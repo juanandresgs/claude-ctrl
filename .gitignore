@@ -1,5 +1,9 @@
 # Claude System .gitignore
 
+# Living Documentation session tracking
+.session-decisions
+CLAUDE.local.md
+
 # Data directories (large, user-specific content)
 projects/
 todos/
