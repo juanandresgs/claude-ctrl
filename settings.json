@@ -1,44 +1,55 @@
 {
   "permissions": {
     "allow": [
+      "Bash(basename *)",
+      "Bash(brew *)",
       "Bash(cat *)",
+      "Bash(chmod *)",
+      "Bash(cp *)",
       "Bash(curl *)",
-      "Bash(curl:*)",
+      "Bash(cut *)",
+      "Bash(date *)",
+      "Bash(dirname *)",
       "Bash(du *)",
       "Bash(echo *)",
+      "Bash(env *)",
+      "Bash(file *)",
       "Bash(find *)",
-      "Bash(gh auth:*)",
-      "Bash(gh repo view:*)",
-      "Bash(git branch:*)",
-      "Bash(git config:*)",
-      "Bash(git diff *)",
-      "Bash(git diff)",
-      "Bash(git init:*)",
-      "Bash(git log *)",
-      "Bash(git log)",
-      "Bash(git show *)",
-      "Bash(git show)",
-      "Bash(git status *)",
-      "Bash(git status)",
+      "Bash(gh *)",
+      "Bash(git *)",
       "Bash(grep *)",
-      "Bash(grep:*)",
       "Bash(head *)",
       "Bash(less *)",
       "Bash(ls *)",
       "Bash(ls)",
       "Bash(lsof *)",
+      "Bash(mkdir *)",
+      "Bash(mv *)",
+      "Bash(node *)",
+      "Bash(npm *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
       "Bash(pwd)",
       "Bash(rg *)",
       "Bash(sleep *)",
+      "Bash(sort *)",
       "Bash(sqlite3 *)",
       "Bash(tail *)",
+      "Bash(tee *)",
+      "Bash(test *)",
+      "Bash(touch *)",
+      "Bash(tr *)",
+      "Bash(uniq *)",
+      "Bash(wc *)",
+      "Bash(which *)",
       "Bash(whoami)",
-      "Read(/Users/turla/*)",
+      "Bash(xargs *)",
+      "Bash(zellij *)",
       "Read(~/*)",
       "Read(./*)",
       "WebFetch",
       "WebSearch",
-      "Bash(zellij:*)"
+      "ida-pro-mcp *"
     ],
     "deny": [
       "Read(./.env*)",
@@ -46,24 +57,47 @@
       "Read(./**/credentials*)"
     ],
     "ask": [],
-    "defaultMode": "plan",
-    "tools": {
-      "Bash": {
-        "git *": "confirm",
-        "rm *": "confirm"
-      }
-    }
+    "defaultMode": "plan"
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": ["context7"],
+  "enabledMcpjsonServers": [
+    "context7"
+  ],
   "hooks": {
-    "PreToolUse": [
+    "SessionStart": [
       {
-        "matcher": "Write",
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/turla/.claude/hooks/gate.sh",
+            "command": "$HOME/.claude/hooks/session-init.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/doc-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/plan-check.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/guard.sh",
             "timeout": 5
           }
         ]
@@ -75,7 +109,23 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/turla/.claude/hooks/track.sh"
+            "command": "$HOME/.claude/hooks/lint.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/track.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/compact-preserve.sh",
+            "timeout": 10
           }
         ]
       }
@@ -85,7 +135,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/turla/.claude/hooks/surface.sh",
+            "command": "$HOME/.claude/hooks/surface.sh",
             "timeout": 180
           }
         ]

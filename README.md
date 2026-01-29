@@ -1,10 +1,10 @@
 # Claude Code Configuration
 
-This directory contains the configuration that shapes how Claude Code operates—a system designed around three principles:
+This directory contains the configuration that shapes how Claude Code operates — a system designed around three principles:
 
 1. **Code is truth** — Documentation derives from source, never the reverse
 2. **Decisions at implementation** — Capture the "why" where it happens
-3. **Knowledge flows upward** — Annotations bubble up to navigable docs
+3. **Deterministic enforcement** — Hooks always execute, instructions degrade with context
 
 ---
 
@@ -28,9 +28,9 @@ This directory contains the configuration that shapes how Claude Code operates�
 │  2. Guardian → Creates worktrees (main is sacred)           │
 │  3. Implementer → Tests first, @decision annotations        │
 │  4. Guardian → Commits/merges with approval                 │
-│  5. Hooks → Gate, track, surface (automatic)               │
+│  5. Hooks → Guard, gate, lint, track, surface (automatic)  │
 ├─────────────────────────────────────────────────────────────┤
-│  COMMANDS: /surface (extract docs) | /compact (save ctx)   │
+│  COMMAND: /compact (preserve context before compaction)     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -38,11 +38,28 @@ This directory contains the configuration that shapes how Claude Code operates�
 
 ## Hooks (Automatic, Every Time)
 
+### Layer 1: PreToolUse — Block Before Execution
+
+| Hook | Matcher | What It Does |
+|------|---------|--------------|
+| **guard.sh** | Bash | Blocks /tmp writes, commits on main, force push, destructive git |
+| **doc-gate.sh** | Write\|Edit | Enforces file documentation headers and @decision on 50+ line files |
+| **plan-check.sh** | Write\|Edit | Warns if writing source code without MASTER_PLAN.md |
+
+### Layer 2: PostToolUse — Feedback After Execution
+
+| Hook | Matcher | What It Does |
+|------|---------|--------------|
+| **lint.sh** | Write\|Edit | Auto-detects project linter, runs on modified files, exit 2 feedback loop |
+| **track.sh** | Write\|Edit | Records which files changed this session |
+
+### Layer 3: Session Lifecycle
+
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **gate.sh** | Before Write | Checks 50+ line source files for @decision annotation |
-| **track.sh** | After Write/Edit | Records which files changed this session |
-| **surface.sh** | Session End | Reports decision status, suggests /surface |
+| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, worktrees |
+| **compact-preserve.sh** | PreCompact | Preserves git state and session context before compaction |
+| **surface.sh** | Stop | Validates @decision coverage, reports audit at session end |
 
 ---
 
@@ -72,21 +89,17 @@ Add to significant source files (50+ lines):
 
 ---
 
-## Skills (Non-Deterministic Intelligence)
+## Skills
 
 | Skill | Purpose |
 |-------|---------|
-| **decision-parser** | Parse @decision annotation syntax from source |
-| **doc-generator** | Generate docs/decisions/ from extracted annotations |
-| **context-preservation** | Survive compaction with context intact |
+| **decision-parser** | Parse and validate @decision annotation syntax from source |
+| **context-preservation** | Generate structured summaries for session continuity |
 
----
-
-## Commands
+## Command
 
 | Command | Purpose |
 |---------|---------|
-| `/surface` | Extract decisions from source → generate docs/decisions/ |
 | `/compact` | Create context summary before compaction |
 
 ---
@@ -98,14 +111,17 @@ Add to significant source files (50+ lines):
 ├── CLAUDE.md              # Sacred philosophical foundation
 ├── settings.json          # Configuration (hooks, permissions)
 ├── README.md              # This guide
-├── .gitignore             # Runtime exclusions
-├── LIVING_DOCUMENTATION.md # System overview
 │
-├── hooks/                 # Deterministic automation
-│   ├── gate.sh            # Pre-write: enforce annotations
-│   ├── track.sh           # Post-edit: track changes
-│   ├── surface.sh         # Session end: report status
-│   └── status.sh          # Helper: formatted output
+├── hooks/                 # Deterministic enforcement
+│   ├── log.sh             # Helper: structured logging (sourced by all hooks)
+│   ├── guard.sh           # PreToolUse(Bash): sacred practice guardrails
+│   ├── doc-gate.sh        # PreToolUse(Write|Edit): documentation enforcement
+│   ├── plan-check.sh      # PreToolUse(Write|Edit): plan-first warning
+│   ├── lint.sh            # PostToolUse(Write|Edit): auto-detect linter
+│   ├── track.sh           # PostToolUse(Write|Edit): change tracking
+│   ├── session-init.sh    # SessionStart: project context injection
+│   ├── compact-preserve.sh # PreCompact: context preservation
+│   └── surface.sh         # Stop: decision audit and validation
 │
 ├── agents/                # The team of excellence
 │   ├── planner.md         # Core Dogma: plan before implement
@@ -114,11 +130,9 @@ Add to significant source files (50+ lines):
 │
 ├── skills/                # Non-deterministic intelligence
 │   ├── decision-parser/   # Parse @decision syntax
-│   ├── doc-generator/     # Generate docs/decisions/
 │   └── context-preservation/ # Survive compaction
 │
 └── commands/              # User-invoked operations
-    ├── surface.md         # /surface pipeline
     └── compact.md         # /compact context preservation
 ```
 
@@ -135,6 +149,7 @@ This configuration embodies that belief:
 - **Main is sacred** — All work happens in isolated worktrees
 - **Nothing done until tested** — Quality gates at every step
 - **Decisions captured where made** — @decision annotations in code, not separate docs
+- **Deterministic enforcement** — Hooks execute mechanically; CLAUDE.md instructions degrade with context
 
 ---
 

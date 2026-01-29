@@ -1,26 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# @decision DEC-HOOKS-002
-# @title Project-aware file change tracking
-# @status accepted
-# @rationale Tracks file changes per-session in the PROJECT's .claude directory,
-#            not the global ~/.claude. Uses git root detection to ensure correct
-#            project identification even when called from global hooks.
+# Project-aware file change tracking.
+# PostToolUse hook — matcher: Write|Edit
+#
+# Tracks file changes per-session in the PROJECT's .claude directory.
+# Uses CLAUDE_PROJECT_DIR when available, falls back to git root detection.
+# Session-scoped to avoid collisions with concurrent sessions.
 
-INPUT=$(cat)
-FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty')
+source "$(dirname "$0")/log.sh"
+
+HOOK_INPUT=$(read_input)
+FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path
-[[ -z "$FILE" ]] && exit 0
+[[ -z "$FILE_PATH" ]] && exit 0
 
-# Exit silently if file doesn't exist (safety check for path)
-[[ ! -e "$(dirname "$FILE")" ]] && exit 0
+# Exit silently if parent directory doesn't exist
+[[ ! -e "$(dirname "$FILE_PATH")" ]] && exit 0
 
-# Detect project root (git root or file's directory)
-PROJECT_ROOT=$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || dirname "$FILE")
+# Detect project root (prefers CLAUDE_PROJECT_DIR)
+PROJECT_ROOT=$(detect_project_root)
 
-# Create session tracking in PROJECT's .claude directory
-mkdir -p "$PROJECT_ROOT/.claude"
-echo "$FILE" >> "$PROJECT_ROOT/.claude/.session-decisions"
+# Session-scoped tracking file
+SESSION_ID="${CLAUDE_SESSION_ID:-$$}"
+TRACKING_DIR="$PROJECT_ROOT/.claude"
+TRACKING_FILE="$TRACKING_DIR/.session-decisions-${SESSION_ID}"
+
+# Create tracking directory if needed
+mkdir -p "$TRACKING_DIR"
+
+# Atomic append: write to temp then append (safer than direct >>)
+TMPFILE=$(mktemp "${TRACKING_DIR}/.track.XXXXXX")
+echo "$FILE_PATH" > "$TMPFILE"
+cat "$TMPFILE" >> "$TRACKING_FILE"
+rm -f "$TMPFILE"
+
 exit 0
