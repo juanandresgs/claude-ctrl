@@ -51,12 +51,19 @@
       "WebSearch",
       "mcp__ida-pro-mcp__*"
     ],
-    "deny": ["Read(./.env*)", "Read(./secrets/**)", "Read(./**/credentials*)"],
+    "deny": [
+      "Read(./.env*)",
+      "Read(./secrets/**)",
+      "Read(./**/credentials*)"
+    ],
     "ask": [],
     "defaultMode": "plan"
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": ["context7", "ida-pro-mcp"],
+  "enabledMcpjsonServers": [
+    "context7",
+    "ida-pro-mcp"
+  ],
   "hooks": {
     "SessionStart": [
       {
@@ -99,6 +106,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/plan-check.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/dispatch-advisory.sh",
+            "timeout": 5
           }
         ]
       },
@@ -109,11 +121,6 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/guard.sh",
             "timeout": 5
-          },
-          {
-            "type": "agent",
-            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Evaluate if this bash command is safe. Check for: data destruction, credential exposure, writing to protected paths, unintended side effects. The command is: $ARGUMENTS. Only flag genuinely dangerous commands, not normal development operations.",
-            "timeout": 10
           }
         ]
       }
@@ -134,7 +141,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/code-review.sh",
-            "timeout": 30
+            "timeout": 10
           },
           {
             "type": "command",
@@ -144,13 +151,8 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/test-runner.sh",
-            "async": true,
-            "timeout": 300
-          },
-          {
-            "type": "agent",
-            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Review the file just written/edited. Check: 1) Does the file header accurately describe the file's purpose? 2) If the file is 50+ lines, does it have a @decision annotation with meaningful rationale? 3) Are function/method comments present for non-trivial logic? If documentation is adequate, return {\"ok\": true}. If not, return {\"ok\": false, \"reason\": \"specific improvement suggestions\"}. Context: $ARGUMENTS",
-            "timeout": 30
+            "timeout": 60,
+            "async": true
           }
         ]
       }
@@ -183,9 +185,9 @@
         "matcher": "planner|Plan",
         "hooks": [
           {
-            "type": "agent",
-            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. The Planner agent has finished producing a plan. Review the plan output for completeness: 1) Does it include clear requirements and definition of done? 2) Are architectural decisions documented with rationale? 3) Are git issues defined with phases? 4) Is there a worktree strategy? If complete, return {\"ok\": true}. If gaps exist, return {\"ok\": false, \"reason\": \"specific gaps\"}. Context: $ARGUMENTS",
-            "timeout": 30
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-planner.sh",
+            "timeout": 5
           }
         ]
       },
@@ -193,9 +195,9 @@
         "matcher": "implementer",
         "hooks": [
           {
-            "type": "agent",
-            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check if the implementer's output includes: 1) A summary of what was built, 2) Test results showing it works, 3) Verification instructions the user can follow. If all present, return {\"ok\": true}. If any are missing, return {\"ok\": false, \"reason\": \"specific feedback about what's needed\"}. Context: $ARGUMENTS",
-            "timeout": 30
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-implementer.sh",
+            "timeout": 5
           }
         ]
       },
@@ -203,9 +205,9 @@
         "matcher": "guardian",
         "hooks": [
           {
-            "type": "agent",
-            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. The Guardian agent has finished. Verify completeness: 1) If a merge was performed, was MASTER_PLAN.md updated with the phase status and decision log? If merge happened but MASTER_PLAN.md was NOT modified, return {\"ok\": false, \"reason\": \"Guardian must update MASTER_PLAN.md after merge: mark phase status, append decision log with @decision IDs from merged code.\"}. 2) Were @decision annotations verified before any merge? 3) Was explicit user approval obtained before commits/merges? If no merge was performed (e.g., only worktree creation or branch management), these checks are not required — return {\"ok\": true}. Context: $ARGUMENTS",
-            "timeout": 30
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-guardian.sh",
+            "timeout": 5
           }
         ]
       }
@@ -227,17 +229,17 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/surface.sh",
-            "timeout": 180
+            "timeout": 30
           },
           {
-            "type": "agent",
-            "prompt": "You MUST respond with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. FIRST: Check if the current working directory is the ~/.claude config directory (meta-infrastructure). If so, return ok=true immediately — this is not a software project and has no relevant test suite. OTHERWISE: Verify that the project's tests pass before this session response is finalized. Look for test configuration files (package.json scripts, pytest, cargo test, go test) in the project root (NOT in git submodules — only the project's own tests). If a test framework is found, run the tests using Bash. Report whether tests pass or fail. If no test framework is detected, return ok=true. Context: $ARGUMENTS",
-            "timeout": 120
-          },
-          {
-            "type": "agent",
-            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check the LAST paragraph of the assistant's response for forward motion. Forward motion means ANY of: a question mark (?), phrases like 'want me to', 'shall I', 'let me know', 'would you like', 'should I', or an explicit offer/suggestion for next steps. If the last paragraph contains ANY of these indicators, return {\"ok\": true}. ONLY return {\"ok\": false, \"reason\": \"Response lacks forward motion\"} if the response ends with a bare completion statement ('done', 'finished', 'completed', 'all set') with absolutely no question, offer, or suggestion in the final paragraph. When in doubt, return {\"ok\": true}. Context: $ARGUMENTS",
+            "type": "command",
+            "command": "$HOME/.claude/hooks/session-summary.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/forward-motion.sh",
+            "timeout": 5
           }
         ]
       }
@@ -258,8 +260,9 @@
     "type": "command",
     "command": "input=$(cat); printf '\\033[2m%s\\033[0m \\033[1;36m%s\\033[0m \\033[2m│\\033[0m \\033[33m%s\\033[0m \\033[2m│\\033[0m \\033[32m%s\\033[0m' \"$(echo \"$input\" | jq -r '.model.display_name')\" \"$(basename \"$(echo \"$input\" | jq -r '.workspace.current_dir')\")\" \"$(date '+%H:%M:%S')\" \"$(echo \"$input\" | jq -r '.version')\""
   },
+  "autoUpdatesChannel": "latest",
   "installation": {
     "method": "native"
   },
-  "autoUpdatesChannel": "latest"
+  "model": "opus"
 }

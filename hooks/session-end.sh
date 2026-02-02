@@ -11,8 +11,10 @@ set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 
-HOOK_INPUT=$(read_input)
-REASON=$(echo "$HOOK_INPUT" | jq -r '.reason // "unknown"' 2>/dev/null)
+# Optimization: Stream input directly to jq to avoid loading potentially
+# large session history into a Bash variable (which consumes ~3-4x RAM).
+# HOOK_INPUT=$(read_input) <- removing this
+REASON=$(jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")
 
 PROJECT_ROOT=$(detect_project_root)
 
@@ -32,6 +34,11 @@ rm -f "$PROJECT_ROOT/.claude/.session-decisions"*
 
 # --- Clean up lint cache ---
 rm -f "$PROJECT_ROOT/.claude/.lint-cache"
+
+# --- Clean up test runner artifacts ---
+rm -f "$PROJECT_ROOT/.claude/.test-runner.lock"
+rm -f "$PROJECT_ROOT/.claude/.test-runner.last-run"
+rm -f "$PROJECT_ROOT/.claude/.test-runner.out"
 
 # --- Clean up temp tracking artifacts ---
 rm -f "$PROJECT_ROOT/.claude/.track."*

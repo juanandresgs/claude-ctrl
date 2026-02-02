@@ -84,6 +84,64 @@ detect_test_runner() {
 RUNNER=$(detect_test_runner "$PROJECT_ROOT" "$FILE_PATH")
 [[ "$RUNNER" == "none" ]] && exit 0
 
+# --- Cooldown: skip if last run was <10 seconds ago ---
+LOCK_DIR="${PROJECT_ROOT}/.claude"
+LAST_RUN_FILE="${LOCK_DIR}/.test-runner.last-run"
+mkdir -p "$LOCK_DIR"
+
+if [[ -f "$LAST_RUN_FILE" ]]; then
+    LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo "0")
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - LAST_RUN ))
+    if [[ "$ELAPSED" -lt 10 ]]; then
+        exit 0
+    fi
+fi
+
+# --- Lock file: ensure only one test process per project ---
+LOCK_FILE="${LOCK_DIR}/.test-runner.lock"
+
+# Kill previous test run if still active
+if [[ -f "$LOCK_FILE" ]]; then
+    OLD_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+        # Kill child processes first (vitest workers, pytest workers, etc.)
+        pkill -P "$OLD_PID" 2>/dev/null || true
+        # Then kill the parent
+        kill "$OLD_PID" 2>/dev/null || true
+        wait "$OLD_PID" 2>/dev/null || true
+    fi
+    rm -f "$LOCK_FILE"
+fi
+
+# Track the test subprocess PID for targeted cleanup
+TEST_PID=""
+
+# Write our PID and clean up on exit (both lock file and test subprocess)
+echo $$ > "$LOCK_FILE"
+trap '{
+    # Kill the test subprocess and its children if still running
+    if [[ -n "$TEST_PID" ]] && kill -0 "$TEST_PID" 2>/dev/null; then
+        pkill -P "$TEST_PID" 2>/dev/null || true
+        kill "$TEST_PID" 2>/dev/null || true
+    fi
+    rm -f "$LOCK_FILE"
+}' EXIT
+
+# Debounce: let rapid writes settle before running tests.
+# Since this hook is async, this doesn't block Claude.
+# If another write fires during this sleep, the lock mechanism above
+# will kill us before we start the actual test run.
+sleep 2
+
+# Re-check lock — if we were superseded during debounce, exit quietly
+if [[ -f "$LOCK_FILE" ]]; then
+    CURRENT_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [[ "$CURRENT_PID" != "$$" ]]; then
+        exit 0
+    fi
+fi
+
 # --- Run tests ---
 run_tests() {
     local runner="$1"
@@ -122,8 +180,16 @@ run_tests() {
     esac
 }
 
-TEST_OUTPUT=$(run_tests "$RUNNER" "$PROJECT_ROOT" "$FILE_PATH" 2>&1) || TEST_EXIT=$?
-TEST_EXIT="${TEST_EXIT:-0}"
+# Run tests in a subshell and capture PID for targeted cleanup
+run_tests "$RUNNER" "$PROJECT_ROOT" "$FILE_PATH" > "${LOCK_DIR}/.test-runner.out" 2>&1 &
+TEST_PID=$!
+wait "$TEST_PID" 2>/dev/null || true
+TEST_EXIT=$?
+TEST_OUTPUT=$(cat "${LOCK_DIR}/.test-runner.out" 2>/dev/null || echo "")
+rm -f "${LOCK_DIR}/.test-runner.out"
+
+# Write cooldown timestamp
+date +%s > "$LAST_RUN_FILE"
 
 # --- Report results ---
 if [[ "$TEST_EXIT" -ne 0 ]]; then
