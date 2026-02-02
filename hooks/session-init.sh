@@ -52,15 +52,47 @@ if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
     else
         CONTEXT_PARTS+=("MASTER_PLAN.md: exists")
     fi
+
+    # Plan age and staleness detection
+    PLAN_MOD=$(stat -f '%m' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || stat -c '%Y' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    if [[ "$PLAN_MOD" -gt 0 ]]; then
+        NOW=$(date +%s)
+        PLAN_AGE_DAYS=$(( (NOW - PLAN_MOD) / 86400 ))
+        if [[ "$PLAN_AGE_DAYS" -gt 0 ]]; then
+            CONTEXT_PARTS+=("Plan age: ${PLAN_AGE_DAYS}d since last update")
+        fi
+
+        # Count commits since plan was last modified
+        if [[ -d "$PROJECT_ROOT/.git" ]]; then
+            PLAN_DATE=$(date -r "$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
+            if [[ -n "$PLAN_DATE" ]]; then
+                COMMITS_SINCE=$(git -C "$PROJECT_ROOT" rev-list --count --after="$PLAN_DATE" HEAD 2>/dev/null || echo "0")
+                if [[ "$COMMITS_SINCE" -ge 5 ]]; then
+                    CONTEXT_PARTS+=("MASTER_PLAN.md may be stale (last updated ${PLAN_AGE_DAYS}d ago, $COMMITS_SINCE commits since)")
+                fi
+            fi
+        fi
+    fi
+
+    # Phase progress tracking
+    TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    if [[ "$TOTAL_PHASES" -gt 0 ]]; then
+        CONTEXT_PARTS+=("Plan progress: $COMPLETED_PHASES/$TOTAL_PHASES phases completed")
+    fi
 else
     CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
 fi
 
 # --- Stale session files ---
-if [[ -f "$PROJECT_ROOT/.claude/.session-decisions" ]]; then
-    STALE_COUNT=$(wc -l < "$PROJECT_ROOT/.claude/.session-decisions" | tr -d ' ')
-    CONTEXT_PARTS+=("Stale session file: .session-decisions ($STALE_COUNT entries from previous session)")
-fi
+# Check both new and legacy filenames
+for pattern in "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/.session-decisions"*; do
+    if [[ -f "$pattern" ]]; then
+        STALE_COUNT=$(wc -l < "$pattern" | tr -d ' ')
+        STALE_NAME=$(basename "$pattern")
+        CONTEXT_PARTS+=("Stale session file: $STALE_NAME ($STALE_COUNT entries from previous session)")
+    fi
+done
 
 # --- Output as additionalContext ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then

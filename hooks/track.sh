@@ -22,10 +22,10 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Detect project root (prefers CLAUDE_PROJECT_DIR)
 PROJECT_ROOT=$(detect_project_root)
 
-# Session-scoped tracking file
+# Session-scoped tracking file (tracks file changes, not decisions)
 SESSION_ID="${CLAUDE_SESSION_ID:-$$}"
 TRACKING_DIR="$PROJECT_ROOT/.claude"
-TRACKING_FILE="$TRACKING_DIR/.session-decisions-${SESSION_ID}"
+TRACKING_FILE="$TRACKING_DIR/.session-changes-${SESSION_ID}"
 
 # Create tracking directory if needed
 mkdir -p "$TRACKING_DIR"

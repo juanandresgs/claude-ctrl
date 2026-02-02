@@ -23,8 +23,8 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Exit silently if no file path
 [[ -z "$FILE_PATH" ]] && exit 0
 
-# Skip non-source files
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php)$ ]] && exit 0
+# Skip non-source files (matches doc-gate.sh extension list)
+[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] && exit 0
 
 # Skip test files, config files, documentation
 [[ "$FILE_PATH" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && exit 0
@@ -45,7 +45,7 @@ if [[ ! -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "additionalContext": "No MASTER_PLAN.md found in $PROJECT_ROOT. Per Core Dogma, create a plan before implementing. Sacred Practice #5: We NEVER run straight into implementing anything."
+    "additionalContext": "No MASTER_PLAN.md found in $PROJECT_ROOT. Per Core Dogma, create a plan before implementing. Sacred Practice #6: We NEVER run straight into implementing anything."
   }
 }
 EOF

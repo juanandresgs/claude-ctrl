@@ -56,9 +56,23 @@ if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
     fi
 fi
 
-# --- Session file changes ---
-SESSION_FILE="$PROJECT_ROOT/.claude/.session-decisions"
-if [[ -f "$SESSION_FILE" ]]; then
+# --- Session file changes (mirrors surface.sh fallback logic) ---
+SESSION_ID="${CLAUDE_SESSION_ID:-}"
+SESSION_FILE=""
+if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}" ]]; then
+    SESSION_FILE="$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
+elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
+    SESSION_FILE="$PROJECT_ROOT/.claude/.session-changes"
+else
+    # Glob fallback for any session file (legacy or mismatched ID)
+    SESSION_FILE=$(ls "$PROJECT_ROOT/.claude/.session-changes"* 2>/dev/null | head -1 || echo "")
+    # Also check legacy name
+    if [[ -z "$SESSION_FILE" ]]; then
+        SESSION_FILE=$(ls "$PROJECT_ROOT/.claude/.session-decisions"* 2>/dev/null | head -1 || echo "")
+    fi
+fi
+
+if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     FILE_COUNT=$(sort -u "$SESSION_FILE" | wc -l | tr -d ' ')
     CONTEXT_PARTS+=("Files modified this session: $FILE_COUNT")
     # List unique files

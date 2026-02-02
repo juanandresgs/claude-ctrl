@@ -30,8 +30,10 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 PROJECT_ROOT=$(detect_project_root)
 
 # --- Linter detection with caching ---
-CACHE_KEY=$(echo "$PROJECT_ROOT" | md5 2>/dev/null || echo "$PROJECT_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
-CACHE_FILE="/tmp/claude-lint-cache-${CACHE_KEY}"
+# Cache in project .claude dir (not /tmp/ — Sacred Practice #3)
+CACHE_DIR="$PROJECT_ROOT/.claude"
+mkdir -p "$CACHE_DIR"
+CACHE_FILE="$CACHE_DIR/.lint-cache"
 
 detect_linter() {
     local root="$1"
