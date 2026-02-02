@@ -28,9 +28,6 @@ if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_I
     CHANGES="$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
 elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
     CHANGES="$PROJECT_ROOT/.claude/.session-changes"
-else
-    # Glob fallback
-    CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-changes"* 2>/dev/null | head -1 || echo "")
 fi
 
 # No tracking file → no summary needed
@@ -38,12 +35,13 @@ if [[ -z "$CHANGES" || ! -f "$CHANGES" ]]; then
     exit 0
 fi
 
-# Count unique files changed
-TOTAL_FILES=$(sort -u "$CHANGES" | wc -l | tr -d ' ')
+# Count unique files changed (guard against empty file)
+TOTAL_FILES=$(sort -u "$CHANGES" 2>/dev/null | wc -l | tr -d ' ') || TOTAL_FILES=0
+[[ "$TOTAL_FILES" -eq 0 ]] && exit 0
 
 # Count source vs non-source
 SOURCE_EXTS='(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)'
-SOURCE_COUNT=$(sort -u "$CHANGES" | grep -cE "\\.${SOURCE_EXTS}$" 2>/dev/null) || SOURCE_COUNT=0
+SOURCE_COUNT=$(sort -u "$CHANGES" 2>/dev/null | grep -cE "\\.${SOURCE_EXTS}$") || SOURCE_COUNT=0
 CONFIG_COUNT=$(( TOTAL_FILES - SOURCE_COUNT ))
 
 # Check for @decision annotations added this session
@@ -54,7 +52,7 @@ while IFS= read -r file; do
     if grep -qE "$DECISION_PATTERN" "$file" 2>/dev/null; then
         ((DECISIONS_ADDED++)) || true
     fi
-done < <(sort -u "$CHANGES")
+done < <(sort -u "$CHANGES" 2>/dev/null)
 
 # Build summary (3-4 lines max)
 SUMMARY="Session: $TOTAL_FILES file(s) changed"
