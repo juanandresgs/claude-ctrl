@@ -114,6 +114,14 @@ is_skippable_path() {
     return 1
 }
 
+# --- Audit trail ---
+append_audit() {
+    local root="$1" event="$2" detail="$3"
+    local audit_file="$root/.claude/.audit-log"
+    mkdir -p "$root/.claude"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%S)|${event}|${detail}" >> "$audit_file"
+}
+
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f get_git_state get_plan_status get_session_changes is_source_file is_skippable_path
+export -f get_git_state get_plan_status get_session_changes is_source_file is_skippable_path append_audit

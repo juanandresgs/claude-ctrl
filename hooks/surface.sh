@@ -258,6 +258,18 @@ if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
     fi
 fi
 
+# --- Append key findings to audit log ---
+AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
+if [[ "$MISSING_COUNT" -gt 0 ]]; then
+    append_audit "$PROJECT_ROOT" "decision_gap" "$MISSING_COUNT files missing @decision"
+fi
+if [[ -n "${CODE_NOT_PLAN:-}" ]]; then
+    append_audit "$PROJECT_ROOT" "plan_drift" "unplanned decisions: $CODE_NOT_PLAN"
+fi
+if [[ -n "${PLAN_NOT_CODE:-}" ]]; then
+    append_audit "$PROJECT_ROOT" "plan_drift" "unimplemented decisions: $PLAN_NOT_CODE"
+fi
+
 # Clean up session tracking
 rm -f "$CHANGES"
 exit 0

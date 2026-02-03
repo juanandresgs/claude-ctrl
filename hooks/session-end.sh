@@ -20,28 +20,30 @@ PROJECT_ROOT=$(detect_project_root)
 
 log_info "SESSION-END" "Session ending (reason: $REASON)"
 
-# --- Clean up session tracking files ---
-SESSION_ID="${CLAUDE_SESSION_ID:-}"
-if [[ -n "$SESSION_ID" ]]; then
-    rm -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
-else
-    # Clean all session files if no specific ID
-    rm -f "$PROJECT_ROOT/.claude/.session-changes"*
-fi
-
-# Also clean legacy-named files
+# --- Clean up session-scoped files (these don't persist) ---
+rm -f "$PROJECT_ROOT/.claude/.session-changes"*
 rm -f "$PROJECT_ROOT/.claude/.session-decisions"*
-
-# --- Clean up lint cache ---
+rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
 rm -f "$PROJECT_ROOT/.claude/.lint-cache"
-
-# --- Clean up test runner artifacts ---
-rm -f "$PROJECT_ROOT/.claude/.test-runner.lock"
-rm -f "$PROJECT_ROOT/.claude/.test-runner.last-run"
-rm -f "$PROJECT_ROOT/.claude/.test-runner.out"
-
-# --- Clean up temp tracking artifacts ---
+rm -f "$PROJECT_ROOT/.claude/.test-runner."*
+rm -f "$PROJECT_ROOT/.claude/.test-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.track."*
+
+# DO NOT delete (cross-session state):
+#   .audit-log       — persistent audit trail
+#   .test-status     — last known test state
+#   .agent-findings  — pending agent issues
+#   .lint-breaker    — circuit breaker state
+
+# --- Trim audit log to prevent unbounded growth (keep last 100 entries) ---
+AUDIT_LOG="$PROJECT_ROOT/.claude/.audit-log"
+if [[ -f "$AUDIT_LOG" ]]; then
+    LINES=$(wc -l < "$AUDIT_LOG" | tr -d ' ')
+    if [[ "$LINES" -gt 100 ]]; then
+        tail -100 "$AUDIT_LOG" > "${AUDIT_LOG}.tmp"
+        mv "${AUDIT_LOG}.tmp" "$AUDIT_LOG"
+    fi
+fi
 
 log_info "SESSION-END" "Cleanup complete"
 exit 0

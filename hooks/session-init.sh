@@ -74,6 +74,36 @@ for pattern in "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/
     fi
 done
 
+# --- Previous session audit trail ---
+AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
+if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
+    ENTRY_COUNT=$(wc -l < "$AUDIT_LOG" | tr -d ' ')
+    RECENT=$(tail -10 "$AUDIT_LOG")
+    CONTEXT_PARTS+=("Audit trail ($ENTRY_COUNT entries, showing last 10):")
+    while IFS= read -r line; do
+        CONTEXT_PARTS+=("  $line")
+    done <<< "$RECENT"
+fi
+
+# --- Pending agent findings ---
+FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
+    CONTEXT_PARTS+=("Unresolved agent findings from previous session:")
+    while IFS= read -r line; do
+        CONTEXT_PARTS+=("  $line")
+    done < "$FINDINGS_FILE"
+fi
+
+# --- Last known test status ---
+TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
+if [[ -f "$TEST_STATUS" ]]; then
+    TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
+    TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS")
+    if [[ "$TS_RESULT" == "fail" ]]; then
+        CONTEXT_PARTS+=("WARNING: Last test run FAILED ($TS_FAILS failures). test-gate.sh will block source writes until tests pass.")
+    fi
+fi
+
 # --- Output as additionalContext ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
     CONTEXT=$(printf '%s\n' "${CONTEXT_PARTS[@]}")

@@ -151,5 +151,21 @@ if echo "$COMMAND" | grep -qE 'git\s+branch\s+.*-D\b'; then
     deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
+# --- Check 5: Test status gate for merge commands ---
+if echo "$COMMAND" | grep -qE 'git\s+merge'; then
+    PROJECT_ROOT=$(detect_project_root)
+    TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+    if [[ -f "$TEST_STATUS_FILE" ]]; then
+        TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+        TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+        TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
+        NOW=$(date +%s)
+        AGE=$(( NOW - TEST_TIME ))
+        if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
+            deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before merging."
+        fi
+    fi
+fi
+
 # All checks passed
 exit 0

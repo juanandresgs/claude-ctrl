@@ -10,6 +10,7 @@ set -euo pipefail
 # @decision check is grep. Both complete in <1s. Status: accepted.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
@@ -83,6 +84,16 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     fi
 else
     CONTEXT="Implementer validation: branch=$CURRENT_BRANCH, @decision coverage OK."
+fi
+
+# Persist findings for next-prompt injection
+if [[ ${#ISSUES[@]} -gt 0 ]]; then
+    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+    mkdir -p "${PROJECT_ROOT}/.claude"
+    echo "implementer|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
+    for issue in "${ISSUES[@]}"; do
+        append_audit "$PROJECT_ROOT" "agent_implementer" "$issue"
+    done
 fi
 
 # Output as additionalContext

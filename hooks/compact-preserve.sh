@@ -101,6 +101,22 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     fi
 fi
 
+# --- Feedback spine state ---
+TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
+if [[ -f "$TEST_STATUS" ]]; then
+    TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
+    TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS")
+    CONTEXT_PARTS+=("Test status: ${TS_RESULT} (${TS_FAILS} failures)")
+fi
+
+AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
+if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
+    CONTEXT_PARTS+=("Recent audit (last 5):")
+    while IFS= read -r line; do
+        CONTEXT_PARTS+=("  $line")
+    done < <(tail -5 "$AUDIT_LOG")
+fi
+
 # --- Output ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
     CONTEXT=$(printf '%s\n' "${CONTEXT_PARTS[@]}")

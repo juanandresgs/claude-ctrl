@@ -21,6 +21,43 @@ PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
 
+# --- First-prompt mitigation for session-init bug (Issue #10373) ---
+PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${CLAUDE_SESSION_ID:-$$}"
+if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
+    mkdir -p "${PROJECT_ROOT}/.claude"
+    echo "1" > "$PROMPT_COUNT_FILE"
+    # Inject full session context (same as session-init.sh)
+    get_git_state "$PROJECT_ROOT"
+    get_plan_status "$PROJECT_ROOT"
+    [[ -n "$GIT_BRANCH" ]] && CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted")
+    [[ "$PLAN_EXISTS" == "true" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done")
+    [[ "$PLAN_EXISTS" == "false" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
+fi
+
+# --- Inject agent findings from previous subagent runs ---
+FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
+    CONTEXT_PARTS+=("Previous agent findings (unresolved):")
+    while IFS='|' read -r agent issues; do
+        [[ -z "$agent" ]] && continue
+        CONTEXT_PARTS+=("  ${agent}: ${issues}")
+    done < "$FINDINGS_FILE"
+    # Clear after injection (one-shot delivery)
+    rm -f "$FINDINGS_FILE"
+fi
+
+# --- Inject recent audit trail ---
+AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
+if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
+    RECENT=$(tail -5 "$AUDIT_LOG")
+    if [[ -n "$RECENT" ]]; then
+        CONTEXT_PARTS+=("Recent audit events:")
+        while IFS= read -r line; do
+            CONTEXT_PARTS+=("  $line")
+        done <<< "$RECENT"
+    fi
+fi
+
 # --- Check for plan/implement/status keywords ---
 if echo "$PROMPT" | grep -qiE '\bplan\b|\bimplement\b|\bphase\b|\bmaster.plan\b|\bstatus\b|\bprogress\b|\bdemo\b'; then
     get_plan_status "$PROJECT_ROOT"

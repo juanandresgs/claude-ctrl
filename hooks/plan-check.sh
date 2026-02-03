@@ -80,20 +80,32 @@ EOF
     exit 0
 fi
 
-# --- Plan staleness check (advisory, not deny) ---
-STALENESS_THRESHOLD="${PLAN_STALENESS_THRESHOLD:-20}"
+# --- Plan staleness check (two-tier: advisory at WARN, deny at DENY) ---
+STALENESS_WARN="${PLAN_STALENESS_WARN:-20}"
+STALENESS_DENY="${PLAN_STALENESS_DENY:-40}"
 if [[ -d "$PROJECT_ROOT/.git" ]]; then
     PLAN_MOD=$(stat -f '%m' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || stat -c '%Y' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
     if [[ "$PLAN_MOD" -gt 0 ]]; then
         PLAN_DATE=$(date -r "$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
         if [[ -n "$PLAN_DATE" ]]; then
             COMMITS_SINCE=$(git -C "$PROJECT_ROOT" rev-list --count --after="$PLAN_DATE" HEAD 2>/dev/null || echo "0")
-            if [[ "$COMMITS_SINCE" -ge "$STALENESS_THRESHOLD" ]]; then
+            if [[ "$COMMITS_SINCE" -ge "$STALENESS_DENY" ]]; then
+                cat <<DENY_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "MASTER_PLAN.md is critically stale ($COMMITS_SINCE commits since last update, threshold: $STALENESS_DENY). Run /plan-sync to reconcile plan with codebase before continuing."
+  }
+}
+DENY_EOF
+                exit 0
+            elif [[ "$COMMITS_SINCE" -ge "$STALENESS_WARN" ]]; then
                 cat <<STALE_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "additionalContext": "Plan staleness warning: MASTER_PLAN.md has not been updated in $COMMITS_SINCE commits (threshold: $STALENESS_THRESHOLD). Consider running /plan-sync to reconcile plan with codebase before continuing."
+    "additionalContext": "Plan staleness warning: MASTER_PLAN.md has not been updated in $COMMITS_SINCE commits (threshold: $STALENESS_WARN). Consider running /plan-sync to reconcile plan with codebase before continuing."
   }
 }
 STALE_EOF

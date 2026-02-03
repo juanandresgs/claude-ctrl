@@ -95,6 +95,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "$HOME/.claude/hooks/test-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/branch-guard.sh",
             "timeout": 5
           },
@@ -106,11 +111,6 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/plan-check.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/dispatch-advisory.sh",
             "timeout": 5
           }
         ]

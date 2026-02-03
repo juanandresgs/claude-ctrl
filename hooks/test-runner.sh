@@ -193,6 +193,18 @@ rm -f "${LOCK_DIR}/.test-runner.out"
 # Write cooldown timestamp
 date +%s > "$LAST_RUN_FILE"
 
+# --- Write test status for test-gate.sh and guard.sh ---
+TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+if [[ "$TEST_EXIT" -ne 0 ]]; then
+    FAIL_COUNT=$(echo "$TEST_OUTPUT" | grep -cE '(FAIL|FAILED|ERROR|fail)' || echo "1")
+    [[ "$FAIL_COUNT" -eq 0 ]] && FAIL_COUNT=1
+    echo "fail|${FAIL_COUNT}|$(date +%s)" > "$TEST_STATUS_FILE"
+    # Audit trail
+    append_audit "$PROJECT_ROOT" "test_fail" "${RUNNER}: ${FAIL_COUNT} failures"
+else
+    echo "pass|0|$(date +%s)" > "$TEST_STATUS_FILE"
+fi
+
 # --- Report results ---
 if [[ "$TEST_EXIT" -ne 0 ]]; then
     ESCAPED=$(echo "Test failures detected ($RUNNER):\n$TEST_OUTPUT" | jq -Rs .)

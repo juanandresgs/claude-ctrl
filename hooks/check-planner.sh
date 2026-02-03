@@ -10,6 +10,7 @@ set -euo pipefail
 # that completes in <1s. Status: accepted.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
@@ -63,6 +64,16 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     done
 else
     CONTEXT="Planner validation: MASTER_PLAN.md looks good ($PHASE_COUNT phases defined)."
+fi
+
+# Persist findings for next-prompt injection
+if [[ ${#ISSUES[@]} -gt 0 ]]; then
+    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+    mkdir -p "${PROJECT_ROOT}/.claude"
+    echo "planner|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
+    for issue in "${ISSUES[@]}"; do
+        append_audit "$PROJECT_ROOT" "agent_planner" "$issue"
+    done
 fi
 
 # Output as additionalContext

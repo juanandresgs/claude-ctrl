@@ -138,6 +138,28 @@ fi
 # No linter detected — exit silently
 [[ "$LINTER" == "none" ]] && exit 0
 
+# --- Circuit breaker: prevent runaway lint retry loops ---
+BREAKER_FILE="${PROJECT_ROOT}/.claude/.lint-breaker"
+if [[ -f "$BREAKER_FILE" ]]; then
+    BREAKER_STATE=$(cut -d'|' -f1 "$BREAKER_FILE")
+    BREAKER_COUNT=$(cut -d'|' -f2 "$BREAKER_FILE")
+    BREAKER_TIME=$(cut -d'|' -f3 "$BREAKER_FILE")
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - BREAKER_TIME ))
+
+    if [[ "$BREAKER_STATE" == "open" && "$ELAPSED" -lt 300 ]]; then
+        # OPEN state: skip lint entirely
+        cat <<BREAKER_EOF
+{ "hookSpecificOutput": { "hookEventName": "PostToolUse",
+    "additionalContext": "Lint circuit breaker OPEN ($BREAKER_COUNT consecutive failures). Skipping lint for $((300 - ELAPSED))s. Fix underlying lint issues to reset." } }
+BREAKER_EOF
+        exit 0
+    elif [[ "$BREAKER_STATE" == "open" && "$ELAPSED" -ge 300 ]]; then
+        # Timeout expired → HALF-OPEN (allow one attempt)
+        echo "half-open|$BREAKER_COUNT|$BREAKER_TIME" > "$BREAKER_FILE"
+    fi
+fi
+
 # --- Run linter ---
 run_lint() {
     local linter="$1"
@@ -207,11 +229,26 @@ LINT_OUTPUT=$(run_lint "$LINTER" "$FILE_PATH" "$PROJECT_ROOT" 2>&1) || LINT_EXIT
 LINT_EXIT="${LINT_EXIT:-0}"
 
 if [[ "$LINT_EXIT" -ne 0 ]]; then
+    # Update circuit breaker
+    PREV_COUNT=0
+    if [[ -f "$BREAKER_FILE" ]]; then
+        PREV_COUNT=$(cut -d'|' -f2 "$BREAKER_FILE" 2>/dev/null || echo "0")
+    fi
+    NEW_COUNT=$(( PREV_COUNT + 1 ))
+    if [[ "$NEW_COUNT" -ge 3 ]]; then
+        echo "open|$NEW_COUNT|$(date +%s)" > "$BREAKER_FILE"
+    else
+        echo "closed|$NEW_COUNT|$(date +%s)" > "$BREAKER_FILE"
+    fi
+
     # Lint failed — feed errors back to Claude via exit code 2
     echo "Lint errors ($LINTER) in $FILE_PATH:" >&2
     echo "$LINT_OUTPUT" >&2
     exit 2
 fi
+
+# Reset breaker on success
+echo "closed|0|$(date +%s)" > "$BREAKER_FILE"
 
 # Lint passed — silent success
 exit 0
