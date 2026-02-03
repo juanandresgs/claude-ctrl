@@ -104,8 +104,30 @@ detect_linter() {
     echo "none"
 }
 
-# Check cache or detect
+# Check cache or detect (invalidate if config files are newer than cache)
+CACHE_STALE=false
 if [[ -f "$CACHE_FILE" ]]; then
+    # Invalidate cache if any linter config file is newer than cache
+    for cfg in "$PROJECT_ROOT/pyproject.toml" "$PROJECT_ROOT/setup.cfg" \
+               "$PROJECT_ROOT/biome.json" "$PROJECT_ROOT/biome.jsonc" \
+               "$PROJECT_ROOT/package.json" "$PROJECT_ROOT/Cargo.toml" \
+               "$PROJECT_ROOT/.golangci.yml" "$PROJECT_ROOT/.golangci.yaml" \
+               "$PROJECT_ROOT/go.mod" "$PROJECT_ROOT/Makefile"; do
+        if [[ -f "$cfg" && "$cfg" -nt "$CACHE_FILE" ]]; then
+            CACHE_STALE=true
+            break
+        fi
+    done
+    # Also invalidate .prettierrc* changes
+    for cfg in "$PROJECT_ROOT"/.prettierrc*; do
+        if [[ -f "$cfg" && "$cfg" -nt "$CACHE_FILE" ]]; then
+            CACHE_STALE=true
+            break
+        fi
+    done
+fi
+
+if [[ -f "$CACHE_FILE" && "$CACHE_STALE" == "false" ]]; then
     LINTER=$(cat "$CACHE_FILE")
 else
     LINTER=$(detect_linter "$PROJECT_ROOT" "$FILE_PATH")

@@ -71,8 +71,8 @@ if [[ -n "$PHASE_HEADERS" ]]; then
                 ISSUES+=("Phase $PHASE_NUM: Completed phase missing Decision Log section")
             else
                 # Check that Decision Log has content beyond the placeholder comment
-                LOG_SECTION=$(echo "$PHASE_CONTENT" | sed -n '/###\s*Decision\s*Log/,/^###\|^##/p' | tail -n +2)
-                NON_COMMENT=$(echo "$LOG_SECTION" | grep -v '^\s*$' | grep -v '<!--' | grep -v '-->' || echo "")
+                LOG_SECTION=$(echo "$PHASE_CONTENT" | sed -n '/### *Decision *Log/,/^###/p' | tail -n +2)
+                NON_COMMENT=$(echo "$LOG_SECTION" | grep -v '^\s*$' | grep -v '<!--' | grep -v -e '-->' || echo "")
                 if [[ -z "$NON_COMMENT" ]]; then
                     ISSUES+=("Phase $PHASE_NUM: Completed phase has empty Decision Log — Guardian must append decision entries")
                 fi

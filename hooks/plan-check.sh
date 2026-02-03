@@ -36,6 +36,30 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Skip the .claude config directory itself
 [[ "$FILE_PATH" =~ \.claude/ ]] && exit 0
 
+# --- Fast-mode: skip small/scoped changes ---
+# Edit tool is inherently scoped (substring replacement) — skip plan check
+TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+if [[ "$TOOL_NAME" == "Edit" ]]; then
+    exit 0
+fi
+
+# Write tool: skip small files (<20 lines) — trivial fixes don't need a plan
+if [[ "$TOOL_NAME" == "Write" ]]; then
+    CONTENT_LINES=$(echo "$HOOK_INPUT" | jq -r '.tool_input.content // ""' 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$CONTENT_LINES" -lt 20 ]]; then
+        # Log the bypass so surface.sh can report unplanned small writes
+        cat <<FAST_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "additionalContext": "Fast-mode bypass: small file write ($CONTENT_LINES lines) skipped plan check. Surface audit will track this."
+  }
+}
+FAST_EOF
+        exit 0
+    fi
+fi
+
 # Detect project root
 PROJECT_ROOT=$(detect_project_root)
 
@@ -54,6 +78,29 @@ if [[ ! -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
 }
 EOF
     exit 0
+fi
+
+# --- Plan staleness check (advisory, not deny) ---
+STALENESS_THRESHOLD="${PLAN_STALENESS_THRESHOLD:-20}"
+if [[ -d "$PROJECT_ROOT/.git" ]]; then
+    PLAN_MOD=$(stat -f '%m' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || stat -c '%Y' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    if [[ "$PLAN_MOD" -gt 0 ]]; then
+        PLAN_DATE=$(date -r "$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
+        if [[ -n "$PLAN_DATE" ]]; then
+            COMMITS_SINCE=$(git -C "$PROJECT_ROOT" rev-list --count --after="$PLAN_DATE" HEAD 2>/dev/null || echo "0")
+            if [[ "$COMMITS_SINCE" -ge "$STALENESS_THRESHOLD" ]]; then
+                cat <<STALE_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "additionalContext": "Plan staleness warning: MASTER_PLAN.md has not been updated in $COMMITS_SINCE commits (threshold: $STALENESS_THRESHOLD). Consider running /plan-sync to reconcile plan with codebase before continuing."
+  }
+}
+STALE_EOF
+                exit 0
+            fi
+        fi
+    fi
 fi
 
 exit 0
