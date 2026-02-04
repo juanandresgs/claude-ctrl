@@ -8,6 +8,32 @@ This directory contains the configuration that shapes how Claude Code operates �
 
 ---
 
+## Setup (Fresh Clone)
+
+```bash
+# Clone with submodules (required for research-verified and last30days skills)
+git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude
+
+# Create your local settings override
+cp settings.local.example.json settings.local.json
+# Edit settings.local.json — set model, MCP servers, plugins for your machine
+```
+
+### Optional Dependencies
+
+| Dependency | Purpose | Platform |
+|-----------|---------|----------|
+| `terminal-notifier` | Desktop notifications when Claude needs attention | macOS (`brew install terminal-notifier`) |
+| Multi-MCP server | Code review hook integration | Any (see `code-review.sh`) |
+| `jq` | JSON processing in hooks | Any (`brew install jq` / `apt install jq`) |
+
+### Platform Notes
+
+- **macOS**: Full support. Notifications use `terminal-notifier` with `osascript` fallback.
+- **Linux**: Partial. Notification hooks won't fire (no macOS notification APIs). All other hooks work.
+
+---
+
 ## The Team of Excellence
 
 ### Agents
@@ -29,8 +55,6 @@ This directory contains the configuration that shapes how Claude Code operates �
 │  3. Implementer → Tests first, @decision annotations        │
 │  4. Guardian → Commits/merges with approval                 │
 │  5. Hooks → Guard, gate, lint, track, surface (automatic)  │
-├─────────────────────────────────────────────────────────────┤
-│  COMMAND: /compact (preserve context before compaction)     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -38,28 +62,61 @@ This directory contains the configuration that shapes how Claude Code operates �
 
 ## Hooks (Automatic, Every Time)
 
-### Layer 1: PreToolUse — Block Before Execution
+All hooks are registered in `settings.json` and run deterministically. For protocol details, shared library APIs, and execution order, see [`hooks/HOOKS.md`](hooks/HOOKS.md).
+
+### PreToolUse — Block Before Execution
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
 | **guard.sh** | Bash | Blocks /tmp writes, commits on main, force push, destructive git |
-| **doc-gate.sh** | Write\|Edit | Enforces file documentation headers and @decision on 50+ line files |
+| **test-gate.sh** | Write\|Edit | Blocks source file writes when tests are failing |
+| **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
+| **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision on 50+ line files |
 | **plan-check.sh** | Write\|Edit | Warns if writing source code without MASTER_PLAN.md |
 
-### Layer 2: PostToolUse — Feedback After Execution
+### PostToolUse — Feedback After Execution
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **lint.sh** | Write\|Edit | Auto-detects project linter, runs on modified files, exit 2 feedback loop |
+| **lint.sh** | Write\|Edit | Auto-detects project linter, runs on modified files |
 | **track.sh** | Write\|Edit | Records which files changed this session |
+| **code-review.sh** | Write\|Edit | Triggers code review via Multi-MCP (optional dependency) |
+| **plan-validate.sh** | Write\|Edit | Validates changes align with MASTER_PLAN.md |
+| **test-runner.sh** | Write\|Edit | Runs project tests asynchronously after writes |
 
-### Layer 3: Session Lifecycle
+### Session Lifecycle
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
 | **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, worktrees |
+| **prompt-submit.sh** | UserPromptSubmit | Adds git context and plan status to each prompt |
 | **compact-preserve.sh** | PreCompact | Preserves git state and session context before compaction |
-| **surface.sh** | Stop | Validates @decision coverage, reports audit at session end |
+| **session-end.sh** | SessionEnd | Cleanup and session finalization |
+| **surface.sh** | Stop | Validates @decision coverage, reports audit |
+| **session-summary.sh** | Stop | Deterministic session summary (files changed, git state, next action) |
+| **forward-motion.sh** | Stop | Ensures session ends with forward momentum |
+
+### Notifications
+
+| Hook | Matcher | What It Does |
+|------|---------|--------------|
+| **notify.sh** | permission_prompt\|idle_prompt | Desktop notification when Claude needs attention (macOS) |
+
+### Subagent Lifecycle
+
+| Hook | Event / Matcher | What It Does |
+|------|-----------------|--------------|
+| **subagent-start.sh** | SubagentStart | Injects context when subagents launch |
+| **check-planner.sh** | SubagentStop (planner\|Plan) | Validates planner output quality |
+| **check-implementer.sh** | SubagentStop (implementer) | Validates implementer output quality |
+| **check-guardian.sh** | SubagentStop (guardian) | Validates guardian output quality |
+
+### Shared Libraries
+
+| File | Purpose |
+|------|---------|
+| **log.sh** | Structured logging helper (sourced by all hooks) |
+| **context-lib.sh** | Git state, plan status, project root detection (sourced by hooks) |
 
 ---
 
@@ -95,12 +152,20 @@ Add to significant source files (50+ lines):
 |-------|---------|
 | **decision-parser** | Parse and validate @decision annotation syntax from source |
 | **context-preservation** | Generate structured summaries for session continuity |
+| **plan-sync** | Reconcile MASTER_PLAN.md with codebase @decision annotations |
+| **generate-knowledge** | Analyze any git repo and produce a structured knowledge kit |
+| **worktree** | Git worktree management for parallel development |
+| **research-advisor** | Intelligent router — analyzes query, selects optimal research skill |
+| **research-fast** | Quick expert synthesis for overviews and strategic planning |
+| **research-verified** | Multi-source verification with citations and credibility scoring (submodule) |
+| **last30days** | Recent discussions from Reddit, X, and web (submodule) |
 
-## Command
+## Commands
 
 | Command | Purpose |
 |---------|---------|
 | `/compact` | Create context summary before compaction |
+| `/analyze` | Bootstrap session with full repo knowledgebase context |
 
 ---
 
@@ -108,33 +173,85 @@ Add to significant source files (50+ lines):
 
 ```
 ~/.claude/
-├── CLAUDE.md              # Sacred philosophical foundation
-├── settings.json          # Configuration (hooks, permissions)
-├── README.md              # This guide
+├── CLAUDE.md                   # Foundational philosophy and workflow rules
+├── README.md                   # This guide
+├── FUTURE_CONSIDERATIONS.md    # Deferred/rejected design decisions
+├── settings.json               # Configuration (hooks, permissions) — universal
+├── settings.local.json         # Machine-specific overrides (gitignored)
+├── settings.local.example.json # Template for local overrides (tracked)
+├── .gitmodules                 # Submodule references
 │
-├── hooks/                 # Deterministic enforcement
-│   ├── log.sh             # Helper: structured logging (sourced by all hooks)
-│   ├── guard.sh           # PreToolUse(Bash): sacred practice guardrails
-│   ├── doc-gate.sh        # PreToolUse(Write|Edit): documentation enforcement
-│   ├── plan-check.sh      # PreToolUse(Write|Edit): plan-first warning
-│   ├── lint.sh            # PostToolUse(Write|Edit): auto-detect linter
-│   ├── track.sh           # PostToolUse(Write|Edit): change tracking
-│   ├── session-init.sh    # SessionStart: project context injection
-│   ├── compact-preserve.sh # PreCompact: context preservation
-│   └── surface.sh         # Stop: decision audit and validation
+├── hooks/                      # Deterministic enforcement
+│   ├── HOOKS.md                # Hook protocol reference and catalog
+│   ├── log.sh                  # Shared: structured logging
+│   ├── context-lib.sh          # Shared: git/plan state detection
+│   ├── guard.sh                # PreToolUse(Bash): sacred practice guardrails
+│   ├── test-gate.sh            # PreToolUse(Write|Edit): test-passing gate
+│   ├── branch-guard.sh         # PreToolUse(Write|Edit): main branch protection
+│   ├── doc-gate.sh             # PreToolUse(Write|Edit): documentation enforcement
+│   ├── plan-check.sh           # PreToolUse(Write|Edit): plan-first warning
+│   ├── lint.sh                 # PostToolUse(Write|Edit): auto-detect linter
+│   ├── track.sh                # PostToolUse(Write|Edit): change tracking
+│   ├── code-review.sh          # PostToolUse(Write|Edit): code review integration
+│   ├── plan-validate.sh        # PostToolUse(Write|Edit): plan alignment check
+│   ├── test-runner.sh          # PostToolUse(Write|Edit): async test execution
+│   ├── session-init.sh         # SessionStart: project context injection
+│   ├── prompt-submit.sh        # UserPromptSubmit: per-prompt context
+│   ├── compact-preserve.sh     # PreCompact: context preservation
+│   ├── session-end.sh          # SessionEnd: cleanup
+│   ├── surface.sh              # Stop: decision audit
+│   ├── session-summary.sh      # Stop: session summary
+│   ├── forward-motion.sh       # Stop: forward momentum check
+│   ├── notify.sh               # Notification: desktop alerts (macOS)
+│   ├── subagent-start.sh       # SubagentStart: context injection
+│   ├── check-planner.sh        # SubagentStop: planner validation
+│   ├── check-implementer.sh    # SubagentStop: implementer validation
+│   └── check-guardian.sh       # SubagentStop: guardian validation
 │
-├── agents/                # The team of excellence
-│   ├── planner.md         # Core Dogma: plan before implement
-│   ├── implementer.md     # Test-first in isolated worktrees
-│   └── guardian.md        # Protect repository integrity
+├── agents/                     # The team of excellence
+│   ├── planner.md              # Core Dogma: plan before implement
+│   ├── implementer.md          # Test-first in isolated worktrees
+│   └── guardian.md             # Protect repository integrity
 │
-├── skills/                # Non-deterministic intelligence
-│   ├── decision-parser/   # Parse @decision syntax
-│   └── context-preservation/ # Survive compaction
+├── skills/                     # Non-deterministic intelligence
+│   ├── decision-parser/        # Parse @decision syntax
+│   ├── context-preservation/   # Survive compaction
+│   ├── plan-sync/              # Plan ↔ codebase reconciliation
+│   ├── generate-knowledge/     # Repo knowledge kit generation
+│   ├── worktree/               # Git worktree management
+│   ├── research-advisor/       # Research query router
+│   ├── research-fast/          # Quick expert synthesis
+│   ├── research-verified/      # Multi-source verified research (submodule)
+│   └── last30days/             # Recent web discussions (submodule)
 │
-└── commands/              # User-invoked operations
-    └── compact.md         # /compact context preservation
+├── commands/                   # User-invoked operations
+│   ├── compact.md              # /compact context preservation
+│   └── analyze.md              # /analyze repo knowledge bootstrap
+│
+├── docs/                       # Design documentation
+│   └── research-system-design.md
+│
+└── templates/                  # Templates for generated output
+    ├── knowledge-kit-template.md
+    ├── research-entry-template.md
+    └── research-readme-template.md
 ```
+
+---
+
+## Settings Architecture
+
+**`settings.json`** (tracked) — Universal configuration that works on any machine:
+- Hook registrations, permission rules, status line
+- Only includes `context7` MCP server (freely available)
+
+**`settings.local.json`** (gitignored) — Machine-specific overrides:
+- Model preference (`"model": "opus"`)
+- Additional MCP servers (`ida-pro-mcp`, etc.)
+- Plugins (`frontend-design`, etc.)
+- Machine-specific permission grants (`sqlite3`, `zellij`, etc.)
+
+Copy `settings.local.example.json` → `settings.local.json` and customize for your setup.
 
 ---
 
@@ -152,6 +269,12 @@ This configuration embodies that belief:
 - **Deterministic enforcement** — Hooks execute mechanically; CLAUDE.md instructions degrade with context
 
 ---
+
+## References
+
+- [`hooks/HOOKS.md`](hooks/HOOKS.md) — Hook protocol, shared library APIs, execution order
+- [`FUTURE_CONSIDERATIONS.md`](FUTURE_CONSIDERATIONS.md) — Deferred and rejected design decisions
+- [`docs/research-system-design.md`](docs/research-system-design.md) — Research system architecture
 
 ## Recovery
 

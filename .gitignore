@@ -41,6 +41,10 @@ plans/
 # Archive (recoverable deletions, not tracked)
 .archive/
 
+# Runtime output directories
+backups/
+research_output/
+
 # ═══════════════════════════════════════════════════════════
 # LOCAL OVERRIDES (user-specific, not tracked)
 # ═══════════════════════════════════════════════════════════

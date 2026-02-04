@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to settings.local.json and customize. This file is tracked; settings.local.json is gitignored.",
+
+  "model": "opus",
+
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "context7",
+    "ida-pro-mcp"
+  ],
+
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 *)",
+      "Bash(zellij *)",
+      "mcp__ida-pro-mcp__*"
+    ]
+  },
+
+  "enabledPlugins": {
+    "frontend-design@claude-code-plugins": true
+  }
+}

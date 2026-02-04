@@ -33,7 +33,6 @@
       "Bash(rg *)",
       "Bash(sleep *)",
       "Bash(sort *)",
-      "Bash(sqlite3 *)",
       "Bash(tail *)",
       "Bash(tee *)",
       "Bash(test *)",
@@ -44,12 +43,10 @@
       "Bash(which *)",
       "Bash(whoami)",
       "Bash(xargs *)",
-      "Bash(zellij *)",
       "Read(~/*)",
       "Read(./*)",
       "WebFetch",
-      "WebSearch",
-      "mcp__ida-pro-mcp__*"
+      "WebSearch"
     ],
     "deny": [
       "Read(./.env*)",
@@ -59,11 +56,9 @@
     "ask": [],
     "defaultMode": "plan"
   },
-  "model": "opus",
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
-    "context7",
-    "ida-pro-mcp"
+    "context7"
   ],
   "hooks": {
     "SessionStart": [
@@ -264,8 +259,5 @@
   "autoUpdatesChannel": "latest",
   "installation": {
     "method": "native"
-  },
-  "enabledPlugins": {
-    "frontend-design@claude-code-plugins": true
   }
 }
