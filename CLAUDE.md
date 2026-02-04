@@ -58,7 +58,6 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 | `agents/implementer.md` | Implementing code in a worktree |
 | `agents/guardian.md` | Committing, merging, branch management |
 | `hooks/HOOKS.md` | Understanding hook behavior, debugging hooks, @decision format |
-| `FUTURE_CONSIDERATIONS.md` | Evaluating a design that might already be deferred/rejected |
 | `README.md` | Full system overview, directory map, all hooks/skills/commands |
 
 ## Commands & Skills

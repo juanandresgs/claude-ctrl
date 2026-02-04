@@ -175,7 +175,6 @@ Add to significant source files (50+ lines):
 ~/.claude/
 ├── CLAUDE.md                   # Foundational philosophy and workflow rules
 ├── README.md                   # This guide
-├── FUTURE_CONSIDERATIONS.md    # Deferred/rejected design decisions
 ├── settings.json               # Configuration (hooks, permissions) — universal
 ├── settings.local.json         # Machine-specific overrides (gitignored)
 ├── settings.local.example.json # Template for local overrides (tracked)
@@ -273,7 +272,6 @@ This configuration embodies that belief:
 ## References
 
 - [`hooks/HOOKS.md`](hooks/HOOKS.md) — Hook protocol, shared library APIs, execution order
-- [`FUTURE_CONSIDERATIONS.md`](FUTURE_CONSIDERATIONS.md) — Deferred and rejected design decisions
 - [`docs/research-system-design.md`](docs/research-system-design.md) — Research system architecture
 
 ## Recovery
