@@ -150,11 +150,7 @@ Add to significant source files (50+ lines):
 
 | Skill | Purpose |
 |-------|---------|
-| **decision-parser** | Parse and validate @decision annotation syntax from source |
 | **context-preservation** | Generate structured summaries for session continuity |
-| **plan-sync** | Reconcile MASTER_PLAN.md with codebase @decision annotations |
-| **generate-knowledge** | Analyze any git repo and produce a structured knowledge kit |
-| **worktree** | Git worktree management for parallel development |
 | **deep-research** | Multi-model deep research with comparative assessment (OpenAI + Perplexity + Gemini) |
 | **last30days** | Recent discussions from Reddit, X, and web (submodule) |
 
@@ -163,7 +159,6 @@ Add to significant source files (50+ lines):
 | Command | Purpose |
 |---------|---------|
 | `/compact` | Create context summary before compaction |
-| `/analyze` | Bootstrap session with full repo knowledgebase context |
 
 ---
 
@@ -211,17 +206,12 @@ Add to significant source files (50+ lines):
 │   └── guardian.md             # Protect repository integrity
 │
 ├── skills/                     # Non-deterministic intelligence
-│   ├── decision-parser/        # Parse @decision syntax
 │   ├── context-preservation/   # Survive compaction
-│   ├── plan-sync/              # Plan ↔ codebase reconciliation
-│   ├── generate-knowledge/     # Repo knowledge kit generation
-│   ├── worktree/               # Git worktree management
 │   ├── deep-research/          # Multi-model deep research (OpenAI + Perplexity + Gemini)
 │   └── last30days/             # Recent web discussions (submodule)
 │
 ├── commands/                   # User-invoked operations
-│   ├── compact.md              # /compact context preservation
-│   └── analyze.md              # /analyze repo knowledge bootstrap
+│   └── compact.md              # /compact context preservation
 │
 ├── docs/                       # Design documentation
 │   └── context-management-sota-2026.md

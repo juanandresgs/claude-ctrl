@@ -66,9 +66,8 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 ## Commands & Skills
 
 - `/compact` — Context preservation before compaction
-- `/analyze` — Bootstrap session with repo knowledgebase
 - **Research**: `deep-research`, `last30days`
-- **Workflow**: `decision-parser`, `context-preservation`, `plan-sync`, `generate-knowledge`, `worktree`
+- **Workflow**: `context-preservation`
 
 ## Notes
 

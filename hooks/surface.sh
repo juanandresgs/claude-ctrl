@@ -270,6 +270,33 @@ if [[ -n "${PLAN_NOT_CODE:-}" ]]; then
     append_audit "$PROJECT_ROOT" "plan_drift" "unimplemented decisions: $PLAN_NOT_CODE"
 fi
 
+# --- Emit hookSpecificOutput so findings reach the model on next turn ---
+SUMMARY_PARTS=()
+SUMMARY_PARTS+=("$TOTAL_CHANGED source files changed, $MISSING_COUNT need @decision")
+if [[ -n "${CODE_NOT_PLAN:-}" || -n "${PLAN_NOT_CODE:-}" ]]; then
+    DRIFT_PARTS=""
+    [[ -n "${CODE_NOT_PLAN:-}" ]] && DRIFT_PARTS="$(echo "$CODE_NOT_PLAN" | wc -w | tr -d ' ') decisions in code not in plan"
+    [[ -n "${PLAN_NOT_CODE:-}" ]] && {
+        [[ -n "$DRIFT_PARTS" ]] && DRIFT_PARTS="$DRIFT_PARTS, "
+        DRIFT_PARTS="${DRIFT_PARTS}$(echo "$PLAN_NOT_CODE" | wc -w | tr -d ' ') in plan not in code"
+    }
+    SUMMARY_PARTS+=("Plan drift: $DRIFT_PARTS")
+fi
+if [[ "${TOTAL_PHASES:-0}" -gt 0 ]]; then
+    SUMMARY_PARTS+=("Phase status: $COMPLETED_PHASES/$TOTAL_PHASES completed")
+fi
+
+SUMMARY=$(printf '%s\n' "${SUMMARY_PARTS[@]}")
+ESCAPED_SUMMARY=$(echo "$SUMMARY" | jq -Rs .)
+cat <<HOOK_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "Stop",
+    "additionalContext": $ESCAPED_SUMMARY
+  }
+}
+HOOK_EOF
+
 # Clean up session tracking
 rm -f "$CHANGES"
 exit 0

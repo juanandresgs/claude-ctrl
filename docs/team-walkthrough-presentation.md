@@ -403,7 +403,6 @@ Unlike hooks (deterministic, binary), skills require judgment:
 | **research-advisor** | Routes to optimal research method | `/research [query]` |
 | **research-fast** | Quick synthesis via Gemini | `/research-fast [topic]` |
 | **research-verified** | Multi-source with citations | `/research-verified [topic]` |
-| **plan-sync** | Reconcile plan ↔ code | `/plan-sync` |
 | **context-preservation** | Survive compaction | `/compact` |
 | **generate-knowledge** | Analyze repo → knowledge kit | `/generate-knowledge` |
 

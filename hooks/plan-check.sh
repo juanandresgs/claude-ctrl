@@ -95,7 +95,7 @@ if [[ -d "$PROJECT_ROOT/.git" ]]; then
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "MASTER_PLAN.md is critically stale ($COMMITS_SINCE commits since last update, threshold: $STALENESS_DENY). Run /plan-sync to reconcile plan with codebase before continuing."
+    "permissionDecisionReason": "MASTER_PLAN.md is critically stale ($COMMITS_SINCE commits since last update, threshold: $STALENESS_DENY). Read MASTER_PLAN.md, scan the codebase for @decision annotations, and update the plan's phase statuses before continuing."
   }
 }
 DENY_EOF
@@ -105,7 +105,7 @@ DENY_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "additionalContext": "Plan staleness warning: MASTER_PLAN.md has not been updated in $COMMITS_SINCE commits (threshold: $STALENESS_WARN). Consider running /plan-sync to reconcile plan with codebase before continuing."
+    "additionalContext": "Plan staleness warning: MASTER_PLAN.md has not been updated in $COMMITS_SINCE commits (threshold: $STALENESS_WARN). Consider reviewing MASTER_PLAN.md — it may not reflect the current codebase state."
   }
 }
 STALE_EOF

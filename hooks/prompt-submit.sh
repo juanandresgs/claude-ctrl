@@ -32,6 +32,45 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     [[ -n "$GIT_BRANCH" ]] && CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted")
     [[ "$PLAN_EXISTS" == "true" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done")
     [[ "$PLAN_EXISTS" == "false" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
+
+    # --- First-encounter plan assessment ---
+    # When plan is stale, scan @decision coverage and inject assessment
+    if [[ "$PLAN_EXISTS" == "true" && "$PLAN_COMMITS_SINCE" -ge 20 ]]; then
+        DECISION_PATTERN='@decision|# DECISION:|// DECISION\('
+        DECISION_FILE_COUNT=0
+        TOTAL_SOURCE_COUNT=0
+        SCAN_DIRS=()
+        for dir in src lib app pkg cmd internal; do
+            [[ -d "$PROJECT_ROOT/$dir" ]] && SCAN_DIRS+=("$PROJECT_ROOT/$dir")
+        done
+        [[ ${#SCAN_DIRS[@]} -eq 0 ]] && SCAN_DIRS=("$PROJECT_ROOT")
+
+        for dir in "${SCAN_DIRS[@]}"; do
+            if command -v rg &>/dev/null; then
+                dec_count=$(rg -l "$DECISION_PATTERN" "$dir" \
+                    --glob '*.{ts,tsx,js,jsx,py,rs,go,java,c,cpp,h,hpp,sh,rb,php}' \
+                    2>/dev/null | wc -l | tr -d ' ') || dec_count=0
+                src_count=$(rg --files "$dir" \
+                    --glob '*.{ts,tsx,js,jsx,py,rs,go,java,c,cpp,h,hpp,sh,rb,php}' \
+                    2>/dev/null | wc -l | tr -d ' ') || src_count=0
+            else
+                dec_count=$(grep -rlE "$DECISION_PATTERN" "$dir" \
+                    --include='*.ts' --include='*.py' --include='*.js' --include='*.sh' \
+                    2>/dev/null | wc -l | tr -d ' ') || dec_count=0
+                src_count=$(find "$dir" -type f \( -name '*.ts' -o -name '*.py' -o -name '*.js' -o -name '*.sh' \) \
+                    2>/dev/null | wc -l | tr -d ' ') || src_count=0
+            fi
+            DECISION_FILE_COUNT=$((DECISION_FILE_COUNT + dec_count))
+            TOTAL_SOURCE_COUNT=$((TOTAL_SOURCE_COUNT + src_count))
+        done
+
+        COVERAGE_PCT=0
+        [[ "$TOTAL_SOURCE_COUNT" -gt 0 ]] && COVERAGE_PCT=$((DECISION_FILE_COUNT * 100 / TOTAL_SOURCE_COUNT))
+
+        if [[ "$COVERAGE_PCT" -lt 30 || "$PLAN_COMMITS_SINCE" -ge 40 ]]; then
+            CONTEXT_PARTS+=("Plan assessment: MASTER_PLAN.md is $PLAN_COMMITS_SINCE commits stale. @decision coverage: $DECISION_FILE_COUNT/$TOTAL_SOURCE_COUNT source files (${COVERAGE_PCT}%). Review the plan and scan for @decision gaps before implementing.")
+        fi
+    fi
 fi
 
 # --- Inject agent findings from previous subagent runs ---
