@@ -141,6 +141,23 @@ remove redundant prose. 200-400 words.]
 | OpenAI | [n] sources | [n] words | [assessment] |
 | Perplexity | [n] sources | [n] words | [assessment] |
 | Gemini | [n] sources | [n] words | [assessment] |
+
+## References
+
+**CRITICAL: The report must be verifiable.** Include a numbered references section at the end using citations from all providers. Every factual claim in the report should be traceable to a source.
+
+Build the references list by:
+1. Collecting all citation URLs from the `citations` arrays in the JSON results
+2. Deduplicating by URL (multiple providers may cite the same source)
+3. Numbering them sequentially
+4. Using inline reference numbers `[1]`, `[2]` etc. throughout the report body to link claims to sources
+
+Format:
+[1] Title or description — URL
+[2] Title or description — URL
+...
+
+If a provider (like Gemini) returns no structured citations, note that its claims are unsourced and lower confidence. Prefer citing claims that have URLs backing them.
 ```
 
 **Adaptation rules:**
