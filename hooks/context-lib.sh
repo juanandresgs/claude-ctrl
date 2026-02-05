@@ -92,6 +92,21 @@ get_session_changes() {
     fi
 }
 
+# --- Research log status ---
+get_research_status() {
+    local root="$1"
+    RESEARCH_EXISTS=false
+    RESEARCH_ENTRY_COUNT=0
+    RESEARCH_RECENT_TOPICS=""
+
+    local log="$root/.claude/research-log.md"
+    [[ ! -f "$log" ]] && return
+
+    RESEARCH_EXISTS=true
+    RESEARCH_ENTRY_COUNT=$(grep -c '^### \[' "$log" 2>/dev/null || echo "0")
+    RESEARCH_RECENT_TOPICS=$(grep '^### \[' "$log" | tail -3 | sed 's/^### \[[^]]*\] //' | paste -sd ', ' - 2>/dev/null || echo "")
+}
+
 # --- Source file detection ---
 # Single source of truth for source file extensions across all hooks.
 # DECISION: Consolidated extension list. Rationale: Source file regex was
@@ -124,4 +139,4 @@ append_audit() {
 
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f get_git_state get_plan_status get_session_changes is_source_file is_skippable_path append_audit
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit

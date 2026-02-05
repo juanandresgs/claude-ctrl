@@ -35,14 +35,38 @@ Before any code exists, you create the plan that guides its creation. You are ep
 4. Detect relevant existing patterns in the codebase
 
 ### Phase 2: Architecture Design
-1. Identify major decisions that need to be made
-2. For decisions involving technology choices, trade-off evaluation, or unfamiliar domains — invoke `/research` to get evidence-backed analysis before committing to an approach. The research advisor automatically selects the right depth (verified sources for high-stakes comparisons, fast synthesis for overviews, recent discussions for trending topics).
-3. For each decision, document:
-   - Options considered
-   - Trade-offs
-   - Recommended approach with rationale (these become @decision annotations)
-4. Define component boundaries and interfaces
-5. Identify integration points
+1. Identify major decisions and evaluate options with documented trade-offs
+2. For each decision, document options, trade-offs, and recommended approach (these become @decision annotations)
+3. Define component boundaries and interfaces
+4. Identify integration points
+
+### Research Protocol
+
+Before committing to architecture decisions, evaluate whether research is needed:
+
+**When to research:**
+- Technology selection between alternatives (e.g., PostgreSQL vs MongoDB)
+- Unfamiliar domain with high-stakes implications (e.g., auth patterns, payment processing)
+- Architecture patterns where community experience matters
+
+**Before invoking research:**
+1. Read `{project_root}/.claude/research-log.md` if it exists
+2. If prior research covers the question, cite it and skip re-researching
+
+**Skill selection:**
+- `/deep-research` — Multi-model consensus (OpenAI + Perplexity + Gemini). For: technology comparisons, architecture decisions, complex trade-offs.
+- `/last30days` — Reddit/X/web with engagement metrics. For: community sentiment, current practices, "what are people using".
+- **Both in parallel** — When depth AND recency needed. Invoke as separate Skill calls.
+
+**After research returns**, append to `{project_root}/.claude/research-log.md`:
+
+    ### [YYYY-MM-DD HH:MM] {Query Title}
+    - **Skill:** {skill-name}
+    - **Query:** {full original query}
+    - **Summary:** {2-3 sentence summary}
+    - **Key Findings:** {bullets}
+    - **Decision Impact:** {DEC-IDs this informed}
+    - **Sources:** [1] {url}, [2] {url}
 
 ### Phase 3: Issue Decomposition
 1. Break the plan into discrete, parallelizable units

@@ -39,6 +39,12 @@ CONTEXT_PARTS+=("$CTX_LINE")
 case "$AGENT_TYPE" in
     planner|Plan)
         CONTEXT_PARTS+=("Role: Planner — create MASTER_PLAN.md before any code. Include rationale, architecture, git issues, worktree strategy.")
+        get_research_status "$PROJECT_ROOT"
+        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+            CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries ($RESEARCH_RECENT_TOPICS). Read .claude/research-log.md before researching — avoid duplicates.")
+        else
+            CONTEXT_PARTS+=("No prior research. /deep-research for tech comparisons, /last30days for community sentiment.")
+        fi
         ;;
     implementer)
         # Check if any worktrees exist for this project
@@ -54,6 +60,10 @@ case "$AGENT_TYPE" in
             if [[ "$TS_RESULT" == "fail" ]]; then
                 CONTEXT_PARTS+=("WARNING: Tests currently FAILING ($TS_FAILS failures). Fix before proceeding.")
             fi
+        fi
+        get_research_status "$PROJECT_ROOT"
+        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+            CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
         fi
         CONTEXT_PARTS+=("VERIFICATION: Before committing, discover project MCP tools and use them to verify. Present verification checkpoint to user with live test instructions. User must confirm before commit.")
         ;;

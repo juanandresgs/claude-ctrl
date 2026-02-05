@@ -2,7 +2,3 @@
 	path = skills/last30days
 	url = https://github.com/juanandresgs/last30days-skill.git
 	ignore = dirty
-[submodule "skills/research-verified"]
-	path = skills/research-verified
-	url = https://github.com/juanandresgs/claude-deep-research-skill.git
-	ignore = dirty

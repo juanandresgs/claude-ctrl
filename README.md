@@ -11,7 +11,7 @@ This directory contains the configuration that shapes how Claude Code operates �
 ## Setup (Fresh Clone)
 
 ```bash
-# Clone with submodules (required for research-verified and last30days skills)
+# Clone with submodules (required for last30days skill)
 git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude
 
 # Create your local settings override
@@ -155,9 +155,7 @@ Add to significant source files (50+ lines):
 | **plan-sync** | Reconcile MASTER_PLAN.md with codebase @decision annotations |
 | **generate-knowledge** | Analyze any git repo and produce a structured knowledge kit |
 | **worktree** | Git worktree management for parallel development |
-| **research-advisor** | Intelligent router — analyzes query, selects optimal research skill |
-| **research-fast** | Quick expert synthesis for overviews and strategic planning |
-| **research-verified** | Multi-source verification with citations and credibility scoring (submodule) |
+| **deep-research** | Multi-model deep research with comparative assessment (OpenAI + Perplexity + Gemini) |
 | **last30days** | Recent discussions from Reddit, X, and web (submodule) |
 
 ## Commands
@@ -218,9 +216,7 @@ Add to significant source files (50+ lines):
 │   ├── plan-sync/              # Plan ↔ codebase reconciliation
 │   ├── generate-knowledge/     # Repo knowledge kit generation
 │   ├── worktree/               # Git worktree management
-│   ├── research-advisor/       # Research query router
-│   ├── research-fast/          # Quick expert synthesis
-│   ├── research-verified/      # Multi-source verified research (submodule)
+│   ├── deep-research/          # Multi-model deep research (OpenAI + Perplexity + Gemini)
 │   └── last30days/             # Recent web discussions (submodule)
 │
 ├── commands/                   # User-invoked operations
@@ -228,12 +224,10 @@ Add to significant source files (50+ lines):
 │   └── analyze.md              # /analyze repo knowledge bootstrap
 │
 ├── docs/                       # Design documentation
-│   └── research-system-design.md
+│   └── context-management-sota-2026.md
 │
 └── templates/                  # Templates for generated output
-    ├── knowledge-kit-template.md
-    ├── research-entry-template.md
-    └── research-readme-template.md
+    └── knowledge-kit-template.md
 ```
 
 ---
@@ -272,7 +266,6 @@ This configuration embodies that belief:
 ## References
 
 - [`hooks/HOOKS.md`](hooks/HOOKS.md) — Hook protocol, shared library APIs, execution order
-- [`docs/research-system-design.md`](docs/research-system-design.md) — Research system architecture
 
 ## Recovery
 

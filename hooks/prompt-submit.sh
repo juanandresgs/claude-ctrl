@@ -86,6 +86,16 @@ elif echo "$PROMPT" | grep -qiE '\beverything\b|\ball of\b|\bentire\b|\bcomprehe
     CONTEXT_PARTS+=("Broad scope detected. Interaction Style: clarify scope with the user — what specifically should be included/excluded?")
 fi
 
+# --- Research-worthy prompt detection ---
+if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|community|reddit)\b|\brecent\b|\btrending\b|\bdeep dive\b|\bwhich is better\b|\bpros and cons\b'; then
+    get_research_status "$PROJECT_ROOT"
+    if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+        CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before invoking /deep-research or /last30days.")
+    else
+        CONTEXT_PARTS+=("No prior research. /deep-research for deep analysis, /last30days for recent community discussions.")
+    fi
+fi
+
 # --- Output ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
     CONTEXT=$(printf '%s\n' "${CONTEXT_PARTS[@]}")
