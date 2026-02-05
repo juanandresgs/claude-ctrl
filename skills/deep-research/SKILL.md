@@ -48,9 +48,17 @@ echo "Add at least one API key for deep research."
 
 **Step 1: Run the deep research script**
 
+**CRITICAL: This script takes 2-10 minutes.** Run it in the background so you can tell the user what's happening while it works.
+
 ```bash
+# Run in background — use run_in_background: true on the Bash tool call
 python3 ~/.claude/skills/deep-research/scripts/deep_research.py "$ARGUMENTS" --emit=json 2>&1
 ```
+
+After launching, immediately tell the user:
+> "Deep research launched across [N] providers. This typically takes 2-10 minutes. I'll synthesize the results when all providers report back."
+
+Then use **TaskOutput** (with `block: true, timeout: 600000`) to wait for the result. When it returns, proceed to Step 2.
 
 The script will:
 - Detect which API keys are configured
@@ -58,7 +66,7 @@ The script will:
 - Poll async providers (OpenAI, Gemini) until complete
 - Output structured JSON to stdout with progress to stderr
 
-**IMPORTANT**: Deep research models can take 2-10 minutes per provider. The script handles all polling internally. Let it run to completion.
+**IMPORTANT**: Deep research models take 2-10 minutes per provider. The script handles all polling internally. Do NOT interrupt it.
 
 **Step 2: Parse the JSON output**
 
