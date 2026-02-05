@@ -35,7 +35,7 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
 
     # --- First-encounter plan assessment ---
     # When plan is stale, scan @decision coverage and inject assessment
-    if [[ "$PLAN_EXISTS" == "true" && "$PLAN_COMMITS_SINCE" -ge 20 ]]; then
+    if [[ "$PLAN_EXISTS" == "true" && "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
         DECISION_PATTERN='@decision|# DECISION:|// DECISION\('
         DECISION_FILE_COUNT=0
         TOTAL_SOURCE_COUNT=0
@@ -67,8 +67,8 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
         COVERAGE_PCT=0
         [[ "$TOTAL_SOURCE_COUNT" -gt 0 ]] && COVERAGE_PCT=$((DECISION_FILE_COUNT * 100 / TOTAL_SOURCE_COUNT))
 
-        if [[ "$COVERAGE_PCT" -lt 30 || "$PLAN_COMMITS_SINCE" -ge 40 ]]; then
-            CONTEXT_PARTS+=("Plan assessment: MASTER_PLAN.md is $PLAN_COMMITS_SINCE commits stale. @decision coverage: $DECISION_FILE_COUNT/$TOTAL_SOURCE_COUNT source files (${COVERAGE_PCT}%). Review the plan and scan for @decision gaps before implementing.")
+        if [[ "$COVERAGE_PCT" -lt 30 || "$PLAN_SOURCE_CHURN_PCT" -ge 20 ]]; then
+            CONTEXT_PARTS+=("Plan assessment: ${PLAN_SOURCE_CHURN_PCT}% source file churn since plan update. @decision coverage: $DECISION_FILE_COUNT/$TOTAL_SOURCE_COUNT source files (${COVERAGE_PCT}%). Review the plan and scan for @decision gaps before implementing.")
         fi
     fi
 fi

@@ -80,39 +80,72 @@ EOF
     exit 0
 fi
 
-# --- Plan staleness check (two-tier: advisory at WARN, deny at DENY) ---
-STALENESS_WARN="${PLAN_STALENESS_WARN:-40}"
-STALENESS_DENY="${PLAN_STALENESS_DENY:-100}"
-if [[ -d "$PROJECT_ROOT/.git" ]]; then
-    PLAN_MOD=$(stat -f '%m' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || stat -c '%Y' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
-    if [[ "$PLAN_MOD" -gt 0 ]]; then
-        PLAN_DATE=$(date -r "$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$PLAN_MOD" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
-        if [[ -n "$PLAN_DATE" ]]; then
-            COMMITS_SINCE=$(git -C "$PROJECT_ROOT" rev-list --count --after="$PLAN_DATE" HEAD 2>/dev/null || echo "0")
-            if [[ "$COMMITS_SINCE" -ge "$STALENESS_DENY" ]]; then
-                cat <<DENY_EOF
+# --- Plan staleness check (composite: churn % + drift IDs) ---
+# DECISION: Composite churn+drift staleness. Rationale: Raw commit count
+# doesn't normalize by project size or change significance. Source file churn
+# percentage is self-normalizing (consensus from multi-model deep research).
+# Decision drift from surface audit provides structural signal. Status: accepted.
+get_plan_status "$PROJECT_ROOT"
+get_drift_data "$PROJECT_ROOT"
+
+# Churn tier (primary signal, self-normalizing by project size)
+CHURN_WARN_PCT="${PLAN_CHURN_WARN:-15}"
+CHURN_DENY_PCT="${PLAN_CHURN_DENY:-35}"
+
+CHURN_TIER="ok"
+[[ "$PLAN_SOURCE_CHURN_PCT" -ge "$CHURN_DENY_PCT" ]] && CHURN_TIER="deny"
+[[ "$CHURN_TIER" == "ok" && "$PLAN_SOURCE_CHURN_PCT" -ge "$CHURN_WARN_PCT" ]] && CHURN_TIER="warn"
+
+# Drift tier (secondary signal, from last session's surface audit)
+DRIFT_TIER="ok"
+TOTAL_DRIFT=0
+if [[ "$DRIFT_LAST_AUDIT_EPOCH" -gt 0 ]]; then
+    TOTAL_DRIFT=$((DRIFT_UNPLANNED_COUNT + DRIFT_UNIMPLEMENTED_COUNT))
+    [[ "$TOTAL_DRIFT" -ge 5 ]] && DRIFT_TIER="deny"
+    [[ "$DRIFT_TIER" == "ok" && "$TOTAL_DRIFT" -ge 2 ]] && DRIFT_TIER="warn"
+else
+    # No prior audit — fall back to commit count as bootstrap heuristic
+    [[ "$PLAN_COMMITS_SINCE" -ge 100 ]] && DRIFT_TIER="deny"
+    [[ "$DRIFT_TIER" == "ok" && "$PLAN_COMMITS_SINCE" -ge 40 ]] && DRIFT_TIER="warn"
+fi
+
+# Composite: worst tier wins
+STALENESS="ok"
+[[ "$CHURN_TIER" == "deny" || "$DRIFT_TIER" == "deny" ]] && STALENESS="deny"
+[[ "$STALENESS" == "ok" ]] && [[ "$CHURN_TIER" == "warn" || "$DRIFT_TIER" == "warn" ]] && STALENESS="warn"
+
+# Build diagnostic reason string
+DIAG_PARTS=()
+[[ "$CHURN_TIER" != "ok" ]] && DIAG_PARTS+=("Source churn: ${PLAN_SOURCE_CHURN_PCT}% of files changed (threshold: ${CHURN_WARN_PCT}%/${CHURN_DENY_PCT}%).")
+if [[ "$DRIFT_LAST_AUDIT_EPOCH" -gt 0 ]]; then
+    [[ "$DRIFT_TIER" != "ok" ]] && DIAG_PARTS+=("Decision drift: $TOTAL_DRIFT decisions out of sync (${DRIFT_UNPLANNED_COUNT} unplanned, ${DRIFT_UNIMPLEMENTED_COUNT} unimplemented).")
+else
+    [[ "$DRIFT_TIER" != "ok" ]] && DIAG_PARTS+=("Commit count fallback: $PLAN_COMMITS_SINCE commits since plan update.")
+fi
+DIAGNOSTIC=""
+[[ ${#DIAG_PARTS[@]} -gt 0 ]] && DIAGNOSTIC=$(printf '%s ' "${DIAG_PARTS[@]}")
+
+if [[ "$STALENESS" == "deny" ]]; then
+    cat <<DENY_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "MASTER_PLAN.md is critically stale ($COMMITS_SINCE commits since last update, threshold: $STALENESS_DENY). Read MASTER_PLAN.md, scan the codebase for @decision annotations, and update the plan's phase statuses before continuing."
+    "permissionDecisionReason": "MASTER_PLAN.md is critically stale. ${DIAGNOSTIC}Read MASTER_PLAN.md, scan the codebase for @decision annotations, and update the plan's phase statuses before continuing."
   }
 }
 DENY_EOF
-                exit 0
-            elif [[ "$COMMITS_SINCE" -ge "$STALENESS_WARN" ]]; then
-                cat <<STALE_EOF
+    exit 0
+elif [[ "$STALENESS" == "warn" ]]; then
+    cat <<WARN_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "additionalContext": "Plan staleness warning: MASTER_PLAN.md has not been updated in $COMMITS_SINCE commits (threshold: $STALENESS_WARN). Consider reviewing MASTER_PLAN.md — it may not reflect the current codebase state."
+    "additionalContext": "Plan staleness warning: ${DIAGNOSTIC}Consider reviewing MASTER_PLAN.md — it may not reflect the current codebase state."
   }
 }
-STALE_EOF
-                exit 0
-            fi
-        fi
-    fi
+WARN_EOF
+    exit 0
 fi
 
 exit 0

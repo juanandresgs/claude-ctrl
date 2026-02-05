@@ -43,6 +43,7 @@ rm -f "$PROJECT_ROOT/.claude/.track."*
 #   .audit-log       — persistent audit trail
 #   .agent-findings  — pending agent issues
 #   .lint-breaker    — circuit breaker state
+#   .plan-drift      — decision drift data from last surface audit
 # NOTE: .test-status is cleared at session START (session-init.sh), not here.
 # It must survive session-end so session-init can read it for context injection,
 # then clears it to prevent stale results from satisfying the commit gate.

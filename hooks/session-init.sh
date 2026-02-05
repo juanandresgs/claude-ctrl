@@ -44,8 +44,8 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
     [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
     CONTEXT_PARTS+=("$PLAN_LINE")
 
-    if [[ "$PLAN_COMMITS_SINCE" -ge 20 ]]; then
-        CONTEXT_PARTS+=("WARNING: Plan may be stale ($PLAN_COMMITS_SINCE commits since last update)")
+    if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
+        CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
     fi
 else
     CONTEXT_PARTS+=("Plan: not found (required before implementation)")

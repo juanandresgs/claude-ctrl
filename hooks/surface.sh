@@ -270,6 +270,17 @@ if [[ -n "${PLAN_NOT_CODE:-}" ]]; then
     append_audit "$PROJECT_ROOT" "plan_drift" "unimplemented decisions: $PLAN_NOT_CODE"
 fi
 
+# --- Persist structured drift data for next session's plan-check ---
+DRIFT_FILE="${PROJECT_ROOT}/.claude/.plan-drift"
+{
+    echo "audit_epoch=$(date +%s)"
+    echo "unplanned_count=$(echo "${CODE_NOT_PLAN:-}" | wc -w | tr -d ' ')"
+    echo "unimplemented_count=$(echo "${PLAN_NOT_CODE:-}" | wc -w | tr -d ' ')"
+    echo "missing_decisions=${MISSING_COUNT:-0}"
+    echo "total_decisions=${TOTAL_DECISIONS:-0}"
+    echo "source_files_changed=${TOTAL_CHANGED:-0}"
+} > "$DRIFT_FILE"
+
 # --- Emit systemMessage so findings reach the model on next turn ---
 # Stop hooks use systemMessage (not hookSpecificOutput, which is PreToolUse/PostToolUse only)
 SUMMARY_PARTS=()

@@ -13,8 +13,15 @@
 #                                      GIT_WORKTREES, GIT_WT_COUNT
 #   get_plan_status <project_root>   - Populates PLAN_EXISTS, PLAN_PHASE,
 #                                      PLAN_TOTAL_PHASES, PLAN_COMPLETED_PHASES,
-#                                      PLAN_AGE_DAYS, PLAN_COMMITS_SINCE
+#                                      PLAN_AGE_DAYS, PLAN_COMMITS_SINCE,
+#                                      PLAN_CHANGED_SOURCE_FILES,
+#                                      PLAN_TOTAL_SOURCE_FILES,
+#                                      PLAN_SOURCE_CHURN_PCT
 #   get_session_changes <project_root> - Populates SESSION_CHANGED_COUNT
+#   get_drift_data <project_root>    - Populates DRIFT_UNPLANNED_COUNT,
+#                                      DRIFT_UNIMPLEMENTED_COUNT,
+#                                      DRIFT_MISSING_DECISIONS,
+#                                      DRIFT_LAST_AUDIT_EPOCH
 
 # --- Git state ---
 get_git_state() {
@@ -45,6 +52,9 @@ get_plan_status() {
     PLAN_IN_PROGRESS_PHASES=0
     PLAN_AGE_DAYS=0
     PLAN_COMMITS_SINCE=0
+    PLAN_CHANGED_SOURCE_FILES=0
+    PLAN_TOTAL_SOURCE_FILES=0
+    PLAN_SOURCE_CHURN_PCT=0
 
     [[ ! -f "$root/MASTER_PLAN.md" ]] && return
 
@@ -69,6 +79,19 @@ get_plan_status() {
             plan_date=$(date -r "$plan_mod" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$plan_mod" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
             if [[ -n "$plan_date" ]]; then
                 PLAN_COMMITS_SINCE=$(git -C "$root" rev-list --count --after="$plan_date" HEAD 2>/dev/null || echo "0")
+
+                # Source file churn since plan update (primary staleness signal)
+                PLAN_CHANGED_SOURCE_FILES=$(git -C "$root" log --after="$plan_date" \
+                    --name-only --format="" HEAD 2>/dev/null \
+                    | sort -u \
+                    | grep -cE "\.($SOURCE_EXTENSIONS)$" 2>/dev/null) || PLAN_CHANGED_SOURCE_FILES=0
+
+                PLAN_TOTAL_SOURCE_FILES=$(git -C "$root" ls-files 2>/dev/null \
+                    | grep -cE "\.($SOURCE_EXTENSIONS)$" 2>/dev/null) || PLAN_TOTAL_SOURCE_FILES=0
+
+                if [[ "$PLAN_TOTAL_SOURCE_FILES" -gt 0 ]]; then
+                    PLAN_SOURCE_CHURN_PCT=$((PLAN_CHANGED_SOURCE_FILES * 100 / PLAN_TOTAL_SOURCE_FILES))
+                fi
             fi
         fi
     fi
@@ -90,6 +113,23 @@ get_session_changes() {
     if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
         SESSION_CHANGED_COUNT=$(sort -u "$SESSION_FILE" | wc -l | tr -d ' ')
     fi
+}
+
+# --- Plan drift data (from previous session's surface audit) ---
+get_drift_data() {
+    local root="$1"
+    DRIFT_UNPLANNED_COUNT=0
+    DRIFT_UNIMPLEMENTED_COUNT=0
+    DRIFT_MISSING_DECISIONS=0
+    DRIFT_LAST_AUDIT_EPOCH=0
+
+    local drift_file="$root/.claude/.plan-drift"
+    [[ ! -f "$drift_file" ]] && return
+
+    DRIFT_UNPLANNED_COUNT=$(grep '^unplanned_count=' "$drift_file" 2>/dev/null | cut -d= -f2) || DRIFT_UNPLANNED_COUNT=0
+    DRIFT_UNIMPLEMENTED_COUNT=$(grep '^unimplemented_count=' "$drift_file" 2>/dev/null | cut -d= -f2) || DRIFT_UNIMPLEMENTED_COUNT=0
+    DRIFT_MISSING_DECISIONS=$(grep '^missing_decisions=' "$drift_file" 2>/dev/null | cut -d= -f2) || DRIFT_MISSING_DECISIONS=0
+    DRIFT_LAST_AUDIT_EPOCH=$(grep '^audit_epoch=' "$drift_file" 2>/dev/null | cut -d= -f2) || DRIFT_LAST_AUDIT_EPOCH=0
 }
 
 # --- Research log status ---
@@ -139,4 +179,4 @@ append_audit() {
 
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit
