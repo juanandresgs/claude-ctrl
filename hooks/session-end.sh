@@ -28,13 +28,16 @@ rm -f "$PROJECT_ROOT/.claude/.lint-cache"
 rm -f "$PROJECT_ROOT/.claude/.test-runner."*
 rm -f "$PROJECT_ROOT/.claude/.test-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.test-gate-cold-warned"
+rm -f "$PROJECT_ROOT/.claude/.mock-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.track."*
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail
-#   .test-status     — last known test state
 #   .agent-findings  — pending agent issues
 #   .lint-breaker    — circuit breaker state
+# NOTE: .test-status is cleared at session START (session-init.sh), not here.
+# It must survive session-end so session-init can read it for context injection,
+# then clears it to prevent stale results from satisfying the commit gate.
 
 # --- Trim audit log to prevent unbounded growth (keep last 100 entries) ---
 AUDIT_LOG="$PROJECT_ROOT/.claude/.audit-log"

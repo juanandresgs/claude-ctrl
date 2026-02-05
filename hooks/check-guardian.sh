@@ -90,6 +90,8 @@ if [[ -f "$TEST_STATUS_FILE" ]]; then
             ISSUES+=("Tests failing ($TEST_FAILS failures) — address before next git operation")
         fi
     fi
+else
+    ISSUES+=("No test results found — verify tests were run before committing")
 fi
 
 # Build context message

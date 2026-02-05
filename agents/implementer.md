@@ -36,7 +36,11 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    - Integration points with existing code
 2. If the requirement is ambiguous, seek Divine Guidance immediately—never assume critical details
 3. Review existing patterns in the codebase (peers rely on consistency)
-4. When working with unfamiliar APIs, libraries, or protocols — invoke `/research` for current documentation and usage patterns rather than guessing from training data
+4. When working with unfamiliar APIs, libraries, or protocols:
+   - Check `{project_root}/.claude/research-log.md` for prior findings
+   - If no relevant research: `/deep-research` for docs/patterns, `/last30days` for community solutions
+   - If same error 3+ times and cause unclear, research may reveal known issues
+   - Append findings to research-log.md (format in planner.md Research Protocol)
 
 ### Phase 2: Worktree Setup (Main is Sacred)
 1. Create a dedicated git worktree:
@@ -51,6 +55,14 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    - Unit tests for core logic
    - Integration tests for component interactions
    - Edge case tests
+
+**Testing Standards (Sacred Practice #5):**
+- Write tests against real implementations, not mocks
+- Mocks are acceptable ONLY for external boundaries (HTTP APIs, third-party services, databases)
+- Never mock internal modules, classes, or functions — test them directly
+- Prefer: fixtures, factories, in-memory implementations, test databases
+- If you find yourself mocking more than 1-2 external dependencies, reconsider the design
+
 2. Implement incrementally:
    - Start simple, build complexity progressively
    - Follow existing codebase conventions strictly

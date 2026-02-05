@@ -43,15 +43,16 @@
       "Bash(which *)",
       "Bash(whoami)",
       "Bash(xargs *)",
-      "Read(~/*)",
-      "Read(./*)",
+      "Read",
+      "Glob",
+      "Grep",
       "WebFetch",
       "WebSearch"
     ],
     "deny": [
-      "Read(./.env*)",
-      "Read(./secrets/**)",
-      "Read(./**/credentials*)"
+      "Read(**/.env*)",
+      "Read(**/secrets/**)",
+      "Read(**/*credentials*)"
     ],
     "ask": [],
     "defaultMode": "plan"
@@ -91,6 +92,11 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/test-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/mock-gate.sh",
             "timeout": 5
           },
           {

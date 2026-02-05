@@ -165,18 +165,33 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
     fi
 fi
 
+# --- Helper: check if repo is the ~/.claude meta-infrastructure repo ---
+is_claude_meta_repo() {
+    local dir="$1"
+    local repo_root
+    repo_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo "")
+    [[ "$repo_root" == */.claude ]]
+}
+
 # --- Check 6: Test status gate for merge commands ---
 if echo "$COMMAND" | grep -qE 'git\s+merge'; then
     PROJECT_ROOT=$(detect_project_root)
-    TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-    if [[ -f "$TEST_STATUS_FILE" ]]; then
-        TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-        TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-        TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-        NOW=$(date +%s)
-        AGE=$(( NOW - TEST_TIME ))
-        if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
-            deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before merging."
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+        if [[ -f "$TEST_STATUS_FILE" ]]; then
+            TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+            TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+            TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
+            NOW=$(date +%s)
+            AGE=$(( NOW - TEST_TIME ))
+            if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
+                deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before merging."
+            fi
+            if [[ "$TEST_RESULT" != "pass" ]]; then
+                deny "Cannot merge: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
+            fi
+        else
+            deny "Cannot merge: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before merging."
         fi
     fi
 fi
@@ -184,15 +199,22 @@ fi
 # --- Check 7: Test status gate for commit commands ---
 if echo "$COMMAND" | grep -qE 'git\s+commit'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
-    TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-    if [[ -f "$TEST_STATUS_FILE" ]]; then
-        TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-        TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-        TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-        NOW=$(date +%s)
-        AGE=$(( NOW - TEST_TIME ))
-        if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
-            deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before committing."
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+        if [[ -f "$TEST_STATUS_FILE" ]]; then
+            TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+            TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+            TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
+            NOW=$(date +%s)
+            AGE=$(( NOW - TEST_TIME ))
+            if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
+                deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before committing."
+            fi
+            if [[ "$TEST_RESULT" != "pass" ]]; then
+                deny "Cannot commit: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
+            fi
+        else
+            deny "Cannot commit: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before committing."
         fi
     fi
 fi

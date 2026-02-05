@@ -107,7 +107,7 @@ SessionStart    → session-init.sh (git state, plan status, worktree warnings)
 UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
 PreToolUse:Bash → guard.sh (sacred practice guardrails + rewrites)
-PreToolUse:W/E  → test-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
+PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
                     ↓
 [Tool executes]
                     ↓
@@ -124,6 +124,42 @@ SessionEnd      → session-end.sh (cleanup)
 ```
 
 Hooks within the same event run **sequentially** in array order from settings.json. A deny from any PreToolUse hook stops the tool call — later hooks in the chain don't run.
+
+---
+
+## Hook Details
+
+### guard.sh — Commit/Merge Test Evidence Gate
+
+Checks 6 (merge) and 7 (commit) require test evidence before allowing git operations:
+
+- **`.test-status` missing** → DENY (no test evidence)
+- **`.test-status` shows `fail`** (within 10 min) → DENY (tests failing)
+- **`.test-status` shows non-`pass`** → DENY (unknown/error status)
+- **`.test-status` shows `pass`** → ALLOW
+
+**Exemption:** The `~/.claude` meta-infrastructure repo is exempt from test evidence requirements (no test framework by design). Uses `is_claude_meta_repo()` helper.
+
+### mock-gate.sh — Mock Detection Gate (Escalating)
+
+PreToolUse hook for Write|Edit. Detects internal mocking patterns in test files and enforces Sacred Practice #5.
+
+| State | Behavior |
+|-------|----------|
+| Non-test file | ALLOW (always) |
+| `@mock-exempt` annotation | ALLOW (always) |
+| External-boundary mocks only | ALLOW (always) |
+| Internal mocks, strike 1 | ALLOW + advisory warning |
+| Internal mocks, strike 2+ | DENY |
+
+**Detection patterns:**
+- Python: `unittest.mock`, `MagicMock`, `@patch`, `mock.patch`, `mocker.patch`
+- JS/TS: `jest.mock(`, `vi.mock(`, `.mockImplementation`, `.mockReturnValue`, `sinon.stub/mock`
+- Go: `gomock`, `mockgen`
+
+**External boundary exemptions:** `requests`, `httpx`, `redis`, `sqlalchemy`, `boto3`, `axios`, `node-fetch`, `pg`, `mongodb`, `aws-sdk`, `pytest-httpx`, `httpretty`, `responses`, `nock`, `msw`, `testcontainers`
+
+**State file:** `.claude/.mock-gate-strikes` (format: `count|epoch`, cleaned by session-end.sh)
 
 ---
 

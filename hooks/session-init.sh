@@ -51,6 +51,12 @@ else
     CONTEXT_PARTS+=("Plan: not found (required before implementation)")
 fi
 
+# --- Research status ---
+get_research_status "$PROJECT_ROOT"
+if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+    CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries | recent: $RESEARCH_RECENT_TOPICS")
+fi
+
 # --- Stale session files ---
 STALE_FILE_COUNT=0
 for pattern in "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/.session-decisions"*; do
@@ -67,7 +73,10 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     done < "$FINDINGS_FILE"
 fi
 
-# --- Last known test status ---
+# --- Clear stale test status from previous session ---
+# .test-status is now a hard gate for commits (guard.sh Checks 6/7).
+# Stale passing results from a previous session must not satisfy the gate.
+# test-runner.sh will regenerate it after the first Write/Edit in this session.
 TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
 if [[ -f "$TEST_STATUS" ]]; then
     TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
@@ -75,6 +84,7 @@ if [[ -f "$TEST_STATUS" ]]; then
     if [[ "$TS_RESULT" == "fail" ]]; then
         CONTEXT_PARTS+=("WARNING: Last test run FAILED ($TS_FAILS failures). test-gate.sh will block source writes until tests pass.")
     fi
+    rm -f "$TEST_STATUS"
 fi
 
 # --- Output as additionalContext ---

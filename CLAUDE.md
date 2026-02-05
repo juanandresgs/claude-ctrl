@@ -31,6 +31,8 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 
 Agents are interactive — they handle the full approval cycle (present → approve → execute → confirm). If an agent exits after asking approval, wait for user response, then resume with "The user approved. Proceed."
 
+**Auto-dispatch to Guardian:** When implementation and testing are complete, invoke Guardian directly — do not ask "should I commit?" The Guardian handles its own approval cycle (present → approve → execute → verify). The orchestrator's job is to recognize when work is ready for commit and dispatch.
+
 ## Sacred Practices
 
 1. **Always Use Git** — Initialize or integrate with git. Save incrementally. Always be able to rollback.
@@ -65,7 +67,7 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 
 - `/compact` — Context preservation before compaction
 - `/analyze` — Bootstrap session with repo knowledgebase
-- **Research**: `research-advisor` (auto-routes), `research-fast`, `research-verified`, `last30days`
+- **Research**: `deep-research`, `last30days`
 - **Workflow**: `decision-parser`, `context-preservation`, `plan-sync`, `generate-knowledge`, `worktree`
 
 ## Notes
