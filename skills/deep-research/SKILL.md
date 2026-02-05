@@ -150,17 +150,27 @@ remove redundant prose. 200-400 words.]
 
 ---
 
-## Save the Report
+## Save All Outputs
 
-Save the report to a dated directory:
+Save everything to a dated directory:
 
 ```bash
 mkdir -p ~/Documents/DeepResearch_[SafeTopic]_[YYYY-MM-DD]
 ```
 
-Write the report as `report.md` in that directory.
+Write these files:
 
-Tell the user where the report was saved.
+| File | Contents |
+|------|----------|
+| `report.md` | Your comparative synthesis (the report above) |
+| `raw_results.json` | The full JSON output from the script (copy verbatim) |
+| `openai.md` | OpenAI's full report text (from `results[].report` where provider=openai) |
+| `perplexity.md` | Perplexity's full report text |
+| `gemini.md` | Gemini's full report text |
+
+Only write provider files for providers that succeeded. The raw individual reports are often 5-40K chars — preserve them in full, don't truncate.
+
+Tell the user where the reports were saved and list the files.
 
 ---
 
