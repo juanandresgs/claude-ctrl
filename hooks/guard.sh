@@ -119,7 +119,7 @@ if echo "$COMMAND" | grep -qE 'git\s+commit'; then
             if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
                 : # Allow - plan file commits on main are permitted
             else
-                deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree: git worktree add ../feature-name $CURRENT_BRANCH"
+                deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
             fi
         fi
     fi

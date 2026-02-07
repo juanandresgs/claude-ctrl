@@ -41,6 +41,9 @@ plans/
 # Archive (recoverable deletions, not tracked)
 .archive/
 
+# Git worktrees (feature isolation, never tracked)
+.worktrees/
+
 # Runtime output directories
 backups/
 research_output/

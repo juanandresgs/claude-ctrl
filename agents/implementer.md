@@ -56,7 +56,7 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
 ### Phase 2: Worktree Setup (Main is Sacred)
 1. Create a dedicated git worktree:
    ```bash
-   git worktree add ../feature-<name> -b feature/<name>
+   git worktree add .worktrees/feature-<name> -b feature/<name>
    ```
 2. Navigate to the worktree for all implementation work
 3. Verify isolation is complete
