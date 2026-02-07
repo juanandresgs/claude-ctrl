@@ -40,7 +40,7 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
 
    The planner runs `/deep-research` during architecture decisions. Before implementing unfamiliar integrations, check for prior research:
    - `{project_root}/.claude/research-log.md` — structured findings from planning phase
-   - `~/Documents/DeepResearch_*/` — full provider reports from prior deep-research runs
+   - `{project_root}/.claude/research/DeepResearch_*/` — full provider reports from prior deep-research runs
    - `MASTER_PLAN.md` decision rationale — architecture context for your task
 
    For quick, targeted questions during implementation (API usage, error messages, library patterns):

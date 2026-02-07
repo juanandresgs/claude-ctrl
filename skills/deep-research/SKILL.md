@@ -53,9 +53,11 @@ Create the output directory and run the script:
 
 ```bash
 # timeout must exceed script's internal 600s timeout
-mkdir -p ~/Documents/DeepResearch_[SafeTopic]_[YYYY-MM-DD] && \
+# Output stays project-local at .claude/research/ so implementer can reference it
+RESEARCH_DIR=".claude/research/DeepResearch_[SafeTopic]_[YYYY-MM-DD]"
+mkdir -p "$RESEARCH_DIR" && \
 python3 ~/.claude/skills/deep-research/scripts/deep_research.py "$ARGUMENTS" \
-  --output-dir ~/Documents/DeepResearch_[SafeTopic]_[YYYY-MM-DD] 2>&1
+  --output-dir "$RESEARCH_DIR" 2>&1
 ```
 
 Set `timeout: 660000` on the Bash tool call (script's 600s timeout + 60s buffer).
@@ -206,7 +208,7 @@ End with:
 Deep Research complete.
 - Providers: [n]/3 succeeded
 - Total research time: [sum of elapsed]s
-- Report saved to: ~/Documents/DeepResearch_[Topic]_[Date]/report.md
+- Report saved to: .claude/research/DeepResearch_[Topic]_[Date]/report.md
 
 Want me to dig deeper into any specific finding?
 ```
