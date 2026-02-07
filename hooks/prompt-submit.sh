@@ -114,7 +114,7 @@ fi
 
 # --- Detect deferred-work language → suggest /todo ---
 if echo "$PROMPT" | grep -qiE '\blater\b|\bdefer\b|\bbacklog\b|\beventually\b|\bsomeday\b|\bpark (this|that|it)\b|\bremind me\b|\bcome back to\b|\bfuture\b.*\b(todo|task|idea)\b|\bnote.*(for|to) (later|self)\b'; then
-    CONTEXT_PARTS+=("Deferred-work language detected. Suggest using /todo to capture this idea so it persists across sessions.")
+    CONTEXT_PARTS+=("Deferred-work language detected. Suggest using /backlog to capture this idea so it persists across sessions.")
 fi
 
 # --- Check for plan/implement/status keywords ---

@@ -3,7 +3,7 @@
 A multi-agent workflow for Claude Code that enforces plan-first development, worktree isolation, test-first implementation, and approval gates through deterministic hooks.
 
 - **3 specialized agents** — Planner, Implementer, Guardian — each with defined responsibilities and model assignments
-- **23 hooks** — Mechanical enforcement of engineering practices at every lifecycle event
+- **24 hooks** — Mechanical enforcement of engineering practices at every lifecycle event
 - **Research skills** — Multi-model deep research and recent web discussion analysis
 - **Split settings** — Tracked universal config + gitignored local overrides
 
@@ -15,7 +15,7 @@ Claude Code out of the box is capable but undisciplined. It commits directly to 
 
 None of these are bugs — they're defaults. This configuration replaces those defaults with enforced engineering discipline.
 
-Three agents divide responsibilities so no single context handles planning, implementation, and git operations. Twenty-three hooks run deterministically at every lifecycle event — they don't depend on the model remembering instructions, they execute mechanically regardless of context window pressure.
+Three agents divide responsibilities so no single context handles planning, implementation, and git operations. Twenty-four hooks run deterministically at every lifecycle event — they don't depend on the model remembering instructions, they execute mechanically regardless of context window pressure.
 
 The result: every session starts with context injection, every file write is gated by branch protection and test status, every commit requires approval, every session ends with a structured summary and forward momentum.
 
@@ -121,6 +121,7 @@ User Prompt ────► prompt-submit.sh (context injection per prompt)
        ▼
 Pre Tool Use ───► [Bash] guard.sh ◄── /tmp rewrite, main protect,
        │                                force-with-lease, test evidence
+       │                auto-review.sh ◄── intelligent command auto-approval
        │         [Write|Edit] test-gate.sh → mock-gate.sh →
        │                      branch-guard.sh → doc-gate.sh →
        │                      plan-check.sh
@@ -157,6 +158,7 @@ Hooks within the same event run sequentially in array order. A deny from any Pre
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
 | **guard.sh** | Bash | Blocks `/tmp` writes, commits on main, force push, destructive git; rewrites to safe alternatives |
+| **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
@@ -403,11 +405,12 @@ Try writing a file to `/tmp/test.txt` — `guard.sh` should rewrite it to `tmp/t
 ├── settings.local.example.json   # Template for local overrides (tracked)
 ├── .gitmodules                   # Submodule references (last30days)
 │
-├── hooks/                        # Deterministic enforcement (23 hooks + 2 libraries)
+├── hooks/                        # Deterministic enforcement (24 hooks + 2 libraries)
 │   ├── HOOKS.md                  # Hook protocol reference and full catalog
 │   ├── log.sh                    # Shared: structured logging, stdin caching
 │   ├── context-lib.sh            # Shared: git/plan state, source file detection
 │   ├── guard.sh                  # PreToolUse(Bash): sacred practice guardrails + rewrites
+│   ├── auto-review.sh            # PreToolUse(Bash): intelligent command auto-approval
 │   ├── test-gate.sh              # PreToolUse(Write|Edit): test-passing gate
 │   ├── mock-gate.sh              # PreToolUse(Write|Edit): internal mock detection
 │   ├── branch-guard.sh           # PreToolUse(Write|Edit): main branch protection

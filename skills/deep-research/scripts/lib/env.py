@@ -5,62 +5,44 @@ providers have different pricing and availability. Users may only have one or tw
 keys. The skill adapts its output based on which providers are available rather
 than requiring all three.
 
-Loads API keys from ~/.config/deep-research/.env and environment variables.
+Loads API keys from central ~/.claude/.env. Falls back to legacy
+~/.config/deep-research/.env for backward compatibility.
 """
 
-import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-CONFIG_DIR = Path.home() / ".config" / "deep-research"
-CONFIG_FILE = CONFIG_DIR / ".env"
+# Add shared lib to path
+_shared_lib = Path(__file__).resolve().parents[3] / "scripts" / "lib"
+if str(_shared_lib) not in sys.path:
+    sys.path.insert(0, str(_shared_lib))
 
+from env import load_env_file, CENTRAL_ENV  # noqa: E402
 
-def load_env_file(path: Path) -> Dict[str, str]:
-    """Load environment variables from a .env file."""
-    env = {}
-    if not path.exists():
-        return env
+LEGACY_CONFIG = Path.home() / ".config" / "deep-research" / ".env"
 
-    with open(path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' in line:
-                key, _, value = line.partition('=')
-                key = key.strip()
-                value = value.strip()
-                if value and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                if key and value:
-                    env[key] = value
-    return env
+_KEY_NAMES = ('OPENAI_API_KEY', 'PERPLEXITY_API_KEY', 'GEMINI_API_KEY')
 
 
 def get_config() -> Dict[str, Optional[str]]:
-    """Load configuration from ~/.config/deep-research/.env and environment.
+    """Load configuration from central .env, legacy .env, and environment.
 
-    Environment variables override file values.
-
-    Returns:
-        Dict with OPENAI_API_KEY, PERPLEXITY_API_KEY, GEMINI_API_KEY (each Optional[str]).
+    Priority: environment > ~/.claude/.env > ~/.config/deep-research/.env
     """
-    file_env = load_env_file(CONFIG_FILE)
+    import os
+
+    legacy_env = load_env_file(LEGACY_CONFIG)
+    central_env = load_env_file(CENTRAL_ENV)
 
     return {
-        'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY') or file_env.get('OPENAI_API_KEY'),
-        'PERPLEXITY_API_KEY': os.environ.get('PERPLEXITY_API_KEY') or file_env.get('PERPLEXITY_API_KEY'),
-        'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY') or file_env.get('GEMINI_API_KEY'),
+        key: os.environ.get(key) or central_env.get(key) or legacy_env.get(key)
+        for key in _KEY_NAMES
     }
 
 
 def get_available_providers(config: Dict[str, Optional[str]]) -> List[str]:
-    """Return list of providers that have API keys configured.
-
-    Returns:
-        List of provider names: 'openai', 'perplexity', 'gemini'
-    """
+    """Return list of providers that have API keys configured."""
     providers = []
     if config.get('OPENAI_API_KEY'):
         providers.append('openai')
@@ -72,5 +54,5 @@ def get_available_providers(config: Dict[str, Optional[str]]) -> List[str]:
 
 
 def config_exists() -> bool:
-    """Check if configuration file exists."""
-    return CONFIG_FILE.exists()
+    """Check if any configuration file exists."""
+    return CENTRAL_ENV.exists() or LEGACY_CONFIG.exists()

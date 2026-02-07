@@ -66,8 +66,7 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 ## Commands & Skills
 
 - `/compact` — Context preservation before compaction
-- `/todo <text>` — Capture idea/task as GitHub Issue (project-scoped or `--global`)
-- `/todos` — List, close, and review pending todos
+- `/backlog` — Unified backlog: list, create, close, triage todos (GitHub Issues). No args = list; `/backlog <text>` = create; `/backlog done <#>` = close
 - **Research**: `deep-research`, `last30days`
 - **Workflow**: `context-preservation`
 

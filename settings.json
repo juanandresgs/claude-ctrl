@@ -1,43 +1,37 @@
 {
   "permissions": {
     "allow": [
+      "Bash(awk *)",
       "Bash(basename *)",
-      "Bash(brew *)",
       "Bash(cat *)",
-      "Bash(chmod *)",
-      "Bash(cp *)",
-      "Bash(curl *)",
       "Bash(cut *)",
       "Bash(date *)",
+      "Bash(diff *)",
       "Bash(dirname *)",
       "Bash(du *)",
       "Bash(echo *)",
       "Bash(env *)",
       "Bash(file *)",
       "Bash(find *)",
-      "Bash(gh *)",
-      "Bash(git *)",
       "Bash(grep *)",
       "Bash(head *)",
+      "Bash(jq *)",
       "Bash(less *)",
       "Bash(ls *)",
       "Bash(ls)",
       "Bash(lsof *)",
-      "Bash(mkdir *)",
-      "Bash(mv *)",
-      "Bash(node *)",
-      "Bash(npm *)",
-      "Bash(python *)",
-      "Bash(python3 *)",
       "Bash(pwd)",
+      "Bash(readlink *)",
+      "Bash(realpath *)",
       "Bash(rg *)",
       "Bash(sleep *)",
       "Bash(sort *)",
+      "Bash(stat *)",
       "Bash(tail *)",
-      "Bash(tee *)",
       "Bash(test *)",
-      "Bash(touch *)",
       "Bash(tr *)",
+      "Bash(uname)",
+      "Bash(uname *)",
       "Bash(uniq *)",
       "Bash(wc *)",
       "Bash(which *)",
@@ -57,7 +51,6 @@
     "ask": [],
     "defaultMode": "plan"
   },
-  "model": "claude-opus-4-6",
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "context7"
@@ -123,6 +116,11 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "echo skip",
             "timeout": 5
           }
         ]
@@ -261,7 +259,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "input=$(cat); printf '\\033[2m%s\\033[0m \\033[1;36m%s\\033[0m \\033[2m│\\033[0m \\033[33m%s\\033[0m \\033[2m│\\033[0m \\033[32m%s\\033[0m' \"$(echo \"$input\" | jq -r '.model.display_name')\" \"$(basename \"$(echo \"$input\" | jq -r '.workspace.current_dir')\")\" \"$(date '+%H:%M:%S')\" \"$(echo \"$input\" | jq -r '.version')\""
+    "command": "$HOME/.claude/scripts/statusline.sh"
   },
   "autoUpdatesChannel": "latest",
   "installation": {

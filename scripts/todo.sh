@@ -2,7 +2,7 @@
 # todo.sh — Claude Code persistent idea capture backend.
 #
 # Purpose: Wraps the GitHub CLI (gh) to provide durable, visible todo/idea
-# storage as GitHub Issues. Called by /todo and /todos slash commands and
+# storage as GitHub Issues. Called by /backlog slash command and
 # queried by hooks (session-init, session-summary) for automatic surfacing.
 #
 # @decision GitHub Issues over flat files — provides durability, visibility
@@ -73,6 +73,15 @@ CONF
 
     echo "Auto-detected GitHub user: $username" >&2
     echo "Cached global repo: $GLOBAL_REPO → $CONFIG_FILE" >&2
+}
+
+# --- Cache ---
+
+TODO_CACHE="$HOME/.claude/.todo-count"
+
+update_todo_cache() {
+    local count="${1:-0}"
+    echo "$count" > "$TODO_CACHE"
 }
 
 # --- Helpers ---
@@ -227,6 +236,11 @@ cmd_add() {
         $repo_flag 2>&1)
 
     echo "$result"
+
+    # Increment cached todo count
+    local cached=0
+    [[ -f "$TODO_CACHE" ]] && cached=$(cat "$TODO_CACHE" 2>/dev/null || echo 0)
+    update_todo_cache $((cached + 1))
 }
 
 cmd_list() {
@@ -321,8 +335,14 @@ cmd_done() {
     done
 
     gh issue close "$issue_number" \
-        --comment "Closed via Claude Code /todos done" \
+        --comment "Closed via Claude Code /backlog done" \
         $repo_flag 2>&1
+
+    # Decrement cached todo count
+    local cached=0
+    [[ -f "$TODO_CACHE" ]] && cached=$(cat "$TODO_CACHE" 2>/dev/null || echo 0)
+    [[ "$cached" -gt 0 ]] && cached=$((cached - 1))
+    update_todo_cache "$cached"
 }
 
 cmd_stale() {
@@ -484,7 +504,13 @@ cmd_hud() {
         fi
     fi
 
-    [[ -z "$scope" ]] && return 0
+    if [[ -z "$scope" ]]; then
+        update_todo_cache 0
+        return 0
+    fi
+
+    # Authoritative cache sync — real count from API
+    update_todo_cache "$count"
 
     # Get active claims for annotation
     local active_issues=""
@@ -511,9 +537,9 @@ cmd_hud() {
 
     local remaining=$((count - shown))
     if [[ "$remaining" -gt 0 ]]; then
-        echo "  ... and ${remaining} more. Use /todos to review."
+        echo "  ... and ${remaining} more. Use /backlog to review."
     else
-        echo "  Use /todos to review."
+        echo "  Use /backlog to review."
     fi
 }
 
