@@ -33,6 +33,17 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     [[ "$PLAN_EXISTS" == "true" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done")
     [[ "$PLAN_EXISTS" == "false" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
 
+    # Inject todo HUD (same as session-init)
+    TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
+    if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
+        HUD_OUTPUT=$("$TODO_SCRIPT" hud 2>/dev/null || echo "")
+        if [[ -n "$HUD_OUTPUT" ]]; then
+            while IFS= read -r line; do
+                CONTEXT_PARTS+=("$line")
+            done <<< "$HUD_OUTPUT"
+        fi
+    fi
+
     # --- First-encounter plan assessment ---
     # When plan is stale, scan @decision coverage and inject assessment
     if [[ "$PLAN_EXISTS" == "true" && "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then

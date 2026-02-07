@@ -67,68 +67,11 @@ done
 # --- Todo HUD (listing with active-session annotations) ---
 TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
 if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-    HUD_MAX=5
-    HUD_SCOPE=""
-    HUD_LABEL=""
-    HUD_ISSUES=""
-
-    # Try project todos first, fall back to global
-    PROJECT_JSON=$("$TODO_SCRIPT" list --project --json 2>/dev/null || echo "")
-    PROJECT_COUNT=0
-    if [[ -n "$PROJECT_JSON" ]]; then
-        PROJECT_COUNT=$(echo "$PROJECT_JSON" | jq '.issues | length' 2>/dev/null || echo "0")
-    fi
-
-    if [[ "$PROJECT_COUNT" -gt 0 ]]; then
-        HUD_SCOPE="PROJECT"
-        HUD_LABEL=$(echo "$PROJECT_JSON" | jq -r '.repo' 2>/dev/null)
-        HUD_ISSUES="$PROJECT_JSON"
-    else
-        GLOBAL_JSON=$("$TODO_SCRIPT" list --global --json 2>/dev/null || echo "")
-        GLOBAL_COUNT=0
-        if [[ -n "$GLOBAL_JSON" ]]; then
-            GLOBAL_COUNT=$(echo "$GLOBAL_JSON" | jq '.issues | length' 2>/dev/null || echo "0")
-        fi
-        if [[ "$GLOBAL_COUNT" -gt 0 ]]; then
-            HUD_SCOPE="GLOBAL"
-            HUD_LABEL=$(echo "$GLOBAL_JSON" | jq -r '.repo' 2>/dev/null)
-            HUD_ISSUES="$GLOBAL_JSON"
-        fi
-    fi
-
-    if [[ -n "$HUD_ISSUES" ]]; then
-        ISSUE_COUNT=$(echo "$HUD_ISSUES" | jq '.issues | length' 2>/dev/null || echo "0")
-
-        # Get active claims for annotation
-        ACTIVE_ISSUES=""
-        if [[ -x "$TODO_SCRIPT" ]]; then
-            ACTIVE_JSON=$("$TODO_SCRIPT" active --json 2>/dev/null || echo "[]")
-            ACTIVE_ISSUES=$(echo "$ACTIVE_JSON" | jq -r '.[].issue' 2>/dev/null | tr '\n' ',' || echo "")
-        fi
-
-        CONTEXT_PARTS+=("Todos (${HUD_SCOPE} - ${ISSUE_COUNT} open):")
-        SHOWN=0
+    HUD_OUTPUT=$("$TODO_SCRIPT" hud 2>/dev/null || echo "")
+    if [[ -n "$HUD_OUTPUT" ]]; then
         while IFS= read -r line; do
-            NUM=$(echo "$line" | jq -r '.number')
-            TITLE=$(echo "$line" | jq -r '.title')
-            ENTRY="  #${NUM} ${TITLE}"
-
-            # Check if this issue has an active session
-            if echo ",$ACTIVE_ISSUES," | grep -q ",${NUM},"; then
-                ENTRY="${ENTRY} ← active session"
-            fi
-
-            CONTEXT_PARTS+=("$ENTRY")
-            SHOWN=$((SHOWN + 1))
-            [[ "$SHOWN" -ge "$HUD_MAX" ]] && break
-        done < <(echo "$HUD_ISSUES" | jq -c '.issues[]')
-
-        REMAINING=$((ISSUE_COUNT - SHOWN))
-        if [[ "$REMAINING" -gt 0 ]]; then
-            CONTEXT_PARTS+=("  ... and ${REMAINING} more. Use /todos to review.")
-        else
-            CONTEXT_PARTS+=("  Use /todos to review.")
-        fi
+            CONTEXT_PARTS+=("$line")
+        done <<< "$HUD_OUTPUT"
     fi
 fi
 

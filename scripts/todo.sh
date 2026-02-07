@@ -446,6 +446,77 @@ cmd_count() {
     echo "${project_count}|${global_count}|${stale_count}"
 }
 
+# --- HUD (formatted listing for hook injection) ---
+
+cmd_hud() {
+    local max=5
+
+    # Try project todos first, fall back to global
+    local scope=""
+    local issues=""
+    local count=0
+
+    if is_git_repo; then
+        local repo_name
+        repo_name=$(get_repo_name)
+        if [[ -n "$repo_name" ]]; then
+            local pj
+            pj=$(gh issue list --label "$LABEL" --state open --limit 10 \
+                --json number,title 2>/dev/null || echo "[]")
+            count=$(echo "$pj" | jq 'length')
+            if [[ "$count" -gt 0 ]]; then
+                scope="PROJECT"
+                issues="$pj"
+            fi
+        fi
+    fi
+
+    if [[ -z "$scope" ]]; then
+        if gh repo view "$GLOBAL_REPO" >/dev/null 2>&1; then
+            local gj
+            gj=$(gh issue list --repo "$GLOBAL_REPO" --label "$LABEL" --state open \
+                --limit 10 --json number,title 2>/dev/null || echo "[]")
+            count=$(echo "$gj" | jq 'length')
+            if [[ "$count" -gt 0 ]]; then
+                scope="GLOBAL"
+                issues="$gj"
+            fi
+        fi
+    fi
+
+    [[ -z "$scope" ]] && return 0
+
+    # Get active claims for annotation
+    local active_issues=""
+    if [[ -f "$CLAIMS_FILE" ]]; then
+        active_issues=$(cmd_active --json 2>/dev/null | jq -r '.[].issue' 2>/dev/null | tr '\n' ',' || echo "")
+    fi
+
+    echo "Todos (${scope} - ${count} open):"
+    local shown=0
+    while IFS= read -r line; do
+        local num title entry
+        num=$(echo "$line" | jq -r '.number')
+        title=$(echo "$line" | jq -r '.title')
+        entry="  #${num} ${title}"
+
+        if echo ",$active_issues," | grep -q ",${num},"; then
+            entry="${entry} ← active session"
+        fi
+
+        echo "$entry"
+        shown=$((shown + 1))
+        [[ "$shown" -ge "$max" ]] && break
+    done < <(echo "$issues" | jq -c '.[]')
+
+    local remaining=$((count - shown))
+    if [[ "$remaining" -gt 0 ]]; then
+        echo "  ... and ${remaining} more. Use /todos to review."
+    else
+        echo "  Use /todos to review."
+    fi
+}
+
 # --- Active session tracking ---
 
 cmd_claim() {
@@ -618,6 +689,7 @@ case "$COMMAND" in
     claim)   cmd_claim "$@" ;;
     unclaim) cmd_unclaim "$@" ;;
     active)  cmd_active "$@" ;;
+    hud)     cmd_hud "$@" ;;
     help|*)
         echo "Claude Code Todo System"
         echo ""
@@ -630,6 +702,7 @@ case "$COMMAND" in
         echo "  todo.sh claim <number> [--global] [--auto]"
         echo "  todo.sh unclaim [--session=ID]"
         echo "  todo.sh active [--json]"
+        echo "  todo.sh hud"
         echo ""
         echo "Persistence: GitHub Issues labeled '$LABEL'"
         echo "Global repo: $GLOBAL_REPO"
