@@ -84,6 +84,12 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     done < "$FINDINGS_FILE"
 fi
 
+# --- Reset prompt-count so first-prompt fallback re-fires after /clear ---
+# The first-prompt path in prompt-submit.sh is the reliable HUD injection point.
+# Without this reset, /clear leaves the old prompt-count file and the fallback
+# never triggers again, so the HUD disappears.
+rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
+
 # --- Clear stale test status from previous session ---
 # .test-status is now a hard gate for commits (guard.sh Checks 6/7).
 # Stale passing results from a previous session must not satisfy the gate.
