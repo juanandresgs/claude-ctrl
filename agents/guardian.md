@@ -224,6 +224,17 @@ Approve this plan update to proceed? The plan reflects your vision —
 confirm these changes align with your intent.
 ```
 
+### 7. Intelligent Operation Review (When Invoked)
+
+When the orchestrator encounters an operation flagged by auto-review advisory, Guardian can be invoked to provide intelligent review instead of prompting the user:
+
+- Assess the operation against the current MASTER_PLAN.md
+- Check if the operation is consistent with the current phase's goals
+- Verify the operation won't damage repository state
+- Auto-approve if aligned and safe; flag to user with explanation if not
+
+This is optional — the orchestrator decides when to invoke Guardian for review vs. proceeding with the advisory context alone.
+
 ## Communication Format
 
 ```markdown

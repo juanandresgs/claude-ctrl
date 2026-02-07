@@ -3,11 +3,13 @@
 # PreToolUse hook — matcher: Bash
 #
 # Three-tier command classification engine that auto-approves safe commands
-# and silently defers everything else to the normal permission system.
+# and injects advisory context for risky ones. Philosophy: "Approve unless
+# proven dangerous" — safe commands auto-approve, risky commands get advisory
+# context injected so the permission prompt is intelligent, not generic.
 #
 # Tier 1 — Inherently safe (read-only, navigation, output): always approve
 # Tier 2 — Behavior-dependent (git, npm, docker, etc.): analyze subcommand + flags
-# Tier 3 — Always defer (rm, sudo, kill, etc.): never auto-approve
+# Tier 3 — Always risky (rm, sudo, kill, etc.): inject advisory, defer to permission system
 #
 # Compound commands (&&, ||, ;, |) are decomposed and each segment analyzed.
 # Command substitutions ($() and backticks) are recursively analyzed (depth limit 2).
@@ -46,9 +48,19 @@ EOF
     exit 0
 }
 
-# Silent defer — exit with no output, letting the normal permission system
-# handle the command (Guardian for git ops, standard prompt for everything else).
-defer() {
+# Advisory — inject the risk reason as context for the permission system.
+# Exits 0 (no opinion on permission), but provides the model with context
+# about WHY the command is risky so it can explain to the user.
+advise() {
+    local reason="${RISK_REASON:-unknown risk}"
+    cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "additionalContext": "auto-review risk: $reason"
+  }
+}
+EOF
     exit 0
 }
 
@@ -490,11 +502,11 @@ analyze_git() {
         # Write operations
         commit)  return 0 ;;   # guard.sh enforces main-branch/test/proof gates; Guardian provides formal approval
         push)    return 0 ;;   # guard.sh enforces force-push protection; Guardian provides formal approval
-        merge)   set_risk "git merge — merges branches (may cause conflicts)"; return 1 ;;
+        merge)   return 0 ;;   # Guardian agent handles merges formally; conflicts are recoverable
         rebase)  set_risk "git rebase — rewrites commit history"; return 1 ;;
         reset)   set_risk "git reset — moves HEAD and may discard changes"; return 1 ;;
         clean)   set_risk "git clean — permanently deletes untracked files"; return 1 ;;
-        revert)  set_risk "git revert — creates a commit that undoes a previous commit"; return 1 ;;
+        revert)  return 0 ;;   # Safe — creates a new commit, reversible
         bisect)  set_risk "git bisect — interactive binary search through history"; return 1 ;;
         reflog)  set_risk "git reflog — accesses reference log history"; return 1 ;;
 
@@ -534,7 +546,7 @@ analyze_npm() {
         login|logout|adduser|whoami)
             set_risk "npm $subcmd — modifies authentication state"; return 1 ;;
         link)
-            set_risk "npm link — creates global symlinks (system-wide side effect)"; return 1 ;;
+            return 0 ;; # Symlinks are routine in monorepo dev
 
         *)
             set_risk "npm $subcmd — unknown subcommand, cannot assess safety"
@@ -751,8 +763,10 @@ analyze_brew() {
     case "$subcmd" in
         list|ls|info|search|doctor|config|leaves|deps|uses|outdated|desc|home|cat|tap-info|shellenv)
             return 0 ;;
-        install|uninstall|remove|rm|upgrade|update)
-            set_risk "brew $subcmd — installs/removes/upgrades system packages"; return 1 ;;
+        install|upgrade|update)
+            return 0 ;; # System package management is routine for dev
+        uninstall|remove|rm)
+            set_risk "brew $subcmd — removes system packages"; return 1 ;;
         link|unlink|pin|unpin|tap|untap|services|cleanup)
             set_risk "brew $subcmd — modifies Homebrew package state"; return 1 ;;
         *)
@@ -787,11 +801,13 @@ analyze_gh() {
             if echo "$args" | grep -qE '\b(create|edit|comment|close|reopen)\b'; then
                 return 0
             fi
-            # Merge/review are harder to undo — keep risky
-            if echo "$args" | grep -qE '\b(merge|review)\b'; then
-                local action
-                action=$(echo "$args" | grep -oE '(merge|review)' | head -1)
-                set_risk "gh $subcmd $action — modifies GitHub $subcmd (requires review)"
+            # Merge — Guardian handles formal approval; auto-approve here
+            if echo "$args" | grep -qE '\bmerge\b'; then
+                return 0
+            fi
+            # Review is harder to undo — keep risky
+            if echo "$args" | grep -qE '\breview\b'; then
+                set_risk "gh $subcmd review — modifies GitHub review state"
                 return 1
             fi
             set_risk "gh $subcmd — cannot determine if read or write operation"
@@ -818,7 +834,7 @@ if is_safe "$COMMAND" 0; then
     approve "auto-review: all command segments classified as safe"
 fi
 
-# Not safe — silently defer to the normal permission system.
-# The Guardian handles git commit/push/merge; everything else gets the
-# standard user permission prompt.
-defer
+# Not safe — inject advisory context and defer to the normal permission system.
+# The model receives the risk reason and can explain it when the permission
+# prompt appears. Guardian handles git commit/push/merge formally.
+advise

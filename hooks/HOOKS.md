@@ -197,25 +197,27 @@ PreToolUse hook for Write|Edit. Detects internal mocking patterns in test files 
 
 ### auto-review.sh — Intelligent Command Auto-Approval
 
-PreToolUse hook for Bash. Runs alongside guard.sh. While guard.sh denies/rewrites dangerous commands, auto-review.sh classifies every command: auto-approves safe ones and denies risky ones with a structured explanation the model presents to the user.
+PreToolUse hook for Bash. Runs alongside guard.sh. Philosophy: **"Approve unless proven dangerous"** — auto-approve safe commands, inject advisory context for risky ones, and let the normal permission system handle the prompt with full risk information.
 
 **Three-Tier Classification:**
 
 | Tier | Behavior | Examples |
 |------|----------|---------|
 | 1 — Inherently Safe | Auto-approve regardless of arguments | `ls`, `cat`, `grep`, `cd`, `echo`, `sort`, `wc`, `date` |
-| 2 — Behavior-Dependent | Analyze subcommand + flags; deny with explanation if risky | `git status` ✓, `git push` ✗; `curl` GET ✓, `curl -X POST` ✗ |
-| 3 — Always Deny | Deny with explanation, never auto-approve | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` |
+| 2 — Behavior-Dependent | Analyze subcommand + flags; approve if safe, advise if risky | `git status` ✓, `git merge` ✓ (Guardian gates); `git rebase` ⚠️ advisory |
+| 3 — Always Risky | Inject advisory context, defer to permission system | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` |
 
-**Compound Command Handling:** Commands joined with `&&`, `||`, `;`, or `|` are decomposed. Each segment is analyzed independently. ALL segments must be safe for auto-approval; ANY risky segment defers the entire command.
+**Advisory Pattern (risky commands):** When a command is classified as risky, auto-review injects the risk reason as `additionalContext` and exits 0 (no opinion). The normal permission system still handles the prompt, but Claude now has the risk context to explain *why* the user is being asked. This replaces the old silent-defer pattern where the user got a generic "allow this?" with no context.
+
+**Compound Command Handling:** Commands joined with `&&`, `||`, `;`, or `|` are decomposed. Each segment is analyzed independently. ALL segments must be safe for auto-approval; ANY risky segment triggers advisory for the entire command.
 
 **Recursive $() Analysis:** Command substitutions (`$()` and backticks) are recursively analyzed up to depth 2. `cd $(git rev-parse --show-toplevel)` auto-approves because both `cd` (T1) and `git rev-parse` (T2→read-only) are safe.
 
 **Dangerous Flag Detection:** Certain flags escalate risk regardless of tier: `--force`, `--hard`, `--no-verify`, `-f` (on git).
 
-**Structured Deny:** When a command is risky, auto-review outputs a `deny` with a detailed reason explaining what was flagged and why. The model receives this and presents the risk analysis to the user, then can re-run the command if approved. This replaces raw permission prompts with intelligent review.
+**Interaction with guard.sh:** Guard runs first (sequential). If guard denies, auto-review never runs. If guard allows/passes through, auto-review classifies the command. If auto-review approves, the user skips the permission prompt. If auto-review advises, the risk reason is injected as context for the permission prompt.
 
-**Interaction with guard.sh:** Guard runs first (sequential). If guard denies, auto-review never runs. If guard allows/passes through, auto-review classifies the command. If auto-review approves, the user skips the permission prompt. If auto-review denies, the model receives the risk explanation and presents it to the user.
+**Interaction with Guardian agent:** Commands gated by other intelligent systems (Guardian for merges, guard.sh for dangerous git ops) are auto-approved by auto-review — the authority is delegated to the specialized gate. Auto-review advises on the uncertain middle ground that no other gate covers.
 
 **Interaction with settings.json allowlist:** Behavior-dependent commands (git, curl, npm, docker, etc.) are NOT in the allowlist — auto-review.sh is the sole gatekeeper. Only Tier 1 commands (ls, cat, grep, etc.) remain in the allowlist as a fast-path optimization.
 
