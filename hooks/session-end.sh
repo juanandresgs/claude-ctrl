@@ -20,6 +20,12 @@ PROJECT_ROOT=$(detect_project_root)
 
 log_info "SESSION-END" "Session ending (reason: $REASON)"
 
+# --- Release active todo claims for this session ---
+TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
+if [[ -x "$TODO_SCRIPT" ]]; then
+    "$TODO_SCRIPT" unclaim --session="${CLAUDE_SESSION_ID:-$$}" 2>/dev/null || true
+fi
+
 # --- Kill lingering async test-runner processes ---
 # test-runner.sh runs async (PostToolUse). If it's still running when the session
 # ends, its output will never be consumed. Kill it to prevent orphaned processes.

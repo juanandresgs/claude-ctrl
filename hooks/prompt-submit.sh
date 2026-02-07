@@ -85,6 +85,22 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     rm -f "$FINDINGS_FILE"
 fi
 
+# --- Auto-claim: detect issue references in action prompts ---
+TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
+if [[ -x "$TODO_SCRIPT" ]]; then
+    ISSUE_REF=$(echo "$PROMPT" | grep -oiE '\b(work|fix|implement|tackle|start|handle|address)\b.*#([0-9]+)' | grep -oE '#[0-9]+' | head -1 || true)
+    if [[ -n "$ISSUE_REF" ]]; then
+        ISSUE_NUM="${ISSUE_REF#\#}"
+        # Auto-claim — fire and forget, don't block the prompt
+        if is_git_repo; then
+            "$TODO_SCRIPT" claim "$ISSUE_NUM" --auto 2>/dev/null || true
+        else
+            "$TODO_SCRIPT" claim "$ISSUE_NUM" --global --auto 2>/dev/null || true
+        fi
+        CONTEXT_PARTS+=("Auto-claimed todo #${ISSUE_NUM} for this session.")
+    fi
+fi
+
 # --- Detect deferred-work language → suggest /todo ---
 if echo "$PROMPT" | grep -qiE '\blater\b|\bdefer\b|\bbacklog\b|\beventually\b|\bsomeday\b|\bpark (this|that|it)\b|\bremind me\b|\bcome back to\b|\bfuture\b.*\b(todo|task|idea)\b|\bnote.*(for|to) (later|self)\b'; then
     CONTEXT_PARTS+=("Deferred-work language detected. Suggest using /todo to capture this idea so it persists across sessions.")

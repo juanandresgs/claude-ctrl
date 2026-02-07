@@ -16,6 +16,9 @@
 #   done <issue-number> [--global|--repo=owner/repo]
 #   stale [--days=14]
 #   count [--project|--global|--all]
+#   claim <issue-number> [--global] [--auto]
+#   unclaim [--session=ID]
+#   active [--json]
 #
 # Requires: gh CLI authenticated (gh auth login)
 set -euo pipefail
@@ -24,6 +27,7 @@ LABEL="claude-todo"
 STALE_DAYS=14
 CONFIG_DIR="$HOME/.config/cc-todos"
 CONFIG_FILE="$CONFIG_DIR/config"
+CLAIMS_FILE="$CONFIG_DIR/active-claims.tsv"
 
 # --- Bootstrap ---
 
@@ -442,6 +446,159 @@ cmd_count() {
     echo "${project_count}|${global_count}|${stale_count}"
 }
 
+# --- Active session tracking ---
+
+cmd_claim() {
+    local issue_number=""
+    local scope="project"
+    local source="manual"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --global) scope="global"; shift ;;
+            --auto)   source="auto"; shift ;;
+            *)
+                if [[ -z "$issue_number" ]]; then
+                    issue_number="$1"
+                fi
+                shift ;;
+        esac
+    done
+
+    if [[ -z "$issue_number" ]]; then
+        echo "ERROR: No issue number provided." >&2
+        echo "Usage: todo.sh claim <number> [--global] [--auto]" >&2
+        exit 1
+    fi
+
+    local repo=""
+    if [[ "$scope" == "global" ]]; then
+        repo="$GLOBAL_REPO"
+    elif is_git_repo; then
+        repo=$(get_repo_name)
+    fi
+    [[ -z "$repo" ]] && repo="$GLOBAL_REPO"
+
+    local session_id="${CLAUDE_SESSION_ID:-$$}"
+    local pid="${PPID:-$$}"
+    local cwd="$PWD"
+    local timestamp
+    timestamp=$(date '+%s')
+
+    mkdir -p "$CONFIG_DIR"
+
+    # Remove existing claim for same session+issue (idempotent)
+    if [[ -f "$CLAIMS_FILE" ]]; then
+        local tmp="${CLAIMS_FILE}.tmp"
+        grep -v "^${session_id}	.*	${issue_number}	${repo}	" "$CLAIMS_FILE" > "$tmp" 2>/dev/null || true
+        mv "$tmp" "$CLAIMS_FILE"
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$session_id" "$pid" "$issue_number" "$repo" "$cwd" "$timestamp" "$source" \
+        >> "$CLAIMS_FILE"
+
+    echo "Claimed #${issue_number} (${repo}) [${source}]"
+}
+
+cmd_unclaim() {
+    local session_id="${CLAUDE_SESSION_ID:-$$}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --session=*) session_id="${1#--session=}"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ ! -f "$CLAIMS_FILE" ]]; then
+        return 0
+    fi
+
+    local tmp="${CLAIMS_FILE}.tmp"
+    grep -v "^${session_id}	" "$CLAIMS_FILE" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$CLAIMS_FILE"
+
+    # Remove empty file
+    [[ ! -s "$CLAIMS_FILE" ]] && rm -f "$CLAIMS_FILE"
+}
+
+cmd_active() {
+    local json_output=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_output=true; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ ! -f "$CLAIMS_FILE" ]]; then
+        $json_output && echo "[]"
+        return 0
+    fi
+
+    local now
+    now=$(date '+%s')
+    local auto_ttl=$((8 * 3600))   # 8 hours
+    local manual_ttl=$((24 * 3600)) # 24 hours
+    local kept_lines=()
+
+    while IFS=$'\t' read -r sid pid inum repo cwd ts src; do
+        [[ -z "$sid" ]] && continue
+
+        # Prune: PID dead
+        if ! kill -0 "$pid" 2>/dev/null; then
+            continue
+        fi
+
+        # Prune: TTL expired
+        local age=$((now - ts))
+        if [[ "$src" == "auto" && "$age" -gt "$auto_ttl" ]]; then
+            continue
+        fi
+        if [[ "$src" == "manual" && "$age" -gt "$manual_ttl" ]]; then
+            continue
+        fi
+
+        kept_lines+=("${sid}	${pid}	${inum}	${repo}	${cwd}	${ts}	${src}")
+    done < "$CLAIMS_FILE"
+
+    # Rewrite pruned file
+    if [[ ${#kept_lines[@]} -gt 0 ]]; then
+        printf '%s\n' "${kept_lines[@]}" > "$CLAIMS_FILE"
+    else
+        rm -f "$CLAIMS_FILE"
+    fi
+
+    # Output
+    if $json_output; then
+        if [[ ${#kept_lines[@]} -eq 0 ]]; then
+            echo "[]"
+            return 0
+        fi
+        local json="["
+        local first=true
+        for line in "${kept_lines[@]}"; do
+            IFS=$'\t' read -r sid pid inum repo cwd ts src <<< "$line"
+            $first || json+=","
+            first=false
+            json+="{\"session\":\"${sid}\",\"pid\":${pid},\"issue\":${inum},\"repo\":\"${repo}\",\"cwd\":\"${cwd}\",\"timestamp\":${ts},\"source\":\"${src}\"}"
+        done
+        json+="]"
+        echo "$json"
+    else
+        if [[ ${#kept_lines[@]} -eq 0 ]]; then
+            echo "No active claims."
+            return 0
+        fi
+        for line in "${kept_lines[@]}"; do
+            IFS=$'\t' read -r sid pid inum repo cwd ts src <<< "$line"
+            echo "  #${inum} (${repo}) — session ${sid:0:8}… [${src}]"
+        done
+    fi
+}
+
 # --- Bootstrap (validate gh + resolve repo) ---
 
 require_gh
@@ -453,11 +610,14 @@ COMMAND="${1:-help}"
 shift || true
 
 case "$COMMAND" in
-    add)   cmd_add "$@" ;;
-    list)  cmd_list "$@" ;;
-    done)  cmd_done "$@" ;;
-    stale) cmd_stale "$@" ;;
-    count) cmd_count "$@" ;;
+    add)     cmd_add "$@" ;;
+    list)    cmd_list "$@" ;;
+    done)    cmd_done "$@" ;;
+    stale)   cmd_stale "$@" ;;
+    count)   cmd_count "$@" ;;
+    claim)   cmd_claim "$@" ;;
+    unclaim) cmd_unclaim "$@" ;;
+    active)  cmd_active "$@" ;;
     help|*)
         echo "Claude Code Todo System"
         echo ""
@@ -467,6 +627,9 @@ case "$COMMAND" in
         echo "  todo.sh done <issue-number> [--global|--repo=owner/repo]"
         echo "  todo.sh stale [--days=14]"
         echo "  todo.sh count [--project|--global|--all]"
+        echo "  todo.sh claim <number> [--global] [--auto]"
+        echo "  todo.sh unclaim [--session=ID]"
+        echo "  todo.sh active [--json]"
         echo ""
         echo "Persistence: GitHub Issues labeled '$LABEL'"
         echo "Global repo: $GLOBAL_REPO"
