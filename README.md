@@ -9,91 +9,143 @@ JAGS' batteries-included Claude Code config
 
 Claude Code out of the box is capable but undisciplined. It commits directly to main. It skips tests. It starts implementing before understanding the problem. It force-pushes without thinking. None of these are bugs — they're defaults.
 
-This system replaces those defaults with mechanical enforcement. Three specialized agents divide the work — Planner, Implementer, Guardian — so no single context handles planning, implementation, and git operations. Twenty-four hooks run deterministically at every lifecycle event. They don't depend on the model remembering instructions. They execute regardless of context window pressure.
+This system replaces those defaults with mechanical enforcement. Three specialized agents divide the work — Planner, Implementer, Guardian — so no single context handles planning, implementation, and git operations. Hooks run deterministically at every lifecycle event. They don't depend on the model remembering instructions. They execute regardless of context window pressure.
 
 **Instructions guide. Hooks enforce.**
 
 ---
 
-## What This Looks Like
+## Without This vs With This
 
-No configuration. No hoping the model remembers. Just mechanical enforcement.
-
-#### Dangerous paths get silently rewritten
+**Default Claude Code** — you describe a feature and:
 
 ```
-You:      echo 'test' > /tmp/scratch.txt
-guard.sh: REWRITE → mkdir -p tmp && echo 'test' > tmp/scratch.txt
-```
-> `/tmp/` is forbidden. Transparently rewritten to project `tmp/`.
-
-#### Force push becomes force-with-lease
-
-```
-You:      git push --force origin feature
-guard.sh: REWRITE → git push --force-with-lease origin feature
-```
-> `--force` rewritten to `--force-with-lease`. Your reflog says thanks.
-
-#### Main branch is protected at every level
-
-```
-You:      git commit -m "quick fix"     # on main branch
-guard.sh: DENY — Cannot commit on main. Sacred Practice #2.
-```
-> Use Guardian agent to create an isolated worktree.
-
-#### Tests must pass before you can keep writing
-
-```
-You:           [writes src/auth.ts]     # tests are failing
-test-gate.sh:  WARNING — Tests failing. Strike 1 of 2.
-
-               [writes again]
-test-gate.sh:  DENY — Tests still failing. Fix tests before continuing.
+idea → code → commit → push → discover the mess
 ```
 
-#### No code without a plan
+The model writes on main, skips tests, force-pushes, and forgets the plan once the context window fills up. Every session is a coin flip.
+
+**With this system** — the same feature request triggers a self-correcting pipeline:
 
 ```
-You:            [writes src/auth.ts]    # no MASTER_PLAN.md exists
-plan-check.sh:  DENY — No plan found. Sacred Practice #6.
+                ┌─────────────────────────────────────────┐
+                │           You describe a feature         │
+                └──────────────────┬──────────────────────┘
+                                   ▼
+                ┌──────────────────────────────────────────┐
+                │  Planner agent designs MASTER_PLAN.md    │
+                │  + creates GitHub Issues                 │
+                └──────────────────┬───────────────────────┘
+                                   ▼
+                ┌──────────────────────────────────────────┐
+                │  Guardian agent creates isolated worktree │
+                └──────────────────┬───────────────────────┘
+                                   ▼
+              ┌────────────────────────────────────────────────┐
+              │              Implementer codes                  │
+              │                                                 │
+              │   write src/ ──► test-gate: tests passing? ─┐   │
+              │       ▲              no? warn, then block   │   │
+              │       └──── fix tests, write again ◄────────┘   │
+              │                                                 │
+              │   write src/ ──► plan-check: plan stale? ───┐   │
+              │       ▲              yes? block              │   │
+              │       └──── update plan, write again ◄──────┘   │
+              │                                                 │
+              │   write src/ ──► doc-gate: documented? ─────┐   │
+              │       ▲              no? block               │   │
+              │       └──── add headers + @decision ◄───────┘   │
+              └────────────────────────┬───────────────────────┘
+                                       ▼
+                ┌──────────────────────────────────────────────┐
+                │  Guardian agent: commit (requires test       │
+                │  evidence + your approval) → merge to main   │
+                └──────────────────────────────────────────────┘
 ```
-> Invoke Planner agent first.
 
-Every check runs deterministically via hooks — not instructions that degrade with context pressure.
+Every arrow is a hook. Every feedback loop is automatic. The model doesn't choose to follow the process — the hooks won't let it skip. Try to write code without a plan and you're pushed back. Try to commit with failing tests and you're pushed back. Try to skip documentation and you're pushed back. The system self-corrects until the work is right.
+
+**The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get silently rewritten (`--force` → `--force-with-lease`, `/tmp/` → project `tmp/`). Everything else either flows through or gets caught. You just describe what you want and review what comes out.
 
 ---
 
-## The Opinions
+## Why Hooks, Not Instructions
 
-This system is opinionated. That's the point. Every opinion has a hook that enforces it.
+Most Claude Code configs rely on CLAUDE.md instructions — guidance that works early in a session but degrades as the context window fills up or compaction throws everything off a cliff. This system puts enforcement in **deterministic hooks**: shell scripts that fire before and after every event, regardless of context pressure.
 
-- **Plans before code.** `plan-check.sh` denies source writes without a MASTER_PLAN.md.
-- **Main is never touched.** `branch-guard.sh` blocks writes on main. `guard.sh` blocks commits on main.
-- **Tests pass first.** `test-gate.sh` warns on the first write with failing tests, blocks on the second. `guard.sh` requires test evidence for commits.
-- **Real tests, not mocks.** `mock-gate.sh` detects internal mocking patterns — warns first, blocks on repeat.
-- **Decisions live in code.** `doc-gate.sh` enforces headers and `@decision` annotations on files over 50 lines.
-- **Approval gates on permanent operations.** `guard.sh` blocks force push. Guardian agent requires approval for all commits and merges.
-
-If you disagree with an opinion, change the hook that enforces it.
+Instructions are probabilistic. Hooks are mechanical. That's the difference.
 
 ---
 
-## What Makes This Different
+## Getting Started
 
-Most Claude Code configurations rely on indeterministic instructions in CLAUDE.md — guidance that works well in the beginning but degrades as the context window fills up or compaction throws us off a cliff. This system puts enforcement in **deterministic hooks**: shell scripts that run before and after events, regardless of context fatigue and whose outputs persist beyond session clearing.
+### 1. Clone
 
-| Capability | How It's Enforced |
-|---|---|
-| **Plan-first development** | `plan-check.sh` hard-denies source writes without MASTER_PLAN.md |
-| **Branch protection** | `branch-guard.sh` blocks source writes on main at the tool level, not just at commit time |
-| **Test gating** | `test-gate.sh` escalates (warn → block); `guard.sh` requires test evidence for commits |
-| **Mock discipline** | `mock-gate.sh` detects internal mocks, warns first, blocks on repeat |
-| **Safe rewrites** | `guard.sh` transparently rewrites `/tmp/` → project `tmp/`, `--force` → `--force-with-lease` |
-| **Decision tracking** | `doc-gate.sh` enforces @decision annotations; `surface.sh` audits coverage |
-| **Agent separation** | Planner, Implementer, Guardian — each owns a phase, none overlap |
-| **Session continuity** | Context injected at start, preserved at compaction, summarized at end |
+```bash
+# Clone with submodules (last30days skill is a submodule)
+git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude
+```
+
+If you already have a `~/.claude` directory, back it up first:
+```bash
+tar czf ~/claude-backup-$(date +%Y%m%d).tar.gz ~/.claude
+```
+
+### 2. Local Settings
+
+The system uses a split settings architecture:
+
+- **`settings.json`** (tracked) — Universal configuration: hook registrations, permissions, status line. Works on any machine. Only includes freely available MCP servers (context7).
+- **`settings.local.json`** (gitignored) — Your machine-specific overrides: model preference, additional MCP servers, plugins, extra permissions.
+
+Claude Code merges both files, with local taking precedence.
+
+```bash
+cp settings.local.example.json settings.local.json
+# Edit to set your model preference, MCP servers, plugins
+```
+
+### 3. Backlog System (GitHub Issues)
+
+The `/backlog` command persists ideas as GitHub Issues.
+On first use, auto-detects your GitHub username and creates a private `cc-todos` repo.
+
+**Requirements:** `gh` CLI installed and authenticated (`gh auth login`)
+
+**Manual override:** `echo "GLOBAL_REPO=myorg/my-repo" > ~/.config/cc-todos/config`
+
+### 4. Optional API Keys
+
+| Key | Used By | Without It |
+|-----|---------|-----------|
+| OpenAI API key | `deep-research` skill | Skill degrades (fewer models in comparison) |
+| Perplexity API key | `deep-research` skill | Skill degrades (fewer models in comparison) |
+| Gemini API key | `deep-research` skill | Skill degrades (fewer models in comparison) |
+
+Research skills are optional — the core workflow (agents + hooks) works without any API keys.
+
+### 5. Verify Installation
+
+On your first `claude` session in any project directory, you should see:
+
+- **SessionStart hook fires** — injects git state, plan status, worktree info
+- **Plan mode by default** — `settings.json` sets `"defaultMode": "plan"` so Claude thinks before acting
+- **Prompt context** — each prompt gets git branch and plan status injected
+
+Try writing a file to `/tmp/test.txt` — `guard.sh` should rewrite it to `tmp/test.txt` in the project root.
+
+### 6. Optional Dependencies
+
+| Dependency | Purpose | Install |
+|-----------|---------|---------|
+| `terminal-notifier` | Desktop notifications when Claude needs attention | `brew install terminal-notifier` (macOS) |
+| `jq` | JSON processing in hooks | `brew install jq` / `apt install jq` |
+| Multi-MCP server | Code review hook integration | See `code-review.sh` |
+
+### Platform Notes
+
+- **macOS**: Full support. Notifications use `terminal-notifier` with `osascript` fallback.
+- **Linux**: Partial support. Notification hooks won't fire (no macOS notification APIs). All other hooks work.
 
 ---
 
@@ -436,7 +488,7 @@ Detection regex in `doc-gate.sh`: `@decision|# DECISION:|// DECISION:` — all t
         ┌────────────┐  ┌────────────┐  ┌────────────┐
         │   Agents   │  │   Hooks    │  │  Settings  │
         │            │  │            │  │            │
-        │ planner    │  │ 24 hooks   │  │ .json      │
+        │ planner    │  │   hooks/   │  │ .json      │
         │ implementer│  │ in hooks/  │  │ (universal │
         │ guardian   │  │            │  │  + local)  │
         └─────┬──────┘  └─────┬──────┘  └────────────┘
@@ -471,78 +523,6 @@ The `deep-research` skill uses API keys for OpenAI, Perplexity, and Gemini but d
 |---------|---------|
 | `/compact` | Generate structured context summary before compaction (prevents amnesia) |
 | `/backlog` | Unified backlog management — list, create, close, triage todos (GitHub Issues). No args = list; `/backlog <text>` = create; `/backlog done <#>` = close; `/backlog review` = interactive triage |
-
----
-
-## Getting Started
-
-### 1. Clone
-
-```bash
-# Clone with submodules (last30days skill is a submodule)
-git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude
-```
-
-If you already have a `~/.claude` directory, back it up first:
-```bash
-tar czf ~/claude-backup-$(date +%Y%m%d).tar.gz ~/.claude
-```
-
-### 2. Local Settings
-
-The system uses a split settings architecture:
-
-- **`settings.json`** (tracked) — Universal configuration: hook registrations, permissions, status line. Works on any machine. Only includes freely available MCP servers (context7).
-- **`settings.local.json`** (gitignored) — Your machine-specific overrides: model preference, additional MCP servers, plugins, extra permissions.
-
-Claude Code merges both files, with local taking precedence.
-
-```bash
-cp settings.local.example.json settings.local.json
-# Edit to set your model preference, MCP servers, plugins
-```
-
-### 3. Backlog System (GitHub Issues)
-
-The `/backlog` command persists ideas as GitHub Issues.
-On first use, auto-detects your GitHub username and creates a private `cc-todos` repo.
-
-**Requirements:** `gh` CLI installed and authenticated (`gh auth login`)
-
-**Manual override:** `echo "GLOBAL_REPO=myorg/my-repo" > ~/.config/cc-todos/config`
-
-### 4. Optional API Keys
-
-| Key | Used By | Without It |
-|-----|---------|-----------|
-| OpenAI API key | `deep-research` skill | Skill degrades (fewer models in comparison) |
-| Perplexity API key | `deep-research` skill | Skill degrades (fewer models in comparison) |
-| Gemini API key | `deep-research` skill | Skill degrades (fewer models in comparison) |
-
-Research skills are optional — the core workflow (agents + hooks) works without any API keys.
-
-### 5. Verify Installation
-
-On your first `claude` session in any project directory, you should see:
-
-- **SessionStart hook fires** — injects git state, plan status, worktree info
-- **Plan mode by default** — `settings.json` sets `"defaultMode": "plan"` so Claude thinks before acting
-- **Prompt context** — each prompt gets git branch and plan status injected
-
-Try writing a file to `/tmp/test.txt` — `guard.sh` should rewrite it to `tmp/test.txt` in the project root.
-
-### 6. Optional Dependencies
-
-| Dependency | Purpose | Install |
-|-----------|---------|---------|
-| `terminal-notifier` | Desktop notifications when Claude needs attention | `brew install terminal-notifier` (macOS) |
-| `jq` | JSON processing in hooks | `brew install jq` / `apt install jq` |
-| Multi-MCP server | Code review hook integration | See `code-review.sh` |
-
-### Platform Notes
-
-- **macOS**: Full support. Notifications use `terminal-notifier` with `osascript` fallback.
-- **Linux**: Partial support. Notification hooks won't fire (no macOS notification APIs). All other hooks work.
 
 ---
 
