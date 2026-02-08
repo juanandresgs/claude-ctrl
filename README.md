@@ -4,7 +4,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/commits/main)
 [![Shell](https://img.shields.io/badge/language-bash-green.svg)](hooks/)
-[![Validate Hooks](https://github.com/juanandresgs/claude-system/actions/workflows/validate.yml/badge.svg)](https://github.com/juanandresgs/claude-system/actions/workflows/validate.yml)
 
 JAGS' batteries-included Claude Code config
 
@@ -18,32 +17,51 @@ This system replaces those defaults with mechanical enforcement. Three specializ
 
 ## What This Looks Like
 
-No configuration. No hoping the model remembers. Just mechanical enforcement:
+No configuration. No hoping the model remembers. Just mechanical enforcement.
+
+#### Dangerous paths get silently rewritten
 
 ```
-You:     echo 'test' > /tmp/scratch.txt
-guard.sh: ✅ REWRITE → mkdir -p tmp && echo 'test' > tmp/scratch.txt
-          /tmp/ is forbidden. Transparently rewritten to project tmp/.
+You:      echo 'test' > /tmp/scratch.txt
+guard.sh: REWRITE → mkdir -p tmp && echo 'test' > tmp/scratch.txt
+```
+> `/tmp/` is forbidden. Transparently rewritten to project `tmp/`.
 
-You:     git push --force origin feature
-guard.sh: ✅ REWRITE → git push --force-with-lease origin feature
-          --force rewritten to --force-with-lease. Your reflog says thanks.
+#### Force push becomes force-with-lease
 
-You:     git commit -m "quick fix"          (on main branch)
-guard.sh: ❌ DENY — Cannot commit on main. Sacred Practice #2.
-          Action: Use Guardian agent to create an isolated worktree.
+```
+You:      git push --force origin feature
+guard.sh: REWRITE → git push --force-with-lease origin feature
+```
+> `--force` rewritten to `--force-with-lease`. Your reflog says thanks.
 
-You:     [writes src/auth.ts]               (tests are failing)
-test-gate.sh: ⚠️ WARNING — Tests failing. Strike 1 of 2.
-              [writes again]
-test-gate.sh: ❌ DENY — Tests still failing. Fix tests before continuing.
+#### Main branch is protected at every level
 
-You:     [writes src/auth.ts]               (no MASTER_PLAN.md exists)
-plan-check.sh: ❌ DENY — No plan found. Sacred Practice #6.
-               Action: Invoke Planner agent first.
+```
+You:      git commit -m "quick fix"     # on main branch
+guard.sh: DENY — Cannot commit on main. Sacred Practice #2.
+```
+> Use Guardian agent to create an isolated worktree.
+
+#### Tests must pass before you can keep writing
+
+```
+You:           [writes src/auth.ts]     # tests are failing
+test-gate.sh:  WARNING — Tests failing. Strike 1 of 2.
+
+               [writes again]
+test-gate.sh:  DENY — Tests still failing. Fix tests before continuing.
 ```
 
-Every check runs deterministically via hooks — not instructions that degrade with context pressure. The model doesn't need to remember the rules. The hooks enforce them.
+#### No code without a plan
+
+```
+You:            [writes src/auth.ts]    # no MASTER_PLAN.md exists
+plan-check.sh:  DENY — No plan found. Sacred Practice #6.
+```
+> Invoke Planner agent first.
+
+Every check runs deterministically via hooks — not instructions that degrade with context pressure.
 
 ---
 
@@ -218,45 +236,45 @@ Hooks within the same event run sequentially in array order. A deny from any Pre
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **lint.sh** | Write\|Edit | Auto-detects project linter, runs on modified files (exit 2 = retry loop) |
-| **track.sh** | Write\|Edit | Records which files changed this session |
-| **code-review.sh** | Write\|Edit | Suggests code review via Multi-MCP on significant changes (optional dependency) |
-| **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structural integrity (phases, status fields, decision IDs) |
-| **test-runner.sh** | Write\|Edit | Runs project tests asynchronously after writes |
+| **lint.sh** | Write\|Edit | Auto-detects project linter (ruff, black, prettier, eslint, etc.), runs on modified files. Exit 2 = feedback loop (Claude retries the fix automatically) |
+| **track.sh** | Write\|Edit | Records file changes to `.session-changes-$SESSION_ID`. Also invalidates `.proof-status` when verified source files change — ensuring the user always verifies the final state, not an intermediate one |
+| **code-review.sh** | Write\|Edit | Fires on 20+ line source files (skips tests and config). Injects diff context and suggests `mcp__multi__codereview` for multi-model analysis. Falls back silently if Multi-MCP is unavailable |
+| **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structure on every write: phase Status fields (`planned`/`in-progress`/`completed`), Decision Log content for completed phases, original intent section preserved, DEC-COMPONENT-NNN ID format. Exit 2 = feedback loop with fix instructions |
+| **test-runner.sh** | Write\|Edit | **Async** — doesn't block Claude. Auto-detects test framework (pytest, vitest, jest, npm-test, cargo-test, go-test). 2s debounce lets rapid writes settle. 10s cooldown between runs. Lock file ensures single instance (kills previous run if superseded). Writes `.test-status` (`pass\|0\|timestamp` or `fail\|count\|timestamp`) consumed by test-gate.sh and guard.sh. Reports results via `systemMessage` |
 
 ### Session Lifecycle
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees |
-| **prompt-submit.sh** | UserPromptSubmit | Adds git context and plan status to each prompt |
-| **compact-preserve.sh** | PreCompact | Preserves git state and session context before compaction |
-| **session-end.sh** | SessionEnd | Cleanup and session finalization |
-| **surface.sh** | Stop | Validates @decision coverage, reports audit results |
-| **session-summary.sh** | Stop | Deterministic session summary (files changed, git state, next action) |
-| **forward-motion.sh** | Stop | Ensures session ends with forward momentum |
+| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
+| **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation |
+| **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
+| **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Preserves cross-session state (`.audit-log`, `.agent-findings`, `.plan-drift`). Trims audit log to last 100 entries |
+| **surface.sh** | Stop | Full decision audit pipeline: (1) extract — scans project source directories for @decision annotations using ripgrep (with grep fallback); (2) validate — checks changed files over 50 lines for @decision presence and rationale; (3) reconcile — compares DEC-IDs in MASTER_PLAN.md vs code, identifies unplanned decisions (in code but not plan) and unimplemented decisions (in plan but not code), respects deprecated/superseded status; (4) persist — writes structured drift data to `.plan-drift` for consumption by plan-check.sh next session. Reports via `systemMessage` |
+| **session-summary.sh** | Stop | Deterministic (<2s runtime). Counts unique files changed (source vs config), @decision annotations added. Reports git branch, dirty/clean state, test status (waits briefly for in-flight async test-runner). Generates workflow-aware next-action guidance: on main → "create plan" or "create worktrees"; on feature branch → "fix tests", "run tests", "review changes", or "merge to main" based on current state. Includes pending todo count |
+| **forward-motion.sh** | Stop | Deterministic regex check (not AI). Extracts the last paragraph of the assistant's response and checks for forward motion indicators: `?`, "want me to", "shall I", "let me know", "would you like", "next step", etc. Returns exit 2 (feedback loop) only if the response ends with a bare completion statement ("done", "finished", "all set") and no question mark — prompting the model to add a suggestion or offer |
 
 ### Notifications
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **notify.sh** | permission_prompt\|idle_prompt | Desktop notification when Claude needs attention (macOS) |
+| **notify.sh** | permission_prompt\|idle_prompt | Desktop notification when Claude needs attention (macOS only). Uses `terminal-notifier` (activates terminal on click) with `osascript` fallback. Sound varies by urgency: `Ping` for permission prompts, `Glass` for idle prompts |
 
 ### Subagent Lifecycle
 
 | Hook | Event / Matcher | What It Does |
 |------|-----------------|--------------|
-| **subagent-start.sh** | SubagentStart | Injects context when subagents launch |
-| **check-planner.sh** | SubagentStop (planner\|Plan) | Validates planner output quality and issue creation |
-| **check-implementer.sh** | SubagentStop (implementer) | Validates implementer output quality |
-| **check-guardian.sh** | SubagentStop (guardian) | Validates guardian output quality |
+| **subagent-start.sh** | SubagentStart | Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, verification protocol instructions. **Guardian** gets plan update rules (only at phase boundaries) and test status. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
+| **check-planner.sh** | SubagentStop (planner\|Plan) | 5 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
+| **check-implementer.sh** | SubagentStop (implementer) | 5 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"), (5) proof-of-work status (`verified`/`pending`/missing). Advisory only. Persists findings |
+| **check-guardian.sh** | SubagentStop (guardian) | 5 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected). Advisory only. Persists findings |
 
 ### Shared Libraries
 
-| File | Purpose |
+| File | Exports |
 |------|---------|
-| **log.sh** | Structured logging, stdin caching, field extraction (sourced by all hooks) |
-| **context-lib.sh** | Git state, plan status, project root detection, source file identification |
+| **log.sh** | `read_input` — reads and caches stdin JSON (prevents double-read). `get_field` — jq extraction from cached input. `log_json`/`log_info` — stderr logging (doesn't interfere with hook JSON output). `detect_project_root` — resolution chain: `CLAUDE_PROJECT_DIR` → git root → `$HOME` fallback |
+| **context-lib.sh** | `get_git_state` — populates `GIT_BRANCH`, `GIT_DIRTY_COUNT`, `GIT_WORKTREES`, `GIT_WT_COUNT`. `get_plan_status` — populates `PLAN_EXISTS`, `PLAN_PHASE`, `PLAN_TOTAL_PHASES`, `PLAN_COMPLETED_PHASES`, `PLAN_AGE_DAYS`, `PLAN_SOURCE_CHURN_PCT`. `get_session_changes` — file count for current session. `get_drift_data` — reads `.plan-drift` file from last surface audit. `get_research_status` — research log entry count and recent topics. `is_source_file`/`is_skippable_path` — extension matching and directory filtering. `append_audit` — timestamped audit trail. `SOURCE_EXTENSIONS` — single source of truth for source file extensions across all hooks |
 
 ### Key guard.sh Behaviors
 
@@ -285,7 +303,7 @@ The most complex hook — 8 checks covering 3 rewrites, 3 hard blocks, and 2 evi
 | 6-7 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
 | 8 | `.proof-status` = `verified` | `.claude/.proof-status` (format: `status\|timestamp`) | `~/.claude` meta-repo |
 
-Test evidence: a pass of any age satisfies the gate. A `fail` within 10 minutes, any non-pass status, or missing file = denied.
+Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
 
 Proof-of-work: the user must see the feature work before code is committed. `track.sh` resets proof status to `pending` when source files change after verification — ensuring the user always verifies the final state.
 
@@ -317,6 +335,57 @@ An 840-line policy engine that replaces the blunt "allow or ask" permission mode
 **Dangerous flag escalation:** `--force`, `--hard`, `--no-verify`, `-f` (on git) escalate any command to risky regardless of tier.
 
 **Interaction with guard.sh:** Guard runs first (sequential in settings.json). If guard denies, auto-review never executes. If guard allows/passes through, auto-review classifies. This means guard handles the hard security boundaries, auto-review handles the UX of permission prompts.
+
+### Enforcement Patterns
+
+Three patterns recur across the hook system:
+
+**Escalating gates** — warn on first offense, block on repeat. Used when the model may have a legitimate reason to proceed once, but repeat violations indicate a broken workflow.
+
+| Hook | Strike File | Warn | Block |
+|------|------------|------|-------|
+| **test-gate.sh** | `.test-gate-strikes` | First source write with failing tests | Second source write without fixing tests |
+| **mock-gate.sh** | `.mock-gate-strikes` | First internal mock detected | Second internal mock (external boundary mocks always allowed) |
+
+**Feedback loops** — exit code 2 tells Claude Code to retry the operation with the hook's output as guidance, rather than failing outright. The model gets a chance to fix the issue automatically.
+
+| Hook | Triggers exit 2 when |
+|------|---------------------|
+| **lint.sh** | Linter finds fixable issues in the written file |
+| **plan-validate.sh** | MASTER_PLAN.md fails structural validation (missing Status fields, empty Decision Log, bad DEC-ID format) |
+| **forward-motion.sh** | Response ends with bare completion ("done") and no question, suggestion, or offer |
+
+**Transparent rewrites** — the model's command is silently replaced with a safe alternative. No denial, no feedback — the model doesn't even know the command was changed.
+
+| Hook | Rewrites |
+|------|----------|
+| **guard.sh** | `/tmp/` → project `tmp/`, `--force` → `--force-with-lease`, `worktree remove` → prepends safe `cd` |
+
+### State Files
+
+Hooks communicate across events through state files in the project's `.claude/` directory. This is the backbone that connects async test execution to commit-time evidence gates, session tracking to end-of-session audits, and compaction preservation to next-session context injection.
+
+**Session-scoped** (cleaned up by session-end.sh):
+
+| File | Written By | Read By | Contents |
+|------|-----------|---------|----------|
+| `.session-changes-$ID` | track.sh | surface.sh, session-summary.sh, check-implementer.sh, compact-preserve.sh | One file path per line — every Write/Edit this session |
+| `.prompt-count-$ID` | prompt-submit.sh | prompt-submit.sh | Tracks whether first-prompt mitigation has fired |
+| `.test-gate-strikes` | test-gate.sh | test-gate.sh | Strike count for escalating enforcement |
+| `.mock-gate-strikes` | mock-gate.sh | mock-gate.sh | Strike count for escalating enforcement |
+| `.test-runner.lock` | test-runner.sh | test-runner.sh | PID of active test process (prevents concurrent runs) |
+| `.test-runner.last-run` | test-runner.sh | test-runner.sh | Epoch timestamp of last run (10s cooldown) |
+
+**Cross-session** (preserved by session-end.sh):
+
+| File | Written By | Read By | Contents |
+|------|-----------|---------|----------|
+| `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
+| `.proof-status` | user verification flow | guard.sh (evidence gate), track.sh (invalidation), check-implementer.sh | `status\|timestamp` — `verified` or `pending`. track.sh resets to `pending` when source files change after verification |
+| `.plan-drift` | surface.sh | plan-check.sh (staleness scoring) | Structured key=value: `unplanned_count`, `unimplemented_count`, `missing_decisions`, `total_decisions`, `source_files_changed` |
+| `.agent-findings` | check-planner.sh, check-implementer.sh, check-guardian.sh | session-init.sh, prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery) |
+| `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |
+| `.audit-log` | surface.sh, test-runner.sh, check-*.sh | compact-preserve.sh, session-summary.sh | Timestamped event trail — trimmed to last 100 entries by session-end.sh |
 
 ---
 
@@ -489,7 +558,9 @@ Try writing a file to `/tmp/test.txt` — `guard.sh` should rewrite it to `tmp/t
 | Planning | Implements immediately | Plan mode by default; MASTER_PLAN.md required before code |
 | Documentation | Optional | File headers and @decision enforced on 50+ line files |
 | Session end | Just stops | Decision audit + session summary + forward momentum check |
-| Commits | Executes on request | Requires approval via Guardian agent; test evidence required |
+| Session start | Cold start | Git state, plan status, worktrees, todo HUD, agent findings injected |
+| Context loss | Compaction loses everything | Dual-path preservation: persistent file + compaction directive. Context survives |
+| Commits | Executes on request | Requires approval via Guardian agent; test + proof-of-work evidence required |
 | Code review | None | Suggested on significant file writes (when Multi-MCP available) |
 
 ---
