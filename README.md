@@ -8,18 +8,17 @@
 
 JAGS' batteries-included Claude Code config
 
-A multi-agent workflow for Claude Code that enforces plan-first development, worktree isolation, test-first implementation, and approval gates through deterministic hooks.
+Claude Code out of the box is capable but undisciplined. It commits directly to main. It skips tests. It starts implementing before understanding the problem. It force-pushes without thinking. None of these are bugs — they're defaults.
 
-- **3 specialized agents** — Planner, Implementer, Guardian — each with defined responsibilities and model assignments
-- **24 hooks + 2 shared libraries** — Mechanical enforcement of engineering practices at every lifecycle event
-- **Research skills** — Multi-model deep research and recent web discussion analysis
-- **Split settings** — Tracked universal config + gitignored local overrides
+This system replaces those defaults with mechanical enforcement. Three specialized agents divide the work — Planner, Implementer, Guardian — so no single context handles planning, implementation, and git operations. Twenty-four hooks run deterministically at every lifecycle event. They don't depend on the model remembering instructions. They execute regardless of context window pressure.
+
+**Instructions guide. Hooks enforce.**
 
 ---
 
-## Quick Proof
+## What This Looks Like
 
-Here's what the hook system does in practice — no configuration, no hoping the model remembers, just mechanical enforcement:
+No configuration. No hoping the model remembers. Just mechanical enforcement:
 
 ```
 You:     echo 'test' > /tmp/scratch.txt
@@ -48,59 +47,45 @@ Every check runs deterministically via hooks — not instructions that degrade w
 
 ---
 
-## Why This Exists
+## The Opinions
 
-Claude Code out of the box is capable but undisciplined. It commits directly to main. It writes temporary files to `/tmp`. It starts implementing before understanding the problem. It mocks internal modules instead of testing real behavior. It skips documentation. It force-pushes without thinking.
+This system is opinionated. That's the point. Every opinion has a hook that enforces it.
 
-None of these are bugs — they're defaults. This configuration replaces those defaults with enforced engineering discipline.
+- **Plans before code.** `plan-check.sh` denies source writes without a MASTER_PLAN.md.
+- **Main is never touched.** `branch-guard.sh` blocks writes on main. `guard.sh` blocks commits on main.
+- **Tests pass first.** `test-gate.sh` warns on the first write with failing tests, blocks on the second. `guard.sh` requires test evidence for commits.
+- **Real tests, not mocks.** `mock-gate.sh` detects internal mocking patterns — warns first, blocks on repeat.
+- **Decisions live in code.** `doc-gate.sh` enforces headers and `@decision` annotations on files over 50 lines.
+- **Approval gates on permanent operations.** `guard.sh` blocks force push. Guardian agent requires approval for all commits and merges.
 
-Three agents divide responsibilities so no single context handles planning, implementation, and git operations. Twenty-four hooks (plus two shared libraries) run deterministically at every lifecycle event — they don't depend on the model remembering instructions, they execute mechanically regardless of context window pressure.
-
-The result: every session starts with context injection, every file write is gated by branch protection and test status, every commit requires approval, every session ends with a structured summary and forward momentum.
-
-This system is opinionated. That's the point. The opinions are:
-- Plans before code. Always.
-- Main is never touched during development. Never.
-- Tests pass before you can commit. No exceptions.
-- Decisions are captured where they're made, in the code, not in separate documents.
-- Hooks enforce what instructions suggest.
-
-If you disagree with an opinion, change the hook that enforces it. The architecture makes that straightforward.
+If you disagree with an opinion, change the hook that enforces it.
 
 ---
 
-## Who This Is For
+## What Makes This Different
 
-- **Solo developers** who want guardrails against their own shortcuts — you know you shouldn't commit to main at 2am, but you will unless something stops you
-- **Teams standardizing Claude Code** across developers — same hooks, same practices, same enforcement regardless of who's running the session
-- **Anyone burned by Claude Code defaults** — it committed untested code to main, it force-pushed, it started building before understanding the requirement, and you lost an afternoon cleaning up
+Most Claude Code configurations rely on indeterministic instructions in CLAUDE.md — guidance that works well in the beginning but degrades as the context window fills up or compaction throws us off a cliff. This system puts enforcement in **deterministic hooks**: shell scripts that run before and after events, regardless of context fatigue and whose outputs persist beyond session clearing.
 
-## How It Compares
-
-| | **claude-system** | everything-claude-code | claude-code-showcase | hooks-mastery | claude-pipeline |
-|---|---|---|---|---|---|
-| **Approach** | Deterministic hook enforcement | Broad toolkit (agents + commands + skills) | Config showcase + GH Actions | Educational hook demos | Quality gates + role agents |
-| **Hook count** | 24 + 2 shared libs | Prompt-based | Varies | ~10 demo hooks | 2 hooks |
-| **Enforcement** | Mechanical (hooks run regardless of context) | Instruction-based (degrades with context) | Instruction-based | N/A (educational) | Partial (2 hooks) |
-| **Plan enforcement** | Hard gate — no code without MASTER_PLAN.md | Optional | No | No | No |
-| **Test gating** | Escalating — warn then block; commit requires evidence | Optional | No | No | Yes |
-| **Branch protection** | Hard deny writes on main at tool level | Instructions only | No | No | No |
-| **Mock detection** | Escalating — warns then blocks internal mocks | No | No | No | No |
-| **Agent model** | 3 agents (Planner/Implementer/Guardian) | 12+ agents | Flexible | N/A | Role-based |
-| **Decision tracking** | @decision annotations enforced by hooks | No | No | No | No |
-| **Best for** | Disciplined SDLC enforcement | Breadth of capabilities | Flexibility & templates | Learning hooks | Lightweight gates |
-
-This system is narrower but deeper than the alternatives. It doesn't try to be everything — it enforces a specific engineering workflow at the mechanical level.
+| Capability | How It's Enforced |
+|---|---|
+| **Plan-first development** | `plan-check.sh` hard-denies source writes without MASTER_PLAN.md |
+| **Branch protection** | `branch-guard.sh` blocks source writes on main at the tool level, not just at commit time |
+| **Test gating** | `test-gate.sh` escalates (warn → block); `guard.sh` requires test evidence for commits |
+| **Mock discipline** | `mock-gate.sh` detects internal mocks, warns first, blocks on repeat |
+| **Safe rewrites** | `guard.sh` transparently rewrites `/tmp/` → project `tmp/`, `--force` → `--force-with-lease` |
+| **Decision tracking** | `doc-gate.sh` enforces @decision annotations; `surface.sh` audits coverage |
+| **Agent separation** | Planner, Implementer, Guardian — each owns a phase, none overlap |
+| **Session continuity** | Context injected at start, preserved at compaction, summarized at end |
 
 ---
 
 ## How It Works
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  CORE DOGMA: We NEVER run straight into implementing.        │
-│  Plan first. Isolate work. Test everything. Get approval.    │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  The model doesn't decide the workflow. The hooks do.              │
+│  Plan first. Segment and isolate. Test everything. Get approval.   │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Agent Workflow
@@ -154,9 +139,9 @@ Each agent handles its own approval cycle: present the work, wait for approval, 
 
 ## Sacred Practices
 
-Nine practices define how this system operates. Each one has mechanical enforcement — not just instructions that degrade with context, but hooks that execute every time.
+These are non-negotiable. Each one is enforced by hooks that run every time, regardless of context window state or model behavior. They are not suggestions.
 
-| # | Practice | Enforcement |
+| # | Practice | What Enforces It |
 |---|----------|-------------|
 | 1 | **Always Use Git** | `session-init.sh` injects git state; `guard.sh` blocks destructive operations |
 | 2 | **Main is Sacred** | `branch-guard.sh` blocks writes on main; `guard.sh` blocks commits on main |
@@ -221,13 +206,13 @@ Hooks within the same event run sequentially in array order. A deny from any Pre
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | Blocks `/tmp` writes, commits on main, force push, destructive git; rewrites to safe alternatives |
+| **guard.sh** | Bash | 8 checks: rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
-| **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files |
-| **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; bypasses small files and edits |
+| **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files; Write = hard deny, Edit = advisory; warns on new root-level markdown files (Sacred Practice #9) |
+| **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; composite staleness scoring (source churn % + decision drift) warns then blocks when plan diverges from code; bypasses Edit tool, small writes (<20 lines), non-git dirs |
 
 ### PostToolUse — Feedback After Execution
 
@@ -275,13 +260,63 @@ Hooks within the same event run sequentially in array order. A deny from any Pre
 
 ### Key guard.sh Behaviors
 
-Three checks use transparent rewrites — the model's command is silently replaced with a safe alternative:
+The most complex hook — 8 checks covering 3 rewrites, 3 hard blocks, and 2 evidence gates.
 
-1. `/tmp/` paths → project `tmp/` directory
-2. `--force` → `--force-with-lease`
-3. `git worktree remove` → prepends `cd` to main worktree first
+**Transparent rewrites** (model's command silently replaced with safe alternative):
 
-Commits and merges require a `.test-status` file showing `pass`. A pass of any age satisfies the gate; any non-pass status or missing file = denied.
+| Check | Trigger | Rewrite |
+|-------|---------|---------|
+| 1 | `/tmp/` or `/private/tmp/` write | → project `tmp/` directory (macOS symlink-aware; exempts Claude scratchpad) |
+| 3 | `git push --force` (not to main) | → `--force-with-lease` |
+| 5 | `git worktree remove` | → prepends `cd` to main worktree (prevents CWD death spiral) |
+
+**Hard blocks** (deny with explanation):
+
+| Check | Trigger | Why |
+|-------|---------|-----|
+| 2 | `git commit` on main/master | Sacred Practice #2 (exempts `~/.claude` meta-repo and MASTER_PLAN.md-only commits) |
+| 3 | `git push --force` to main/master | Destructive to shared history |
+| 4 | `git reset --hard`, `git clean -f`, `git branch -D` | Destructive operations — suggests safe alternatives |
+
+**Evidence gates** (require proof before commit/merge):
+
+| Check | Requires | State File | Exemption |
+|-------|----------|------------|-----------|
+| 6-7 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
+| 8 | `.proof-status` = `verified` | `.claude/.proof-status` (format: `status\|timestamp`) | `~/.claude` meta-repo |
+
+Test evidence: a pass of any age satisfies the gate. A `fail` within 10 minutes, any non-pass status, or missing file = denied.
+
+Proof-of-work: the user must see the feature work before code is committed. `track.sh` resets proof status to `pending` when source files change after verification — ensuring the user always verifies the final state.
+
+### Key plan-check.sh Behaviors
+
+Beyond checking for MASTER_PLAN.md existence, this hook scores plan staleness using two signals:
+
+| Signal | What It Measures | Warn Threshold | Deny Threshold |
+|--------|-----------------|----------------|----------------|
+| **Source churn %** | Percentage of tracked source files changed since plan update | 15% | 35% |
+| **Decision drift** | Count of unplanned + unimplemented @decision IDs (from `surface.sh` audit) | 2 IDs | 5 IDs |
+
+The composite score takes the worst tier across both signals. If either hits deny threshold, writes are blocked until the plan is updated. This is self-normalizing — a 3-file project and a 300-file project both trigger at the same percentage.
+
+**Bypasses:** Edit tool (inherently scoped), Write under 20 lines (trivial), non-source files, test files, non-git directories, `~/.claude` meta-infrastructure.
+
+### Key auto-review.sh Behaviors
+
+An 840-line policy engine that replaces the blunt "allow or ask" permission model with intelligent classification:
+
+| Tier | Behavior | How It Decides |
+|------|----------|---------------|
+| **1 — Safe** | Auto-approve | Command is inherently read-only: `ls`, `cat`, `grep`, `cd`, `echo`, `sort`, `wc`, `date`, etc. |
+| **2 — Behavior-dependent** | Analyze subcommand + flags | `git status` ✅ auto-approve; `git rebase` ⚠️ advisory. Compound commands (`&&`, `\|\|`, `;`, `\|`) decomposed — every segment must be safe |
+| **3 — Always risky** | Advisory context → defer to user | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` — risk reason injected so the permission prompt explains *why* |
+
+**Recursive analysis:** Command substitutions (`$()` and backticks) are analyzed to depth 2. `cd $(git rev-parse --show-toplevel)` auto-approves because both `cd` (Tier 1) and `git rev-parse` (Tier 2 → read-only) are safe.
+
+**Dangerous flag escalation:** `--force`, `--hard`, `--no-verify`, `-f` (on git) escalate any command to risky regardless of tier.
+
+**Interaction with guard.sh:** Guard runs first (sequential in settings.json). If guard denies, auto-review never executes. If guard allows/passes through, auto-review classifies. This means guard handles the hard security boundaries, auto-review handles the UX of permission prompts.
 
 ---
 
@@ -291,7 +326,7 @@ The `@decision` annotation creates a bidirectional mapping between MASTER_PLAN.m
 
 `doc-gate.sh` enforces that files over 50 lines include @decision annotations. `surface.sh` audits decision coverage at session end.
 
-**TypeScript/JavaScript:**
+**TypeScript/JavaScript** (detected by `@decision`):
 ```typescript
 /**
  * @decision DEC-AUTH-001
@@ -301,15 +336,17 @@ The `@decision` annotation creates a bidirectional mapping between MASTER_PLAN.m
  */
 ```
 
-**Python/Shell:**
+**Python/Shell** (detected by `# DECISION:`):
 ```python
-# DECISION: Use PKCE for mobile OAuth. Rationale: Cannot store secrets. Status: accepted.
+# DECISION: DEC-AUTH-001 — Use PKCE for mobile OAuth. Rationale: Cannot store secrets. Status: accepted.
 ```
 
-**Go/Rust:**
+**Go/Rust/C** (detected by `// DECISION:`):
 ```go
-// DECISION(DEC-AUTH-001): Use PKCE for mobile OAuth. Rationale: Cannot store secrets.
+// DECISION: DEC-AUTH-001 — Use PKCE for mobile OAuth. Rationale: Cannot store secrets.
 ```
+
+Detection regex in `doc-gate.sh`: `@decision|# DECISION:|// DECISION:` — all three patterns are matched.
 
 ---
 
@@ -454,76 +491,6 @@ Try writing a file to `/tmp/test.txt` — `guard.sh` should rewrite it to `tmp/t
 | Session end | Just stops | Decision audit + session summary + forward momentum check |
 | Commits | Executes on request | Requires approval via Guardian agent; test evidence required |
 | Code review | None | Suggested on significant file writes (when Multi-MCP available) |
-
----
-
-## Directory Structure
-
-```
-~/.claude/
-├── CLAUDE.md                     # Workflow rules, dispatch table, sacred practices
-├── README.md                     # This guide
-├── settings.json                 # Hook registrations, permissions — universal (tracked)
-├── settings.local.json           # Machine-specific overrides (gitignored)
-├── settings.local.example.json   # Template for local overrides (tracked)
-├── .gitmodules                   # Submodule references (last30days)
-│
-├── hooks/                        # Deterministic enforcement (24 hooks + 2 libraries)
-│   ├── HOOKS.md                  # Hook protocol reference and full catalog
-│   ├── log.sh                    # Shared: structured logging, stdin caching
-│   ├── context-lib.sh            # Shared: git/plan state, source file detection
-│   ├── guard.sh                  # PreToolUse(Bash): sacred practice guardrails + rewrites
-│   ├── auto-review.sh            # PreToolUse(Bash): intelligent command auto-approval
-│   ├── test-gate.sh              # PreToolUse(Write|Edit): test-passing gate
-│   ├── mock-gate.sh              # PreToolUse(Write|Edit): internal mock detection
-│   ├── branch-guard.sh           # PreToolUse(Write|Edit): main branch protection
-│   ├── doc-gate.sh               # PreToolUse(Write|Edit): documentation enforcement
-│   ├── plan-check.sh             # PreToolUse(Write|Edit): plan-first warning
-│   ├── lint.sh                   # PostToolUse(Write|Edit): auto-detect linter
-│   ├── track.sh                  # PostToolUse(Write|Edit): change tracking
-│   ├── code-review.sh            # PostToolUse(Write|Edit): code review integration
-│   ├── plan-validate.sh          # PostToolUse(Write|Edit): plan alignment check
-│   ├── test-runner.sh            # PostToolUse(Write|Edit): async test execution
-│   ├── session-init.sh           # SessionStart: project context injection
-│   ├── prompt-submit.sh          # UserPromptSubmit: per-prompt context
-│   ├── compact-preserve.sh       # PreCompact: context preservation
-│   ├── session-end.sh            # SessionEnd: cleanup
-│   ├── surface.sh                # Stop: decision audit
-│   ├── session-summary.sh        # Stop: session summary
-│   ├── forward-motion.sh         # Stop: forward momentum check
-│   ├── notify.sh                 # Notification: desktop alerts (macOS)
-│   ├── subagent-start.sh         # SubagentStart: context injection
-│   ├── check-planner.sh          # SubagentStop: planner validation
-│   ├── check-implementer.sh      # SubagentStop: implementer validation
-│   └── check-guardian.sh         # SubagentStop: guardian validation
-│
-├── agents/                       # Specialized agent definitions
-│   ├── planner.md                # Core Dogma: plan before implement
-│   ├── implementer.md            # Test-first in isolated worktrees
-│   └── guardian.md               # Protect repository integrity
-│
-├── skills/                       # Non-deterministic intelligence
-│   ├── context-preservation/     # Survive compaction
-│   ├── deep-research/            # Multi-model research (OpenAI + Perplexity + Gemini)
-│   └── last30days/               # Recent web discussions (submodule)
-│
-├── commands/                     # User-invoked slash commands
-│   ├── compact.md                # /compact — context preservation
-│   └── backlog.md                # /backlog — unified backlog management (GitHub Issues)
-│
-├── scripts/                      # Backend scripts for commands and hooks
-│   ├── todo.sh                   # GitHub Issue management backend for /backlog
-│   ├── statusline.sh             # Status line with git state and todo HUD
-│   └── lib/
-│       └── keychain.py           # Centralized API key management
-│
-├── docs/                         # Design documentation
-│   ├── context-management-sota-2026.md
-│   └── team-walkthrough-presentation.md
-│
-└── templates/                    # Templates for generated output
-    └── knowledge-kit-template.md
-```
 
 ---
 
