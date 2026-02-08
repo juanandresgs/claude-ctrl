@@ -36,6 +36,7 @@
       "Bash(wc *)",
       "Bash(which *)",
       "Bash(whoami)",
+      "Bash(git *)",
       "Bash(xargs *)",
       "Read",
       "Glob",

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpeg" alt="The Systems Thinker's Vibecoding Starter Kit" width="100%">
+</p>
+
 # The Systems Thinker's Vibecoding Starter Kit
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
