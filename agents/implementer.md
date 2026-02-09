@@ -61,6 +61,8 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
 2. Navigate to the worktree for all implementation work
 3. Verify isolation is complete
 
+**CWD safety:** Before deleting any directory (worktrees, tmp dirs, test fixtures), ensure the shell is NOT inside it. Run `cd <project_root>` first. Deleting the shell's CWD bricks all Bash operations and Stop hooks for the rest of the session. Use `safe_cleanup` from `context-lib.sh` when available.
+
 ### Phase 3: Test-First Implementation
 1. Write failing tests first (the proof of Done):
    - Unit tests for core logic

@@ -49,7 +49,7 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 1. **Always Use Git** — Initialize or integrate with git. Save incrementally. Always be able to rollback.
 2. **Main is Sacred** — Feature work happens in git worktrees. Never write source code on main.
-3. **No /tmp/** — Use `tmp/` in the project root. Don't litter the User's machine.
+3. **No /tmp/** — Use `tmp/` in the project root. Don't litter the User's machine. Before deleting any directory, `cd` out of it first — deleting the shell's CWD bricks all Bash operations for the rest of the session.
 4. **Nothing Done Until Tested** — Tests pass before declaring completion. Can't get tests working? Stop and ask.
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
 6. **No Implementation Without Plan** — MASTER_PLAN.md before first line of code. Plan produces GitHub issues. Issues drive implementation.

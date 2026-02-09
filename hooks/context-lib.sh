@@ -169,6 +169,20 @@ is_skippable_path() {
     return 1
 }
 
+# --- Safe directory cleanup ---
+# Prevents CWD-deletion bug: if the shell's CWD is inside the target,
+# posix_spawn fails with ENOENT for all subsequent commands (including
+# Stop hooks). Always cd out before deleting.
+# Usage: safe_cleanup "/path/to/delete" "$PROJECT_ROOT"
+safe_cleanup() {
+    local target="$1"
+    local fallback="${2:-$HOME}"
+    if [[ "$PWD" == "$target"* ]]; then
+        cd "$fallback" || cd "$HOME" || cd /
+    fi
+    rm -rf "$target"
+}
+
 # --- Audit trail ---
 append_audit() {
     local root="$1" event="$2" detail="$3"
@@ -299,4 +313,4 @@ get_subagent_status() {
 
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup
