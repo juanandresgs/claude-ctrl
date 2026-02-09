@@ -1,0 +1,6 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "node -e \"console.log('hello')\""
+  }
+}

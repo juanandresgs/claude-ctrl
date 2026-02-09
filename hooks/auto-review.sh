@@ -404,7 +404,7 @@ analyze_tier2() {
         brew)       analyze_brew "$args" ;;
         tar|gzip|gunzip|zip|unzip|bzip2|xz) return 0 ;; # Archive tools — safe
         open|xdg-open) return 0 ;; # Opener — safe
-        python|python3|node|ruby|perl) return 0 ;; # Script exec — allow
+        python|python3|node|ruby|perl) analyze_interpreter "$cmd" "$args" ;;
         tee)        analyze_path_target "tee" "$args" ;;
         jq|yq)      return 0 ;; # JSON/YAML processor — safe
         gh)         analyze_gh "$args" ;;
@@ -826,6 +826,46 @@ analyze_gh() {
             set_risk "gh $subcmd — unknown subcommand, cannot assess safety"
             return 1
             ;;
+    esac
+}
+
+# ── Interpreter analyzer ──
+# python/node/ruby/perl with script files or -m = safe; -c/-e (inline code) = risky
+analyze_interpreter() {
+    local cmd="$1"
+    local args="$2"
+
+    # No arguments = interactive REPL — risky
+    [[ -z "$args" ]] && {
+        set_risk "'$cmd' with no arguments — interactive REPL session"
+        return 1
+    }
+
+    # Extract first argument (flag or script path)
+    local first_arg
+    first_arg=$(echo "$args" | awk '{print $1}')
+
+    case "$first_arg" in
+        # Dangerous: inline code execution
+        -c)
+            set_risk "'$cmd -c' executes inline code — cannot statically verify"
+            return 1 ;;
+        -e)
+            set_risk "'$cmd -e' executes inline code — cannot statically verify"
+            return 1 ;;
+        # Safe: module execution (python -m pytest, python -m pip, etc.)
+        -m)
+            return 0 ;;
+        # Safe flags: version, help
+        --version|--help|-V|-h)
+            return 0 ;;
+        # Unknown flags — defer to user
+        -*)
+            set_risk "'$cmd' with unknown flag '$first_arg' — cannot assess safety"
+            return 1 ;;
+        # Script path — running a file is safe
+        *)
+            return 0 ;;
     esac
 }
 

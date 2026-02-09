@@ -280,6 +280,56 @@ if [[ -f "$FIXTURES_DIR/auto-review-safe.json" ]]; then
     fi
 fi
 
+# --- Test: auto-review.sh — interpreter analyzer ---
+echo "--- auto-review.sh interpreter analyzer ---"
+
+# Helper: assert auto-review approves a command
+auto_review_assert_approved() {
+    local fixture="$1" label="$2"
+    if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
+        local output decision
+        output=$(run_hook "$HOOKS_DIR/auto-review.sh" "$FIXTURES_DIR/$fixture")
+        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+        if [[ "$decision" == "allow" ]]; then
+            pass "auto-review.sh — $label"
+        else
+            fail "auto-review.sh — $label" "expected allow, got: ${decision:-no opinion (advisory/defer)}"
+        fi
+    else
+        skip "auto-review.sh — $label" "fixture $fixture not found"
+    fi
+}
+
+# Helper: assert auto-review does NOT approve (defers to user)
+auto_review_assert_deferred() {
+    local fixture="$1" label="$2"
+    if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
+        local output decision
+        output=$(run_hook "$HOOKS_DIR/auto-review.sh" "$FIXTURES_DIR/$fixture")
+        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+        if [[ "$decision" == "allow" ]]; then
+            fail "auto-review.sh — $label" "should NOT auto-approve but got allow"
+        else
+            pass "auto-review.sh — $label"
+        fi
+    else
+        skip "auto-review.sh — $label" "fixture $fixture not found"
+    fi
+}
+
+# Interpreter: safe forms (script files, -m module)
+auto_review_assert_approved "auto-review-python-script.json" "python3 script.py → approved (safe)"
+auto_review_assert_approved "auto-review-python-module.json" "python3 -m pytest → approved (safe)"
+auto_review_assert_approved "auto-review-node-script.json"   "node app.js → approved (safe)"
+
+# Interpreter: risky forms (inline code, interactive REPL)
+auto_review_assert_deferred "auto-review-python-inline.json" "python3 -c \"...\" → deferred (inline code)"
+auto_review_assert_deferred "auto-review-python-repl.json"   "python3 (no args) → deferred (interactive REPL)"
+auto_review_assert_deferred "auto-review-node-inline.json"   "node -e \"...\" → deferred (inline code)"
+
+# Shell: existing analyzer (regression tests)
+auto_review_assert_approved "auto-review-bash-script.json"   "bash script.sh → approved (safe)"
+auto_review_assert_deferred "auto-review-bash-inline.json"   "bash -c \"...\" → deferred (inline code)"
 echo ""
 
 # --- Test: plan-validate.sh (PostToolUse) ---

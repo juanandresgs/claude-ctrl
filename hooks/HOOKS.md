@@ -293,7 +293,11 @@ An 840-line policy engine that replaces the blunt "allow or ask" permission mode
 
 **Dangerous flag escalation:** `--force`, `--hard`, `--no-verify`, `-f` (on git) escalate any command to risky regardless of tier.
 
+**Interpreter analysis:** `python`, `node`, `ruby`, `perl` dispatch to `analyze_interpreter()` which distinguishes safe forms (script files, `-m module`, `--version`) from risky forms (`-c`/`-e` inline code, no-args interactive REPL). This mirrors the existing `analyze_shell()` pattern for `bash`/`sh`/`zsh`.
+
 **Interaction with guard.sh:** Guard runs first (sequential in settings.json). If guard denies, auto-review never executes. If guard allows/passes through, auto-review classifies. This means guard handles the hard security boundaries, auto-review handles the UX of permission prompts.
+
+**Permission evaluation order:** Hooks fire before the settings.json allow/deny lists. The full chain is: (1) PreToolUse hooks fire (guard.sh → auto-review.sh); (2) if a hook emits `permissionDecision: allow` → command proceeds with no prompt; (3) if a hook emits `permissionDecision: deny` → command blocked; (4) if no hook has an opinion → fall through to settings.json deny/allow rules; (5) if no rule matches → fall through to the permission mode (plan, default, etc.). This means most `Bash(echo *)`, `Bash(cat *)` entries in the settings.json allow list are redundant — auto-review.sh approves them as Tier 1 before the allow list is ever consulted.
 
 **Git commit/push/merge reclassification:** These are classified as risky (return 1) rather than safe. This ensures every `git commit`, `git push`, and `git merge` triggers a user permission prompt, enforcing Guardian agent dispatch (Sacred Practice #8). Trade-off: Guardian's own git calls also trigger the prompt, meaning the user approves twice (Guardian plan + actual command). Acceptable — one extra click for mechanical enforcement.
 
