@@ -253,11 +253,18 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
 fi
 
 # --- Helper: check if repo is the ~/.claude meta-infrastructure repo ---
+# Uses --git-common-dir so worktrees of ~/.claude (e.g., claude-prd-integration)
+# are correctly recognized as meta-repo. Fixes #29.
 is_claude_meta_repo() {
     local dir="$1"
-    local repo_root
-    repo_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo "")
-    [[ "$repo_root" == */.claude ]]
+    local common_dir
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || echo "")
+    # Resolve to absolute if relative
+    if [[ -n "$common_dir" && "$common_dir" != /* ]]; then
+        common_dir=$(cd "$dir" && cd "$common_dir" && pwd)
+    fi
+    # common_dir for ~/.claude is ~/.claude/.git (strip trailing /.git)
+    [[ "${common_dir%/.git}" == */.claude ]]
 }
 
 # --- Check 6: Test status gate for merge commands ---
