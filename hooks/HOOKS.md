@@ -134,7 +134,6 @@ UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
 PreToolUse:Bash → guard.sh (sacred practice guardrails + rewrites)
                    auto-review.sh (intelligent command auto-approval)
-                   llm-review.sh (external LLM semantic review — Gemini + OpenAI)
 PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
                     ↓
 [Tool executes]
@@ -163,7 +162,6 @@ Hooks within the same event run **sequentially** in array order from settings.js
 |------|---------|--------------|
 | **guard.sh** | Bash | 9 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges. All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user. `git commit/push/merge` classified as risky (requires Guardian dispatch per Sacred Practice #8) |
-| **llm-review.sh** | Bash | External LLM semantic reviewer: calls Gemini/OpenAI to analyze commands auto-review couldn't classify. Safe = auto-approve, unsafe = deny (requires dual-provider consensus), misaligned = advisory nudge |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
@@ -301,37 +299,6 @@ An 840-line policy engine that replaces the blunt "allow or ask" permission mode
 
 ---
 
-## Key llm-review.sh Behaviors
-
-Third layer in the PreToolUse:Bash chain. Only fires for commands that auto-review.sh couldn't classify (emitted `additionalContext` advisory instead of `permissionDecision: allow`).
-
-**Three-layer chain:** `guard.sh → auto-review.sh → llm-review.sh`
-
-| Verdict | Action | Example |
-|---------|--------|---------|
-| Safe + aligned | Auto-approve silently | `mkdir -p tmp && todo.sh list > tmp/out.json` |
-| Unsafe | Deny with dual-provider reasoning | `python -c "import os; os.system('rm -rf /')"` |
-| Safe but misaligned | Advisory nudge (no blocking) | `npm publish` during a testing phase |
-
-**Dual-provider consensus for deny:** A single model cannot deny. Unsafe verdict from primary reviewer (Gemini) auto-escalates to OpenAI for second opinion. Both must agree for deny. Disagreement = advisory with both perspectives.
-
-**Providers:**
-
-| Provider | Role | Timeout | Model |
-|----------|------|---------|-------|
-| Gemini Flash | Primary reviewer (fast pass) | 3s | `$LLM_REVIEW_GEMINI_MODEL` (default: `gemini-2.0-flash`) |
-| OpenAI Mini | Second opinion (unsafe escalation only) | 5s | `$LLM_REVIEW_OPENAI_MODEL` (default: `gpt-4o-mini`) |
-
-**Fallback cascade:** Both keys → full two-provider flow. One key → single reviewer, unsafe = advisory only (can't deny alone). No keys → silent exit. Provider failure → try other provider or downgrade to advisory. Both fail → silent exit.
-
-**Caching:** SHA-256 of command string → `$PROJECT_ROOT/.claude/.llm-review-cache`. Session-scoped (cleared by session-init.sh). Format: `hash|verdict|reason|epoch`.
-
-**Configuration:** `LLM_REVIEW_ENABLED=0` disables entirely. API keys loaded from env vars or `~/.claude/.env`.
-
-**No-recursion guarantee:** Hook scripts run as bash subprocesses. The `curl` calls are HTTP requests that do not flow through the PreToolUse hook chain.
-
----
-
 ## Enforcement Patterns
 
 Three patterns recur across the hook system:
@@ -373,7 +340,6 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | `.mock-gate-strikes` | mock-gate.sh | mock-gate.sh | Strike count for escalating enforcement |
 | `.test-runner.lock` | test-runner.sh | test-runner.sh | PID of active test process (prevents concurrent runs) |
 | `.test-runner.last-run` | test-runner.sh | test-runner.sh | Epoch timestamp of last run (10s cooldown) |
-| `.llm-review-cache` | llm-review.sh | llm-review.sh | `hash\|verdict\|reason\|epoch` — SHA-256 keyed cache of LLM verdicts, cleared on session start |
 | `.update-status` | update-check.sh | session-init.sh | `status\|local_ver\|remote_ver\|count\|timestamp\|summary` — one-shot, deleted after injection |
 | `.update-check.lock` | update-check.sh | update-check.sh | PID of running update check (prevents concurrent runs) |
 
