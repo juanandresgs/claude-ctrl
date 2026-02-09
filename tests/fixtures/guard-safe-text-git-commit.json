@@ -1,0 +1,6 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "bash todo.sh add --config \"fix the out of repo git committing to allow subdirectories\""
+  }
+}

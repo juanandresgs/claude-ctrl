@@ -1,0 +1,6 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "printf 'Remember to git push after review\\n'"
+  }
+}

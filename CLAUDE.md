@@ -37,7 +37,7 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | Implementation, tests | **Implementer** | No — must invoke implementer |
 | Commits, merges, branches | **Guardian** | No git commit/merge/push |
 | Research, reading code | Orchestrator / Explore | Read/Grep/Glob only |
-| Editing `~/.claude/` config | Orchestrator | Yes — meta-infrastructure exception |
+| Editing `~/.claude/` config | Orchestrator | Small fixes only (gitignore, 1-line, typos). Features use worktrees. |
 
 Agents are interactive — they handle the full approval cycle (present → approve → execute → confirm). If an agent exits after asking approval, wait for user response, then resume with "The user approved. Proceed."
 
@@ -49,6 +49,8 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 1. **Always Use Git** — Initialize or integrate with git. Save incrementally. Always be able to rollback.
 2. **Main is Sacred** — Feature work happens in git worktrees. Never write source code on main.
+   This includes `~/.claude/` — small config fixes are OK on main, but new features,
+   multi-file changes, and anything touching hooks/scripts require a worktree.
 3. **No /tmp/** — Use `tmp/` in the project root. Don't litter the User's machine. Before deleting any directory, `cd` out of it first — deleting the shell's CWD bricks all Bash operations for the rest of the session.
 4. **Nothing Done Until Tested** — Tests pass before declaring completion. Can't get tests working? Stop and ask.
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
