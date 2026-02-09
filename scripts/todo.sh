@@ -11,12 +11,16 @@
 # Flat files are invisible, easy to lose, and lack timestamps. Status: accepted.
 #
 # Commands:
-#   add "title" [--global] [--priority=high|medium|low] [--body="details"]
-#   list [--project|--global|--all] [--json]
-#   done <issue-number> [--global|--repo=owner/repo]
+#   add "title" [--global|--config] [--priority=high|medium|low] [--body="details"]
+#   list [--project|--global|--config|--all] [--json] [--grouped]
+#   done <issue-number> [--global|--config|--repo=owner/repo]
 #   stale [--days=14]
-#   count [--project|--global|--all]
-#   claim <issue-number> [--global] [--auto]
+#   count [--project|--global|--config|--all]
+#   group <component> <issue-numbers...> [--global|--config]
+#   ungroup <component> <issue-numbers...> [--global|--config]
+#   attach <issue-number> <image-path> [--global|--config] [--gist]
+#   images <issue-number> [--global|--config]
+#   claim <issue-number> [--global|--config] [--auto]
 #   unclaim [--session=ID]
 #   active [--json]
 #
@@ -28,8 +32,13 @@ STALE_DAYS=14
 CONFIG_DIR="$HOME/.config/cc-todos"
 CONFIG_FILE="$CONFIG_DIR/config"
 CLAIMS_FILE="$CONFIG_DIR/active-claims.tsv"
+TODO_IMAGES_DIR="$HOME/.claude/todo-images"
 
 # --- Bootstrap ---
+
+# @decision CONFIG_REPO derived from ~/.claude git remote rather than hardcoded.
+# Rationale: follows the same dynamic-detection pattern as GLOBAL_REPO. If the user
+# forks or moves the harness repo, it auto-adapts. Status: accepted.
 
 require_gh() {
     if ! command -v gh >/dev/null 2>&1; then
@@ -73,6 +82,37 @@ CONF
 
     echo "Auto-detected GitHub user: $username" >&2
     echo "Cached global repo: $GLOBAL_REPO → $CONFIG_FILE" >&2
+}
+
+resolve_config_repo() {
+    # Fast path: cached value
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        if [[ -n "${CONFIG_REPO:-}" ]]; then
+            return 0
+        fi
+    fi
+
+    # Slow path: derive from ~/.claude git remote
+    local remote_url
+    remote_url=$(git -C "$HOME/.claude" remote get-url origin 2>/dev/null) || {
+        echo "WARNING: ~/.claude has no git remote. Cannot resolve config repo." >&2
+        CONFIG_REPO=""
+        return 1
+    }
+
+    # Parse owner/repo from SSH or HTTPS URL
+    CONFIG_REPO=$(echo "$remote_url" | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')
+
+    # Append to existing config file
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo "CONFIG_REPO=$CONFIG_REPO" >> "$CONFIG_FILE"
+    else
+        mkdir -p "$CONFIG_DIR"
+        echo "CONFIG_REPO=$CONFIG_REPO" >> "$CONFIG_FILE"
+    fi
+
+    echo "Auto-detected config repo: $CONFIG_REPO → $CONFIG_FILE" >&2
 }
 
 # --- Cache ---
@@ -127,6 +167,61 @@ ensure_priority_label() {
         $repo_flag 2>/dev/null || true
 }
 
+ensure_component_label() {
+    local component="$1"
+    local repo="${2:-}"
+    local repo_flag=""
+    [[ -n "$repo" ]] && repo_flag="--repo $repo"
+
+    gh label create "component:$component" \
+        --description "Component: $component" \
+        --color "5319e7" \
+        $repo_flag 2>/dev/null || true
+}
+
+# --- Image helpers ---
+
+save_image() {
+    local image_path="$1"
+    local repo_slug="$2"
+    local issue_number="$3"
+
+    if [[ ! -f "$image_path" ]]; then
+        echo "ERROR: Image not found: $image_path" >&2
+        return 1
+    fi
+
+    local dest_dir="$TODO_IMAGES_DIR/${repo_slug}/${issue_number}"
+    mkdir -p "$dest_dir"
+
+    local filename
+    filename="$(date '+%s')-$(basename "$image_path")"
+    cp "$image_path" "$dest_dir/$filename"
+
+    echo "$dest_dir/$filename"
+}
+
+upload_image_gist() {
+    local image_path="$1"
+    local description="${2:-Todo image attachment}"
+
+    local gist_url
+    gist_url=$(gh gist create "$image_path" --desc "$description" 2>/dev/null) || {
+        echo "WARNING: Gist upload failed. Image saved locally only." >&2
+        return 1
+    }
+
+    # Convert gist URL to raw URL for markdown embedding
+    # gh gist create returns: https://gist.github.com/<user>/<id>
+    local gist_id
+    gist_id=$(basename "$gist_url")
+    local filename
+    filename=$(basename "$image_path")
+    local raw_url="https://gist.githubusercontent.com/raw/${gist_id}/${filename}"
+
+    echo "$raw_url"
+}
+
 ensure_global_repo() {
     # Check if global repo exists; if not, create it
     if ! gh repo view "$GLOBAL_REPO" >/dev/null 2>&1; then
@@ -147,6 +242,8 @@ cmd_add() {
     local scope="project"
     local priority=""
     local body="Captured via Claude Code /todo"
+    local image_path=""
+    local use_gist=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -154,11 +251,20 @@ cmd_add() {
             --global)
                 scope="global"
                 shift ;;
+            --config)
+                scope="config"
+                shift ;;
             --priority=*)
                 priority="${1#--priority=}"
                 shift ;;
             --body=*)
                 body="${1#--body=}"
+                shift ;;
+            --image=*)
+                image_path="${1#--image=}"
+                shift ;;
+            --gist)
+                use_gist=true
                 shift ;;
             *)
                 if [[ -z "$title" ]]; then
@@ -172,7 +278,7 @@ cmd_add() {
 
     if [[ -z "$title" ]]; then
         echo "ERROR: No todo title provided." >&2
-        echo "Usage: todo.sh add \"title\" [--global] [--priority=high|medium|low]" >&2
+        echo "Usage: todo.sh add \"title\" [--global|--config] [--priority=high|medium|low]" >&2
         exit 1
     fi
 
@@ -180,7 +286,15 @@ cmd_add() {
     local target_repo=""
     local repo_flag=""
 
-    if [[ "$scope" == "global" ]]; then
+    if [[ "$scope" == "config" ]]; then
+        if [[ -z "${CONFIG_REPO:-}" ]]; then
+            echo "ERROR: Config repo not resolved. Ensure ~/.claude has a git remote." >&2
+            exit 1
+        fi
+        target_repo="$CONFIG_REPO"
+        repo_flag="--repo $CONFIG_REPO"
+        body="$body (config)"
+    elif [[ "$scope" == "global" ]]; then
         ensure_global_repo
         target_repo="$GLOBAL_REPO"
         repo_flag="--repo $GLOBAL_REPO"
@@ -237,6 +351,31 @@ cmd_add() {
 
     echo "$result"
 
+    # Handle image attachment if provided
+    if [[ -n "$image_path" ]]; then
+        # Extract issue number from result URL (format: https://github.com/owner/repo/issues/N)
+        local new_issue_num
+        new_issue_num=$(echo "$result" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' | tail -1)
+        if [[ -n "$new_issue_num" ]]; then
+            local repo_slug="${target_repo//\//-}"
+            local saved
+            saved=$(save_image "$image_path" "$repo_slug" "$new_issue_num") || true
+            if [[ -n "${saved:-}" ]]; then
+                echo "Image saved: $saved"
+                local img_comment="**Attachment:** \`$(basename "$image_path")\`\nLocal: \`$saved\`"
+                if $use_gist; then
+                    local raw_url
+                    raw_url=$(upload_image_gist "$image_path" "Attachment for #${new_issue_num} in ${target_repo}") || true
+                    if [[ -n "${raw_url:-}" ]]; then
+                        img_comment="![attachment](${raw_url})\n\n${img_comment}\nGist: ${raw_url}"
+                        echo "Image uploaded: $raw_url"
+                    fi
+                fi
+                gh issue comment "$new_issue_num" --body "$(echo -e "$img_comment")" $repo_flag 2>/dev/null || true
+            fi
+        fi
+    fi
+
     # Increment cached todo count
     local cached=0
     [[ -f "$TODO_CACHE" ]] && cached=$(cat "$TODO_CACHE" 2>/dev/null || echo 0)
@@ -246,18 +385,22 @@ cmd_add() {
 cmd_list() {
     local scope="all"
     local json_output=false
+    local grouped=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --project) scope="project"; shift ;;
-            --global)  scope="global"; shift ;;
-            --all)     scope="all"; shift ;;
-            --json)    json_output=true; shift ;;
+            --project)  scope="project"; shift ;;
+            --global)   scope="global"; shift ;;
+            --config)   scope="config"; shift ;;
+            --all)      scope="all"; shift ;;
+            --json)     json_output=true; shift ;;
+            --grouped)  grouped=true; shift ;;
             *) shift ;;
         esac
     done
 
     local has_output=false
+    local all_issues="[]"
 
     # Project todos
     if [[ "$scope" == "project" || "$scope" == "all" ]]; then
@@ -278,7 +421,10 @@ cmd_list() {
 
                 if [[ "$count" -gt 0 ]]; then
                     has_output=true
-                    if $json_output; then
+                    if $grouped; then
+                        all_issues=$(echo "$all_issues" "$project_issues" | jq -s --arg repo "$repo_name" \
+                            '.[0] + [.[1][] | . + {_scope: "project", _repo: $repo}]')
+                    elif $json_output; then
                         echo "$project_issues" | jq --arg repo "$repo_name" '{repo: $repo, scope: "project", issues: .}'
                     else
                         echo "PROJECT [$repo_name] ($count open):"
@@ -306,7 +452,10 @@ cmd_list() {
 
             if [[ "$count" -gt 0 ]]; then
                 has_output=true
-                if $json_output; then
+                if $grouped; then
+                    all_issues=$(echo "$all_issues" "$global_issues" | jq -s --arg repo "$GLOBAL_REPO" \
+                        '.[0] + [.[1][] | . + {_scope: "global", _repo: $repo}]')
+                elif $json_output; then
                     echo "$global_issues" | jq --arg repo "$GLOBAL_REPO" '{repo: $repo, scope: "global", issues: .}'
                 else
                     echo "GLOBAL [$GLOBAL_REPO] ($count open):"
@@ -314,6 +463,54 @@ cmd_list() {
                 fi
             fi
         fi
+    fi
+
+    # Config todos
+    if [[ "$scope" == "config" || "$scope" == "all" ]]; then
+        if [[ -n "${CONFIG_REPO:-}" ]] && gh repo view "$CONFIG_REPO" >/dev/null 2>&1; then
+            local config_issues
+            config_issues=$(gh issue list \
+                --repo "$CONFIG_REPO" \
+                --label "$LABEL" \
+                --state open \
+                --limit 10 \
+                --json number,title,createdAt,labels \
+                2>/dev/null || echo "[]")
+
+            local count
+            count=$(echo "$config_issues" | jq 'length')
+
+            if [[ "$count" -gt 0 ]]; then
+                has_output=true
+                if $grouped; then
+                    all_issues=$(echo "$all_issues" "$config_issues" | jq -s --arg repo "$CONFIG_REPO" \
+                        '.[0] + [.[1][] | . + {_scope: "config", _repo: $repo}]')
+                elif $json_output; then
+                    echo "$config_issues" | jq --arg repo "$CONFIG_REPO" '{repo: $repo, scope: "config", issues: .}'
+                else
+                    echo "CONFIG [$CONFIG_REPO] ($count open):"
+                    echo "$config_issues" | jq -r '.[] | "  #\(.number) \(.title) (\(.createdAt | split("T")[0]))"'
+                fi
+            fi
+        fi
+    fi
+
+    # Grouped output: display issues grouped by component:* label
+    if $grouped && $has_output; then
+        echo "$all_issues" | jq -r '
+            [.[] | . + {
+                _component: (
+                    [.labels[].name | select(startswith("component:"))] | first // "ungrouped"
+                    | sub("^component:"; "")
+                )
+            }]
+            | group_by(._component)
+            | sort_by(.[0]._component)
+            | .[] | (
+                "[\(.[0]._component | ascii_upcase)] (\(length) issues):",
+                (.[] | "  #\(.number) \(.title) (\(.createdAt | split("T")[0])) [\(._scope)]")
+            )'
+        return
     fi
 
     if ! $has_output; then
@@ -330,6 +527,7 @@ cmd_done() {
         case "$1" in
             --repo=*) repo_flag="--repo ${1#--repo=}"; shift ;;
             --global) repo_flag="--repo $GLOBAL_REPO"; shift ;;
+            --config) repo_flag="--repo $CONFIG_REPO"; shift ;;
             *) shift ;;
         esac
     done
@@ -394,6 +592,20 @@ cmd_stale() {
         echo "$stale" | jq -r --arg cutoff "$cutoff_date" \
             '.[] | select(.createdAt < $cutoff) | "  #\(.number) \(.title) (\(.createdAt | split("T")[0])) [GLOBAL]"'
     fi
+
+    # Config stale
+    if [[ -n "${CONFIG_REPO:-}" ]] && gh repo view "$CONFIG_REPO" >/dev/null 2>&1; then
+        local stale
+        stale=$(gh issue list \
+            --repo "$CONFIG_REPO" \
+            --label "$LABEL" \
+            --state open \
+            --json number,title,createdAt \
+            2>/dev/null || echo "[]")
+
+        echo "$stale" | jq -r --arg cutoff "$cutoff_date" \
+            '.[] | select(.createdAt < $cutoff) | "  #\(.number) \(.title) (\(.createdAt | split("T")[0])) [CONFIG]"'
+    fi
 }
 
 cmd_count() {
@@ -403,6 +615,7 @@ cmd_count() {
         case "$1" in
             --project) scope="project"; shift ;;
             --global)  scope="global"; shift ;;
+            --config)  scope="config"; shift ;;
             --all)     scope="all"; shift ;;
             *) shift ;;
         esac
@@ -410,6 +623,7 @@ cmd_count() {
 
     local project_count=0
     local global_count=0
+    local config_count=0
     local stale_count=0
 
     local cutoff_date
@@ -462,8 +676,30 @@ cmd_count() {
         fi
     fi
 
+    # Config count
+    if [[ "$scope" == "config" || "$scope" == "all" ]]; then
+        if [[ -n "${CONFIG_REPO:-}" ]] && gh repo view "$CONFIG_REPO" >/dev/null 2>&1; then
+            local issues
+            issues=$(gh issue list \
+                --repo "$CONFIG_REPO" \
+                --label "$LABEL" \
+                --state open \
+                --json number,createdAt \
+                --limit 100 \
+                2>/dev/null || echo "[]")
+            config_count=$(echo "$issues" | jq 'length')
+
+            if [[ -n "$cutoff_date" ]]; then
+                local cs
+                cs=$(echo "$issues" | jq --arg cutoff "$cutoff_date" \
+                    '[.[] | select(.createdAt < $cutoff)] | length')
+                stale_count=$((stale_count + cs))
+            fi
+        fi
+    fi
+
     # Output as pipe-delimited for easy parsing by hooks
-    echo "${project_count}|${global_count}|${stale_count}"
+    echo "${project_count}|${global_count}|${config_count}|${stale_count}"
 }
 
 # --- HUD (formatted listing for hook injection) ---
@@ -500,6 +736,19 @@ cmd_hud() {
             if [[ "$count" -gt 0 ]]; then
                 scope="GLOBAL"
                 issues="$gj"
+            fi
+        fi
+    fi
+
+    if [[ -z "$scope" ]]; then
+        if [[ -n "${CONFIG_REPO:-}" ]] && gh repo view "$CONFIG_REPO" >/dev/null 2>&1; then
+            local cj
+            cj=$(gh issue list --repo "$CONFIG_REPO" --label "$LABEL" --state open \
+                --limit 10 --json number,title 2>/dev/null || echo "[]")
+            count=$(echo "$cj" | jq 'length')
+            if [[ "$count" -gt 0 ]]; then
+                scope="CONFIG"
+                issues="$cj"
             fi
         fi
     fi
@@ -543,6 +792,210 @@ cmd_hud() {
     fi
 }
 
+# --- Component grouping ---
+
+cmd_group() {
+    local component=""
+    local scope="project"
+    local issues=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --global) scope="global"; shift ;;
+            --config) scope="config"; shift ;;
+            *)
+                if [[ -z "$component" ]]; then
+                    component="$1"
+                else
+                    issues+=("${1#\#}")  # Strip leading # if present
+                fi
+                shift ;;
+        esac
+    done
+
+    if [[ -z "$component" || ${#issues[@]} -eq 0 ]]; then
+        echo "ERROR: Usage: todo.sh group <component> <issue-numbers...> [--global|--config]" >&2
+        exit 1
+    fi
+
+    local repo="" repo_flag=""
+    if [[ "$scope" == "config" ]]; then
+        repo="$CONFIG_REPO"; repo_flag="--repo $CONFIG_REPO"
+    elif [[ "$scope" == "global" ]]; then
+        repo="$GLOBAL_REPO"; repo_flag="--repo $GLOBAL_REPO"
+    elif is_git_repo; then
+        repo=$(get_repo_name)
+    fi
+    [[ -z "$repo" ]] && repo="$GLOBAL_REPO" && repo_flag="--repo $GLOBAL_REPO"
+
+    ensure_component_label "$component" "$repo"
+
+    for num in "${issues[@]}"; do
+        if gh issue edit "$num" --add-label "component:$component" $repo_flag >/dev/null 2>&1; then
+            echo "#${num} <- component:${component}"
+        else
+            echo "ERROR: Failed to label #${num}" >&2
+        fi
+    done
+}
+
+cmd_ungroup() {
+    local component=""
+    local scope="project"
+    local issues=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --global) scope="global"; shift ;;
+            --config) scope="config"; shift ;;
+            *)
+                if [[ -z "$component" ]]; then
+                    component="$1"
+                else
+                    issues+=("${1#\#}")
+                fi
+                shift ;;
+        esac
+    done
+
+    if [[ -z "$component" || ${#issues[@]} -eq 0 ]]; then
+        echo "ERROR: Usage: todo.sh ungroup <component> <issue-numbers...> [--global|--config]" >&2
+        exit 1
+    fi
+
+    local repo_flag=""
+    if [[ "$scope" == "config" ]]; then
+        repo_flag="--repo $CONFIG_REPO"
+    elif [[ "$scope" == "global" ]]; then
+        repo_flag="--repo $GLOBAL_REPO"
+    elif is_git_repo; then
+        : # no flag needed for current repo
+    else
+        repo_flag="--repo $GLOBAL_REPO"
+    fi
+
+    for num in "${issues[@]}"; do
+        if gh issue edit "$num" --remove-label "component:$component" $repo_flag >/dev/null 2>&1; then
+            echo "#${num} -x- component:${component}"
+        else
+            echo "ERROR: Failed to unlabel #${num}" >&2
+        fi
+    done
+}
+
+# --- Image attachments ---
+
+cmd_attach() {
+    local issue_number=""
+    local image_path=""
+    local scope="project"
+    local use_gist=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --global) scope="global"; shift ;;
+            --config) scope="config"; shift ;;
+            --gist)   use_gist=true; shift ;;
+            *)
+                if [[ -z "$issue_number" ]]; then
+                    issue_number="${1#\#}"
+                elif [[ -z "$image_path" ]]; then
+                    image_path="$1"
+                fi
+                shift ;;
+        esac
+    done
+
+    if [[ -z "$issue_number" || -z "$image_path" ]]; then
+        echo "ERROR: Usage: todo.sh attach <issue-number> <image-path> [--global|--config] [--gist]" >&2
+        exit 1
+    fi
+
+    local repo="" repo_flag=""
+    if [[ "$scope" == "config" ]]; then
+        repo="$CONFIG_REPO"; repo_flag="--repo $CONFIG_REPO"
+    elif [[ "$scope" == "global" ]]; then
+        repo="$GLOBAL_REPO"; repo_flag="--repo $GLOBAL_REPO"
+    elif is_git_repo; then
+        repo=$(get_repo_name)
+    fi
+    [[ -z "$repo" ]] && repo="$GLOBAL_REPO" && repo_flag="--repo $GLOBAL_REPO"
+
+    # Normalize repo slug for filesystem (owner/repo → owner-repo)
+    local repo_slug="${repo//\//-}"
+
+    # Save locally
+    local saved_path
+    saved_path=$(save_image "$image_path" "$repo_slug" "$issue_number") || exit 1
+    echo "Saved: $saved_path"
+
+    # Optionally upload to gist
+    local comment_body="**Attachment:** \`$(basename "$image_path")\`\nLocal: \`$saved_path\`"
+    if $use_gist; then
+        local raw_url
+        raw_url=$(upload_image_gist "$image_path" "Attachment for #${issue_number} in ${repo}") || true
+        if [[ -n "${raw_url:-}" ]]; then
+            comment_body="![attachment](${raw_url})\n\n${comment_body}\nGist: ${raw_url}"
+            echo "Uploaded: $raw_url"
+        fi
+    fi
+
+    # Add comment to issue with image reference
+    gh issue comment "$issue_number" --body "$(echo -e "$comment_body")" $repo_flag 2>&1
+}
+
+cmd_images() {
+    local issue_number=""
+    local scope="project"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --global) scope="global"; shift ;;
+            --config) scope="config"; shift ;;
+            *)
+                if [[ -z "$issue_number" ]]; then
+                    issue_number="${1#\#}"
+                fi
+                shift ;;
+        esac
+    done
+
+    if [[ -z "$issue_number" ]]; then
+        echo "ERROR: Usage: todo.sh images <issue-number> [--global|--config]" >&2
+        exit 1
+    fi
+
+    local repo=""
+    if [[ "$scope" == "config" ]]; then
+        repo="$CONFIG_REPO"
+    elif [[ "$scope" == "global" ]]; then
+        repo="$GLOBAL_REPO"
+    elif is_git_repo; then
+        repo=$(get_repo_name)
+    fi
+    [[ -z "$repo" ]] && repo="$GLOBAL_REPO"
+
+    local repo_slug="${repo//\//-}"
+    local img_dir="$TODO_IMAGES_DIR/${repo_slug}/${issue_number}"
+
+    if [[ ! -d "$img_dir" ]]; then
+        echo "No images for #${issue_number}."
+        return 0
+    fi
+
+    local count=0
+    echo "Images for #${issue_number} (${repo}):"
+    for f in "$img_dir"/*; do
+        [[ -f "$f" ]] || continue
+        echo "  $(basename "$f") — $f"
+        count=$((count + 1))
+    done
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "  (none)"
+    fi
+}
+
 # --- Active session tracking ---
 
 cmd_claim() {
@@ -553,6 +1006,7 @@ cmd_claim() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --global) scope="global"; shift ;;
+            --config) scope="config"; shift ;;
             --auto)   source="auto"; shift ;;
             *)
                 if [[ -z "$issue_number" ]]; then
@@ -564,12 +1018,14 @@ cmd_claim() {
 
     if [[ -z "$issue_number" ]]; then
         echo "ERROR: No issue number provided." >&2
-        echo "Usage: todo.sh claim <number> [--global] [--auto]" >&2
+        echo "Usage: todo.sh claim <number> [--global|--config] [--auto]" >&2
         exit 1
     fi
 
     local repo=""
-    if [[ "$scope" == "global" ]]; then
+    if [[ "$scope" == "config" ]]; then
+        repo="$CONFIG_REPO"
+    elif [[ "$scope" == "global" ]]; then
         repo="$GLOBAL_REPO"
     elif is_git_repo; then
         repo=$(get_repo_name)
@@ -596,6 +1052,19 @@ cmd_claim() {
         >> "$CLAIMS_FILE"
 
     echo "Claimed #${issue_number} (${repo}) [${source}]"
+
+    # Surface any attached images
+    local repo_slug="${repo//\//-}"
+    local img_dir="$TODO_IMAGES_DIR/${repo_slug}/${issue_number}"
+    if [[ -d "$img_dir" ]]; then
+        local img_count=0
+        for f in "$img_dir"/*; do
+            [[ -f "$f" ]] && img_count=$((img_count + 1))
+        done
+        if [[ "$img_count" -gt 0 ]]; then
+            echo "  $img_count image(s) attached. Use 'todo.sh images $issue_number' to view."
+        fi
+    fi
 }
 
 cmd_unclaim() {
@@ -700,6 +1169,7 @@ cmd_active() {
 
 require_gh
 resolve_global_repo
+resolve_config_repo || true  # Non-fatal if ~/.claude has no remote
 
 # --- Main dispatch ---
 
@@ -707,30 +1177,42 @@ COMMAND="${1:-help}"
 shift || true
 
 case "$COMMAND" in
-    add)     cmd_add "$@" ;;
-    list)    cmd_list "$@" ;;
-    done)    cmd_done "$@" ;;
-    stale)   cmd_stale "$@" ;;
-    count)   cmd_count "$@" ;;
-    claim)   cmd_claim "$@" ;;
-    unclaim) cmd_unclaim "$@" ;;
-    active)  cmd_active "$@" ;;
-    hud)     cmd_hud "$@" ;;
+    add)      cmd_add "$@" ;;
+    list)     cmd_list "$@" ;;
+    done)     cmd_done "$@" ;;
+    stale)    cmd_stale "$@" ;;
+    count)    cmd_count "$@" ;;
+    group)    cmd_group "$@" ;;
+    ungroup)  cmd_ungroup "$@" ;;
+    attach)   cmd_attach "$@" ;;
+    images)   cmd_images "$@" ;;
+    claim)    cmd_claim "$@" ;;
+    unclaim)  cmd_unclaim "$@" ;;
+    active)   cmd_active "$@" ;;
+    hud)      cmd_hud "$@" ;;
     help|*)
         echo "Claude Code Todo System"
         echo ""
         echo "Usage:"
-        echo "  todo.sh add \"title\" [--global] [--priority=high|medium|low] [--body=\"details\"]"
-        echo "  todo.sh list [--project|--global|--all] [--json]"
-        echo "  todo.sh done <issue-number> [--global|--repo=owner/repo]"
+        echo "  todo.sh add \"title\" [--global|--config] [--priority=high|medium|low] [--body=\"details\"] [--image=path] [--gist]"
+        echo "  todo.sh list [--project|--global|--config|--all] [--json] [--grouped]"
+        echo "  todo.sh done <issue-number> [--global|--config|--repo=owner/repo]"
         echo "  todo.sh stale [--days=14]"
-        echo "  todo.sh count [--project|--global|--all]"
-        echo "  todo.sh claim <number> [--global] [--auto]"
+        echo "  todo.sh count [--project|--global|--config|--all]"
+        echo "  todo.sh group <component> <issue-numbers...> [--global|--config]"
+        echo "  todo.sh ungroup <component> <issue-numbers...> [--global|--config]"
+        echo "  todo.sh attach <issue-number> <image-path> [--global|--config] [--gist]"
+        echo "  todo.sh images <issue-number> [--global|--config]"
+        echo "  todo.sh claim <number> [--global|--config] [--auto]"
         echo "  todo.sh unclaim [--session=ID]"
         echo "  todo.sh active [--json]"
         echo "  todo.sh hud"
         echo ""
+        echo "Scopes:"
+        echo "  --project  Current repo (default when in a git repo)"
+        echo "  --global   Global backlog ($GLOBAL_REPO)"
+        echo "  --config   Harness config repo (${CONFIG_REPO:-not configured})"
+        echo ""
         echo "Persistence: GitHub Issues labeled '$LABEL'"
-        echo "Global repo: $GLOBAL_REPO"
         ;;
 esac
