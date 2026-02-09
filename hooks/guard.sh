@@ -84,9 +84,11 @@ if echo "$COMMAND" | grep -qE 'chmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)?777\s+/' || \
     deny "NUCLEAR DENY — Recursive permission destruction blocked. chmod 777 on root compromises system security."
 fi
 
-# Category 5: System shutdown/reboot
-if echo "$COMMAND" | grep -qE '\b(shutdown|reboot|halt|poweroff)\b' || \
-   echo "$COMMAND" | grep -qE '\binit\s+[06]\b'; then
+# Category 5: System shutdown/reboot — only matches command position
+# Anchored to start-of-string or after command separators (&&, ||, |, ;)
+# so filenames like "guard-nuclear-shutdown.json" or commit messages don't trigger.
+if echo "$COMMAND" | grep -qE '(^|&&|\|\|?|;)\s*(sudo\s+)?(shutdown|reboot|halt|poweroff)\b' || \
+   echo "$COMMAND" | grep -qE '(^|&&|\|\|?|;)\s*(sudo\s+)?init\s+[06]\b'; then
     deny "NUCLEAR DENY — System shutdown/reboot blocked. This command would halt or restart the machine."
 fi
 
