@@ -26,10 +26,18 @@ ISSUES=()
 # Extract agent's response text first (needed for phase-boundary detection)
 RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
 
+# Detect plan completion state from actual plan content (not fragile response text matching)
+get_plan_status "$PROJECT_ROOT"
+
 # Detect if this was a phase-completing merge by looking for phase-completion language
 IS_PHASE_COMPLETING=""
 if [[ -n "$RESPONSE_TEXT" ]]; then
     IS_PHASE_COMPLETING=$(echo "$RESPONSE_TEXT" | grep -iE 'phase.*(complete|done|finished)|marking phase.*completed|status.*completed|phase completion' || echo "")
+fi
+
+# Content-based: if all plan phases are now completed, flag for archival
+if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+    ISSUES+=("All plan phases completed ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES) — plan should be archived before new work begins.")
 fi
 
 # Check 1: MASTER_PLAN.md freshness — only for phase-completing merges

@@ -486,6 +486,190 @@ done < <(
 rm -rf "$UPD_TEST_DIR2"
 echo ""
 
+# --- Test: Plan lifecycle — completed plan detection ---
+echo "--- plan lifecycle ---"
+PL_TEST_DIR=$(mktemp -d)
+mkdir -p "$PL_TEST_DIR/.claude"
+git init "$PL_TEST_DIR" >/dev/null 2>&1
+
+# Create a completed plan (all phases done)
+cat > "$PL_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
+# Test Plan
+
+## Phase 1: First
+**Status:** completed
+
+## Phase 2: Second
+**Status:** completed
+PLAN_EOF
+
+# Source context-lib and test lifecycle detection
+(
+    source "$HOOKS_DIR/context-lib.sh"
+    get_plan_status "$PL_TEST_DIR"
+    if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+        echo "COMPLETED_OK"
+    else
+        echo "COMPLETED_FAIL:$PLAN_LIFECYCLE"
+    fi
+) | while IFS= read -r line; do
+    if [[ "$line" == "COMPLETED_OK" ]]; then
+        pass "lifecycle — completed plan detected"
+    elif [[ "$line" == COMPLETED_FAIL* ]]; then
+        fail "lifecycle — completed plan" "expected 'completed', got: ${line#COMPLETED_FAIL:}"
+    fi
+done
+
+# Test active plan detection
+cat > "$PL_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
+# Test Plan
+
+## Phase 1: First
+**Status:** completed
+
+## Phase 2: Second
+**Status:** in-progress
+PLAN_EOF
+
+(
+    source "$HOOKS_DIR/context-lib.sh"
+    get_plan_status "$PL_TEST_DIR"
+    if [[ "$PLAN_LIFECYCLE" == "active" ]]; then
+        echo "ACTIVE_OK"
+    else
+        echo "ACTIVE_FAIL:$PLAN_LIFECYCLE"
+    fi
+) | while IFS= read -r line; do
+    if [[ "$line" == "ACTIVE_OK" ]]; then
+        pass "lifecycle — active plan detected"
+    elif [[ "$line" == ACTIVE_FAIL* ]]; then
+        fail "lifecycle — active plan" "expected 'active', got: ${line#ACTIVE_FAIL:}"
+    fi
+done
+
+# Test no plan detection
+rm -f "$PL_TEST_DIR/MASTER_PLAN.md"
+(
+    source "$HOOKS_DIR/context-lib.sh"
+    get_plan_status "$PL_TEST_DIR"
+    if [[ "$PLAN_LIFECYCLE" == "none" ]]; then
+        echo "NONE_OK"
+    else
+        echo "NONE_FAIL:$PLAN_LIFECYCLE"
+    fi
+) | while IFS= read -r line; do
+    if [[ "$line" == "NONE_OK" ]]; then
+        pass "lifecycle — no plan detected"
+    elif [[ "$line" == NONE_FAIL* ]]; then
+        fail "lifecycle — no plan" "expected 'none', got: ${line#NONE_FAIL:}"
+    fi
+done
+
+rm -rf "$PL_TEST_DIR"
+echo ""
+
+# --- Test: Plan archival ---
+echo "--- plan archival ---"
+PA_TEST_DIR=$(mktemp -d)
+mkdir -p "$PA_TEST_DIR/.claude"
+
+cat > "$PA_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
+# Test Archival Plan
+
+## Phase 1: Only Phase
+**Status:** completed
+PLAN_EOF
+
+(
+    source "$HOOKS_DIR/context-lib.sh"
+    result=$(archive_plan "$PA_TEST_DIR")
+    if [[ -n "$result" && ! -f "$PA_TEST_DIR/MASTER_PLAN.md" ]]; then
+        echo "ARCHIVE_OK:$result"
+    else
+        echo "ARCHIVE_FAIL"
+    fi
+) | while IFS= read -r line; do
+    if [[ "$line" == ARCHIVE_OK* ]]; then
+        archived_name="${line#ARCHIVE_OK:}"
+        pass "archival — plan archived as $archived_name"
+    elif [[ "$line" == "ARCHIVE_FAIL" ]]; then
+        fail "archival — plan archive" "MASTER_PLAN.md still exists or no result returned"
+    fi
+done
+
+# Check archived file exists
+if ls "$PA_TEST_DIR/archived-plans/"*test-archival-plan* 1>/dev/null 2>&1; then
+    pass "archival — file exists in archived-plans/"
+else
+    fail "archival — archived file" "no archived file found in $PA_TEST_DIR/archived-plans/"
+fi
+
+# Check breadcrumb
+if [[ -f "$PA_TEST_DIR/.claude/.last-plan-archived" ]]; then
+    pass "archival — breadcrumb created"
+else
+    fail "archival — breadcrumb" "no .last-plan-archived file"
+fi
+
+rm -rf "$PA_TEST_DIR"
+echo ""
+
+# --- Test: plan-check.sh — completed plan denial ---
+echo "--- plan-check.sh lifecycle ---"
+PC_TEST_DIR=$(mktemp -d)
+mkdir -p "$PC_TEST_DIR/.claude"
+git init "$PC_TEST_DIR" >/dev/null 2>&1
+# Need at least one commit for git to work
+(cd "$PC_TEST_DIR" && git add -A && git commit -m "init" --allow-empty) >/dev/null 2>&1
+
+# Create a completed plan
+cat > "$PC_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
+# Completed Plan
+
+## Phase 1: Done
+**Status:** completed
+
+## Phase 2: Also Done
+**Status:** completed
+PLAN_EOF
+
+# Feed plan-check a source file Write
+PLAN_CHECK_INPUT=$(jq -n --arg fp "$PC_TEST_DIR/src/main.ts" '{tool_name:"Write",tool_input:{file_path:$fp,content:"console.log(1);\nconsole.log(2);\nconsole.log(3);\nconsole.log(4);\nconsole.log(5);\nconsole.log(6);\nconsole.log(7);\nconsole.log(8);\nconsole.log(9);\nconsole.log(10);\nconsole.log(11);\nconsole.log(12);\nconsole.log(13);\nconsole.log(14);\nconsole.log(15);\nconsole.log(16);\nconsole.log(17);\nconsole.log(18);\nconsole.log(19);\nconsole.log(20);\nconsole.log(21);"}}')
+output=$(echo "$PLAN_CHECK_INPUT" | CLAUDE_PROJECT_DIR="$PC_TEST_DIR" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null) || true
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
+    if echo "$reason" | grep -qi "completed"; then
+        pass "plan-check.sh — completed plan blocks source writes"
+    else
+        fail "plan-check.sh — completed plan" "denied but reason doesn't mention 'completed': $reason"
+    fi
+else
+    fail "plan-check.sh — completed plan" "expected deny, got: ${decision:-no output}"
+fi
+
+# Test: active plan allows writes
+cat > "$PC_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
+# Active Plan
+
+## Phase 1: Done
+**Status:** completed
+
+## Phase 2: In Progress
+**Status:** in-progress
+PLAN_EOF
+
+output=$(echo "$PLAN_CHECK_INPUT" | CLAUDE_PROJECT_DIR="$PC_TEST_DIR" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null) || true
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "plan-check.sh — active plan allows source writes"
+else
+    fail "plan-check.sh — active plan" "should allow but got deny"
+fi
+
+rm -rf "$PC_TEST_DIR"
+echo ""
+
 
 # --- Summary ---
 echo "==========================="

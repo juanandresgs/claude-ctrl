@@ -18,7 +18,7 @@
 #                                      PLAN_TOTAL_SOURCE_FILES,
 #                                      PLAN_SOURCE_CHURN_PCT,
 #                                      PLAN_REQ_COUNT, PLAN_P0_COUNT,
-#                                      PLAN_NOGO_COUNT
+#                                      PLAN_NOGO_COUNT, PLAN_LIFECYCLE
 #   get_session_changes <project_root> - Populates SESSION_CHANGED_COUNT
 #   get_drift_data <project_root>    - Populates DRIFT_UNPLANNED_COUNT,
 #                                      DRIFT_UNIMPLEMENTED_COUNT,
@@ -60,6 +60,7 @@ get_plan_status() {
     PLAN_REQ_COUNT=0
     PLAN_P0_COUNT=0
     PLAN_NOGO_COUNT=0
+    PLAN_LIFECYCLE="none"
 
     [[ ! -f "$root/MASTER_PLAN.md" ]] && return
 
@@ -72,6 +73,14 @@ get_plan_status() {
     PLAN_TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
     PLAN_COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
     PLAN_IN_PROGRESS_PHASES=$(grep -cE '\*\*Status:\*\*\s*in-progress' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
+
+    # Plan lifecycle state: none (no plan), active (has incomplete phases), completed (all phases done)
+    # PLAN_LIFECYCLE defaults to "none" (set above, before early return).
+    if [[ "$PLAN_TOTAL_PHASES" -gt 0 && "$PLAN_COMPLETED_PHASES" -eq "$PLAN_TOTAL_PHASES" ]]; then
+        PLAN_LIFECYCLE="completed"
+    else
+        PLAN_LIFECYCLE="active"
+    fi
 
     # Plan age
     local plan_mod
@@ -319,6 +328,37 @@ get_subagent_status() {
     SUBAGENT_TOTAL_COUNT=$(wc -l < "$tracker" 2>/dev/null | tr -d ' ')
 }
 
+# --- Plan archival ---
+# Moves a completed MASTER_PLAN.md to archived-plans/ with date prefix.
+# Creates breadcrumb for session-init to detect.
+# Usage: archive_plan "/path/to/project"
+archive_plan() {
+    local root="$1"
+    local plan="$root/MASTER_PLAN.md"
+    [[ ! -f "$plan" ]] && return 1
+
+    local archive_dir="$root/archived-plans"
+    mkdir -p "$archive_dir"
+
+    # Extract plan title for readable filename
+    local title
+    title=$(head -1 "$plan" | sed 's/^# //' | sed 's/[^a-zA-Z0-9 -]//g' | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+    local date_prefix
+    date_prefix=$(date +%Y-%m-%d)
+    local archive_name="${date_prefix}_${title}.md"
+
+    cp "$plan" "$archive_dir/$archive_name"
+    rm "$plan"
+
+    # Breadcrumb for session-init
+    mkdir -p "$root/.claude"
+    echo "archived=$archive_name" > "$root/.claude/.last-plan-archived"
+    echo "epoch=$(date +%s)" >> "$root/.claude/.last-plan-archived"
+
+    append_audit "$root" "plan_archived" "$archive_name"
+    echo "$archive_name"
+}
+
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan

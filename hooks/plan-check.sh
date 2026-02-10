@@ -80,12 +80,26 @@ EOF
     exit 0
 fi
 
+# --- Plan lifecycle check: completed plan is NOT an active plan ---
+get_plan_status "$PROJECT_ROOT"
+if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+    cat <<COMPLETE_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "BLOCKED: MASTER_PLAN.md has all phases completed ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES). A completed plan is not an active plan.\\n\\nAction: Archive the completed plan and invoke the Planner agent to create a new MASTER_PLAN.md for the current work."
+  }
+}
+COMPLETE_EOF
+    exit 0
+fi
+
 # --- Plan staleness check (composite: churn % + drift IDs) ---
 # DECISION: Composite churn+drift staleness. Rationale: Raw commit count
 # doesn't normalize by project size or change significance. Source file churn
 # percentage is self-normalizing (consensus from multi-model deep research).
 # Decision drift from surface audit provides structural signal. Status: accepted.
-get_plan_status "$PROJECT_ROOT"
 get_drift_data "$PROJECT_ROOT"
 
 # Churn tier (primary signal, self-normalizing by project size)

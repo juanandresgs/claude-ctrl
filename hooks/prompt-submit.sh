@@ -32,8 +32,15 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     get_plan_status "$PROJECT_ROOT"
     write_statusline_cache "$PROJECT_ROOT"
     [[ -n "$GIT_BRANCH" ]] && CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted")
-    [[ "$PLAN_EXISTS" == "true" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done")
-    [[ "$PLAN_EXISTS" == "false" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
+    if [[ "$PLAN_EXISTS" == "true" ]]; then
+        if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is COMPLETED ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases). Source writes BLOCKED. Archive and create new plan.")
+        else
+            CONTEXT_PARTS+=("MASTER_PLAN.md: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done")
+        fi
+    else
+        CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
+    fi
 
     # Inject todo HUD (same as session-init)
     TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
@@ -124,13 +131,17 @@ if echo "$PROMPT" | grep -qiE '\bplan\b|\bimplement\b|\bphase\b|\bmaster.plan\b|
     get_plan_status "$PROJECT_ROOT"
 
     if [[ "$PLAN_EXISTS" == "true" ]]; then
-        PLAN_LINE="Plan:"
-        [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done"
-        [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
-        [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
-        get_session_changes "$PROJECT_ROOT"
-        [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
-        CONTEXT_PARTS+=("$PLAN_LINE")
+        if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is COMPLETED ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done). Source writes are BLOCKED. Archive the completed plan and create a new one.")
+        else
+            PLAN_LINE="Plan:"
+            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done"
+            [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+            get_session_changes "$PROJECT_ROOT"
+            [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
+            CONTEXT_PARTS+=("$PLAN_LINE")
+        fi
     else
         CONTEXT_PARTS+=("No MASTER_PLAN.md found — Core Dogma requires planning before implementation.")
     fi

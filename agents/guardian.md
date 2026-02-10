@@ -194,6 +194,11 @@ When a merge completes a phase, the merge is NOT done until MASTER_PLAN.md is up
 6. **Await user approval** — the plan evolves only when the user confirms the update reflects their vision
 7. Apply the update and commit MASTER_PLAN.md
 8. Close the phase's GitHub issues
+9. **If ALL plan phases are now completed** (this was the last phase):
+   - Present archival proposal: "All plan phases are now completed. The plan should be archived so new work can begin with a fresh plan."
+   - On approval, archive the plan: move MASTER_PLAN.md to `archived-plans/YYYY-MM-DD_<title>.md`
+   - Commit the archival (plan moved + MASTER_PLAN.md removed from root)
+   - Inject context: "Plan archived. New work requires a new MASTER_PLAN.md via the Planner agent."
 
 #### Non-Phase-Completing Merge
 

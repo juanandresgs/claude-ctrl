@@ -58,14 +58,18 @@ get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
-    PLAN_LINE="Plan:"
-    [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
-    [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
-    [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
-    CONTEXT_PARTS+=("$PLAN_LINE")
+    if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+        CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is COMPLETED (all $PLAN_TOTAL_PHASES phases done). Source writes are BLOCKED until a new plan is created. Archive the completed plan first.")
+    else
+        PLAN_LINE="Plan:"
+        [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
+        [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+        [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+        CONTEXT_PARTS+=("$PLAN_LINE")
 
-    if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
-        CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+        if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
+            CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+        fi
     fi
 else
     CONTEXT_PARTS+=("Plan: not found (required before implementation)")
