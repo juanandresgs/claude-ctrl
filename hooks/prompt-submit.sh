@@ -26,7 +26,7 @@ PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${CLAUDE_SESSION_ID:-$$
 if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     mkdir -p "${PROJECT_ROOT}/.claude"
     echo "1" > "$PROMPT_COUNT_FILE"
-    echo "$(date +%s)" > "${PROJECT_ROOT}/.claude/.session-start-epoch"
+    date +%s > "${PROJECT_ROOT}/.claude/.session-start-epoch"
     # Inject full session context (same as session-init.sh)
     get_git_state "$PROJECT_ROOT"
     get_plan_status "$PROJECT_ROOT"

@@ -284,7 +284,8 @@ track_subagent_stop() {
         if [[ "$found" == "false" && "$line" == "ACTIVE|${agent_type}|"* ]]; then
             # Convert to DONE record
             local start_epoch="${line##*|}"
-            local now_epoch=$(date +%s)
+            local now_epoch
+            now_epoch=$(date +%s)
             local duration=$((now_epoch - start_epoch))
             echo "DONE|${agent_type}|${start_epoch}|${duration}" >> "$tmp"
             found=true
@@ -316,7 +317,7 @@ get_subagent_status() {
     SUBAGENT_ACTIVE_COUNT=$(grep -c '^ACTIVE|' "$tracker" 2>/dev/null || echo 0)
 
     # Get unique active types
-    SUBAGENT_ACTIVE_TYPES=$(grep '^ACTIVE|' "$tracker" 2>/dev/null | cut -d'|' -f2 | sort | uniq -c | sed 's/^ *//' | while read count type; do
+    SUBAGENT_ACTIVE_TYPES=$(grep '^ACTIVE|' "$tracker" 2>/dev/null | cut -d'|' -f2 | sort | uniq -c | sed 's/^ *//' | while read -r count type; do
         if [[ "$count" -gt 1 ]]; then
             echo "${type}x${count}"
         else

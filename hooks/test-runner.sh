@@ -207,7 +207,7 @@ fi
 
 # --- Report results ---
 if [[ "$TEST_EXIT" -ne 0 ]]; then
-    ESCAPED=$(echo "Test failures detected ($RUNNER):\n$TEST_OUTPUT" | jq -Rs .)
+    ESCAPED=$(printf "Test failures detected (%s):\n%s" "$RUNNER" "$TEST_OUTPUT" | jq -Rs .)
     cat <<EOF
 {
   "systemMessage": $ESCAPED

@@ -50,7 +50,7 @@ if [[ -n "$PHASE_HEADERS" ]]; then
     while IFS= read -r phase_line; do
         PHASE_NUM=$(echo "$phase_line" | grep -oE 'Phase\s+[0-9]+' | grep -oE '[0-9]+')
         LINE_NUM=$(echo "$phase_line" | cut -d: -f1)
-        PHASE_NAME=$(echo "$phase_line" | sed 's/^[0-9]*://')
+        PHASE_NAME="${phase_line#*:}"
 
         # Find the next phase header line number (or end of file)
         NEXT_LINE=$(grep -nE '^\#\#\s+Phase\s+[0-9]' "$FILE_PATH" 2>/dev/null | \

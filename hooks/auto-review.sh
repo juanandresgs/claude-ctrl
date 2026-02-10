@@ -164,6 +164,7 @@ analyze_segment() {
     # Handle pipes: each part of the pipe must be safe
     if echo "$segment" | grep -qF '|'; then
         local pipe_parts
+        # shellcheck disable=SC2001
         pipe_parts=$(echo "$segment" | sed 's/\s*|\s*/\n/g')
         while IFS= read -r part; do
             [[ -z "$part" ]] && continue
@@ -206,6 +207,7 @@ analyze_single_command() {
         else
             stripped="${stripped#*[[:space:]]}"
         fi
+        # shellcheck disable=SC2001
         stripped=$(echo "$stripped" | sed 's/^[[:space:]]*//')
     done
 
@@ -221,6 +223,7 @@ analyze_single_command() {
 
     # Extract arguments (everything after command name)
     local args
+    # shellcheck disable=SC2001
     args=$(echo "$stripped" | sed "s|^[^[:space:]]*[[:space:]]*||")
 
     # Classify the command
@@ -251,6 +254,7 @@ analyze_substitutions() {
     # Extract $(...) content — simple approach for common cases
     # Handle nested parens by counting depth
     local remaining="$cmd"
+    # shellcheck disable=SC2016
     while [[ "$remaining" == *'$('* ]]; do
         # Find the $( position
         local before="${remaining%%\$(*}"
@@ -588,7 +592,7 @@ analyze_docker() {
 
     case "$subcmd" in
         # Safe: read/inspect/build
-        build|ps|images|image|logs|inspect|version|info|top|stats|port|history|events|manifest)
+        build|ps|images|logs|inspect|version|info|top|stats|port|history|events|manifest)
             return 0 ;;
         run|exec|create|start|compose)
             # Docker run/compose are generally safe for dev

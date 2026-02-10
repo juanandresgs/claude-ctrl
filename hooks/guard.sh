@@ -163,6 +163,7 @@ extract_git_target_dir() {
 # --- Helper: compare repo identity via git common dir ---
 # Worktrees of the same repo share the same common dir, so they are correctly
 # treated as "same project." Returns 0 (true) if same, 1 (false) if different.
+# shellcheck disable=SC2317,SC2329
 is_same_project() {
     local target_dir="$1"
     local current_root

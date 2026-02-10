@@ -34,9 +34,11 @@ elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
     CHANGES="$PROJECT_ROOT/.claude/.session-changes"
 else
     # Glob fallback for any session file
+    # shellcheck disable=SC2012
     CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-changes"* 2>/dev/null | head -1 || echo "")
     # Also check legacy name
     if [[ -z "$CHANGES" ]]; then
+        # shellcheck disable=SC2012
         CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-decisions"* 2>/dev/null | head -1 || echo "")
     fi
 fi
@@ -320,6 +322,7 @@ CURRENT_COMPONENT=""
 while IFS= read -r dec_id; do
     [[ -z "$dec_id" ]] && continue
     # Extract component from DEC-ID (e.g., DEC-CACHE-001 -> CACHE)
+    # shellcheck disable=SC2001
     component=$(echo "$dec_id" | sed 's/DEC-\([A-Z]*\)-.*/\1/')
 
     if [[ "$component" != "$CURRENT_COMPONENT" ]]; then
@@ -345,7 +348,8 @@ while IFS= read -r dec_id; do
     if [[ -n "$source_file" ]]; then
         dec_title=$(grep -A1 "@decision $dec_id" "$source_file" 2>/dev/null | grep '@title' | sed 's/.*@title //' || echo "")
         dec_status=$(grep -A3 "@decision $dec_id" "$source_file" 2>/dev/null | grep '@status' | sed 's/.*@status //' || echo "unknown")
-        rel_source="${source_file#$PROJECT_ROOT/}"
+        rel_source="${source_file#"$PROJECT_ROOT"/}"
+        # shellcheck disable=SC2129
         echo "- **$dec_id**: ${dec_title:-[untitled]}" >> "$REGISTRY_TMP"
         echo "  - Source: \`$rel_source\`" >> "$REGISTRY_TMP"
         echo "  - Status: ${dec_status}" >> "$REGISTRY_TMP"
