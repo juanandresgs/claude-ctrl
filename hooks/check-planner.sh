@@ -20,6 +20,9 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "planner"
+get_git_state "$PROJECT_ROOT"
+get_plan_status "$PROJECT_ROOT"
+write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
 CONTEXT=""

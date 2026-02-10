@@ -159,6 +159,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/task-track.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [

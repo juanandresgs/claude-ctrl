@@ -22,6 +22,9 @@ PROJECT_ROOT=$(detect_project_root)
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "implementer"
+get_git_state "$PROJECT_ROOT"
+get_plan_status "$PROJECT_ROOT"
+write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
 
