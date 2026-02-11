@@ -217,16 +217,20 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 | **lint.sh** | PostToolUse:Write\|Edit | Auto-detect linter, run on modified files, feedback loop |
 | **track.sh** | PostToolUse:Write\|Edit | Record changes, invalidate proof-of-work on source edits |
 | **test-runner.sh** | PostToolUse:Write\|Edit | Async test execution, writes `.test-status` for evidence gate |
-| **update-check.sh** | SessionStart (startup) | Auto-update harness from origin; notify for breaking changes |
-| **session-init.sh** | SessionStart | Inject git state, update status, plan status, worktrees, todo HUD |
+| **session-init.sh** | SessionStart | Inject git state, update status, plan status, worktrees, todo HUD (calls `scripts/update-check.sh`) |
 | **prompt-submit.sh** | UserPromptSubmit | Keyword-based context injection, deferred-work detection |
 | **compact-preserve.sh** | PreCompact | Dual-path context preservation across compaction |
 | **surface.sh** | Stop | Decision audit: extract, validate, reconcile @decision coverage, REQ-ID traceability |
 | **session-summary.sh** | Stop | File counts, git state, workflow-aware next-action guidance |
 | **forward-motion.sh** | Stop | Ensure response ends with question, suggestion, or offer |
+| **plan-validate.sh** | PostToolUse:Write\|Edit | Validate MASTER_PLAN.md format, REQ-ID syntax, decision linkage |
+| **code-review.sh** | PostToolUse:Write\|Edit | Optional LLM-based code review integration (requires Multi-MCP) |
+| **task-track.sh** | PreToolUse:Task | Track subagent state and update status bar |
 | **notify.sh** | Notification | Desktop alert when Claude needs attention (macOS) |
 | **subagent-start.sh** | SubagentStart | Agent-specific context injection |
-| **check-*.sh** | SubagentStop | Verify planner/implementer/guardian output quality |
+| **check-planner.sh** | SubagentStop:planner | Verify MASTER_PLAN.md exists and is valid |
+| **check-implementer.sh** | SubagentStop:implementer | Enforce proof-of-work (live demo + tests) before commits |
+| **check-guardian.sh** | SubagentStop:guardian | Validate commit message format and issue linkage |
 | **session-end.sh** | SessionEnd | Cleanup session files, kill async processes |
 
 ---
@@ -265,6 +269,8 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 
 | Skill | Purpose |
 |-------|---------|
+| **uplevel** | Comprehensive repository health audit — security, testing, quality, docs, staleness, standards |
+| **decide** | Interactive decision configurator — explore trade-offs, costs, effort estimates with filtering UI |
 | **deep-research** | Multi-model research via OpenAI + Perplexity + Gemini with comparative synthesis |
 | **last30days** | Recent discussions from Reddit, X, and web with engagement metrics (submodule) |
 | **prd** | Optional deep-dive PRD: problem statement, user journeys, requirements, success metrics |
