@@ -1,9 +1,11 @@
 """OpenAI deep research provider client.
 
-@decision Background mode with polling for OpenAI Responses API — o3-deep-research
-runs as a background task that can take 2-10 minutes. We POST with background=true,
-then poll GET /v1/responses/{id} every 10s until status is 'completed' or 'failed'.
-Fallback model o4-mini-deep-research used if primary model returns 404.
+@decision Adaptive poll intervals with time-based timeout — o3-deep-research runs as
+a background task that can take up to 30 minutes. We POST with background=true, then
+poll GET /v1/responses/{id} with adaptive intervals: 5s for first 2 min, 15s for
+2-10 min, 30s for 10+ min. Hard timeout at 1800s (30 minutes). Adaptive intervals
+reduce API load while maintaining responsiveness. Fallback model o4-mini-deep-research
+used if primary model returns 404.
 
 Uses the Responses API (not Chat Completions) as required by deep research models.
 """
@@ -17,8 +19,24 @@ from . import http
 BASE_URL = "https://api.openai.com/v1"
 PRIMARY_MODEL = "o3-deep-research-2025-06-26"
 FALLBACK_MODEL = "o4-mini-deep-research-2025-06-26"
-POLL_INTERVAL = 10  # seconds
-MAX_POLL_ATTEMPTS = 60  # 10 minutes max
+MAX_POLL_SECONDS = 1800  # 30 minute hard ceiling
+
+
+def _get_poll_interval(elapsed: float) -> int:
+    """Return adaptive poll interval based on elapsed time.
+
+    Args:
+        elapsed: Seconds elapsed since polling started.
+
+    Returns:
+        Poll interval in seconds: 5s (0-120s), 15s (120-600s), 30s (600s+)
+    """
+    if elapsed < 120:
+        return 5
+    elif elapsed < 600:
+        return 15
+    else:
+        return 30
 
 
 def _headers(api_key: str) -> Dict[str, str]:
@@ -58,14 +76,24 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
     Raises:
         http.HTTPError: If polling fails or times out.
     """
-    for attempt in range(MAX_POLL_ATTEMPTS):
+    start_time = time.time()
+    poll_count = 0
+
+    while True:
+        elapsed = time.time() - start_time
+
+        # Check hard timeout ceiling
+        if elapsed >= MAX_POLL_SECONDS:
+            raise http.HTTPError(f"OpenAI deep research timed out after {int(elapsed)}s")
+
+        poll_count += 1
         resp = http.get(
             f"{BASE_URL}/responses/{response_id}",
             headers=_headers(api_key),
             timeout=30,
         )
         status = resp.get("status", "")
-        http.log(f"OpenAI poll {attempt + 1}: status={status}")
+        http.log(f"OpenAI poll {poll_count}: status={status}")
 
         if status == "completed":
             return resp
@@ -73,17 +101,25 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
             error = resp.get("error", {})
             msg = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
             raise http.HTTPError(f"OpenAI deep research failed: {msg}")
+        elif status == "incomplete":
+            raise http.HTTPError("OpenAI deep research returned incomplete (may have hit output limit)")
+        elif status == "cancelled":
+            raise http.HTTPError("OpenAI deep research was cancelled")
         elif status in ("queued", "in_progress", "searching"):
-            sys.stderr.write(f"  [OpenAI] Status: {status} (poll {attempt + 1})\n")
+            minutes = int(elapsed) // 60
+            seconds = int(elapsed) % 60
+            sys.stderr.write(f"  [OpenAI] Status: {status} ({minutes}m {seconds}s, poll {poll_count})\n")
             sys.stderr.flush()
-            time.sleep(POLL_INTERVAL)
+            interval = _get_poll_interval(elapsed)
+            time.sleep(interval)
         else:
             # Unknown status, keep polling
-            sys.stderr.write(f"  [OpenAI] Unknown status: {status} (poll {attempt + 1})\n")
+            minutes = int(elapsed) // 60
+            seconds = int(elapsed) % 60
+            sys.stderr.write(f"  [OpenAI] Unknown status: {status} ({minutes}m {seconds}s, poll {poll_count})\n")
             sys.stderr.flush()
-            time.sleep(POLL_INTERVAL)
-
-    raise http.HTTPError(f"OpenAI deep research timed out after {MAX_POLL_ATTEMPTS * POLL_INTERVAL}s")
+            interval = _get_poll_interval(elapsed)
+            time.sleep(interval)
 
 
 def _extract_report(response: Dict[str, Any]) -> Tuple[str, List[Any]]:

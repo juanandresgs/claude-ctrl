@@ -52,7 +52,7 @@ echo "Add at least one API key for deep research."
 Create the output directory and run the script:
 
 ```bash
-# timeout must exceed script's internal 600s timeout
+# timeout must exceed script's internal 1800s timeout
 # Output stays project-local at .claude/research/ so implementer can reference it
 RESEARCH_DIR=".claude/research/DeepResearch_[SafeTopic]_[YYYY-MM-DD]"
 mkdir -p "$RESEARCH_DIR" && \
@@ -60,7 +60,7 @@ python3 ~/.claude/skills/deep-research/scripts/deep_research.py "$ARGUMENTS" \
   --output-dir "$RESEARCH_DIR" 2>&1
 ```
 
-Set `timeout: 660000` on the Bash tool call (script's 600s timeout + 60s buffer).
+Set `timeout: 1920000` on the Bash tool call (script's 1800s timeout + 120s buffer = 1920s = 32 min).
 
 The script will:
 - Detect which API keys are configured

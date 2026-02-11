@@ -241,20 +241,20 @@ if failed:
             self.assertIn("perplexity", data["warnings"][0])
 
     def test_timeout_buffer(self):
-        """Verify as_completed uses timeout + 60s buffer."""
+        """Verify as_completed uses timeout + 120s buffer."""
         # Read the source code and verify the timeout buffer
         script_path = SCRIPT_DIR / "deep_research.py"
         with open(script_path) as f:
             content = f.read()
 
         # Look for the as_completed call with timeout buffer
-        self.assertIn("as_completed(futures, timeout=args.timeout + 60)", content)
+        self.assertIn("as_completed(futures, timeout=args.timeout + 120)", content)
 
         # Verify the comment explaining the buffer exists
         lines = content.split("\n")
         as_completed_line = None
         for i, line in enumerate(lines):
-            if "as_completed(futures, timeout=args.timeout + 60)" in line:
+            if "as_completed(futures, timeout=args.timeout + 120)" in line:
                 as_completed_line = i
                 break
 
@@ -304,6 +304,70 @@ if failed:
         warning = data["warnings"][0]
         self.assertIn("gemini failed: unknown error", warning)
         self.assertIn("after 25.5s", warning)
+
+    def test_gemini_terminal_states(self):
+        """Verify Gemini handles cancelled/CANCELLED as terminal states."""
+        # Read gemini_dr.py source and verify terminal state handling
+        gemini_path = SCRIPT_DIR / "lib" / "gemini_dr.py"
+        with open(gemini_path) as f:
+            content = f.read()
+
+        # Verify both cancelled and CANCELLED appear in terminal state check
+        self.assertIn('status in ("cancelled", "CANCELLED")', content)
+        # Verify it raises HTTPError
+        self.assertIn('raise http.HTTPError("Gemini deep research was cancelled")', content)
+
+    def test_openai_terminal_states(self):
+        """Verify OpenAI handles incomplete and cancelled as terminal states."""
+        # Read openai_dr.py source and verify terminal state handling
+        openai_path = SCRIPT_DIR / "lib" / "openai_dr.py"
+        with open(openai_path) as f:
+            content = f.read()
+
+        # Verify incomplete terminal state
+        self.assertIn('status == "incomplete"', content)
+        self.assertIn('raise http.HTTPError("OpenAI deep research returned incomplete', content)
+
+        # Verify cancelled terminal state
+        self.assertIn('status == "cancelled"', content)
+        self.assertIn('raise http.HTTPError("OpenAI deep research was cancelled")', content)
+
+    def test_openai_adaptive_intervals(self):
+        """Test OpenAI adaptive poll interval function."""
+        # Import the function directly (no mocks!)
+        from lib.openai_dr import _get_poll_interval
+
+        # 0-120s elapsed → 5s
+        self.assertEqual(_get_poll_interval(0), 5)
+        self.assertEqual(_get_poll_interval(60), 5)
+        self.assertEqual(_get_poll_interval(119), 5)
+
+        # 120-600s elapsed → 15s
+        self.assertEqual(_get_poll_interval(120), 15)
+        self.assertEqual(_get_poll_interval(300), 15)
+        self.assertEqual(_get_poll_interval(599), 15)
+
+        # 600s+ elapsed → 30s
+        self.assertEqual(_get_poll_interval(600), 30)
+        self.assertEqual(_get_poll_interval(1200), 30)
+
+    def test_timeout_ceilings(self):
+        """Verify timeout ceilings are >= 1800s (30 min) for both providers."""
+        # Read gemini_dr.py and verify timeout ceiling
+        gemini_path = SCRIPT_DIR / "lib" / "gemini_dr.py"
+        with open(gemini_path) as f:
+            gemini_content = f.read()
+
+        # Gemini now uses MAX_TIMEOUT_SECONDS like OpenAI (for Phase 3)
+        self.assertIn("MAX_TIMEOUT_SECONDS = 1800", gemini_content)
+
+        # Read openai_dr.py and verify timeout ceiling
+        openai_path = SCRIPT_DIR / "lib" / "openai_dr.py"
+        with open(openai_path) as f:
+            openai_content = f.read()
+
+        # OpenAI uses MAX_POLL_SECONDS
+        self.assertIn("MAX_POLL_SECONDS = 1800", openai_content)
 
 
 if __name__ == "__main__":

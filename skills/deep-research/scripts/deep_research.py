@@ -4,7 +4,9 @@
 @decision ThreadPoolExecutor with max_workers=3 for parallel provider calls —
 each provider is I/O-bound (network polling), so threads are ideal. Results
 collected via as_completed for progressive stderr output. JSON to stdout for
-Claude consumption; compact mode for human debugging.
+Claude consumption; compact mode for human debugging. Timeout default raised to
+1800s (30 min) to accommodate provider ceilings. as_completed buffer increased
+from 60s to 120s to handle network jitter at 30-min scale.
 
 Usage:
     python3 deep_research.py <topic> [options]
@@ -12,7 +14,7 @@ Usage:
 Options:
     --mock              Use fixtures instead of real API calls
     --emit=MODE         Output mode: compact|json (default: json)
-    --timeout=SECS      Max wait per provider in seconds (default: 600)
+    --timeout=SECS      Max wait per provider in seconds (default: 1800)
     --debug             Enable verbose debug logging
 """
 
@@ -136,8 +138,8 @@ def main():
         help="Output mode (default: json)",
     )
     parser.add_argument(
-        "--timeout", type=int, default=600,
-        help="Max wait per provider in seconds (default: 600)",
+        "--timeout", type=int, default=1800,
+        help="Max wait per provider in seconds (default: 1800)",
     )
     parser.add_argument(
         "--debug", action="store_true",
@@ -197,7 +199,7 @@ def main():
                 future = executor.submit(run_provider, provider, api_key, args.topic)
                 futures[future] = provider
 
-            for future in as_completed(futures, timeout=args.timeout + 60):
+            for future in as_completed(futures, timeout=args.timeout + 120):
                 provider = futures[future]
                 try:
                     result = future.result()
