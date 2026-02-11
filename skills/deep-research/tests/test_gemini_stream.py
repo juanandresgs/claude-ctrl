@@ -217,10 +217,15 @@ class TestConstants:
 
 
 class TestStreamingPayload:
-    """Test that _submit_request includes streaming config in payload."""
+    """Test that _submit_request uses correct POST payload structure."""
 
-    def test_submit_request_has_stream_and_agent_config(self):
-        """Verify _submit_request source includes stream=True and agent_config."""
+    def test_submit_request_background_only(self):
+        """Verify _submit_request creates interaction with background=True only.
+
+        The POST request should include only input, agent, and background=True.
+        Streaming is retrieved separately via GET with ?alt=sse parameter.
+        Including stream=True or agent_config in POST body causes HTTP 400.
+        """
         # Read the source file
         gemini_dr_path = os.path.join(
             os.path.dirname(__file__), '..', 'scripts', 'lib', 'gemini_dr.py'
@@ -243,10 +248,15 @@ class TestStreamingPayload:
         func_source = ast.get_source_segment(source, submit_func)
         assert func_source is not None
 
-        # Check for required keys in payload
-        assert '"stream"' in func_source or "'stream'" in func_source
-        assert '"agent_config"' in func_source or "'agent_config'" in func_source
-        assert '"thinking_summaries"' in func_source or "'thinking_summaries'" in func_source
+        # Check that payload includes required keys
+        assert '"background"' in func_source or "'background'" in func_source
+        assert '"input"' in func_source or "'input'" in func_source
+        assert '"agent"' in func_source or "'agent'" in func_source
+
+        # Check that stream and agent_config are NOT in the POST body
+        # (they cause HTTP 400 errors)
+        assert '"stream"' not in func_source and "'stream'" not in func_source
+        assert '"agent_config"' not in func_source and "'agent_config'" not in func_source
 
 
 class TestFallbackExists:

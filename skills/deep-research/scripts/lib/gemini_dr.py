@@ -4,14 +4,14 @@
 @title Gemini Interactions API with SSE streaming and thinking summaries
 @status accepted
 @rationale Deep research runs as a background interaction that can take up to 30
-minutes. We POST with background=true, stream=True, and agent_config with
-thinking_summaries=auto (DEC-TIMEOUT-002). Primary mode: SSE streaming via GET
-/v1beta/interactions/{id}?alt=sse to receive real-time thinking summaries and
-content deltas (DEC-TIMEOUT-006). Fallback mode: polling GET /v1beta/interactions/{id}
-every 5-30s (adaptive) up to 1800s total. Zombie detection: if no SSE events arrive
-for 300s, raise "appears stuck" error. The Interactions API is a separate endpoint
-from the standard Gemini generateContent API. Uses v1beta API with API key auth
-(not OAuth).
+minutes. We POST with background=true only to create the interaction (DEC-TIMEOUT-002).
+Primary mode: SSE streaming via GET /v1beta/interactions/{id}?alt=sse to receive
+real-time thinking summaries and content deltas (DEC-TIMEOUT-006). The SSE stream
+provides agent_config behavior automatically. Fallback mode: polling GET
+/v1beta/interactions/{id} every 5-30s (adaptive) up to 1800s total. Zombie detection:
+if no SSE events arrive for 300s, raise "appears stuck" error. The Interactions API
+is a separate endpoint from the standard Gemini generateContent API. Uses v1beta API
+with API key auth (not OAuth).
 """
 
 import json
@@ -28,7 +28,10 @@ ZOMBIE_THRESHOLD = 300  # 5 minutes without events = stuck
 
 
 def _submit_request(api_key: str, topic: str) -> Dict[str, Any]:
-    """Submit a deep research interaction in background mode with streaming.
+    """Submit a deep research interaction in background mode.
+
+    Creates an interaction that runs in the background. The POST returns JSON
+    with an interaction ID. Streaming is retrieved separately via GET with ?alt=sse.
 
     Returns:
         Response dict with interaction ID.
@@ -37,10 +40,6 @@ def _submit_request(api_key: str, topic: str) -> Dict[str, Any]:
         "input": topic,
         "agent": AGENT,
         "background": True,
-        "stream": True,
-        "agent_config": {
-            "thinking_summaries": "auto"
-        },
     }
     headers = {
         "Content-Type": "application/json",
@@ -167,14 +166,17 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
         http.HTTPError: On API error, timeout, or zombie detection
     """
     url = f"{BASE_URL}/interactions/{interaction_id}?alt=sse"
-    headers = {"x-goog-api-key": api_key}
+    headers = {
+        "x-goog-api-key": api_key,
+        "Accept": "text/event-stream",
+    }
 
     start_time = time.time()
     last_event_time = start_time
     report_parts: List[str] = []
 
     try:
-        for event in http.stream_sse(url, headers=headers, timeout=30):
+        for event in http.stream_sse(url, headers=headers, timeout=MAX_TIMEOUT_SECONDS):
             last_event_time = time.time()
             elapsed = last_event_time - start_time
 
@@ -220,7 +222,7 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
                     if text:
                         report_parts.append(text)
 
-            elif event_type == "interaction.complete":
+            elif event_type in ("interaction.complete", "interaction.completed"):
                 minutes = int(elapsed) // 60
                 seconds = int(elapsed) % 60
                 sys.stderr.write(f"  [Gemini] {minutes}m {seconds:02d}s - Complete\n")
