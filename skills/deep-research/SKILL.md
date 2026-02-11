@@ -79,6 +79,7 @@ Use the **Read** tool to read `raw_results.json` from the output directory. The 
   "topic": "the research topic",
   "provider_count": 3,
   "success_count": 3,
+  "warnings": [],
   "results": [
     {
       "provider": "openai",
@@ -94,7 +95,15 @@ Use the **Read** tool to read `raw_results.json` from the output directory. The 
 }
 ```
 
-**Step 3: If any providers failed**, optionally supplement with WebSearch to fill gaps.
+**Step 3: Check for provider failures**
+
+**MANDATORY**: Before synthesis, check if `success_count < provider_count` (or check the `warnings` array in the JSON). If ANY providers failed:
+
+1. **Immediately tell the user** with a `WARNING:` prefix — which providers failed, their error messages, and elapsed time
+2. You **SHOULD** supplement failed providers with WebSearch to fill knowledge gaps
+3. Note which findings in your synthesis came from WebSearch rather than deep research
+
+Do NOT silently skip failed providers. The user must know about failures before reading the report.
 
 ---
 
@@ -104,6 +113,15 @@ Read ALL provider reports carefully. Then produce a report in this structure:
 
 ```markdown
 # Deep Research Report: [Topic]
+
+## Provider Status
+| Provider | Status | Time | Notes |
+|----------|--------|------|-------|
+| OpenAI | OK | 145s | |
+| Perplexity | OK | 89s | |
+| Gemini | FAILED | 600s | HTTPError: timed out after 600s |
+
+*(Always include this table. Green path: all OK. Failure path: makes problems immediately visible.)*
 
 ## Executive Summary
 [3-5 sentence overview of the key findings across all models]
@@ -164,8 +182,8 @@ If a provider (like Gemini) returns no structured citations, note that its claim
 ```
 
 **Adaptation rules:**
-- If only 1 provider succeeded: Skip comparative sections, note limited analysis
-- If only 2 providers succeeded: Pairwise comparison instead of tri-model
+- If only 1 provider succeeded: Skip comparative sections, note limited analysis. Begin Executive Summary with a note about which provider(s) failed and why.
+- If only 2 providers succeeded: Pairwise comparison instead of tri-model. Begin Executive Summary with a note about which provider failed and why.
 - If 0 providers succeeded: Report the errors and suggest checking API keys
 
 ---
@@ -205,8 +223,8 @@ Tell the user where the reports were saved and list the files.
 End with:
 ```
 ---
-Deep Research complete.
-- Providers: [n]/3 succeeded
+Deep Research complete — [n]/3 providers succeeded.
+WARNING: [provider names] failed — [brief error reasons] (only include this line if any failed)
 - Total research time: [sum of elapsed]s
 - Report saved to: .claude/research/DeepResearch_[Topic]_[Date]/report.md
 

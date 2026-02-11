@@ -41,10 +41,17 @@ class ProviderResult:
 
 def render_json(results: List[ProviderResult], topic: str) -> str:
     """Render results as structured JSON for Claude consumption."""
+    warnings: List[str] = []
+    for r in results:
+        if not r.success:
+            elapsed = f" (after {r.elapsed_seconds}s)" if r.elapsed_seconds else ""
+            warnings.append(f"{r.provider} failed: {r.error or 'unknown error'}{elapsed}")
+
     output = {
         "topic": topic,
         "provider_count": len(results),
         "success_count": sum(1 for r in results if r.success),
+        "warnings": warnings,
         "results": [r.to_dict() for r in results],
     }
     return json.dumps(output, indent=2, ensure_ascii=False)
