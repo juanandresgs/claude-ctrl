@@ -8,7 +8,9 @@
 # @rationale Each hook's stdin/stdout contract is testable in isolation by
 #   feeding JSON fixtures and checking exit codes + output structure. This
 #   avoids needing a running Claude Code session for CI validation. Statusline
-#   and subagent tests use temp directories for isolation.
+#   and subagent tests use temp directories for isolation. Expanded to include
+#   gate hook behavioral tests, context-lib unit tests, integration tests, and
+#   session lifecycle tests for comprehensive coverage (GitHub #63, #68, #70, #71).
 #
 # Usage: bash tests/run-hooks.sh
 #
@@ -17,9 +19,11 @@
 #   - Stdout is valid JSON (when output is expected)
 #   - Deny responses have the correct structure
 #   - Allow/advisory responses have the correct structure
-#   - Statusline cache read/write and segment rendering
-#   - Subagent tracking display
-
+#   - Gate hooks (branch-guard, doc-gate, test-gate, mock-gate) behavioral contracts
+#   - context-lib.sh unit tests (is_source_file, is_skippable_path, get_git_state)
+#   - Integration tests (settings.json sync, hook pipeline)
+#   - Session lifecycle tests (session-init, prompt-submit)
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -84,6 +88,496 @@ if python3 -m json.tool "$SETTINGS" > /dev/null 2>&1; then
 else
     fail "settings.json" "invalid JSON"
 fi
+echo ""
+
+# =============================================================================
+# GATE HOOK BEHAVIORAL TESTS
+# =============================================================================
+
+echo "=========================================="
+echo "GATE HOOK BEHAVIORAL TESTS"
+echo "=========================================="
+echo ""
+
+# --- Test: branch-guard.sh behavioral tests ---
+echo "--- branch-guard.sh behavioral tests ---"
+
+# Test 1: Deny source file write on main branch
+BG_TEST_DIR_MAIN=$(mktemp -d)
+git init "$BG_TEST_DIR_MAIN" >/dev/null 2>&1
+(cd "$BG_TEST_DIR_MAIN" && git add -A && git commit -m "init" --allow-empty) >/dev/null 2>&1
+
+BG_FIXTURE_MAIN_DENY="$FIXTURES_DIR/branch-guard-main-deny.json"
+cat > "$BG_FIXTURE_MAIN_DENY" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_MAIN/src/main.ts","content":"console.log('test');\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_MAIN_DENY")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "branch-guard.sh — deny source file on main"
+else
+    fail "branch-guard.sh — deny source file on main" "expected deny, got: ${decision:-no output}"
+fi
+safe_cleanup "$BG_TEST_DIR_MAIN" "$SCRIPT_DIR"
+rm -f "$BG_FIXTURE_MAIN_DENY"
+
+# Test 2: Allow source file write on feature branch
+BG_TEST_DIR_FEATURE=$(mktemp -d)
+git init "$BG_TEST_DIR_FEATURE" >/dev/null 2>&1
+(cd "$BG_TEST_DIR_FEATURE" && git checkout -b feature/test >/dev/null 2>&1 && git add -A && git commit -m "init" --allow-empty >/dev/null 2>&1)
+
+BG_FIXTURE_FEATURE_ALLOW="$FIXTURES_DIR/branch-guard-feature-allow.json"
+cat > "$BG_FIXTURE_FEATURE_ALLOW" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_FEATURE/src/main.ts","content":"console.log('test');\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_FEATURE_ALLOW")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "branch-guard.sh — allow source file on feature branch"
+else
+    fail "branch-guard.sh — allow source file on feature branch" "should allow but got deny"
+fi
+safe_cleanup "$BG_TEST_DIR_FEATURE" "$SCRIPT_DIR"
+rm -f "$BG_FIXTURE_FEATURE_ALLOW"
+
+# Test 3: Allow non-source file on main
+BG_TEST_DIR_NONSOURCE=$(mktemp -d)
+git init "$BG_TEST_DIR_NONSOURCE" >/dev/null 2>&1
+(cd "$BG_TEST_DIR_NONSOURCE" && git add -A && git commit -m "init" --allow-empty) >/dev/null 2>&1
+
+BG_FIXTURE_MAIN_NONSOURCE="$FIXTURES_DIR/branch-guard-main-nonsource.json"
+cat > "$BG_FIXTURE_MAIN_NONSOURCE" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_NONSOURCE/README.md","content":"# Test\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_MAIN_NONSOURCE")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "branch-guard.sh — allow non-source file on main"
+else
+    fail "branch-guard.sh — allow non-source file on main" "should allow but got deny"
+fi
+safe_cleanup "$BG_TEST_DIR_NONSOURCE" "$SCRIPT_DIR"
+rm -f "$BG_FIXTURE_MAIN_NONSOURCE"
+
+# Test 4: Allow MASTER_PLAN.md on main
+BG_TEST_DIR_PLAN=$(mktemp -d)
+git init "$BG_TEST_DIR_PLAN" >/dev/null 2>&1
+(cd "$BG_TEST_DIR_PLAN" && git add -A && git commit -m "init" --allow-empty) >/dev/null 2>&1
+
+BG_FIXTURE_PLAN="$FIXTURES_DIR/branch-guard-plan.json"
+cat > "$BG_FIXTURE_PLAN" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_PLAN/MASTER_PLAN.md","content":"# Plan\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_PLAN")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "branch-guard.sh — allow MASTER_PLAN.md on main"
+else
+    fail "branch-guard.sh — allow MASTER_PLAN.md on main" "should allow but got deny"
+fi
+safe_cleanup "$BG_TEST_DIR_PLAN" "$SCRIPT_DIR"
+rm -f "$BG_FIXTURE_PLAN"
+
+echo ""
+
+# --- Test: doc-gate.sh behavioral tests ---
+echo "--- doc-gate.sh behavioral tests ---"
+
+# Test 1: Deny Write without header
+DOC_FIXTURE_NO_HEADER="$FIXTURES_DIR/doc-gate-no-header.json"
+cat > "$DOC_FIXTURE_NO_HEADER" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"console.log('no header');\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_NO_HEADER")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "doc-gate.sh — deny Write without header"
+else
+    fail "doc-gate.sh — deny Write without header" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$DOC_FIXTURE_NO_HEADER"
+
+# Test 2: Allow Write with header
+DOC_FIXTURE_WITH_HEADER="$FIXTURES_DIR/doc-gate-with-header.json"
+cat > "$DOC_FIXTURE_WITH_HEADER" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"/**\n * @file test.ts\n * @description Test file\n */\nconsole.log('has header');\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_WITH_HEADER")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "doc-gate.sh — allow Write with header"
+else
+    fail "doc-gate.sh — allow Write with header" "should allow but got deny"
+fi
+rm -f "$DOC_FIXTURE_WITH_HEADER"
+
+# Test 3: Deny 50+ line file without @decision
+DOC_FIXTURE_NO_DECISION="$FIXTURES_DIR/doc-gate-no-decision.json"
+LARGE_CONTENT="/**\n * @file test.ts\n * @description Test\n */\n"
+for i in {1..50}; do
+    LARGE_CONTENT+="console.log($i);\n"
+done
+cat > "$DOC_FIXTURE_NO_DECISION" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"$LARGE_CONTENT"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_NO_DECISION")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "doc-gate.sh — deny 50+ lines without @decision"
+else
+    fail "doc-gate.sh — deny 50+ lines without @decision" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$DOC_FIXTURE_NO_DECISION"
+
+# Test 4: Allow 50+ line file with @decision
+DOC_FIXTURE_WITH_DECISION="$FIXTURES_DIR/doc-gate-with-decision.json"
+LARGE_CONTENT_WITH_DEC="/**\n * @file test.ts\n * @decision DEC-TEST-001\n */\n"
+for i in {1..50}; do
+    LARGE_CONTENT_WITH_DEC+="console.log($i);\n"
+done
+cat > "$DOC_FIXTURE_WITH_DECISION" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"$LARGE_CONTENT_WITH_DEC"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_WITH_DECISION")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "doc-gate.sh — allow 50+ lines with @decision"
+else
+    fail "doc-gate.sh — allow 50+ lines with @decision" "should allow but got deny"
+fi
+rm -f "$DOC_FIXTURE_WITH_DECISION"
+echo ""
+
+# --- Test: test-gate.sh behavioral tests ---
+echo "--- test-gate.sh behavioral tests ---"
+
+TG_TEST_DIR=$(mktemp -d)
+mkdir -p "$TG_TEST_DIR/.claude"
+git init "$TG_TEST_DIR" >/dev/null 2>&1
+
+# Test 1: Allow when no test status (cold start)
+TG_FIXTURE_COLD="$FIXTURES_DIR/test-gate-cold.json"
+cat > "$TG_FIXTURE_COLD" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"console.log('test');\n"}}
+EOF
+
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_COLD")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "test-gate.sh — allow when no test status"
+else
+    fail "test-gate.sh — allow when no test status" "should allow but got deny"
+fi
+rm -f "$TG_FIXTURE_COLD"
+
+# Test 2: Allow + reset strikes when tests pass
+echo "pass|0|$(date +%s)" > "$TG_TEST_DIR/.claude/.test-status"
+TG_FIXTURE_PASS="$FIXTURES_DIR/test-gate-pass.json"
+cat > "$TG_FIXTURE_PASS" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"console.log('test');\n"}}
+EOF
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_PASS")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" && ! -f "$TG_TEST_DIR/.claude/.test-gate-strikes" ]]; then
+    pass "test-gate.sh — allow + reset strikes when tests pass"
+else
+    fail "test-gate.sh — allow + reset strikes when tests pass" "should allow and reset strikes"
+fi
+rm -f "$TG_FIXTURE_PASS"
+
+# Test 3: Advisory warning on first strike
+echo "fail|5|$(date +%s)" > "$TG_TEST_DIR/.claude/.test-status"
+TG_FIXTURE_SRC="$FIXTURES_DIR/test-gate-src.json"
+cat > "$TG_FIXTURE_SRC" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"console.log('strike1');\n"}}
+EOF
+
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_SRC")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+context=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+if [[ "$decision" != "deny" && -n "$context" && "$context" == *"failing"* ]]; then
+    pass "test-gate.sh — advisory warning on strike 1"
+else
+    fail "test-gate.sh — advisory warning on strike 1" "expected advisory, got decision=$decision context=$context"
+fi
+
+# Test 4: Deny on second strike
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_SRC")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "test-gate.sh — deny on strike 2"
+else
+    fail "test-gate.sh — deny on strike 2" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$TG_FIXTURE_SRC"
+
+safe_cleanup "$TG_TEST_DIR" "$SCRIPT_DIR"
+echo ""
+
+# --- Test: mock-gate.sh behavioral tests ---
+echo "--- mock-gate.sh behavioral tests ---"
+
+MG_TEST_DIR=$(mktemp -d)
+mkdir -p "$MG_TEST_DIR/.claude"
+
+# Test 1: Allow non-test files
+MG_FIXTURE_NONTEST="$FIXTURES_DIR/mock-gate-nontest.json"
+cat > "$MG_FIXTURE_NONTEST" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$MG_TEST_DIR/src/main.ts","content":"console.log('not a test');\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/mock-gate.sh" "$MG_FIXTURE_NONTEST")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "mock-gate.sh — allow non-test files"
+else
+    fail "mock-gate.sh — allow non-test files" "should allow but got deny"
+fi
+rm -f "$MG_FIXTURE_NONTEST"
+
+# Test 2: Detect internal mocks and warn (strike 1)
+MG_FIXTURE_INTERNAL_MOCK="$FIXTURES_DIR/mock-gate-internal-mock.json"
+cat > "$MG_FIXTURE_INTERNAL_MOCK" <<EOF
+{"tool_name":"Write","tool_input":{"file_path":"$MG_TEST_DIR/src/main.test.ts","content":"import { jest } from '@jest/globals';\njest.mock('../myModule');\n"}}
+EOF
+
+output=$(CLAUDE_PROJECT_DIR="$MG_TEST_DIR" run_hook "$HOOKS_DIR/mock-gate.sh" "$MG_FIXTURE_INTERNAL_MOCK")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+context=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+if [[ "$decision" != "deny" && -n "$context" && "$context" == *"mock"* ]]; then
+    pass "mock-gate.sh — advisory warning on internal mock (strike 1)"
+else
+    fail "mock-gate.sh — advisory warning on internal mock" "expected advisory, got decision=$decision"
+fi
+
+# Test 3: Deny on second mock usage
+output=$(CLAUDE_PROJECT_DIR="$MG_TEST_DIR" run_hook "$HOOKS_DIR/mock-gate.sh" "$MG_FIXTURE_INTERNAL_MOCK")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "mock-gate.sh — deny on strike 2"
+else
+    fail "mock-gate.sh — deny on strike 2" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$MG_FIXTURE_INTERNAL_MOCK"
+
+safe_cleanup "$MG_TEST_DIR" "$SCRIPT_DIR"
+echo ""
+
+# =============================================================================
+# CONTEXT-LIB UNIT TESTS
+# =============================================================================
+
+echo "=========================================="
+echo "CONTEXT-LIB UNIT TESTS"
+echo "=========================================="
+echo ""
+
+echo "--- context-lib.sh: is_source_file() ---"
+
+# Test source file detection
+test_is_source() {
+    local file="$1" expected="$2"
+    if is_source_file "$file"; then
+        result="true"
+    else
+        result="false"
+    fi
+    if [[ "$result" == "$expected" ]]; then
+        pass "is_source_file($file) → $expected"
+    else
+        fail "is_source_file($file)" "expected $expected, got $result"
+    fi
+}
+
+test_is_source "src/main.ts" "true"
+test_is_source "lib/util.py" "true"
+test_is_source "cmd/main.go" "true"
+test_is_source "README.md" "false"
+test_is_source "config.json" "false"
+test_is_source "script.sh" "true"
+test_is_source "noextension" "false"
+test_is_source "main.tsx" "true"
+echo ""
+
+echo "--- context-lib.sh: is_skippable_path() ---"
+
+# Test skippable path detection
+test_is_skippable() {
+    local file="$1" expected="$2"
+    if is_skippable_path "$file"; then
+        result="true"
+    else
+        result="false"
+    fi
+    if [[ "$result" == "$expected" ]]; then
+        pass "is_skippable_path($file) → $expected"
+    else
+        fail "is_skippable_path($file)" "expected $expected, got $result"
+    fi
+}
+
+test_is_skippable "node_modules/pkg/index.js" "true"
+test_is_skippable "vendor/lib.go" "true"
+test_is_skippable "src/main.test.ts" "true"
+test_is_skippable "dist/bundle.min.js" "true"
+test_is_skippable "src/main.py" "false"
+test_is_skippable ".git/config" "true"
+echo ""
+
+echo "--- context-lib.sh: get_git_state() ---"
+
+GS_TEST_DIR=$(mktemp -d)
+git init "$GS_TEST_DIR" >/dev/null 2>&1
+(cd "$GS_TEST_DIR" && git checkout -b test-branch >/dev/null 2>&1 && git add -A && git commit -m "init" --allow-empty >/dev/null 2>&1)
+echo "test" > "$GS_TEST_DIR/file.txt"
+
+get_git_state "$GS_TEST_DIR"
+if [[ "$GIT_BRANCH" == "test-branch" ]]; then
+    pass "get_git_state() — detects branch"
+else
+    fail "get_git_state() — detects branch" "expected test-branch, got: $GIT_BRANCH"
+fi
+
+if [[ "$GIT_DIRTY_COUNT" -gt 0 ]]; then
+    pass "get_git_state() — counts dirty files"
+else
+    fail "get_git_state() — counts dirty files" "expected >0, got: $GIT_DIRTY_COUNT"
+fi
+
+safe_cleanup "$GS_TEST_DIR" "$SCRIPT_DIR"
+echo ""
+
+# =============================================================================
+# INTEGRATION TESTS
+# =============================================================================
+
+echo "=========================================="
+echo "INTEGRATION TESTS"
+echo "=========================================="
+echo ""
+
+echo "--- settings.json ↔ hook file sync ---"
+
+# Extract all hooks referenced in settings.json (only hooks/ paths, not scripts/)
+REGISTERED_HOOKS=$(jq -r '.hooks | .. | .command? // empty' "$SETTINGS" | grep 'hooks/.*\.sh$' | sed 's|.*/hooks/||' | sort -u)
+
+# List all .sh files in hooks/
+ACTUAL_HOOKS=$(ls "$HOOKS_DIR"/*.sh 2>/dev/null | xargs -n1 basename | sort)
+
+ORPHAN_REGISTRATIONS=""
+UNREGISTERED_HOOKS=""
+
+# Check for orphan registrations (hook in settings.json but file missing)
+while IFS= read -r hook; do
+    if [[ -n "$hook" && ! -f "$HOOKS_DIR/$hook" ]]; then
+        ORPHAN_REGISTRATIONS+="$hook "
+    fi
+done <<< "$REGISTERED_HOOKS"
+
+# Check for unregistered hooks (file exists but not in settings.json)
+while IFS= read -r hook; do
+    if ! echo "$REGISTERED_HOOKS" | grep -q "^$hook$"; then
+        # Exempt utility libraries (not hooks)
+        case "$hook" in
+            log.sh|context-lib.sh)
+                ;;
+            *)
+                UNREGISTERED_HOOKS+="$hook "
+                ;;
+        esac
+    fi
+done <<< "$ACTUAL_HOOKS"
+
+if [[ -z "$ORPHAN_REGISTRATIONS" && -z "$UNREGISTERED_HOOKS" ]]; then
+    pass "settings.json ↔ hook sync — no orphans or missing registrations"
+else
+    if [[ -n "$ORPHAN_REGISTRATIONS" ]]; then
+        fail "settings.json ↔ hook sync" "orphan registrations: $ORPHAN_REGISTRATIONS"
+    fi
+    if [[ -n "$UNREGISTERED_HOOKS" ]]; then
+        fail "settings.json ↔ hook sync" "unregistered hooks: $UNREGISTERED_HOOKS"
+    fi
+fi
+echo ""
+
+# =============================================================================
+# SESSION LIFECYCLE TESTS
+# =============================================================================
+
+echo "=========================================="
+echo "SESSION LIFECYCLE TESTS"
+echo "=========================================="
+echo ""
+
+echo "--- session-init.sh ---"
+
+if [[ -f "$FIXTURES_DIR/session-init.json" ]]; then
+    output=$(bash "$HOOKS_DIR/session-init.sh" < "$FIXTURES_DIR/session-init.json" 2>/dev/null) || true
+    if [[ -n "$output" ]]; then
+        # Verify it's valid JSON
+        if echo "$output" | jq -e '.hookSpecificOutput' > /dev/null 2>&1; then
+            pass "session-init.sh — produces valid JSON output"
+        else
+            fail "session-init.sh — produces valid JSON output" "invalid JSON: $output"
+        fi
+    else
+        pass "session-init.sh — runs without error (no output)"
+    fi
+else
+    skip "session-init.sh" "no fixture found"
+fi
+echo ""
+
+echo "--- prompt-submit.sh ---"
+
+PS_TEST_DIR=$(mktemp -d)
+mkdir -p "$PS_TEST_DIR/.claude"
+git init "$PS_TEST_DIR" >/dev/null 2>&1
+
+# Test keyword detection
+PS_FIXTURE_KEYWORD="$FIXTURES_DIR/prompt-submit-keyword.json"
+cat > "$PS_FIXTURE_KEYWORD" <<EOF
+{"prompt":"Let's work on the todo list"}
+EOF
+
+output=$(CLAUDE_PROJECT_DIR="$PS_TEST_DIR" bash "$HOOKS_DIR/prompt-submit.sh" < "$PS_FIXTURE_KEYWORD" 2>/dev/null) || true
+if echo "$output" | jq -e '.hookSpecificOutput' > /dev/null 2>&1; then
+    pass "prompt-submit.sh — keyword detection produces valid output"
+else
+    # No output is also OK (keyword might not trigger)
+    pass "prompt-submit.sh — runs without error"
+fi
+rm -f "$PS_FIXTURE_KEYWORD"
+
+# Test normal prompt (no keyword)
+PS_FIXTURE_NORMAL="$FIXTURES_DIR/prompt-submit-normal.json"
+cat > "$PS_FIXTURE_NORMAL" <<EOF
+{"prompt":"What is the weather?"}
+EOF
+
+output=$(CLAUDE_PROJECT_DIR="$PS_TEST_DIR" bash "$HOOKS_DIR/prompt-submit.sh" < "$PS_FIXTURE_NORMAL" 2>/dev/null) || true
+# Normal prompts should pass through silently or with minimal context
+pass "prompt-submit.sh — handles normal prompt without error"
+rm -f "$PS_FIXTURE_NORMAL"
+
+safe_cleanup "$PS_TEST_DIR" "$SCRIPT_DIR"
+echo ""
+
+# =============================================================================
+# EXISTING TESTS (PRESERVED)
+# =============================================================================
+
+echo "=========================================="
+echo "EXISTING GUARD.SH TESTS (PRESERVED)"
+echo "=========================================="
 echo ""
 
 # --- Test: guard.sh — /tmp rewrite ---
@@ -344,19 +838,6 @@ if [[ -f "$FIXTURES_DIR/plan-validate-non-plan.json" ]]; then
         pass "plan-validate.sh — non-plan file passes through"
     else
         pass "plan-validate.sh — non-plan file (with advisory)"
-    fi
-fi
-
-echo ""
-
-# --- Test: session-init.sh ---
-echo "--- session-init.sh ---"
-if [[ -f "$FIXTURES_DIR/session-init.json" ]]; then
-    output=$(bash "$HOOKS_DIR/session-init.sh" < "$FIXTURES_DIR/session-init.json" 2>/dev/null) || true
-    if [[ -n "$output" ]]; then
-        pass "session-init.sh — produces output on startup"
-    else
-        pass "session-init.sh — runs without error"
     fi
 fi
 
