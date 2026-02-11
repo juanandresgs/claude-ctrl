@@ -197,7 +197,7 @@ def main():
                 future = executor.submit(run_provider, provider, api_key, args.topic)
                 futures[future] = provider
 
-            for future in as_completed(futures, timeout=args.timeout):
+            for future in as_completed(futures, timeout=args.timeout + 60):
                 provider = futures[future]
                 try:
                     result = future.result()
@@ -225,6 +225,13 @@ def main():
         with open(out / "raw_results.json", "w") as f:
             f.write(render_json(results, args.topic))
         print(str(out / "raw_results.json"))
+        # Print failure summary to stdout so the synthesis agent sees it
+        failed = [r for r in results if not r.success]
+        if failed:
+            print(f"WARNING: {len(failed)} provider(s) failed:")
+            for r in failed:
+                elapsed = f" after {r.elapsed_seconds}s" if r.elapsed_seconds else ""
+                print(f"  - {r.provider}: {r.error or 'unknown error'}{elapsed}")
     elif args.emit == "json":
         print(render_json(results, args.topic))
     else:
