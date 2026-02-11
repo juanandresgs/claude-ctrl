@@ -11,7 +11,7 @@ jobs:
     name: Validate settings.json
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Validate settings.json
         run: python3 -m json.tool settings.json > /dev/null
 
@@ -19,7 +19,7 @@ jobs:
     name: Lint hook scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
       - name: Run shellcheck on all hooks
@@ -37,7 +37,7 @@ jobs:
     name: Validate hook contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install jq
         run: sudo apt-get install -y jq
       - name: Run hook contract tests
