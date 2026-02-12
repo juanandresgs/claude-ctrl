@@ -433,7 +433,7 @@ init_trace() {
     local project_name
     project_name=$(basename "$project_root")
     local branch
-    branch=$(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    branch=$(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch="unknown"
 
     cat > "${trace_dir}/manifest.json" <<MANIFEST
 {

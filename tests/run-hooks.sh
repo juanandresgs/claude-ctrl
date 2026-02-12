@@ -1148,6 +1148,217 @@ safe_cleanup "$PC_TEST_DIR" "$SCRIPT_DIR"
 echo ""
 
 
+# --- Test: Trace Protocol ---
+echo "--- trace protocol ---"
+
+# Test 1: init_trace creates directory structure
+TR_TEST_DIR=$(mktemp -d)
+git init "$TR_TEST_DIR" >/dev/null 2>&1
+git -C "$TR_TEST_DIR" commit --allow-empty -m "init" >/dev/null 2>&1
+
+# Run test in subshell and capture output
+output=$(
+    source "$HOOKS_DIR/context-lib.sh"
+    TRACE_STORE="$TR_TEST_DIR/traces"
+    TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
+    if [[ -n "$TRACE_ID" && -d "$TRACE_STORE/$TRACE_ID/artifacts" && -f "$TRACE_STORE/$TRACE_ID/manifest.json" ]]; then
+        echo "INIT_OK"
+    else
+        echo "INIT_FAIL"
+    fi
+)
+if [[ "$output" == "INIT_OK" ]]; then
+    pass "trace — init_trace creates dir + manifest"
+else
+    fail "trace — init_trace" "missing directory or manifest"
+fi
+
+# Test 2: init_trace manifest has correct schema
+output=$(
+    source "$HOOKS_DIR/context-lib.sh"
+    TRACE_STORE="$TR_TEST_DIR/traces"
+    TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
+    manifest="$TRACE_STORE/$TRACE_ID/manifest.json"
+
+    # First check if valid JSON
+    if ! jq empty "$manifest" 2>/dev/null; then
+        echo "SCHEMA_FAIL:invalid JSON"
+    else
+        # Check required fields (project path may vary, skip exact match)
+        has_version=$(jq -r '.version' "$manifest")
+        has_agent=$(jq -r '.agent_type' "$manifest")
+        has_status=$(jq -r '.status' "$manifest")
+        has_project=$(jq -r '.project' "$manifest")
+
+        if [[ "$has_version" == "1" && "$has_agent" == "test-agent" && "$has_status" == "active" && -n "$has_project" ]]; then
+            echo "SCHEMA_OK"
+        else
+            echo "SCHEMA_FAIL:v='$has_version' agent='$has_agent' status='$has_status' proj='$has_project'"
+        fi
+    fi
+)
+if [[ "$output" == "SCHEMA_OK" ]]; then
+    pass "trace — manifest has correct schema"
+else
+    fail "trace — manifest schema" "$output"
+fi
+
+# Test 3: init_trace creates active marker
+output=$(
+    source "$HOOKS_DIR/context-lib.sh"
+    TRACE_STORE="$TR_TEST_DIR/traces"
+    CLAUDE_SESSION_ID="test-session-123"
+    TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
+    marker="$TRACE_STORE/.active-test-agent-test-session-123"
+    if [[ -f "$marker" ]]; then
+        marker_content=$(cat "$marker")
+        if [[ "$marker_content" == "$TRACE_ID" ]]; then
+            echo "MARKER_OK"
+        else
+            echo "MARKER_FAIL:content mismatch"
+        fi
+    else
+        echo "MARKER_FAIL:marker not found"
+    fi
+)
+if [[ "$output" == "MARKER_OK" ]]; then
+    pass "trace — active marker created with trace ID"
+else
+    fail "trace — active marker" "$output"
+fi
+
+# Test 4: detect_active_trace finds marker
+output=$(
+    source "$HOOKS_DIR/context-lib.sh"
+    TRACE_STORE="$TR_TEST_DIR/traces"
+    CLAUDE_SESSION_ID="test-session-456"
+    TRACE_ID=$(init_trace "$TR_TEST_DIR" "detect-agent")
+    DETECTED=$(detect_active_trace "$TR_TEST_DIR" "detect-agent")
+    if [[ "$DETECTED" == "$TRACE_ID" ]]; then
+        echo "DETECT_OK"
+    else
+        echo "DETECT_FAIL:expected=$TRACE_ID got=$DETECTED"
+    fi
+)
+if [[ "$output" == "DETECT_OK" ]]; then
+    pass "trace — detect_active_trace finds marker"
+else
+    fail "trace — detect_active_trace" "$output"
+fi
+
+# Test 5: finalize_trace updates manifest + creates index + cleans marker
+output=$(
+    source "$HOOKS_DIR/context-lib.sh"
+    TRACE_STORE="$TR_TEST_DIR/traces"
+    CLAUDE_SESSION_ID="test-session-789"
+    TRACE_ID=$(init_trace "$TR_TEST_DIR" "finalize-agent")
+    trace_dir="$TRACE_STORE/$TRACE_ID"
+
+    # Write summary (so it's not marked crashed)
+    echo "# Test Summary" > "$trace_dir/summary.md"
+    echo "All tests passed" > "$trace_dir/artifacts/test-output.txt"
+    echo "file1.sh" > "$trace_dir/artifacts/files-changed.txt"
+
+    finalize_trace "$TRACE_ID" "$TR_TEST_DIR" "finalize-agent"
+
+    # Check manifest was updated
+    manifest_status=$(jq -r '.status' "$trace_dir/manifest.json" 2>/dev/null)
+    manifest_outcome=$(jq -r '.outcome' "$trace_dir/manifest.json" 2>/dev/null)
+    manifest_test=$(jq -r '.test_result' "$trace_dir/manifest.json" 2>/dev/null)
+    manifest_files=$(jq -r '.files_changed' "$trace_dir/manifest.json" 2>/dev/null)
+
+    # Check index was created
+    index_exists=false
+    if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
+        if grep -q "$TRACE_ID" "$TRACE_STORE/index.jsonl"; then
+            index_exists=true
+        fi
+    fi
+
+    # Check marker was cleaned
+    marker="$TRACE_STORE/.active-finalize-agent-test-session-789"
+    marker_cleaned=true
+    [[ -f "$marker" ]] && marker_cleaned=false
+
+    if [[ "$manifest_status" == "completed" && "$manifest_outcome" == "success" && "$manifest_test" == "pass" && "$manifest_files" == "1" && "$index_exists" == "true" && "$marker_cleaned" == "true" ]]; then
+        echo "FINALIZE_OK"
+    else
+        echo "FINALIZE_FAIL:status=$manifest_status outcome=$manifest_outcome test=$manifest_test files=$manifest_files index=$index_exists marker_cleaned=$marker_cleaned"
+    fi
+)
+if [[ "$output" == "FINALIZE_OK" ]]; then
+    pass "trace — finalize updates manifest, indexes, cleans marker"
+else
+    fail "trace — finalize" "$output"
+fi
+
+# Test 6: finalize_trace marks crashed when no summary
+output=$(
+    source "$HOOKS_DIR/context-lib.sh"
+    TRACE_STORE="$TR_TEST_DIR/traces"
+    CLAUDE_SESSION_ID="test-session-crash"
+    TRACE_ID=$(init_trace "$TR_TEST_DIR" "crash-agent")
+    # Do NOT write summary.md — simulates crash
+    finalize_trace "$TRACE_ID" "$TR_TEST_DIR" "crash-agent"
+
+    crash_status=$(jq -r '.status' "$TRACE_STORE/$TRACE_ID/manifest.json" 2>/dev/null)
+    crash_outcome=$(jq -r '.outcome' "$TRACE_STORE/$TRACE_ID/manifest.json" 2>/dev/null)
+
+    if [[ "$crash_status" == "crashed" && "$crash_outcome" == "crashed" ]]; then
+        echo "CRASH_OK"
+    else
+        echo "CRASH_FAIL:status=$crash_status outcome=$crash_outcome"
+    fi
+)
+if [[ "$output" == "CRASH_OK" ]]; then
+    pass "trace — no summary marks as crashed"
+else
+    fail "trace — crash detection" "$output"
+fi
+
+# Test 7: subagent-start.sh injects TRACE_DIR for planner
+output=$(
+    export TRACE_STORE="$TR_TEST_DIR/traces"
+    export CLAUDE_PROJECT_DIR="$TR_TEST_DIR"
+    mkdir -p "$TR_TEST_DIR/.git"
+    hook_output=$(echo '{"agent_type":"planner"}' | bash "$HOOKS_DIR/subagent-start.sh" 2>/dev/null) || true
+    if echo "$hook_output" | grep -q "TRACE_DIR="; then
+        echo "INJECT_OK"
+    else
+        echo "INJECT_FAIL:no TRACE_DIR in output"
+    fi
+)
+if [[ "$output" == "INJECT_OK" ]]; then
+    pass "trace — subagent-start injects TRACE_DIR for planner"
+else
+    fail "trace — subagent-start injection" "$output"
+fi
+
+# Test 8: subagent-start.sh skips trace for Bash agent
+output=$(
+    export TRACE_STORE="$TR_TEST_DIR/traces"
+    export CLAUDE_PROJECT_DIR="$TR_TEST_DIR"
+    mkdir -p "$TR_TEST_DIR/.git"
+    # Count traces before
+    before=$(ls "$TRACE_STORE" 2>/dev/null | grep -c "^Bash-" || echo "0")
+    hook_output=$(echo '{"agent_type":"Bash"}' | bash "$HOOKS_DIR/subagent-start.sh" 2>/dev/null) || true
+    after=$(ls "$TRACE_STORE" 2>/dev/null | grep -c "^Bash-" || echo "0")
+    if [[ "$before" == "$after" ]]; then
+        echo "SKIP_OK"
+    else
+        echo "SKIP_FAIL:trace created for Bash agent"
+    fi
+)
+if [[ "$output" == "SKIP_OK" ]]; then
+    pass "trace — subagent-start skips trace for Bash agent"
+else
+    fail "trace — Bash skip" "$output"
+fi
+
+safe_cleanup "$TR_TEST_DIR" "$SCRIPT_DIR"
+echo ""
+
+
 # --- Summary ---
 echo "==========================="
 total=$((passed + failed + skipped))
