@@ -621,6 +621,23 @@ index_trace() {
     fi
 }
 
+# --- Meta-repo detection ---
+# Check if a directory is the ~/.claude meta-infrastructure repo.
+# Uses --git-common-dir so worktrees of ~/.claude are correctly recognized.
+# Usage: is_claude_meta_repo "/path/to/dir"
+# Returns: 0 if meta-repo, 1 otherwise
+is_claude_meta_repo() {
+    local dir="$1"
+    local common_dir
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || echo "")
+    # Resolve to absolute if relative
+    if [[ -n "$common_dir" && "$common_dir" != /* ]]; then
+        common_dir=$(cd "$dir" && cd "$common_dir" && pwd)
+    fi
+    # common_dir for ~/.claude is ~/.claude/.git (strip trailing /.git)
+    [[ "${common_dir%/.git}" == */.claude ]]
+}
+
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo

@@ -140,7 +140,7 @@ PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-ga
 PostToolUse:W/E → lint.sh → track.sh → code-review.sh → plan-validate.sh → test-runner.sh (async)
                     ↓
 SubagentStart   → subagent-start.sh (agent-specific context)
-SubagentStop    → check-planner.sh | check-implementer.sh | check-guardian.sh
+SubagentStop    → check-planner.sh | check-implementer.sh | check-tester.sh | check-guardian.sh
                     ↓
 Stop            → surface.sh (decision audit) → session-summary.sh → forward-motion.sh
                     ↓
@@ -159,7 +159,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 9 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges. All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
+| **guard.sh** | Bash | 10 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges; **blocks agents from writing `verified` to `.proof-status`** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user. `git commit/push/merge` classified as risky (requires Guardian dispatch per Sacred Practice #8) |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
@@ -183,7 +183,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 |------|-------|--------------|
 | **session-init.sh** | SessionStart | Calls update-check.sh inline (fixes race condition where parallel hooks caused one-session-late notifications), then injects git state, harness update status, MASTER_PLAN.md status, active worktrees, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
 | **update-check.sh** | Called by session-init.sh | Fetches origin/main, compares versions. Auto-applies safe updates (same MAJOR). Notifies for breaking changes (different MAJOR). Aborts cleanly on conflict. Writes `.update-status` consumed by session-init.sh. Disabled by `.disable-auto-update` flag file |
-| **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation |
+| **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. **User verification gate**: when user says "verified" and `.proof-status = pending`, writes `verified\|timestamp` — this is the ONLY path to verified status. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation |
 | **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
 | **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Preserves cross-session state (`.audit-log`, `.agent-findings`, `.plan-drift`). Trims audit log to last 100 entries |
 
@@ -205,16 +205,18 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Event / Matcher | What It Does |
 |------|-----------------|--------------|
-| **subagent-start.sh** | SubagentStart | Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, verification protocol instructions. **Guardian** gets plan update rules (only at phase boundaries) and test status. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
+| **task-track.sh** | PreToolUse:Task | Tracks subagent spawns for status bar. **Dispatch gates**: Guardian requires `.proof-status = verified` (meta-repo exempt). Tester requires implementer trace to have completed (prevents premature dispatch). Both gates use PreToolUse deny |
+| **subagent-start.sh** | SubagentStart | Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status. **Tester** gets implementer trace path, project type hints, branch context, verification protocol. **Guardian** gets plan update rules (only at phase boundaries) and test status. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
 | **check-planner.sh** | SubagentStop (planner\|Plan) | 6 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation), (6) has structured requirements sections — only flagged for multi-phase plans (single-phase/Tier 1 plans are expected to be brief). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
-| **check-implementer.sh** | SubagentStop (implementer) | 5 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"), (5) proof-of-work status (`verified`/`pending`/missing). Advisory only. Persists findings |
+| **check-implementer.sh** | SubagentStop (implementer) | 4 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"). Advisory only — proof-of-work verification moved to tester agent. Persists findings |
+| **check-tester.sh** | SubagentStop (tester) | Validates tester completed verification: (1) `.proof-status` exists (at least pending), (2) trace artifacts include verification evidence. If proof is `verified` → exit 0 (Guardian unblocked). If proof is `pending` → exit 0 with advisory (waiting for user). If proof missing → exit 2 (feedback loop: resume tester). Persists findings |
 | **check-guardian.sh** | SubagentStop (guardian) | 5 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected). Advisory only. Persists findings |
 
 ---
 
 ## Key guard.sh Behaviors
 
-The most complex hook — 9 checks covering 7 nuclear denies, 1 early-exit gate, 3 rewrites, 3 hard blocks, and 2 evidence gates.
+The most complex hook — 10 checks covering 7 nuclear denies, 1 early-exit gate, 3 rewrites, 3 hard blocks, 2 evidence gates, and 1 human gate enforcer.
 
 **Nuclear deny** (Check 0 — unconditional, fires first):
 
@@ -260,6 +262,12 @@ Strips quoted strings from the command, then checks if `git` appears in a comman
 Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
 
 Proof-of-work: the user must see the feature work before code is committed. `track.sh` resets proof status to `pending` when source files change after verification — ensuring the user always verifies the final state.
+
+**Human gate enforcement** (Check 9 — blocks agent bypass):
+
+| Check | Trigger | Why |
+|-------|---------|-----|
+| 9 | Any Bash command writing `verified` to `.proof-status` | Only `prompt-submit.sh` (triggered by user saying "verified") can write verified status. Prevents agents from bypassing the human verification gate |
 
 ---
 
@@ -351,7 +359,7 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | File | Written By | Read By | Contents |
 |------|-----------|---------|----------|
 | `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
-| `.proof-status` | user verification flow | guard.sh (evidence gate), track.sh (invalidation), check-implementer.sh | `status\|timestamp` — `verified` or `pending`. track.sh resets to `pending` when source files change after verification |
+| `.proof-status` | tester agent writes `pending`, prompt-submit.sh writes `verified` on user confirmation | guard.sh (evidence gate), track.sh (invalidation), check-tester.sh, task-track.sh (Guardian gate) | `status\|timestamp` — `verified` or `pending`. Only prompt-submit.sh can write `verified` (human gate). guard.sh Check 9 blocks agent bypass. track.sh resets to `pending` when source files change after verification |
 | `.plan-drift` | surface.sh | plan-check.sh (staleness scoring) | Structured key=value: `unplanned_count`, `unimplemented_count`, `missing_decisions`, `total_decisions`, `source_files_changed`, `unaddressed_p0s`, `nogo_count` |
 | `.agent-findings` | check-planner.sh, check-implementer.sh, check-guardian.sh | session-init.sh, prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery) |
 | `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |

@@ -2,15 +2,16 @@
 set -euo pipefail
 
 # SubagentStop:implementer — deterministic validation of implementer output.
-# Replaces AI agent hook. Checks worktree usage and @decision annotation coverage.
-# Exits 2 (feedback loop) when proof-of-work is missing — forces implementer resume.
-# Exits 0 when proof-of-work is verified or when loop guard triggers escalation.
+# Checks worktree usage, @decision annotation coverage, and test status.
+# Proof-of-work verification is handled by the tester agent, not the implementer.
 #
-# DECISION: Blocking proof-of-work enforcement. Rationale: Advisory-only hook
-# (exit 0 always) was routinely skipped — agents declared "done" without live demo.
-# Exit 2 forces the orchestrator to resume the implementer, creating an unavoidable
-# feedback loop. Loop guard (2+ resumes) escalates to user to prevent infinite loops.
-# Status: accepted.
+# @decision DEC-IMPL-STOP-001
+# @title Implementer SubagentStop without proof-of-work check
+# @status accepted
+# @rationale Proof-of-work verification moved to the tester agent to separate
+#   builder from judge. The implementer exits after tests pass. The tester
+#   handles live demos and user verification. This prevents the implementer
+#   from being both builder and judge of its own work.
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -99,25 +100,6 @@ else
     ISSUES+=("No test results found — verify tests were run before declaring done")
 fi
 
-# Check 5: Proof-of-work verification status (BLOCKING — exit 2 when missing)
-PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
-PROOF_MISSING=false
-if [[ -f "$PROOF_FILE" ]]; then
-    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
-    if [[ "$PROOF_STATUS" == "verified" ]]; then
-        : # OK — user has confirmed feature works
-    elif [[ "$PROOF_STATUS" == "pending" ]]; then
-        PROOF_MISSING=true
-        ISSUES+=("Proof-of-work pending — verification checkpoint not completed by user")
-    else
-        PROOF_MISSING=true
-        ISSUES+=("Proof-of-work status unknown ('$PROOF_STATUS') — run verification checkpoint")
-    fi
-else
-    PROOF_MISSING=true
-    ISSUES+=("No proof-of-work verification — user has not confirmed feature works (.proof-status missing)")
-fi
-
 # --- Trace protocol: finalize trace ---
 if [[ -n "$TRACE_ID" ]]; then
     # Fallback: if agent didn't write summary.md, save response excerpt
@@ -165,38 +147,7 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     done
 fi
 
-# If proof-of-work is missing, exit 2 (feedback loop) to block Guardian dispatch
-if [[ "$PROOF_MISSING" == "true" ]]; then
-    # Loop guard: count how many times implementer has been sent back for proof
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-    RESUME_COUNT=0
-    if [[ -f "$FINDINGS_FILE" ]]; then
-        RESUME_COUNT=$(grep -c 'proof-of-work' "$FINDINGS_FILE" 2>/dev/null || echo "0")
-    fi
-
-    if [[ "$RESUME_COUNT" -ge 2 ]]; then
-        # Escalate to user instead of looping
-        DIRECTIVE="ESCALATION: The implementer has been sent back ${RESUME_COUNT} times for proof-of-work but has not completed it. Please intervene — either run the live demo yourself or waive the requirement for this task."
-        ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
-        cat <<EOF
-{
-  "additionalContext": $ESCAPED
-}
-EOF
-        exit 0  # Don't block forever — let the user see the escalation
-    else
-        DIRECTIVE="BLOCKED: Implementer returned without live proof-of-work.\nDO NOT dispatch Guardian. Resume the implementer to:\n1. Run the feature/system live (not just tests)\n2. Show actual output to the user\n3. Ask: \"Does this match your intent?\"\n4. Get user confirmation → write .proof-status\n\nThe SubagentStop hook enforces this gate. Proof-of-work is a BLOCKING requirement."
-        ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
-        cat <<EOF
-{
-  "additionalContext": $ESCAPED
-}
-EOF
-        exit 2  # Feedback loop — force implementer resume
-    fi
-fi
-
-# Output as additionalContext (proof verified or no proof issues)
+# Output as additionalContext
 ESCAPED=$(echo -e "$CONTEXT" | jq -Rs .)
 cat <<EOF
 {

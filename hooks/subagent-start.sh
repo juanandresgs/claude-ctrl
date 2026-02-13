@@ -87,9 +87,43 @@ case "$AGENT_TYPE" in
         if [[ "$RESEARCH_EXISTS" == "true" ]]; then
             CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
         fi
-        CONTEXT_PARTS+=("VERIFICATION: Before committing, discover project MCP tools and use them to verify. Present verification checkpoint to user with live test instructions. User must confirm before commit.")
+        CONTEXT_PARTS+=("After tests pass, return to orchestrator. The tester agent handles live verification — you do NOT demo or write .proof-status.")
         if [[ -n "$TRACE_DIR" ]]; then
             CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (test-output.txt, diff.patch, files-changed.txt, proof-evidence.txt). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
+        fi
+        ;;
+    tester)
+        CONTEXT_PARTS+=("Role: Tester — run the feature end-to-end, show the user actual output, write .proof-status = pending, ask user to say 'verified'. Do NOT modify source code. Do NOT write tests. Do NOT write 'verified' to .proof-status.")
+        # Inject latest implementer trace path
+        IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
+        if [[ -z "$IMPL_TRACE" ]]; then
+            # Try finding most recent completed implementer trace
+            IMPL_TRACE=$(ls -t "${TRACE_STORE}"/implementer-*/manifest.json 2>/dev/null | head -1 | xargs -I{} dirname {} 2>/dev/null | xargs basename 2>/dev/null || echo "")
+        fi
+        if [[ -n "$IMPL_TRACE" ]]; then
+            CONTEXT_PARTS+=("Implementer trace: ${TRACE_STORE}/${IMPL_TRACE} — read summary.md and artifacts/ to understand what was built.")
+        fi
+        # Inject worktree/branch context
+        if [[ -n "$GIT_BRANCH" ]]; then
+            CONTEXT_PARTS+=("Working on branch: $GIT_BRANCH — verify the feature on this branch, not main.")
+        fi
+        # Project type detection hints
+        if [[ -f "$PROJECT_ROOT/package.json" ]]; then
+            CONTEXT_PARTS+=("Project type hint: Node.js/web (package.json found). Try: npm run dev / npm start for dev server.")
+        elif [[ -f "$PROJECT_ROOT/pyproject.toml" || -f "$PROJECT_ROOT/setup.py" ]]; then
+            CONTEXT_PARTS+=("Project type hint: Python project. Look for CLI entrypoints or API servers.")
+        elif [[ -f "$PROJECT_ROOT/Cargo.toml" ]]; then
+            CONTEXT_PARTS+=("Project type hint: Rust project. Try: cargo run for CLI verification.")
+        elif [[ -f "$PROJECT_ROOT/go.mod" ]]; then
+            CONTEXT_PARTS+=("Project type hint: Go project. Try: go run . for CLI verification.")
+        fi
+        # Check for hook/script projects (like ~/.claude itself)
+        if is_claude_meta_repo "$PROJECT_ROOT" 2>/dev/null; then
+            CONTEXT_PARTS+=("Project type: Claude Code meta-infrastructure (hooks/scripts). Verify by running hooks with test input and checking output.")
+        fi
+        CONTEXT_PARTS+=("VERIFICATION PROTOCOL: 1. Run the feature live. 2. Paste actual output. 3. Write pending to .proof-status. 4. Ask user to say 'verified'.")
+        if [[ -n "$TRACE_DIR" ]]; then
+            CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (verification-output.txt, verification-strategy.txt). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
         fi
         ;;
     guardian)

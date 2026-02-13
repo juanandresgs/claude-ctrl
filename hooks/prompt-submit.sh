@@ -93,6 +93,21 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     fi
 fi
 
+# --- User verification gate ---
+# When user says "verified" and a proof flow is active (.proof-status = pending),
+# write verified|<timestamp>. This is the ONLY path to verified status.
+# No agent can write "verified" directly — guard.sh blocks it.
+PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+if echo "$PROMPT" | grep -qiE '^\s*verified\s*$|^.*\bverified\b.*$'; then
+    if [[ -f "$PROOF_FILE" ]]; then
+        CURRENT_STATUS=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null)
+        if [[ "$CURRENT_STATUS" == "pending" ]]; then
+            echo "verified|$(date +%s)" > "$PROOF_FILE"
+            CONTEXT_PARTS+=("Proof-of-work verified by user. Guardian dispatch is now unblocked.")
+        fi
+    fi
+fi
+
 # --- Inject agent findings from previous subagent runs ---
 FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
 if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then

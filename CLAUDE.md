@@ -35,6 +35,7 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 |------|-------|--------------------|
 | Planning, architecture | **Planner** | No Write/Edit for source |
 | Implementation, tests | **Implementer** | No — must invoke implementer |
+| E2E verification, demos | **Tester** | No — must invoke tester |
 | Commits, merges, branches | **Guardian** | No git commit/merge/push |
 | Research, reading code | Orchestrator / Explore | Read/Grep/Glob only |
 | Editing `~/.claude/` config | Orchestrator | Small fixes only (gitignore, 1-line, typos). Features use worktrees. |
@@ -45,13 +46,19 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **Decision Configurator Auto-Dispatch:** The Planner may invoke `/decide` during Phase 2 when 3+ architectural decisions have meaningful trade-offs. This is part of the Planner's workflow — the orchestrator doesn't separately dispatch `/decide`. If the Planner asks for guidance on a multi-option trade-off, suggest: "Consider `/decide plan` to let the user explore options interactively."
 
-**Pre-dispatch gate:** Before dispatching Guardian, check SubagentStop findings from check-implementer.sh. If proof-of-work was flagged as missing or pending, DO NOT dispatch Guardian. Resume the implementer to complete Phase 4 (Live Demo & Verification). The proof-of-work finding is a BLOCKING condition for Guardian dispatch.
+**Auto-dispatch to Tester:** After the implementer returns successfully (tests pass, no blocking issues), dispatch the tester automatically with the implementer's trace context. Do NOT ask "should I verify?" — just dispatch the tester.
+
+**Pre-dispatch gate (mechanically enforced):**
+- Tester dispatch: requires implementer to have returned with tests passing
+- Guardian dispatch: requires `.proof-status = verified` (PreToolUse:Task gate in task-track.sh)
+- The user must say "verified" for `.proof-status` to reach verified — no agent can write it
 
 **Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.
 
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
 - Implementer: max_turns=75
 - Planner: max_turns=40
+- Tester: max_turns=25
 - Guardian: max_turns=30
 
 ## Sacred Practices
@@ -67,7 +74,10 @@ Agents are interactive — they handle the full approval cycle (present → appr
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
 8. **Approval Gates** — Commits, merges, force pushes require explicit user approval.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues. MASTER_PLAN.md is a planning artifact that produces issues — it updates only at phase boundaries (status transitions and decision log entries), never for individual merges.
-10. **Proof Before Commit** — Every implementation milestone includes a live demo with actual output. The user sees it working before anything is committed. Tests prove correctness; demos prove alignment.
+10. **Proof Before Commit** — The tester agent runs the feature live and shows the user.
+    The user says "verified." Only then can Guardian commit. Mechanically enforced:
+    task-track.sh denies Guardian dispatch, guard.sh denies git commit/merge,
+    prompt-submit.sh is the only path to verified status.
 
 ## Code is Truth
 
@@ -83,6 +93,7 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 |----------|-------------|
 | `agents/planner.md` | Planning a new project or feature |
 | `agents/implementer.md` | Implementing code in a worktree |
+| `agents/tester.md` | Verifying implementation works end-to-end |
 | `agents/guardian.md` | Committing, merging, branch management |
 | `hooks/HOOKS.md` | Understanding hook behavior, debugging hooks, @decision format |
 | `README.md` | Full system overview, directory map, all hooks/skills/commands |

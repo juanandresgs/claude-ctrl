@@ -243,6 +243,16 @@
         ]
       },
       {
+        "matcher": "tester",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-tester.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "guardian",
         "hooks": [
           {
@@ -301,6 +311,7 @@
     "type": "command",
     "command": "$HOME/.claude/scripts/statusline.sh"
   },
+  "fastMode": true,
   "autoUpdatesChannel": "latest",
   "installation": {
     "method": "native"

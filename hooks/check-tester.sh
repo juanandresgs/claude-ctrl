@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# SubagentStop:tester — validation of tester output.
+# Checks that the tester completed its verification job:
+#   - .proof-status exists (at least pending)
+#   - If still pending → exit 2 (user hasn't confirmed yet)
+#   - If verified → exit 0 (Guardian dispatch unblocked)
+#
+# @decision DEC-TESTER-001
+# @title Tester SubagentStop validation with human gate enforcement
+# @status accepted
+# @rationale The tester agent presents evidence and writes .proof-status = pending.
+#   Only the user can write verified (via prompt-submit.sh). This hook enforces
+#   the gate: if proof is still pending, the tester is resumed to re-present
+#   the demo. If verified, Guardian dispatch is unblocked.
+
+source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
+
+# Capture stdin (contains agent response)
+AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
+
+PROJECT_ROOT=$(detect_project_root)
+
+# Track subagent completion
+track_subagent_stop "$PROJECT_ROOT" "tester"
+
+# --- Trace protocol: detect and prepare for finalization ---
+TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
+TRACE_DIR=""
+if [[ -n "$TRACE_ID" ]]; then
+    TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+fi
+
+get_git_state "$PROJECT_ROOT"
+get_plan_status "$PROJECT_ROOT"
+write_statusline_cache "$PROJECT_ROOT"
+
+ISSUES=()
+
+# Check 1: .proof-status exists (tester should have written pending)
+PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+PROOF_STATUS="missing"
+if [[ -f "$PROOF_FILE" ]]; then
+    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+fi
+
+if [[ "$PROOF_STATUS" == "missing" ]]; then
+    ISSUES+=("Tester returned without writing .proof-status — verification evidence not collected")
+fi
+
+# Check 2: Trace artifacts include verification evidence (not just test output)
+if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
+    if [[ ! -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
+        ISSUES+=("Trace artifact missing: verification-output.txt — tester should capture live feature output")
+    fi
+    # Validate summary exists
+    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+        RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"
+fi
+
+# Response size advisory
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')
+    if [[ "$WORD_COUNT" -gt 1200 ]]; then
+        ISSUES+=("Agent response too large (~${WORD_COUNT} words). Use TRACE_DIR/artifacts/ for verbose output, return ≤1500 token summary.")
+    fi
+fi
+
+# Build context message
+CONTEXT=""
+if [[ ${#ISSUES[@]} -gt 0 ]]; then
+    CONTEXT="Tester validation: ${#ISSUES[@]} issue(s)."
+    for issue in "${ISSUES[@]}"; do
+        CONTEXT+="\n- $issue"
+    done
+else
+    CONTEXT="Tester validation: proof-status=$PROOF_STATUS."
+fi
+
+# Persist findings for next-prompt injection
+if [[ ${#ISSUES[@]} -gt 0 ]]; then
+    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+    mkdir -p "${PROJECT_ROOT}/.claude"
+    echo "tester|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
+    for issue in "${ISSUES[@]}"; do
+        append_audit "$PROJECT_ROOT" "agent_tester" "$issue"
+    done
+fi
+
+# Decision gate based on proof status
+if [[ "$PROOF_STATUS" == "verified" ]]; then
+    # User has confirmed — Guardian dispatch is unblocked
+    ESCAPED=$(echo -e "$CONTEXT\nProof verified by user. Guardian dispatch is now unblocked." | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
+    exit 0
+elif [[ "$PROOF_STATUS" == "pending" ]]; then
+    # Proof flow is active but user hasn't confirmed yet
+    # This is expected — the tester presented evidence, now we wait for the user
+    DIRECTIVE="WAITING FOR USER: The tester has presented verification evidence and written .proof-status = pending. The user must now review the evidence and say 'verified' to proceed. Do NOT dispatch Guardian until .proof-status = verified. If the user describes issues, resume the implementer with their findings."
+    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
+    exit 0
+else
+    # proof-status missing or unknown — tester didn't complete its job
+    DIRECTIVE="BLOCKED: Tester returned without completing verification.\nResume the tester to:\n1. Run the feature/system live\n2. Show actual output to the user\n3. Write pending to .proof-status\n4. Ask user to say 'verified'"
+    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
+    exit 2  # Feedback loop — force tester resume
+fi

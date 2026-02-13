@@ -26,4 +26,52 @@ get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
+# Emit PreToolUse deny response with reason, then exit.
+deny() {
+    local reason="$1"
+    cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "$reason"
+  }
+}
+EOF
+    exit 0
+}
+
+# --- Gate A: Guardian requires .proof-status = verified ---
+# Meta-repo (~/.claude) is exempt — no feature verification needed for config.
+if [[ "$AGENT_TYPE" == "guardian" ]]; then
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+        if [[ -f "$PROOF_FILE" ]]; then
+            PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+            if [[ "$PROOF_STATUS" != "verified" ]]; then
+                deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
+            fi
+        else
+            deny "Cannot dispatch Guardian: no proof-of-work verification (.proof-status missing). Dispatch tester to verify the implementation first."
+        fi
+    fi
+fi
+
+# --- Gate B: Tester requires implementer trace (advisory) ---
+# Prevents premature tester dispatch before implementer has returned.
+# Meta-repo (~/.claude) is exempt.
+if [[ "$AGENT_TYPE" == "tester" ]]; then
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
+        if [[ -n "$IMPL_TRACE" ]]; then
+            # Active trace means implementer hasn't returned yet
+            IMPL_MANIFEST="${TRACE_STORE}/${IMPL_TRACE}/manifest.json"
+            IMPL_STATUS=$(jq -r '.status // "unknown"' "$IMPL_MANIFEST" 2>/dev/null || echo "unknown")
+            if [[ "$IMPL_STATUS" == "active" ]]; then
+                deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
+            fi
+        fi
+    fi
+fi
+
 exit 0

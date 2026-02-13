@@ -82,84 +82,18 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    - Refactor as patterns emerge
 3. All tests must pass before proceeding
 
-### Phase 4: Live Demo & Verification (CANNOT BE SKIPPED)
-
-The SubagentStop hook will REJECT your output if proof-of-work is missing.
-You will be resumed and asked to complete this phase. Save time — do it now.
-
-"Tests pass" ≠ "feature works". Tests validate expected paths.
-Live demos expose dynamic errors, integration failures, and drift from user intent.
-
-#### What "Live Demo" Means by Project Type
-
-| Project Type | What to Do |
-|---|---|
-| Web app | Start dev server → navigate to feature → describe or screenshot what you see |
-| CLI tool | Run the command with real arguments → paste actual terminal output |
-| API | Curl the endpoint → show request + response |
-| Hook/script | Run with test input → show what it produces |
-| Library | Run the example code → show output |
-| Config/meta | Run the test suite → paste actual output (not summary) |
+After tests pass, return to the orchestrator. The **tester agent** handles live verification — you do not demo or write `.proof-status`.
 
 #### Progress Checkpoints (Show Your Work)
 After completing each logical unit of work — a test passing, a component working, an endpoint responding — surface to the user:
-1. **Show what was built**: test output, a curl command, a code walkthrough, or a working demo
+1. **Show what was built**: test output, a curl command, a code walkthrough
 2. **Ask for alignment**: "Does this align with what you had in mind? Should I continue or adjust?"
 3. **Never go dark**: Do not work through more than one major logical unit without checking in with the user
 
 At minimum:
 - After Phase 3 (tests passing): show the test results and explain what they prove
-- Before Phase 6 (final validation): show a working demo or walkthrough of the feature
 
-#### Verification Checkpoint (Before Commit)
-
-Before proceeding to commit, you MUST complete a verification checkpoint. Guard.sh enforces this — commits are blocked without a verified `.proof-status` file.
-
-**Step 1: Discover verification tools**
-Check what MCP servers and tools are available in this project:
-- Browser preview tools (Playwright MCP, browser-tools, Storybook)
-- API testing tools (HTTP client MCPs)
-- Database or service inspection tools
-If project-specific MCP tools exist, USE them to verify the feature end-to-end.
-
-**Step 2: Collect proof evidence**
-Gather proof from multiple categories:
-
-| Category | Examples | Required? |
-|----------|----------|-----------|
-| **Test output** | pytest summary, vitest results, go test output | Always |
-| **Live demo** | Start dev server + URL, curl output, CLI command + result | Required for user-facing features |
-| **MCP evidence** | Playwright screenshot, API response capture, browser snapshot | When MCP tools available |
-
-**Minimum requirement:** Test output is mandatory. For user-facing features, at least one of live demo OR MCP evidence is also required.
-
-**Step 3: Prepare the user's test environment**
-Set up everything the user needs to verify live:
-- Web features: start dev server, provide exact URL/route to visit
-- API features: provide curl commands or request examples
-- CLI features: provide exact commands to run
-- Library features: provide a minimal runnable example
-
-**Step 4: Present verification checkpoint**
-Show the user:
-1. **Test output** — actual test framework output (copy/paste the real output, not a summary)
-2. **MCP evidence** — screenshots, API responses, or other tool-gathered proof (if tools were available)
-3. **Live test instructions** — exact steps for the user to verify themselves
-4. **Ask explicitly**: "Please verify the feature. Reply **'verified'** to proceed to commit, or describe what needs to change."
-
-**Step 5: Record proof status**
-- **User says "verified"** → Write the proof status file:
-  ```bash
-  echo "verified|$(date +%s)" > <project_root>/.claude/.proof-status
-  ```
-- **User says something else** → Fix the issue, re-collect proof, re-present. Do NOT write the file.
-- **Do NOT write `.proof-status` until the user explicitly says "verified"** — this is a human gate.
-
-Note: If source files are edited after verification (e.g., lint fixes), `track.sh` automatically resets `.proof-status` to `pending`. You must re-verify with the user: "I made a minor change after verification. Feature behavior is unchanged. Still verified?" → user confirms → rewrite `.proof-status`.
-
-Do NOT proceed to Phase 6 until `.proof-status` shows `verified`. This is a hard gate enforced by guard.sh.
-
-### Phase 5: Decision Annotation
+### Phase 4: Decision Annotation
 For significant code (50+ lines), add @decision annotations using the IDs **pre-assigned in MASTER_PLAN.md**:
 ```typescript
 /**
@@ -173,7 +107,7 @@ For significant code (50+ lines), add @decision annotations using the IDs **pre-
 - If you make a decision not covered by the plan, create a new ID following the `DEC-COMPONENT-NNN` pattern and note it — Guardian will capture the delta during phase review
 - This bidirectional mapping (plan → code, code → plan) is how the system tracks drift and ensures alignment
 
-### Phase 6: Validation & Presentation
+### Phase 5: Validation & Presentation
 1. Run full test suite—no regressions
 2. Review your own code for clarity, security, performance
 3. Commit with clear messages
@@ -193,17 +127,13 @@ For significant code (50+ lines), add @decision annotations using the IDs **pre-
 ## Session End Protocol
 
 Before completing your work, verify:
-- [ ] Did you run the feature LIVE (not just tests)?
-- [ ] Did you paste ACTUAL OUTPUT (not a summary)?
-- [ ] Did the user see it and confirm alignment?
-- [ ] Is `.proof-status` set to `verified`?
+- [ ] Do all tests pass?
+- [ ] Are @decision annotations present on 50+ line source files?
+- [ ] Is the worktree clean (no untracked debris)?
 - [ ] If you asked for approval (commit, approach, next steps), did you receive and process it?
 - [ ] Did you execute the requested operation (or explain why not)?
 - [ ] Does the user know what was done and what comes next?
 - [ ] Have you suggested a next step or asked if they want to continue?
-
-If ANY of the first four answers is no → complete Phase 4 (Live Demo & Verification) before returning.
-The SubagentStop hook will reject your output and force a resume if proof-of-work is missing.
 
 **Never end a conversation with just an approval question.** If you present work and ask "Should I commit this?" or "Does this look right?", wait for the user's response and then:
 - If approved → Execute the commit/next action
@@ -219,7 +149,7 @@ When TRACE_DIR appears in your startup context:
    - `test-output.txt` — full test framework output
    - `diff.patch` — `git diff` of all changes
    - `files-changed.txt` — one file path per line
-   - `proof-evidence.txt` — live demo output shown to user
+   - `proof-evidence.txt` — test output and implementation evidence
 2. Write `$TRACE_DIR/summary.md` before returning — include: status, files changed, test counts, key decisions, next steps
 3. Return message to orchestrator: ≤1500 tokens, structured summary + "Full trace: $TRACE_DIR"
 

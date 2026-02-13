@@ -24,6 +24,7 @@ set -euo pipefail
 #   - No destructive git commands (reset --hard, clean -f, branch -D)
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')
@@ -130,6 +131,18 @@ if echo "$COMMAND" | grep -qE "$TMP_PATTERN"; then
         REWRITTEN="mkdir -p $PROJECT_TMP && $REWRITTEN"
         rewrite "$REWRITTEN" "Rewrote /tmp/ to project tmp/ directory. Sacred Practice #3: artifacts belong with their project."
     fi
+fi
+
+# --- Check 9: Block agents from writing verified to .proof-status ---
+# Only prompt-submit.sh (user-triggered) can write verified status.
+# This prevents any agent from bypassing the human verification gate.
+# Must be before the early-exit gate since this is not a git command.
+# Two conditions: (1) command structurally writes to .proof-status (redirect
+# target outside quotes), AND (2) "verified" appears anywhere in the command.
+# This avoids false-positives on commit messages that mention both keywords.
+_proof_stripped=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
+if echo "$_proof_stripped" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$COMMAND" | grep -qE 'verified'; then
+    deny "Cannot write 'verified' to .proof-status directly. Only the user can verify proof-of-work. Present the demo and ask the user to say 'verified'."
 fi
 
 # --- Early-exit gate: skip git-specific checks for non-git commands ---
@@ -260,20 +273,7 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'
     fi
 fi
 
-# --- Helper: check if repo is the ~/.claude meta-infrastructure repo ---
-# Uses --git-common-dir so worktrees of ~/.claude (e.g., claude-prd-integration)
-# are correctly recognized as meta-repo. Fixes #29.
-is_claude_meta_repo() {
-    local dir="$1"
-    local common_dir
-    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || echo "")
-    # Resolve to absolute if relative
-    if [[ -n "$common_dir" && "$common_dir" != /* ]]; then
-        common_dir=$(cd "$dir" && cd "$common_dir" && pwd)
-    fi
-    # common_dir for ~/.claude is ~/.claude/.git (strip trailing /.git)
-    [[ "${common_dir%/.git}" == */.claude ]]
-}
+# is_claude_meta_repo is provided by context-lib.sh (shared library)
 
 # --- Check 6: Test status gate for merge commands ---
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
