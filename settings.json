@@ -68,6 +68,7 @@
       "NotebookEdit",
       "mcp__context7__resolve-library-id",
       "mcp__context7__query-docs",
+      "mcp__fetch__fetch",
       "mcp__playwright__*",
       "mcp__claude-in-chrome__*",
       "Skill(*)"
@@ -82,7 +83,8 @@
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
-    "context7"
+    "context7",
+    "fetch"
   ],
   "hooks": {
     "SessionStart": [
@@ -194,6 +196,16 @@
             "command": "$HOME/.claude/hooks/test-runner.sh",
             "timeout": 60,
             "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/webfetch-fallback.sh",
+            "timeout": 5
           }
         ]
       }

@@ -105,6 +105,17 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 - **Research**: `deep-research`, `last30days`
 - **Workflow**: `context-preservation`
 
+## Web Fetching
+
+`WebFetch` works for most URLs. When it fails (blocked domains, cascade errors), a PostToolUse hook automatically suggests alternatives. For batch fetching (3+ URLs), prefer `batch-fetch.py` via Bash to avoid cascade failures.
+
+| Scenario | Method | Why |
+|----------|--------|-----|
+| Single URL in conversation | `WebFetch` or `mcp__fetch__fetch` | Both work; hook suggests fallback on failure |
+| Multiple URLs (3+) in a skill/agent | `batch-fetch.py` via Bash | Cascade-proof — single tool call |
+| JS-rendered / bot-blocked site | Playwright MCP (`browser_navigate` → `browser_snapshot`) | Full browser rendering |
+| Blocked/failed WebFetch | `mcp__fetch__fetch` | Hook suggests this automatically |
+
 ## Notes
 
 - This is meta-infrastructure — patterns here apply to OTHER projects
