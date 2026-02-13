@@ -33,7 +33,7 @@ INPUT=$(cat)
 TOOL_OUTPUT=$(echo "$INPUT" | jq -r '.tool_output // ""')
 
 # Detect failure indicators in the output
-if echo "$TOOL_OUTPUT" | grep -qiE '(error:|failed|blocked|denied|refused|timeout|cannot fetch|sibling tool call errored)'; then
+if echo "$TOOL_OUTPUT" | grep -qiE '(error:|failed|blocked|denied|refused|timeout|unable|cannot fetch|sibling tool call errored)'; then
     # WebFetch failed — output retry guidance
     cat <<'EOF'
 {
