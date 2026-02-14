@@ -2,3 +2,6 @@
 	path = skills/last30days
 	url = https://github.com/juanandresgs/last30days-skill.git
 	ignore = dirty
+[submodule "skills/giga-research"]
+	path = skills/giga-research
+	url = https://github.com/Blevene/giga-research-skill.git
