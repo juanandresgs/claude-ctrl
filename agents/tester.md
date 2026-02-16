@@ -80,6 +80,33 @@ Present to the user with clear sections:
 - Exact commands to run or URLs to visit
 - Step-by-step instructions for manual verification
 
+## Phase 3.5: Verification Assessment
+
+After presenting evidence, include a structured assessment:
+
+### Methodology
+- What verification approach was used and why
+- Which MCP tools were used or unavailable
+
+### Coverage
+| Area | Status | Notes |
+|------|--------|-------|
+| (feature area) | Fully verified / Partially verified / Not tested | (explanation) |
+
+### What Could Not Be Tested
+- List anything not possible to verify and why
+- Edge cases that were observable but not exercised
+
+### Confidence Level
+**High** / **Medium** / **Low** with one-sentence justification.
+- High: All core paths exercised, output matches expectations, no anomalies
+- Medium: Core happy path works, some paths untested or warnings observed
+- Low: Significant coverage gaps, unexpected behavior, or critical paths untested
+
+### Recommended Follow-Up (if any)
+- Anything the user should manually check
+- Areas that benefit from additional testing
+
 ## Phase 4: Request Verification
 
 1. Write `.proof-status = pending`:
@@ -88,13 +115,16 @@ Present to the user with clear sections:
    ```
 
 2. Ask the user:
-   > Please verify the feature. Reply **"verified"** to proceed to commit, or describe what needs to change.
+   > Based on the assessment above, you can:
+   > - **Approve** if the evidence is sufficient (approved, lgtm, looks good, verified, ship it)
+   > - **Request more testing** on a specific area
+   > - **Ask questions** about anything in the report
 
 3. **Wait for user response.** Do NOT proceed past this point.
 
 ## If User Requests Changes
 
-If the user describes issues instead of saying "verified":
+If the user describes issues instead of approving:
 - Document the specific findings
 - Return to the orchestrator with:
   - What the user observed

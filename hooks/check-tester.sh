@@ -106,7 +106,7 @@ EOF
 elif [[ "$PROOF_STATUS" == "pending" ]]; then
     # Proof flow is active but user hasn't confirmed yet
     # This is expected — the tester presented evidence, now we wait for the user
-    DIRECTIVE="WAITING FOR USER: The tester has presented verification evidence and written .proof-status = pending. The user must now review the evidence and say 'verified' to proceed. Do NOT dispatch Guardian until .proof-status = verified. If the user describes issues, resume the implementer with their findings."
+    DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
     ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {
@@ -116,7 +116,7 @@ EOF
     exit 0
 else
     # proof-status missing or unknown — tester didn't complete its job
-    DIRECTIVE="BLOCKED: Tester returned without completing verification.\nResume the tester to:\n1. Run the feature/system live\n2. Show actual output to the user\n3. Write pending to .proof-status\n4. Ask user to say 'verified'"
+    DIRECTIVE="BLOCKED: Tester returned without completing verification.\nResume the tester to:\n1. Run the feature/system live\n2. Show actual output to the user\n3. Write pending to .proof-status\n4. Present the verification report and let the user respond naturally"
     ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {

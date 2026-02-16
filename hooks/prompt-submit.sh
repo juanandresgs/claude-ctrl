@@ -98,7 +98,7 @@ fi
 # write verified|<timestamp>. This is the ONLY path to verified status.
 # No agent can write "verified" directly — guard.sh blocks it.
 PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
-if echo "$PROMPT" | grep -qiE '^\s*verified\s*$|^.*\bverified\b.*$'; then
+if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+good\b|\bship\s+it\b|\bapprove\s+for\s+commit\b'; then
     if [[ -f "$PROOF_FILE" ]]; then
         CURRENT_STATUS=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null)
         if [[ "$CURRENT_STATUS" == "pending" ]]; then

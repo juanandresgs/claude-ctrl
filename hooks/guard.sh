@@ -141,8 +141,8 @@ fi
 # target outside quotes), AND (2) "verified" appears anywhere in the command.
 # This avoids false-positives on commit messages that mention both keywords.
 _proof_stripped=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
-if echo "$_proof_stripped" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$COMMAND" | grep -qE 'verified'; then
-    deny "Cannot write 'verified' to .proof-status directly. Only the user can verify proof-of-work. Present the demo and ask the user to say 'verified'."
+if echo "$_proof_stripped" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$COMMAND" | grep -qiE 'verified|approved?|lgtm|looks.good|ship.it'; then
+    deny "Cannot write approval status to .proof-status directly. Only the user can verify proof-of-work (via prompt-submit.sh). Present the verification report and let the user respond naturally."
 fi
 
 # --- Early-exit gate: skip git-specific checks for non-git commands ---

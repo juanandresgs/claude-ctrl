@@ -48,10 +48,12 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **Auto-dispatch to Tester:** After the implementer returns successfully (tests pass, no blocking issues), dispatch the tester automatically with the implementer's trace context. Do NOT ask "should I verify?" — just dispatch the tester.
 
+**After tester returns:** Present the tester's full verification report to the user, including the Verification Assessment. Do NOT summarize it into a keyword demand. Engage in Q&A about the evidence. When the user expresses approval, prompt-submit.sh handles the gate transition automatically.
+
 **Pre-dispatch gate (mechanically enforced):**
 - Tester dispatch: requires implementer to have returned with tests passing
 - Guardian dispatch: requires `.proof-status = verified` (PreToolUse:Task gate in task-track.sh)
-- The user must say "verified" for `.proof-status` to reach verified — no agent can write it
+- The user's approval (verified, approved, lgtm, looks good, ship it) triggers `.proof-status = verified` via prompt-submit.sh — no agent can write it
 
 **Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.
 
@@ -74,8 +76,11 @@ Agents are interactive — they handle the full approval cycle (present → appr
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
 8. **Approval Gates** — Commits, merges, force pushes require explicit user approval.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues. MASTER_PLAN.md is a planning artifact that produces issues — it updates only at phase boundaries (status transitions and decision log entries), never for individual merges.
-10. **Proof Before Commit** — The tester agent runs the feature live and shows the user.
-    The user says "verified." Only then can Guardian commit. Mechanically enforced:
+10. **Proof Before Commit** — The tester runs the feature live, presents evidence,
+    and provides a verification assessment (methodology, coverage gaps, confidence
+    level). Present the full report to the user. Let them respond naturally — any
+    approval language (approved, lgtm, looks good, verified, ship it) triggers
+    the gate. Do NOT reduce this to "say verified." Mechanically enforced:
     task-track.sh denies Guardian dispatch, guard.sh denies git commit/merge,
     prompt-submit.sh is the only path to verified status.
 
