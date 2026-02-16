@@ -217,6 +217,7 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 | **lint.sh** | PostToolUse:Write\|Edit | Auto-detect linter, run on modified files, feedback loop |
 | **track.sh** | PostToolUse:Write\|Edit | Record changes, invalidate proof-of-work on source edits |
 | **test-runner.sh** | PostToolUse:Write\|Edit | Async test execution, writes `.test-status` for evidence gate |
+| **skill-result.sh** | PostToolUse:Skill | Reads `.skill-result.md` from forked skills, injects as context |
 | **session-init.sh** | SessionStart | Inject git state, update status, plan status, worktrees, todo HUD (calls `scripts/update-check.sh`) |
 | **prompt-submit.sh** | UserPromptSubmit | Keyword-based context injection, deferred-work detection |
 | **compact-preserve.sh** | PreCompact | Dual-path context preservation across compaction |

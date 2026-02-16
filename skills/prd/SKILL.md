@@ -187,3 +187,31 @@ Scope creep happens when:
 - Review the spec against the original problem statement — does everything serve it?
 - Time-box investigations: "If we cannot figure out X in 2 days, we cut it"
 - Create a "parking lot" for good ideas that are not in scope
+
+---
+
+## Write Context Summary (MANDATORY — do this LAST)
+
+Write a compact result summary so the parent session receives key findings:
+
+```bash
+cat > .claude/.skill-result.md << 'SKILLEOF'
+## PRD Result: [Feature Name]
+
+**Output:** [path to PRD file]
+
+### Requirements Summary
+- **P0 (Must-have):** [n] requirements
+- **P1 (Nice-to-have):** [n] requirements
+- **P2 (Future):** [n] requirements
+
+### Key User Journeys
+1. [Primary user journey summary]
+2. [Secondary user journey summary]
+
+### Open Questions
+- [Most important unresolved question]
+SKILLEOF
+```
+
+Keep under 2000 characters. This is consumed by a hook — the parent session will see it automatically.

@@ -622,6 +622,30 @@ The Planner proceeds to Phase 2 Step 3 (Finalize decisions) with the user's conf
 → Looks for recent research on Next.js vs Remix, generates framework comparison configurator
 ```
 
+## Write Context Summary (MANDATORY — do this LAST)
+
+Write a compact result summary so the parent session receives key findings:
+
+```bash
+cat > .claude/.skill-result.md << 'SKILLEOF'
+## Decision Configurator Result
+
+**Decisions made:** [n]
+**Confirmed DEC-IDs:** [DEC-XXX-001, DEC-XXX-002, ...]
+
+### Decisions Summary
+1. [DEC-ID]: [Choice made] — [1-line rationale]
+2. [DEC-ID]: [Choice made] — [1-line rationale]
+
+### Pending
+- [Any decisions deferred or needing follow-up]
+SKILLEOF
+```
+
+Keep under 2000 characters. This is consumed by a hook — the parent session will see it automatically.
+
+---
+
 ## Notes
 
 - The configurator is a single HTML file — no build tools, no npm, no server

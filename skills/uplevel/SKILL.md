@@ -192,3 +192,29 @@ When `--quick` is enabled, area agents MUST NOT:
 - Run any command that modifies the filesystem
 
 Quick mode is read-only: Glob, Grep, Read, and non-destructive `git` commands only.
+
+---
+
+## Write Context Summary (MANDATORY — do this LAST)
+
+Write a compact result summary so the parent session receives key findings:
+
+```bash
+cat > .claude/.skill-result.md << 'SKILLEOF'
+## Uplevel Audit Result
+
+**Health score:** [n]/100
+**Issues created:** [n] GitHub issues
+
+### Top Findings by Severity
+- 🔴 Critical: [finding or "none"]
+- 🟡 Warning: [finding count and summary]
+- 🟢 Info: [finding count]
+
+### Recommended Next Steps
+1. [Highest priority action]
+2. [Second priority action]
+SKILLEOF
+```
+
+Keep under 2000 characters. This is consumed by a hook — the parent session will see it automatically.

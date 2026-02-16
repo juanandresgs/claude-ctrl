@@ -218,6 +218,32 @@ Tell the user where the reports were saved and list the files.
 
 ---
 
+## Write Context Summary (MANDATORY — do this LAST)
+
+Write a compact result summary so the parent session receives key findings:
+
+```bash
+cat > .claude/.skill-result.md << 'SKILLEOF'
+## Deep Research Result: [Topic]
+
+**Status:** [n]/3 providers succeeded | [list any failures]
+**Time:** [total elapsed]s
+**Output:** .claude/research/DeepResearch_[Topic]_[Date]/report.md
+
+### Key Findings (highest confidence)
+1. [Finding supported by 2+ providers]
+2. [Finding supported by 2+ providers]
+3. [Additional key finding]
+
+### Needs Attention
+- [Any provider failures or gaps worth noting]
+SKILLEOF
+```
+
+Keep under 2000 characters. This is consumed by a hook — the parent session will see it automatically.
+
+---
+
 ## After the Report
 
 End with:

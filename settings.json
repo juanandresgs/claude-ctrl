@@ -218,6 +218,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/skill-result.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Notification": [
