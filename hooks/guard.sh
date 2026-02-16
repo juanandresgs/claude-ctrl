@@ -215,6 +215,7 @@ is_same_project() {
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
+#   - Merge commits (MERGE_HEAD present — landing feature branches via git merge)
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     REPO_ROOT=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -226,6 +227,8 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
             STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
             if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
                 : # Allow - plan file commits on main are permitted
+            elif GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --absolute-git-dir 2>/dev/null) && [[ -f "$GIT_DIR/MERGE_HEAD" ]]; then
+                : # Allow — completing a merge is the intended workflow
             else
                 deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
             fi

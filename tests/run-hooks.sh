@@ -768,6 +768,57 @@ nuclear_assert_safe "guard-safe-pipe-grep-commit.json" "git log | grep commit (p
 rm -f "$PIPE_FIXTURE"
 echo ""
 
+# --- Test: guard.sh — Check 2: main is sacred (commit on main) ---
+echo "--- guard.sh Check 2: main is sacred ---"
+
+# Test: direct commit on main should be DENIED
+C2_TEST_DIR=$(mktemp -d)
+git init "$C2_TEST_DIR" >/dev/null 2>&1
+(cd "$C2_TEST_DIR" && git commit -m "init" --allow-empty) >/dev/null 2>&1
+# Stage a file so it's not a MASTER_PLAN.md-only commit
+echo "test" > "$C2_TEST_DIR/src.js"
+(cd "$C2_TEST_DIR" && git add src.js) >/dev/null 2>&1
+
+C2_FIXTURE_DENY="$FIXTURES_DIR/guard-check2-commit-main-deny.json"
+cat > "$C2_FIXTURE_DENY" <<C2EOF
+{"tool_name":"Bash","tool_input":{"command":"git -C $C2_TEST_DIR commit -m \"direct commit on main\""}}
+C2EOF
+
+output=$(run_hook "$HOOKS_DIR/guard.sh" "$C2_FIXTURE_DENY")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "guard.sh — Check 2: direct commit on main denied"
+else
+    fail "guard.sh — Check 2: direct commit on main" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$C2_FIXTURE_DENY"
+
+# Test: merge commit on main (MERGE_HEAD present) should be ALLOWED
+# Create MERGE_HEAD to simulate an in-progress merge
+GIT_DIR_PATH=$(git -C "$C2_TEST_DIR" rev-parse --absolute-git-dir 2>/dev/null)
+touch "$GIT_DIR_PATH/MERGE_HEAD"
+# Satisfy Check 7 (test-status) and Check 8 (proof-status) so only Check 2 is tested
+mkdir -p "$C2_TEST_DIR/.claude"
+echo "pass|0|$(date +%s)" > "$C2_TEST_DIR/.claude/.test-status"
+echo "verified|$(date +%s)" > "$C2_TEST_DIR/.claude/.proof-status"
+
+C2_FIXTURE_MERGE="$FIXTURES_DIR/guard-check2-merge-commit-allow.json"
+cat > "$C2_FIXTURE_MERGE" <<C2EOF
+{"tool_name":"Bash","tool_input":{"command":"git -C $C2_TEST_DIR commit -m \"Merge branch 'feature' into main\""}}
+C2EOF
+
+output=$(run_hook "$HOOKS_DIR/guard.sh" "$C2_FIXTURE_MERGE")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    fail "guard.sh — Check 2: merge commit on main" "should allow but got deny"
+else
+    pass "guard.sh — Check 2: merge commit on main allowed (MERGE_HEAD present)"
+fi
+rm -f "$C2_FIXTURE_MERGE"
+
+safe_cleanup "$C2_TEST_DIR" "$SCRIPT_DIR"
+echo ""
+
 # --- Test: auto-review.sh ---
 echo "--- auto-review.sh ---"
 if [[ -f "$FIXTURES_DIR/auto-review-safe.json" ]]; then
