@@ -50,6 +50,13 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **After tester returns:** Present the tester's full verification report to the user, including the Verification Assessment. Do NOT summarize it into a keyword demand. Engage in Q&A about the evidence. When the user expresses approval, prompt-submit.sh handles the gate transition automatically.
 
+**Auto-verify fast path:** When check-tester.sh detects `AUTOVERIFY: CLEAN`
+with High confidence, full coverage, and no caveats, it auto-writes
+`.proof-status = verified`. The orchestrator should present the verification
+report AND dispatch Guardian in parallel — the user sees evidence while the
+commit is in flight. If auto-verify doesn't trigger, the manual approval
+flow applies (present report, wait for user approval keyword).
+
 **Pre-dispatch gate (mechanically enforced):**
 - Tester dispatch: requires implementer to have returned with tests passing
 - Guardian dispatch: requires `.proof-status = verified` (PreToolUse:Task gate in task-track.sh)
@@ -84,11 +91,13 @@ When the task touches unfamiliar areas, read relevant files from the Resources t
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues. MASTER_PLAN.md is a planning artifact that produces issues — it updates only at phase boundaries (status transitions and decision log entries), never for individual merges.
 10. **Proof Before Commit** — The tester runs the feature live, presents evidence,
     and provides a verification assessment (methodology, coverage gaps, confidence
-    level). Present the full report to the user. Let them respond naturally — any
-    approval language (approved, lgtm, looks good, verified, ship it) triggers
-    the gate. Do NOT reduce this to "say verified." Mechanically enforced:
+    level). Present the full report to the user. Clean e2e verifications
+    (High confidence, no caveats) auto-verify — the user sees evidence while
+    Guardian commits. Otherwise, let them respond naturally — any approval
+    language (approved, lgtm, looks good, verified, ship it) triggers the gate.
+    Do NOT reduce this to "say verified." Mechanically enforced:
     task-track.sh denies Guardian dispatch, guard.sh denies git commit/merge,
-    prompt-submit.sh is the only path to verified status.
+    prompt-submit.sh is the only manual path to verified status.
 
 ## Code is Truth
 
