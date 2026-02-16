@@ -1,13 +1,31 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Session cleanup on termination.
-# SessionEnd hook — runs once when session actually ends.
+# session-end.sh — SessionEnd hook
+#
+# Purpose: Cleans up session-scoped files when Claude Code session terminates.
+# Releases active todo claims, kills orphaned async processes, and removes
+# temporary tracking files that don't persist across sessions.
+#
+# Hook type: SessionEnd
+# Trigger: Session termination (any reason)
+# Input: JSON on stdin with reason field
+# Output: None (cleanup only)
 #
 # Cleans up:
-#   - Session tracking files (.session-changes-*)
+#   - Session tracking files (.session-changes-*, .session-decisions-*)
 #   - Lint cache files (.lint-cache)
-#   - Temporary tracking artifacts
+#   - Test gate strikes and warnings
+#   - Temporary tracking artifacts (.track.*)
+#   - Skill result files (.skill-result*)
+#   - Async test-runner processes
+#
+# Persists (does NOT delete):
+#   - .audit-log — persistent audit trail
+#   - .agent-findings — pending agent issues
+#   - .lint-breaker — circuit breaker state
+#   - .plan-drift — decision drift data
+#   - .test-status — cleared at session START, not here
+
+set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 
@@ -44,6 +62,7 @@ rm -f "$PROJECT_ROOT/.claude/.test-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.test-gate-cold-warned"
 rm -f "$PROJECT_ROOT/.claude/.mock-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.track."*
+rm -f "$PROJECT_ROOT/.claude/.skill-result"*
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail

@@ -258,6 +258,33 @@ These constraints make the skill reliable. They are non-negotiable:
 
 ---
 
+## Write Context Summary (MANDATORY — do this LAST)
+
+Write a compact result summary so the parent session receives key findings:
+
+```bash
+cat > .claude/.skill-result.md << 'SKILLEOF'
+## Content Snapshot Result: [Title]
+
+**Source:** [URL or document path]
+**Output:** [path to generated snapshot file]
+**Quotes extracted:** [n]
+
+### Key Takeaways
+1. [Most important insight]
+2. [Second key insight]
+3. [Third key insight]
+
+### Coverage
+- [What was covered well]
+- [Any gaps or sections skipped]
+SKILLEOF
+```
+
+Keep under 2000 characters. This is consumed by a hook — the parent session will see it automatically.
+
+---
+
 ## After Completion
 
 ```
