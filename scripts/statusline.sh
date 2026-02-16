@@ -106,6 +106,33 @@ if [[ "$todo_count" -gt 0 ]]; then
     line=$(printf '%s %b \033[35m%d todo%s\033[0m' "$line" "$sep" "$todo_count" "$local_s")
 fi
 
+# Community segment (read from .community-status)
+COMMUNITY_STATUS_FILE="$HOME/.claude/.community-status"
+if [[ -f "$COMMUNITY_STATUS_FILE" ]]; then
+    comm_status=$(jq -r '.status // "none"' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "none")
+    if [[ "$comm_status" == "active" ]]; then
+        comm_prs=$(jq -r '.total_prs // 0' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "0")
+        comm_issues=$(jq -r '.total_issues // 0' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "0")
+
+        if [[ "$comm_prs" -gt 0 || "$comm_issues" -gt 0 ]]; then
+            comm_text=""
+            if [[ "$comm_prs" -gt 0 && "$comm_issues" -gt 0 ]]; then
+                pr_s=""; [[ "$comm_prs" -ne 1 ]] && pr_s="s"
+                issue_s=""; [[ "$comm_issues" -ne 1 ]] && issue_s="s"
+                comm_text="${comm_prs} PR${pr_s} + ${comm_issues} issue${issue_s}"
+            elif [[ "$comm_prs" -gt 0 ]]; then
+                pr_s=""; [[ "$comm_prs" -ne 1 ]] && pr_s="s"
+                comm_text="${comm_prs} PR${pr_s}"
+            else
+                issue_s=""; [[ "$comm_issues" -ne 1 ]] && issue_s="s"
+                comm_text="${comm_issues} issue${issue_s}"
+            fi
+            # Use bold white (1;37m) to distinguish from magenta todos
+            line=$(printf '%s %b \033[1;37m%s\033[0m' "$line" "$sep" "$comm_text")
+        fi
+    fi
+fi
+
 # Version
 line=$(printf '%s %b \033[32m%s\033[0m' "$line" "$sep" "$version")
 

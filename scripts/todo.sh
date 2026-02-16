@@ -521,6 +521,33 @@ cmd_list() {
         fi
     fi
 
+    # --- COMMUNITY section (not shown in --json or --grouped mode) ---
+    if ! $json_output && ! $grouped; then
+        COMMUNITY_STATUS_FILE="$HOME/.claude/.community-status"
+        if [[ -f "$COMMUNITY_STATUS_FILE" ]]; then
+            local comm_status
+            comm_status=$(jq -r '.status // "none"' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "none")
+            if [[ "$comm_status" == "active" ]]; then
+                local comm_items
+                comm_items=$(jq -r '.items // []' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "[]")
+                local comm_count
+                comm_count=$(echo "$comm_items" | jq 'length' 2>/dev/null || echo "0")
+
+                if [[ "$comm_count" -gt 0 ]]; then
+                    has_output=true
+                    echo ""
+                    echo "COMMUNITY ($comm_count items across your repos):"
+                    echo "$comm_items" | jq -r '.[] |
+                        if .type == "pr" then
+                            "  PR #\(.number) on \(.repo) — \(.title) (by \(.author))"
+                        else
+                            "  Issue #\(.number) on \(.repo) — \(.title) (by \(.author))"
+                        end' 2>/dev/null
+                fi
+            fi
+        fi
+    fi
+
     # Grouped output: display issues grouped by component:* label
     if $grouped && $has_output; then
         echo "$all_issues" | jq -r '
@@ -815,6 +842,35 @@ cmd_hud() {
         echo "  ... and ${remaining} more. Use /backlog to review."
     else
         echo "  Use /backlog to review."
+    fi
+
+    # Add community one-liner if items exist
+    COMMUNITY_STATUS_FILE="$HOME/.claude/.community-status"
+    if [[ -f "$COMMUNITY_STATUS_FILE" ]]; then
+        local comm_status
+        comm_status=$(jq -r '.status // "none"' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "none")
+        if [[ "$comm_status" == "active" ]]; then
+            local comm_prs comm_issues
+            comm_prs=$(jq -r '.total_prs // 0' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "0")
+            comm_issues=$(jq -r '.total_issues // 0' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "0")
+
+            if [[ "$comm_prs" -gt 0 || "$comm_issues" -gt 0 ]]; then
+                echo ""
+                local comm_text=""
+                if [[ "$comm_prs" -gt 0 && "$comm_issues" -gt 0 ]]; then
+                    local pr_s=""; [[ "$comm_prs" -ne 1 ]] && pr_s="s"
+                    local issue_s=""; [[ "$comm_issues" -ne 1 ]] && issue_s="s"
+                    comm_text="${comm_prs} PR${pr_s} + ${comm_issues} issue${issue_s}"
+                elif [[ "$comm_prs" -gt 0 ]]; then
+                    local pr_s=""; [[ "$comm_prs" -ne 1 ]] && pr_s="s"
+                    comm_text="${comm_prs} PR${pr_s}"
+                else
+                    local issue_s=""; [[ "$comm_issues" -ne 1 ]] && issue_s="s"
+                    comm_text="${comm_issues} issue${issue_s}"
+                fi
+                echo "Community: ${comm_text} across your repos (use /backlog to see details)"
+            fi
+        fi
     fi
 }
 

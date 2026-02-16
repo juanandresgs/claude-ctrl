@@ -61,50 +61,12 @@ if [[ -f "$UPDATE_STATUS_FILE" && -s "$UPDATE_STATUS_FILE" ]]; then
     rm -f "$UPDATE_STATUS_FILE"
 fi
 
-# --- Run community check first (guarantees .community-status exists) ---
-# Inline execution to ensure .community-status is written before we read it below.
+# --- Run community check in background (non-blocking) ---
+# The .community-status file will be ready by the time statusline renders.
+# Display moved to statusline.sh and todo.sh for better visibility.
 COMMUNITY_SCRIPT="$HOME/.claude/scripts/community-check.sh"
 if [[ -x "$COMMUNITY_SCRIPT" ]]; then
-    "$COMMUNITY_SCRIPT" 2>/dev/null || true
-fi
-
-# --- Community contributions status ---
-COMMUNITY_STATUS_FILE="$HOME/.claude/.community-status"
-if [[ -f "$COMMUNITY_STATUS_FILE" && -s "$COMMUNITY_STATUS_FILE" ]]; then
-    COMM_STATUS=$(jq -r '.status // "none"' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "none")
-    COMM_TOTAL_PRS=$(jq -r '.total_prs // 0' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "0")
-    COMM_TOTAL_ISSUES=$(jq -r '.total_issues // 0' "$COMMUNITY_STATUS_FILE" 2>/dev/null || echo "0")
-
-    if [[ "$COMM_STATUS" == "active" ]]; then
-        TOTAL_ITEMS=$((COMM_TOTAL_PRS + COMM_TOTAL_ISSUES))
-
-        if [[ "$TOTAL_ITEMS" -le 3 ]]; then
-            # Show individual items
-            while IFS= read -r item; do
-                ITEM_TYPE=$(echo "$item" | jq -r '.type')
-                ITEM_REPO=$(echo "$item" | jq -r '.repo')
-                ITEM_NUMBER=$(echo "$item" | jq -r '.number')
-                ITEM_TITLE=$(echo "$item" | jq -r '.title')
-                ITEM_AUTHOR=$(echo "$item" | jq -r '.author')
-
-                if [[ "$ITEM_TYPE" == "pr" ]]; then
-                    CONTEXT_PARTS+=("Community: PR #${ITEM_NUMBER} on ${ITEM_REPO} (${ITEM_TITLE}) by ${ITEM_AUTHOR}")
-                else
-                    CONTEXT_PARTS+=("Community: Issue #${ITEM_NUMBER} on ${ITEM_REPO} (${ITEM_TITLE}) by ${ITEM_AUTHOR}")
-                fi
-            done < <(jq -c '.items[]' "$COMMUNITY_STATUS_FILE" 2>/dev/null)
-        else
-            # Show counts for many items
-            if [[ "$COMM_TOTAL_PRS" -gt 0 && "$COMM_TOTAL_ISSUES" -gt 0 ]]; then
-                CONTEXT_PARTS+=("Community: ${COMM_TOTAL_PRS} open PRs + ${COMM_TOTAL_ISSUES} issues across your repos")
-            elif [[ "$COMM_TOTAL_PRS" -gt 0 ]]; then
-                CONTEXT_PARTS+=("Community: ${COMM_TOTAL_PRS} open PRs across your repos")
-            else
-                CONTEXT_PARTS+=("Community: ${COMM_TOTAL_ISSUES} open issues across your repos")
-            fi
-        fi
-    fi
-    # status == "none" → silent (no output)
+    "$COMMUNITY_SCRIPT" 2>/dev/null &
 fi
 
 # --- MASTER_PLAN.md ---
