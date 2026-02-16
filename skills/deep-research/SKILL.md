@@ -57,7 +57,7 @@ Create the output directory and run the script:
 RESEARCH_DIR=".claude/research/DeepResearch_[SafeTopic]_[YYYY-MM-DD]"
 mkdir -p "$RESEARCH_DIR" && \
 python3 ~/.claude/skills/deep-research/scripts/deep_research.py "$ARGUMENTS" \
-  --output-dir "$RESEARCH_DIR" --validate=1 2>&1
+  --output-dir "$RESEARCH_DIR" --validate=2 2>&1
 ```
 
 Set `timeout: 1920000` on the Bash tool call (script's 1800s timeout + 120s buffer = 1920s = 32 min).
