@@ -121,7 +121,10 @@ fi
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
     FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
     mkdir -p "${PROJECT_ROOT}/.claude"
-    echo "planner|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
+    FINDING="planner|$(IFS=';'; echo "${ISSUES[*]}")"
+    if ! grep -qxF "$FINDING" "$FINDINGS_FILE" 2>/dev/null; then
+        echo "$FINDING" >> "$FINDINGS_FILE"
+    fi
     for issue in "${ISSUES[@]}"; do
         append_audit "$PROJECT_ROOT" "agent_planner" "$issue"
     done

@@ -57,8 +57,6 @@ plans/
 .session-start-epoch
 .subagent-tracker
 
-# LLM review cache (session-scoped, cleared on session start)
-.llm-review-cache
 
 # MCP server configuration (local runtime, user-specific)
 .mcp.json

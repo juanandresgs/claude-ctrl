@@ -157,6 +157,20 @@ Skills are non-deterministic intelligence layers. They have their own `SKILL.md`
 
 For hook bugs: include the JSON input that triggers the bug and the expected vs. actual output. See the bug report issue template.
 
+## Removing a Feature
+
+When removing a hook, skill, or feature, follow this checklist to avoid orphaned artifacts:
+
+1. Remove the hook/script files from `hooks/` or `scripts/`
+2. Remove registration from `settings.json`
+3. Remove documentation from `hooks/HOOKS.md` tables
+4. Remove test references from `tests/` and `tests/fixtures/`
+5. Search codebase for feature name references: `grep -r "feature-name" .`
+6. Remove or update plan files in `plans/` that discuss the feature
+7. Remove `.gitignore` entries for feature-specific cache or state files
+8. Update `README.md` hook table if applicable
+9. Run a new session — `session-init.sh` consistency check will flag any remaining references
+
 ## Questions?
 
 Open a discussion or issue. The hook system is designed to be modular — each hook enforces one practice, so new contributions rarely conflict with existing ones.
