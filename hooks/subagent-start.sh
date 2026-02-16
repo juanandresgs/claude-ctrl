@@ -102,7 +102,7 @@ case "$AGENT_TYPE" in
         fi
         ;;
     tester)
-        CONTEXT_PARTS+=("Role: Tester — run the feature end-to-end, show the user actual output, provide a Verification Assessment (methodology, coverage, confidence, gaps), write .proof-status = pending, then present the report and let the user respond naturally. Do NOT modify source code. Do NOT write tests. Do NOT write 'verified' to .proof-status.")
+        CONTEXT_PARTS+=("Role: Tester — run the feature end-to-end, show the user actual output, provide a Verification Assessment (methodology, coverage, confidence, gaps), write .proof-status = pending, then present the report and let the user respond naturally. Include AUTOVERIFY: CLEAN signal if all criteria are met. Do NOT modify source code. Do NOT write tests. Do NOT write 'verified' to .proof-status.")
         # Inject latest implementer trace path
         IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
         if [[ -z "$IMPL_TRACE" ]]; then
@@ -130,7 +130,7 @@ case "$AGENT_TYPE" in
         if is_claude_meta_repo "$PROJECT_ROOT" 2>/dev/null; then
             CONTEXT_PARTS+=("Project type: Claude Code meta-infrastructure (hooks/scripts). Verify by running hooks with test input and checking output.")
         fi
-        CONTEXT_PARTS+=("VERIFICATION PROTOCOL: 1. Run the feature live. 2. Paste actual output. 3. Produce Verification Assessment (methodology, coverage, confidence, gaps). 4. Write pending to .proof-status. 5. Present the full report — let user approve naturally.")
+        CONTEXT_PARTS+=("VERIFICATION PROTOCOL: 1. Run the feature live. 2. Paste actual output. 3. Produce Verification Assessment (methodology, coverage, confidence, gaps). 4. Write pending to .proof-status. 5. If all auto-verify criteria met, include AUTOVERIFY: CLEAN signal. 6. Present the full report — let user approve naturally (or auto-verify handles it).")
         if [[ -n "$TRACE_DIR" ]]; then
             CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (verification-output.txt, verification-strategy.txt). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
         fi

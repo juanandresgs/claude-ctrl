@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# SubagentStop:tester — validation of tester output.
+# SubagentStop:tester — validation of tester output with auto-verify support.
 # Checks that the tester completed its verification job:
 #   - .proof-status exists (at least pending)
-#   - If still pending → exit 2 (user hasn't confirmed yet)
+#   - If tester signals AUTOVERIFY: CLEAN with High confidence and full coverage,
+#     auto-writes verified status (bypasses manual approval)
+#   - If still pending → exit 0 with advisory (user approval flow)
 #   - If verified → exit 0 (Guardian dispatch unblocked)
 #
 # @decision DEC-TESTER-001
-# @title Tester SubagentStop validation with human gate enforcement
+# @title Tester SubagentStop with auto-verify for clean e2e verifications
 # @status accepted
-# @rationale The tester agent presents evidence and writes .proof-status = pending.
-#   Only the user can write verified (via prompt-submit.sh). This hook enforces
-#   the gate: if proof is still pending, the tester is resumed to re-present
-#   the demo. If verified, Guardian dispatch is unblocked.
+# @rationale The tester presents evidence and writes .proof-status = pending.
+#   If the tester signals AUTOVERIFY: CLEAN and secondary validation confirms
+#   (High confidence, full coverage, no caveats), this hook auto-writes
+#   verified — bypassing manual approval. Otherwise, the user must approve.
+#   Guard.sh Check 9 only blocks Bash tool writes, not hook file operations.
+#   track.sh resets proof if source files change post-verification.
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -104,9 +108,32 @@ if [[ "$PROOF_STATUS" == "verified" ]]; then
 EOF
     exit 0
 elif [[ "$PROOF_STATUS" == "pending" ]]; then
-    # Proof flow is active but user hasn't confirmed yet
-    # This is expected — the tester presented evidence, now we wait for the user
-    DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
+    # --- Auto-verify: check if tester signals clean verification ---
+    AUTO_VERIFIED=false
+    if echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
+        # Secondary validation — reject false claims
+        AV_FAIL=false
+        # Must have High confidence (markdown bold)
+        echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
+        # Must NOT have "Not tested" or "Partially verified" in coverage
+        echo "$RESPONSE_TEXT" | grep -qi 'Not tested\|Partially verified' && AV_FAIL=true
+        # Must NOT have Medium or Low confidence
+        echo "$RESPONSE_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*' && AV_FAIL=true
+
+        if [[ "$AV_FAIL" == "false" ]]; then
+            echo "verified|$(date +%s)" > "$PROOF_FILE"
+            AUTO_VERIFIED=true
+            append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
+        else
+            append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
+        fi
+    fi
+
+    if [[ "$AUTO_VERIFIED" == "true" ]]; then
+        DIRECTIVE="AUTO-VERIFIED: The tester completed e2e verification with High confidence, full coverage, and no caveats. Proof-of-work is now verified. Present the tester's full verification report to the user AND dispatch Guardian simultaneously. The user sees the evidence while the commit is in flight."
+    else
+        DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
+    fi
     ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {

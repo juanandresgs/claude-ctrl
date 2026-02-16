@@ -107,6 +107,21 @@ After presenting evidence, include a structured assessment:
 - Anything the user should manually check
 - Areas that benefit from additional testing
 
+### Auto-Verify Signal
+
+If your assessment meets ALL of these criteria, include this exact line at the end of your Verification Assessment:
+
+    AUTOVERIFY: CLEAN
+
+Criteria (ALL must be true):
+- Confidence Level is **High**
+- Every area in the Coverage table is "Fully verified"
+- "What Could Not Be Tested" lists only "None" or is empty
+- "Recommended Follow-Up" lists only "None" or is empty
+- No errors, warnings, or anomalies were observed
+
+If ANY criterion is not met, do NOT include this line. The manual approval flow will apply.
+
 ## Phase 4: Request Verification
 
 1. Write `.proof-status = pending`:
@@ -114,7 +129,8 @@ After presenting evidence, include a structured assessment:
    echo "pending|$(date +%s)" > <project_root>/.claude/.proof-status
    ```
 
-2. Ask the user:
+2. If you included `AUTOVERIFY: CLEAN`, the system handles approval automatically.
+   Otherwise, ask the user:
    > Based on the assessment above, you can:
    > - **Approve** if the evidence is sufficient (approved, lgtm, looks good, verified, ship it)
    > - **Request more testing** on a specific area
