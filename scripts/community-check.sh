@@ -103,7 +103,7 @@ if [[ "$REPOS" == "[]" ]]; then
     exit 0
 fi
 
-# --- Step 5: Query PRs and issues for each repo ---
+# --- Step 5: Query PRs and issues for each repo (parallel) ---
 # Use temp files for parallel processing
 TMP_DIR=$(mktemp -d)
 trap "rm -rf '$TMP_DIR'; cleanup" EXIT
@@ -112,48 +112,68 @@ ALL_ITEMS="[]"
 TOTAL_PRS=0
 TOTAL_ISSUES=0
 
-# Process repos sequentially (parallel would be complex with temp files)
+# Fire all repo queries in parallel as background jobs
+JOB_PIDS=()
 while IFS= read -r repo_name; do
     [[ -z "$repo_name" ]] && continue
 
     REPO_FULL="${USERNAME}/${repo_name}"
+    REPO_OUTPUT="${TMP_DIR}/${repo_name}.json"
 
-    # Fetch PRs
-    PRS=$(gh pr list --repo "$REPO_FULL" --state open --json number,title,author,createdAt 2>/dev/null || echo "[]")
+    # Background job: fetch PRs and issues, filter, write to temp file
+    (
+        # Fetch PRs
+        PRS=$(gh pr list --repo "$REPO_FULL" --state open --json number,title,author,createdAt 2>/dev/null || echo "[]")
 
-    # Filter out self-authored PRs and convert to our format
-    FILTERED_PRS=$(echo "$PRS" | jq --arg username "$USERNAME" --arg repo "$repo_name" '
-        map(select(.author.login != $username)) |
-        map({
-            type: "pr",
-            repo: $repo,
-            number: .number,
-            title: .title,
-            author: .author.login
-        })
-    ' 2>/dev/null || echo "[]")
+        # Filter out self-authored PRs and convert to our format
+        FILTERED_PRS=$(echo "$PRS" | jq --arg username "$USERNAME" --arg repo "$repo_name" '
+            map(select(.author.login != $username)) |
+            map({
+                type: "pr",
+                repo: $repo,
+                number: .number,
+                title: .title,
+                author: .author.login
+            })
+        ' 2>/dev/null || echo "[]")
 
-    # Fetch issues
-    ISSUES=$(gh issue list --repo "$REPO_FULL" --state open --json number,title,author,labels,createdAt 2>/dev/null || echo "[]")
+        # Fetch issues
+        ISSUES=$(gh issue list --repo "$REPO_FULL" --state open --json number,title,author,labels,createdAt 2>/dev/null || echo "[]")
 
-    # Filter out self-authored issues and claude-todo labels
-    FILTERED_ISSUES=$(echo "$ISSUES" | jq --arg username "$USERNAME" --arg repo "$repo_name" '
-        map(select(.author.login != $username)) |
-        map(select([.labels[].name] | any(. == "claude-todo") | not)) |
-        map({
-            type: "issue",
-            repo: $repo,
-            number: .number,
-            title: .title,
-            author: .author.login
-        })
-    ' 2>/dev/null || echo "[]")
+        # Filter out self-authored issues and claude-todo labels
+        FILTERED_ISSUES=$(echo "$ISSUES" | jq --arg username "$USERNAME" --arg repo "$repo_name" '
+            map(select(.author.login != $username)) |
+            map(select([.labels[].name] | any(. == "claude-todo") | not)) |
+            map({
+                type: "issue",
+                repo: $repo,
+                number: .number,
+                title: .title,
+                author: .author.login
+            })
+        ' 2>/dev/null || echo "[]")
 
-    # Merge into ALL_ITEMS
-    ALL_ITEMS=$(echo "$ALL_ITEMS" | jq --argjson prs "$FILTERED_PRS" --argjson issues "$FILTERED_ISSUES" \
-        '. + $prs + $issues' 2>/dev/null || echo "[]")
+        # Merge PRs and issues into single array
+        MERGED=$(echo "$FILTERED_PRS" "$FILTERED_ISSUES" | jq -s '.[0] + .[1]' 2>/dev/null || echo "[]")
 
+        # Write to temp file
+        echo "$MERGED" > "$REPO_OUTPUT"
+    ) &
+
+    JOB_PIDS+=($!)
 done < <(echo "$REPOS" | jq -r '.[].name' 2>/dev/null)
+
+# Wait for all background jobs to complete
+for pid in "${JOB_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+done
+
+# Merge all results from temp files
+for result_file in "$TMP_DIR"/*.json; do
+    [[ ! -f "$result_file" ]] && continue
+    REPO_ITEMS=$(cat "$result_file" 2>/dev/null || echo "[]")
+    ALL_ITEMS=$(echo "$ALL_ITEMS" "$REPO_ITEMS" | jq -s '.[0] + .[1]' 2>/dev/null || echo "[]")
+done
 
 # --- Step 6: Count and write status ---
 TOTAL_PRS=$(echo "$ALL_ITEMS" | jq '[.[] | select(.type == "pr")] | length' 2>/dev/null || echo "0")

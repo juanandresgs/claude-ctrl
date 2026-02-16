@@ -61,6 +61,14 @@ if [[ -f "$UPDATE_STATUS_FILE" && -s "$UPDATE_STATUS_FILE" ]]; then
     rm -f "$UPDATE_STATUS_FILE"
 fi
 
+# --- Run community check in background (non-blocking) ---
+# The .community-status file will be ready by the time statusline renders.
+# Display moved to statusline.sh and todo.sh for better visibility.
+COMMUNITY_SCRIPT="$HOME/.claude/scripts/community-check.sh"
+if [[ -x "$COMMUNITY_SCRIPT" ]]; then
+    "$COMMUNITY_SCRIPT" 2>/dev/null &
+fi
+
 # --- MASTER_PLAN.md preamble: project identity ---
 if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
     PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
