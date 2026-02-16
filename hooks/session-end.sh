@@ -35,6 +35,7 @@ source "$(dirname "$0")/log.sh"
 REASON=$(jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 log_info "SESSION-END" "Session ending (reason: $REASON)"
 
@@ -53,16 +54,16 @@ if pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
 fi
 
 # --- Clean up session-scoped files (these don't persist) ---
-rm -f "$PROJECT_ROOT/.claude/.session-changes"*
-rm -f "$PROJECT_ROOT/.claude/.session-decisions"*
-rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
-rm -f "$PROJECT_ROOT/.claude/.lint-cache"
-rm -f "$PROJECT_ROOT/.claude/.test-runner."*
-rm -f "$PROJECT_ROOT/.claude/.test-gate-strikes"
-rm -f "$PROJECT_ROOT/.claude/.test-gate-cold-warned"
-rm -f "$PROJECT_ROOT/.claude/.mock-gate-strikes"
-rm -f "$PROJECT_ROOT/.claude/.track."*
-rm -f "$PROJECT_ROOT/.claude/.skill-result"*
+rm -f "${CLAUDE_DIR}/.session-changes"*
+rm -f "${CLAUDE_DIR}/.session-decisions"*
+rm -f "${CLAUDE_DIR}/.prompt-count-"*
+rm -f "${CLAUDE_DIR}/.lint-cache"
+rm -f "${CLAUDE_DIR}/.test-runner."*
+rm -f "${CLAUDE_DIR}/.test-gate-strikes"
+rm -f "${CLAUDE_DIR}/.test-gate-cold-warned"
+rm -f "${CLAUDE_DIR}/.mock-gate-strikes"
+rm -f "${CLAUDE_DIR}/.track."*
+rm -f "${CLAUDE_DIR}/.skill-result"*
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail
@@ -74,7 +75,7 @@ rm -f "$PROJECT_ROOT/.claude/.skill-result"*
 # then clears it to prevent stale results from satisfying the commit gate.
 
 # --- Trim audit log to prevent unbounded growth (keep last 100 entries) ---
-AUDIT_LOG="$PROJECT_ROOT/.claude/.audit-log"
+AUDIT_LOG="${CLAUDE_DIR}/.audit-log"
 if [[ -f "$AUDIT_LOG" ]]; then
     LINES=$(wc -l < "$AUDIT_LOG" | tr -d ' ')
     if [[ "$LINES" -gt 100 ]]; then

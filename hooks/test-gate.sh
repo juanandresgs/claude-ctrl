@@ -45,8 +45,9 @@ is_test_file "$FILE_PATH" && exit 0
 
 # --- Read test status ---
 PROJECT_ROOT=$(detect_project_root)
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-STRIKES_FILE="${PROJECT_ROOT}/.claude/.test-gate-strikes"
+CLAUDE_DIR=$(get_claude_dir)
+TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
+STRIKES_FILE="${CLAUDE_DIR}/.test-gate-strikes"
 
 # No test status yet → allow (with cold-start advisory if test framework detected)
 if [[ ! -f "$TEST_STATUS_FILE" ]]; then
@@ -57,7 +58,7 @@ if [[ ! -f "$TEST_STATUS_FILE" ]]; then
     [[ -f "$PROJECT_ROOT/Cargo.toml" ]] && HAS_TESTS=true
     [[ -f "$PROJECT_ROOT/go.mod" ]] && HAS_TESTS=true
     if [[ "$HAS_TESTS" == "true" ]]; then
-        COLD_FLAG="${PROJECT_ROOT}/.claude/.test-gate-cold-warned"
+        COLD_FLAG="${CLAUDE_DIR}/.test-gate-cold-warned"
         if [[ ! -f "$COLD_FLAG" ]]; then
             mkdir -p "${PROJECT_ROOT}/.claude"
             touch "$COLD_FLAG"

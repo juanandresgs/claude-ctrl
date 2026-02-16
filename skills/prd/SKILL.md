@@ -190,6 +190,28 @@ Scope creep happens when:
 
 ---
 
+## Auto-Save Output (MANDATORY — do this BEFORE context summary)
+
+After generating the PRD, automatically save it to a predictable location:
+
+1. Determine the save path:
+   - If in a project context: `<project_root>/.claude/prds/<slug>.md`
+   - If in ~/.claude context: `${HOME}/.claude/prds/<slug>.md`
+   - Where `<slug>` is a kebab-case version of the feature name (e.g., "User Authentication" → "user-authentication")
+
+2. Create the directory if it doesn't exist:
+   ```bash
+   mkdir -p <project_root>/.claude/prds
+   ```
+
+3. Write the PRD to the file using the Write tool
+
+4. Print the save path in your response so the user knows where to find it
+
+**Rationale:** PRD generation is expensive (multi-model research, deep analysis). Auto-saving ensures the work persists even if the user doesn't manually save. This implements Fix #40.
+
+---
+
 ## Write Context Summary (MANDATORY — do this LAST)
 
 Write a compact result summary so the parent session receives key findings:

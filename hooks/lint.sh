@@ -29,6 +29,7 @@ is_skippable_path "$FILE_PATH" && exit 0
 
 # --- Detect project root ---
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # --- Linter detection with caching ---
 # Cache in project .claude dir (not /tmp/ — Sacred Practice #3)
@@ -139,7 +140,7 @@ fi
 [[ "$LINTER" == "none" ]] && exit 0
 
 # --- Circuit breaker: prevent runaway lint retry loops ---
-BREAKER_FILE="${PROJECT_ROOT}/.claude/.lint-breaker"
+BREAKER_FILE="${CLAUDE_DIR}/.lint-breaker"
 if [[ -f "$BREAKER_FILE" ]]; then
     BREAKER_STATE=$(cut -d'|' -f1 "$BREAKER_FILE")
     BREAKER_COUNT=$(cut -d'|' -f2 "$BREAKER_FILE")

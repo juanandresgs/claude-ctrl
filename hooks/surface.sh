@@ -25,21 +25,22 @@ fi
 
 # Get project root (prefers CLAUDE_PROJECT_DIR)
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # Find session tracking file (try session-scoped first, fall back to legacy)
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
-if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
-elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes"
+if [[ -n "$SESSION_ID" && -f "${CLAUDE_DIR}/.session-changes-${SESSION_ID}" ]]; then
+    CHANGES="${CLAUDE_DIR}/.session-changes-${SESSION_ID}"
+elif [[ -f "${CLAUDE_DIR}/.session-changes" ]]; then
+    CHANGES="${CLAUDE_DIR}/.session-changes"
 else
     # Glob fallback for any session file
     # shellcheck disable=SC2012
-    CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-changes"* 2>/dev/null | head -1 || echo "")
+    CHANGES=$(ls "${CLAUDE_DIR}/.session-changes"* 2>/dev/null | head -1 || echo "")
     # Also check legacy name
     if [[ -z "$CHANGES" ]]; then
         # shellcheck disable=SC2012
-        CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-decisions"* 2>/dev/null | head -1 || echo "")
+        CHANGES=$(ls "${CLAUDE_DIR}/.session-decisions"* 2>/dev/null | head -1 || echo "")
     fi
 fi
 
@@ -379,7 +380,7 @@ fi
 rm -f "$DEC_IDS_FILE"
 
 # --- Append key findings to audit log ---
-AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
+AUDIT_LOG="${CLAUDE_DIR}/.audit-log"
 if [[ "$MISSING_COUNT" -gt 0 ]]; then
     append_audit "$PROJECT_ROOT" "decision_gap" "$MISSING_COUNT files missing @decision"
 fi
@@ -391,7 +392,7 @@ if [[ -n "${PLAN_NOT_CODE:-}" ]]; then
 fi
 
 # --- Persist structured drift data for next session's plan-check ---
-DRIFT_FILE="${PROJECT_ROOT}/.claude/.plan-drift"
+DRIFT_FILE="${CLAUDE_DIR}/.plan-drift"
 {
     echo "audit_epoch=$(date +%s)"
     echo "unplanned_count=$(echo "${CODE_NOT_PLAN:-}" | wc -w | tr -d ' ')"

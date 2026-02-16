@@ -8,8 +8,16 @@
 #   read_input                  - Read and cache stdin JSON (sets HOOK_INPUT)
 #   get_field <jq_path>         - Extract field from cached input
 #   detect_project_root         - Find git root or fall back to CLAUDE_PROJECT_DIR
+#   get_claude_dir              - Get .claude directory path (handles ~/.claude special case)
 #
 # All output goes to stderr so it doesn't interfere with hook JSON output.
+#
+# @decision DEC-LOG-001
+# @title Shared logging and path utilities for all hooks
+# @status accepted
+# @rationale Centralized helper functions prevent duplication and ensure consistent
+#   behavior across all hooks. get_claude_dir() fixes #77 double-nesting bug.
+#   detect_project_root() includes #34 deleted CWD recovery.
 
 # Cache stdin so multiple functions can read it
 HOOK_INPUT=""
@@ -39,6 +47,12 @@ log_info() {
 }
 
 detect_project_root() {
+    # Check if CWD still exists — recover if deleted (Fix #34)
+    if [[ ! -d "$PWD" ]]; then
+        cd "${HOME}" 2>/dev/null || cd / 2>/dev/null
+        echo "WARNING: CWD was deleted, recovered to $(pwd)" >&2
+    fi
+
     # Prefer CLAUDE_PROJECT_DIR if set and valid
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}" ]]; then
         echo "$CLAUDE_PROJECT_DIR"
@@ -57,5 +71,24 @@ detect_project_root() {
     echo "${HOME:-/}"
 }
 
+# @decision DEC-QUICKFIX-001
+# @title Fix double-nested paths when PROJECT_ROOT is ~/.claude
+# @status accepted
+# @rationale When PROJECT_ROOT is ~/.claude, using ${PROJECT_ROOT}/.claude/ produces
+#   ~/.claude/.claude/ which breaks state file paths. This helper returns the correct
+#   .claude directory: PROJECT_ROOT/.claude for normal projects, PROJECT_ROOT for ~/.claude.
+#   Fixes #77.
+get_claude_dir() {
+    local project_root="${PROJECT_ROOT:-$(detect_project_root)}"
+    local home_claude="${HOME}/.claude"
+
+    # If PROJECT_ROOT is already ~/.claude, return it as-is (don't double-nest)
+    if [[ "$project_root" == "$home_claude" ]]; then
+        echo "$project_root"
+    else
+        echo "${project_root}/.claude"
+    fi
+}
+
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root
+export -f log_json log_info read_input get_field detect_project_root get_claude_dir

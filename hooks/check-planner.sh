@@ -16,6 +16,7 @@ source "$(dirname "$0")/context-lib.sh"
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
 # Track subagent completion
@@ -118,7 +119,7 @@ fi
 
 # Persist findings for next-prompt injection
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+    FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
     mkdir -p "${PROJECT_ROOT}/.claude"
     echo "planner|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
     for issue in "${ISSUES[@]}"; do

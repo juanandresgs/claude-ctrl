@@ -16,6 +16,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
 
 # --- Git state (via shared library) ---
@@ -84,7 +85,7 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
 fi
 
 # --- Test status ---
-TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
+TEST_STATUS="${CLAUDE_DIR}/.test-status"
 if [[ -f "$TEST_STATUS" ]]; then
     TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
     TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS")
@@ -92,7 +93,7 @@ if [[ -f "$TEST_STATUS" ]]; then
 fi
 
 # --- Agent findings (unresolved issues from subagents) ---
-FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
 if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     CONTEXT_PARTS+=("Unresolved agent findings:")
     while IFS= read -r line; do
@@ -112,7 +113,7 @@ if [[ -d "$TRACE_STORE" ]]; then
 fi
 
 # --- Audit trail (last 5) ---
-AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
+AUDIT_LOG="${CLAUDE_DIR}/.audit-log"
 if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
     CONTEXT_PARTS+=("Recent audit (last 5):")
     while IFS= read -r line; do
@@ -125,7 +126,7 @@ fi
 # SessionStart(compact) event. Belt-and-suspenders: even if the
 # additionalContext is lost during compaction, session-init.sh can
 # re-inject this data.
-PRESERVE_FILE="${PROJECT_ROOT}/.claude/.preserved-context"
+PRESERVE_FILE="${CLAUDE_DIR}/.preserved-context"
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
     mkdir -p "$PROJECT_ROOT/.claude"
     {

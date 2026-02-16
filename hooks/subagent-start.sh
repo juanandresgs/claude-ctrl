@@ -19,6 +19,7 @@ HOOK_INPUT=$(read_input)
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
 
 # --- Git + Plan state (one line) ---
@@ -84,7 +85,7 @@ case "$AGENT_TYPE" in
         fi
         CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to ${DECISION_LINE_THRESHOLD}+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
         # Inject test status
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+        TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
             TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
             TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
@@ -138,7 +139,7 @@ case "$AGENT_TYPE" in
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
         # Inject test status
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+        TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
             TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
             TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")

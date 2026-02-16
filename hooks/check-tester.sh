@@ -26,6 +26,7 @@ source "$(dirname "$0")/context-lib.sh"
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "tester"
@@ -44,7 +45,7 @@ write_statusline_cache "$PROJECT_ROOT"
 ISSUES=()
 
 # Check 1: .proof-status exists (tester should have written pending)
-PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+PROOF_FILE="${CLAUDE_DIR}/.proof-status"
 PROOF_STATUS="missing"
 if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
@@ -89,7 +90,7 @@ fi
 
 # Persist findings for next-prompt injection
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+    FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
     mkdir -p "${PROJECT_ROOT}/.claude"
     echo "tester|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
     for issue in "${ISSUES[@]}"; do

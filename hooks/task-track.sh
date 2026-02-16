@@ -19,6 +19,7 @@ HOOK_INPUT=$(read_input)
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.tool_input.subagent_type // "unknown"' 2>/dev/null)
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # Track spawn and refresh statusline cache
 track_subagent_start "$PROJECT_ROOT" "$AGENT_TYPE"
@@ -45,7 +46,7 @@ EOF
 # Meta-repo (~/.claude) is exempt — no feature verification needed for config.
 if [[ "$AGENT_TYPE" == "guardian" ]]; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
         if [[ -f "$PROOF_FILE" ]]; then
             PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
             if [[ "$PROOF_STATUS" != "verified" ]]; then

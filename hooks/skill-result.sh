@@ -26,7 +26,8 @@ TOOL_NAME=$(get_field '.tool_name')
 
 SKILL_NAME=$(get_field '.tool_input.skill')
 PROJECT_ROOT=$(detect_project_root)
-RESULT_FILE="$PROJECT_ROOT/.claude/.skill-result.md"
+CLAUDE_DIR=$(get_claude_dir)
+RESULT_FILE="${CLAUDE_DIR}/.skill-result.md"
 
 [[ ! -f "$RESULT_FILE" ]] && exit 0
 

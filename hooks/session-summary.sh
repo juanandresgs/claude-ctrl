@@ -21,14 +21,15 @@ if [[ "$STOP_ACTIVE" == "true" ]]; then
 fi
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # Find session tracking file
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
 CHANGES=""
-if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
-elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes"
+if [[ -n "$SESSION_ID" && -f "${CLAUDE_DIR}/.session-changes-${SESSION_ID}" ]]; then
+    CHANGES="${CLAUDE_DIR}/.session-changes-${SESSION_ID}"
+elif [[ -f "${CLAUDE_DIR}/.session-changes" ]]; then
+    CHANGES="${CLAUDE_DIR}/.session-changes"
 fi
 
 # No tracking file → no summary needed
@@ -79,7 +80,7 @@ get_plan_status "$PROJECT_ROOT"
 # "not run" while tests are actually in-flight.
 TEST_RESULT="unknown"
 TEST_FAILS=0
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
 
 # Brief wait for async test-runner if it's still running
 if [[ ! -f "$TEST_STATUS_FILE" ]] && pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then

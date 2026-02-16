@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # Dynamic context injection based on user prompt content.
 # UserPromptSubmit hook
 #
@@ -8,6 +6,16 @@ set -euo pipefail
 #   - File paths → inject that file's @decision status
 #   - "plan" or "implement" → inject MASTER_PLAN.md phase status
 #   - "merge" or "commit" → inject git dirty state
+#
+# @decision DEC-PROMPT-001
+# @title User verification gate and dynamic context injection
+# @status accepted
+# @rationale This hook serves two critical functions: (1) it's the ONLY path for user
+#   verification to reach .proof-status (no agent can write "verified"), and (2) it
+#   injects contextual hints based on prompt keywords. Uses get_claude_dir() to handle
+#   ~/.claude special case (Fix #77).
+
+set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -22,11 +30,12 @@ PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
 
 # --- First-prompt mitigation for session-init bug (Issue #10373) ---
-PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${CLAUDE_SESSION_ID:-$$}"
+CLAUDE_DIR=$(get_claude_dir)
+PROMPT_COUNT_FILE="${CLAUDE_DIR}/.prompt-count-${CLAUDE_SESSION_ID:-$$}"
 if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
-    mkdir -p "${PROJECT_ROOT}/.claude"
+    mkdir -p "${CLAUDE_DIR}"
     echo "1" > "$PROMPT_COUNT_FILE"
-    date +%s > "${PROJECT_ROOT}/.claude/.session-start-epoch"
+    date +%s > "${CLAUDE_DIR}/.session-start-epoch"
     # Inject full session context (same as session-init.sh)
     get_git_state "$PROJECT_ROOT"
     get_plan_status "$PROJECT_ROOT"
@@ -97,7 +106,7 @@ fi
 # When user says "verified" and a proof flow is active (.proof-status = pending),
 # write verified|<timestamp>. This is the ONLY path to verified status.
 # No agent can write "verified" directly — guard.sh blocks it.
-PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+PROOF_FILE="${CLAUDE_DIR}/.proof-status"
 if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+good\b|\bship\s+it\b|\bapprove\s+for\s+commit\b'; then
     if [[ -f "$PROOF_FILE" ]]; then
         CURRENT_STATUS=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null)
@@ -109,7 +118,7 @@ if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+goo
 fi
 
 # --- Inject agent findings from previous subagent runs ---
-FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
 if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     CONTEXT_PARTS+=("Previous agent findings (unresolved):")
     while IFS='|' read -r agent issues; do
@@ -224,7 +233,7 @@ if [[ -f "$PROMPT_COUNT_FILE" ]]; then
     fi
 
     # Secondary: session duration
-    EPOCH_FILE="${PROJECT_ROOT}/.claude/.session-start-epoch"
+    EPOCH_FILE="${CLAUDE_DIR}/.session-start-epoch"
     if [[ "$SUGGEST_COMPACT" == "false" && -f "$EPOCH_FILE" ]]; then
         START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")
         NOW_EPOCH=$(date +%s)

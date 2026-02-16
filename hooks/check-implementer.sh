@@ -20,6 +20,7 @@ source "$(dirname "$0")/context-lib.sh"
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "implementer"
@@ -46,10 +47,10 @@ fi
 # Check 2: Scan session-changes for 50+ line source files missing @decision
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
 CHANGES=""
-if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
-elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes"
+if [[ -n "$SESSION_ID" && -f "${CLAUDE_DIR}/.session-changes-${SESSION_ID}" ]]; then
+    CHANGES="${CLAUDE_DIR}/.session-changes-${SESSION_ID}"
+elif [[ -f "${CLAUDE_DIR}/.session-changes" ]]; then
+    CHANGES="${CLAUDE_DIR}/.session-changes"
 fi
 
 MISSING_COUNT=0
@@ -139,7 +140,7 @@ fi
 
 # Persist findings for next-prompt injection
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+    FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
     mkdir -p "${PROJECT_ROOT}/.claude"
     echo "implementer|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
     for issue in "${ISSUES[@]}"; do

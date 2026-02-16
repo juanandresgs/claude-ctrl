@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # Async background test runner after file changes.
 # PostToolUse hook — matcher: Write|Edit — async: true
 #
@@ -10,6 +8,14 @@ set -euo pipefail
 #
 # Detection: scans project root for test framework config, runs appropriate suite.
 # Skips non-source files and files in non-source directories.
+#
+# @decision DEC-TEST-001
+# @title Automatic background test execution after source changes
+# @status accepted
+# @rationale Sacred Practice #4: Nothing Done Until Tested. Runs tests automatically
+#   after Write/Edit to catch regressions early. Uses get_claude_dir() for state files.
+
+set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -29,6 +35,7 @@ is_skippable_path "$FILE_PATH" && exit 0
 [[ "$FILE_PATH" =~ \.claude ]] && exit 0
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 
 # --- Detect test runner ---
 detect_test_runner() {
@@ -194,7 +201,7 @@ rm -f "${LOCK_DIR}/.test-runner.out"
 date +%s > "$LAST_RUN_FILE"
 
 # --- Write test status for test-gate.sh and guard.sh ---
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
 if [[ "$TEST_EXIT" -ne 0 ]]; then
     FAIL_COUNT=$(echo "$TEST_OUTPUT" | grep -cE '(FAIL|FAILED|ERROR|fail)' || echo "1")
     [[ "$FAIL_COUNT" -eq 0 ]] && FAIL_COUNT=1

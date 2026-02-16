@@ -133,7 +133,8 @@ fi
 
 # --- Escalating strike system ---
 PROJECT_ROOT=$(detect_project_root)
-STRIKES_FILE="${PROJECT_ROOT}/.claude/.mock-gate-strikes"
+CLAUDE_DIR=$(get_claude_dir)
+STRIKES_FILE="${CLAUDE_DIR}/.mock-gate-strikes"
 
 CURRENT_STRIKES=0
 if [[ -f "$STRIKES_FILE" ]]; then

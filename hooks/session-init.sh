@@ -18,6 +18,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)
+CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
 
 # --- Run update check first (guarantees .update-status exists) ---
@@ -109,7 +110,7 @@ fi
 # compact-preserve.sh writes .preserved-context before compaction.
 # Re-inject it here so the post-compaction session has full context
 # even if the additionalContext from PreCompact was lost in summarization.
-PRESERVE_FILE="${PROJECT_ROOT}/.claude/.preserved-context"
+PRESERVE_FILE="${CLAUDE_DIR}/.preserved-context"
 if [[ -f "$PRESERVE_FILE" && -s "$PRESERVE_FILE" ]]; then
     CONTEXT_PARTS+=("Preserved context from before compaction:")
     while IFS= read -r line; do
@@ -124,7 +125,7 @@ fi
 
 # --- Stale session files ---
 STALE_FILE_COUNT=0
-for pattern in "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/.session-decisions"*; do
+for pattern in "${CLAUDE_DIR}/.session-changes"* "${CLAUDE_DIR}/.session-decisions"*; do
     [[ -f "$pattern" ]] && STALE_FILE_COUNT=$((STALE_FILE_COUNT + 1))
 done
 [[ "$STALE_FILE_COUNT" -gt 0 ]] && CONTEXT_PARTS+=("Stale session files: $STALE_FILE_COUNT from previous session")
@@ -184,7 +185,7 @@ if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
 fi
 
 # --- Pending agent findings ---
-FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
+FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
 if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     CONTEXT_PARTS+=("Unresolved agent findings from previous session:")
     while IFS= read -r line; do
@@ -196,15 +197,15 @@ fi
 # The first-prompt path in prompt-submit.sh is the reliable HUD injection point.
 # Without this reset, /clear leaves the old prompt-count file and the fallback
 # never triggers again, so the HUD disappears.
-rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
-rm -f "$PROJECT_ROOT/.claude/.session-start-epoch"
-rm -f "$PROJECT_ROOT/.claude/.subagent-tracker"
+rm -f "${CLAUDE_DIR}/.prompt-count-"*
+rm -f "${CLAUDE_DIR}/.session-start-epoch"
+rm -f "${CLAUDE_DIR}/.subagent-tracker"
 
 # --- Clear stale test status from previous session ---
 # .test-status is now a hard gate for commits (guard.sh Checks 6/7).
 # Stale passing results from a previous session must not satisfy the gate.
 # test-runner.sh will regenerate it after the first Write/Edit in this session.
-TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
+TEST_STATUS="${CLAUDE_DIR}/.test-status"
 if [[ -f "$TEST_STATUS" ]]; then
     TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
     TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS")
