@@ -57,7 +57,7 @@ Create the output directory and run the script:
 RESEARCH_DIR=".claude/research/DeepResearch_[SafeTopic]_[YYYY-MM-DD]"
 mkdir -p "$RESEARCH_DIR" && \
 python3 ~/.claude/skills/deep-research/scripts/deep_research.py "$ARGUMENTS" \
-  --output-dir "$RESEARCH_DIR" 2>&1
+  --output-dir "$RESEARCH_DIR" --validate=1 2>&1
 ```
 
 Set `timeout: 1920000` on the Bash tool call (script's 1800s timeout + 120s buffer = 1920s = 32 min).
@@ -80,12 +80,30 @@ Use the **Read** tool to read `raw_results.json` from the output directory. The 
   "provider_count": 3,
   "success_count": 3,
   "warnings": [],
+  "citation_validation": {
+    "depth": 1,
+    "total": 47,
+    "valid": 42,
+    "invalid": 2,
+    "unreachable": 3,
+    "skipped": 0
+  },
   "results": [
     {
       "provider": "openai",
       "success": true,
       "report": "full report text...",
-      "citations": [{"url": "...", "title": "..."}],
+      "citations": [
+        {
+          "url": "...",
+          "title": "...",
+          "validation": {
+            "status": "valid",
+            "depth": 1,
+            "details": "HTTP 200"
+          }
+        }
+      ],
       "model": "o3-deep-research-2025-06-26",
       "elapsed_seconds": 145.3,
       "error": null
@@ -94,6 +112,8 @@ Use the **Read** tool to read `raw_results.json` from the output directory. The 
   ]
 }
 ```
+
+Note: `citation_validation` and `validation` fields within citations are only present if `--validate=1` or higher was used.
 
 **Step 3: Check for provider failures**
 
@@ -140,14 +160,23 @@ remove redundant prose. 200-400 words.]
 
 ## Comparative Assessment
 
+Tag each finding with its agreement level:
+- `[consensus]` — All providers agree
+- `[majority]` — 2+ providers agree
+- `[contested]` — Providers disagree
+- `[unique-<provider>]` — Single provider finding (e.g., `[unique-openai]`)
+
 ### Points of Agreement
-[Claims made by 2+ models — these are highest confidence findings]
+[`[consensus]` findings — claims made by all providers. Highest confidence.]
+
+### Points of Majority Agreement
+[`[majority]` findings — claims made by 2+ but not all providers.]
 
 ### Points of Disagreement
-[Claims where models contradict each other — note which model says what]
+[`[contested]` findings — claims where providers contradict each other. Note which model says what.]
 
 ### Unique Insights
-[Findings that only one model reported — interesting but lower confidence]
+[`[unique-<provider>]` findings — single-provider findings. Interesting but lower confidence.]
 
 ### Confidence Assessment
 | Finding | OpenAI | Perplexity | Gemini | Confidence |
@@ -197,11 +226,29 @@ Write these additional files to the same directory:
 | File | Contents |
 |------|----------|
 | `report.md` | Your comparative synthesis (the report above) |
+| `comparison-matrix.md` | Topic coverage matrix (see below) |
 | `openai.md` | OpenAI's full report text (from `results[].report` where provider=openai) |
 | `perplexity.md` | Perplexity's full report text |
 | `gemini.md` | Gemini's full report text |
 
 Only write provider files for providers that succeeded. The raw individual reports are often 5-40K chars — preserve them in full, don't truncate.
+
+### Comparison Matrix
+
+Produce `comparison-matrix.md` — a side-by-side coverage matrix:
+
+| Topic / Claim | OpenAI | Perplexity | Gemini |
+|--------------|--------|------------|--------|
+| [key topic 1] | Detailed | Mentioned | Absent |
+| [key topic 2] | Mentioned | Detailed | Detailed |
+| [key topic 3] | Absent | Absent | Detailed |
+
+Coverage levels:
+- **Detailed** — Provider gave substantial analysis (multiple paragraphs, data, sources)
+- **Mentioned** — Provider referenced it briefly
+- **Absent** — Provider did not cover this topic
+
+Include 10-20 key topics/claims from across all providers.
 
 Tell the user where the reports were saved and list the files.
 

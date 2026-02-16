@@ -54,6 +54,42 @@ def render_json(results: List[ProviderResult], topic: str) -> str:
         "warnings": warnings,
         "results": [r.to_dict() for r in results],
     }
+
+    # Add citation validation summary if any citations have validation data
+    validation_depth = 0
+    total = 0
+    valid = 0
+    invalid = 0
+    unreachable = 0
+    skipped = 0
+
+    for r in results:
+        citations = r.citations
+        for citation in citations:
+            if isinstance(citation, dict) and "validation" in citation:
+                val = citation["validation"]
+                validation_depth = val.get("depth", 0)
+                total += 1
+                status = val.get("status", "")
+                if status == "valid":
+                    valid += 1
+                elif status == "invalid":
+                    invalid += 1
+                elif status == "unreachable":
+                    unreachable += 1
+                elif status == "skipped":
+                    skipped += 1
+
+    if validation_depth > 0:
+        output["citation_validation"] = {
+            "depth": validation_depth,
+            "total": total,
+            "valid": valid,
+            "invalid": invalid,
+            "unreachable": unreachable,
+            "skipped": skipped,
+        }
+
     return json.dumps(output, indent=2, ensure_ascii=False)
 
 

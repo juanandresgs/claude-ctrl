@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import http
+from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError, ProviderAPIError
 
 BASE_URL = "https://api.openai.com/v1"
 PRIMARY_MODEL = "o3-deep-research-2025-06-26"
@@ -84,7 +85,7 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
 
         # Check hard timeout ceiling
         if elapsed >= MAX_POLL_SECONDS:
-            raise http.HTTPError(f"OpenAI deep research timed out after {int(elapsed)}s")
+            raise ProviderTimeoutError("openai", MAX_POLL_SECONDS, elapsed)
 
         poll_count += 1
         resp = http.get(
@@ -100,11 +101,11 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
         elif status == "failed":
             error = resp.get("error", {})
             msg = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
-            raise http.HTTPError(f"OpenAI deep research failed: {msg}")
+            raise ProviderAPIError("openai", 0, msg, elapsed)
         elif status == "incomplete":
-            raise http.HTTPError("OpenAI deep research returned incomplete (may have hit output limit)")
+            raise ProviderAPIError("openai", 0, "returned incomplete (may have hit output limit)", elapsed)
         elif status == "cancelled":
-            raise http.HTTPError("OpenAI deep research was cancelled")
+            raise ProviderAPIError("openai", 0, "was cancelled", elapsed)
         elif status in ("queued", "in_progress", "searching"):
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
@@ -179,7 +180,7 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
     status = resp.get("status", "")
 
     if not response_id:
-        raise http.HTTPError("No response ID returned from OpenAI")
+        raise ProviderAPIError("openai", 0, "No response ID returned")
 
     # If already completed (unlikely for deep research), extract directly
     if status == "completed":

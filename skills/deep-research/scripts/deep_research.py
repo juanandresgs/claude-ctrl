@@ -19,6 +19,7 @@ Options:
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -33,6 +34,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from lib import env, http
 from lib.render import ProviderResult, render_json, render_compact
 from lib import openai_dr, perplexity_dr, gemini_dr
+from lib.errors import ProviderError
+from lib.validate import validate_citations
 
 
 PROVIDER_MODULES = {
@@ -80,6 +83,15 @@ def run_provider(provider: str, api_key: str, topic: str) -> ProviderResult:
             citations=citations,
             model=model,
             elapsed_seconds=round(elapsed, 1),
+        )
+    except ProviderError as e:
+        elapsed = time.time() - start
+        return ProviderResult(
+            provider=provider,
+            success=False,
+            model=PROVIDER_MODULES[provider].__dict__.get("MODEL", "unknown"),
+            elapsed_seconds=round(elapsed, 1),
+            error=str(e),
         )
     except Exception as e:
         elapsed = time.time() - start
@@ -149,6 +161,10 @@ def main():
         "--output-dir", type=str, default=None,
         help="Write raw_results.json to this directory instead of stdout",
     )
+    parser.add_argument(
+        "--validate", type=int, choices=[0, 1, 2, 3], default=0,
+        help="Citation validation depth: 0=none, 1=liveness, 2=relevance, 3=cross-ref (default: 0)",
+    )
 
     args = parser.parse_args()
 
@@ -187,6 +203,9 @@ def main():
     sys.stderr.write(f"Providers: {', '.join(available)} ({len(available)} active)\n")
     sys.stderr.flush()
 
+    # Record start time for metadata
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     # Run research
     if args.mock:
         results = run_mock(available)
@@ -220,12 +239,59 @@ def main():
     order = {"openai": 0, "perplexity": 1, "gemini": 2}
     results.sort(key=lambda r: order.get(r.provider, 99))
 
+    # Validate citations if requested
+    if args.validate > 0:
+        sys.stderr.write(f"\nValidating citations (depth={args.validate})...\n")
+        sys.stderr.flush()
+        results = validate_citations(results, args.validate)
+        sys.stderr.write("Citation validation complete.\n")
+        sys.stderr.flush()
+
     # Output
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
+
+        # Write raw_results.json
         with open(out / "raw_results.json", "w") as f:
             f.write(render_json(results, args.topic))
+
+        # Write meta.json with session metadata
+        completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        meta = {
+            "topic": args.topic,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "providers": {},
+        }
+
+        # Add provider details to metadata
+        for r in results:
+            meta["providers"][r.provider] = {
+                "success": r.success,
+                "elapsed_s": r.elapsed_seconds,
+                "model": r.model,
+            }
+            if not r.success:
+                meta["providers"][r.provider]["error"] = r.error
+
+        # Add validation metadata if citations were validated
+        if args.validate > 0:
+            # Count total citations and validated citations
+            total_citations = sum(len(r.citations) for r in results if r.success)
+            validated = 0
+            for r in results:
+                for citation in r.citations:
+                    if isinstance(citation, dict) and "validation" in citation:
+                        validated += 1
+
+            meta["citation_validation_depth"] = args.validate
+            meta["total_citations"] = total_citations
+            meta["validated_citations"] = validated
+
+        with open(out / "meta.json", "w") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+
         print(str(out / "raw_results.json"))
         # Print failure summary to stdout so the synthesis agent sees it
         failed = [r for r in results if not r.success]

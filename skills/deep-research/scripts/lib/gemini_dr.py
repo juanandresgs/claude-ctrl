@@ -20,6 +20,7 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from . import http
+from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError, ProviderAPIError
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 AGENT = "deep-research-pro-preview-12-2025"
@@ -90,9 +91,7 @@ def _poll_response_fallback(api_key: str, interaction_id: str) -> Dict[str, Any]
         elapsed = time.time() - start_time
 
         if elapsed >= MAX_TIMEOUT_SECONDS:
-            raise http.HTTPError(
-                f"Gemini deep research timed out after {int(elapsed)}s"
-            )
+            raise ProviderTimeoutError("gemini", MAX_TIMEOUT_SECONDS, elapsed)
 
         resp = http.get(
             f"{BASE_URL}/interactions/{interaction_id}",
@@ -108,9 +107,9 @@ def _poll_response_fallback(api_key: str, interaction_id: str) -> Dict[str, Any]
         elif status in ("failed", "FAILED"):
             error = resp.get("error", {})
             msg = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
-            raise http.HTTPError(f"Gemini deep research failed: {msg}")
+            raise ProviderAPIError("gemini", 0, msg, elapsed)
         elif status in ("cancelled", "CANCELLED"):
-            raise http.HTTPError("Gemini deep research was cancelled")
+            raise ProviderAPIError("gemini", 0, "was cancelled", elapsed)
         else:
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
@@ -182,9 +181,7 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
 
             # Overall timeout check
             if elapsed >= MAX_TIMEOUT_SECONDS:
-                raise http.HTTPError(
-                    f"Gemini deep research timed out after {int(elapsed)}s"
-                )
+                raise ProviderTimeoutError("gemini", MAX_TIMEOUT_SECONDS, elapsed)
 
             event_type = event.get("event", "")
             data_str = event.get("data", "")
@@ -231,14 +228,14 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
 
             elif event_type == "error":
                 error_msg = data.get("message", "Unknown error")
-                raise http.HTTPError(f"Gemini deep research failed: {error_msg}")
+                elapsed = time.time() - start_time
+                raise ProviderAPIError("gemini", 0, error_msg, elapsed)
 
             # Zombie detection: check if we've been silent too long
             silence_duration = time.time() - last_event_time
             if silence_duration > ZOMBIE_THRESHOLD:
-                raise http.HTTPError(
-                    f"Gemini task appears stuck (no events for {int(silence_duration)}s)"
-                )
+                elapsed = time.time() - start_time
+                raise ProviderTimeoutError("gemini", ZOMBIE_THRESHOLD, elapsed)
 
     except http.HTTPError:
         # Re-raise HTTP errors as-is
@@ -324,7 +321,7 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
     interaction_id = resp.get("name", resp.get("id", resp.get("interactionId", "")))
 
     if not interaction_id:
-        raise http.HTTPError("No interaction ID returned from Gemini")
+        raise ProviderAPIError("gemini", 0, "No interaction ID returned")
 
     # Check if already completed (unlikely with background=true, but handle it)
     status = resp.get("status", resp.get("metadata", {}).get("status", ""))

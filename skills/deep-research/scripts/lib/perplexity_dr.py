@@ -11,6 +11,7 @@ Uses the standard Chat Completions API format.
 from typing import Any, Dict, List, Tuple
 
 from . import http
+from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError, ProviderAPIError
 
 BASE_URL = "https://api.perplexity.ai"
 MODEL = "sonar-deep-research"

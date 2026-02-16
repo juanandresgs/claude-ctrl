@@ -314,8 +314,8 @@ if failed:
 
         # Verify both cancelled and CANCELLED appear in terminal state check
         self.assertIn('status in ("cancelled", "CANCELLED")', content)
-        # Verify it raises HTTPError
-        self.assertIn('raise http.HTTPError("Gemini deep research was cancelled")', content)
+        # Verify it raises ProviderAPIError with "was cancelled" message
+        self.assertIn('raise ProviderAPIError("gemini", 0, "was cancelled"', content)
 
     def test_openai_terminal_states(self):
         """Verify OpenAI handles incomplete and cancelled as terminal states."""
@@ -326,11 +326,11 @@ if failed:
 
         # Verify incomplete terminal state
         self.assertIn('status == "incomplete"', content)
-        self.assertIn('raise http.HTTPError("OpenAI deep research returned incomplete', content)
+        self.assertIn('raise ProviderAPIError("openai", 0, "returned incomplete', content)
 
         # Verify cancelled terminal state
         self.assertIn('status == "cancelled"', content)
-        self.assertIn('raise http.HTTPError("OpenAI deep research was cancelled")', content)
+        self.assertIn('raise ProviderAPIError("openai", 0, "was cancelled"', content)
 
     def test_openai_adaptive_intervals(self):
         """Test OpenAI adaptive poll interval function."""
