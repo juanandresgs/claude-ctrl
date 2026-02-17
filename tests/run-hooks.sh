@@ -1562,6 +1562,38 @@ safe_cleanup "$TR_TEST_DIR" "$SCRIPT_DIR"
 echo ""
 
 
+# ===== V2 Observability Tests =====
+echo ""
+echo "=== V2 Observability Tests ==="
+
+V2_TEST_FILES=(
+    "test-trajectory.sh"
+    "test-cross-session.sh"
+    "test-subagent-tracker-scope.sh"
+    "test-checkpoint.sh"
+    "test-session-context.sh"
+    "test-proof-gate.sh"
+    "test-auto-verify.sh"
+)
+
+for test_file in "${V2_TEST_FILES[@]}"; do
+    test_path="$SCRIPT_DIR/$test_file"
+    if [[ -f "$test_path" ]]; then
+        echo ""
+        echo "--- Running $test_file ---"
+        if bash "$test_path"; then
+            echo "  $test_file: ALL PASSED"
+        else
+            echo "  $test_file: FAILURES DETECTED"
+            failed=$((failed + 1))
+        fi
+    else
+        echo "  SKIP: $test_file not found"
+        skipped=$((skipped + 1))
+    fi
+done
+
+
 # --- Summary ---
 echo "==========================="
 total=$((passed + failed + skipped))

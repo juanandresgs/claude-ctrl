@@ -20,6 +20,7 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "guardian"
+append_session_event "agent_stop" "{\"type\":\"guardian\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: detect and prepare for finalization ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "guardian" 2>/dev/null || echo "")

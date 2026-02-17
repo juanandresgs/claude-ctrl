@@ -36,8 +36,10 @@ echo "$FILE_PATH" > "$TMPFILE"
 cat "$TMPFILE" >> "$TRACKING_FILE"
 rm -f "$TMPFILE"
 
-# --- Log write event to session event log ---
-append_session_event "write" "{\"file\":\"$FILE_PATH\"}" "$PROJECT_ROOT"
+# --- Log write event to session event log (skip trace artifacts — meta-infrastructure noise) ---
+if [[ ! "$FILE_PATH" =~ /\.claude/traces/ ]]; then
+    append_session_event "write" "{\"file\":\"$FILE_PATH\"}" "$PROJECT_ROOT"
+fi
 
 # --- Invalidate proof-status when non-test source files change ---
 # If user verified the feature and then source code changes, proof is stale.

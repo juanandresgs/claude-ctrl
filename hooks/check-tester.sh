@@ -29,6 +29,7 @@ CLAUDE_DIR=$(get_claude_dir)
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "tester"
+append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: detect and prepare for finalization ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")

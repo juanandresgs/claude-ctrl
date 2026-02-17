@@ -205,10 +205,18 @@ if [[ "$TEST_EXIT" -ne 0 ]]; then
     FAIL_COUNT=$(echo "$TEST_OUTPUT" | grep -cE '(FAIL|FAILED|ERROR|fail)' || echo "1")
     [[ "$FAIL_COUNT" -eq 0 ]] && FAIL_COUNT=1
     echo "fail|${FAIL_COUNT}|$(date +%s)" > "$TEST_STATUS_FILE"
+    # Extract top failing assertion for trajectory tracking
+    TOP_ASSERTION=$(echo "$TEST_OUTPUT" | grep -oE '(FAIL test_[a-zA-Z_]+|FAILED [a-zA-Z_:]+|AssertionError:? [a-zA-Z_]+|test_[a-zA-Z_]+ FAILED)' | head -1 | sed 's/^FAIL //; s/^FAILED //; s/^AssertionError:? //' || echo "unknown")
+    [[ -z "$TOP_ASSERTION" ]] && TOP_ASSERTION="unknown"
     # Audit trail
     append_audit "$PROJECT_ROOT" "test_fail" "${RUNNER}: ${FAIL_COUNT} failures"
+    append_session_event "test_run" \
+      "{\"result\":\"fail\",\"failures\":${FAIL_COUNT},\"assertion\":\"${TOP_ASSERTION}\"}" \
+      "$PROJECT_ROOT"
 else
     echo "pass|0|$(date +%s)" > "$TEST_STATUS_FILE"
+    append_session_event "test_run" \
+      "{\"result\":\"pass\",\"failures\":0}" "$PROJECT_ROOT"
 fi
 
 # --- Report results ---

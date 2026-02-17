@@ -29,6 +29,8 @@ get_plan_status "$PROJECT_ROOT"
 
 # Track subagent spawn
 track_subagent_start "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}"
+append_session_event "agent_start" \
+  "{\"type\":\"${AGENT_TYPE:-unknown}\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: initialize trace directory ---
 TRACE_ID=""
