@@ -679,6 +679,102 @@ append_session_event() {
     rm -f "$tmp"
 }
 
+# --- Approach pivot detection ---
+# @decision DEC-V2-PIVOT-001
+# @title detect_approach_pivots reads JSONL event log for edit->fail loops
+# @status accepted
+# @rationale The edit->test_fail->edit->test_fail cycle on the same file indicates
+# the agent is stuck. By detecting this pattern in the session event log we can
+# provide precise, actionable guidance: which file is looping, which assertion
+# keeps failing, and how many times the cycle has repeated. This converts a generic
+# "tests failing" message into "you have edited compute.py 4 times and test_compute
+# keeps failing — read the test to understand what it expects."
+# Implementation uses awk for bash 3.2 compatibility (macOS ships bash 3.2;
+# associative arrays require bash 4+).
+# Variables set: PIVOT_COUNT (int), PIVOT_FILES (space-sep list), PIVOT_ASSERTIONS (comma-sep list)
+detect_approach_pivots() {
+    local project_root="${1:-$(detect_project_root)}"
+    local claude_dir="${project_root}/.claude"
+    local events_file="${claude_dir}/.session-events.jsonl"
+
+    PIVOT_COUNT=0
+    PIVOT_FILES=""
+    PIVOT_ASSERTIONS=""
+
+    [[ ! -f "$events_file" ]] && return 0
+
+    # Extract writes and test_fail events with ordering preserved.
+    # Output format per line:  WRITE:<file>  or  FAIL:<assertion>
+    local event_sequence
+    event_sequence=$(jq -r '
+        if .event == "write" and .file != null then
+            "WRITE:" + .file
+        elif .event == "test_run" and .result == "fail" then
+            "FAIL:" + (.assertion // "unknown")
+        else
+            empty
+        end
+    ' "$events_file" 2>/dev/null) || return 0
+
+    [[ -z "$event_sequence" ]] && return 0
+
+    # Use awk to detect pivot pattern (bash 3.2 safe — no associative arrays).
+    # A pivot is defined as: a file that was written, then a test_fail occurred,
+    # then the same file was written again. awk tracks this per-file.
+    # Output format: one line per pivoting file: "<file>|<assertion1>,<assertion2>"
+    local pivot_lines
+    pivot_lines=$(echo "$event_sequence" | awk '
+        BEGIN { saw_fail = 0; last_assertion = ""; }
+        /^WRITE:/ {
+            fname = substr($0, 7)
+            write_count[fname]++
+            if (saw_fail) {
+                post_fail_writes[fname]++
+                if (last_assertion != "" && last_assertion != "unknown") {
+                    # Append assertion for this file (space-separated, dedup later)
+                    if (file_assertions[fname] == "") {
+                        file_assertions[fname] = last_assertion
+                    } else if (index(file_assertions[fname], last_assertion) == 0) {
+                        file_assertions[fname] = file_assertions[fname] "," last_assertion
+                    }
+                }
+            }
+        }
+        /^FAIL:/ {
+            saw_fail = 1
+            last_assertion = substr($0, 6)
+        }
+        END {
+            for (fname in post_fail_writes) {
+                if (post_fail_writes[fname] >= 1 && write_count[fname] >= 2) {
+                    print fname "|" file_assertions[fname]
+                }
+            }
+        }
+    ' 2>/dev/null) || return 0
+
+    [[ -z "$pivot_lines" ]] && return 0
+
+    # Parse awk output into shell variables
+    local pivot_count=0
+    local pivot_files_list=""
+    local pivot_assertions_list=""
+
+    while IFS='|' read -r fname assertions; do
+        [[ -z "$fname" ]] && continue
+        pivot_count=$(( pivot_count + 1 ))
+        pivot_files_list="${pivot_files_list:+$pivot_files_list }$fname"
+        pivot_assertions_list="${pivot_assertions_list:+$pivot_assertions_list,}${assertions:-}"
+    done <<< "$pivot_lines"
+
+    PIVOT_COUNT="$pivot_count"
+    PIVOT_FILES="$pivot_files_list"
+    PIVOT_ASSERTIONS="$pivot_assertions_list"
+
+    return 0
+}
+export -f detect_approach_pivots
+
 get_session_trajectory() {
     local project_root="${1:-}"
     if [[ -z "$project_root" ]]; then

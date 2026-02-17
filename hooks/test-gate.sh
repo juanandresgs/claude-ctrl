@@ -98,13 +98,59 @@ NOW=$(date +%s)
 echo "${NEW_STRIKES}|${NOW}" > "$STRIKES_FILE"
 
 if [[ "$NEW_STRIKES" -ge 2 ]]; then
-    # Strike 2+: DENY
+    # Strike 2+: DENY with trajectory-aware guidance
+    # Read the session event log to provide specific actionable context.
+    DENY_REASON="Tests are still failing ($TEST_FAILS failures, ${TEST_AGE}s ago). You've written source code ${NEW_STRIKES} times without fixing tests."
+
+    # Augment with trajectory data if the session event log exists
+    EVENTS_FILE="${CLAUDE_DIR}/.session-events.jsonl"
+    if [[ -f "$EVENTS_FILE" ]]; then
+        detect_approach_pivots "$PROJECT_ROOT"
+
+        if [[ "$PIVOT_COUNT" -gt 0 && -n "$PIVOT_FILES" ]]; then
+            # Find the most-edited pivoting file (first one in space-separated list)
+            TOP_FILE=$(echo "$PIVOT_FILES" | awk '{print $1}')
+            TOP_BASENAME=$(basename "$TOP_FILE")
+
+            # Count total writes for this file in the session
+            FILE_WRITES=$(grep '"event":"write"' "$EVENTS_FILE" 2>/dev/null \
+                | jq -r --arg f "$TOP_FILE" 'select(.file == $f) | .file' 2>/dev/null \
+                | wc -l | tr -d ' ')
+
+            DENY_REASON="$DENY_REASON You've modified \`${TOP_BASENAME}\` ${FILE_WRITES} time(s) this session without resolving test failures."
+
+            # Add assertion-level hint if available
+            if [[ -n "$PIVOT_ASSERTIONS" ]]; then
+                TOP_ASSERTION=$(echo "$PIVOT_ASSERTIONS" | tr ',' '\n' | grep -v '^$' | head -1)
+                if [[ -n "$TOP_ASSERTION" ]]; then
+                    DENY_REASON="$DENY_REASON The assertion \`${TOP_ASSERTION}\` has been failing repeatedly. Consider reading the failing test to understand what it expects, or try a different approach."
+                fi
+            else
+                DENY_REASON="$DENY_REASON Consider stepping back to re-read the failing test or trying a different file."
+            fi
+        else
+            # No pivot pattern detected but we have an event log — give generic trajectory hint
+            MOST_EDITED=$(grep '"event":"write"' "$EVENTS_FILE" 2>/dev/null \
+                | jq -r '.file // empty' 2>/dev/null \
+                | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+            if [[ -n "$MOST_EDITED" ]]; then
+                MOST_EDITED_BASE=$(basename "$MOST_EDITED")
+                DENY_REASON="$DENY_REASON Most-edited file this session: \`${MOST_EDITED_BASE}\`. Consider reading the failing tests before writing more source code."
+            else
+                DENY_REASON="$DENY_REASON Fix the failing tests before continuing. Test files are exempt from this gate."
+            fi
+        fi
+    else
+        DENY_REASON="$DENY_REASON Fix the failing tests before continuing. Test files are exempt from this gate."
+    fi
+
+    ESCAPED_REASON=$(echo "$DENY_REASON" | jq -Rs '.[0:-1]')
     cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "Tests are still failing ($TEST_FAILS failures, ${TEST_AGE}s ago). You've written source code ${NEW_STRIKES} times without fixing tests. Fix the failing tests before continuing. Test files are exempt from this gate."
+    "permissionDecisionReason": $ESCAPED_REASON
   }
 }
 EOF

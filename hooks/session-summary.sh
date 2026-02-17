@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Stop hook: deterministic session summary.
+# Stop hook: deterministic session summary with trajectory-aware narrative.
 # Replaces AI agent Stop hook. Reads session tracking, produces concise summary.
 # Bounded runtime (<2s). Reports via systemMessage.
 #
-# DECISION: Deterministic session summary. Rationale: AI agent Stop hooks cause
-# "stuck on Stop hooks 2/3" lockup due to non-deterministic inference time.
-# Every metric here is a wc/grep that completes instantly. Status: accepted.
+# @decision DEC-SUMMARY-001
+# @title Deterministic session summary with trajectory narrative
+# @status accepted
+# @rationale AI agent Stop hooks cause "stuck on Stop hooks 2/3" lockup due to
+# non-deterministic inference time. Every metric here is a wc/grep/awk that
+# completes instantly. v2 Phase 3 adds trajectory narrative: calls
+# get_session_trajectory() and detect_approach_pivots() to surface edit->fail
+# loops, most-failed assertions, and pivot counts in the summary. Trajectory
+# calls are wrapped in set +e because grep pipelines exit 1 on no match.
+set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -159,6 +164,96 @@ if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
 fi
 
 SUMMARY+="\nNext: $NEXT_ACTION"
+
+# --- Trajectory narrative (from session event log) ---
+# Call get_session_trajectory and detect_approach_pivots to build a
+# human-readable retrospective of what happened this session.
+EVENTS_FILE="${CLAUDE_DIR}/.session-events.jsonl"
+if [[ -f "$EVENTS_FILE" ]]; then
+    # These functions use grep pipelines that exit 1 on no match; guard with set +e
+    set +e
+    get_session_trajectory "$PROJECT_ROOT"
+    detect_approach_pivots "$PROJECT_ROOT"
+    set -e
+
+    TRAJ_LINE=""
+
+    if [[ "${TRAJ_TOOL_CALLS:-0}" -gt 0 ]]; then
+        TRAJ_LINE="Trajectory: ${TRAJ_TOOL_CALLS} write(s) across ${TRAJ_FILES_MODIFIED} file(s)."
+    fi
+
+    if [[ "${TRAJ_TEST_FAILURES:-0}" -gt 0 ]]; then
+        TRAJ_LINE="$TRAJ_LINE ${TRAJ_TEST_FAILURES} test failure(s)."
+        # Surface the most-failed assertion if available
+        TOP_ASSERTION=$(grep '"event":"test_run"' "$EVENTS_FILE" 2>/dev/null \
+            | grep '"result":"fail"' \
+            | jq -r '.assertion // empty' 2>/dev/null \
+            | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+        if [[ -n "$TOP_ASSERTION" && "$TOP_ASSERTION" != "null" && "$TOP_ASSERTION" != "unknown" ]]; then
+            TRAJ_LINE="$TRAJ_LINE Most-failed: \`${TOP_ASSERTION}\`."
+        fi
+    fi
+
+    if [[ "${PIVOT_COUNT:-0}" -gt 0 ]]; then
+        TRAJ_LINE="$TRAJ_LINE ${PIVOT_COUNT} approach pivot(s) detected (edit->fail loop)."
+        if [[ -n "${PIVOT_FILES:-}" ]]; then
+            PIVOT_BASE=$(echo "$PIVOT_FILES" | tr ' ' '\n' | xargs -I{} basename {} 2>/dev/null | paste -sd ', ' - || echo "$PIVOT_FILES")
+            TRAJ_LINE="$TRAJ_LINE Looping files: ${PIVOT_BASE}."
+        fi
+    fi
+
+    if [[ "${TRAJ_GATE_BLOCKS:-0}" -gt 0 ]]; then
+        TRAJ_LINE="$TRAJ_LINE ${TRAJ_GATE_BLOCKS} gate block(s)."
+    fi
+
+    if [[ -n "${TRAJ_AGENTS:-}" ]]; then
+        TRAJ_LINE="$TRAJ_LINE Agents: ${TRAJ_AGENTS}."
+    fi
+
+    if [[ -n "$TRAJ_LINE" ]]; then
+        SUMMARY+="\n$TRAJ_LINE"
+    fi
+
+    # Write structured retrospective to sessions dir if it exists
+    SESSIONS_DIR="$HOME/.claude/sessions"
+    if [[ -d "$SESSIONS_DIR" ]]; then
+        PROJECT_HASH=$(echo "$PROJECT_ROOT" | shasum -a 256 2>/dev/null | cut -c1-8 || echo "unknown")
+        SESSION_DIR="$SESSIONS_DIR/$PROJECT_HASH"
+        mkdir -p "$SESSION_DIR"
+
+        SESSION_LABEL="${CLAUDE_SESSION_ID:-$(date +%Y%m%d-%H%M%S)}"
+        RETRO_FILE="$SESSION_DIR/${SESSION_LABEL}-summary.md"
+
+        cat > "$RETRO_FILE" <<RETRO
+# Session Retrospective
+
+**Date:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+**Project:** $PROJECT_ROOT
+**Branch:** $GIT_BRANCH
+
+## Changes
+- Files changed: $TOTAL_FILES ($SOURCE_COUNT source, $CONFIG_COUNT config/other)
+- Decisions annotated: $DECISIONS_ADDED
+
+## Test Status
+- Result: $TEST_RESULT
+- Failures: $TEST_FAILS
+
+## Trajectory
+- Writes: ${TRAJ_TOOL_CALLS:-0} across ${TRAJ_FILES_MODIFIED:-0} file(s)
+- Test failures: ${TRAJ_TEST_FAILURES:-0}
+- Gate blocks: ${TRAJ_GATE_BLOCKS:-0}
+- Approach pivots: ${PIVOT_COUNT:-0}
+- Pivot files: ${PIVOT_FILES:-none}
+- Pivot assertions: ${PIVOT_ASSERTIONS:-none}
+- Agents used: ${TRAJ_AGENTS:-none}
+- Duration: ${TRAJ_ELAPSED_MIN:-0}m
+
+## Next
+$NEXT_ACTION
+RETRO
+    fi
+fi
 
 # Output as systemMessage
 ESCAPED=$(echo -e "$SUMMARY" | jq -Rs .)
