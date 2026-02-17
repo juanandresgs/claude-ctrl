@@ -134,7 +134,7 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 **Status:** planned
 **Decision IDs:** DEC-V2-001, DEC-V2-003, DEC-V2-004
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
-**Issues:** TBD
+**Issues:** #81
 **Definition of Done:**
 - REQ-P0-001 satisfied: `.session-events.jsonl` written with structured events
 - REQ-P0-002 satisfied: `get_session_trajectory()` returns accurate aggregates
@@ -163,7 +163,7 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 **Status:** planned
 **Decision IDs:** DEC-V2-002
 **Requirements:** REQ-P0-004, REQ-P0-005
-**Issues:** TBD
+**Issues:** #82
 **Definition of Done:**
 - REQ-P0-004 satisfied: Checkpoint refs created at correct frequency
 - REQ-P0-005 satisfied: `/rewind` restores working tree to checkpoint state
@@ -193,7 +193,7 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 **Status:** planned
 **Decision IDs:** DEC-V2-005
 **Requirements:** REQ-P0-006
-**Issues:** TBD
+**Issues:** #83
 **Definition of Done:**
 - REQ-P0-006 satisfied: Non-trivial commits include `--- Session Context ---` block
 
@@ -218,7 +218,7 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 **Status:** planned
 **Decision IDs:** (trajectory analysis additions)
 **Requirements:** REQ-P0-007
-**Issues:** TBD
+**Issues:** #84
 **Definition of Done:**
 - REQ-P0-007 satisfied: test-gate provides trajectory-based guidance on strike 2+
 
@@ -244,7 +244,7 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 **Status:** planned
 **Decision IDs:** DEC-V2-003
 **Requirements:** REQ-P0-008
-**Issues:** TBD
+**Issues:** #85
 **Definition of Done:**
 - REQ-P0-008 satisfied: Prior session friction injected at session start after 3+ sessions
 
