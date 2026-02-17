@@ -638,6 +638,149 @@ is_claude_meta_repo() {
     [[ "${common_dir%/.git}" == */.claude ]]
 }
 
+# --- Session event log ---
+# Append-only JSONL event log for session observability.
+# @decision DEC-V2-001
+# @title Session events as JSONL append-only log
+# @status accepted
+# @rationale JSONL is atomic (one write per line), grep-friendly, doesn't require
+# parsing entire file to append.
+
+append_session_event() {
+    local event_type="$1"
+    local detail_json="${2:-{}}"
+    local project_root="${3:-}"
+
+    # Auto-detect project root if not provided
+    if [[ -z "$project_root" ]]; then
+        project_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    fi
+
+    local event_file="$project_root/.claude/.session-events.jsonl"
+    mkdir -p "$(dirname "$event_file")"
+
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Build event JSON: merge timestamp and event type into detail
+    local event_line
+    event_line=$(jq -c --arg ts "$ts" --arg evt "$event_type" '. + {ts: $ts, event: $evt}' <<< "$detail_json" 2>/dev/null)
+
+    # Fallback if jq fails (detail_json was malformed)
+    if [[ -z "$event_line" ]]; then
+        event_line="{\"ts\":\"$ts\",\"event\":\"$event_type\"}"
+    fi
+
+    # Atomic append via temp file
+    local tmp
+    tmp=$(mktemp "${event_file}.XXXXXX")
+    echo "$event_line" > "$tmp"
+    cat "$tmp" >> "$event_file"
+    rm -f "$tmp"
+}
+
+get_session_trajectory() {
+    local project_root="${1:-}"
+    if [[ -z "$project_root" ]]; then
+        project_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    fi
+
+    local event_file="$project_root/.claude/.session-events.jsonl"
+
+    # Initialize trajectory variables
+    TRAJ_TOOL_CALLS=0
+    TRAJ_FILES_MODIFIED=0
+    TRAJ_GATE_BLOCKS=0
+    TRAJ_AGENTS=""
+    TRAJ_ELAPSED_MIN=0
+    TRAJ_PIVOTS=0
+    TRAJ_TEST_FAILURES=0
+    TRAJ_CHECKPOINTS=0
+    TRAJ_REWINDS=0
+
+    [[ ! -f "$event_file" ]] && return
+
+    # Count events by type using grep (fast, no jq needed for aggregates)
+    # grep -c exits 1 when count is 0, so use subshell to capture output and default
+    TRAJ_TOOL_CALLS=$(grep -c '"event":"write"' "$event_file" 2>/dev/null) || true
+    TRAJ_TOOL_CALLS=${TRAJ_TOOL_CALLS:-0}
+    TRAJ_FILES_MODIFIED=$(grep '"event":"write"' "$event_file" 2>/dev/null | jq -r '.file // empty' 2>/dev/null | sort -u | wc -l | tr -d ' ')
+    TRAJ_GATE_BLOCKS=$(grep '"result":"block"' "$event_file" 2>/dev/null | wc -l | tr -d ' ')
+    TRAJ_TEST_FAILURES=$(grep '"event":"test_run"' "$event_file" 2>/dev/null | grep '"result":"fail"' | wc -l | tr -d ' ')
+    TRAJ_CHECKPOINTS=$(grep -c '"event":"checkpoint"' "$event_file" 2>/dev/null) || true
+    TRAJ_CHECKPOINTS=${TRAJ_CHECKPOINTS:-0}
+    TRAJ_REWINDS=$(grep -c '"event":"rewind"' "$event_file" 2>/dev/null) || true
+    TRAJ_REWINDS=${TRAJ_REWINDS:-0}
+
+    # Extract unique agent types
+    TRAJ_AGENTS=$(grep '"event":"agent_start"' "$event_file" 2>/dev/null | jq -r '.type // empty' 2>/dev/null | sort -u | paste -sd ',' - 2>/dev/null || echo "")
+
+    # Calculate elapsed time from first to last event
+    local first_ts last_ts
+    first_ts=$(head -1 "$event_file" 2>/dev/null | jq -r '.ts // empty' 2>/dev/null)
+    last_ts=$(tail -1 "$event_file" 2>/dev/null | jq -r '.ts // empty' 2>/dev/null)
+    if [[ -n "$first_ts" && -n "$last_ts" ]]; then
+        local first_epoch last_epoch
+        first_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$first_ts" +%s 2>/dev/null || date -d "$first_ts" +%s 2>/dev/null || echo "0")
+        last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_ts" +%s 2>/dev/null || date -d "$last_ts" +%s 2>/dev/null || echo "0")
+        if [[ "$first_epoch" -gt 0 && "$last_epoch" -gt 0 ]]; then
+            TRAJ_ELAPSED_MIN=$(( (last_epoch - first_epoch) / 60 ))
+        fi
+    fi
+
+    # Detect pivots: same file edited multiple times with intervening test failures
+    # (Simplified: count files edited more than twice with test failures between edits)
+    TRAJ_PIVOTS=0
+    if [[ "$TRAJ_TEST_FAILURES" -gt 0 ]]; then
+        local repeated_files
+        repeated_files=$(grep '"event":"write"' "$event_file" 2>/dev/null | jq -r '.file // empty' 2>/dev/null | sort | uniq -c | sort -rn | awk '$1 > 2 {print $2}' | head -5)
+        if [[ -n "$repeated_files" ]]; then
+            TRAJ_PIVOTS=$(echo "$repeated_files" | wc -l | tr -d ' ')
+        fi
+    fi
+}
+
+get_session_summary_context() {
+    local project_root="${1:-}"
+    if [[ -z "$project_root" ]]; then
+        project_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    fi
+
+    get_session_trajectory "$project_root"
+
+    local event_file="$project_root/.claude/.session-events.jsonl"
+    [[ ! -f "$event_file" ]] && return
+
+    local summary=""
+    summary="Session trajectory: ${TRAJ_TOOL_CALLS} writes across ${TRAJ_FILES_MODIFIED} files."
+
+    if [[ "$TRAJ_GATE_BLOCKS" -gt 0 ]]; then
+        summary="$summary ${TRAJ_GATE_BLOCKS} gate blocks."
+    fi
+
+    if [[ "$TRAJ_TEST_FAILURES" -gt 0 ]]; then
+        summary="$summary ${TRAJ_TEST_FAILURES} test failures."
+        # Extract most-failed assertion
+        local top_assertion
+        top_assertion=$(grep '"event":"test_run"' "$event_file" 2>/dev/null | grep '"result":"fail"' | jq -r '.assertion // empty' 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+        if [[ -n "$top_assertion" ]]; then
+            summary="$summary Most-failed assertion: $top_assertion."
+        fi
+    fi
+
+    if [[ -n "$TRAJ_AGENTS" ]]; then
+        summary="$summary Agents: ${TRAJ_AGENTS}."
+    fi
+
+    if [[ "$TRAJ_PIVOTS" -gt 0 ]]; then
+        summary="$summary ${TRAJ_PIVOTS} approach pivot(s) detected."
+    fi
+
+    summary="$summary Duration: ${TRAJ_ELAPSED_MIN}m. Checkpoints: ${TRAJ_CHECKPOINTS}. Rewinds: ${TRAJ_REWINDS}."
+
+    echo "$summary"
+}
+
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context

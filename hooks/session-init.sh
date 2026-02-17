@@ -215,6 +215,11 @@ if [[ -f "$TEST_STATUS" ]]; then
     rm -f "$TEST_STATUS"
 fi
 
+# --- Initialize session event log ---
+SESSION_EVENT_FILE="${CLAUDE_DIR}/.session-events.jsonl"
+rm -f "$SESSION_EVENT_FILE"  # Fresh log each session
+append_session_event "session_start" "{\"project\":\"$(basename "$PROJECT_ROOT")\",\"branch\":\"${GIT_BRANCH:-unknown}\"}" "$PROJECT_ROOT"
+
 # --- Output as additionalContext ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
     CONTEXT=$(printf '%s\n' "${CONTEXT_PARTS[@]}")

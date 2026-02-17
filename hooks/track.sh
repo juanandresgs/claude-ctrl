@@ -9,6 +9,7 @@ set -euo pipefail
 # Session-scoped to avoid collisions with concurrent sessions.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
@@ -35,6 +36,9 @@ TMPFILE=$(mktemp "${TRACKING_DIR}/.track.XXXXXX")
 echo "$FILE_PATH" > "$TMPFILE"
 cat "$TMPFILE" >> "$TRACKING_FILE"
 rm -f "$TMPFILE"
+
+# --- Log write event to session event log ---
+append_session_event "write" "{\"file\":\"$FILE_PATH\"}" "$PROJECT_ROOT"
 
 # --- Invalidate proof-status when non-test source files change ---
 # If user verified the feature and then source code changes, proof is stale.

@@ -28,6 +28,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 # Optimization: Stream input directly to jq to avoid loading potentially
 # large session history into a Bash variable (which consumes ~3-4x RAM).
@@ -53,7 +54,25 @@ if pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
     log_info "SESSION-END" "Killed lingering test-runner process(es)"
 fi
 
+# --- Archive session event log ---
+SESSION_EVENT_FILE="${CLAUDE_DIR}/.session-events.jsonl"
+if [[ -f "$SESSION_EVENT_FILE" && -s "$SESSION_EVENT_FILE" ]]; then
+    # Create project-specific archive directory
+    PROJECT_HASH=$(echo "$PROJECT_ROOT" | shasum -a 256 2>/dev/null | cut -c1-12)
+    ARCHIVE_DIR="$HOME/.claude/sessions/${PROJECT_HASH}"
+    mkdir -p "$ARCHIVE_DIR"
+
+    # Generate session ID
+    SESSION_ID="${CLAUDE_SESSION_ID:-$(date +%s)}"
+    ARCHIVE_FILE="${ARCHIVE_DIR}/${SESSION_ID}.jsonl"
+
+    # Archive
+    cp "$SESSION_EVENT_FILE" "$ARCHIVE_FILE"
+    log_info "SESSION-END" "Archived session events to $ARCHIVE_FILE"
+fi
+
 # --- Clean up session-scoped files (these don't persist) ---
+rm -f "${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "${CLAUDE_DIR}/.session-changes"*
 rm -f "${CLAUDE_DIR}/.session-decisions"*
 rm -f "${CLAUDE_DIR}/.prompt-count-"*

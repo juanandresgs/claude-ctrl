@@ -284,12 +284,15 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
     if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
         if read_test_status "$PROJECT_ROOT"; then
             if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt "$TEST_STALENESS_THRESHOLD" ]]; then
+                append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_merge\",\"result\":\"block\",\"reason\":\"tests failing\"}" "$PROJECT_ROOT"
                 deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${TEST_AGE}s ago). Fix test failures before merging."
             fi
             if [[ "$TEST_RESULT" != "pass" ]]; then
+                append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_merge\",\"result\":\"block\",\"reason\":\"tests not passing\"}" "$PROJECT_ROOT"
                 deny "Cannot merge: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
             fi
         else
+            append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_merge\",\"result\":\"block\",\"reason\":\"no test status\"}" "$PROJECT_ROOT"
             deny "Cannot merge: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before merging."
         fi
     fi
@@ -301,12 +304,15 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
         if read_test_status "$PROJECT_ROOT"; then
             if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt "$TEST_STALENESS_THRESHOLD" ]]; then
+                append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_commit\",\"result\":\"block\",\"reason\":\"tests failing\"}" "$PROJECT_ROOT"
                 deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${TEST_AGE}s ago). Fix test failures before committing."
             fi
             if [[ "$TEST_RESULT" != "pass" ]]; then
+                append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_commit\",\"result\":\"block\",\"reason\":\"tests not passing\"}" "$PROJECT_ROOT"
                 deny "Cannot commit: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
             fi
         else
+            append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_commit\",\"result\":\"block\",\"reason\":\"no test status\"}" "$PROJECT_ROOT"
             deny "Cannot commit: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before committing."
         fi
     fi
@@ -326,12 +332,20 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
         if [[ -f "$PROOF_FILE" ]]; then
             PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
             if [[ "$PROOF_STATUS" != "verified" ]]; then
+                append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"not verified\"}" "$PROOF_DIR"
                 deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
             fi
         else
+            append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"no proof status\"}" "$PROOF_DIR"
             deny "Cannot proceed: no proof-of-work verification (.claude/.proof-status missing). The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
         fi
     fi
+fi
+
+# Log gate pass for git commands that reached the gates
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
+    PROJECT_ROOT=$(detect_project_root)
+    append_session_event "gate_eval" "{\"hook\":\"guard\",\"result\":\"allow\"}" "$PROJECT_ROOT"
 fi
 
 # All checks passed
