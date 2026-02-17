@@ -46,11 +46,19 @@ Default to Tier 2 when uncertain. Escalate to Tier 3 when the problem domain is 
 
 Ground the plan in evidence before designing solutions. For Tier 1 tasks, the problem statement is 1-2 sentences and goals/non-goals are brief bullets without REQ-IDs.
 
-1. **Problem statement** — Who has this problem, how often, and what is the cost of not solving it? Cite evidence: user research, support data, metrics, customer feedback. If no hard evidence exists, state that explicitly.
-2. **Goals** — 3-5 measurable outcomes. Distinguish user goals (what users get) from business goals (what the organization gets). Goals are outcomes, not outputs ("reduce time to first value by 50%" not "build onboarding wizard").
-3. **Non-goals** — 3-5 explicit exclusions with rationale. Categories: not enough impact, too complex for this scope, separate initiative, premature. Non-goals prevent scope creep during implementation and set expectations.
-4. List unknowns and ambiguities — if unclear, turn to the User for Divine Guidance.
-5. Detect relevant existing patterns in the codebase.
+1. **Challenge Requirements (Critical First Step)** — Before accepting the stated requirement, actively question whether it's the right thing to build:
+   - Is this the right scope? Should it be bigger/smaller?
+   - Is there a simpler version that delivers 80% of the value?
+   - What assumptions are we making that should be validated?
+   - Is this solving the root problem or a symptom?
+
+   If the requirement feels misaligned or if a simpler path exists, present your reasoning to the user before proceeding.
+
+2. **Problem statement** — Who has this problem, how often, and what is the cost of not solving it? Cite evidence: user research, support data, metrics, customer feedback. If no hard evidence exists, state that explicitly.
+3. **Goals** — 3-5 measurable outcomes. Distinguish user goals (what users get) from business goals (what the organization gets). Goals are outcomes, not outputs ("reduce time to first value by 50%" not "build onboarding wizard").
+4. **Non-goals** — 3-5 explicit exclusions with rationale. Categories: not enough impact, too complex for this scope, separate initiative, premature. Non-goals prevent scope creep during implementation and set expectations.
+5. List unknowns and ambiguities — if unclear, turn to the User for Divine Guidance.
+6. Detect relevant existing patterns in the codebase.
 
 #### 1b. User Requirements
 
@@ -80,6 +88,24 @@ Define how you will know the feature succeeded:
 2. For each decision, document options, trade-offs, and recommended approach (these become @decision annotations)
 3. Define component boundaries and interfaces
 4. Identify integration points
+
+#### Step 1a: Alternatives Gate (Present Before Committing)
+
+When the problem has 2+ reasonable approaches that differ significantly in effort, complexity, or outcome, you MUST present them to the user with trade-offs before committing to one path. This is simpler than the Decision Configurator gate (which handles 3+ formal architectural decisions) — this is: "I see two ways to do this — which do you prefer?"
+
+**When to invoke Alternatives Gate:**
+- Two valid architectural approaches with meaningfully different effort or complexity
+- Trade-off between simple-now vs. extensible-later
+- Different technology choices with pros/cons
+- Scope ambiguity (minimal viable vs. full-featured)
+
+**How to present:**
+- Brief description of each approach (2-3 sentences)
+- Key trade-off for each (effort, complexity, extensibility, risk)
+- Your recommendation with reasoning
+- Ask the user to choose or provide guidance
+
+**Skip this gate when:** The decision is obvious, the approaches are equivalent, or you're confident in a clear best choice. But default to asking when in doubt — it's better to present options than to silently choose and go deep on the wrong path.
 
 #### Step 2: Research Gate (Mandatory)
 

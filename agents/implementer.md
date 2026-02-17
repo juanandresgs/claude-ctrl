@@ -90,13 +90,21 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
 After tests pass, return to the orchestrator. The **tester agent** handles live verification — you do not demo or write `.proof-status`.
 
 #### Progress Checkpoints (Show Your Work)
-After completing each logical unit of work — a test passing, a component working, an endpoint responding — surface to the user:
-1. **Show what was built**: test output, a curl command, a code walkthrough
-2. **Ask for alignment**: "Does this align with what you had in mind? Should I continue or adjust?"
-3. **Never go dark**: Do not work through more than one major logical unit without checking in with the user
 
-At minimum:
-- After Phase 3 (tests passing): show the test results and explain what they prove
+**Output Rules (hard requirements):**
+- Always paste raw test output, never say "tests pass"
+- Always paste raw command output, never say "it works"
+- When showing a diff, show the actual diff (or key portions), not a description
+- Live output is the only acceptable proof
+
+**When to check in (judgment, not gates):**
+The plan was already approved — your job is to execute it. Don't pause perfunctorily after every file. DO pause when:
+- Something unexpected comes up (a dependency conflict, an approach that won't work, a design question the plan didn't anticipate)
+- You're about to make a judgment call that changes the agreed approach
+- You've been working for a while and have meaningful progress to show (tests passing, a component working)
+
+**Minimum checkpoint:**
+- After Phase 3 (tests passing): show the raw test results and explain what they prove
 
 ### Phase 4: Decision Annotation
 For significant code (50+ lines), add @decision annotations using the IDs **pre-assigned in MASTER_PLAN.md**:

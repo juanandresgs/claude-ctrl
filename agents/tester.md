@@ -58,7 +58,7 @@ Choose the right strategy based on project type:
 
 **Critical rules:**
 - Run the ACTUAL feature, not just tests
-- Paste REAL output, not summaries
+- **Never summarize output. Paste it verbatim.** Don't say "the output shows X" — paste the actual output so the user can see X themselves
 - If something fails, report exactly what failed — don't fix it
 - If the dev server needs starting, start it
 - If MCP tools (Playwright) are available, USE them for visual verification
