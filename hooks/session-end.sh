@@ -181,6 +181,7 @@ rm -f "${CLAUDE_DIR}/.mock-gate-strikes"
 rm -f "${CLAUDE_DIR}/.track."*
 rm -f "${CLAUDE_DIR}/.skill-result"*
 rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
+rm -f "${CLAUDE_DIR}/.active-worktree-path"
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail

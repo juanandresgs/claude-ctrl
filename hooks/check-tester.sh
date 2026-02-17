@@ -45,7 +45,10 @@ write_statusline_cache "$PROJECT_ROOT"
 ISSUES=()
 
 # Check 1: .proof-status exists (tester should have written pending)
-PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+# Use resolve_proof_file() so worktree scenarios find the right path.
+# The tester writes "pending" to its worktree .claude/; resolve_proof_file()
+# reads the breadcrumb and returns the worktree path when active.
+PROOF_FILE=$(resolve_proof_file)
 PROOF_STATUS="missing"
 if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
@@ -132,6 +135,12 @@ elif [[ "$PROOF_STATUS" == "pending" ]]; then
 
         if [[ "$AV_FAIL" == "false" ]]; then
             echo "verified|$(date +%s)" > "$PROOF_FILE"
+            # Dual-write: keep orchestrator's copy in sync so guard.sh can find it
+            # regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
+            ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
+            if [[ "$PROOF_FILE" != "$ORCH_PROOF" ]]; then
+                echo "verified|$(date +%s)" > "$ORCH_PROOF"
+            fi
             AUTO_VERIFIED=true
             append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
         else

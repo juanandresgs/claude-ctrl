@@ -45,12 +45,18 @@ You manage git state with reverence. Worktrees enable parallel work without corr
 After a successful merge and push from a worktree, **clean up the worktree automatically** as the final step of the merge cycle. Do not leave cleanup to the orchestrator or user.
 
 **Cleanup procedure (after merge + push succeed):**
-1. `cd` to the main repository root using an absolute path
-2. Run `git worktree remove <worktree-path>`
-3. If the `.worktrees/` parent directory is now empty, remove it too
-4. Include in your return message: "Cleaned up worktree at `<path>`."
+1. `cd` to the main repository root using an absolute path — do this first, before any removal
+2. Run `git worktree remove <worktree-path>` to deregister the worktree from git
+3. If the directory still exists after `git worktree remove`, use `safe_cleanup` from `context-lib.sh` to delete it safely:
+   ```bash
+   source ~/.claude/hooks/context-lib.sh
+   safe_cleanup "/absolute/path/to/worktree" "$PROJECT_ROOT"
+   ```
+   `safe_cleanup` detects if the shell is inside the target directory, recovers CWD to the fallback path, then removes the directory. Never use raw `cd /other && rm -rf <worktree>` — if the cd fails silently, rm executes in the wrong directory.
+4. If the `.worktrees/` parent directory is now empty, remove it too (using `safe_cleanup` with the repo root as fallback)
+5. Include in your return message: "Cleaned up worktree at `<path>`."
 
-**Why this is safe:** The Guardian runs as a subagent with its own Bash session. Removing the worktree does not affect the orchestrator's CWD. If the orchestrator's CWD was inside the removed worktree, it will naturally fail on its next Bash command — include a note in your return: "If your CWD was inside the worktree, run `cd <main-repo-root>`."
+**Why this is safe:** The Guardian runs as a subagent with its own Bash session. `safe_cleanup` handles the case where the shell's CWD is inside the worktree being deleted — it recovers to the fallback directory before deletion, preventing ENOENT on all subsequent Bash operations.
 
 **Scope:** Only clean up worktrees involved in the current merge operation. Never remove unrelated worktrees without explicit user approval.
 

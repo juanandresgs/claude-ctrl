@@ -57,6 +57,8 @@ plans/
 .session-start-epoch
 .subagent-tracker
 .subagent-tracker-*
+.active-worktree-path
+.proof-status
 
 
 # MCP server configuration (local runtime, user-specific)

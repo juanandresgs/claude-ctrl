@@ -4,6 +4,11 @@
 # Fires before every Task tool dispatch. Extracts subagent_type
 # from tool_input and updates .subagent-tracker + .statusline-cache.
 #
+# Gate C also writes .active-worktree-path breadcrumb at implementer dispatch
+# so resolve_proof_file() (log.sh) can locate the active .proof-status in
+# worktree scenarios where tester writes its status to a different directory
+# than the orchestrator's CLAUDE_DIR.
+#
 # @decision DEC-CACHE-003
 # @title Use PreToolUse:Task as SubagentStart replacement
 # @status accepted
@@ -79,6 +84,11 @@ fi
 # Creates .proof-status = needs-verification when implementer is dispatched.
 # This activates Gate A — Guardian will be blocked until verification completes.
 # Meta-repo (~/.claude) is exempt.
+#
+# Also writes .active-worktree-path breadcrumb when a linked worktree exists.
+# The tester agent runs inside the worktree and writes its proof-status there.
+# The breadcrumb lets resolve_proof_file() (in log.sh) find the correct path
+# so prompt-submit.sh, check-tester.sh, and guard.sh all operate on the same file.
 if [[ "$AGENT_TYPE" == "implementer" ]]; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         PROOF_FILE="${CLAUDE_DIR}/.proof-status"
@@ -86,6 +96,18 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         if [[ ! -f "$PROOF_FILE" ]]; then
             mkdir -p "$(dirname "$PROOF_FILE")"
             echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
+        fi
+
+        # Write breadcrumb: detect the most recent worktree (excluding main).
+        # git worktree list --porcelain outputs blocks separated by blank lines;
+        # the first block is always the main worktree. We capture the last
+        # non-main worktree path seen in the output.
+        ACTIVE_WORKTREE=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+            | awk -v main="$PROJECT_ROOT" '/^worktree /{path=$2} path && path != main {last=path} END{print last}' \
+            || echo "")
+        if [[ -n "$ACTIVE_WORKTREE" && -d "$ACTIVE_WORKTREE" ]]; then
+            echo "$ACTIVE_WORKTREE" > "${CLAUDE_DIR}/.active-worktree-path"
+            log_info "TASK-TRACK" "Breadcrumb written: active worktree is $ACTIVE_WORKTREE"
         fi
     fi
 fi

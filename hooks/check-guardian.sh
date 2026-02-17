@@ -144,6 +144,9 @@ fi
 # When Guardian successfully committed, the verification cycle is complete.
 # Clean .proof-status so it doesn't interfere with the next implementation cycle.
 # This prevents stale "verified" state from bypassing the proof gate on the next task.
+#
+# Worktree cleanup: also remove the worktree's .proof-status and the
+# .active-worktree-path breadcrumb so future implementer dispatches start clean.
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_COMMIT=$(echo "$RESPONSE_TEXT" | grep -iE 'committed|commit.*successful|pushed|merge.*complete' || echo "")
     if [[ -n "$HAS_COMMIT" ]]; then
@@ -154,6 +157,18 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
                 rm -f "$PROOF_FILE"
                 log_info "CHECK-GUARDIAN" "Cleaned .proof-status after successful commit"
             fi
+        fi
+
+        # Clean up worktree breadcrumb and its .proof-status
+        BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path"
+        if [[ -f "$BREADCRUMB" ]]; then
+            WORKTREE_PATH=$(cat "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]')
+            if [[ -n "$WORKTREE_PATH" && -d "$WORKTREE_PATH" ]]; then
+                rm -f "${WORKTREE_PATH}/.claude/.proof-status"
+                log_info "CHECK-GUARDIAN" "Cleaned worktree .proof-status at $WORKTREE_PATH"
+            fi
+            rm -f "$BREADCRUMB"
+            log_info "CHECK-GUARDIAN" "Cleaned .active-worktree-path breadcrumb"
         fi
     fi
 fi
