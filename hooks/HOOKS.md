@@ -159,7 +159,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 10 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges; **blocks agents from writing approval status to `.proof-status`** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
+| **guard.sh** | Bash | 11 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges (missing state files = allow, gate only active when files exist); **blocks agents from writing approval status to `.proof-status`** and **blocks deletion of `.proof-status` when verification is active** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user. `git commit/push/merge` classified as risky (requires Guardian dispatch per Sacred Practice #8) |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
@@ -206,7 +206,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Event / Matcher | What It Does |
 |------|-----------------|--------------|
-| **task-track.sh** | PreToolUse:Task | Tracks subagent spawns for status bar. **Dispatch gates**: Guardian requires `.proof-status = verified` (meta-repo exempt). Tester requires implementer trace to have completed (prevents premature dispatch). Both gates use PreToolUse deny |
+| **task-track.sh** | PreToolUse:Task | Tracks subagent spawns for status bar. **Dispatch gates**: Guardian requires `.proof-status = verified` when file exists (missing = allow, fixes bootstrap deadlock; meta-repo exempt). Tester requires implementer trace to have completed (prevents premature dispatch). **Implementer dispatch activates proof gate** by creating `.proof-status = needs-verification`. All gates use PreToolUse deny |
 | **subagent-start.sh** | SubagentStart | Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status. **Tester** gets implementer trace path, project type hints, branch context, verification protocol (includes Verification Assessment: methodology, coverage, confidence, gaps). **Guardian** gets plan update rules (only at phase boundaries) and test status. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
 | **check-planner.sh** | SubagentStop (planner\|Plan) | 6 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation), (6) has structured requirements sections — only flagged for multi-phase plans (single-phase/Tier 1 plans are expected to be brief). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
 | **check-implementer.sh** | SubagentStop (implementer) | 4 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"). Advisory only — proof-of-work verification moved to tester agent. Persists findings |
@@ -217,7 +217,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ## Key guard.sh Behaviors
 
-The most complex hook — 10 checks covering 7 nuclear denies, 1 early-exit gate, 3 rewrites, 3 hard blocks, 2 evidence gates, and 1 human gate enforcer.
+The most complex hook — 11 checks covering 7 nuclear denies, 1 early-exit gate, 3 rewrites, 3 hard blocks, 2 evidence gates, and 2 human gate enforcers.
 
 **Nuclear deny** (Check 0 — unconditional, fires first):
 
@@ -257,18 +257,19 @@ Strips quoted strings from the command, then checks if `git` appears in a comman
 
 | Check | Requires | State File | Exemption |
 |-------|----------|------------|-----------|
-| 6-7 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
-| 8 | `.proof-status` = `verified` | `.claude/.proof-status` (format: `status\|timestamp`) | `~/.claude` meta-repo |
+| 6-7 | `.test-status` = `pass` (when file exists) | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo; missing file = allow (bootstrap path) |
+| 8 | `.proof-status` = `verified` (when file exists) | `.claude/.proof-status` (format: `status\|timestamp`) | `~/.claude` meta-repo; missing file = allow (bootstrap path) |
 
-Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
+Test evidence: only `pass` satisfies the gate when the file exists. Any non-pass status (`fail` of any age, unknown) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message. Missing file = no test data to enforce = allowed (bootstrap path).
 
-Proof-of-work: the user must see the feature work before code is committed. `track.sh` resets proof status to `pending` when source files change after verification — ensuring the user always verifies the final state.
+Proof-of-work: the user must see the feature work before code is committed. The gate is only active when `.proof-status` exists — created by implementer dispatch (task-track.sh Gate C writes `needs-verification`). Missing file means no implementation in progress, so commits are allowed (fixes bootstrap deadlock). `track.sh` resets proof status to `pending` when source files change after verification — ensuring the user always verifies the final state.
 
-**Human gate enforcement** (Check 9 — blocks agent bypass):
+**Human gate enforcement** (Checks 9-10 — blocks agent bypass):
 
 | Check | Trigger | Why |
 |-------|---------|-----|
 | 9 | Any Bash command writing approval status to `.proof-status` | Only `prompt-submit.sh` (user approval) and `check-tester.sh` (auto-verify) can write verified status. Guard.sh blocks Bash tool writes but not hook file operations |
+| 10 | `rm` command targeting `.proof-status` when status is `pending` or `needs-verification` | Prevents agents from bypassing the gate by deleting the file. Verified status can be cleaned up freely |
 
 ---
 

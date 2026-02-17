@@ -42,7 +42,9 @@ EOF
     exit 0
 }
 
-# --- Gate A: Guardian requires .proof-status = verified ---
+# --- Gate A: Guardian requires .proof-status = verified (when active) ---
+# Gate is only active when .proof-status file exists (created by implementer dispatch).
+# Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
 # Meta-repo (~/.claude) is exempt — no feature verification needed for config.
 if [[ "$AGENT_TYPE" == "guardian" ]]; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
@@ -52,9 +54,8 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
             if [[ "$PROOF_STATUS" != "verified" ]]; then
                 deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
             fi
-        else
-            deny "Cannot dispatch Guardian: no proof-of-work verification (.proof-status missing). Dispatch tester to verify the implementation first."
         fi
+        # File missing → no implementation in progress → allow (bootstrap path)
     fi
 fi
 
@@ -71,6 +72,21 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
             if [[ "$IMPL_STATUS" == "active" ]]; then
                 deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
             fi
+        fi
+    fi
+fi
+
+# --- Gate C: Implementer dispatch activates proof gate ---
+# Creates .proof-status = needs-verification when implementer is dispatched.
+# This activates Gate A — Guardian will be blocked until verification completes.
+# Meta-repo (~/.claude) is exempt.
+if [[ "$AGENT_TYPE" == "implementer" ]]; then
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+        # Only activate if no proof flow is already active
+        if [[ ! -f "$PROOF_FILE" ]]; then
+            mkdir -p "$(dirname "$PROOF_FILE")"
+            echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
         fi
     fi
 fi
