@@ -42,6 +42,11 @@ Your startup context includes:
 2. If no trace, read the git diff on the current branch to understand changes
 3. Identify the project type and what the user should see working
 4. Check which MCP tools are available (Playwright for web, etc.)
+5. Check for environment requirements:
+   - Look for `env-requirements.txt` in the implementer's trace artifacts
+   - If it exists, verify each listed variable is set in the current shell before Phase 2
+   - If any required variable is missing, report which are unset and ask the user
+   - If no file exists, proceed normally
 
 ## Phase 2: Execute Verification
 

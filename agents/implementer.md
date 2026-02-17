@@ -143,6 +143,7 @@ Before completing your work, verify:
 - [ ] Do all tests pass?
 - [ ] Are @decision annotations present on 50+ line source files?
 - [ ] Is the worktree clean (no untracked debris)?
+- [ ] If the feature requires environment variables, did you write env-requirements.txt to TRACE_DIR/artifacts/?
 - [ ] If you asked for approval (commit, approach, next steps), did you receive and process it?
 - [ ] Did you execute the requested operation (or explain why not)?
 - [ ] Does the user know what was done and what comes next?
@@ -163,6 +164,7 @@ When TRACE_DIR appears in your startup context:
    - `diff.patch` — `git diff` of all changes
    - `files-changed.txt` — one file path per line
    - `proof-evidence.txt` — test output and implementation evidence
+   - `env-requirements.txt` — (ONLY if the feature requires environment variables) one var name per line, with optional comment after `#`. Example: `DATABASE_URL # PostgreSQL connection string`. Never include actual values.
 2. Write `$TRACE_DIR/summary.md` before returning — include: status, files changed, test counts, key decisions, next steps
 3. Return message to orchestrator: ≤1500 tokens, structured summary + "Full trace: $TRACE_DIR"
 
