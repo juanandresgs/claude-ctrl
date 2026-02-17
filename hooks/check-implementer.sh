@@ -13,8 +13,7 @@ set -euo pipefail
 #   handles live demos and user verification. This prevents the implementer
 #   from being both builder and judge of its own work.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")

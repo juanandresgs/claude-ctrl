@@ -9,8 +9,7 @@ set -euo pipefail
 # non-deterministic runtime and cascade risk. File stat + git status complete
 # in <1s with zero cascade risk. Status: accepted.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")

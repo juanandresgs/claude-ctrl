@@ -18,7 +18,7 @@
 #            contract (.skill-result.md) is cleaner than retrofitting the trace protocol.
 
 set -euo pipefail
-source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 TOOL_NAME=$(get_field '.tool_name')

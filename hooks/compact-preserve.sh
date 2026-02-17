@@ -12,8 +12,7 @@ set -euo pipefail
 # a structured context summary (per context-preservation skill) as part of
 # the compaction. This ensures session intent (not just project state) survives.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)

@@ -47,8 +47,7 @@
 
 set -euo pipefail
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 # Optimization: Stream input directly to jq to avoid loading potentially
 # large session history into a Bash variable (which consumes ~3-4x RAM).
@@ -172,6 +171,9 @@ rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
 # NOTE: .test-status is cleared at session START (session-init.sh), not here.
 # It must survive session-end so session-init can read it for context injection,
 # then clears it to prevent stale results from satisfying the commit gate.
+
+# Clean session hook-library cache
+rm -rf "${HOME}/.claude/.hook-cache/${CLAUDE_SESSION_ID:-$$}" 2>/dev/null || true
 
 # --- Trim audit log to prevent unbounded growth (keep last 100 entries) ---
 AUDIT_LOG="${CLAUDE_DIR}/.audit-log"

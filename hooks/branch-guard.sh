@@ -20,8 +20,7 @@ set -euo pipefail
 #   - Non-source files (config, docs, markdown, JSON, YAML, etc.)
 #   - Files in git worktrees (non-main branches)
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')

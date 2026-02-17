@@ -11,8 +11,7 @@ set -euo pipefail
 # Runs lint on the specific file only (fast, under 10 seconds).
 # If no linter detected, exits 0 silently.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')

@@ -14,8 +14,7 @@ set -euo pipefail
 #   - Guardian: injects session event log summary for richer commit messages
 #     (DEC-V2-005: structured session context in non-trivial commits)
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)

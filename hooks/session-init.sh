@@ -14,8 +14,7 @@ set -euo pipefail
 # for brand-new sessions. Works for /clear, /compact, resume. Implement
 # anyway — when it works it's valuable, when it doesn't there's no harm.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
@@ -270,6 +269,10 @@ if [[ -f "$TEST_STATUS" ]]; then
     fi
     rm -f "$TEST_STATUS"
 fi
+
+# --- Clean stale hook-library caches (crashed sessions) ---
+# Caches older than 24h belong to sessions that exited without running session-end.sh.
+find "${HOME}/.claude/.hook-cache" -maxdepth 1 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
 
 # --- Initialize session event log ---
 # After compaction, preserve the event log — the trajectory is still relevant

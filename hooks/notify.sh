@@ -16,7 +16,7 @@ set -euo pipefail
 #   - Claude requests permission (permission_prompt)
 #   - Claude is idle waiting for input (idle_prompt)
 
-source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 NOTIFICATION_TYPE=$(echo "$HOOK_INPUT" | jq -r '.notification_type // empty' 2>/dev/null)

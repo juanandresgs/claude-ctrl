@@ -20,7 +20,7 @@ set -euo pipefail
 #   PostToolUse on browser_snapshot is the right trigger because
 #   snapshot is the typical "content captured" signal.
 
-source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 INPUT=$(read_input)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')

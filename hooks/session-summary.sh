@@ -14,8 +14,7 @@
 # calls are wrapped in set +e because grep pipelines exit 1 on no match.
 set -euo pipefail
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 

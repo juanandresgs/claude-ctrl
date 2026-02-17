@@ -9,8 +9,7 @@ set -euo pipefail
 # non-deterministic runtime and cascade risk. Every check here is a grep/stat
 # that completes in <1s. Status: accepted.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")

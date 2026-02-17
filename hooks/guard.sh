@@ -23,8 +23,7 @@ set -euo pipefail
 #   - No force push to main/master
 #   - No destructive git commands (reset --hard, clean -f, branch -D)
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')

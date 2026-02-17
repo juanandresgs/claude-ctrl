@@ -8,8 +8,7 @@ set -euo pipefail
 # Uses CLAUDE_PROJECT_DIR when available, falls back to git root detection.
 # Session-scoped to avoid collisions with concurrent sessions.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')

@@ -18,8 +18,7 @@ set -euo pipefail
 #   - The ~/.claude directory itself (meta-infrastructure)
 #   - Non-git directories
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')

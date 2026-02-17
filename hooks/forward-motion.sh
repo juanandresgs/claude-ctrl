@@ -13,7 +13,7 @@ set -euo pipefail
 # indicators: questions, offers, suggestions. Returns exit 2 (feedback) only
 # if the response ends with a bare completion statement and no forward motion.
 
-source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 

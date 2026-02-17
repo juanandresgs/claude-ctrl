@@ -19,8 +19,7 @@ set -euo pipefail
 #   Guard.sh Check 9 only blocks Bash tool writes, not hook file operations.
 #   track.sh resets proof if source files change post-verification.
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")

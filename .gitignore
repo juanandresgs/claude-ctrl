@@ -84,6 +84,9 @@ todo-images/
 # Git worktrees (feature isolation, never tracked)
 .worktrees/
 
+# Session-scoped hook library cache (race condition prevention, DEC-SRCLIB-001)
+.hook-cache/
+
 # Worktree roster (machine-local state, regenerated per registration)
 .worktree-roster.tsv
 

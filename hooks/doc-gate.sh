@@ -11,8 +11,7 @@ set -euo pipefail
 # For Write: checks tool_input.content directly
 # For Edit: reads file from disk (allows edits to files that already have headers)
 
-source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/context-lib.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 TOOL_NAME=$(get_field '.tool_name')

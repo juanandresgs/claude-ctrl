@@ -15,7 +15,7 @@ set -euo pipefail
 #
 # Exit 2 triggers feedback loop (same as lint.sh) with fix instructions.
 
-source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
