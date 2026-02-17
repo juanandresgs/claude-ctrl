@@ -396,6 +396,11 @@ fi
 # Gate is only active when .proof-status file exists (created by implementer dispatch).
 # Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
 # Same meta-repo exemption as test gates (no feature verification needed for config).
+#
+# Worktree fix: when the worktree's .claude/.proof-status is missing, fall back
+# to the orchestrator's CLAUDE_DIR/.proof-status. This handles the case where
+# prompt-submit.sh wrote "verified" to the orchestrator's copy (dual-write path).
+# The worktree's file takes precedence when both exist.
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
     if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
         PROOF_DIR=$(extract_git_target_dir "$COMMAND")
@@ -404,6 +409,13 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
     fi
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROOF_DIR"; then
         PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
+        # Fallback: if worktree file is absent, check orchestrator's CLAUDE_DIR
+        if [[ ! -f "$PROOF_FILE" ]]; then
+            ORCH_PROOF_FILE="$(get_claude_dir)/.proof-status"
+            if [[ -f "$ORCH_PROOF_FILE" ]]; then
+                PROOF_FILE="$ORCH_PROOF_FILE"
+            fi
+        fi
         if [[ -f "$PROOF_FILE" ]]; then
             if validate_state_file "$PROOF_FILE" 1; then
                 PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")

@@ -635,7 +635,12 @@ finalize_trace() {
     fi
 
     # Check proof status from project
+    # Prefer the local .claude/.proof-status; fall back to get_claude_dir() to
+    # handle the ~/.claude meta-repo case (avoids double-nesting ~/.claude/.claude/).
     local proof_file="${project_root}/.claude/.proof-status"
+    if [[ ! -f "$proof_file" ]]; then
+        proof_file="$(get_claude_dir)/.proof-status"
+    fi
     if [[ -f "$proof_file" ]]; then
         local ps
         ps=$(cut -d'|' -f1 "$proof_file")
@@ -1098,7 +1103,15 @@ build_resume_directive() {
     RESUME_DIRECTIVE=""
     RESUME_FILES=""
 
-    local claude_dir="$project_root/.claude"
+    # Use the same double-nesting guard as get_claude_dir():
+    # when project_root IS ~/.claude, don't append /.claude again.
+    local home_claude="${HOME}/.claude"
+    local claude_dir
+    if [[ "$project_root" == "$home_claude" ]]; then
+        claude_dir="$project_root"
+    else
+        claude_dir="$project_root/.claude"
+    fi
 
     # --- Priority 1: Active agent in progress ---
     # Use session-scoped tracker per DEC-SUBAGENT-002 (not the old global path)

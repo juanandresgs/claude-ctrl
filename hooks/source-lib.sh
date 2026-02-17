@@ -18,6 +18,12 @@
 #   mode entirely. The theoretical git-merge race condition is mitigated by
 #   session-init.sh's smoke test that validates library sourcing on startup.
 
+# CWD recovery: if the shell's CWD was deleted (e.g., worktree removal between
+# hook invocations), recover before any hook logic runs. Without this, $PWD
+# lookups fail with ENOENT and all subsequent detect_project_root() calls
+# return garbage. This guard runs before sourcing log.sh so it is always active.
+[[ ! -d "${PWD:-}" ]] && { cd "${HOME}" 2>/dev/null || cd /; }
+
 _SRCLIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "${_SRCLIB_DIR}/log.sh"
