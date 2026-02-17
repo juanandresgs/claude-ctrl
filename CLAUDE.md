@@ -59,7 +59,7 @@ flow applies (present report, wait for user approval keyword).
 
 **Pre-dispatch gate (mechanically enforced):**
 - Tester dispatch: requires implementer to have returned with tests passing
-- Guardian dispatch: requires `.proof-status = verified` (PreToolUse:Task gate in task-track.sh)
+- Guardian dispatch: requires `.proof-status = verified` when file exists (PreToolUse:Task gate in task-track.sh). Missing file = no gate (bootstrap path — implementer dispatch activates the gate by writing `needs-verification`)
 - The user's approval (verified, approved, lgtm, looks good, ship it) triggers `.proof-status = verified` via prompt-submit.sh — no agent can write it
 
 **Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.

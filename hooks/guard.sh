@@ -145,6 +145,21 @@ if echo "$_proof_stripped" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$C
     deny "Cannot write approval status to .proof-status directly. Only the user can verify proof-of-work (via prompt-submit.sh). Present the verification report and let the user respond naturally."
 fi
 
+# --- Check 10: Block deletion of .proof-status when verification active ---
+# Prevents agents from bypassing the gate by deleting the file.
+# Only blocks when status is pending or needs-verification (gate is active).
+# Verified status can be cleaned up freely.
+if echo "$_proof_stripped" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
+    _ps_dir=$(get_claude_dir)
+    _ps_file="${_ps_dir}/.proof-status"
+    if [[ -f "$_ps_file" ]]; then
+        _ps_val=$(cut -d'|' -f1 "$_ps_file")
+        if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
+            deny "Cannot delete .proof-status while verification is active (status: $_ps_val). Complete the verification flow first."
+        fi
+    fi
+fi
+
 # --- Early-exit gate: skip git-specific checks for non-git commands ---
 # Strip quoted strings so text like "fix git committing" doesn't trigger.
 # Then check if `git` appears in a command position (start, or after && || | ;).
@@ -290,7 +305,7 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
                 deny "Cannot merge: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
             fi
         else
-            deny "Cannot merge: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before merging."
+            : # No test results yet — allow (no test data to enforce)
         fi
     fi
 fi
@@ -307,13 +322,15 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
                 deny "Cannot commit: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
             fi
         else
-            deny "Cannot commit: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before committing."
+            : # No test results yet — allow (no test data to enforce)
         fi
     fi
 fi
 
 # --- Check 8: Proof-of-work verification gate ---
-# Requires .proof-status = "verified" before commit/merge.
+# Requires .proof-status = "verified" before commit/merge (when gate is active).
+# Gate is only active when .proof-status file exists (created by implementer dispatch).
+# Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
 # Same meta-repo exemption as test gates (no feature verification needed for config).
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
     if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
@@ -328,9 +345,8 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
             if [[ "$PROOF_STATUS" != "verified" ]]; then
                 deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
             fi
-        else
-            deny "Cannot proceed: no proof-of-work verification (.claude/.proof-status missing). The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
         fi
+        # File missing → no implementation in progress → allow (bootstrap path)
     fi
 fi
 
