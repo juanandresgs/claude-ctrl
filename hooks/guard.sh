@@ -161,6 +161,29 @@ if echo "$_proof_stripped" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; th
     fi
 fi
 
+# --- Check 5b: rm -rf .worktrees/ CWD safety rewrite ---
+# Same death-spiral prevention as Check 5 (git worktree remove), but for direct
+# rm commands that bypass git worktree remove entirely (e.g. rm -rf .worktrees/).
+# Must run BEFORE the early-exit gate which skips all non-git commands.
+#
+# @decision DEC-GUARD-002
+# @title Two-tier worktree CWD safety: git worktree remove + raw rm
+# @status accepted
+# @rationale Check 5 only catches `git worktree remove`. The death spiral also
+# occurs when the agent runs `rm -rf .worktrees/` directly, or when
+# worktree-roster.sh cleanup falls through to rm -rf internally. This check
+# intercepts rm with recursive+force targeting any .worktrees/ path and prepends
+# a `cd` to the main worktree, identical to the Check 5 pattern.
+if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktrees/|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+).*\.worktrees/'; then
+    WT_TARGET=$(echo "$COMMAND" | grep -oE '[^[:space:]]*\.worktrees/[^[:space:];&|]*' | head -1)
+    if [[ -n "$WT_TARGET" ]]; then
+        MAIN_WT=$(git worktree list 2>/dev/null | awk '{print $1; exit}')
+        MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
+        REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
+        rewrite "$REWRITTEN" "Rewrote to cd to main worktree before rm of worktree directory. Prevents CWD death spiral if shell CWD is inside the target."
+    fi
+fi
+
 # --- Early-exit gate: skip git-specific checks for non-git commands ---
 # Strip quoted strings so text like "fix git committing" doesn't trigger.
 # Then check if `git` appears in a command position (start, or after && || | ;).

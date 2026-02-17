@@ -48,7 +48,7 @@ if [[ -n "$GIT_BRANCH" ]]; then
         STALE_COUNT=$("$ROSTER_SCRIPT" stale 2>/dev/null | wc -l || echo "0")
         STALE_COUNT=$(echo "$STALE_COUNT" | tr -d ' ')
         if [[ "$STALE_COUNT" -gt 0 ]]; then
-            CONTEXT_PARTS+=("WARNING: $STALE_COUNT stale worktree(s) detected. Run \`worktree-roster.sh cleanup\` to review.")
+            CONTEXT_PARTS+=("WARNING: $STALE_COUNT stale worktree(s) detected. Run \`worktree-roster.sh cleanup --dry-run\` to review before removing.")
         fi
     fi
 fi

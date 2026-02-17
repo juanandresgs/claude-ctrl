@@ -250,12 +250,220 @@ test_json_output() {
     echo "PASS: JSON output"
 }
 
+# Test 7: Fresh lockfile — worktree is treated as active, not collected for removal
+test_lockfile_protection() {
+    echo "TEST: Fresh lockfile — worktree treated as active, not removed"
+
+    local test_path="$PROJECT_ROOT/tmp/test-worktrees/test7"
+    mkdir -p "$test_path"
+    git -C "$test_path" init --initial-branch=test-branch >/dev/null 2>&1
+    git -C "$test_path" config user.email "test@test.com" >/dev/null 2>&1
+    git -C "$test_path" config user.name "Test" >/dev/null 2>&1
+    touch "$test_path/README.md"
+    git -C "$test_path" add . >/dev/null 2>&1
+    git -C "$test_path" commit -m "initial" >/dev/null 2>&1
+
+    # Write entry with dead PID (would normally be stale without lockfile)
+    local created_at
+    created_at=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "${test_path}\ttest-branch\t007\ttest-session\t999999\t${created_at}" > "$TEST_REGISTRY"
+
+    # Fresh lockfile — get_worktree_status returns "active", entry skipped entirely
+    touch "$test_path/.claude-active"
+
+    # Run cleanup --confirm: should find NO stale worktrees
+    local output
+    output=$(REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" cleanup --confirm 2>&1 || true)
+
+    # Directory must still exist (treated as active)
+    if [[ ! -d "$test_path" ]]; then
+        echo "FAIL: Fresh-lockfile worktree was removed (should be treated as active)"
+        return 1
+    fi
+
+    assert_contains "$output" "No stale worktrees" "Fresh lockfile → treated as active, no stale found"
+
+    echo "PASS: Fresh lockfile treated as active"
+}
+
+# Test 8: Stale lockfile + no --force → skip with message; + --force → remove
+test_lockfile_force() {
+    echo "TEST: Stale lockfile (>24h) — skipped without --force, removed with --force"
+
+    local test_path="$PROJECT_ROOT/tmp/test-worktrees/test8"
+    mkdir -p "$test_path"
+    git -C "$test_path" init --initial-branch=test-branch >/dev/null 2>&1
+    git -C "$test_path" config user.email "test@test.com" >/dev/null 2>&1
+    git -C "$test_path" config user.name "Test" >/dev/null 2>&1
+    touch "$test_path/README.md"
+    git -C "$test_path" add . >/dev/null 2>&1
+    git -C "$test_path" commit -m "initial" >/dev/null 2>&1
+
+    local created_at
+    created_at=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "${test_path}\ttest-branch\t008\ttest-session\t999999\t${created_at}" > "$TEST_REGISTRY"
+
+    # Stale lockfile (age >24h) — backdate so get_worktree_status returns "stale"
+    touch "$test_path/.claude-active"
+    local old_ts
+    old_ts=$(date -v -25H +%Y%m%d%H%M 2>/dev/null || date --date='-25 hours' +%Y%m%d%H%M 2>/dev/null || echo "")
+    if [[ -n "$old_ts" ]]; then
+        touch -t "$old_ts" "$test_path/.claude-active" 2>/dev/null || true
+    fi
+
+    # Without --force: status is stale, lockfile file still present → skip with message
+    local output
+    output=$(REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" cleanup --confirm 2>&1 || true)
+    assert_contains "$output" "Skipping" "Stale lockfile without --force → should print Skipping"
+
+    if [[ ! -d "$test_path" ]]; then
+        echo "FAIL: Should not have removed worktree without --force"
+        return 1
+    fi
+
+    # Restore registry (cleanup may have modified it even if skipped)
+    echo -e "${test_path}\ttest-branch\t008\ttest-session\t999999\t${created_at}" > "$TEST_REGISTRY"
+    touch -t "$old_ts" "$test_path/.claude-active" 2>/dev/null || true
+
+    # With --force: removes despite lockfile presence
+    output=$(REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" cleanup --confirm --force 2>&1 || true)
+    assert_contains "$output" "Removing" "With --force → should print Removing"
+
+    echo "PASS: Stale lockfile skip / --force override"
+}
+
+# Test 9: Stale lockfile (>24h) — treated as stale, not active
+test_stale_lockfile() {
+    echo "TEST: Stale lockfile (>24h) treated as stale"
+
+    local test_path="$PROJECT_ROOT/tmp/test-worktrees/test9"
+    mkdir -p "$test_path"
+    git -C "$test_path" init --initial-branch=test-branch >/dev/null 2>&1
+    git -C "$test_path" config user.email "test@test.com" >/dev/null 2>&1
+    git -C "$test_path" config user.name "Test" >/dev/null 2>&1
+    touch "$test_path/README.md"
+    git -C "$test_path" add . >/dev/null 2>&1
+    git -C "$test_path" commit -m "initial" >/dev/null 2>&1
+
+    local created_at
+    created_at=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "${test_path}\ttest-branch\t009\ttest-session\t999999\t${created_at}" > "$TEST_REGISTRY"
+
+    # Place an OLD lockfile — backdate by 25 hours
+    touch "$test_path/.claude-active"
+    local old_ts
+    old_ts=$(date -v -25H +%Y%m%d%H%M 2>/dev/null || date --date='-25 hours' +%Y%m%d%H%M 2>/dev/null || echo "")
+    if [[ -n "$old_ts" ]]; then
+        touch -t "$old_ts" "$test_path/.claude-active" 2>/dev/null || true
+    fi
+
+    # Stale detection should report this worktree as stale
+    local output
+    output=$(REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" stale || true)
+
+    assert_contains "$output" "$test_path" "Stale list should contain path with old lockfile"
+
+    echo "PASS: Stale lockfile treated as stale"
+}
+
+# Test 10: Backward compat — no lockfile, PID-based detection still works
+test_backward_compat_pid() {
+    echo "TEST: Backward compat — PID-based stale detection without lockfile"
+
+    local test_path="$PROJECT_ROOT/tmp/test-worktrees/test10"
+    mkdir -p "$test_path"
+    git -C "$test_path" init --initial-branch=test-branch >/dev/null 2>&1
+    git -C "$test_path" config user.email "test@test.com" >/dev/null 2>&1
+    git -C "$test_path" config user.name "Test" >/dev/null 2>&1
+    touch "$test_path/README.md"
+    git -C "$test_path" add . >/dev/null 2>&1
+    git -C "$test_path" commit -m "initial" >/dev/null 2>&1
+
+    local created_at
+    created_at=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # No lockfile, dead PID — should be stale (old behaviour)
+    echo -e "${test_path}\ttest-branch\t010\ttest-session\t999999\t${created_at}" > "$TEST_REGISTRY"
+
+    local output
+    output=$(REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" stale || true)
+    assert_contains "$output" "$test_path" "Dead PID, no lockfile → should be stale"
+
+    # No lockfile, pid=0 — should also be stale (new pid=0 default)
+    echo -e "${test_path}\ttest-branch\t010\ttest-session\t0\t${created_at}" > "$TEST_REGISTRY"
+    output=$(REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" stale || true)
+    assert_contains "$output" "$test_path" "pid=0, no lockfile → should be stale"
+
+    echo "PASS: Backward compat PID detection"
+}
+
+# Test 11: PID register — new registrations use pid=0
+test_pid_register_zero() {
+    echo "TEST: New registrations use pid=0"
+
+    local test_path="$PROJECT_ROOT/tmp/test-worktrees/test11"
+    mkdir -p "$test_path"
+    git -C "$test_path" init --initial-branch=test-branch >/dev/null 2>&1
+    git -C "$test_path" config user.email "test@test.com" >/dev/null 2>&1
+    git -C "$test_path" config user.name "Test" >/dev/null 2>&1
+    touch "$test_path/README.md"
+    git -C "$test_path" add . >/dev/null 2>&1
+    git -C "$test_path" commit -m "initial" >/dev/null 2>&1
+
+    REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" register "$test_path" --issue=011 --session=test-session
+
+    local entry pid_field
+    entry=$(cat "$TEST_REGISTRY")
+    # pid is field 5 (0-indexed: path,branch,issue,session,pid,created_at)
+    pid_field=$(echo "$entry" | awk -F'\t' '{print $5}')
+
+    assert_equals "0" "$pid_field" "Registered pid should be 0"
+
+    echo "PASS: New registrations use pid=0"
+}
+
+# Test 12: CWD safety — cleanup doesn't ENOENT when PWD is inside target
+test_cwd_safety() {
+    echo "TEST: CWD safety — cleanup survives when called from inside worktree dir"
+
+    local test_path="$PROJECT_ROOT/tmp/test-worktrees/test12"
+    mkdir -p "$test_path"
+    git -C "$test_path" init --initial-branch=test-branch >/dev/null 2>&1
+    git -C "$test_path" config user.email "test@test.com" >/dev/null 2>&1
+    git -C "$test_path" config user.name "Test" >/dev/null 2>&1
+    touch "$test_path/README.md"
+    git -C "$test_path" add . >/dev/null 2>&1
+    git -C "$test_path" commit -m "initial" >/dev/null 2>&1
+
+    local created_at
+    created_at=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "${test_path}\ttest-branch\t012\ttest-session\t999999\t${created_at}" > "$TEST_REGISTRY"
+
+    # Run cleanup from a subshell that starts inside the worktree dir.
+    # The script must cd out first, then rm the dir. If it fails to cd out,
+    # the rm will kill the shell and subsequent commands will fail with ENOENT.
+    local result
+    result=$(
+        cd "$test_path"
+        REGISTRY="$TEST_REGISTRY" "$ROSTER_SCRIPT" cleanup --confirm 2>&1
+        echo "EXIT:$?"
+    )
+
+    if echo "$result" | grep -q "EXIT:0"; then
+        echo "PASS: CWD safety — cleanup succeeded from inside worktree"
+    else
+        echo "FAIL: CWD safety — unexpected result: $result"
+        return 1
+    fi
+}
+
 # Run all tests
 run_tests() {
     local failed=0
     local passed=0
 
-    for test_func in test_register test_register_idempotent test_list test_stale_detection test_prune test_json_output; do
+    for test_func in test_register test_register_idempotent test_list test_stale_detection test_prune test_json_output \
+        test_lockfile_protection test_lockfile_force test_stale_lockfile test_backward_compat_pid test_pid_register_zero test_cwd_safety; do
         setup
         if $test_func; then
             passed=$((passed + 1))

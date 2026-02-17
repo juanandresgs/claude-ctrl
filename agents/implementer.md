@@ -63,8 +63,13 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    ~/.claude/scripts/worktree-roster.sh register .worktrees/feature-<name> --issue=<issue_number> --session=$CLAUDE_SESSION_ID
    ```
    This enables stale worktree detection and cleanup. The issue number should match the GitHub issue you're implementing.
-3. Navigate to the worktree for all implementation work
-4. Verify isolation is complete
+3. Create a lockfile to mark the worktree as actively in use:
+   ```bash
+   touch .worktrees/feature-<name>/.claude-active
+   ```
+   The lockfile prevents `cleanup` from removing the worktree while your session is active. It is checked by mtime: files older than 24h are treated as stale.
+4. Navigate to the worktree for all implementation work
+5. Verify isolation is complete
 
 **CWD safety:** Before deleting any directory (worktrees, tmp dirs, test fixtures), ensure the shell is NOT inside it. Run `cd <project_root>` first. Deleting the shell's CWD bricks all Bash operations and Stop hooks for the rest of the session. Use `safe_cleanup` from `context-lib.sh` when available.
 
@@ -143,6 +148,7 @@ Before completing your work, verify:
 - [ ] Do all tests pass?
 - [ ] Are @decision annotations present on 50+ line source files?
 - [ ] Is the worktree clean (no untracked debris)?
+- [ ] Remove the lockfile so the worktree can be cleaned up later: `rm -f .worktrees/feature-<name>/.claude-active`
 - [ ] If the feature requires environment variables, did you write env-requirements.txt to TRACE_DIR/artifacts/?
 - [ ] If you asked for approval (commit, approach, next steps), did you receive and process it?
 - [ ] Did you execute the requested operation (or explain why not)?

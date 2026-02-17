@@ -802,6 +802,21 @@ if [[ -f "$FIXTURES_DIR/guard-force-push.json" ]]; then
     fi
 fi
 
+# --- Test: guard.sh — Check 5b: rm -rf .worktrees/ CWD safety rewrite ---
+if [[ -f "$FIXTURES_DIR/guard-rm-rf-worktrees.json" ]]; then
+    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-rm-rf-worktrees.json")
+    if echo "$output" | jq -e '.hookSpecificOutput.updatedInput.command' > /dev/null 2>&1; then
+        rewritten=$(echo "$output" | jq -r '.hookSpecificOutput.updatedInput.command')
+        if [[ "$rewritten" == "cd "* && "$rewritten" == *"rm -rf .worktrees/test-fake"* ]]; then
+            pass "guard.sh — Check 5b: rm -rf .worktrees/ rewritten with cd prefix"
+        else
+            fail "guard.sh — Check 5b: rm -rf .worktrees/ rewrite" "expected cd prefix, got: $rewritten"
+        fi
+    else
+        fail "guard.sh — Check 5b: rm -rf .worktrees/ rewrite" "no updatedInput in output: $output"
+    fi
+fi
+
 # --- Test: guard.sh — nuclear command deny ---
 echo "--- guard.sh nuclear commands ---"
 

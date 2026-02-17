@@ -21,12 +21,12 @@
 #   register <path> [--issue=N] [--session=ID]  Register new worktree (idempotent)
 #   list [--json]                                Show all worktrees with status
 #   stale                                        List stale worktrees (PID dead, dir exists)
-#   cleanup [--dry-run] [--confirm]              Remove stale worktrees
+#   cleanup [--dry-run] [--confirm] [--force]    Remove stale worktrees
 #   prune                                        Remove orphaned registry entries
 #
 # Status types:
-#   active   - PID is alive
-#   stale    - PID is dead but directory exists
+#   active   - Lockfile present (<24h) or PID is alive
+#   stale    - PID is dead and no fresh lockfile; directory exists
 #   orphaned - Registry entry but directory gone
 
 set -euo pipefail
@@ -49,12 +49,26 @@ is_pid_alive() {
 }
 
 # Get status for a worktree entry
+# Lockfile (.claude-active) takes precedence over PID for active detection.
+# A fresh lockfile (mtime < 24h) means the session is considered active even
+# if the PID field is 0 (new registrations) or stale.
 get_worktree_status() {
     local path="$1"
     local pid="$2"
 
     if [[ ! -d "$path" ]]; then
         echo "orphaned"
+    elif [[ -f "$path/.claude-active" ]]; then
+        # Lockfile present — check freshness (24h = 86400s)
+        local mtime now age
+        mtime=$(stat -f %m "$path/.claude-active" 2>/dev/null || stat -c %Y "$path/.claude-active" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        age=$((now - mtime))
+        if [[ $age -lt 86400 ]]; then
+            echo "active"
+        else
+            echo "stale"
+        fi
     elif is_pid_alive "$pid"; then
         echo "active"
     else
@@ -67,7 +81,7 @@ cmd_register() {
     local path=""
     local issue=""
     local session="${CLAUDE_SESSION_ID:-}"
-    local pid="$$"
+    local pid="0"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -251,9 +265,21 @@ cmd_stale() {
 }
 
 # Cleanup stale worktrees
+#
+# @decision DEC-WORKTREE-002
+# @title CWD-safe cleanup with lockfile protection and --force override
+# @status accepted
+# @rationale Deleting a directory while the shell CWD is inside it causes
+# posix_spawn ENOENT on all subsequent Bash calls — the "CWD death spiral".
+# This is fixed by resolving the main worktree and cd-ing there before any
+# rm or git worktree remove call. Lockfile protection (.claude-active) prevents
+# cleanup from removing worktrees with active sessions; --force overrides.
+# pid=0 registrations (new default) no longer trigger false-stale detection —
+# the lockfile is now the primary liveness signal.
 cmd_cleanup() {
     local dry_run=true
     local confirm=false
+    local force=false
 
     for arg in "$@"; do
         case "$arg" in
@@ -263,6 +289,9 @@ cmd_cleanup() {
             --confirm)
                 confirm=true
                 dry_run=false
+                ;;
+            --force)
+                force=true
                 ;;
         esac
     done
@@ -274,13 +303,22 @@ cmd_cleanup() {
         return
     fi
 
-    # Collect stale entries
+    # Collect stale entries, skipping lockfile-protected ones unless --force
     local stale_paths=()
     while IFS=$'\t' read -r path branch issue session pid created_at; do
         local status
         status=$(get_worktree_status "$path" "$pid")
 
         if [[ "$status" == "stale" ]]; then
+            # Skip lockfile-protected worktrees unless --force
+            if [[ -f "$path/.claude-active" ]] && ! $force; then
+                local mtime now age
+                mtime=$(stat -f %m "$path/.claude-active" 2>/dev/null || stat -c %Y "$path/.claude-active" 2>/dev/null || echo 0)
+                now=$(date +%s)
+                age=$((now - mtime))
+                echo "Skipping $path (lockfile present, age ${age}s — use --force to override)"
+                continue
+            fi
             stale_paths+=("$path")
         fi
     done < "$REGISTRY"
@@ -306,19 +344,29 @@ cmd_cleanup() {
         exit 0
     fi
 
-    # Remove worktrees
+    # Resolve main worktree for CWD safety
+    local main_wt
+    main_wt=$(git worktree list 2>/dev/null | awk '{print $1; exit}')
+    main_wt="${main_wt:-$(pwd)}"
+
+    # Remove worktrees (CWD-safe)
     local removed=0
     for path in "${stale_paths[@]}"; do
         echo "Removing: $path"
 
-        # Remove via git worktree remove
-        if git worktree remove "$path" 2>/dev/null; then
+        # CWD safety: if shell is inside target, cd out first
+        if [[ "$PWD" == "$path"* ]]; then
+            cd "$main_wt" || cd "$HOME"
+        fi
+
+        # Remove via git worktree remove (from main worktree for safety)
+        if (cd "$main_wt" && git worktree remove "$path" 2>/dev/null); then
             removed=$((removed + 1))
         elif [[ -d "$path" ]]; then
             # Force removal if git worktree remove failed
             rm -rf "$path"
             # Remove from git config
-            git worktree prune 2>/dev/null || true
+            (cd "$main_wt" && git worktree prune 2>/dev/null) || true
             removed=$((removed + 1))
         fi
 
@@ -387,12 +435,12 @@ Commands:
   register <path> [--issue=N] [--session=ID]   Register a worktree
   list [--json]                                 List all worktrees with status
   stale                                         List stale worktrees (PID dead)
-  cleanup [--dry-run] [--confirm]               Remove stale worktrees
+  cleanup [--dry-run] [--confirm] [--force]     Remove stale worktrees
   prune                                         Remove orphaned registry entries
 
 Status types:
-  active   - PID is alive
-  stale    - PID is dead but directory exists
+  active   - Lockfile present (<24h) or PID is alive
+  stale    - PID is dead and no fresh lockfile; directory exists
   orphaned - Registry entry but directory gone
 EOF
         exit 1
