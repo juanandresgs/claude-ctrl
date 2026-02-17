@@ -83,6 +83,9 @@ todo-images/
 # Git worktrees (feature isolation, never tracked)
 .worktrees/
 
+# Worktree roster (machine-local state, regenerated per registration)
+.worktree-roster.tsv
+
 # Runtime output directories
 backups/
 research_output/

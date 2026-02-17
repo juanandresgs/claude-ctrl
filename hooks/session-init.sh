@@ -41,6 +41,17 @@ if [[ -n "$GIT_BRANCH" ]]; then
     if [[ "$GIT_BRANCH" == "main" || "$GIT_BRANCH" == "master" ]]; then
         CONTEXT_PARTS+=("WARNING: On $GIT_BRANCH branch. Sacred Practice #2: create a worktree before making changes.")
     fi
+
+    # Stale worktree detection
+    ROSTER_SCRIPT="$HOME/.claude/scripts/worktree-roster.sh"
+    if [[ -x "$ROSTER_SCRIPT" ]]; then
+        "$ROSTER_SCRIPT" prune 2>/dev/null || true
+        STALE_COUNT=$("$ROSTER_SCRIPT" stale 2>/dev/null | wc -l || echo "0")
+        STALE_COUNT=$(echo "$STALE_COUNT" | tr -d ' ')
+        if [[ "$STALE_COUNT" -gt 0 ]]; then
+            CONTEXT_PARTS+=("WARNING: $STALE_COUNT stale worktree(s) detected. Run \`worktree-roster.sh cleanup\` to review.")
+        fi
+    fi
 fi
 
 # --- Harness update status ---

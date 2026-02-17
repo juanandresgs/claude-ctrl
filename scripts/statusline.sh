@@ -75,7 +75,23 @@ fi
 
 # Worktrees (cyan, only if > 0)
 if [[ "$cache_wt" -gt 0 ]]; then
-    line=$(printf '%s %b \033[36mWT:%d\033[0m' "$line" "$sep" "$cache_wt")
+    # Check for stale worktrees
+    ROSTER_FILE="$HOME/.claude/.worktree-roster.tsv"
+    stale_count=0
+    if [[ -f "$ROSTER_FILE" && -s "$ROSTER_FILE" ]]; then
+        while IFS=$'\t' read -r wt_path wt_branch wt_issue wt_session wt_pid wt_created; do
+            # Check if directory exists and PID is dead
+            if [[ -d "$wt_path" ]] && ! kill -0 "$wt_pid" 2>/dev/null; then
+                stale_count=$((stale_count + 1))
+            fi
+        done < "$ROSTER_FILE"
+    fi
+
+    if [[ "$stale_count" -gt 0 ]]; then
+        line=$(printf '%s %b \033[36mWT:%d\033[0m \033[33m(%d stale)\033[0m' "$line" "$sep" "$cache_wt" "$stale_count")
+    else
+        line=$(printf '%s %b \033[36mWT:%d\033[0m' "$line" "$sep" "$cache_wt")
+    fi
 fi
 
 # Plan phase (blue or dim)

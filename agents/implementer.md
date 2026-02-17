@@ -58,8 +58,13 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    ```bash
    git worktree add .worktrees/feature-<name> -b feature/<name>
    ```
-2. Navigate to the worktree for all implementation work
-3. Verify isolation is complete
+2. Register the worktree for tracking:
+   ```bash
+   ~/.claude/scripts/worktree-roster.sh register .worktrees/feature-<name> --issue=<issue_number> --session=$CLAUDE_SESSION_ID
+   ```
+   This enables stale worktree detection and cleanup. The issue number should match the GitHub issue you're implementing.
+3. Navigate to the worktree for all implementation work
+4. Verify isolation is complete
 
 **CWD safety:** Before deleting any directory (worktrees, tmp dirs, test fixtures), ensure the shell is NOT inside it. Run `cd <project_root>` first. Deleting the shell's CWD bricks all Bash operations and Stop hooks for the rest of the session. Use `safe_cleanup` from `context-lib.sh` when available.
 
