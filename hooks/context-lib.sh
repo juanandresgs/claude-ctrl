@@ -231,6 +231,60 @@ read_test_status() {
     return 0
 }
 
+# --- State file validation ---
+# @decision DEC-INTEGRITY-001
+# @title validate_state_file guards corrupt-file reads in guard.sh
+# @status accepted
+# @rationale guard.sh reads .proof-status and .test-status via cut. A corrupt
+#   or empty file causes cut to return an empty string, which then falls through
+#   to unexpected code paths. Worse, a missing file guarded only by -f can still
+#   fail if the inode is deleted between the check and the read. validate_state_file
+#   validates existence, non-emptiness, and minimum field count before any caller
+#   reads the file — preventing spurious ERR-trap fires that would otherwise cause
+#   deny-on-crash to block legitimate commands.
+# Validate a pipe-delimited state file has expected format.
+# Usage: validate_state_file "/path/to/file" field_count
+# Returns 0 if valid, 1 if invalid/missing/corrupt.
+validate_state_file() {
+    local file="$1"
+    local expected_fields="${2:-1}"
+    [[ ! -f "$file" ]] && return 1
+    [[ ! -s "$file" ]] && return 1
+    local content
+    content=$(head -1 "$file" 2>/dev/null) || return 1
+    [[ -z "$content" ]] && return 1
+    # Count pipe-delimited fields
+    local actual_fields
+    actual_fields=$(echo "$content" | awk -F'|' '{print NF}')
+    [[ "$actual_fields" -ge "$expected_fields" ]] || return 1
+    return 0
+}
+
+# --- Atomic file writer ---
+# @decision DEC-INTEGRITY-004
+# @title Atomic write via temp-file-then-mv for state file safety
+# @status accepted
+# @rationale Writing state files directly (echo > file) can produce truncated or
+# empty files if the process is killed mid-write (e.g., SIGKILL, power loss).
+# temp-file-then-mv is atomic on POSIX filesystems: the destination either has
+# the old content or the new content, never a partial write. The .tmp.$$ suffix
+# makes temp files unique per-process so concurrent writers don't collide.
+#
+# Usage: atomic_write "/path/to/file" "content"
+# Or:    echo "content" | atomic_write "/path/to/file"
+atomic_write() {
+    local target="$1"
+    local content="${2:-}"
+    local tmp="${target}.tmp.$$"
+    mkdir -p "$(dirname "$target")"
+    if [[ -n "$content" ]]; then
+        printf '%s\n' "$content" > "$tmp"
+    else
+        cat > "$tmp"
+    fi
+    mv "$tmp" "$target"
+}
+
 # --- Safe directory cleanup ---
 # Prevents CWD-deletion bug: if the shell's CWD is inside the target,
 # posix_spawn fails with ENOENT for all subsequent commands (including
@@ -1001,7 +1055,8 @@ build_resume_directive() {
     local claude_dir="$project_root/.claude"
 
     # --- Priority 1: Active agent in progress ---
-    local tracker="$claude_dir/.subagent-tracker"
+    # Use session-scoped tracker per DEC-SUBAGENT-002 (not the old global path)
+    local tracker="$claude_dir/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
     if [[ -f "$tracker" ]]; then
         local active_count
         active_count=$(grep -c '^ACTIVE|' "$tracker" 2>/dev/null) || active_count=0
@@ -1106,4 +1161,4 @@ build_resume_directive() {
 
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions

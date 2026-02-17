@@ -22,6 +22,36 @@ set -euo pipefail
 #   - Main is sacred (no commits on main/master)
 #   - No force push to main/master
 #   - No destructive git commands (reset --hard, clean -f, branch -D)
+#
+# @decision DEC-INTEGRITY-002
+# @title Deny-on-crash EXIT trap for fail-closed behavior
+# @status accepted
+# @rationale guard.sh previously failed open: if source-lib.sh failed to load,
+#   jq was missing, or any command errored under set -euo pipefail, the hook
+#   would exit non-zero and Claude Code would silently allow the command through.
+#   This meant safety checks could be bypassed by any runtime error. The EXIT
+#   trap pattern combined with a completion flag (_GUARD_COMPLETED) flips this
+#   to fail-closed: crash = deny. Normal exit paths (deny(), rewrite(), early
+#   exits) set the flag to true so the trap is a no-op for them. The trap MUST
+#   be installed before source-lib.sh because that is the most common crash point.
+
+# --- Fail-closed crash trap ---
+# MUST be set before source-lib.sh — that's the most common failure point.
+_GUARD_COMPLETED=false
+_guard_deny_on_crash() {
+    if [[ "$_GUARD_COMPLETED" != "true" ]]; then
+        cat <<'CRASHJSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "SAFETY: guard.sh crashed before completing safety checks. Command denied as precaution. Run: bash -n ~/.claude/hooks/guard.sh to diagnose."
+  }
+}
+CRASHJSON
+    fi
+}
+trap '_guard_deny_on_crash' EXIT
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -29,7 +59,10 @@ HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')
 
 # Exit silently if no command
-[[ -z "$COMMAND" ]] && exit 0
+if [[ -z "$COMMAND" ]]; then
+    _GUARD_COMPLETED=true
+    exit 0
+fi
 
 # Emit PreToolUse deny response with reason, then exit.
 deny() {
@@ -43,6 +76,7 @@ deny() {
   }
 }
 EOF
+    _GUARD_COMPLETED=true
     exit 0
 }
 
@@ -64,6 +98,7 @@ rewrite() {
   }
 }
 EOF
+    _GUARD_COMPLETED=true
     exit 0
 }
 
@@ -189,6 +224,7 @@ fi
 # Then check if `git` appears in a command position (start, or after && || | ;).
 _stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
 if ! echo "$_stripped_cmd" | grep -qE '(^|&&|\|\|?|;)\s*git\s'; then
+    _GUARD_COMPLETED=true
     exit 0
 fi
 
@@ -369,7 +405,12 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROOF_DIR"; then
         PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
         if [[ -f "$PROOF_FILE" ]]; then
-            PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+            if validate_state_file "$PROOF_FILE" 1; then
+                PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+            else
+                # Corrupt or empty file — treat as "not verified" (fail-closed)
+                PROOF_STATUS="corrupt"
+            fi
             if [[ "$PROOF_STATUS" != "verified" ]]; then
                 append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"not verified\"}" "$PROOF_DIR"
                 deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
@@ -386,4 +427,5 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
 fi
 
 # All checks passed
+_GUARD_COMPLETED=true
 exit 0
