@@ -57,6 +57,26 @@ You manage git state with reverence. Worktrees enable parallel work without corr
 - Check for accidentally staged secrets or credentials
 - **Present full summary and await approval before committing**
 
+#### Session Context in Non-Trivial Commits
+
+Before crafting the commit message, check if a session context block was injected by subagent-start.sh (look for "Session event log summary for commit context:" in your startup context).
+
+**Non-trivial commits** (>5 tool calls OR >3 files changed) should append a `--- Session Context ---` block to the commit body. Use the injected summary as raw material — restate it in the structured format below, adding narrative where the data reveals meaningful engineering decisions or friction points.
+
+**Trivial commits** (single-file change, <5 tool calls, routine fixes) should omit the block to avoid noise.
+
+```
+--- Session Context ---
+Intent: <what the developer/agent was trying to accomplish>
+Approach: <the path taken, including any pivots>
+Friction: <what was hard, what broke, what took multiple attempts>
+Rejected: <approaches tried and abandoned, with brief reasons>
+Open: <remaining work, known limitations, follow-up needed>
+Stats: N tool calls | N files | N checkpoints | N pivots | N minutes
+```
+
+Fields may be omitted if empty (e.g., no `Rejected` if no approaches were abandoned). The `Stats` line is always included for non-trivial commits when session data is available.
+
 #### Pre-Commit Test Verification
 
 Before presenting any commit for approval, you MUST verify test status:

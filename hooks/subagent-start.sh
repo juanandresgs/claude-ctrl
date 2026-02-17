@@ -11,6 +11,8 @@ set -euo pipefail
 #   - Active worktrees
 #   - Agent-type-specific guidance
 #   - Tracks subagent spawn in .subagent-tracker for status bar
+#   - Guardian: injects session event log summary for richer commit messages
+#     (DEC-V2-005: structured session context in non-trivial commits)
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -148,6 +150,11 @@ case "$AGENT_TYPE" in
             if [[ "$TS_RESULT" == "fail" ]]; then
                 CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($TS_FAILS failures). Do NOT commit/merge until tests pass.")
             fi
+        fi
+        # Inject session summary for richer commit messages
+        SESSION_SUMMARY=$(get_session_summary_context "$PROJECT_ROOT" 2>/dev/null || echo "")
+        if [[ -n "$SESSION_SUMMARY" ]]; then
+            CONTEXT_PARTS+=("Session event log summary for commit context: $SESSION_SUMMARY")
         fi
         if [[ -n "$TRACE_DIR" ]]; then
             CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (merge-analysis.md). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")

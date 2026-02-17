@@ -740,6 +740,14 @@ get_session_trajectory() {
     fi
 }
 
+# @decision DEC-V2-005
+# @title Session context in commits as structured text
+# @status accepted
+# @rationale Structured Key: Value format is scannable in git log, parseable by tools,
+# and consistent with conventional commit trailers. A single-line prose summary was
+# insufficient — structured output lets Guardian selectively include stats, friction,
+# and agent trajectory context in commit messages without manual formatting effort.
+# Trivial sessions (<3 events) return empty to avoid noise in minor commits.
 get_session_summary_context() {
     local project_root="${1:-}"
     if [[ -z "$project_root" ]]; then
@@ -751,34 +759,53 @@ get_session_summary_context() {
     local event_file="$project_root/.claude/.session-events.jsonl"
     [[ ! -f "$event_file" ]] && return
 
-    local summary=""
-    summary="Session trajectory: ${TRAJ_TOOL_CALLS} writes across ${TRAJ_FILES_MODIFIED} files."
+    # Count total events for triviality check
+    local total_events
+    total_events=$(wc -l < "$event_file" 2>/dev/null | tr -d ' ')
+    total_events=${total_events:-0}
 
-    if [[ "$TRAJ_GATE_BLOCKS" -gt 0 ]]; then
-        summary="$summary ${TRAJ_GATE_BLOCKS} gate blocks."
+    # Trivial sessions (<3 events) produce no context — avoid noise in minor commits
+    [[ "$total_events" -lt 3 ]] && return
+
+    # Build structured output block
+    local stats_line="${TRAJ_TOOL_CALLS} tool calls | ${TRAJ_FILES_MODIFIED} files | ${TRAJ_CHECKPOINTS} checkpoints | ${TRAJ_PIVOTS} pivots | ${TRAJ_ELAPSED_MIN} minutes"
+
+    printf '%s\n' '--- Session Context ---'
+    printf 'Stats: %s\n' "$stats_line"
+
+    if [[ -n "$TRAJ_AGENTS" ]]; then
+        printf 'Agents: %s\n' "$TRAJ_AGENTS"
     fi
 
     if [[ "$TRAJ_TEST_FAILURES" -gt 0 ]]; then
-        summary="$summary ${TRAJ_TEST_FAILURES} test failures."
-        # Extract most-failed assertion
+        # Extract most-failed assertion for friction context
         local top_assertion
-        top_assertion=$(grep '"event":"test_run"' "$event_file" 2>/dev/null | grep '"result":"fail"' | jq -r '.assertion // empty' 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+        top_assertion=$(grep '"event":"test_run"' "$event_file" 2>/dev/null | grep '"result":"fail"' | jq -r '.assertion // empty' 2>/dev/null | sort | uniq -c | sort -rn | head -1 | sed 's/^[[:space:]]*[0-9]* //')
         if [[ -n "$top_assertion" ]]; then
-            summary="$summary Most-failed assertion: $top_assertion."
+            printf 'Friction: %d test failure(s) — most common: %s\n' "$TRAJ_TEST_FAILURES" "$top_assertion"
+        else
+            printf 'Friction: %d test failure(s)\n' "$TRAJ_TEST_FAILURES"
         fi
     fi
 
-    if [[ -n "$TRAJ_AGENTS" ]]; then
-        summary="$summary Agents: ${TRAJ_AGENTS}."
+    if [[ "$TRAJ_GATE_BLOCKS" -gt 0 ]]; then
+        printf 'Friction: %d gate block(s) — agent corrected course\n' "$TRAJ_GATE_BLOCKS"
     fi
 
     if [[ "$TRAJ_PIVOTS" -gt 0 ]]; then
-        summary="$summary ${TRAJ_PIVOTS} approach pivot(s) detected."
+        # Extract pivot details: files edited most often
+        local pivot_files
+        pivot_files=$(grep '"event":"write"' "$event_file" 2>/dev/null | jq -r '.file // empty' 2>/dev/null | sort | uniq -c | sort -rn | awk '$1 > 2 {print $2}' | head -3 | paste -sd ', ' - 2>/dev/null || echo "")
+        if [[ -n "$pivot_files" ]]; then
+            printf 'Approach: %d pivot(s) detected on: %s\n' "$TRAJ_PIVOTS" "$pivot_files"
+        else
+            printf 'Approach: %d pivot(s) detected\n' "$TRAJ_PIVOTS"
+        fi
     fi
 
-    summary="$summary Duration: ${TRAJ_ELAPSED_MIN}m. Checkpoints: ${TRAJ_CHECKPOINTS}. Rewinds: ${TRAJ_REWINDS}."
-
-    echo "$summary"
+    if [[ "$TRAJ_REWINDS" -gt 0 ]]; then
+        printf 'Rewinds: %d checkpoint rewind(s)\n' "$TRAJ_REWINDS"
+    fi
 }
 
 # Export for subshells
