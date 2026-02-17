@@ -118,6 +118,16 @@ case "$AGENT_TYPE" in
         if [[ -n "$IMPL_TRACE" ]]; then
             CONTEXT_PARTS+=("Implementer trace: ${TRACE_STORE}/${IMPL_TRACE} — read summary.md and artifacts/ to understand what was built.")
         fi
+        # Surface environment requirements from implementer trace
+        if [[ -n "$IMPL_TRACE" ]]; then
+            env_req_file="${TRACE_STORE}/${IMPL_TRACE}/artifacts/env-requirements.txt"
+            if [[ -f "$env_req_file" ]]; then
+                env_vars=$(grep -v '^#' "$env_req_file" | grep -v '^$' | cut -d'#' -f1 | tr -d ' ' | paste -sd ', ' -)
+                if [[ -n "$env_vars" ]]; then
+                    CONTEXT_PARTS+=("ENV REQUIREMENTS: This feature requires: ${env_vars}. Verify they are set before running.")
+                fi
+            fi
+        fi
         # Inject worktree/branch context
         if [[ -n "$GIT_BRANCH" ]]; then
             CONTEXT_PARTS+=("Working on branch: $GIT_BRANCH — verify the feature on this branch, not main.")
