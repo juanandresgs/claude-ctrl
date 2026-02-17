@@ -255,6 +255,32 @@ fi
 rm -f "${CLAUDE_DIR}/.prompt-count-"*
 rm -f "${CLAUDE_DIR}/.session-start-epoch"
 rm -f "${CLAUDE_DIR}/.subagent-tracker"
+# Prune orphaned session-scoped tracker files from crashed sessions.
+# Each tracker is named .subagent-tracker-<SESSION_ID_or_PID>.
+# If the PID portion is numeric and the process is dead, the file is stale.
+for tracker_file in "${CLAUDE_DIR}/.subagent-tracker-"*; do
+    [[ ! -f "$tracker_file" ]] && continue
+    tracker_id="${tracker_file##*-}"
+    # If tracker_id looks like a PID (all digits), check if process is alive
+    if [[ "$tracker_id" =~ ^[0-9]+$ ]]; then
+        if ! kill -0 "$tracker_id" 2>/dev/null; then
+            rm -f "$tracker_file"
+        fi
+    else
+        # CLAUDE_SESSION_ID format — skip if it matches the current session
+        if [[ "$tracker_id" != "${CLAUDE_SESSION_ID:-}" ]]; then
+            # Age check: if older than 2 hours, safe to prune
+            if [[ "$(uname)" == "Darwin" ]]; then
+                tracker_age=$(( $(date +%s) - $(stat -f %m "$tracker_file" 2>/dev/null || echo "0") ))
+            else
+                tracker_age=$(( $(date +%s) - $(stat -c %Y "$tracker_file" 2>/dev/null || echo "0") ))
+            fi
+            if [[ "$tracker_age" -gt 7200 ]]; then
+                rm -f "$tracker_file"
+            fi
+        fi
+    fi
+done
 
 # --- Clear stale test status from previous session ---
 # .test-status is now a hard gate for commits (guard.sh Checks 6/7).
@@ -276,6 +302,25 @@ fi
 # all 29 hooks fail silently. Runs in a subshell so failures don't kill this hook.
 if ! (source "$(dirname "$0")/source-lib.sh") 2>/dev/null; then
     CONTEXT_PARTS+=("WARNING: Hook library smoke test FAILED. log.sh or context-lib.sh may be corrupted. Run: bash -n ~/.claude/hooks/log.sh && bash -n ~/.claude/hooks/context-lib.sh")
+fi
+
+# --- Preflight integrity checks ---
+# Fast validation of libraries, state files, and hook registration.
+# diagnose.sh --quick completes in <250ms. Failures inject warnings;
+# a crash of preflight itself does NOT block the session.
+DIAGNOSE_SCRIPT="$HOME/.claude/skills/diagnose/scripts/diagnose.sh"
+if [[ -x "$DIAGNOSE_SCRIPT" ]]; then
+    PREFLIGHT_OUTPUT=$("$DIAGNOSE_SCRIPT" --quick 2>/dev/null) || true
+    if [[ -n "$PREFLIGHT_OUTPUT" ]]; then
+        # Extract WARN and FAIL lines only — PASS lines are noise in session context
+        PREFLIGHT_ISSUES=$(echo "$PREFLIGHT_OUTPUT" | grep -E '^\[(WARN|FAIL)\]' || true)
+        if [[ -n "$PREFLIGHT_ISSUES" ]]; then
+            CONTEXT_PARTS+=("Preflight checks:")
+            while IFS= read -r line; do
+                CONTEXT_PARTS+=("  $line")
+            done <<< "$PREFLIGHT_ISSUES"
+        fi
+    fi
 fi
 
 # --- Initialize session event log ---

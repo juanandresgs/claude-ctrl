@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# SubagentStop:guardian — deterministic validation of guardian actions.
-# Replaces AI agent hook. Checks MASTER_PLAN.md recency and git cleanliness.
+# check-guardian.sh — SubagentStop:guardian hook
+#
+# Purpose: Deterministic post-guardian validation. Checks MASTER_PLAN.md recency,
+# git cleanliness, test status, and approval-loop state after each guardian run.
+# Cleans up .proof-status after a successful commit to reset the verification cycle.
 # Advisory only (exit 0 always). Reports findings via additionalContext.
 #
-# DECISION: Deterministic guardian validation. Rationale: AI agent hooks have
-# non-deterministic runtime and cascade risk. File stat + git status complete
-# in <1s with zero cascade risk. Status: accepted.
+# Hook type: SubagentStop
+# Trigger: After any Task tool invocation that ran the guardian agent
+# Input: JSON on stdin with agent response text
+# Output: JSON { "additionalContext": "..." } with validation findings
+#
+# @decision DEC-GUARDIAN-001
+# @title Deterministic guardian validation replacing AI agent hook
+# @status accepted
+# @rationale AI agent hooks have non-deterministic runtime and cascade risk.
+# File stat + git status complete in <1s with zero cascade risk. Post-commit
+# .proof-status cleanup (Phase B) ensures the verification gate resets cleanly
+# for the next implementation cycle, preventing stale "verified" state from
+# bypassing the proof gate on subsequent tasks.
+
+set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -124,6 +137,24 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')
     if [[ "$WORD_COUNT" -gt 1200 ]]; then
         ISSUES+=("Agent response too large (~${WORD_COUNT} words). Use TRACE_DIR for verbose output.")
+    fi
+fi
+
+# --- Post-commit .proof-status cleanup ---
+# When Guardian successfully committed, the verification cycle is complete.
+# Clean .proof-status so it doesn't interfere with the next implementation cycle.
+# This prevents stale "verified" state from bypassing the proof gate on the next task.
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    HAS_COMMIT=$(echo "$RESPONSE_TEXT" | grep -iE 'committed|commit.*successful|pushed|merge.*complete' || echo "")
+    if [[ -n "$HAS_COMMIT" ]]; then
+        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+        if [[ -f "$PROOF_FILE" ]]; then
+            PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
+            if [[ "$PROOF_VAL" == "verified" ]]; then
+                rm -f "$PROOF_FILE"
+                log_info "CHECK-GUARDIAN" "Cleaned .proof-status after successful commit"
+            fi
+        fi
     fi
 fi
 
