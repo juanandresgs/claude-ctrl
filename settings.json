@@ -138,6 +138,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/plan-check.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/checkpoint.sh",
+            "timeout": 5
           }
         ]
       },

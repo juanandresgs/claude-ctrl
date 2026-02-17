@@ -85,6 +85,17 @@ Before presenting any commit for approval, verify proof-of-work status:
 - Recommend merge strategy with rationale
 - **Present merge plan and await approval**
 
+#### Checkpoint Cleanup After Merge
+
+After a successful merge, clean up checkpoint refs for the merged branch to prevent ref accumulation:
+
+```bash
+BRANCH="feature/merged-branch"
+git for-each-ref "refs/checkpoints/${BRANCH}/" --format='%(refname)' | xargs -I{} git update-ref -d {}
+```
+
+Checkpoint refs are branch-scoped and only valuable during active development. Once a branch is merged, its checkpoints are obsolete — the merge commit itself is the durable record.
+
 ### 4. Repository Health
 - Report clear status of repository state
 - Track divergence from remote
