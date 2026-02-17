@@ -760,48 +760,120 @@ cmd_count() {
 cmd_hud() {
     local max=5
 
-    # Try project todos first, fall back to global
+    # @decision DEC-HUD-PARALLEL-001
+    # @title Parallel todo HUD queries via background subshells + temp files
+    # @status accepted
+    # @rationale The original implementation tried project → global → config
+    # sequentially, short-circuiting on the first non-empty result. Each gh
+    # issue list call costs ~0.3-0.5s; in the worst case (no project todos) two
+    # API calls ran serially. The fix: launch all three queries in parallel
+    # background subshells, each writing to a temp file in a mktemp directory.
+    # wait for all three, then pick the first non-empty result in project →
+    # global → config priority order. Network-down / auth-fail paths produce
+    # empty "[]" results, preserving original fallback behavior. Temp dir is
+    # cleaned up in all exit paths via trap.
+
     local scope=""
     local issues=""
     local count=0
 
-    if is_git_repo; then
-        local repo_name
-        repo_name=$(get_repo_name)
-        if [[ -n "$repo_name" ]]; then
-            local pj
-            pj=$(gh issue list --label "$LABEL" --state open --limit 10 \
-                --json number,title 2>/dev/null || echo "[]")
-            count=$(echo "$pj" | jq 'length')
-            if [[ "$count" -gt 0 ]]; then
-                scope="PROJECT"
-                issues="$pj"
-            fi
-        fi
+    # Create temp dir for parallel query results
+    local _hud_tmpdir
+    _hud_tmpdir=$(mktemp -d 2>/dev/null) || _hud_tmpdir=""
+    if [[ -z "$_hud_tmpdir" ]]; then
+        # mktemp failed — fall back to sequential behavior (best-effort)
+        _hud_tmpdir=""
     fi
 
-    if [[ -z "$scope" ]]; then
-        if gh repo view "$GLOBAL_REPO" >/dev/null 2>&1; then
-            local gj
-            gj=$(gh issue list --repo "$GLOBAL_REPO" --label "$LABEL" --state open \
-                --limit 10 --json number,title 2>/dev/null || echo "[]")
-            count=$(echo "$gj" | jq 'length')
-            if [[ "$count" -gt 0 ]]; then
-                scope="GLOBAL"
-                issues="$gj"
+    # Cleanup on all exit paths
+    _hud_cleanup() { [[ -n "${_hud_tmpdir:-}" ]] && rm -rf "$_hud_tmpdir"; }
+    trap _hud_cleanup RETURN
+
+    if [[ -n "$_hud_tmpdir" ]]; then
+        local _pj_file="$_hud_tmpdir/project.json"
+        local _gj_file="$_hud_tmpdir/global.json"
+        local _cj_file="$_hud_tmpdir/config.json"
+
+        # Launch parallel background queries
+        # Project scope: only when inside a git repo
+        if is_git_repo && [[ -n "$(get_repo_name 2>/dev/null)" ]]; then
+            (gh issue list --label "$LABEL" --state open --limit 10 \
+                --json number,title 2>/dev/null || echo "[]") > "$_pj_file" &
+        else
+            echo "[]" > "$_pj_file"
+        fi
+
+        # Global scope
+        (gh issue list --repo "$GLOBAL_REPO" --label "$LABEL" --state open \
+            --limit 10 --json number,title 2>/dev/null || echo "[]") > "$_gj_file" &
+
+        # Config scope: only when CONFIG_REPO is set
+        if [[ -n "${CONFIG_REPO:-}" ]]; then
+            (gh issue list --repo "$CONFIG_REPO" --label "$LABEL" --state open \
+                --limit 10 --json number,title 2>/dev/null || echo "[]") > "$_cj_file" &
+        else
+            echo "[]" > "$_cj_file"
+        fi
+
+        # Wait for all background queries to finish
+        wait
+
+        # Pick first non-empty result in priority order: project → global → config
+        local _pj _gj _cj _pj_count _gj_count _cj_count
+        _pj=$(cat "$_pj_file" 2>/dev/null || echo "[]")
+        _gj=$(cat "$_gj_file" 2>/dev/null || echo "[]")
+        _cj=$(cat "$_cj_file" 2>/dev/null || echo "[]")
+        _pj_count=$(echo "$_pj" | jq 'length' 2>/dev/null || echo "0")
+        _gj_count=$(echo "$_gj" | jq 'length' 2>/dev/null || echo "0")
+        _cj_count=$(echo "$_cj" | jq 'length' 2>/dev/null || echo "0")
+
+        if [[ "$_pj_count" -gt 0 ]]; then
+            scope="PROJECT"; issues="$_pj"; count="$_pj_count"
+        elif [[ "$_gj_count" -gt 0 ]]; then
+            scope="GLOBAL";  issues="$_gj"; count="$_gj_count"
+        elif [[ "$_cj_count" -gt 0 ]]; then
+            scope="CONFIG";  issues="$_cj"; count="$_cj_count"
+        fi
+    else
+        # Fallback: sequential queries (original behavior, no temp dir)
+        if is_git_repo; then
+            local repo_name
+            repo_name=$(get_repo_name)
+            if [[ -n "$repo_name" ]]; then
+                local pj
+                pj=$(gh issue list --label "$LABEL" --state open --limit 10 \
+                    --json number,title 2>/dev/null || echo "[]")
+                count=$(echo "$pj" | jq 'length')
+                if [[ "$count" -gt 0 ]]; then
+                    scope="PROJECT"
+                    issues="$pj"
+                fi
             fi
         fi
-    fi
 
-    if [[ -z "$scope" ]]; then
-        if [[ -n "${CONFIG_REPO:-}" ]] && gh repo view "$CONFIG_REPO" >/dev/null 2>&1; then
-            local cj
-            cj=$(gh issue list --repo "$CONFIG_REPO" --label "$LABEL" --state open \
-                --limit 10 --json number,title 2>/dev/null || echo "[]")
-            count=$(echo "$cj" | jq 'length')
-            if [[ "$count" -gt 0 ]]; then
-                scope="CONFIG"
-                issues="$cj"
+        if [[ -z "$scope" ]]; then
+            if gh repo view "$GLOBAL_REPO" >/dev/null 2>&1; then
+                local gj
+                gj=$(gh issue list --repo "$GLOBAL_REPO" --label "$LABEL" --state open \
+                    --limit 10 --json number,title 2>/dev/null || echo "[]")
+                count=$(echo "$gj" | jq 'length')
+                if [[ "$count" -gt 0 ]]; then
+                    scope="GLOBAL"
+                    issues="$gj"
+                fi
+            fi
+        fi
+
+        if [[ -z "$scope" ]]; then
+            if [[ -n "${CONFIG_REPO:-}" ]] && gh repo view "$CONFIG_REPO" >/dev/null 2>&1; then
+                local cj
+                cj=$(gh issue list --repo "$CONFIG_REPO" --label "$LABEL" --state open \
+                    --limit 10 --json number,title 2>/dev/null || echo "[]")
+                count=$(echo "$cj" | jq 'length')
+                if [[ "$count" -gt 0 ]]; then
+                    scope="CONFIG"
+                    issues="$cj"
+                fi
             fi
         fi
     fi

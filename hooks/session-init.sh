@@ -41,12 +41,40 @@ PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
 
-# --- Run update check first (guarantees .update-status exists) ---
-# Previously a separate SessionStart hook that raced with this script.
-# Inlined to ensure .update-status is written before we read it below.
+# --- Fix 1: Read update status from previous session's check (one-shot display) ---
+# @decision DEC-UPDATE-BG-001
+# @title Background update-check with previous-session result display
+# @status accepted
+# @rationale update-check.sh runs `git fetch` which blocks up to 5s on slow
+# networks or during rapid session cycling. The fix: read the .update-status
+# file written by the PREVIOUS session's background check, display it (one-shot),
+# then launch a new background check for the NEXT session. This makes startup
+# completely non-blocking for update notifications — the user sees the previous
+# check result immediately (usually <1s stale) and the new check runs concurrently
+# in the background without delaying the session.
+UPDATE_STATUS_FILE="$HOME/.claude/.update-status"
+if [[ -f "$UPDATE_STATUS_FILE" && -s "$UPDATE_STATUS_FILE" ]]; then
+    IFS='|' read -r UPD_STATUS UPD_LOCAL_VER UPD_REMOTE_VER UPD_COUNT UPD_TS UPD_SUMMARY < "$UPDATE_STATUS_FILE"
+    case "$UPD_STATUS" in
+        updated)
+            CONTEXT_PARTS+=("Harness updated (v${UPD_LOCAL_VER} → v${UPD_REMOTE_VER}, ${UPD_COUNT} commits). To disable: \`touch ~/.claude/.disable-auto-update\`")
+            ;;
+        breaking)
+            CONTEXT_PARTS+=("Harness update available (v${UPD_LOCAL_VER} → v${UPD_REMOTE_VER}, BREAKING). Review CHANGELOG.md then \`cd ~/.claude && git pull --autostash --rebase\`. To disable: \`touch ~/.claude/.disable-auto-update\`")
+            ;;
+        conflict)
+            CONTEXT_PARTS+=("Harness auto-update failed (merge conflict with local changes). Run \`cd ~/.claude && git pull --autostash --rebase\` to resolve. To disable: \`touch ~/.claude/.disable-auto-update\`")
+            ;;
+    esac
+    # One-shot: remove after reading so next session starts clean
+    rm -f "$UPDATE_STATUS_FILE"
+fi
+
+# Launch update-check in background for the next session (non-blocking)
 UPDATE_SCRIPT="$HOME/.claude/scripts/update-check.sh"
 if [[ -x "$UPDATE_SCRIPT" ]]; then
-    "$UPDATE_SCRIPT" >/dev/null 2>/dev/null || true
+    "$UPDATE_SCRIPT" >/dev/null 2>/dev/null &
+    disown 2>/dev/null || true
 fi
 
 # --- Git state ---
@@ -74,31 +102,40 @@ if [[ -n "$GIT_BRANCH" ]]; then
     fi
 fi
 
-# --- Harness update status ---
-UPDATE_STATUS_FILE="$HOME/.claude/.update-status"
-if [[ -f "$UPDATE_STATUS_FILE" && -s "$UPDATE_STATUS_FILE" ]]; then
-    IFS='|' read -r UPD_STATUS UPD_LOCAL_VER UPD_REMOTE_VER UPD_COUNT UPD_TS UPD_SUMMARY < "$UPDATE_STATUS_FILE"
-    case "$UPD_STATUS" in
-        updated)
-            CONTEXT_PARTS+=("Harness updated (v${UPD_LOCAL_VER} → v${UPD_REMOTE_VER}, ${UPD_COUNT} commits). To disable: \`touch ~/.claude/.disable-auto-update\`")
-            ;;
-        breaking)
-            CONTEXT_PARTS+=("Harness update available (v${UPD_LOCAL_VER} → v${UPD_REMOTE_VER}, BREAKING). Review CHANGELOG.md then \`cd ~/.claude && git pull --autostash --rebase\`. To disable: \`touch ~/.claude/.disable-auto-update\`")
-            ;;
-        conflict)
-            CONTEXT_PARTS+=("Harness auto-update failed (merge conflict with local changes). Run \`cd ~/.claude && git pull --autostash --rebase\` to resolve. To disable: \`touch ~/.claude/.disable-auto-update\`")
-            ;;
-    esac
-    # One-shot: remove after reading
-    rm -f "$UPDATE_STATUS_FILE"
-fi
-
-# --- Run community check in background (non-blocking) ---
+# --- Run community check in background (non-blocking, 1-hour TTL) ---
 # The .community-status file will be ready by the time statusline renders.
 # Display moved to statusline.sh and todo.sh for better visibility.
+#
+# @decision DEC-COMMUNITY-003
+# @title Rate-limit community-check.sh to 1-hour TTL to prevent redundant API calls
+# @status accepted
+# @rationale community-check.sh makes GitHub API requests (gh issue list per repo)
+# that add 0.5-2s of startup latency during rapid session cycling (/clear, /compact,
+# terminal re-attach). A 1-hour TTL reuses the previous result within the window —
+# community contributions don't change on sub-minute timescales, so freshness is not
+# meaningfully compromised. The TTL is read from .community-status "checked_at" field,
+# which community-check.sh already writes. If the file is absent or malformed, the
+# check always runs. Users who need immediate refresh can delete .community-status.
+# NOTE: session-init.sh runs at top-level (not inside a function), so _COMM_ prefix
+# is used instead of `local` to avoid polluting the function-local namespace.
 COMMUNITY_SCRIPT="$HOME/.claude/scripts/community-check.sh"
+_COMM_STATUS_FILE="$HOME/.claude/.community-status"
+_COMM_TTL=3600  # 1 hour in seconds
+_COMM_SHOULD_RUN=true
+
 if [[ -x "$COMMUNITY_SCRIPT" ]]; then
-    "$COMMUNITY_SCRIPT" 2>/dev/null &
+    if [[ -f "$_COMM_STATUS_FILE" ]]; then
+        _COMM_CHECKED_AT=$(jq -r '.checked_at // 0' "$_COMM_STATUS_FILE" 2>/dev/null || echo "0")
+        _COMM_NOW=$(date +%s)
+        _COMM_AGE=$(( _COMM_NOW - _COMM_CHECKED_AT ))
+        if [[ "$_COMM_AGE" -lt "$_COMM_TTL" ]]; then
+            _COMM_SHOULD_RUN=false
+        fi
+    fi
+    if [[ "$_COMM_SHOULD_RUN" == "true" ]]; then
+        "$COMMUNITY_SCRIPT" 2>/dev/null &
+        disown 2>/dev/null || true
+    fi
 fi
 
 # --- MASTER_PLAN.md preamble: project identity ---

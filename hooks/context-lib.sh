@@ -97,23 +97,69 @@ get_plan_status() {
         PLAN_AGE_DAYS=$(( (now - plan_mod) / 86400 ))
 
         # Commits since last plan update
+        # @decision DEC-CHURN-CACHE-001
+        # @title Cache plan churn calculation keyed on HEAD+plan_mod
+        # @status accepted
+        # @rationale git rev-list + git log + git ls-files cost 0.5-1s on each
+        # startup. HEAD and plan_mod are stable between sessions unless the user
+        # commits or edits MASTER_PLAN.md. Cache format:
+        #   HEAD_SHORT|PLAN_MOD_EPOCH|COMMITS_SINCE|CHURN_PCT|CHANGED_FILES|TOTAL_FILES
+        # Invalidated automatically when either key changes. Written atomically.
         if [[ -d "$root/.git" ]]; then
             local plan_date
             plan_date=$(date -r "$plan_mod" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$plan_mod" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
             if [[ -n "$plan_date" ]]; then
-                PLAN_COMMITS_SINCE=$(git -C "$root" rev-list --count --after="$plan_date" HEAD 2>/dev/null || echo "0")
+                local _churn_cache="$root/.claude/.plan-churn-cache"
+                local _head_short
+                _head_short=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo "")
+                local _cache_hit=false
 
-                # Source file churn since plan update (primary staleness signal)
-                PLAN_CHANGED_SOURCE_FILES=$(git -C "$root" log --after="$plan_date" \
-                    --name-only --format="" HEAD 2>/dev/null \
-                    | sort -u \
-                    | grep -cE "\.($SOURCE_EXTENSIONS)$" 2>/dev/null) || PLAN_CHANGED_SOURCE_FILES=0
+                # Try cache read: compare HEAD_SHORT and plan_mod against stored keys
+                if [[ -n "$_head_short" && -f "$_churn_cache" ]]; then
+                    local _cached_line
+                    _cached_line=$(cat "$_churn_cache" 2>/dev/null || echo "")
+                    if [[ -n "$_cached_line" ]]; then
+                        local _c_head _c_mod _c_commits _c_churn_pct _c_changed _c_total
+                        IFS='|' read -r _c_head _c_mod _c_commits _c_churn_pct _c_changed _c_total <<< "$_cached_line"
+                        if [[ "$_c_head" == "$_head_short" && "$_c_mod" == "$plan_mod" ]]; then
+                            PLAN_COMMITS_SINCE="${_c_commits:-0}"
+                            PLAN_SOURCE_CHURN_PCT="${_c_churn_pct:-0}"
+                            PLAN_CHANGED_SOURCE_FILES="${_c_changed:-0}"
+                            PLAN_TOTAL_SOURCE_FILES="${_c_total:-0}"
+                            _cache_hit=true
+                        fi
+                    fi
+                fi
 
-                PLAN_TOTAL_SOURCE_FILES=$(git -C "$root" ls-files 2>/dev/null \
-                    | grep -cE "\.($SOURCE_EXTENSIONS)$" 2>/dev/null) || PLAN_TOTAL_SOURCE_FILES=0
+                if [[ "$_cache_hit" == "false" ]]; then
+                    PLAN_COMMITS_SINCE=$(git -C "$root" rev-list --count --after="$plan_date" HEAD 2>/dev/null || echo "0")
 
-                if [[ "$PLAN_TOTAL_SOURCE_FILES" -gt 0 ]]; then
-                    PLAN_SOURCE_CHURN_PCT=$((PLAN_CHANGED_SOURCE_FILES * 100 / PLAN_TOTAL_SOURCE_FILES))
+                    # Source file churn since plan update (primary staleness signal)
+                    PLAN_CHANGED_SOURCE_FILES=$(git -C "$root" log --after="$plan_date" \
+                        --name-only --format="" HEAD 2>/dev/null \
+                        | sort -u \
+                        | grep -cE "\.($SOURCE_EXTENSIONS)$" 2>/dev/null) || PLAN_CHANGED_SOURCE_FILES=0
+
+                    PLAN_TOTAL_SOURCE_FILES=$(git -C "$root" ls-files 2>/dev/null \
+                        | grep -cE "\.($SOURCE_EXTENSIONS)$" 2>/dev/null) || PLAN_TOTAL_SOURCE_FILES=0
+
+                    if [[ "$PLAN_TOTAL_SOURCE_FILES" -gt 0 ]]; then
+                        PLAN_SOURCE_CHURN_PCT=$((PLAN_CHANGED_SOURCE_FILES * 100 / PLAN_TOTAL_SOURCE_FILES))
+                    fi
+
+                    # Write cache (atomic via temp file)
+                    if [[ -n "$_head_short" ]]; then
+                        mkdir -p "$root/.claude"
+                        local _tmp_cache
+                        _tmp_cache=$(mktemp "$root/.claude/.plan-churn-cache.XXXXXX" 2>/dev/null) || true
+                        if [[ -n "$_tmp_cache" ]]; then
+                            printf '%s|%s|%s|%s|%s|%s\n' \
+                                "$_head_short" "$plan_mod" \
+                                "$PLAN_COMMITS_SINCE" "$PLAN_SOURCE_CHURN_PCT" \
+                                "$PLAN_CHANGED_SOURCE_FILES" "$PLAN_TOTAL_SOURCE_FILES" \
+                                > "$_tmp_cache" && mv "$_tmp_cache" "$_churn_cache" || rm -f "$_tmp_cache"
+                        fi
+                    fi
                 fi
             fi
         fi
