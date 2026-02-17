@@ -17,6 +17,7 @@
 #   - Temporary tracking artifacts (.track.*)
 #   - Skill result files (.skill-result*)
 #   - Async test-runner processes
+#   - Session-scoped subagent tracker (.subagent-tracker-<SESSION_ID>)
 #
 # Persists (does NOT delete):
 #   - .audit-log — persistent audit trail
@@ -24,6 +25,14 @@
 #   - .lint-breaker — circuit breaker state
 #   - .plan-drift — decision drift data
 #   - .test-status — cleared at session START, not here
+#
+# @decision DEC-SUBAGENT-002
+# @title Session-scoped subagent tracker cleanup on exit
+# @status accepted
+# @rationale Issue #73: Each session now owns .subagent-tracker-${CLAUDE_SESSION_ID:-$$}.
+# Deleting it on SessionEnd prevents any file accumulation on clean exits.
+# If the session crashes, the stale file is harmless because future sessions
+# read their own scoped file — no phantom agent counts in the statusline.
 
 set -euo pipefail
 
@@ -83,6 +92,7 @@ rm -f "${CLAUDE_DIR}/.test-gate-cold-warned"
 rm -f "${CLAUDE_DIR}/.mock-gate-strikes"
 rm -f "${CLAUDE_DIR}/.track."*
 rm -f "${CLAUDE_DIR}/.skill-result"*
+rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail

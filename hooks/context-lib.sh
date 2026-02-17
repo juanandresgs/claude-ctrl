@@ -306,10 +306,21 @@ write_statusline_cache() {
 # A JSON state file tracks active agents, total count, and types so the
 # status bar can display real-time agent activity. Token usage not available
 # from hooks — tracked as backlog item cc-todos#37.
+#
+# @decision DEC-SUBAGENT-002
+# @title Session-scoped subagent tracker files
+# @status accepted
+# @rationale Issue #73: A global .subagent-tracker file accumulates stale
+# ACTIVE records if a session crashes without cleanup, causing phantom agent
+# counts in the statusline. Scoping to .subagent-tracker-${CLAUDE_SESSION_ID:-$$}
+# isolates each session's state. When the session ends normally, session-end.sh
+# cleans up the file. If it crashes, the stale file is harmless because future
+# sessions read their own scoped file. CLAUDE_SESSION_ID is used when set;
+# $$ (current PID) is the fallback for environments without it.
 
 track_subagent_start() {
     local root="$1" agent_type="$2"
-    local tracker="$root/.claude/.subagent-tracker"
+    local tracker="$root/.claude/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
     mkdir -p "$root/.claude"
 
     # Append start record (line-based for simplicity and atomicity)
@@ -318,7 +329,7 @@ track_subagent_start() {
 
 track_subagent_stop() {
     local root="$1" agent_type="$2"
-    local tracker="$root/.claude/.subagent-tracker"
+    local tracker="$root/.claude/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
     [[ ! -f "$tracker" ]] && return
 
     # Remove the OLDEST matching ACTIVE entry for this type (FIFO)
@@ -350,7 +361,7 @@ track_subagent_stop() {
 
 get_subagent_status() {
     local root="$1"
-    local tracker="$root/.claude/.subagent-tracker"
+    local tracker="$root/.claude/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
 
     SUBAGENT_ACTIVE_COUNT=0
     SUBAGENT_ACTIVE_TYPES=""
