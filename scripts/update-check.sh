@@ -103,7 +103,7 @@ fi
 COMMIT_COUNT=$(git -C "$CLAUDE_DIR" rev-list HEAD..origin/main --count 2>/dev/null || echo "0")
 COMMIT_SUMMARY=$(git -C "$CLAUDE_DIR" log HEAD..origin/main --oneline --no-decorate 2>/dev/null | head -5 || echo "")
 
-if git -C "$CLAUDE_DIR" pull --autostash --rebase origin main --quiet 2>/dev/null; then
+if git -C "$CLAUDE_DIR" pull --autostash --rebase origin main --quiet >/dev/null 2>/dev/null; then
     # Success — get new HEAD after update
     NEW_HEAD=$(git -C "$CLAUDE_DIR" rev-parse HEAD 2>/dev/null || echo "")
     write_status "updated" "${LOCAL_HEAD:0:7}" "${NEW_HEAD:0:7}" "$COMMIT_COUNT" "$COMMIT_SUMMARY"

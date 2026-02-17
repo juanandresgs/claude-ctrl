@@ -26,7 +26,7 @@ CONTEXT_PARTS=()
 # Inlined to ensure .update-status is written before we read it below.
 UPDATE_SCRIPT="$HOME/.claude/scripts/update-check.sh"
 if [[ -x "$UPDATE_SCRIPT" ]]; then
-    "$UPDATE_SCRIPT" 2>/dev/null || true
+    "$UPDATE_SCRIPT" >/dev/null 2>/dev/null || true
 fi
 
 # --- Git state ---
@@ -158,7 +158,7 @@ if [[ -d "$TRACE_STORE" ]]; then
                 fi
                 if [[ "$marker_age" -gt 7200 ]]; then
                     # Mark as crashed and finalize
-                    jq '.status = "crashed" | .outcome = "crashed"' "$local_manifest" > "${local_manifest}.tmp" 2>/dev/null && mv "${local_manifest}.tmp" "$local_manifest"
+                    (jq '.status = "crashed" | .outcome = "crashed"' "$local_manifest" > "${local_manifest}.tmp" 2>/dev/null && mv "${local_manifest}.tmp" "$local_manifest") || true
                     index_trace "$local_trace_id"
                     rm -f "$marker"
                     CONTEXT_PARTS+=("Crashed trace detected: $local_trace_id (stale ${marker_age}s). Read summary: ~/.claude/traces/$local_trace_id/summary.md")

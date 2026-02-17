@@ -648,7 +648,7 @@ is_claude_meta_repo() {
 
 append_session_event() {
     local event_type="$1"
-    local detail_json="${2:-{}}"
+    local detail_json="${2:-"{}"}"
     local project_root="${3:-}"
 
     # Auto-detect project root if not provided
