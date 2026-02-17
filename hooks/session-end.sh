@@ -33,6 +33,17 @@
 # Deleting it on SessionEnd prevents any file accumulation on clean exits.
 # If the session crashes, the stale file is harmless because future sessions
 # read their own scoped file — no phantom agent counts in the statusline.
+#
+# @decision DEC-V2-PHASE4-002
+# @title Session index entry written at session-end for cross-session learning
+# @status accepted
+# @rationale session-end.sh already has the session event log and project hash in
+# scope. Writing the index entry here (after archiving events) avoids a separate
+# hook and ensures the index is only written for sessions that produced real events.
+# The 20-entry trim keeps disk usage bounded without losing meaningful history.
+# Outcome is derived from .proof-status (verified→committed) then .test-status
+# (pass/fail) as a fallback, giving the most accurate signal for cross-session
+# context injection.
 
 set -euo pipefail
 
@@ -78,6 +89,65 @@ if [[ -f "$SESSION_EVENT_FILE" && -s "$SESSION_EVENT_FILE" ]]; then
     # Archive
     cp "$SESSION_EVENT_FILE" "$ARCHIVE_FILE"
     log_info "SESSION-END" "Archived session events to $ARCHIVE_FILE"
+
+    # --- Write session index entry for cross-session learning ---
+    get_session_trajectory "$PROJECT_ROOT"
+
+    # Collect files touched this session
+    FILES_TOUCHED=$(grep '"event":"write"' "$SESSION_EVENT_FILE" 2>/dev/null | jq -r '.file // empty' 2>/dev/null | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || echo "[]")
+
+    # Collect friction: test failures and gate blocks
+    FRICTION_JSON="[]"
+    TEST_FAIL_MSG=$(grep '"event":"test_run"' "$SESSION_EVENT_FILE" 2>/dev/null | grep '"result":"fail"' | jq -r '.assertion // empty' 2>/dev/null | sort -u | head -3 | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || echo "[]")
+    if [[ "$TEST_FAIL_MSG" != "[]" && "$TEST_FAIL_MSG" != "" ]]; then
+        FRICTION_JSON="$TEST_FAIL_MSG"
+    fi
+
+    # Determine session outcome from proof-status or test-status
+    OUTCOME="unknown"
+    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
+    if [[ -f "$PROOF_FILE" ]]; then
+        PS_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
+        [[ "$PS_VAL" == "verified" ]] && OUTCOME="committed"
+    fi
+    if [[ "$OUTCOME" == "unknown" && -f "$TEST_STATUS_FILE" ]]; then
+        TS_VAL=$(cut -d'|' -f1 "$TEST_STATUS_FILE" 2>/dev/null || echo "")
+        if [[ "$TS_VAL" == "pass" ]]; then
+            OUTCOME="tests-passing"
+        elif [[ "$TS_VAL" == "fail" ]]; then
+            OUTCOME="tests-failing"
+        fi
+    fi
+
+    # Build index entry JSON — compact (-c) for JSONL format (one object per line)
+    INDEX_ENTRY=$(jq -cn \
+        --arg id "$SESSION_ID" \
+        --arg project "$(basename "$PROJECT_ROOT")" \
+        --arg started "$(head -1 "$SESSION_EVENT_FILE" 2>/dev/null | jq -r '.ts // empty' 2>/dev/null || echo "")" \
+        --argjson duration_min "${TRAJ_ELAPSED_MIN:-0}" \
+        --argjson files_touched "$FILES_TOUCHED" \
+        --argjson tool_calls "${TRAJ_TOOL_CALLS:-0}" \
+        --argjson checkpoints "${TRAJ_CHECKPOINTS:-0}" \
+        --argjson pivots "${TRAJ_PIVOTS:-0}" \
+        --argjson friction "$FRICTION_JSON" \
+        --arg outcome "$OUTCOME" \
+        '{id:$id,project:$project,started:$started,duration_min:$duration_min,files_touched:$files_touched,tool_calls:$tool_calls,checkpoints:$checkpoints,pivots:$pivots,friction:$friction,outcome:$outcome}' \
+        2>/dev/null || echo "")
+
+    if [[ -n "$INDEX_ENTRY" ]]; then
+        INDEX_FILE="${ARCHIVE_DIR}/index.jsonl"
+        echo "$INDEX_ENTRY" >> "$INDEX_FILE"
+
+        # Trim index to last 20 entries (prevent unbounded growth)
+        LINE_COUNT=$(wc -l < "$INDEX_FILE" 2>/dev/null | tr -d ' ')
+        if [[ "${LINE_COUNT:-0}" -gt 20 ]]; then
+            tail -20 "$INDEX_FILE" > "${INDEX_FILE}.tmp"
+            mv "${INDEX_FILE}.tmp" "$INDEX_FILE"
+        fi
+
+        log_info "SESSION-END" "Session index updated (outcome: $OUTCOME)"
+    fi
 fi
 
 # --- Clean up session-scoped files (these don't persist) ---

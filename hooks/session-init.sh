@@ -231,6 +231,15 @@ SESSION_EVENT_FILE="${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "$SESSION_EVENT_FILE"  # Fresh log each session
 append_session_event "session_start" "{\"project\":\"$(basename "$PROJECT_ROOT")\",\"branch\":\"${GIT_BRANCH:-unknown}\"}" "$PROJECT_ROOT"
 
+# --- Prior session context (cross-session learning) ---
+# Only inject when 3+ sessions exist; get_prior_sessions returns empty otherwise.
+PRIOR_SESSIONS=$(get_prior_sessions "$PROJECT_ROOT" 2>/dev/null || echo "")
+if [[ -n "$PRIOR_SESSIONS" ]]; then
+    while IFS= read -r line; do
+        CONTEXT_PARTS+=("$line")
+    done <<< "$PRIOR_SESSIONS"
+fi
+
 # --- Output as additionalContext ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
     CONTEXT=$(printf '%s\n' "${CONTEXT_PARTS[@]}")

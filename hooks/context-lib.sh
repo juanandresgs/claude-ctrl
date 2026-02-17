@@ -915,6 +915,71 @@ get_session_summary_context() {
     fi
 }
 
+# --- Cross-session learning ---
+# @decision DEC-V2-PHASE4-001
+# @title get_prior_sessions reads session index for cross-session context injection
+# @status accepted
+# @rationale New sessions start cold with no memory of prior work on the same project.
+# The session index (index.jsonl) captures outcome, files touched, and friction per
+# session. Injecting the last 3 summaries + recurring friction patterns into session-
+# init gives Claude immediate context on what was done, what failed repeatedly, and
+# what the current state of the project is. Threshold of 3 sessions avoids noisy
+# context for brand-new projects. Returns empty string when insufficient data exists
+# so callers can safely skip injection.
+get_prior_sessions() {
+    local project_root="${1:-}"
+    if [[ -z "$project_root" ]]; then
+        project_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    fi
+
+    local project_hash
+    project_hash=$(echo "$project_root" | shasum -a 256 2>/dev/null | cut -c1-12 || echo "")
+    [[ -z "$project_hash" ]] && return 0
+
+    local index_file="$HOME/.claude/sessions/${project_hash}/index.jsonl"
+    [[ ! -f "$index_file" ]] && return 0
+
+    # Count valid JSON lines
+    local session_count
+    session_count=$(grep -c '.' "$index_file" 2>/dev/null || true)
+    session_count=${session_count:-0}
+
+    # Require at least 3 sessions to avoid noise on new projects
+    [[ "$session_count" -lt 3 ]] && return 0
+
+    # Build output: last 3 session summaries
+    local output=""
+    output+="Prior sessions on this project ($session_count total):"$'\n'
+
+    # Read last 3 entries (tail -3 for most recent)
+    local last3
+    last3=$(tail -3 "$index_file" 2>/dev/null || echo "")
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        local id started duration outcome files_count
+        id=$(echo "$entry" | jq -r '.id // "unknown"' 2>/dev/null)
+        started=$(echo "$entry" | jq -r '.started // ""' 2>/dev/null | cut -c1-10)
+        duration=$(echo "$entry" | jq -r '.duration_min // 0' 2>/dev/null)
+        outcome=$(echo "$entry" | jq -r '.outcome // "unknown"' 2>/dev/null)
+        files_count=$(echo "$entry" | jq -r '(.files_touched // []) | length' 2>/dev/null)
+        output+="  - ${started} | ${duration}min | ${outcome} | ${files_count} files"$'\n'
+    done <<< "$last3"
+
+    # Detect recurring friction: strings appearing in 2+ sessions
+    local all_friction
+    all_friction=$(jq -r '.friction[]? // empty' "$index_file" 2>/dev/null | sort | uniq -c | sort -rn | awk '$1 >= 2 {$1=""; print $0}' | sed 's/^ //' || echo "")
+
+    if [[ -n "$all_friction" ]]; then
+        output+="Recurring friction:"$'\n'
+        while IFS= read -r friction_item; do
+            [[ -z "$friction_item" ]] && continue
+            output+="  - ${friction_item}"$'\n'
+        done <<< "$all_friction"
+    fi
+
+    printf '%s' "$output"
+}
+
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context get_prior_sessions
