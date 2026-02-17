@@ -22,8 +22,31 @@ source "$(dirname "$0")/source-lib.sh"
 HOOK_INPUT=$(read_input)
 PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 
-# Exit silently if no prompt
-[[ -z "$PROMPT" ]] && exit 0
+# Exit silently if no prompt — but first check if the approval gate is active.
+# If .proof-status is pending and the prompt is empty (e.g. image-only submit),
+# the keyword gate cannot fire. Emit a context advisory so the orchestrator knows
+# text input is required. Reference /approve as the escape hatch.
+if [[ -z "$PROMPT" ]]; then
+    _EMPTY_CLAUDE_DIR=$(get_claude_dir 2>/dev/null || echo "")
+    if [[ -n "$_EMPTY_CLAUDE_DIR" ]]; then
+        _EMPTY_PROOF="${_EMPTY_CLAUDE_DIR}/.proof-status"
+        if [[ -f "$_EMPTY_PROOF" ]]; then
+            _EMPTY_STATUS=$(cut -d'|' -f1 "$_EMPTY_PROOF" 2>/dev/null || echo "")
+            if [[ "$_EMPTY_STATUS" == "pending" ]]; then
+                cat <<'EOFEMPTY'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "APPROVAL GATE ACTIVE: .proof-status is pending but no text was detected in this prompt. Approval keywords (approved, lgtm, looks good, verified, ship it) must appear as TEXT. Image-only or empty submits cannot trigger the gate. Suggest /approve as an escape hatch."
+  }
+}
+EOFEMPTY
+                exit 0
+            fi
+        fi
+    fi
+    exit 0
+fi
 
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()

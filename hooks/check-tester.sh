@@ -125,15 +125,32 @@ elif [[ "$PROOF_STATUS" == "pending" ]]; then
         AV_FAIL=false
         # Must have High confidence (markdown bold)
         echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
-        # Must NOT have "Not tested" or "Partially verified" in coverage
-        echo "$RESPONSE_TEXT" | grep -qi 'Not tested\|Partially verified' && AV_FAIL=true
+        # Must NOT have "Partially verified" in coverage
+        echo "$RESPONSE_TEXT" | grep -qi 'Partially verified' && AV_FAIL=true
+        # Must NOT have non-environmental "Not tested" entries.
+        # Environmental gaps (browser viewport, screen reader, physical device, etc.)
+        # are whitelisted — they cannot be tested in a headless CLI context and do not
+        # indicate incomplete verification of the feature under test.
+        NOT_TESTED_LINES=$(echo "$RESPONSE_TEXT" | grep -i 'Not tested' || true)
+        if [[ -n "$NOT_TESTED_LINES" ]]; then
+            ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
+            NON_ENV_LINES=$(echo "$NOT_TESTED_LINES" | grep -iv "$ENV_PATTERN" || true)
+            if [[ -n "$NON_ENV_LINES" ]]; then
+                AV_FAIL=true
+            fi
+        fi
         # Must NOT have Medium or Low confidence
         echo "$RESPONSE_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*' && AV_FAIL=true
 
         if [[ "$AV_FAIL" == "false" ]]; then
+            WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
             echo "verified|$(date +%s)" > "$PROOF_FILE"
             AUTO_VERIFIED=true
-            append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
+            if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then
+                append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified (${WHITELISTED_COUNT} environmental 'Not tested' item(s) whitelisted)"
+            else
+                append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
+            fi
         else
             append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
         fi
