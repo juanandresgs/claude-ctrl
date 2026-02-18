@@ -21,7 +21,7 @@ set -euo pipefail
 # Enforces via deny (hard blocks):
 #   - Main is sacred (no commits on main/master)
 #   - No force push to main/master
-#   - No destructive git commands (reset --hard, clean -f, branch -D)
+#   - No destructive git commands (reset --hard, clean -f, branch -D/--delete --force)
 #
 # @decision DEC-INTEGRITY-002
 # @title Deny-on-crash EXIT trap for fail-closed behavior
@@ -461,8 +461,8 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bclean\s+.*-f'; then
     deny "git clean -f permanently deletes untracked files. Use git clean -n (dry run) first to see what would be deleted."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-D\b'; then
-    deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
+    deny "git branch -D / --delete --force force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
 # --- Check 5: Worktree removal CWD safety rewrite ---
