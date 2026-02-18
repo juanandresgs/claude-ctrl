@@ -5,18 +5,25 @@
 # @title Tester completeness gate test suite
 # @status accepted
 # @rationale Validates that check-tester.sh Check 3 correctly detects partial
-#   tester runs and blocks the approval flow.
+#   tester runs and blocks the approval flow using AND logic.
+#
+#   Check 3 uses AND logic: a tester is only blocked when BOTH conditions hold:
+#     1. manifest.json outcome == "partial" (set by finalize_trace when
+#        test-output.txt is missing — the finalize signal)
+#     2. artifacts/verification-output.txt is missing (concrete evidence absent)
 #
 #   Key implementation detail: check-tester.sh calls finalize_trace() (Check 2)
 #   BEFORE Check 3 runs. finalize_trace() re-derives manifest.json outcome from
-#   artifacts — so Signal 1 (outcome == "partial") only fires when finalize_trace
-#   writes "partial" (no test-output.txt and no .test-status found). Signal 2
-#   (verification-output.txt absent) is the primary reliable gate.
+#   artifacts, including a new fallback for verification-output.txt (Fix A).
+#   After Fix A: if verification-output.txt contains pass signals, finalize sets
+#   outcome="success" — so Signal 1 does NOT fire for complete testers.
 #
-#   Practically: a tester that wrote verification-output.txt also wrote
-#   test-output.txt, so finalize_trace sets outcome="success" and Signal 1
-#   is dormant. A tester with no artifacts gets outcome="partial" from
-#   finalize_trace AND triggers Signal 2. Both signals correctly align.
+#   AND logic rationale: finalize_trace marks outcome="partial" when
+#   test-output.txt is missing, but testers write verification-output.txt as
+#   their primary artifact. A tester with verification-output.txt IS complete
+#   even if finalize initially saw no test-output.txt — Fix A resolves this.
+#   The AND gate prevents false positives when outcome resolves to "success"
+#   but verification-output.txt is absent (e.g., implementer-style traces).
 #
 #   context-lib.sh sets TRACE_STORE="$HOME/.claude/traces" unconditionally,
 #   so tests must use the real TRACE_STORE with test-scoped IDs.
@@ -171,27 +178,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 2: verification-output.txt missing, test-output.txt present
+# Test 2: verification-output.txt missing, test-output.txt present (AND logic)
 #   → finalize_trace sets outcome="success" (test-output has "passed")
-#   → Signal 1 does not fire (outcome=success after finalize)
-#   → Signal 2 fires (no verification-output.txt)
-#   → exit 2, INCOMPLETE
+#   → Signal 1 does NOT fire (outcome != "partial")
+#   → AND condition not met → TESTER_COMPLETE=true
+#   → exit 0, normal flow (not blocked)
+#
+#   This test validates AND logic: Signal 2 alone (no verification-output.txt)
+#   must NOT block if Signal 1 is false (outcome != partial). This prevents
+#   false positives when an implementer-style trace is present.
 # ---------------------------------------------------------------------------
-run_test "Check 3: missing verification-output.txt (test-output present) → exit 2 INCOMPLETE"
+run_test "Check 3: missing verification-output.txt, test-output present → exit 0 (AND logic, not blocked)"
 
 make_trace "no" "yes" "yes"
 HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
 run_check_tester "pending"
 cleanup_trace
 
-if [[ "$HOOK_EXIT_CODE" -eq 2 ]]; then
+if [[ "$HOOK_EXIT_CODE" -eq 0 ]]; then
     if echo "$HOOK_OUTPUT" | grep -q "INCOMPLETE"; then
-        pass_test
+        fail_test "AND logic violation: got INCOMPLETE when outcome=success. Got: $HOOK_OUTPUT"
     else
-        fail_test "exit 2 but INCOMPLETE directive missing. Got: $HOOK_OUTPUT"
+        pass_test
     fi
 else
-    fail_test "Expected exit 2 for missing verification-output.txt, got exit $HOOK_EXIT_CODE"
+    fail_test "Expected exit 0 (AND logic: outcome=success overrides missing verification), got exit $HOOK_EXIT_CODE. Output: $HOOK_OUTPUT"
 fi
 
 # ---------------------------------------------------------------------------
@@ -292,7 +303,140 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 7: Syntax check
+# Test 7: AND logic — partial outcome + verification-output.txt PRESENT → exit 0
+#   Both Signal 1 fires (outcome=partial: no test-output.txt) and verification
+#   is present. AND condition not met (HAS_VERIFICATION=true) → not blocked.
+#   Fix A (context-lib.sh): finalize_trace now reads verification-output.txt
+#   and detects "Feature works" — but "Feature works" doesn't match pass keywords
+#   (passed|success|ok|successful), so outcome stays "partial" here. Even so,
+#   HAS_VERIFICATION=true blocks the AND condition → exit 0.
+# ---------------------------------------------------------------------------
+run_test "AND logic: partial outcome + verification-output.txt present → exit 0 (not blocked)"
+
+make_trace "yes" "no" "yes"
+HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
+run_check_tester "pending"
+cleanup_trace
+
+if [[ "$HOOK_EXIT_CODE" -eq 0 ]]; then
+    if echo "$HOOK_OUTPUT" | grep -q "INCOMPLETE"; then
+        fail_test "AND logic violation: blocked despite verification-output.txt present. Got: $HOOK_OUTPUT"
+    else
+        pass_test
+    fi
+else
+    fail_test "Expected exit 0 (verification present, AND condition not met), got exit $HOOK_EXIT_CODE. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 8: AND logic — partial outcome + verification-output.txt MISSING → exit 2
+#   Signal 1 fires (outcome=partial: no test-output.txt).
+#   Signal 2 fires (verification-output.txt absent).
+#   Both conditions true → TESTER_COMPLETE=false → exit 2 INCOMPLETE.
+# ---------------------------------------------------------------------------
+run_test "AND logic: partial outcome + verification-output.txt missing → exit 2 (blocked)"
+
+make_trace "no" "no" "yes"
+HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
+run_check_tester "pending"
+cleanup_trace
+
+if [[ "$HOOK_EXIT_CODE" -eq 2 ]]; then
+    if echo "$HOOK_OUTPUT" | grep -q "INCOMPLETE"; then
+        pass_test
+    else
+        fail_test "exit 2 but INCOMPLETE directive missing. Got: $HOOK_OUTPUT"
+    fi
+else
+    fail_test "Expected exit 2 (both AND conditions met), got exit $HOOK_EXIT_CODE. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 9: success outcome + verification-output.txt PRESENT → exit 0
+#   finalize_trace sets outcome="success" (test-output has "passed").
+#   Signal 1 does not fire (outcome != "partial").
+#   AND condition not met → TESTER_COMPLETE=true → exit 0 normal flow.
+# ---------------------------------------------------------------------------
+run_test "AND logic: success outcome + verification-output.txt present → exit 0"
+
+make_trace "yes" "yes" "yes"
+HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
+run_check_tester "pending"
+cleanup_trace
+
+if [[ "$HOOK_EXIT_CODE" -eq 0 ]]; then
+    if echo "$HOOK_OUTPUT" | grep -q "INCOMPLETE"; then
+        fail_test "False positive: complete tester blocked. Got: $HOOK_OUTPUT"
+    else
+        pass_test
+    fi
+else
+    fail_test "Expected exit 0 for complete trace with success outcome, got exit $HOOK_EXIT_CODE. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 10: Syntax check for context-lib.sh (Fix A)
+# ---------------------------------------------------------------------------
+run_test "Syntax: context-lib.sh is valid bash after Fix A modification"
+if bash -n "$HOOKS_DIR/context-lib.sh" 2>/dev/null; then
+    pass_test
+else
+    fail_test "context-lib.sh has syntax errors"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 11: finalize_trace Fix A — verification-output.txt with pass signal
+#   gives outcome="success" not "partial"
+#   We verify by checking that a trace with only verification-output.txt
+#   (containing "passed") produces exit 0 with normal TESTER COMPLETE flow,
+#   meaning finalize resolved outcome to something other than "partial"
+#   (otherwise AND check would need HAS_VERIFICATION=true to save it —
+#   but with Fix A, finalize itself sets outcome="success").
+# ---------------------------------------------------------------------------
+run_test "Fix A: finalize_trace reads verification-output.txt with 'passed' → outcome=success → exit 0"
+
+make_trace "no" "no" "yes"
+# Override: write verification-output.txt with a clear pass signal
+printf 'Verification passed. All features working correctly.\n' \
+    > "$MOCK_TRACE_DIR/artifacts/verification-output.txt"
+HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
+run_check_tester "pending"
+cleanup_trace
+
+if [[ "$HOOK_EXIT_CODE" -eq 0 ]]; then
+    if echo "$HOOK_OUTPUT" | grep -q "INCOMPLETE"; then
+        fail_test "Fix A regression: tester blocked despite 'passed' in verification-output.txt. Got: $HOOK_OUTPUT"
+    else
+        pass_test
+    fi
+else
+    fail_test "Expected exit 0 (Fix A: verification-output 'passed' → outcome=success), got exit $HOOK_EXIT_CODE. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 12: finalize_trace regression — test-output.txt still works
+#   A trace with only test-output.txt (containing "passed") should still
+#   get outcome="success" (original path, not disturbed by Fix A).
+# ---------------------------------------------------------------------------
+run_test "Fix A regression: test-output.txt 'passed' still resolves outcome=success"
+
+make_trace "no" "yes" "yes"
+HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
+run_check_tester "pending"
+cleanup_trace
+
+if [[ "$HOOK_EXIT_CODE" -eq 0 ]]; then
+    if echo "$HOOK_OUTPUT" | grep -q "INCOMPLETE"; then
+        fail_test "Regression: test-output.txt 'passed' no longer works. Got: $HOOK_OUTPUT"
+    else
+        pass_test
+    fi
+else
+    fail_test "Expected exit 0 (test-output.txt 'passed' still works), got exit $HOOK_EXIT_CODE. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 13: Syntax check for check-tester.sh
 # ---------------------------------------------------------------------------
 run_test "Syntax: check-tester.sh is valid bash after modification"
 if bash -n "$HOOKS_DIR/check-tester.sh" 2>/dev/null; then

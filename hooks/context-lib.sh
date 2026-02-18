@@ -678,6 +678,17 @@ finalize_trace() {
         fi
     fi
 
+    # Fallback: check verification-output.txt for tester agents.
+    # Testers write verification-output.txt (not test-output.txt) as their
+    # primary evidence artifact. Check for pass/success signals in it.
+    if [[ "$test_result" == "unknown" && -f "${trace_dir}/artifacts/verification-output.txt" ]]; then
+        if grep -qiE 'passed|success|ok|successful' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
+            test_result="pass"
+        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
+            test_result="fail"
+        fi
+    fi
+
     # Fallback: check .test-status file when test-output.txt didn't resolve a result.
     # Most agents write .test-status to the project root (or .claude/) instead of the
     # trace artifacts dir, causing 97.8% of traces to show unknown test_result.

@@ -113,37 +113,43 @@ fi
 # Check 3: Tester completeness — detect partial/incomplete runs
 # A tester that only wrote strategy but never produced verification output
 # must not enter the approval flow. Force resume instead.
+# Both signals required (AND logic) — finalize_trace marks outcome="partial"
+# when test-output.txt is missing, but testers write verification-output.txt
+# instead. A tester with verification-output.txt IS complete regardless of
+# manifest outcome.
 #
 # @decision DEC-TESTER-002
-# @title Block partial tester runs before approval flow
+# @title Block partial tester runs before approval flow (AND logic)
 # @status accepted
 # @rationale A tester that exits after planning but before executing verification
-#   leaves TESTER_COMPLETE=true (the old behaviour) and falls through to the
-#   approval flow, presenting no evidence but still triggering the prompt-submit
-#   gate. Two independent signals detect incompleteness:
-#   1. manifest.json outcome == "partial" (trace protocol signal)
+#   must not enter the approval flow. Two signals together detect incompleteness:
+#   1. manifest.json outcome == "partial" (finalize_trace signal)
 #   2. artifacts/verification-output.txt missing (concrete evidence absent)
-#   Either signal alone is sufficient to block. The gate exits 2 (force resume)
-#   matching the existing BLOCKED pattern at line 182.
+#   AND logic is required because finalize_trace() marks ALL testers as "partial"
+#   when test-output.txt is absent — but testers write verification-output.txt
+#   as their primary artifact, not test-output.txt. A tester with
+#   verification-output.txt IS complete even if finalize_trace shows "partial".
+#   The gate exits 2 (force resume) to unblock the tester.
 TESTER_COMPLETE=true
-TRACE_OUTCOME="unknown"
 
-# Signal 1: trace outcome is "partial" (no test artifacts found)
-if [[ -n "$TRACE_DIR" && -f "$TRACE_DIR/manifest.json" ]]; then
-    TRACE_OUTCOME=$(jq -r '.outcome // "unknown"' "$TRACE_DIR/manifest.json" 2>/dev/null || echo "unknown")
-    if [[ "$TRACE_OUTCOME" == "partial" ]]; then
+if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR" ]]; then
+    TRACE_OUTCOME=""
+    if [[ -f "$TRACE_DIR/manifest.json" ]]; then
+        TRACE_OUTCOME=$(jq -r '.outcome // "unknown"' "$TRACE_DIR/manifest.json" 2>/dev/null)
+    fi
+
+    HAS_VERIFICATION=false
+    if [[ -d "$TRACE_DIR/artifacts" && -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
+        HAS_VERIFICATION=true
+    fi
+
+    # Block only when outcome is partial AND verification output is missing
+    # (i.e., tester planned but never executed)
+    if [[ "$TRACE_OUTCOME" == "partial" && "$HAS_VERIFICATION" == "false" ]]; then
         TESTER_COMPLETE=false
     fi
 fi
 
-# Signal 2: verification-output.txt missing (tester planned but didn't execute)
-if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
-    if [[ ! -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
-        TESTER_COMPLETE=false
-    fi
-fi
-
-# Incomplete tester → block and force resume (same pattern as BLOCKED on line ~192)
 if [[ "$TESTER_COMPLETE" == "false" ]]; then
     DIRECTIVE="INCOMPLETE: Tester returned without completing verification (trace outcome: ${TRACE_OUTCOME:-unknown}). Do NOT present confidence levels or approve merge from partial results. Resume the tester to complete verification."
     ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
