@@ -229,34 +229,38 @@ if [[ -f "$_CANARY_FILE" ]]; then
     fi
 fi
 
-# --- Check 0.75: Prevent cd into worktree directories (subshell containment) ---
+# --- Check 0.75: Prevent cd into worktree directories with chained commands ---
 # @decision DEC-GUARD-CWD-003
-# @title Subshell containment for cd into .worktrees/ directories
+# @title Deny cd-into-worktree with chained commands; suggest subshell resubmit
 # @status accepted
 # @rationale When the Bash tool's CWD points to a .worktrees/ path and that
 #   worktree is later deleted, ALL hook spawning fails — not just Bash hooks.
 #   posix_spawn returns ENOENT on macOS when the parent process CWD is deleted.
 #   The canary approach (Path B) only recovers PreToolUse:Bash; Edit hooks, Stop
 #   hooks, and SessionEnd hooks cannot be recovered because the shell can't start.
-#   Prevention is the only reliable fix. Wrapping chained cd+command in a subshell
-#   ( cd .worktrees/x && cmd ) executes the command in the worktree but prevents
-#   the CWD change from persisting to the parent shell. Bare cd is allowed because
-#   subagents (implementer, guardian) need persistent CWD in their worktrees.
-#   The { cd . || cd $HOME ... } inline guard pattern was rejected for this check
-#   because it fires AFTER the damage — the goal here is to prevent the CWD from
-#   ever pointing to a deletable directory.
+#   Prevention is the only reliable fix. The original approach used updatedInput
+#   (rewrite) to transparently wrap the command in a subshell, but updatedInput
+#   is NOT supported in PreToolUse hooks — only in PermissionRequest hooks. The
+#   framework silently ignores updatedInput and runs the original command unchanged,
+#   making rewrite() a no-op for command safety. We now deny with a reason that
+#   includes the suggested subshell-wrapped command so the model can resubmit.
+#   Already-subshell-wrapped commands (starting with "( ") pass through — this is
+#   the model's correct resubmit after a deny. Bare cd is allowed because subagents
+#   (implementer, guardian) need persistent CWD in their worktrees.
 
 # Pattern: cd/pushd where the DESTINATION ends at a worktree name (no deeper subpath).
 # Matches: cd .worktrees/foo, cd /abs/.worktrees/foo, pushd .worktrees/feat-x
 # Does NOT match: cd /parent/.worktrees/foo/subdir (path goes deeper inside worktree)
 # The [^/[:space:];&|]+ after .worktrees/ requires a non-empty worktree name with no
 # further slashes — ensuring we match only the worktree root, not subdirectories within.
-if echo "$COMMAND" | grep -qE '\b(cd|pushd)\b[^;&|]*\.worktrees/[^/[:space:];&|]+([[:space:]]|$|&&|;|\|\|)'; then
+# Skip if already subshell-wrapped (model resubmit after previous deny)
+if [[ "$COMMAND" == "( "* ]]; then
+    : # Already subshell-wrapped, pass through
+elif echo "$COMMAND" | grep -qE '\b(cd|pushd)\b[^;&|]*\.worktrees/[^/[:space:];&|]+([[:space:]]|$|&&|;|\|\|)'; then
     # Check if there are commands chained after the cd (&&, ;, ||)
     if echo "$COMMAND" | grep -qE '\.worktrees/[^/[:space:];&|]+[[:space:]]*(&&|;|\|\|)'; then
-        log_info "GUARD-CWD" "Check 0.75: Wrapping cd-into-worktree in subshell to contain CWD change"
-        rewrite "( $COMMAND )" \
-            "Subshell containment: cd into .worktrees/ with chained commands would set framework CWD to a deletable directory. If the worktree is later removed, ALL hooks fail (posix_spawn ENOENT). Subshell runs the command in the worktree but prevents CWD persistence."
+        log_info "GUARD-CWD" "Check 0.75: Denying cd-into-worktree with chained commands"
+        deny "CWD protection: cd into .worktrees/ with chained commands would set framework CWD to a deletable directory. If the worktree is later removed, ALL hooks fail (posix_spawn ENOENT). Resubmit with subshell wrapping: ( $COMMAND )"
     fi
     # Bare cd/pushd into worktree: allow (subagents need persistent CWD).
     # Defense-in-depth: canary + Path B handles recovery if orchestrator violates CLAUDE.md.
