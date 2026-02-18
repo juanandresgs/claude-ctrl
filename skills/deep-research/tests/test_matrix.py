@@ -32,6 +32,10 @@ from lib.matrix import (
     build_matrix,
     _normalize_heading,
     _jaccard_similarity,
+    _extract_body_keywords,
+    _jaccard_similarity_sets,
+    STOP_WORDS,
+    CONTENT_MATCH_THRESHOLD,
 )
 from lib.render import ProviderResult
 
@@ -654,6 +658,332 @@ class TestFixtureIntegration(unittest.TestCase):
         # Should not raise
         serialized = json.dumps(matrix.to_dict())
         self.assertGreater(len(serialized), 10)
+
+
+# ---------------------------------------------------------------------------
+# _extract_body_keywords
+# ---------------------------------------------------------------------------
+
+class TestExtractBodyKeywords(unittest.TestCase):
+    """Unit tests for stop-word filtered keyword extraction."""
+
+    def test_returns_set(self):
+        result = _extract_body_keywords("hello world")
+        self.assertIsInstance(result, set)
+
+    def test_lowercases_words(self):
+        result = _extract_body_keywords("Hello World")
+        self.assertIn("hello", result)
+        self.assertIn("world", result)
+
+    def test_removes_stop_words(self):
+        # All stop words should be absent
+        text = "the a an is are was were be been"
+        result = _extract_body_keywords(text)
+        self.assertEqual(len(result), 0)
+
+    def test_strips_punctuation(self):
+        result = _extract_body_keywords("company, overview! analysis.")
+        self.assertIn("company", result)
+        self.assertIn("overview", result)
+        self.assertIn("analysis", result)
+
+    def test_excludes_single_char_tokens(self):
+        result = _extract_body_keywords("a b c hello")
+        # 'b' and 'c' are single char (but also stop words covered),
+        # 'hello' is 5 chars — should be present.
+        self.assertIn("hello", result)
+        self.assertNotIn("b", result)
+        self.assertNotIn("c", result)
+
+    def test_empty_text(self):
+        result = _extract_body_keywords("")
+        self.assertEqual(result, set())
+
+    def test_stop_word_constant_contains_common_words(self):
+        for word in ("the", "and", "of", "in", "to", "is"):
+            self.assertIn(word, STOP_WORDS)
+
+    def test_numeric_tokens_allowed(self):
+        # Numbers should not be stripped
+        result = _extract_body_keywords("2024 report analysis")
+        self.assertIn("2024", result)
+
+
+# ---------------------------------------------------------------------------
+# _jaccard_similarity_sets
+# ---------------------------------------------------------------------------
+
+class TestJaccardSimilaritySets(unittest.TestCase):
+    """Unit tests for set-based Jaccard similarity."""
+
+    def test_identical_sets(self):
+        a = {"foo", "bar", "baz"}
+        self.assertAlmostEqual(_jaccard_similarity_sets(a, a), 1.0)
+
+    def test_disjoint_sets(self):
+        a = {"foo", "bar"}
+        b = {"baz", "qux"}
+        self.assertAlmostEqual(_jaccard_similarity_sets(a, b), 0.0)
+
+    def test_partial_overlap(self):
+        # {a,b,c} ∩ {b,c,d} = 2, union = 4 → 0.5
+        a = {"a", "b", "c"}
+        b = {"b", "c", "d"}
+        self.assertAlmostEqual(_jaccard_similarity_sets(a, b), 0.5)
+
+    def test_both_empty(self):
+        self.assertAlmostEqual(_jaccard_similarity_sets(set(), set()), 1.0)
+
+    def test_one_empty(self):
+        self.assertAlmostEqual(_jaccard_similarity_sets(set(), {"a"}), 0.0)
+        self.assertAlmostEqual(_jaccard_similarity_sets({"a"}, set()), 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Two-pass matching (Pass 2 content-based)
+# ---------------------------------------------------------------------------
+
+class TestTwoPassMatching(unittest.TestCase):
+    """Tests for the content-based Pass 2 matching system."""
+
+    def _make_topic(
+        self,
+        heading: str,
+        body_keywords: Set[str],
+        coverage: str = "detailed",
+    ) -> Topic:
+        normalized = _normalize_heading(heading)
+        return Topic(
+            heading=normalized,
+            raw_heading=heading,
+            level=2,
+            word_count=150 if coverage == "detailed" else 20,
+            coverage=coverage,
+            citations_in_section=0,
+            body_keywords=body_keywords,
+        )
+
+    def test_different_headings_shared_body_keywords_match_in_pass2(self):
+        """Topics with different headings but overlapping body text match via Pass 2."""
+        shared_words = {"semiconductor", "quantum", "manufacturing", "supply", "chain",
+                        "fabrication", "wafer", "lithography", "etching", "deposition",
+                        "cleanroom", "yield", "defect", "process", "node"}
+        topics = {
+            "openai": [self._make_topic("Chip Manufacturing", shared_words)],
+            "gemini": [self._make_topic("Semiconductor Production", shared_words)],
+        }
+        matched = match_topics(topics)
+        # Should be matched via Pass 2 content — one cluster, not two.
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0].match_method, "content-fuzzy")
+
+    def test_exact_match_method_label(self):
+        """Identical headings produce match_method='exact'."""
+        topics = {
+            "openai": [self._make_topic("Company Overview", {"founded", "shanghai", "contractor"})],
+            "gemini": [self._make_topic("Company Overview", {"founded", "beijing", "contractor"})],
+        }
+        matched = match_topics(topics)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0].match_method, "exact")
+
+    def test_heading_fuzzy_match_method_label(self):
+        """Similar headings produce match_method='heading-fuzzy'."""
+        # Jaccard on heading words: {apt,group,connections} vs {apt,group,connections,analysis}
+        # = 3/4 = 0.75 >= 0.60 → heading-fuzzy
+        topics = {
+            "openai": [self._make_topic(
+                "APT Group Connections Overview",
+                {"apt", "threat", "actor", "infrastructure"},
+            )],
+            "gemini": [self._make_topic(
+                "APT Group Connections Analysis",
+                {"apt", "threat", "actor", "infrastructure"},
+            )],
+        }
+        matched = match_topics(topics)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0].match_method, "heading-fuzzy")
+
+    def test_unmatched_method_label_when_no_match(self):
+        """Completely disjoint topics produce match_method='unmatched'."""
+        topics = {
+            "openai": [self._make_topic("Quantum Computing", {"qubit", "superposition", "entanglement"})],
+            "gemini": [self._make_topic("Regulatory Compliance", {"regulation", "gdpr", "audit"})],
+        }
+        matched = match_topics(topics)
+        self.assertEqual(len(matched), 2)
+        for m in matched:
+            self.assertEqual(m.match_method, "unmatched")
+
+    def test_pass1_wins_over_pass2_for_same_topic(self):
+        """If a heading match exists, Pass 1 takes it; Pass 2 doesn't steal it."""
+        # "Company Overview" and "Company Overview" → exact match in Pass 1.
+        # The second provider's topic has overlapping body keywords too,
+        # but Pass 1 should claim the match first.
+        shared_words = {"company", "founded", "shanghai", "contractor"}
+        topics = {
+            "openai": [self._make_topic("Company Overview", shared_words)],
+            "gemini": [self._make_topic("Company Overview", shared_words)],
+        }
+        matched = match_topics(topics)
+        self.assertEqual(len(matched), 1)
+        # Must be exact, not content-fuzzy
+        self.assertEqual(matched[0].match_method, "exact")
+
+    def test_content_fuzzy_threshold_exactly_at_boundary(self):
+        """Body keyword Jaccard at exactly CONTENT_MATCH_THRESHOLD (0.30) should match."""
+        # To get exactly 0.30: |intersection| / |union| = 0.30
+        # e.g. 3 shared / 10 total unique → 3/(7+3) = 3/10 = 0.30
+        shared = {"alpha", "beta", "gamma"}
+        only_a = {"delta", "epsilon", "zeta", "eta"}
+        only_b = {"theta", "iota", "kappa"}
+        kw_a = shared | only_a  # 7 unique to a
+        kw_b = shared | only_b  # 3 unique to b
+        # |intersection| = 3, |union| = 3+4+3 = 10 → 0.30 exactly
+        self.assertAlmostEqual(_jaccard_similarity_sets(kw_a, kw_b), 0.30)
+        topics = {
+            "openai": [self._make_topic("Topic Alpha", kw_a)],
+            "gemini": [self._make_topic("Topic Beta", kw_b)],
+        }
+        matched = match_topics(topics)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0].match_method, "content-fuzzy")
+
+    def test_content_fuzzy_threshold_below_boundary_no_match(self):
+        """Body keyword Jaccard below 0.30 should NOT match."""
+        # Use Jaccard < 0.30: 2 shared / 10 unique → 2/10 = 0.20 < 0.30
+        shared = {"alpha", "beta"}
+        only_a = {"delta", "epsilon", "zeta", "eta", "mu"}
+        only_b = {"theta", "iota", "kappa"}
+        kw_a = shared | only_a  # 7 words
+        kw_b = shared | only_b  # 5 words
+        # |intersection|=2, |union|=2+5+3=10 → 0.20
+        self.assertAlmostEqual(_jaccard_similarity_sets(kw_a, kw_b), 0.20)
+        topics = {
+            "openai": [self._make_topic("Topic Alpha", kw_a)],
+            "gemini": [self._make_topic("Topic Beta", kw_b)],
+        }
+        matched = match_topics(topics)
+        self.assertEqual(len(matched), 2)
+        for m in matched:
+            self.assertEqual(m.match_method, "unmatched")
+
+    def test_match_method_present_on_all_matched_topics(self):
+        """Every MatchedTopic must have match_method set."""
+        topics = {
+            "openai": [
+                self._make_topic("Company Overview", {"founded", "structure"}),
+                self._make_topic("Key Findings", {"critical", "exploit", "breach"}),
+            ],
+            "gemini": [
+                self._make_topic("Company Overview", {"founded", "structure"}),
+                self._make_topic("Regulatory Impact", {"regulation", "compliance"}),
+            ],
+        }
+        matched = match_topics(topics)
+        valid_methods = {"exact", "heading-fuzzy", "content-fuzzy", "unmatched"}
+        for m in matched:
+            self.assertIn(m.match_method, valid_methods)
+
+    def test_to_dict_includes_match_method_per_topic(self):
+        """to_dict() must include match_method key on every topic entry."""
+        results = [
+            _provider_result("openai", "# Company Overview\n\nContent here.\n"),
+            _provider_result("gemini", "# Company Overview\n\nContent here.\n"),
+        ]
+        matrix = build_matrix(results)
+        d = matrix.to_dict()
+        for topic_entry in d["topics"]:
+            self.assertIn("match_method", topic_entry)
+            self.assertIn(topic_entry["match_method"],
+                          {"exact", "heading-fuzzy", "content-fuzzy", "unmatched"})
+
+    def test_to_dict_includes_unmatched_hints(self):
+        """to_dict() must include unmatched_hints at top level."""
+        results = [
+            _provider_result("openai", "# Company Overview\n\nContent.\n"),
+            _provider_result("gemini", "# Completely Different\n\nOther content.\n"),
+        ]
+        matrix = build_matrix(results)
+        d = matrix.to_dict()
+        self.assertIn("unmatched_hints", d)
+        self.assertIsInstance(d["unmatched_hints"], list)
+
+    def test_unmatched_hints_have_required_keys(self):
+        """Each unmatched_hint entry must have provider, heading, top_keywords."""
+        results = [
+            _provider_result("openai", "# Unique Topic Alpha\n\nSome specialized content with unique terminology.\n"),
+            _provider_result("gemini", "# Totally Different Beta\n\nEntirely unrelated subject matter.\n"),
+        ]
+        matrix = build_matrix(results)
+        for hint in matrix.unmatched_hints:
+            self.assertIn("provider", hint)
+            self.assertIn("heading", hint)
+            self.assertIn("top_keywords", hint)
+            self.assertIsInstance(hint["top_keywords"], list)
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 content matching with body text in reports
+# ---------------------------------------------------------------------------
+
+class TestContentMatchingEndToEnd(unittest.TestCase):
+    """End-to-end tests verifying Pass 2 fires correctly from build_matrix."""
+
+    # "Company Overview" and "Company Background" share only "company" in heading
+    # (Jaccard = 1/3 ≈ 0.33 < 0.60), so Pass 1 won't match them.
+    # But if their section bodies share significant keywords, Pass 2 should match.
+    OPENAI_REPORT_CONTENT = """# Company Overview
+
+I-SOON is a Shanghai-registered cybersecurity contractor founded 2010.
+The company provides hacking services to Chinese government agencies including
+Ministry State Security. Corporate structure involves subsidiaries across
+multiple cities. Leadership team includes founders with military backgrounds.
+Government contracting relationship spans decade of operation.
+"""
+
+    GEMINI_REPORT_CONTENT = """# Company Background
+
+I-SOON cybersecurity contractor registered Shanghai founded 2010.
+Provides hacking services Chinese government agencies Ministry State Security.
+Corporate structure subsidiaries multiple cities leadership founders military.
+Government contracting relationship decade operation extensive documented.
+"""
+
+    def test_company_overview_vs_background_match_via_content(self):
+        """'Company Overview' and 'Company Background' match via body keyword overlap."""
+        results = [
+            _provider_result("openai", self.OPENAI_REPORT_CONTENT),
+            _provider_result("gemini", self.GEMINI_REPORT_CONTENT),
+        ]
+        matrix = build_matrix(results)
+        # Should be one cluster (content-fuzzy), not two unique topics
+        self.assertEqual(len(matrix.topics), 1)
+        self.assertEqual(matrix.topics[0].match_method, "content-fuzzy")
+
+    def test_body_keywords_populated_on_extracted_topics(self):
+        """extract_topics() must populate body_keywords on each Topic."""
+        report = "# Analysis Section\n\nSemiconductor manufacturing process yield defect.\n"
+        topics = extract_topics(report)
+        self.assertEqual(len(topics), 1)
+        kw = topics[0].body_keywords
+        self.assertIsInstance(kw, set)
+        self.assertIn("semiconductor", kw)
+        self.assertIn("manufacturing", kw)
+        # Stop words should not appear
+        self.assertNotIn("the", kw)
+        self.assertNotIn("is", kw)
+
+    def test_body_keywords_on_flat_report(self):
+        """Flat text (no headings) gets body_keywords from the whole report."""
+        report = "Semiconductor quantum manufacturing analysis research findings."
+        topics = extract_topics(report)
+        self.assertEqual(len(topics), 1)
+        kw = topics[0].body_keywords
+        self.assertIn("semiconductor", kw)
+        self.assertIn("quantum", kw)
 
 
 if __name__ == "__main__":
