@@ -298,6 +298,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Explore|explore",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-explore.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreCompact": [

@@ -171,8 +171,11 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (merge-analysis.md). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
         fi
         ;;
-    Bash|Explore)
-        # Lightweight agents — minimal context
+    Bash)
+        # Truly lightweight — no context
+        ;;
+    Explore)
+        CONTEXT_PARTS+=("OUTPUT LIMIT: If your findings exceed ~1000 words, write the full report to tmp/explore-findings.md in the project root, then return a ≤1500 token summary with key findings and 'Full report: tmp/explore-findings.md'. The orchestrator can read the file for details.")
         ;;
     *)
         CONTEXT_PARTS+=("Agent type: ${AGENT_TYPE:-unknown}")
