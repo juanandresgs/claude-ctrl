@@ -243,6 +243,17 @@ for pattern in "${CLAUDE_DIR}/.session-changes"* "${CLAUDE_DIR}/.session-decisio
 done
 [[ "$STALE_FILE_COUNT" -gt 0 ]] && CONTEXT_PARTS+=("Stale session files: $STALE_FILE_COUNT from previous session")
 
+# --- Trace count canary: warn if significant drop since last session ---
+# check_trace_count_canary() compares current directory count against the
+# value written at last session end. >30% drop triggers a warning.
+# Runs wrapped in set +e: non-fatal, and find may return non-zero on permission errors.
+set +e
+_CANARY_WARNING=$(check_trace_count_canary 2>/dev/null || echo "")
+set -e
+if [[ -n "$_CANARY_WARNING" ]]; then
+    CONTEXT_PARTS+=("$_CANARY_WARNING")
+fi
+
 # --- Trace protocol: surface incomplete and recent traces ---
 if [[ -d "$TRACE_STORE" ]]; then
     # Clean up stale active markers (agent crashed without SubagentStop)

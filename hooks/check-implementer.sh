@@ -107,7 +107,37 @@ if [[ -n "$TRACE_ID" ]]; then
     if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
-    # Validate expected artifacts
+
+    # Auto-capture files-changed.txt if agent didn't write it.
+    # Collects unstaged diffs, staged diffs, and recent commit file names so
+    # finalize_trace() can compute files_changed > 0 even when the agent omitted
+    # the artifact. Uses || true on every git command — hook must not abort on
+    # non-git paths or failed subcommands.
+    if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/files-changed.txt" ]]; then
+        git -C "$PROJECT_ROOT" diff --name-only 2>/dev/null > "$TRACE_DIR/artifacts/files-changed.txt" || true
+        git -C "$PROJECT_ROOT" diff --cached --name-only 2>/dev/null >> "$TRACE_DIR/artifacts/files-changed.txt" || true
+        git -C "$PROJECT_ROOT" log --name-only --format="" -5 2>/dev/null >> "$TRACE_DIR/artifacts/files-changed.txt" || true
+        sort -u "$TRACE_DIR/artifacts/files-changed.txt" -o "$TRACE_DIR/artifacts/files-changed.txt" 2>/dev/null || true
+    fi
+
+    # Auto-capture test-output.txt from .test-status if agent didn't write it.
+    # .test-status format is "result|fail_count|timestamp". The capture adds a
+    # human-readable prefix so report.sh can display it as evidence text.
+    if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/test-output.txt" ]]; then
+        TS_FILE=""
+        [[ -f "${CLAUDE_DIR}/.test-status" ]] && TS_FILE="${CLAUDE_DIR}/.test-status"
+        [[ -z "$TS_FILE" && -f "$PROJECT_ROOT/.test-status" ]] && TS_FILE="$PROJECT_ROOT/.test-status"
+        [[ -z "$TS_FILE" && -f "$PROJECT_ROOT/.claude/.test-status" ]] && TS_FILE="$PROJECT_ROOT/.claude/.test-status"
+        if [[ -n "$TS_FILE" ]]; then
+            echo "# Auto-captured from .test-status at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TRACE_DIR/artifacts/test-output.txt"
+            cat "$TS_FILE" >> "$TRACE_DIR/artifacts/test-output.txt" 2>/dev/null || true
+            TS_RESULT=$(cut -d'|' -f1 "$TS_FILE" 2>/dev/null || echo "unknown")
+            [[ "$TS_RESULT" == "pass" ]] && echo "Tests passed" >> "$TRACE_DIR/artifacts/test-output.txt"
+            [[ "$TS_RESULT" == "fail" ]] && echo "Tests failed" >> "$TRACE_DIR/artifacts/test-output.txt"
+        fi
+    fi
+
+    # Validate expected artifacts (after auto-capture attempts)
     for artifact in test-output.txt files-changed.txt; do
         if [[ ! -f "$TRACE_DIR/artifacts/$artifact" ]]; then
             ISSUES+=("Trace artifact missing: $artifact (TRACE_DIR=$TRACE_DIR)")

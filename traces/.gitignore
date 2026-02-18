@@ -1,0 +1,8 @@
+# traces/.gitignore — defense-in-depth against accidental trace commits
+#
+# Trace data contains project paths, session IDs, agent response text, and
+# code diffs. This must NEVER be committed to the public upstream repo.
+# The root .gitignore already excludes traces/ but this file provides a
+# second layer of protection even if the root ignore is modified or bypassed.
+*
+!.gitignore

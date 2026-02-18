@@ -119,6 +119,56 @@ if [[ -f "${CLAUDE_DIR}/hooks/log.sh" && -f "${CLAUDE_DIR}/hooks/context-lib.sh"
     set -e
 fi
 
+# --- Stage 0: Dataset Integrity Check ---
+# Detects data loss (trace count dropped >30%) and missing historical baseline
+# (all traces on same calendar day). These flags suppress trend analysis and add
+# a "Data Integrity" section to the report to prevent false trend signals.
+#
+# @decision DEC-TRACE-PROT-004
+# @title Stage 0 dataset integrity check before analysis
+# @status accepted
+# @rationale Trend comparisons (Stage 4b) are only meaningful when the dataset
+#   is stable. If traces were deleted since the last run, the signal count delta
+#   reflects data loss rather than real improvements — a false "improving" trend.
+#   Similarly, if all traces come from the same calendar day, there is no
+#   historical baseline for trend comparison. Stage 0 detects both conditions
+#   using the prev_trace_count stored in the previous analysis-cache.json and
+#   the started_at dates in manifest files. DATA_LOSS_SUSPECTED and
+#   NO_HISTORICAL_BASELINE flags are written to dataset_integrity in the cache.
+DATA_LOSS_SUSPECTED=false
+NO_HISTORICAL_BASELINE=false
+PREV_TRACE_COUNT=0
+
+# Read previous trace count from previous cache (before it was overwritten above)
+if [[ -f "$PREV_CACHE_FILE" ]]; then
+    PREV_TRACE_COUNT=$(jq -r '.trace_stats.total // 0' "$PREV_CACHE_FILE" 2>/dev/null || echo "0")
+fi
+
+# Count actual trace directories (filesystem, not index — index may be stale)
+CURRENT_TRACE_DIR_COUNT=$(find "$TRACE_STORE" -maxdepth 1 -mindepth 1 -type d ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+CURRENT_TRACE_DIR_COUNT="${CURRENT_TRACE_DIR_COUNT:-0}"
+
+# Data loss: current < prev * 0.7 (i.e., >30% drop)
+if [[ "$PREV_TRACE_COUNT" -gt 0 && "$CURRENT_TRACE_DIR_COUNT" -lt "$PREV_TRACE_COUNT" ]]; then
+    LOSS_THRESHOLD=$(( PREV_TRACE_COUNT * 70 / 100 ))
+    if [[ "$CURRENT_TRACE_DIR_COUNT" -lt "$LOSS_THRESHOLD" ]]; then
+        DATA_LOSS_SUSPECTED=true
+    fi
+fi
+
+# No historical baseline: all manifest started_at dates are the same calendar day
+UNIQUE_DAYS=0
+if [[ "$CURRENT_TRACE_DIR_COUNT" -gt 0 ]]; then
+    UNIQUE_DAYS=$(find "$TRACE_STORE" -maxdepth 2 -name 'manifest.json' -type f 2>/dev/null \
+        | xargs jq -r '.started_at // empty' 2>/dev/null \
+        | cut -c1-10 \
+        | sort -u \
+        | wc -l | tr -d ' ')
+    if [[ "$UNIQUE_DAYS" -le 1 && "$CURRENT_TRACE_DIR_COUNT" -ge 2 ]]; then
+        NO_HISTORICAL_BASELINE=true
+    fi
+fi
+
 # --- Stage 1: Trace index stats (single-pass jq) ---
 # Includes v2 fields: main_impl_count, branch_unknown_count, agent_type_plan_count
 TRACE_STATS=$(jq -sc '
@@ -639,6 +689,27 @@ STALE_MARKERS_OBJ=$(jq -cn \
     --argjson details "$STALE_MARKERS" \
     '{"count": $count, "details": $details}')
 
+# Stage 0 post-processing: suppress trends when dataset integrity is compromised.
+# Trend analysis is meaningless if traces were deleted between runs (DATA_LOSS_SUSPECTED)
+# or if there is no historical baseline (NO_HISTORICAL_BASELINE — all same day).
+# In either case, set TRENDS to null to prevent false "improving" signals.
+if [[ "$DATA_LOSS_SUSPECTED" == "true" || "$NO_HISTORICAL_BASELINE" == "true" ]]; then
+    TRENDS="null"
+fi
+
+# Build dataset_integrity object for the cache
+DATASET_INTEGRITY=$(jq -cn \
+    --argjson data_loss "$DATA_LOSS_SUSPECTED" \
+    --argjson no_baseline "$NO_HISTORICAL_BASELINE" \
+    --argjson prev_count "$PREV_TRACE_COUNT" \
+    --argjson curr_count "$CURRENT_TRACE_DIR_COUNT" \
+    '{
+      data_loss_suspected: $data_loss,
+      no_historical_baseline: $no_baseline,
+      prev_trace_count: $prev_count,
+      current_trace_dir_count: $curr_count
+    }')
+
 jq -cn \
     --arg generated_at "$GENERATED_AT" \
     --argjson trace_stats "$TRACE_STATS" \
@@ -649,6 +720,7 @@ jq -cn \
     --argjson agent_breakdown "$AGENT_BREAKDOWN" \
     --argjson stale_markers "$STALE_MARKERS_OBJ" \
     --argjson cohort_regressions "$COHORT_REGRESSIONS" \
+    --argjson dataset_integrity "$DATASET_INTEGRITY" \
     '{
       version: 3,
       generated_at: $generated_at,
@@ -659,7 +731,8 @@ jq -cn \
       cohort_regressions: $cohort_regressions,
       trends: $trends,
       agent_breakdown: $agent_breakdown,
-      stale_markers: $stale_markers
+      stale_markers: $stale_markers,
+      dataset_integrity: $dataset_integrity
     }' > "$CACHE_FILE"
 
 SIG_COUNT=$(echo "$SIGNALS" | jq 'length')
