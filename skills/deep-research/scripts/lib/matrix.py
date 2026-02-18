@@ -9,11 +9,12 @@ Architecture:
 - All stdlib-only Python — no external dependencies.
 - Topic extraction via markdown heading regex (H1–H4). Flat reports get one
   synthetic "no headings" topic.
-- Cross-provider matching: two passes.
-  Pass 1: exact (normalized text equal), then heading-fuzzy (Jaccard ≥ 0.60
-  on heading word sets).
-  Pass 2: content-fuzzy — Jaccard ≥ 0.30 on body keyword sets (stop-word
-  filtered) for topics unmatched after Pass 1.
+- Cross-provider matching: heading-based (exact + fuzzy Jaccard ≥ 0.60 on
+  heading word sets). Topics that don't match any heading are marked
+  'unmatched' and surfaced to the LLM via unmatched_hints containing body
+  keywords extracted from the section text. The LLM handles semantic matching
+  (e.g. "Company Overview" ≈ "Company Background") better than algorithmic
+  content similarity.
 - Agreement levels: 'consensus' (all providers), 'majority' (2+), 'unique-<p>'
   (one provider). Computed against active providers (successful results only).
 - Citation overlap: deterministic URL set intersection across providers.
@@ -22,7 +23,7 @@ Architecture:
   match_method per topic and unmatched_hints at top level.
 
 @decision DEC-MATRIX-001
-@title Jaccard similarity threshold at 0.60 for fuzzy heading match (Pass 1)
+@title Jaccard similarity threshold at 0.60 for fuzzy heading match
 @status accepted
 @rationale 0.60 captures genuinely related headings (e.g. "APT Group
 Connections" / "APT Group Links") while excluding accidental overlaps
@@ -30,15 +31,18 @@ Connections" / "APT Group Links") while excluding accidental overlaps
 Lower thresholds produce false merges; higher thresholds miss real matches.
 
 @decision DEC-MATRIX-002
-@title Content-based Pass 2 with Jaccard threshold 0.30 on body keywords
+@title Body keywords extracted for unmatched_hints; no algorithmic content matching
 @status accepted
-@rationale Pass 1 relies on heading text similarity, which fails when providers
-use different terminology for the same subject (e.g. "Company Overview" vs
-"Company Background"). Pass 2 uses keyword overlap of section body text
-(stop-word filtered) to catch these structural mismatches. 0.30 is low enough
-to catch topically related sections while high enough to exclude coincidental
-keyword sharing in short sections. Stop-word filtering removes noise from
-common English function words that inflate overlap spuriously.
+@rationale E2E testing showed that Jaccard similarity on section body keywords
+(Pass 2 content-fuzzy matching) catches zero additional matches in practice.
+Jaccard penalizes asymmetric section sizes: a short "Company Background" section
+vs a long "Company Overview" section produces low overlap even when topically
+identical. The LLM handles semantic matching (e.g. "Company Overview" ≈
+"Company Background") far more accurately via the unmatched_hints protocol.
+Body keywords are therefore extracted and surfaced in unmatched_hints to
+give the LLM the vocabulary it needs for informed merge decisions, rather
+than being used for algorithmic matching. Valid match_method values after
+this decision: 'exact', 'heading-fuzzy', 'unmatched'.
 """
 
 import re
@@ -48,11 +52,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # Word count threshold separating 'detailed' from 'mentioned' coverage.
 DETAILED_WORD_THRESHOLD = 100
 
-# Minimum Jaccard similarity for fuzzy heading match (Pass 1).
+# Minimum Jaccard similarity for fuzzy heading match.
 FUZZY_MATCH_THRESHOLD = 0.60
-
-# Minimum Jaccard similarity for content-based match (Pass 2).
-CONTENT_MATCH_THRESHOLD = 0.30
 
 # English stop words excluded from body keyword extraction.
 STOP_WORDS = frozenset({
@@ -107,13 +108,12 @@ class MatchedTopic:
         match_method: How this cluster was formed.
             'exact'         — heading strings were identical after normalization.
             'heading-fuzzy' — heading Jaccard >= 0.60.
-            'content-fuzzy' — body keyword Jaccard >= 0.30 (Pass 2 only).
             'unmatched'     — topic found in only one provider; no match found.
     """
     canonical_name: str
     coverage: Dict[str, str]  # {provider: 'detailed'|'mentioned'|'absent'}
     agreement_level: str
-    match_method: str = "unmatched"  # 'exact' | 'heading-fuzzy' | 'content-fuzzy' | 'unmatched'
+    match_method: str = "unmatched"  # 'exact' | 'heading-fuzzy' | 'unmatched'
 
 
 @dataclass
@@ -125,7 +125,7 @@ class ComparisonMatrix:
         providers: List of active provider names (successful results only).
         citation_overlap: {url: [providers]} — only URLs cited by 2+ providers.
         stats: Aggregate counts (total_topics, consensus, majority, unique).
-        unmatched_hints: Topics that stayed unmatched after both passes.
+        unmatched_hints: Topics that stayed unmatched after heading matching.
             Each entry: {"provider": str, "heading": str, "top_keywords": [str]}.
             Used by the LLM synthesis step to identify potential manual merges.
     """
@@ -180,7 +180,8 @@ def _extract_body_keywords(text: str) -> Set[str]:
     """Extract significant keywords from section body text.
 
     Lowercases, splits on whitespace, strips punctuation, removes stop words
-    and single-character tokens. Used for Pass 2 content-based matching.
+    and single-character tokens. Used to populate body_keywords on Topic
+    instances, which are surfaced in unmatched_hints for LLM semantic matching.
 
     Args:
         text: Raw section body text (markdown).
@@ -372,55 +373,24 @@ def _best_match(
     return None
 
 
-def _best_content_match(
-    needle: Topic,
-    candidates: List[Topic],
-) -> Optional[Tuple[int, float]]:
-    """Find the best content-based match for `needle` among candidates.
-
-    Uses body_keywords Jaccard similarity with CONTENT_MATCH_THRESHOLD.
-    Used by Pass 2 cluster-level merging (not topic-level).
-
-    Returns (index, score) or None if no match meets the threshold.
-    """
-    best_idx: Optional[int] = None
-    best_score = CONTENT_MATCH_THRESHOLD - 1e-9  # just below threshold
-
-    for idx, candidate in enumerate(candidates):
-        score = _jaccard_similarity_sets(needle.body_keywords, candidate.body_keywords)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-
-    if best_idx is not None and best_score >= CONTENT_MATCH_THRESHOLD:
-        return (best_idx, best_score)
-    return None
-
-
 def match_topics(
     provider_topics: Dict[str, List[Topic]],
 ) -> List[MatchedTopic]:
     """Cluster topics across providers into MatchedTopic instances.
 
-    Algorithm — two passes:
+    Algorithm (heading-based, single pass):
 
-    Pass 1 (heading-based):
     1. For each provider in insertion order, iterate its topics.
     2. For each topic, attempt an exact then heading-fuzzy match against every
        other provider's topic list (only unmatched topics considered).
     3. All matched topics form one cluster. match_method is 'exact' for
        score==1.0, 'heading-fuzzy' for scores below 1.0.
-
-    Pass 2 (content-based):
-    4. Topics not matched in Pass 1 are iterated again.
-    5. For each unmatched anchor, attempt content keyword Jaccard match
-       (threshold 0.30) against other providers' still-unmatched topics.
-    6. Matched clusters get match_method='content-fuzzy'.
-
-    Remaining topics with no match in either pass get match_method='unmatched'.
-
-    7. Providers whose topic lists have no match for a cluster get 'absent'.
-    8. agreement_level is derived from how many active providers cover the topic.
+    4. Topics with no heading match in any other provider get
+       match_method='unmatched'. These are surfaced in unmatched_hints
+       (with body_keywords) so the LLM can decide whether to manually merge
+       topics with different headings covering the same subject.
+    5. Providers whose topic lists have no match for a cluster get 'absent'.
+    6. agreement_level is derived from how many active providers cover the topic.
 
     Args:
         provider_topics: {provider_name: [Topic, ...]}
@@ -477,79 +447,12 @@ def match_topics(
             })
 
     # -----------------------------------------------------------------------
-    # Pass 2: content-based cluster merging for still-unmatched clusters.
-    #
-    # After Pass 1, every topic has been assigned to exactly one cluster as
-    # anchor (all indices are in `used`). Pass 2 therefore operates at the
-    # cluster level: it compares two "unmatched" clusters that each belong to
-    # different single providers, and merges them if their representative
-    # topic's body_keywords Jaccard meets CONTENT_MATCH_THRESHOLD.
-    #
-    # Merged clusters are marked with a sentinel so they can be skipped when
-    # building the final MatchedTopic list.
-    # -----------------------------------------------------------------------
-
-    # Build an index of active (non-merged) unmatched clusters for fast lookup.
-    # We'll iterate and mark merged clusters with "merged_into" key.
-    for i, cluster_a in enumerate(clusters):
-        if cluster_a["match_method"] != "unmatched":
-            continue
-        if "merged_into" in cluster_a:
-            continue
-
-        cluster_topics_a = cluster_a["topics"]
-        anchor_a = next(p for p, t in cluster_topics_a.items() if t is not None)
-        topic_a = cluster_topics_a[anchor_a]
-
-        # Skip clusters whose anchor has no body keywords — no content basis.
-        if not topic_a.body_keywords:
-            continue
-
-        best_j: Optional[int] = None
-        best_sim = CONTENT_MATCH_THRESHOLD - 1e-9
-
-        for j, cluster_b in enumerate(clusters):
-            if j <= i:
-                continue  # avoid double-checking pairs
-            if cluster_b["match_method"] != "unmatched":
-                continue
-            if "merged_into" in cluster_b:
-                continue
-
-            cluster_topics_b = cluster_b["topics"]
-            anchor_b = next(p for p, t in cluster_topics_b.items() if t is not None)
-            if anchor_b == anchor_a:
-                continue  # both from same provider — skip
-
-            topic_b = cluster_topics_b[anchor_b]
-            # Skip if candidate has no body keywords.
-            if not topic_b.body_keywords:
-                continue
-            sim = _jaccard_similarity_sets(topic_a.body_keywords, topic_b.body_keywords)
-            if sim > best_sim:
-                best_sim = sim
-                best_j = j
-
-        if best_j is not None:
-            # Merge cluster_b into cluster_a.
-            cluster_b = clusters[best_j]
-            cluster_topics_b = cluster_b["topics"]
-            for p, t in cluster_topics_b.items():
-                if t is not None and cluster_topics_a.get(p) is None:
-                    cluster_topics_a[p] = t
-            cluster_a["match_method"] = "content-fuzzy"
-            cluster_b["merged_into"] = i  # mark as absorbed
-
-    # -----------------------------------------------------------------------
     # Convert clusters to MatchedTopic instances.
-    # Clusters absorbed by Pass 2 merging are skipped (they have "merged_into").
     # -----------------------------------------------------------------------
     active_provider_count = len(providers)
     matched: List[MatchedTopic] = []
 
     for cluster in clusters:
-        if "merged_into" in cluster:
-            continue  # this cluster was absorbed into another during Pass 2
         cluster_topics = cluster["topics"]
         match_method = cluster["match_method"]
 
@@ -681,7 +584,7 @@ def build_matrix(results: list) -> ComparisonMatrix:
     for r in successful:
         provider_topics[r.provider] = extract_topics(r.report)
 
-    # Match topics across providers (two-pass).
+    # Match topics across providers (heading-based: exact + fuzzy).
     matched = match_topics(provider_topics)
 
     # Compute citation overlap.
@@ -699,7 +602,7 @@ def build_matrix(results: list) -> ComparisonMatrix:
         "unique": unique_count,
     }
 
-    # Build unmatched_hints: topics that remained unmatched after both passes.
+    # Build unmatched_hints: topics that remain unmatched after heading matching.
     # Each hint gives the LLM the provider, heading, and top keywords so it
     # can decide whether to manually merge topics with different headings.
     # Build a lookup from heading to Topic for each provider.
