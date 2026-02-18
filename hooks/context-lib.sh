@@ -634,6 +634,35 @@ finalize_trace() {
         fi
     fi
 
+    # Fallback: check .test-status file when test-output.txt didn't resolve a result.
+    # Most agents write .test-status to the project root (or .claude/) instead of the
+    # trace artifacts dir, causing 97.8% of traces to show unknown test_result.
+    # Priority: project_root/.test-status > project_root/.claude/.test-status.
+    # @decision DEC-OBS-SUG002
+    # @title Add .test-status fallback to finalize_trace
+    # @status accepted
+    # @rationale Agents consistently write .test-status but rarely write test-output.txt
+    #             as a trace artifact. This fallback recovers test_result from the file
+    #             agents already produce, without changing agent behavior. test-output.txt
+    #             (checked above) takes priority because it contains richer evidence.
+    if [[ "$test_result" == "unknown" ]]; then
+        local test_status_file=""
+        if [[ -f "${project_root}/.test-status" ]]; then
+            test_status_file="${project_root}/.test-status"
+        elif [[ -f "${project_root}/.claude/.test-status" ]]; then
+            test_status_file="${project_root}/.claude/.test-status"
+        fi
+        if [[ -n "$test_status_file" ]]; then
+            local ts_content
+            ts_content=$(cat "$test_status_file" 2>/dev/null | tr -d '[:space:]')
+            if [[ "$ts_content" == "pass" || "$ts_content" == "passed" ]]; then
+                test_result="pass"
+            elif [[ "$ts_content" == "fail" || "$ts_content" == "failed" ]]; then
+                test_result="fail"
+            fi
+        fi
+    fi
+
     # Check proof status from project
     # Prefer the local .claude/.proof-status; fall back to get_claude_dir() to
     # handle the ~/.claude meta-repo case (avoids double-nesting ~/.claude/.claude/).
