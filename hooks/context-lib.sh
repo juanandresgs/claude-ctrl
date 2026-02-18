@@ -695,6 +695,36 @@ finalize_trace() {
         files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
     fi
 
+    # Fallback: use git diff when files-changed.txt artifact is missing.
+    # Most agents modify files but don't write files-changed.txt as a trace artifact,
+    # causing 97% of traces to show files_changed=0.
+    # @decision DEC-OBS-SUG003
+    # @title Add git diff fallback to finalize_trace files_changed count
+    # @status accepted
+    # @rationale Agents consistently modify files but rarely write files-changed.txt.
+    #             git diff --stat against the worktree or recent commits recovers accurate
+    #             file counts without changing agent behavior. Uncommitted changes are
+    #             checked first (most relevant for in-flight traces); staged changes are
+    #             the secondary fallback.
+    if [[ "$files_changed" -eq 0 && -n "$project_root" ]]; then
+        # Try git diff --stat for uncommitted changes first
+        local git_stat
+        git_stat=$(git -C "$project_root" diff --stat 2>/dev/null | tail -1)
+        if [[ -n "$git_stat" ]]; then
+            files_changed=$(echo "$git_stat" | awk '{print $1}')
+            # Validate it's a number
+            [[ "$files_changed" =~ ^[0-9]+$ ]] || files_changed=0
+        fi
+        # If still 0, try staged changes
+        if [[ "$files_changed" -eq 0 ]]; then
+            git_stat=$(git -C "$project_root" diff --cached --stat 2>/dev/null | tail -1)
+            if [[ -n "$git_stat" ]]; then
+                files_changed=$(echo "$git_stat" | awk '{print $1}')
+                [[ "$files_changed" =~ ^[0-9]+$ ]] || files_changed=0
+            fi
+        fi
+    fi
+
     # Check if summary exists; if not, it's likely a crash
     local trace_status="completed"
     if [[ ! -f "${trace_dir}/summary.md" ]]; then
