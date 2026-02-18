@@ -212,7 +212,7 @@ fi
 if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktrees/|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+).*\.worktrees/'; then
     WT_TARGET=$(echo "$COMMAND" | grep -oE '[^[:space:]]*\.worktrees/[^[:space:];&|]*' | head -1)
     if [[ -n "$WT_TARGET" ]]; then
-        MAIN_WT=$(git worktree list 2>/dev/null | awk '{print $1; exit}')
+        MAIN_WT=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
         MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
         REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
         rewrite "$REWRITTEN" "Rewrote to cd to main worktree before rm of worktree directory. Prevents CWD death spiral if shell CWD is inside the target."
@@ -339,16 +339,24 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-D\b'; then
 fi
 
 # --- Check 5: Worktree removal CWD safety rewrite ---
+# @decision DEC-GUARD-CHECK5-001
+# @title Use extract_git_target_dir + git -C for worktree removal rewrite
+# @status accepted
+# @rationale The original sed+xargs approach failed for `git -C "path with spaces"
+#   worktree remove` because the sed pattern expected `git worktree` directly
+#   adjacent (no -C option), causing WT_PATH to leak the full command or be empty.
+#   The bare `git worktree list` (no -C) crashed with exit 128 under set -euo pipefail
+#   when the hook CWD was not inside the target git repo, triggering deny-on-crash.
+#   Fix: use extract_git_target_dir() (already handles -C and cd patterns) to get
+#   the correct repo directory, then pass it to git -C so worktree list targets the
+#   right repo regardless of hook CWD. The || echo "" prevents pipeline failure
+#   from crashing under set -euo pipefail.
 if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
-    WT_PATH=$(echo "$COMMAND" | sed -E 's/.*git[[:space:]]+worktree[[:space:]]+remove[[:space:]]+(-f[[:space:]]+)?//' | xargs)
-    if [[ -n "$WT_PATH" ]]; then
-        # Find main worktree (safe target for cd)
-        MAIN_WT=$(git worktree list 2>/dev/null | awk '{print $1; exit}')
-        MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
-        # Rewrite: cd to main worktree before removal prevents CWD death spiral
-        REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
-        rewrite "$REWRITTEN" "Rewrote to cd to main worktree before removal. Prevents death spiral if Bash CWD is inside the worktree being removed."
-    fi
+    CHECK5_DIR=$(extract_git_target_dir "$COMMAND")
+    MAIN_WT=$(git -C "$CHECK5_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
+    MAIN_WT="${MAIN_WT:-$CHECK5_DIR}"
+    REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
+    rewrite "$REWRITTEN" "Rewrote to cd to main worktree before removal. Prevents death spiral if Bash CWD is inside the worktree being removed."
 fi
 
 # is_claude_meta_repo is provided by context-lib.sh (shared library)
