@@ -151,6 +151,18 @@ if [[ -n "$TRACE_ID" ]]; then
     if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
+
+    # Auto-capture commit-info.txt: last commit subject + diff stat.
+    # Provides concrete evidence of what the guardian committed without requiring
+    # the agent to explicitly write an artifact. Uses || true — git may fail on
+    # non-git roots or when HEAD~1 doesn't exist (first commit).
+    if [[ -d "$TRACE_DIR/artifacts" ]]; then
+        {
+            git -C "$PROJECT_ROOT" log --oneline -1 2>/dev/null || true
+            git -C "$PROJECT_ROOT" diff --stat HEAD~1..HEAD 2>/dev/null || true
+        } > "$TRACE_DIR/artifacts/commit-info.txt" 2>/dev/null || true
+    fi
+
     finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "guardian"
 fi
 

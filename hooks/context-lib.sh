@@ -1729,6 +1729,91 @@ build_resume_directive() {
     fi
 }
 
+# --- Trace manifest backup ---
+#
+# @decision DEC-TRACE-PROT-002
+# @title Periodic compressed backup of trace manifests
+# @status accepted
+# @rationale Trace directories can be deleted by `git worktree prune`, disk
+#   cleanup scripts, or accidental rm -rf. Manifests are the most compact
+#   representation of trace metadata (name, outcome, timestamps) and are what
+#   rebuild_index() needs to reconstruct the index. Backing them up at session
+#   end ensures that even after trace loss, the index can be rebuilt from the
+#   backup. Archives are stored inside TRACE_STORE (which is already gitignored)
+#   so they never get committed. Rotation to 3 keeps disk usage bounded at ~3x
+#   manifest size (well under 1 MB for 500 traces).
+backup_trace_manifests() {
+    local store="${TRACE_STORE:-$HOME/.claude/traces}"
+    [[ ! -d "$store" ]] && return 0
+
+    # Collect all manifest paths relative to store root
+    local rel_paths=()
+    while IFS= read -r m; do
+        [[ -f "$m" ]] && rel_paths+=("${m#"${store}/"}")
+    done < <(find "$store" -maxdepth 2 -name 'manifest.json' -type f 2>/dev/null | sort)
+
+    [[ "${#rel_paths[@]}" -eq 0 ]] && return 0
+
+    # Create archive named by date+timestamp
+    local archive="${store}/.manifest-backup-$(date +%Y-%m-%dT%H%M%S).tar.gz"
+
+    # tar from store root with relative paths
+    tar -czf "$archive" -C "$store" "${rel_paths[@]}" 2>/dev/null || {
+        rm -f "$archive" 2>/dev/null || true
+        return 0
+    }
+
+    # Rotate: keep only the 3 newest backups.
+    # Use while-read instead of mapfile — mapfile requires bash 4+ and macOS
+    # ships bash 3.2 as the system shell. ls -t sorts newest-first; we skip
+    # the first 3 (keepers) and delete the rest.
+    local _backup_count=0
+    while IFS= read -r _old_backup; do
+        _backup_count=$(( _backup_count + 1 ))
+        if [[ "$_backup_count" -gt 3 ]]; then
+            rm -f "$_old_backup" 2>/dev/null || true
+        fi
+    done < <(ls -t "$store"/.manifest-backup-*.tar.gz 2>/dev/null)
+}
+
+# --- Trace count canary ---
+#
+# @decision DEC-TRACE-PROT-003
+# @title Session-start trace count canary for data loss detection
+# @status accepted
+# @rationale Recording the trace count at session end and comparing at next
+#   session start provides an early warning when traces are deleted between
+#   sessions. A >30% drop is statistically unlikely from normal operation
+#   (agents complete 1-5 traces per session) but characteristic of a rm -rf
+#   or disk failure. The canary file is stored in TRACE_STORE (gitignored) and
+#   uses a simple count|epoch format for fast I/O. Returns warning string
+#   (non-empty) when a significant drop is detected; empty string otherwise.
+check_trace_count_canary() {
+    local store="${TRACE_STORE:-$HOME/.claude/traces}"
+    local canary_file="${store}/.trace-count-canary"
+
+    # Count current trace directories (exclude hidden dirs/files)
+    local current_count
+    current_count=$(find "$store" -maxdepth 1 -mindepth 1 -type d ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+    current_count="${current_count:-0}"
+
+    if [[ -f "$canary_file" ]]; then
+        local prev_count prev_epoch
+        IFS='|' read -r prev_count prev_epoch < "$canary_file" 2>/dev/null || true
+        prev_count="${prev_count:-0}"
+
+        # Only warn if previous count was meaningful and drop exceeds 30%
+        if [[ "$prev_count" -gt 0 && "$current_count" -lt "$prev_count" ]]; then
+            local drop_pct=$(( (prev_count - current_count) * 100 / prev_count ))
+            if [[ "$drop_pct" -gt 30 ]]; then
+                echo "WARNING: Trace count dropped from ${prev_count} to ${current_count} since last session (${drop_pct}% drop). Possible data loss."
+            fi
+        fi
+    fi
+    # Always update canary with current count
+    echo "${current_count}|$(date +%s)" > "$canary_file" 2>/dev/null || true
+}
+
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace refinalize_trace refinalize_stale_traces rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace refinalize_trace refinalize_stale_traces rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions backup_trace_manifests check_trace_count_canary

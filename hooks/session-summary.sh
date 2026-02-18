@@ -35,6 +35,13 @@ set +e
 refinalize_stale_traces 4 >/dev/null 2>&1
 set -e
 
+# Backup trace manifests at session end (defense against data loss between sessions).
+# ~2s for 500 manifests. Keeps last 3 compressed archives in TRACE_STORE.
+# Wrapped in set +e: non-fatal if tar fails (e.g., no manifests yet).
+set +e
+backup_trace_manifests 2>/dev/null
+set -e
+
 # Find session tracking file
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
 CHANGES=""
