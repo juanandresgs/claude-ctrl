@@ -131,7 +131,30 @@ else
     ISSUES+=("No test results found — verify tests were run before committing")
 fi
 
-# Check 6: CWD staleness advisory + canary write after worktree cleanup
+# Check 6: CHANGELOG.md merge advisory
+# On merge to main/master, note if CHANGELOG.md was not updated.
+# Advisory only — never blocks. guardian.md instructs Guardian to update CHANGELOG.
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    HAS_MERGE_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|git merge|merge.*complete|merge.*main|merge.*master' || echo "")
+    if [[ -n "$HAS_MERGE_OP" ]]; then
+        CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+        if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+            # Check if the merge diff includes CHANGELOG.md
+            MERGE_HEAD_FILE=$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir 2>/dev/null)/ORIG_HEAD
+            if [[ -f "$MERGE_HEAD_FILE" ]]; then
+                ORIG_HEAD=$(cat "$MERGE_HEAD_FILE" 2>/dev/null || echo "")
+                if [[ -n "$ORIG_HEAD" ]]; then
+                    CHANGELOG_IN_MERGE=$(git -C "$PROJECT_ROOT" diff --name-only "${ORIG_HEAD}" HEAD 2>/dev/null | grep -c '^CHANGELOG\.md$' || echo "0")
+                    if [[ "$CHANGELOG_IN_MERGE" -eq 0 ]]; then
+                        ISSUES+=("Advisory: CHANGELOG.md not updated in this merge — consider adding a changelog entry for the merged feature")
+                    fi
+                fi
+            fi
+        fi
+    fi
+fi
+
+# Check 7: CWD staleness advisory + canary write after worktree cleanup
 # When Guardian removes a worktree, the orchestrator's Bash CWD may now point to
 # a deleted directory. guard.sh Check 0.5 auto-recovers on the next command.
 # We also write a canary so Path B recovery triggers even when .cwd is absent

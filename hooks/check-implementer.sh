@@ -162,7 +162,17 @@ else
     ISSUES+=("No test results found — verify tests were run before declaring done")
 fi
 
-# Check 5: Validate expected trace artifacts (advisory, not blocking)
+# Check 5: Doc freshness — flag DENY-tier docs as issues
+# Advisory docs (WARN tier) are noted but not flagged as blocking issues.
+get_doc_freshness "$PROJECT_ROOT"
+if [[ -n "$DOC_STALE_DENY" ]]; then
+    ISSUES+=("Documentation stale (BLOCK tier): ${DOC_STALE_DENY} — update before merge to main")
+fi
+if [[ -n "$DOC_STALE_WARN" ]]; then
+    ISSUES+=("Documentation stale (WARN tier): ${DOC_STALE_WARN} — review before merge")
+fi
+
+# Check 6: Validate expected trace artifacts (advisory, not blocking)
 if [[ -n "$TRACE_ID" && -d "$TRACE_DIR" ]]; then
     for artifact in test-output.txt files-changed.txt; do
         if [[ ! -f "$TRACE_DIR/artifacts/$artifact" ]]; then

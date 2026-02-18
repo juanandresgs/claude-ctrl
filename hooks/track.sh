@@ -41,6 +41,15 @@ if [[ ! "$FILE_PATH" =~ /\.claude/traces/ ]]; then
     append_session_event "write" "{\"file\":\"$FILE_PATH\"}" "$PROJECT_ROOT"
 fi
 
+# --- Invalidate doc freshness cache when a .md file is written ---
+# The cache key includes doc modification times. A direct write to a tracked .md
+# file changes its mtime, which the next get_doc_freshness() call detects as a
+# cache miss. Removing the cache here ensures recomputation within the same session.
+if [[ "$FILE_PATH" == *.md ]]; then
+    _DOC_CACHE="${TRACKING_DIR}/.doc-freshness-cache"
+    rm -f "$_DOC_CACHE"
+fi
+
 # --- Invalidate proof-status when non-test source files change ---
 # If user verified the feature and then source code changes, proof is stale.
 PROOF_FILE="$TRACKING_DIR/.proof-status"

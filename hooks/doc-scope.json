@@ -1,0 +1,38 @@
+{
+  "hooks/HOOKS.md": {
+    "scope": ["hooks/*.sh"],
+    "exclude": ["hooks/source-lib.sh"],
+    "trigger": "structural_churn",
+    "warn_threshold": 2,
+    "block_threshold": 5,
+    "min_scope_size": 5
+  },
+  "ARCHITECTURE.md": {
+    "scope": ["hooks/*.sh", "scripts/*.sh", "skills/*/scripts/*.sh", "agents/*.md"],
+    "trigger": "structural_churn",
+    "warn_threshold": 3,
+    "block_threshold": 7,
+    "min_scope_size": 5
+  },
+  "README.md": {
+    "scope": ["hooks/*.sh", "scripts/*.sh", "skills/*/SKILL.md", "commands/*.md"],
+    "trigger": "structural_churn",
+    "warn_threshold": 3,
+    "block_threshold": 7,
+    "min_scope_size": 5
+  },
+  "CLAUDE.md": {
+    "scope": ["hooks/*.sh", "agents/*.md"],
+    "trigger": "structural_churn",
+    "warn_threshold": 2,
+    "block_threshold": 5,
+    "min_scope_size": 5
+  },
+  "CHANGELOG.md": {
+    "scope": [],
+    "trigger": "advisory_only",
+    "warn_threshold": 0,
+    "block_threshold": 0,
+    "min_scope_size": 0
+  }
+}

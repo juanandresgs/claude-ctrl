@@ -403,6 +403,21 @@ DRIFT_FILE="${CLAUDE_DIR}/.plan-drift"
     echo "nogo_count=${NOGO_COUNT:-0}"
 } > "$DRIFT_FILE"
 
+# --- Persist doc freshness data for observatory and next session ---
+get_doc_freshness "$PROJECT_ROOT"
+DOC_DRIFT_FILE="${CLAUDE_DIR}/.doc-drift"
+# Read existing bypass count if present
+_prev_bypass=0
+if [[ -f "$DOC_DRIFT_FILE" ]]; then
+    _prev_bypass=$(grep '^bypass_count=' "$DOC_DRIFT_FILE" 2>/dev/null | cut -d= -f2 || echo "0")
+fi
+{
+    echo "audit_epoch=$(date +%s)"
+    echo "stale_count=${DOC_STALE_COUNT:-0}"
+    echo "stale_docs=${DOC_STALE_DENY:-} ${DOC_STALE_WARN:-}"
+    echo "bypass_count=${_prev_bypass:-0}"
+} > "$DOC_DRIFT_FILE"
+
 # --- Emit systemMessage so findings reach the model on next turn ---
 # Stop hooks use systemMessage (not hookSpecificOutput, which is PreToolUse/PostToolUse only)
 SUMMARY_PARTS=()

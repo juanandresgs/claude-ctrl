@@ -156,6 +156,11 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/hooks/doc-freshness.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/auto-review.sh",
             "timeout": 5
           }

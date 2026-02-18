@@ -209,6 +209,39 @@ SIGNAL_METADATA=$(cat << 'METADATA_EOF'
     "test": "Create trace with .proof-status=verified in project root. Run finalize_trace. Verify proof_status='verified' in manifest.",
     "depends_on": [],
     "unlocks": []
+  },
+  "SIG-DOCS-STALE": {
+    "title": "Enforce documentation freshness for tracked docs",
+    "desc": "doc-scope.json defines tracked docs with scope globs. get_doc_freshness() detects structural churn (new files added, files deleted) that docs must capture. stale_count > 0 means enforcement is needed.",
+    "complexity": "low",
+    "blast": "file",
+    "files": ["hooks/doc-scope.json"],
+    "approach": "Review and update stale docs listed in .doc-drift. Run get_doc_freshness manually against the project root to confirm which docs need updates and what structural changes they're missing.",
+    "test": "Run get_doc_freshness manually; verify stale_count drops to 0 after updating the listed docs",
+    "depends_on": [],
+    "unlocks": []
+  },
+  "SIG-CHANGELOG-GAP": {
+    "title": "Add CHANGELOG.md entries for merges that skipped them",
+    "desc": "check-guardian.sh Check 6 advises updating CHANGELOG.md on merge, but it is advisory only. Persistent gaps indicate the advisory is not effective and CHANGELOG.md is falling behind.",
+    "complexity": "low",
+    "blast": "file",
+    "files": ["CHANGELOG.md", "hooks/check-guardian.sh"],
+    "approach": "Backfill CHANGELOG.md with entries for recent merges that lacked them. Consider escalating check-guardian.sh Check 6 from advisory to block for future merges.",
+    "test": "After backfill, re-run analyze.sh. Verify SIG-CHANGELOG-GAP affected_count drops.",
+    "depends_on": [],
+    "unlocks": []
+  },
+  "SIG-DOC-BYPASS-RATE": {
+    "title": "Reduce @no-doc bypass rate — review doc-scope.json thresholds or update stale docs",
+    "desc": "@no-doc bypass rate >30% indicates the documentation enforcement is either too aggressive (thresholds too tight) or there are chronically stale docs that need bulk updating.",
+    "complexity": "medium",
+    "blast": "file",
+    "files": ["hooks/doc-scope.json", "hooks/doc-freshness.sh"],
+    "approach": "Review doc-scope.json thresholds. If they are too strict, raise warn/block thresholds. If docs are genuinely stale, update them in a dedicated documentation commit.",
+    "test": "After adjustment, re-run doc-freshness.sh on a test commit. Verify bypass_count stops growing.",
+    "depends_on": ["SIG-DOCS-STALE"],
+    "unlocks": []
   }
 }
 METADATA_EOF

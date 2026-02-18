@@ -168,6 +168,17 @@ else
     CONTEXT_PARTS+=("Plan: not found (required before implementation)")
 fi
 
+# --- Doc freshness status ---
+# Advisory injection — stale docs surfaced alongside plan staleness.
+# get_doc_freshness uses cached results (DEC-DOCFRESH-002) so startup cost is
+# one cache-file read on warm runs, not a suite of git log calls.
+get_doc_freshness "$PROJECT_ROOT"
+if [[ "$DOC_STALE_COUNT" -gt 0 ]]; then
+    CONTEXT_PARTS+=("$DOC_FRESHNESS_SUMMARY")
+elif [[ -n "$DOC_MOD_ADVISORY" ]]; then
+    CONTEXT_PARTS+=("Doc freshness: advisory — high modification churn in: $DOC_MOD_ADVISORY")
+fi
+
 # --- Research status ---
 get_research_status "$PROJECT_ROOT"
 if [[ "$RESEARCH_EXISTS" == "true" ]]; then

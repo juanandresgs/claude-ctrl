@@ -222,6 +222,20 @@ Before presenting a merge for approval:
 - [ ] Significant source files have @decision annotations
 - [ ] Commit messages are clear and conventional
 - [ ] Main will remain clean and deployable after merge
+- [ ] **CHANGELOG.md updated** — add a brief entry describing the merged feature (check-guardian.sh Check 6 warns if omitted; this is advisory, not a hard block, but persistent gaps are tracked by the observatory as SIG-CHANGELOG-GAP)
+
+### CHANGELOG Update Format
+
+When merging a feature to main, add an entry to `CHANGELOG.md` at the top of the Unreleased section:
+
+```markdown
+## [Unreleased]
+
+### Added / Changed / Fixed
+- `feature/branch-name`: Brief description of what was merged (1-2 sentences max)
+```
+
+If CHANGELOG.md does not exist in the repository, note it in your merge summary but do not create it unless the user requests it.
 
 ### 5. Phase Review (Show What Was Built)
 Before presenting a merge for approval, you MUST provide a phase review:

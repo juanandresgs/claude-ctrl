@@ -690,6 +690,100 @@ if [[ "$CRASH_CLUSTER_COUNT" -gt 0 ]]; then
         }]')
 fi
 
+# --- Stage 4 (v3): Documentation freshness signals ---
+# Reads .doc-drift file written by surface.sh to detect doc-related issues.
+
+# SIG-DOCS-STALE: tracked docs with structural churn that haven't been updated
+DOC_DRIFT_FILE="${CLAUDE_DIR}/.doc-drift"
+DOC_STALE_COUNT_RAW=0
+DOC_STALE_DOCS_RAW=""
+DOC_BYPASS_COUNT_RAW=0
+SCOPE_MAP_FILE="${CLAUDE_DIR}/hooks/doc-scope.json"
+SCOPE_TOTAL_DOCS=0
+
+if [[ -f "$DOC_DRIFT_FILE" ]]; then
+    DOC_STALE_COUNT_RAW=$(grep '^stale_count=' "$DOC_DRIFT_FILE" 2>/dev/null | cut -d= -f2 || echo "0")
+    DOC_STALE_DOCS_RAW=$(grep '^stale_docs=' "$DOC_DRIFT_FILE" 2>/dev/null | cut -d= -f2- || echo "")
+    DOC_BYPASS_COUNT_RAW=$(grep '^bypass_count=' "$DOC_DRIFT_FILE" 2>/dev/null | cut -d= -f2 || echo "0")
+fi
+
+if [[ -f "$SCOPE_MAP_FILE" ]]; then
+    SCOPE_TOTAL_DOCS=$(jq 'keys | length' "$SCOPE_MAP_FILE" 2>/dev/null || echo "0")
+fi
+
+if [[ "${DOC_STALE_COUNT_RAW:-0}" -gt 0 ]]; then
+    # Build evidence list from space-separated stale_docs
+    DOC_STALE_EVIDENCE=$(echo "$DOC_STALE_DOCS_RAW" | tr ' ' '\n' | grep -v '^$' | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || echo "[]")
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$DOC_STALE_COUNT_RAW" \
+        --argjson total "$SCOPE_TOTAL_DOCS" \
+        --argjson evidence "$DOC_STALE_EVIDENCE" \
+        '. + [{
+          "id": "SIG-DOCS-STALE",
+          "category": "doc_freshness",
+          "severity": "medium",
+          "description": "Tracked docs have stale structural churn — files added/deleted without doc update",
+          "evidence": {"affected_count": $affected, "total": $total, "stale_docs": $evidence},
+          "root_cause": "hooks/doc-scope.json tracks docs that should reflect structural changes. stale_count > 0 means one or more docs are past warn/block threshold."
+        }]')
+fi
+
+# SIG-CHANGELOG-GAP: merges to main that didn't update CHANGELOG.md
+CHANGELOG_MERGES_TOTAL=0
+CHANGELOG_MERGES_MISSING=0
+if command -v git &>/dev/null && git -C "$CLAUDE_DIR" rev-parse HEAD &>/dev/null 2>&1; then
+    while IFS= read -r merge_hash; do
+        [[ -z "$merge_hash" ]] && continue
+        (( CHANGELOG_MERGES_TOTAL++ )) || true
+        # Check if CHANGELOG.md appeared in this merge's diff
+        if ! git -C "$CLAUDE_DIR" diff-tree --no-commit-id -r --name-only "$merge_hash" 2>/dev/null \
+           | grep -qF 'CHANGELOG.md' 2>/dev/null; then
+            (( CHANGELOG_MERGES_MISSING++ )) || true
+        fi
+    done < <(git -C "$CLAUDE_DIR" log --merges --first-parent main -20 --format='%H' 2>/dev/null || true)
+fi
+
+if [[ "$CHANGELOG_MERGES_MISSING" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$CHANGELOG_MERGES_MISSING" \
+        --argjson total "$CHANGELOG_MERGES_TOTAL" \
+        '. + [{
+          "id": "SIG-CHANGELOG-GAP",
+          "category": "doc_freshness",
+          "severity": "low",
+          "description": "Merges to main without CHANGELOG.md update — feature changes are not documented",
+          "evidence": {"affected_count": $affected, "total": $total},
+          "root_cause": "check-guardian.sh Check 6 warns on merge without CHANGELOG update, but the warning is advisory. Persistent gaps indicate check is not effective."
+        }]')
+fi
+
+# SIG-DOC-BYPASS-RATE: @no-doc bypass usage above acceptable threshold (>30%)
+DOC_BYPASS_RATE_SIG=false
+if [[ "${DOC_BYPASS_COUNT_RAW:-0}" -gt 0 ]]; then
+    # Count total commits since doc-freshness was deployed (approximated as all commits touching hooks/)
+    TOTAL_HOOK_COMMITS=$(git -C "$CLAUDE_DIR" log --oneline -- hooks/ 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$TOTAL_HOOK_COMMITS" -gt 0 ]]; then
+        BYPASS_RATE_PCT=$(jq -n "$DOC_BYPASS_COUNT_RAW / $TOTAL_HOOK_COMMITS * 100" 2>/dev/null || echo "0")
+        if [[ $(jq -n "$BYPASS_RATE_PCT > 30" 2>/dev/null) == "true" ]]; then
+            DOC_BYPASS_RATE_SIG=true
+        fi
+    fi
+fi
+
+if [[ "$DOC_BYPASS_RATE_SIG" == "true" ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$DOC_BYPASS_COUNT_RAW" \
+        --argjson total "$TOTAL_HOOK_COMMITS" \
+        '. + [{
+          "id": "SIG-DOC-BYPASS-RATE",
+          "category": "doc_freshness",
+          "severity": "medium",
+          "description": "@no-doc bypass rate >30% — enforcement may be too aggressive or docs are chronically stale",
+          "evidence": {"affected_count": $affected, "total": $total},
+          "root_cause": "doc-freshness.sh @no-doc escape hatch used too frequently. Either doc thresholds in doc-scope.json are too tight, or docs need a bulk update."
+        }]')
+fi
+
 # --- Stage 5: Cohort regression detection (DEC-OBS-021) ---
 # For each implemented signal with an implemented_at timestamp, filter the
 # trace index to only post-implementation traces and re-evaluate the signal's
