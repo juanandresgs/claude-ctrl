@@ -612,7 +612,7 @@ finalize_trace() {
     local duration=0
     if [[ -n "$started_at" ]]; then
         local start_epoch
-        start_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null || date -d "$started_at" +%s 2>/dev/null || echo "0")
+        start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null || date -u -d "$started_at" +%s 2>/dev/null || echo "0")
         local now_epoch
         now_epoch=$(date +%s)
         if [[ "$start_epoch" -gt 0 ]]; then
