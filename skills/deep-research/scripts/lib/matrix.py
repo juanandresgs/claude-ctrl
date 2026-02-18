@@ -9,21 +9,40 @@ Architecture:
 - All stdlib-only Python — no external dependencies.
 - Topic extraction via markdown heading regex (H1–H4). Flat reports get one
   synthetic "no headings" topic.
-- Cross-provider matching: exact (normalized text equal), then fuzzy (Jaccard
-  ≥ 0.60 on word sets). Unmatched topics are unique to one provider.
+- Cross-provider matching: heading-based (exact + fuzzy Jaccard ≥ 0.60 on
+  heading word sets). Topics that don't match any heading are marked
+  'unmatched' and surfaced to the LLM via unmatched_hints containing body
+  keywords extracted from the section text. The LLM handles semantic matching
+  (e.g. "Company Overview" ≈ "Company Background") better than algorithmic
+  content similarity.
 - Agreement levels: 'consensus' (all providers), 'majority' (2+), 'unique-<p>'
   (one provider). Computed against active providers (successful results only).
 - Citation overlap: deterministic URL set intersection across providers.
 - ComparisonMatrix.to_dict() produces the JSON structure written to
-  comparison_matrix.json and embedded in raw_results.json.
+  comparison_matrix.json and embedded in raw_results.json. Includes
+  match_method per topic and unmatched_hints at top level.
 
 @decision DEC-MATRIX-001
-@title Jaccard similarity threshold at 0.60 for fuzzy topic matching
+@title Jaccard similarity threshold at 0.60 for fuzzy heading match
 @status accepted
 @rationale 0.60 captures genuinely related headings (e.g. "APT Group
 Connections" / "APT Group Links") while excluding accidental overlaps
 (e.g. "Company Overview" / "Company Background" which share only "company").
 Lower thresholds produce false merges; higher thresholds miss real matches.
+
+@decision DEC-MATRIX-002
+@title Body keywords extracted for unmatched_hints; no algorithmic content matching
+@status accepted
+@rationale E2E testing showed that Jaccard similarity on section body keywords
+(Pass 2 content-fuzzy matching) catches zero additional matches in practice.
+Jaccard penalizes asymmetric section sizes: a short "Company Background" section
+vs a long "Company Overview" section produces low overlap even when topically
+identical. The LLM handles semantic matching (e.g. "Company Overview" ≈
+"Company Background") far more accurately via the unmatched_hints protocol.
+Body keywords are therefore extracted and surfaced in unmatched_hints to
+give the LLM the vocabulary it needs for informed merge decisions, rather
+than being used for algorithmic matching. Valid match_method values after
+this decision: 'exact', 'heading-fuzzy', 'unmatched'.
 """
 
 import re
@@ -35,6 +54,21 @@ DETAILED_WORD_THRESHOLD = 100
 
 # Minimum Jaccard similarity for fuzzy heading match.
 FUZZY_MATCH_THRESHOLD = 0.60
+
+# English stop words excluded from body keyword extraction.
+STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "can", "could", "must", "to", "of", "in",
+    "for", "on", "with", "at", "by", "from", "as", "into", "through",
+    "during", "before", "after", "above", "below", "between", "but", "and",
+    "or", "nor", "not", "no", "so", "if", "then", "than", "that", "this",
+    "these", "those", "it", "its", "they", "them", "their", "he", "she",
+    "we", "you", "who", "which", "what", "when", "where", "how", "also",
+    "very", "more", "most", "other", "some", "such", "only", "same",
+    "just", "about", "each", "all", "both", "few", "many", "much", "any",
+    "own",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +86,7 @@ class Topic:
         word_count: Number of words in the section body.
         coverage: 'detailed' (≥100 words) or 'mentioned' (<100 words).
         citations_in_section: Number of URLs found in the section body.
+        body_keywords: Significant keywords from section body (stop-word filtered).
     """
     heading: str
     raw_heading: str
@@ -59,6 +94,7 @@ class Topic:
     word_count: int
     coverage: str  # 'detailed' | 'mentioned'
     citations_in_section: int
+    body_keywords: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -69,10 +105,15 @@ class MatchedTopic:
         canonical_name: Best representative normalized heading.
         coverage: {provider: 'detailed'|'mentioned'|'absent'}.
         agreement_level: 'consensus', 'majority', or 'unique-<provider>'.
+        match_method: How this cluster was formed.
+            'exact'         — heading strings were identical after normalization.
+            'heading-fuzzy' — heading Jaccard >= 0.60.
+            'unmatched'     — topic found in only one provider; no match found.
     """
     canonical_name: str
     coverage: Dict[str, str]  # {provider: 'detailed'|'mentioned'|'absent'}
     agreement_level: str
+    match_method: str = "unmatched"  # 'exact' | 'heading-fuzzy' | 'unmatched'
 
 
 @dataclass
@@ -84,11 +125,15 @@ class ComparisonMatrix:
         providers: List of active provider names (successful results only).
         citation_overlap: {url: [providers]} — only URLs cited by 2+ providers.
         stats: Aggregate counts (total_topics, consensus, majority, unique).
+        unmatched_hints: Topics that stayed unmatched after heading matching.
+            Each entry: {"provider": str, "heading": str, "top_keywords": [str]}.
+            Used by the LLM synthesis step to identify potential manual merges.
     """
     topics: List[MatchedTopic]
     providers: List[str]
     citation_overlap: Dict[str, List[str]]
     stats: Dict[str, Any]
+    unmatched_hints: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-friendly dict matching the output schema.
@@ -97,11 +142,16 @@ class ComparisonMatrix:
             {
               "providers": [...],
               "topics": [
-                {"name": "...", "openai": "detailed", ..., "agreement": "consensus"},
+                {"name": "...", "openai": "detailed", ..., "agreement": "consensus",
+                 "match_method": "exact"},
                 ...
               ],
               "citation_overlap": {"url": ["openai", "gemini"], ...},
-              "stats": {"total_topics": N, "consensus": N, ...}
+              "stats": {"total_topics": N, "consensus": N, ...},
+              "unmatched_hints": [
+                {"provider": "openai", "heading": "...", "top_keywords": [...]},
+                ...
+              ]
             }
         """
         topics_out = []
@@ -110,6 +160,7 @@ class ComparisonMatrix:
             for provider in self.providers:
                 entry[provider] = t.coverage.get(provider, "absent")
             entry["agreement"] = t.agreement_level
+            entry["match_method"] = t.match_method
             topics_out.append(entry)
 
         return {
@@ -117,12 +168,51 @@ class ComparisonMatrix:
             "topics": topics_out,
             "citation_overlap": self.citation_overlap,
             "stats": self.stats,
+            "unmatched_hints": self.unmatched_hints,
         }
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _extract_body_keywords(text: str) -> Set[str]:
+    """Extract significant keywords from section body text.
+
+    Lowercases, splits on whitespace, strips punctuation, removes stop words
+    and single-character tokens. Used to populate body_keywords on Topic
+    instances, which are surfaced in unmatched_hints for LLM semantic matching.
+
+    Args:
+        text: Raw section body text (markdown).
+
+    Returns:
+        Set of cleaned keyword strings.
+    """
+    words: Set[str] = set()
+    for word in text.lower().split():
+        cleaned = re.sub(r'[^a-z0-9]', '', word)
+        if cleaned and len(cleaned) > 1 and cleaned not in STOP_WORDS:
+            words.add(cleaned)
+    return words
+
+
+def _jaccard_similarity_sets(a: Set[str], b: Set[str]) -> float:
+    """Jaccard similarity between two pre-computed keyword sets.
+
+    Args:
+        a: First keyword set.
+        b: Second keyword set.
+
+    Returns:
+        Float in [0.0, 1.0]. Two empty sets → 1.0. One empty → 0.0.
+    """
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
 
 def _normalize_heading(text: str) -> str:
     """Normalize a heading for comparison.
@@ -215,6 +305,7 @@ def extract_topics(report: str) -> List[Topic]:
                 word_count=word_count,
                 coverage=coverage,
                 citations_in_section=_count_urls(report),
+                body_keywords=_extract_body_keywords(report),
             )
         ]
 
@@ -241,6 +332,7 @@ def extract_topics(report: str) -> List[Topic]:
             word_count=word_count,
             coverage=coverage,
             citations_in_section=citation_count,
+            body_keywords=_extract_body_keywords(body),
         ))
 
     return topics
@@ -255,10 +347,12 @@ def _best_match(
     candidates: List[Topic],
     used: Set[int],
 ) -> Optional[Tuple[int, float]]:
-    """Find the best fuzzy match for `needle` among unused candidates.
+    """Find the best heading-based match for `needle` among unused candidates.
 
-    Returns (index, score) of the best match with score ≥ FUZZY_MATCH_THRESHOLD,
+    Returns (index, score) of the best match with score >= FUZZY_MATCH_THRESHOLD,
     or None if no suitable match exists.
+
+    Score 1.0 indicates an exact match; scores below 1.0 are heading-fuzzy.
     """
     best_idx: Optional[int] = None
     best_score = FUZZY_MATCH_THRESHOLD - 1e-9  # just below threshold
@@ -284,13 +378,19 @@ def match_topics(
 ) -> List[MatchedTopic]:
     """Cluster topics across providers into MatchedTopic instances.
 
-    Algorithm:
+    Algorithm (heading-based, single pass):
+
     1. For each provider in insertion order, iterate its topics.
-    2. For each topic, attempt an exact then fuzzy match against every other
-       provider's topic list (only unmatched topics considered).
-    3. All matched topics for the same cluster are merged into one MatchedTopic.
-    4. Providers whose topic lists have no match for a cluster get 'absent'.
-    5. agreement_level is derived from how many active providers cover the topic.
+    2. For each topic, attempt an exact then heading-fuzzy match against every
+       other provider's topic list (only unmatched topics considered).
+    3. All matched topics form one cluster. match_method is 'exact' for
+       score==1.0, 'heading-fuzzy' for scores below 1.0.
+    4. Topics with no heading match in any other provider get
+       match_method='unmatched'. These are surfaced in unmatched_hints
+       (with body_keywords) so the LLM can decide whether to manually merge
+       topics with different headings covering the same subject.
+    5. Providers whose topic lists have no match for a cluster get 'absent'.
+    6. agreement_level is derived from how many active providers cover the topic.
 
     Args:
         provider_topics: {provider_name: [Topic, ...]}
@@ -303,42 +403,60 @@ def match_topics(
         return []
 
     # Track which topics in each provider have been assigned to a cluster.
-    # used[provider][idx] = True means that topic has been claimed.
     used: Dict[str, Set[int]] = {p: set() for p in providers}
 
-    clusters: List[Dict[str, Optional[Topic]]] = []
-    # Each cluster maps provider → Topic (or None if absent).
+    # Each cluster: maps provider → Topic (or None), plus the match_method.
+    # Format: {"topics": {provider: Topic|None}, "match_method": str}
+    clusters: List[Dict] = []
 
+    # -----------------------------------------------------------------------
+    # Pass 1: heading-based matching (exact + fuzzy)
+    # -----------------------------------------------------------------------
     for anchor_provider in providers:
         for anchor_idx, anchor_topic in enumerate(provider_topics[anchor_provider]):
             if anchor_idx in used[anchor_provider]:
                 continue
 
-            # Start a new cluster with this anchor topic.
-            cluster: Dict[str, Optional[Topic]] = {p: None for p in providers}
-            cluster[anchor_provider] = anchor_topic
+            cluster_topics: Dict[str, Optional[Topic]] = {p: None for p in providers}
+            cluster_topics[anchor_provider] = anchor_topic
             used[anchor_provider].add(anchor_idx)
 
-            # Search all other providers for matching topics.
+            # Provisional method for this cluster — upgraded as matches are found.
+            cluster_match_method = "unmatched"
+
             for other_provider in providers:
                 if other_provider == anchor_provider:
                     continue
                 other_topics = provider_topics[other_provider]
                 result = _best_match(anchor_topic, other_topics, used[other_provider])
                 if result is not None:
-                    match_idx, _ = result
-                    cluster[other_provider] = other_topics[match_idx]
+                    match_idx, score = result
+                    cluster_topics[other_provider] = other_topics[match_idx]
                     used[other_provider].add(match_idx)
+                    # Upgrade: exact > heading-fuzzy > unmatched
+                    if score == 1.0:
+                        if cluster_match_method == "unmatched":
+                            cluster_match_method = "exact"
+                    else:
+                        if cluster_match_method == "unmatched":
+                            cluster_match_method = "heading-fuzzy"
 
-            clusters.append(cluster)
+            clusters.append({
+                "topics": cluster_topics,
+                "match_method": cluster_match_method,
+            })
 
+    # -----------------------------------------------------------------------
     # Convert clusters to MatchedTopic instances.
+    # -----------------------------------------------------------------------
     active_provider_count = len(providers)
     matched: List[MatchedTopic] = []
 
     for cluster in clusters:
-        # Pick the canonical name: longest raw heading among present providers.
-        present_topics = [(p, t) for p, t in cluster.items() if t is not None]
+        cluster_topics = cluster["topics"]
+        match_method = cluster["match_method"]
+
+        present_topics = [(p, t) for p, t in cluster_topics.items() if t is not None]
         canonical = max(
             (t.heading for _, t in present_topics),
             key=len,
@@ -346,7 +464,7 @@ def match_topics(
 
         coverage: Dict[str, str] = {}
         for p in providers:
-            t = cluster.get(p)
+            t = cluster_topics.get(p)
             if t is not None:
                 coverage[p] = t.coverage
             else:
@@ -361,7 +479,6 @@ def match_topics(
         elif present_count >= 2:
             agreement = "majority"
         else:
-            # Present in only 1 provider — determine which one.
             only_provider = next(
                 p for p, v in coverage.items() if v != "absent"
             )
@@ -371,6 +488,7 @@ def match_topics(
             canonical_name=canonical,
             coverage=coverage,
             agreement_level=agreement,
+            match_method=match_method,
         ))
 
     return matched
@@ -456,6 +574,7 @@ def build_matrix(results: list) -> ComparisonMatrix:
             providers=[],
             citation_overlap={},
             stats={"total_topics": 0, "consensus": 0, "majority": 0, "unique": 0},
+            unmatched_hints=[],
         )
 
     providers = [r.provider for r in successful]
@@ -465,7 +584,7 @@ def build_matrix(results: list) -> ComparisonMatrix:
     for r in successful:
         provider_topics[r.provider] = extract_topics(r.report)
 
-    # Match topics across providers.
+    # Match topics across providers (heading-based: exact + fuzzy).
     matched = match_topics(provider_topics)
 
     # Compute citation overlap.
@@ -483,9 +602,50 @@ def build_matrix(results: list) -> ComparisonMatrix:
         "unique": unique_count,
     }
 
+    # Build unmatched_hints: topics that remain unmatched after heading matching.
+    # Each hint gives the LLM the provider, heading, and top keywords so it
+    # can decide whether to manually merge topics with different headings.
+    # Build a lookup from heading to Topic for each provider.
+    heading_to_topic: Dict[str, Dict[str, Topic]] = {}
+    for p, topics_list in provider_topics.items():
+        for topic in topics_list:
+            if topic.heading not in heading_to_topic:
+                heading_to_topic[topic.heading] = {}
+            heading_to_topic[topic.heading][p] = topic
+
+    unmatched_hints: List[Dict] = []
+    for t in matched:
+        if t.match_method != "unmatched":
+            continue
+        owning_provider = next(
+            (p for p, cov in t.coverage.items() if cov != "absent"),
+            None,
+        )
+        if owning_provider is None:
+            continue
+        # Retrieve the Topic object to get body_keywords.
+        topic_obj: Optional[Topic] = next(
+            (
+                topic
+                for topic in provider_topics.get(owning_provider, [])
+                if topic.heading == t.canonical_name
+            ),
+            None,
+        )
+        keywords: List[str] = []
+        if topic_obj is not None and topic_obj.body_keywords:
+            keywords = sorted(topic_obj.body_keywords)[:20]
+
+        unmatched_hints.append({
+            "provider": owning_provider,
+            "heading": t.canonical_name,
+            "top_keywords": keywords,
+        })
+
     return ComparisonMatrix(
         topics=matched,
         providers=providers,
         citation_overlap=citation_overlap,
         stats=stats,
+        unmatched_hints=unmatched_hints,
     )

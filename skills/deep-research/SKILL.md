@@ -256,7 +256,11 @@ Only write provider files for providers that succeeded. The raw individual repor
 
 ### Comparison Matrix
 
-The script produced a `comparison_matrix` object inside `raw_results.json` and a standalone `comparison_matrix.json`. Use this pre-built matrix to write `comparison-matrix.md` — do NOT reconstruct coverage from scratch.
+The script produced a `comparison_matrix` object inside `raw_results.json` and a standalone `comparison_matrix.json`. **Start from the pre-built matrix.** The script matched topics using heading text similarity. Review the results:
+
+1. **Render the matrix as-is** for topics with `match_method: "exact"` or `"heading-fuzzy"` — these are high-confidence matches.
+2. **Review `unmatched_hints`** — these are unique topics the code couldn't match, along with their body keywords. If any cover the same subject across providers despite different headings, merge them in your synthesis and note the merge with `[llm-merged]`.
+3. The matrix is your scaffold, not your constraint. Code handles structure; you handle meaning.
 
 **How to render the matrix:**
 1. Read `comparison_matrix.topics` from the JSON — each entry has `name`, one key per provider (`"detailed"`, `"mentioned"`, or `"absent"`), and `agreement`.
