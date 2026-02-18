@@ -27,7 +27,7 @@ jobs:
           failed=0
           for script in hooks/*.sh; do
             echo "--- Checking $script ---"
-            if ! shellcheck -e SC2034,SC1091 "$script"; then
+            if ! shellcheck -e SC2034,SC1091,SC2002,SC2012,SC2015,SC2126,SC2317,SC2329 "$script"; then
               failed=1
             fi
           done

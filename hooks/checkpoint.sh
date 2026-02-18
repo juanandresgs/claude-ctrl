@@ -89,6 +89,7 @@ if [[ "$CREATE" == "true" ]]; then
     fi
 
     TMPIDX=$(mktemp "${TMPDIR:-/tmp}/checkpoint-idx.XXXXXX")
+    # shellcheck disable=SC2064  # Intentional: capture $TMPIDX value at define-time
     trap "rm -f '$TMPIDX'" EXIT
 
     # Copy the current real index as the base, then add all working directory files

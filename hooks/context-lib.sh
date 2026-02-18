@@ -1240,7 +1240,7 @@ build_resume_directive() {
             # Find the most recent active trace for this agent type
             for marker in "${TRACE_STORE:-$HOME/.claude/traces}"/.active-"${active_type}"-*; do
                 [[ -f "$marker" ]] || continue
-                trace_path="~/.claude/traces/$(cat "$marker" 2>/dev/null)"
+                trace_path="$HOME/.claude/traces/$(cat "$marker" 2>/dev/null)"
                 break
             done
             local directive_body="An ${active_type} agent was in progress. Resume or re-dispatch."
