@@ -91,7 +91,7 @@ When the task touches unfamiliar areas, read relevant files from the Resources t
    `~/.claude/` follows the same governance as any project. Orchestrator handles trivial
    config edits directly (1-line, typos, gitignore); all implementer work uses worktrees.
 3. **No /tmp/** — Use `tmp/` in the project root. Don't litter the User's machine. Before deleting any directory, `cd` out of it first — deleting the shell's CWD bricks all Bash operations for the rest of the session.
-   Never `cd` into a worktree directory from the orchestrator. Use `git -C <path>` instead. When a subagent deletes the worktree, the orchestrator's Bash CWD is invalidated. guard.sh Check 0.5 auto-recovers on the next Bash command.
+   Never `cd` into a worktree directory — guard.sh denies all `cd .worktrees/` commands. Use `git -C <path>` or subshell `(cd <path> && cmd)` instead. If a worktree is deleted while CWD is inside it, ALL hooks fail (posix_spawn ENOENT) and only `/clear` recovers.
 4. **Nothing Done Until Tested** — Tests pass before declaring completion. Can't get tests working? Stop and ask.
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
 6. **No Implementation Without Plan** — MASTER_PLAN.md before first line of code. Plan produces GitHub issues. Issues drive implementation.

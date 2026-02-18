@@ -86,12 +86,11 @@ Stop hooks receive `{"stop_hook_active": true/false, "response": "..."}` on stdi
 
 ### Rewrite Pattern
 
-Three checks in guard.sh use transparent rewrites (the model's command is silently replaced):
+Two checks in guard.sh use transparent rewrites (the model's command is silently replaced):
 1. `/tmp/` and `/private/tmp/` writes → project `tmp/` directory (Check 1). On macOS `/tmp` → `/private/tmp` symlink; both forms are caught. Claude scratchpad (`/private/tmp/claude-*/`) is exempt.
 2. `--force` → `--force-with-lease` (Check 3)
-3. `git worktree remove` → prepends `cd "<main-worktree>" &&` (Check 5)
 
-Prefer rewrite over deny when the intent is correct but the method is unsafe.
+Note: `updatedInput` (rewrite) is NOT supported in PreToolUse hooks — it silently fails. These rewrites are documented for completeness but are actually non-functional. See issue tracking the audit of remaining rewrite() calls. Check 5 (`git worktree remove`) and Check 5b (`rm -rf .worktrees/`) were converted from rewrite to deny — the deny message includes the correct safe command for the model to resubmit.
 
 ---
 
@@ -171,7 +170,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 11 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges (missing state files = allow, gate only active when files exist); **blocks agents from writing approval status to `.proof-status`** and **blocks deletion of `.proof-status` when verification is active** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
+| **guard.sh** | Bash | 11 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`; denies cd into .worktrees/, worktree removal without safe CWD; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges (missing state files = allow, gate only active when files exist); **blocks agents from writing approval status to `.proof-status`** and **blocks deletion of `.proof-status` when verification is active** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user. `git commit/push/merge` classified as risky (requires Guardian dispatch per Sacred Practice #8) |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
@@ -232,7 +231,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ## Key guard.sh Behaviors
 
-The most complex hook — 11 checks covering 7 nuclear denies, 1 early-exit gate, 3 rewrites, 3 hard blocks, 2 evidence gates, and 2 human gate enforcers.
+The most complex hook — 11 checks covering 7 nuclear denies, 1 early-exit gate, 2 rewrites, 3 CWD safety denies, 3 hard blocks, 2 evidence gates, and 2 human gate enforcers.
 
 **Nuclear deny** (Check 0 — unconditional, fires first):
 
@@ -258,7 +257,6 @@ Strips quoted strings from the command, then checks if `git` appears in a comman
 |-------|---------|---------|
 | 1 | `/tmp/` or `/private/tmp/` write | → project `tmp/` directory (macOS symlink-aware; exempts Claude scratchpad) |
 | 3 | `git push --force` (not to main) | → `--force-with-lease` |
-| 5 | `git worktree remove` | → prepends `cd` to main worktree (prevents CWD death spiral) |
 
 **Hard blocks** (deny with explanation):
 

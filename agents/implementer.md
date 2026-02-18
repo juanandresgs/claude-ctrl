@@ -73,6 +73,12 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
 
 **CWD safety:** Before deleting any directory (worktrees, tmp dirs, test fixtures), ensure the shell is NOT inside it. Run `cd <project_root>` first. Deleting the shell's CWD bricks all Bash operations and Stop hooks for the rest of the session. Use `safe_cleanup` from `context-lib.sh` when available.
 
+**Working in worktrees:** Never use bare `cd .worktrees/<name>`. Instead:
+- Git commands: `git -C .worktrees/<name> <command>`
+- Other commands: `(cd .worktrees/<name> && <command>)`
+The subshell pattern ensures CWD never persists inside a worktree.
+If guard.sh denies your command, follow the suggestion in the deny message.
+
 ### Phase 3: Test-First Implementation
 1. Write failing tests first (the proof of Done):
    - Unit tests for core logic

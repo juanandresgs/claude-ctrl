@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# Test guard.sh Check 0.75 (Deny cd-into-worktree with chained commands).
+# Test guard.sh Check 0.75 (Deny ALL cd/pushd into .worktrees/).
 #
-# Check 0.75 intercepts Bash commands that contain `cd` or `pushd` targeting a
-# .worktrees/ path combined with chained commands (&&, ;, ||). Such commands would
-# leave the orchestrator's Bash tool CWD inside a deletable worktree directory —
-# when the worktree is later removed ALL hooks fail (posix_spawn ENOENT on macOS).
+# Check 0.75 intercepts ALL Bash commands that contain `cd` or `pushd` targeting a
+# .worktrees/ path — both bare cd and chained commands. Such commands would leave
+# the Bash tool CWD inside a deletable worktree directory — when the worktree is
+# later removed ALL hooks fail (posix_spawn ENOENT on macOS).
 #
-# Prevention strategy: deny the command and include the suggested subshell-wrapped
-# version in the deny reason, so the model can resubmit as ( <original command> ).
-# updatedInput (rewrite) is NOT supported in PreToolUse hooks — only in
-# PermissionRequest hooks — so the previous rewrite approach silently failed.
+# Prevention strategy: deny ALL cd/pushd into .worktrees/ and include the correct
+# subshell or git -C pattern in the deny reason. updatedInput (rewrite) is NOT
+# supported in PreToolUse hooks — only in PermissionRequest hooks — so rewrite()
+# silently fails and denial is the only reliable fix.
 # Commands already wrapped in a subshell ("( ...") pass through immediately.
-# Bare `cd .worktrees/x` (no chained commands) is allowed because subagents
-# (implementer, guardian) legitimately need persistent CWD in their worktrees.
 #
 # @decision DEC-GUARD-CWD-003
-# @title Test suite for guard.sh Check 0.75 deny-with-suggestion
+# @title Test suite for guard.sh Check 0.75 — deny ALL cd/pushd into .worktrees/
 # @status accepted
 # @rationale posix_spawn returns ENOENT on macOS when the parent process CWD is a
-#   deleted directory. The canary approach (Path B) only recovers PreToolUse:Bash;
-#   Edit hooks, Stop hooks, and SessionEnd hooks cannot be recovered. Prevention is
-#   the only reliable fix. This test suite validates that:
-#   (1) chained cd-into-worktree commands are denied with a subshell suggestion,
-#   (2) already-subshell-wrapped commands pass through (model resubmit path),
-#   (3) bare cd-into-worktree commands pass through (subagent persistent CWD), and
-#   (4) commands that mention .worktrees/ without cd/pushd are not affected.
+#   deleted directory. The canary approach (Path B, now removed) only recovered
+#   PreToolUse:Bash; Edit hooks, Stop hooks, and SessionEnd hooks cannot be recovered.
+#   Prevention is the only reliable fix. This test suite validates that:
+#   (1) chained cd-into-worktree commands are denied with CWD protection message,
+#   (2) bare cd-into-worktree commands are ALSO denied (exemption removed),
+#   (3) already-subshell-wrapped commands pass through (correct resubmit path),
+#   (4) subshell-wrapped cd commands pass through (( cd .worktrees/x && cmd )),
+#   (5) git -C .worktrees/x commands pass through (safe pattern), and
+#   (6) commands that mention .worktrees/ without cd/pushd are not affected.
 
 set -euo pipefail
 
@@ -67,13 +67,13 @@ assert_deny_with_suggestion() {
     local output="$1"
     local label="$2"
     if echo "$output" | grep -q '"permissionDecision": "deny"' && \
-       echo "$output" | grep -q 'Resubmit with subshell wrapping'; then
+       echo "$output" | grep -q 'CWD protection'; then
         pass_test
     elif echo "$output" | grep -q '"permissionDecision": "deny"' && \
          echo "$output" | grep -q "SAFETY"; then
         fail_test "$label: deny-on-crash triggered instead of deny-with-suggestion. Output: $output"
     elif echo "$output" | grep -q '"permissionDecision": "deny"'; then
-        fail_test "$label: denied but missing 'Resubmit with subshell wrapping' in reason. Output: $output"
+        fail_test "$label: denied but missing 'CWD protection' in reason. Output: $output"
     elif echo "$output" | grep -q '"updatedInput"'; then
         fail_test "$label: got rewrite (updatedInput) instead of deny — updatedInput is not supported in PreToolUse. Output: $output"
     else
@@ -148,16 +148,17 @@ OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "cd .worktrees + semicolon + echo"
 
-# --- Test 5: cd .worktrees/foo (bare) → PASSTHROUGH ---
-# Bare cd into a worktree: subagents (implementer, guardian) need persistent CWD.
-# This must NOT be denied — the subagent's own shell manages the deletion risk.
-run_test "Check0.75: 'cd .worktrees/foo' (bare, no chain) → PASSTHROUGH (subagent allowed)"
+# --- Test 5: cd .worktrees/foo (bare) → DENY (bare-cd exemption removed) ---
+# Bare cd into a worktree is now denied — persistent CWD in a deletable
+# directory causes posix_spawn ENOENT if the worktree is later removed.
+# The previous exemption for subagents is removed; use subshell or git -C instead.
+run_test "Check0.75: 'cd .worktrees/foo' (bare) → DENY (no more bare-cd exemption)"
 
 CMD="cd .worktrees/feature-mywork"
 INPUT_JSON=$(make_input "$CMD")
 OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
 
-assert_passthrough "$OUTPUT" "bare cd .worktrees (no chained command)"
+assert_deny_with_suggestion "$OUTPUT" "bare cd .worktrees (now denied)"
 
 # --- Test 6: ls .worktrees/foo → PASSTHROUGH (no cd detected) ---
 # Commands that reference .worktrees/ paths without cd/pushd must not be affected.
@@ -218,6 +219,17 @@ INPUT_JSON=$(make_input "$CMD")
 OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
 
 assert_passthrough "$OUTPUT" "already subshell-wrapped (model resubmit)"
+
+# --- Test 11: ( cd .worktrees/foo && npm install ) → PASSTHROUGH (subshell safe) ---
+# Subshell pattern is the correct way to operate in a worktree.
+# The outer shell CWD never changes, so framework CWD stays safe.
+run_test "Check0.75: '( cd .worktrees/foo && npm install )' → PASSTHROUGH (subshell safe)"
+
+CMD="( cd .worktrees/feature-deps && npm install )"
+INPUT_JSON=$(make_input "$CMD")
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+
+assert_passthrough "$OUTPUT" "subshell cd .worktrees + npm install"
 
 # --- Summary ---
 echo ""

@@ -58,7 +58,7 @@ After a successful merge and push from a worktree, **clean up the worktree autom
 
 **Why this is safe:** The Guardian runs as a subagent with its own Bash session. `safe_cleanup` handles the case where the shell's CWD is inside the worktree being deleted — it recovers to the fallback directory before deletion, preventing ENOENT on all subsequent Bash operations.
 
-**Orchestrator CWD note:** The orchestrator's Bash session CWD may still point to the deleted worktree after Guardian returns. guard.sh Check 0.5 auto-recovers on the next command by prepending `cd <git-root-or-HOME>` transparently. Include "worktree removed" or "cleaned up worktree" in return messages so check-guardian.sh Check 6 can inject a CWD advisory to the orchestrator.
+**Orchestrator CWD note:** After Guardian returns, the orchestrator must not `cd` into worktree directories. Use `git -C <path>` or subshell `(cd <path> && cmd)` patterns. guard.sh denies all `cd .worktrees/` commands to prevent CWD bricking.
 
 **Scope:** Only clean up worktrees involved in the current merge operation. Never remove unrelated worktrees without explicit user approval.
 
