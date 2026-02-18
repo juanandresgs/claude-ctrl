@@ -531,6 +531,21 @@ init_trace() {
     local project_root="$1"
     local agent_type="${2:-unknown}"
     local session_id="${CLAUDE_SESSION_ID:-$(date +%s)}"
+
+    # Normalize agent_type for consistency
+    # @decision DEC-OBS-018
+    # @title Normalize agent_type in init_trace
+    # @status accepted
+    # @rationale The Task tool's subagent_type uses capitalized names like "Plan"
+    #             and "Explore" but trace analysis expects lowercase names like
+    #             "planner" and "explore". Normalizing at trace creation ensures
+    #             consistent agent_type values across all traces.
+    case "$agent_type" in
+        Plan|plan)       agent_type="planner" ;;
+        Explore|explore) agent_type="explore" ;;
+        Bash|bash)       agent_type="bash" ;;
+    esac
+
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local hash
@@ -544,7 +559,36 @@ init_trace() {
     local project_name
     project_name=$(basename "$project_root")
     local branch
-    branch=$(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch="unknown"
+    # @decision DEC-OBS-019
+    # @title Distinguish no-git from branch capture failures
+    # @status accepted
+    # @rationale 'unknown' conflates non-git projects with git failures.
+    #             'no-git' for non-repos lets analysis filter them separately.
+    if git -C "$project_root" rev-parse --git-dir > /dev/null 2>&1; then
+        branch=$(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    else
+        branch="no-git"
+    fi
+
+    # Clean up stale .active-* markers older than 2 hours
+    # @decision DEC-OBS-020
+    # @title Age-based cleanup of orphaned .active-* markers
+    # @status accepted
+    # @rationale Agents that crash leave behind .active-* markers that can
+    #             cause false "agent already running" blocks. Cleaning markers
+    #             older than 2 hours on every init_trace() call is safe because
+    #             no legitimate agent runs for more than 2 hours.
+    local stale_threshold=7200  # 2 hours in seconds
+    local now_epoch
+    now_epoch=$(date +%s)
+    for marker in "${TRACE_STORE}/.active-"*; do
+        [[ -f "$marker" ]] || continue
+        local marker_mtime
+        marker_mtime=$(stat -f %m "$marker" 2>/dev/null || echo "0")
+        if (( now_epoch - marker_mtime > stale_threshold )); then
+            rm -f "$marker"
+        fi
+    done
 
     cat > "${trace_dir}/manifest.json" <<MANIFEST
 {
