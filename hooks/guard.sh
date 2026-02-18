@@ -5,23 +5,30 @@ set -euo pipefail
 # PreToolUse hook — matcher: Bash
 #
 # @decision DEC-GUARD-001
-# @title Multi-tier command safety gate with transparent rewrites
+# @title Multi-tier command safety gate with transparent rewrites and CWD protection
 # @status accepted
 # @rationale Enforces Sacred Practices mechanically via deny (hard blocks) and
 #   updatedInput (transparent rewrites). Deny prevents destructive commands
 #   (rm -rf /, git reset --hard, commits on main). Rewrite fixes unsafe patterns
 #   (/tmp/ → project tmp/, --force → --force-with-lease). Nuclear deny category
 #   blocks catastrophic commands (fork bomb, dd to device, SQL DROP) unconditionally.
+#   Worktree CWD safety uses deny (not rewrite) because updatedInput is NOT supported
+#   in PreToolUse hooks — only in PermissionRequest hooks. Check 0.75 denies all
+#   cd/pushd into .worktrees/ to prevent posix_spawn ENOENT if the worktree is deleted.
+#   Check 5 and 5b deny worktree removal without safe CWD first. Check 0.5 (Path A/B
+#   canary recovery) was removed — prevention is the only reliable fix.
 #
 # Enforces via updatedInput (transparent rewrites):
 #   - /tmp/ writes → rewritten to project tmp/ directory
 #   - git push --force → rewritten to --force-with-lease (except to main/master)
-#   - git worktree remove → rewritten to cd to main worktree first (prevents CWD death spiral)
 #
 # Enforces via deny (hard blocks):
 #   - Main is sacred (no commits on main/master)
 #   - No force push to main/master
 #   - No destructive git commands (reset --hard, clean -f, branch -D/--delete --force)
+#   - cd/pushd into .worktrees/ (use subshell or git -C instead)
+#   - git worktree remove without cd to main first
+#   - rm -rf .worktrees/ without cd to main first
 #
 # @decision DEC-INTEGRITY-002
 # @title Deny-on-crash EXIT trap for fail-closed behavior
@@ -148,105 +155,24 @@ if echo "$COMMAND" | grep -qiE '\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TAB
     deny "NUCLEAR DENY — SQL database destruction blocked. DROP/TRUNCATE operations permanently destroy data."
 fi
 
-# --- Check 0.5: Universal CWD recovery (two-path) ---
-# @decision DEC-GUARD-CWD-001
-# @title Rewrite commands when orchestrator Bash CWD is invalid after worktree deletion
-# @status accepted
-# @rationale When Guardian (subagent) removes a worktree, the orchestrator's Bash CWD
-#   still points to the deleted directory. ALL subsequent orchestrator Bash commands
-#   fail with ENOENT. Existing fixes (source-lib.sh line 25, safe_cleanup) only fix
-#   the subagent's own shell — they cannot propagate to the orchestrator's Bash tool
-#   shell. guard.sh's rewrite() CAN propagate because rewritten commands execute in
-#   the Bash tool's shell. Check 0.5 intercepts the first command after CWD death.
-#   Placed AFTER Check 0 (nuclear deny) so catastrophic commands are still denied
-#   even when CWD is broken — nuclear safety is never sacrificed for convenience.
-#
-#   Two detection paths:
-#   Path A (.cwd provided and broken): Walks up the deleted path to find a valid
-#     git-root ancestor (or falls back to $HOME). Emits `cd <recovery_dir> && CMD`
-#     via rewrite() and exits — provides the highest quality recovery.
-#   Path B (canary file at $HOME/.claude/.cwd-recovery-needed): Used when .cwd is
-#     absent or valid (framework CWD is always valid so Claude Code may not report
-#     a broken .cwd). Check 5/5b and check-guardian.sh write a canary containing
-#     the deleted worktree path when a removal is detected. Path B prepends an
-#     inline `cd .` guard to the command (a no-op when CWD is valid, silently falls
-#     back to $HOME when CWD is deleted) and continues to other checks — this allows
-#     git safety checks to still run on the recovered command.
-#
-# @decision DEC-GUARD-CWD-002
-# @title Canary file as second CWD recovery detection path
-# @status accepted
-# @rationale Path A relies on `.cwd` in hook input JSON. In practice, Claude Code
-#   framework always reports its own (valid) CWD — not the Bash tool's persisted
-#   CWD — so `.cwd` is often absent or valid even when the Bash tool's shell is
-#   stuck in a deleted directory. The canary at $HOME/.claude/.cwd-recovery-needed
-#   is written by guard.sh Check 5/5b and check-guardian.sh at the point of worktree
-#   deletion detection — before the Bash tool processes the next command — giving
-#   Check 0.5 a reliable second signal. The canary is one-shot (deleted on read) to
-#   prevent stale triggers across commands. The inline `{ cd . 2>/dev/null ||
-#   cd "$HOME" 2>/dev/null || cd /; };` guard is a zero-overhead no-op when CWD
-#   is valid, and recovers silently when CWD is deleted.
-_CWD_GUARD_APPLIED=false
-_CWD_GUARD_REASON=""
-_CANARY_FILE="$HOME/.claude/.cwd-recovery-needed"
 
-BASH_CWD=$(get_field '.cwd' 2>/dev/null || echo "")
-
-# Path A: .cwd provided and broken → directed recovery (walk up to git root, then exit)
-if [[ -n "$BASH_CWD" && ! -d "$BASH_CWD" ]]; then
-    RECOVERY_DIR=""
-    _candidate="${BASH_CWD}"
-    while [[ "$_candidate" != "/" && "$_candidate" != "." ]]; do
-        _candidate=$(dirname "$_candidate")
-        if [[ -d "$_candidate" && -d "$_candidate/.git" ]]; then
-            RECOVERY_DIR="$_candidate"
-            break
-        fi
-    done
-    RECOVERY_DIR="${RECOVERY_DIR:-$HOME}"
-    log_info "GUARD-CWD" "Path A recovery: '$BASH_CWD' → '$RECOVERY_DIR'"
-    # Consume canary if present (Path A handles recovery, canary no longer needed)
-    rm -f "$_CANARY_FILE"
-    rewrite "cd \"$RECOVERY_DIR\" && $COMMAND" \
-        "CWD recovery: '$BASH_CWD' no longer exists (deleted worktree). Recovered to $RECOVERY_DIR."
-fi
-
-# Path B: Canary file exists → inline guard prepended, continue to other checks
-if [[ -f "$_CANARY_FILE" ]]; then
-    _DELETED_WT=$(head -1 "$_CANARY_FILE" 2>/dev/null | tr -d '[:space:]' || echo "")
-    rm -f "$_CANARY_FILE"  # One-shot: consume immediately
-    if [[ -n "$_DELETED_WT" && ! -d "$_DELETED_WT" ]]; then
-        # Deleted path is truly gone — prepend inline CWD guard to command
-        # The guard is a no-op when CWD is valid; silently falls back to $HOME when CWD is deleted.
-        # We modify COMMAND in-place so subsequent checks operate on the guarded version.
-        COMMAND='{ cd . 2>/dev/null || cd "'"$HOME"'" 2>/dev/null || cd /; }; '"$COMMAND"
-        _CWD_GUARD_APPLIED=true
-        _CWD_GUARD_REASON="CWD canary recovery: '$_DELETED_WT' no longer exists. Prepended inline cd guard."
-        log_info "GUARD-CWD" "Path B recovery applied for deleted: '$_DELETED_WT'"
-    else
-        # Path still exists — false alarm (race condition or test scenario)
-        log_info "GUARD-CWD" "Path B: canary consumed, path still exists ('$_DELETED_WT') — no action"
-    fi
-fi
-
-# --- Check 0.75: Prevent cd into worktree directories with chained commands ---
+# --- Check 0.75: Prevent ALL cd/pushd into worktree directories ---
 # @decision DEC-GUARD-CWD-003
-# @title Deny cd-into-worktree with chained commands; suggest subshell resubmit
+# @title Deny ALL cd/pushd into .worktrees/ — both bare and chained
 # @status accepted
 # @rationale When the Bash tool's CWD points to a .worktrees/ path and that
 #   worktree is later deleted, ALL hook spawning fails — not just Bash hooks.
 #   posix_spawn returns ENOENT on macOS when the parent process CWD is deleted.
-#   The canary approach (Path B) only recovers PreToolUse:Bash; Edit hooks, Stop
-#   hooks, and SessionEnd hooks cannot be recovered because the shell can't start.
-#   Prevention is the only reliable fix. The original approach used updatedInput
-#   (rewrite) to transparently wrap the command in a subshell, but updatedInput
-#   is NOT supported in PreToolUse hooks — only in PermissionRequest hooks. The
-#   framework silently ignores updatedInput and runs the original command unchanged,
-#   making rewrite() a no-op for command safety. We now deny with a reason that
-#   includes the suggested subshell-wrapped command so the model can resubmit.
-#   Already-subshell-wrapped commands (starting with "( ") pass through — this is
-#   the model's correct resubmit after a deny. Bare cd is allowed because subagents
-#   (implementer, guardian) need persistent CWD in their worktrees.
+#   The canary approach (Path B, now removed) only recovered PreToolUse:Bash;
+#   Edit hooks, Stop hooks, and SessionEnd hooks cannot be recovered because
+#   the shell can't start. Prevention is the only reliable fix.
+#   updatedInput is NOT supported in PreToolUse hooks — only in PermissionRequest
+#   hooks — so rewrite() is a no-op for command safety. We deny with a reason
+#   that includes the correct subshell or git -C pattern to use instead.
+#   Already-subshell-wrapped commands (starting with "( ") pass through — this
+#   is the correct resubmit pattern. The previous "bare cd allowed" exemption is
+#   removed: subagents should use git -C or subshell patterns instead, and the
+#   canary recovery fallback that justified the exemption no longer exists.
 
 # Pattern: cd/pushd where the DESTINATION ends at a worktree name (no deeper subpath).
 # Matches: cd .worktrees/foo, cd /abs/.worktrees/foo, pushd .worktrees/feat-x
@@ -257,13 +183,8 @@ fi
 if [[ "$COMMAND" == "( "* ]]; then
     : # Already subshell-wrapped, pass through
 elif echo "$COMMAND" | grep -qE '\b(cd|pushd)\b[^;&|]*\.worktrees/[^/[:space:];&|]+([[:space:]]|$|&&|;|\|\|)'; then
-    # Check if there are commands chained after the cd (&&, ;, ||)
-    if echo "$COMMAND" | grep -qE '\.worktrees/[^/[:space:];&|]+[[:space:]]*(&&|;|\|\|)'; then
-        log_info "GUARD-CWD" "Check 0.75: Denying cd-into-worktree with chained commands"
-        deny "CWD protection: cd into .worktrees/ with chained commands would set framework CWD to a deletable directory. If the worktree is later removed, ALL hooks fail (posix_spawn ENOENT). Resubmit with subshell wrapping: ( $COMMAND )"
-    fi
-    # Bare cd/pushd into worktree: allow (subagents need persistent CWD).
-    # Defense-in-depth: canary + Path B handles recovery if orchestrator violates CLAUDE.md.
+    log_info "GUARD-CWD" "Check 0.75: Denying ALL cd/pushd into .worktrees/"
+    deny "CWD protection: cd/pushd into .worktrees/ denied — persistent CWD in a deletable directory causes posix_spawn ENOENT if the worktree is later removed, bricking ALL hooks. Use per-command subshell: ( cd .worktrees/<name> && <cmd> ) or git -C .worktrees/<name> for git commands."
 fi
 
 # --- Check 1: /tmp/ and /private/tmp/ writes → rewrite to project tmp/ ---
@@ -312,43 +233,35 @@ if echo "$_proof_stripped" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; th
     fi
 fi
 
-# --- Check 5b: rm -rf .worktrees/ CWD safety rewrite ---
+# --- Check 5b: rm -rf .worktrees/ CWD safety deny ---
 # Same death-spiral prevention as Check 5 (git worktree remove), but for direct
 # rm commands that bypass git worktree remove entirely (e.g. rm -rf .worktrees/).
 # Must run BEFORE the early-exit gate which skips all non-git commands.
 #
 # @decision DEC-GUARD-002
-# @title Two-tier worktree CWD safety: git worktree remove + raw rm
+# @title Two-tier worktree CWD safety: git worktree remove + raw rm — deny pattern
 # @status accepted
 # @rationale Check 5 only catches `git worktree remove`. The death spiral also
 # occurs when the agent runs `rm -rf .worktrees/` directly, or when
 # worktree-roster.sh cleanup falls through to rm -rf internally. This check
-# intercepts rm with recursive+force targeting any .worktrees/ path and prepends
-# a `cd` to the main worktree, identical to the Check 5 pattern.
+# intercepts rm with recursive+force targeting any .worktrees/ path and denies
+# with the correct safe command (cd to main worktree first). rewrite() is NOT
+# used because updatedInput is not supported in PreToolUse hooks — it silently
+# fails. deny() with the corrected command in the reason is the only reliable fix.
 if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktrees/|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+).*\.worktrees/'; then
     WT_TARGET=$(echo "$COMMAND" | grep -oE '[^[:space:]]*\.worktrees/[^[:space:];&|]*' | head -1)
     if [[ -n "$WT_TARGET" ]]; then
         MAIN_WT=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
         MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
-        # Write canary: the next orchestrator Bash command may land in a dead CWD.
-        # Resolve to absolute path so Check 0.5 Path B can test if it still exists.
-        _WT_ABS=$(cd "$(dirname "$WT_TARGET" 2>/dev/null)" 2>/dev/null && pwd || echo "$WT_TARGET")
-        echo "${_WT_ABS}" > "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
-        REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
-        rewrite "$REWRITTEN" "Rewrote to cd to main worktree before rm of worktree directory. Prevents CWD death spiral if shell CWD is inside the target."
+        deny "CWD safety: removing worktree directory requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
     fi
 fi
 
 # --- Early-exit gate: skip git-specific checks for non-git commands ---
 # Strip quoted strings so text like "fix git committing" doesn't trigger.
 # Then check if `git` appears in a command position (start, or after && || | ;).
-# NOTE: If Path B canary guard was applied, emit the rewrite before exiting — the
-# deferred rewrite at the bottom is only reachable for git commands.
 _stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
 if ! echo "$_stripped_cmd" | grep -qE '(^|&&|\|\|?|;)\s*git\s'; then
-    if [[ "$_CWD_GUARD_APPLIED" == true ]]; then
-        rewrite "$COMMAND" "$_CWD_GUARD_REASON"
-    fi
     _GUARD_COMPLETED=true
     exit 0
 fi
@@ -463,9 +376,9 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete
     deny "git branch -D / --delete --force force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
-# --- Check 5: Worktree removal CWD safety rewrite ---
+# --- Check 5: Worktree removal CWD safety deny ---
 # @decision DEC-GUARD-CHECK5-001
-# @title Use extract_git_target_dir + git -C for worktree removal rewrite
+# @title Use extract_git_target_dir + git -C for worktree removal — deny pattern
 # @status accepted
 # @rationale The original sed+xargs approach failed for `git -C "path with spaces"
 #   worktree remove` because the sed pattern expected `git worktree` directly
@@ -476,18 +389,14 @@ fi
 #   the correct repo directory, then pass it to git -C so worktree list targets the
 #   right repo regardless of hook CWD. The || echo "" prevents pipeline failure
 #   from crashing under set -euo pipefail.
+#   rewrite() is NOT used because updatedInput is not supported in PreToolUse hooks
+#   — it silently fails. deny() with the corrected command in the reason is the
+#   only reliable fix.
 if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
     CHECK5_DIR=$(extract_git_target_dir "$COMMAND")
     MAIN_WT=$(git -C "$CHECK5_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
     MAIN_WT="${MAIN_WT:-$CHECK5_DIR}"
-    # Extract the worktree path being removed and write canary so Check 0.5 Path B
-    # can recover the orchestrator's CWD on the next Bash command after the removal.
-    WT_REMOVE_PATH=$(echo "$COMMAND" | sed -nE 's/.*worktree[[:space:]]+remove[[:space:]]+(--[a-z-]+[[:space:]]+)*([^[:space:];&|]+).*/\2/p' | head -1 || echo "")
-    if [[ -n "$WT_REMOVE_PATH" ]]; then
-        echo "$WT_REMOVE_PATH" > "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
-    fi
-    REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
-    rewrite "$REWRITTEN" "Rewrote to cd to main worktree before removal. Prevents death spiral if Bash CWD is inside the worktree being removed."
+    deny "CWD safety: worktree removal requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
 fi
 
 # --- Check 6: Test status gate for merge commands ---
@@ -572,15 +481,6 @@ fi
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
     append_session_event "gate_eval" "{\"hook\":\"guard\",\"result\":\"allow\"}" "$PROJECT_ROOT"
-fi
-
-# --- Deferred rewrite: emit Path B canary guard if applied and no other check fired ---
-# If Path B modified COMMAND in-place but no other check called rewrite()/deny() (both
-# exit early), we emit the rewrite here. Checks that DO fire (e.g. Check 5: worktree
-# remove) already operate on the already-modified COMMAND, so their rewrites include
-# the guard prefix automatically — no double-emission needed.
-if [[ "$_CWD_GUARD_APPLIED" == true ]]; then
-    rewrite "$COMMAND" "$_CWD_GUARD_REASON"
 fi
 
 # All checks passed
