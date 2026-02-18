@@ -584,7 +584,7 @@ init_trace() {
     for marker in "${TRACE_STORE}/.active-"*; do
         [[ -f "$marker" ]] || continue
         local marker_mtime
-        marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo "0")
+        marker_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo "0")
         if (( now_epoch - marker_mtime > stale_threshold )); then
             rm -f "$marker"
         fi
@@ -1307,7 +1307,7 @@ build_resume_directive() {
         if [[ -f "$event_file" ]]; then
             RESUME_FILES=$(grep '"event":"write"' "$event_file" 2>/dev/null \
                 | jq -r '.file // empty' 2>/dev/null \
-                | while IFS= read -r f; do echo "$(stat -f '%m' "$f" 2>/dev/null || stat -c '%Y' "$f" 2>/dev/null || echo 0) $f"; done \
+                | while IFS= read -r f; do echo "$(stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null || echo 0) $f"; done \
                 | sort -rn \
                 | head -3 \
                 | awk '{print $2}' \

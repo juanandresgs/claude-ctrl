@@ -202,7 +202,7 @@ while IFS= read -r marker_file; do
     [[ -z "$marker_file" ]] && continue
     (( STALE_MARKER_COUNT++ )) || true
     marker_name=$(basename "$marker_file")
-    marker_age=$(( $(date +%s) - $(stat -f %m "$marker_file" 2>/dev/null || stat -c %Y "$marker_file" 2>/dev/null || echo "0") ))
+    marker_age=$(( $(date +%s) - $(stat -c %Y "$marker_file" 2>/dev/null || stat -f %m "$marker_file" 2>/dev/null || echo "0") ))
     STALE_MARKERS=$(echo "$STALE_MARKERS" | jq \
         --arg name "$marker_name" \
         --argjson age "$marker_age" \
