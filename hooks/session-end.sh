@@ -182,6 +182,7 @@ rm -f "${CLAUDE_DIR}/.track."*
 rm -f "${CLAUDE_DIR}/.skill-result"*
 rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
 rm -f "${CLAUDE_DIR}/.active-worktree-path"
+rm -f "${CLAUDE_DIR}/.cwd-recovery-needed"
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail

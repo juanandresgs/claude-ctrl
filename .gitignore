@@ -59,6 +59,7 @@ plans/
 .subagent-tracker-*
 .active-worktree-path
 .proof-status
+.cwd-recovery-needed
 
 
 # MCP server configuration (local runtime, user-specific)

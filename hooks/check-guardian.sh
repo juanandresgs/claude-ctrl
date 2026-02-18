@@ -124,14 +124,25 @@ else
     ISSUES+=("No test results found — verify tests were run before committing")
 fi
 
-# Check 6: CWD staleness advisory after worktree cleanup
+# Check 6: CWD staleness advisory + canary write after worktree cleanup
 # When Guardian removes a worktree, the orchestrator's Bash CWD may now point to
 # a deleted directory. guard.sh Check 0.5 auto-recovers on the next command.
-# This advisory surfaces the issue so the orchestrator knows recovery is available.
+# We also write a canary so Path B recovery triggers even when .cwd is absent
+# from the hook input (which is the common case — framework CWD is always valid).
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_WORKTREE_CLEANUP=$(echo "$RESPONSE_TEXT" | grep -iE 'worktree.*remov|removed worktree|git worktree remove|cleaned up worktree' || echo "")
     if [[ -n "$HAS_WORKTREE_CLEANUP" ]]; then
-        ISSUES+=("Guardian removed a worktree. guard.sh will auto-recover CWD if needed.")
+        ISSUES+=("Guardian removed a worktree. CWD recovery canary written if path confirmed deleted.")
+        # Read .active-worktree-path breadcrumb written by task-track.sh at implementer dispatch.
+        # If that path is now gone, write the canary for Check 0.5 Path B.
+        BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path"
+        if [[ -f "$BREADCRUMB" ]]; then
+            DELETED_WT=$(head -1 "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || echo "")
+            if [[ -n "$DELETED_WT" && ! -d "$DELETED_WT" ]]; then
+                echo "$DELETED_WT" > "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
+                log_info "CHECK-GUARDIAN" "CWD canary written for deleted worktree: $DELETED_WT"
+            fi
+        fi
     fi
 fi
 

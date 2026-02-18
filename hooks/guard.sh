@@ -148,7 +148,7 @@ if echo "$COMMAND" | grep -qiE '\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TAB
     deny "NUCLEAR DENY — SQL database destruction blocked. DROP/TRUNCATE operations permanently destroy data."
 fi
 
-# --- Check 0.5: Universal CWD recovery ---
+# --- Check 0.5: Universal CWD recovery (two-path) ---
 # @decision DEC-GUARD-CWD-001
 # @title Rewrite commands when orchestrator Bash CWD is invalid after worktree deletion
 # @status accepted
@@ -157,12 +157,42 @@ fi
 #   fail with ENOENT. Existing fixes (source-lib.sh line 25, safe_cleanup) only fix
 #   the subagent's own shell — they cannot propagate to the orchestrator's Bash tool
 #   shell. guard.sh's rewrite() CAN propagate because rewritten commands execute in
-#   the Bash tool's shell. Check 0.5 intercepts the first command after CWD death,
-#   walks up the deleted path to find a valid git-root ancestor (or falls back to
-#   $HOME), and prepends `cd "<recovery_dir>"` to restore a valid working directory.
+#   the Bash tool's shell. Check 0.5 intercepts the first command after CWD death.
 #   Placed AFTER Check 0 (nuclear deny) so catastrophic commands are still denied
 #   even when CWD is broken — nuclear safety is never sacrificed for convenience.
+#
+#   Two detection paths:
+#   Path A (.cwd provided and broken): Walks up the deleted path to find a valid
+#     git-root ancestor (or falls back to $HOME). Emits `cd <recovery_dir> && CMD`
+#     via rewrite() and exits — provides the highest quality recovery.
+#   Path B (canary file at $HOME/.claude/.cwd-recovery-needed): Used when .cwd is
+#     absent or valid (framework CWD is always valid so Claude Code may not report
+#     a broken .cwd). Check 5/5b and check-guardian.sh write a canary containing
+#     the deleted worktree path when a removal is detected. Path B prepends an
+#     inline `cd .` guard to the command (a no-op when CWD is valid, silently falls
+#     back to $HOME when CWD is deleted) and continues to other checks — this allows
+#     git safety checks to still run on the recovered command.
+#
+# @decision DEC-GUARD-CWD-002
+# @title Canary file as second CWD recovery detection path
+# @status accepted
+# @rationale Path A relies on `.cwd` in hook input JSON. In practice, Claude Code
+#   framework always reports its own (valid) CWD — not the Bash tool's persisted
+#   CWD — so `.cwd` is often absent or valid even when the Bash tool's shell is
+#   stuck in a deleted directory. The canary at $HOME/.claude/.cwd-recovery-needed
+#   is written by guard.sh Check 5/5b and check-guardian.sh at the point of worktree
+#   deletion detection — before the Bash tool processes the next command — giving
+#   Check 0.5 a reliable second signal. The canary is one-shot (deleted on read) to
+#   prevent stale triggers across commands. The inline `{ cd . 2>/dev/null ||
+#   cd "$HOME" 2>/dev/null || cd /; };` guard is a zero-overhead no-op when CWD
+#   is valid, and recovers silently when CWD is deleted.
+_CWD_GUARD_APPLIED=false
+_CWD_GUARD_REASON=""
+_CANARY_FILE="$HOME/.claude/.cwd-recovery-needed"
+
 BASH_CWD=$(get_field '.cwd' 2>/dev/null || echo "")
+
+# Path A: .cwd provided and broken → directed recovery (walk up to git root, then exit)
 if [[ -n "$BASH_CWD" && ! -d "$BASH_CWD" ]]; then
     RECOVERY_DIR=""
     _candidate="${BASH_CWD}"
@@ -174,8 +204,29 @@ if [[ -n "$BASH_CWD" && ! -d "$BASH_CWD" ]]; then
         fi
     done
     RECOVERY_DIR="${RECOVERY_DIR:-$HOME}"
+    log_info "GUARD-CWD" "Path A recovery: '$BASH_CWD' → '$RECOVERY_DIR'"
+    # Consume canary if present (Path A handles recovery, canary no longer needed)
+    rm -f "$_CANARY_FILE"
     rewrite "cd \"$RECOVERY_DIR\" && $COMMAND" \
         "CWD recovery: '$BASH_CWD' no longer exists (deleted worktree). Recovered to $RECOVERY_DIR."
+fi
+
+# Path B: Canary file exists → inline guard prepended, continue to other checks
+if [[ -f "$_CANARY_FILE" ]]; then
+    _DELETED_WT=$(head -1 "$_CANARY_FILE" 2>/dev/null | tr -d '[:space:]' || echo "")
+    rm -f "$_CANARY_FILE"  # One-shot: consume immediately
+    if [[ -n "$_DELETED_WT" && ! -d "$_DELETED_WT" ]]; then
+        # Deleted path is truly gone — prepend inline CWD guard to command
+        # The guard is a no-op when CWD is valid; silently falls back to $HOME when CWD is deleted.
+        # We modify COMMAND in-place so subsequent checks operate on the guarded version.
+        COMMAND='{ cd . 2>/dev/null || cd "'"$HOME"'" 2>/dev/null || cd /; }; '"$COMMAND"
+        _CWD_GUARD_APPLIED=true
+        _CWD_GUARD_REASON="CWD canary recovery: '$_DELETED_WT' no longer exists. Prepended inline cd guard."
+        log_info "GUARD-CWD" "Path B recovery applied for deleted: '$_DELETED_WT'"
+    else
+        # Path still exists — false alarm (race condition or test scenario)
+        log_info "GUARD-CWD" "Path B: canary consumed, path still exists ('$_DELETED_WT') — no action"
+    fi
 fi
 
 # --- Check 1: /tmp/ and /private/tmp/ writes → rewrite to project tmp/ ---
@@ -244,6 +295,10 @@ if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktre
     if [[ -n "$WT_TARGET" ]]; then
         MAIN_WT=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
         MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
+        # Write canary: the next orchestrator Bash command may land in a dead CWD.
+        # Resolve to absolute path so Check 0.5 Path B can test if it still exists.
+        _WT_ABS=$(cd "$(dirname "$WT_TARGET" 2>/dev/null)" 2>/dev/null && pwd || echo "$WT_TARGET")
+        echo "${_WT_ABS}" > "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
         REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
         rewrite "$REWRITTEN" "Rewrote to cd to main worktree before rm of worktree directory. Prevents CWD death spiral if shell CWD is inside the target."
     fi
@@ -252,8 +307,13 @@ fi
 # --- Early-exit gate: skip git-specific checks for non-git commands ---
 # Strip quoted strings so text like "fix git committing" doesn't trigger.
 # Then check if `git` appears in a command position (start, or after && || | ;).
+# NOTE: If Path B canary guard was applied, emit the rewrite before exiting — the
+# deferred rewrite at the bottom is only reachable for git commands.
 _stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
 if ! echo "$_stripped_cmd" | grep -qE '(^|&&|\|\|?|;)\s*git\s'; then
+    if [[ "$_CWD_GUARD_APPLIED" == true ]]; then
+        rewrite "$COMMAND" "$_CWD_GUARD_REASON"
+    fi
     _GUARD_COMPLETED=true
     exit 0
 fi
@@ -385,6 +445,12 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'
     CHECK5_DIR=$(extract_git_target_dir "$COMMAND")
     MAIN_WT=$(git -C "$CHECK5_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
     MAIN_WT="${MAIN_WT:-$CHECK5_DIR}"
+    # Extract the worktree path being removed and write canary so Check 0.5 Path B
+    # can recover the orchestrator's CWD on the next Bash command after the removal.
+    WT_REMOVE_PATH=$(echo "$COMMAND" | sed -nE 's/.*worktree[[:space:]]+remove[[:space:]]+(--[a-z-]+[[:space:]]+)*([^[:space:];&|]+).*/\2/p' | head -1 || echo "")
+    if [[ -n "$WT_REMOVE_PATH" ]]; then
+        echo "$WT_REMOVE_PATH" > "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
+    fi
     REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
     rewrite "$REWRITTEN" "Rewrote to cd to main worktree before removal. Prevents death spiral if Bash CWD is inside the worktree being removed."
 fi
@@ -474,6 +540,15 @@ fi
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
     append_session_event "gate_eval" "{\"hook\":\"guard\",\"result\":\"allow\"}" "$PROJECT_ROOT"
+fi
+
+# --- Deferred rewrite: emit Path B canary guard if applied and no other check fired ---
+# If Path B modified COMMAND in-place but no other check called rewrite()/deny() (both
+# exit early), we emit the rewrite here. Checks that DO fire (e.g. Check 5: worktree
+# remove) already operate on the already-modified COMMAND, so their rewrites include
+# the guard prefix automatically — no double-emission needed.
+if [[ "$_CWD_GUARD_APPLIED" == true ]]; then
+    rewrite "$COMMAND" "$_CWD_GUARD_REASON"
 fi
 
 # All checks passed
