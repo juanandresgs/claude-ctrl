@@ -3,10 +3,13 @@
 # Source this file from hooks that need project context:
 #   source "$(dirname "$0")/context-lib.sh"
 #
-# DECISION: Consolidate duplicate context code. Rationale: session-init.sh,
-# prompt-submit.sh, and subagent-start.sh all duplicate git state, plan status,
-# and worktree listing code. A shared library eliminates drift and reduces
-# maintenance surface. Status: accepted.
+# @decision DEC-CTXLIB-001
+# @title Consolidate duplicate context code into shared library
+# @status accepted
+# @rationale session-init.sh, prompt-submit.sh, and subagent-start.sh all duplicated
+#   git state, plan status, and worktree listing code. A shared library eliminates
+#   drift and reduces maintenance surface. All hooks source this file instead of
+#   reimplementing context capture logic inline.
 #
 # Provides:
 #   get_git_state <project_root>     - Populates GIT_BRANCH, GIT_DIRTY_COUNT,
@@ -570,6 +573,19 @@ init_trace() {
         branch="no-git"
     fi
 
+    # Capture start_commit for retrospective file counting in refinalize_trace.
+    # @decision DEC-REFINALIZE-004
+    # @title Capture start_commit in init_trace for commit-range file counting
+    # @status accepted
+    # @rationale refinalize_trace() cannot use git diff (worktree may be gone) but CAN
+    #   use git log/show on commit hashes if they are stored at trace start. The start
+    #   commit paired with end_commit (captured in finalize_trace) gives a precise range
+    #   for counting files changed, recovering files_changed=0 for 79% of traces.
+    local start_commit=""
+    if [[ "$branch" != "no-git" ]]; then
+        start_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || echo "")
+    fi
+
     # Clean up stale .active-* markers older than 2 hours
     # @decision DEC-OBS-020
     # @title Age-based cleanup of orphaned .active-* markers
@@ -599,6 +615,7 @@ init_trace() {
   "project": "${project_root}",
   "project_name": "${project_name}",
   "branch": "${branch}",
+  "start_commit": "${start_commit}",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "status": "active"
 }
@@ -814,6 +831,14 @@ finalize_trace() {
         fi
     fi
 
+    # Capture end_commit for retrospective file counting in refinalize_trace.
+    # Paired with start_commit (written by init_trace), this enables git log --name-only
+    # to count files changed between the two commits even after the worktree is removed.
+    local end_commit=""
+    if [[ -n "$project_root" ]] && git -C "$project_root" rev-parse --git-dir >/dev/null 2>&1; then
+        end_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || echo "")
+    fi
+
     # Update manifest with jq (merge new fields)
     local tmp_manifest="${manifest}.tmp"
     jq --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -823,6 +848,7 @@ finalize_trace() {
        --arg test_result "$test_result" \
        --arg proof_status "$proof_status" \
        --argjson files_changed "$files_changed" \
+       --arg end_commit "$end_commit" \
        '. + {
          finished_at: $finished_at,
          duration_seconds: $duration,
@@ -830,7 +856,8 @@ finalize_trace() {
          outcome: $outcome,
          test_result: $test_result,
          proof_status: $proof_status,
-         files_changed: $files_changed
+         files_changed: $files_changed,
+         end_commit: $end_commit
        }' "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
 
     # Clean active marker
@@ -904,11 +931,12 @@ refinalize_trace() {
     [[ ! -f "$manifest" ]] && return 1
 
     # Read current manifest values
-    local cur_test_result cur_files_changed cur_duration cur_outcome
+    local cur_test_result cur_files_changed cur_duration cur_outcome cur_started_at
     cur_test_result=$(jq -r '.test_result // "unknown"' "$manifest" 2>/dev/null)
     cur_files_changed=$(jq -r '.files_changed // 0' "$manifest" 2>/dev/null)
     cur_duration=$(jq -r '.duration_seconds // 0' "$manifest" 2>/dev/null)
     cur_outcome=$(jq -r '.outcome // "unknown"' "$manifest" 2>/dev/null)
+    cur_started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
 
     # --- Re-evaluate test_result from artifacts ---
     local test_result="unknown"
@@ -930,10 +958,110 @@ refinalize_trace() {
         fi
     fi
 
+    # Fallback: check .test-status from the project directory.
+    # @decision DEC-REFINALIZE-005
+    # @title Add .test-status fallback to refinalize_trace with timestamp window validation
+    # @status accepted
+    # @rationale 72% of new traces have test_result=unknown because agents write .test-status
+    #   (not test-output.txt). finalize_trace() already reads .test-status but at seal time
+    #   the file may not yet exist. refinalize_trace() runs retrospectively when the file
+    #   has had time to land. Timestamp validation (mtime within trace window + 10-min buffer)
+    #   prevents misattribution when multiple agents ran against the same project sequentially.
+    #   This is safe because agents have finished writing before refinalize runs.
+    if [[ "$test_result" == "unknown" ]]; then
+        local rf_project_root
+        rf_project_root=$(jq -r '.project // empty' "$manifest" 2>/dev/null)
+        if [[ -n "$rf_project_root" ]]; then
+            local test_status_file=""
+            if [[ -f "${rf_project_root}/.test-status" ]]; then
+                test_status_file="${rf_project_root}/.test-status"
+            elif [[ -f "${rf_project_root}/.claude/.test-status" ]]; then
+                test_status_file="${rf_project_root}/.claude/.test-status"
+            fi
+            if [[ -n "$test_status_file" ]]; then
+                local ts_content
+                ts_content=$(cut -d'|' -f1 "$test_status_file" 2>/dev/null | tr -d '[:space:]')
+                # Verify .test-status timestamp is within the trace's time window.
+                # Prevents misattribution when multiple agents ran sequentially.
+                local ts_mod
+                ts_mod=$(stat -f '%m' "$test_status_file" 2>/dev/null \
+                    || stat -c '%Y' "$test_status_file" 2>/dev/null \
+                    || echo "0")
+                local trace_start_epoch trace_end_epoch
+                trace_start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$cur_started_at" +%s 2>/dev/null \
+                    || date -u -d "$cur_started_at" +%s 2>/dev/null \
+                    || echo "0")
+                local finished_at_val
+                finished_at_val=$(jq -r '.finished_at // empty' "$manifest" 2>/dev/null)
+                trace_end_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$finished_at_val" +%s 2>/dev/null \
+                    || date -u -d "$finished_at_val" +%s 2>/dev/null \
+                    || echo "0")
+                # Allow 10-minute buffer after trace end for late writes
+                local buffer=600
+                if [[ "$ts_mod" -ge "$trace_start_epoch" && \
+                      "$trace_start_epoch" -gt 0 && \
+                      "$ts_mod" -le $(( trace_end_epoch + buffer )) ]]; then
+                    if [[ "$ts_content" == "pass" || "$ts_content" == "passed" ]]; then
+                        test_result="pass"
+                    elif [[ "$ts_content" == "fail" || "$ts_content" == "failed" ]]; then
+                        test_result="fail"
+                    fi
+                fi
+            fi
+        fi
+    fi
+
     # --- Re-evaluate files_changed from artifact (no git fallback — worktree may be gone) ---
     local files_changed=0
     if [[ -f "${trace_dir}/artifacts/files-changed.txt" ]]; then
         files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
+    fi
+
+    # Fallback: use commit hashes stored in manifest to count files changed via git log.
+    # @decision DEC-REFINALIZE-006
+    # @title Commit-hash-based file counting fallback in refinalize_trace
+    # @status accepted
+    # @rationale 79% of traces have files_changed=0 because agents commit files rather than
+    #   writing files-changed.txt. start_commit (init_trace) and end_commit (finalize_trace)
+    #   bracket the work. git log --name-only between those commits counts unique files changed
+    #   even after the worktree is removed, as long as the commit objects exist in any repo
+    #   that contains them. We check project root first, then ~/.claude as fallback for merged
+    #   worktrees. cat-file -t validates the commit exists before running git log.
+    if [[ "$files_changed" -eq 0 ]]; then
+        local fc_start_commit fc_end_commit fc_project_root
+        fc_start_commit=$(jq -r '.start_commit // empty' "$manifest" 2>/dev/null)
+        fc_end_commit=$(jq -r '.end_commit // empty' "$manifest" 2>/dev/null)
+        fc_project_root=$(jq -r '.project // empty' "$manifest" 2>/dev/null)
+
+        if [[ -n "$fc_end_commit" && -n "$fc_project_root" ]]; then
+            # Find a repo that contains the end_commit — try project root, then ~/.claude
+            local git_repo=""
+            for candidate in "$fc_project_root" "$HOME/.claude"; do
+                if [[ -d "$candidate" ]] && git -C "$candidate" rev-parse --git-dir >/dev/null 2>&1; then
+                    if git -C "$candidate" cat-file -t "$fc_end_commit" >/dev/null 2>&1; then
+                        git_repo="$candidate"
+                        break
+                    fi
+                fi
+            done
+
+            if [[ -n "$git_repo" ]]; then
+                local git_files=0
+                if [[ -n "$fc_start_commit" ]] && \
+                   git -C "$git_repo" cat-file -t "$fc_start_commit" >/dev/null 2>&1; then
+                    # Count unique files changed between start and end commits
+                    git_files=$(git -C "$git_repo" log --name-only --format="" \
+                        "${fc_start_commit}..${fc_end_commit}" 2>/dev/null \
+                        | sort -u | grep -c '.' 2>/dev/null) || git_files=0
+                else
+                    # No valid start_commit — count files in the end commit only
+                    git_files=$(git -C "$git_repo" show --name-only --format="" \
+                        "$fc_end_commit" 2>/dev/null \
+                        | grep -c '.' 2>/dev/null) || git_files=0
+                fi
+                [[ "$git_files" =~ ^[0-9]+$ ]] && files_changed="$git_files"
+            fi
+        fi
     fi
 
     # --- Fix duration_seconds if <= 0 using started_at + finished_at from manifest ---
