@@ -108,11 +108,11 @@ if [[ "$AUTO_VERIFIED" == "true" ]]; then
         append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
     fi
     CONTEXT="Tester validation: proof-status=verified (auto-verified)."
-    DIRECTIVE="AUTO-VERIFIED: The tester completed e2e verification with High confidence, full coverage, and no caveats. Proof-of-work is now verified. Present the tester's full verification report to the user AND dispatch Guardian simultaneously. The user sees the evidence while the commit is in flight."
+    DIRECTIVE="AUTO-VERIFIED: Tester e2e verification passed — High confidence, full coverage, no caveats. .proof-status is verified. Dispatch Guardian NOW with 'AUTO-VERIFY-APPROVED' in the prompt. Guardian will skip its approval prompt and execute the full merge cycle directly. Present the tester's verification report to the user in parallel."
     ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {
-  "additionalContext": $ESCAPED
+  "systemMessage": $ESCAPED
 }
 EOF
     exit 0

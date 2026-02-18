@@ -68,6 +68,10 @@ Stop hooks have a **different schema** from PreToolUse/PostToolUse. They do NOT 
 }
 ```
 
+> **Note**: `additionalContext` is NOT a valid field for Stop hooks. It may be silently
+> processed but renders as passive context, not a `<system-reminder>`. Use `systemMessage`
+> for any directive that the model must act on.
+
 **Block** — prevent the response from completing (rare):
 ```json
 {

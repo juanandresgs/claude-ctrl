@@ -52,10 +52,17 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **Auto-verify fast path:** When check-tester.sh detects `AUTOVERIFY: CLEAN`
 with High confidence, full coverage, and no caveats, it auto-writes
-`.proof-status = verified`. The orchestrator should present the verification
-report AND dispatch Guardian in parallel — the user sees evidence while the
-commit is in flight. If auto-verify doesn't trigger, the manual approval
-flow applies (present report, wait for user approval keyword).
+`.proof-status = verified` and emits `AUTO-VERIFIED` in a system-reminder.
+
+When the orchestrator receives this system-reminder:
+1. Dispatch Guardian with `AUTO-VERIFY-APPROVED` in the prompt — this tells
+   Guardian to skip its approval presentation and execute the merge cycle directly.
+2. Present the tester's verification report to the user in the same response
+   (user sees evidence while commit is in flight).
+3. Do NOT wait for user approval before dispatching — the auto-verify IS the approval.
+
+If auto-verify doesn't trigger, the manual flow applies: present the tester's
+report, engage in Q&A, user approval triggers prompt-submit.sh gate transition.
 
 **Pre-dispatch gate (mechanically enforced):**
 - Tester dispatch: requires implementer to have returned with tests passing

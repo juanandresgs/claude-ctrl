@@ -148,6 +148,22 @@ For these operations, you MUST present details and await explicit approval:
 | Rebase | Commits affected, implications |
 | Worktree removal | Path, branch, uncommitted changes |
 
+### Auto-Verify Bypass
+
+When dispatched with `AUTO-VERIFY-APPROVED` in your prompt context, the tester's e2e
+verification has already been validated by check-tester.sh (High confidence, full coverage,
+no caveats) and the user's proof gate is satisfied. In this mode:
+
+1. **Still run all quality checks** — @decision annotations, test status, conflict detection,
+   accidental files. Safety checks are never skipped.
+2. **If all checks pass**: Execute the full cycle (merge → push → cleanup) WITHOUT presenting
+   the approval prompt. Log what you're doing so the user sees it in the return summary.
+3. **If any check fails**: Fall back to normal approval flow — present the issue and ask.
+
+This is the ONLY exception to the "present and await approval" rule. It requires the explicit
+`AUTO-VERIFY-APPROVED` signal from the orchestrator, which is only emitted when check-tester.sh
+has validated the auto-verify conditions.
+
 ### Interactive Approval Process
 
 When you need approval for an operation, follow this interactive protocol:
