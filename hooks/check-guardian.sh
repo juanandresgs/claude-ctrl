@@ -124,6 +124,17 @@ else
     ISSUES+=("No test results found — verify tests were run before committing")
 fi
 
+# Check 6: CWD staleness advisory after worktree cleanup
+# When Guardian removes a worktree, the orchestrator's Bash CWD may now point to
+# a deleted directory. guard.sh Check 0.5 auto-recovers on the next command.
+# This advisory surfaces the issue so the orchestrator knows recovery is available.
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    HAS_WORKTREE_CLEANUP=$(echo "$RESPONSE_TEXT" | grep -iE 'worktree.*remov|removed worktree|git worktree remove|cleaned up worktree' || echo "")
+    if [[ -n "$HAS_WORKTREE_CLEANUP" ]]; then
+        ISSUES+=("Guardian removed a worktree. guard.sh will auto-recover CWD if needed.")
+    fi
+fi
+
 # --- Trace protocol: finalize trace ---
 if [[ -n "$TRACE_ID" ]]; then
     if [[ ! -f "$TRACE_DIR/summary.md" ]]; then

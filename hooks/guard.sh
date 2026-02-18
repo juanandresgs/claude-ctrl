@@ -148,6 +148,36 @@ if echo "$COMMAND" | grep -qiE '\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TAB
     deny "NUCLEAR DENY — SQL database destruction blocked. DROP/TRUNCATE operations permanently destroy data."
 fi
 
+# --- Check 0.5: Universal CWD recovery ---
+# @decision DEC-GUARD-CWD-001
+# @title Rewrite commands when orchestrator Bash CWD is invalid after worktree deletion
+# @status accepted
+# @rationale When Guardian (subagent) removes a worktree, the orchestrator's Bash CWD
+#   still points to the deleted directory. ALL subsequent orchestrator Bash commands
+#   fail with ENOENT. Existing fixes (source-lib.sh line 25, safe_cleanup) only fix
+#   the subagent's own shell — they cannot propagate to the orchestrator's Bash tool
+#   shell. guard.sh's rewrite() CAN propagate because rewritten commands execute in
+#   the Bash tool's shell. Check 0.5 intercepts the first command after CWD death,
+#   walks up the deleted path to find a valid git-root ancestor (or falls back to
+#   $HOME), and prepends `cd "<recovery_dir>"` to restore a valid working directory.
+#   Placed AFTER Check 0 (nuclear deny) so catastrophic commands are still denied
+#   even when CWD is broken — nuclear safety is never sacrificed for convenience.
+BASH_CWD=$(get_field '.cwd' 2>/dev/null || echo "")
+if [[ -n "$BASH_CWD" && ! -d "$BASH_CWD" ]]; then
+    RECOVERY_DIR=""
+    _candidate="${BASH_CWD}"
+    while [[ "$_candidate" != "/" && "$_candidate" != "." ]]; do
+        _candidate=$(dirname "$_candidate")
+        if [[ -d "$_candidate" && -d "$_candidate/.git" ]]; then
+            RECOVERY_DIR="$_candidate"
+            break
+        fi
+    done
+    RECOVERY_DIR="${RECOVERY_DIR:-$HOME}"
+    rewrite "cd \"$RECOVERY_DIR\" && $COMMAND" \
+        "CWD recovery: '$BASH_CWD' no longer exists (deleted worktree). Recovered to $RECOVERY_DIR."
+fi
+
 # --- Check 1: /tmp/ and /private/tmp/ writes → rewrite to project tmp/ ---
 # On macOS, /tmp → /private/tmp (symlink). Both forms must be caught.
 # Allow: /private/tmp/claude-*/ (Claude Code scratchpad)
