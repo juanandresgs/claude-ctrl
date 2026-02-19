@@ -29,6 +29,13 @@ source "$(dirname "$0")/source-lib.sh"
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
+# Diagnostic: log SubagentStop payload keys for field-name investigation (Issue #TBD)
+if [[ -n "$AGENT_RESPONSE" && "$AGENT_RESPONSE" != "{}" ]]; then
+    PAYLOAD_KEYS=$(echo "$AGENT_RESPONSE" | jq -r 'keys[]' 2>/dev/null | tr '\n' ',' || echo "unknown")
+    PAYLOAD_SIZE=${#AGENT_RESPONSE}
+    echo "check-tester: SubagentStop payload keys=[$PAYLOAD_KEYS] size=${PAYLOAD_SIZE}" >&2
+fi
+
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
@@ -161,8 +168,8 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
     if [[ ! -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
         ISSUES+=("Trace artifact missing: verification-output.txt — tester should capture live feature output")
     fi
-    # Validate summary exists
-    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+    # Validate summary exists and is non-empty (-s checks size > 0)
+    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
