@@ -12,6 +12,16 @@
 # only after auto-verify is resolved (Phase 2). This ensures the hook exits
 # before the 15s timeout even when git and trace I/O is slow.
 #
+# Phase 2 ordering (Fix 2):
+#   1. track_subagent_stop + trace detection
+#   2. git/plan state
+#   3. Check 1b: missing proof-status
+#   4. finalize_trace (extracted before Check 3 so manifest is fresh)
+#   5. Check 3: completeness gate (BEFORE auto-capture — reads fresh manifest)
+#   6. Check 2: auto-capture + artifact validation (AFTER completeness check)
+#   7. Response size advisory
+#   8. Build context + decision gate
+#
 # @decision DEC-TESTER-001
 # @title Tester SubagentStop with auto-verify for clean e2e verifications
 # @status accepted
@@ -22,6 +32,28 @@
 #   Guard.sh Check 9 only blocks Bash tool writes, not hook file operations.
 #   track.sh resets proof if source files change post-verification.
 #   Auto-verify runs FIRST to avoid timeout before reaching this logic.
+#
+# @decision DEC-TESTER-003
+# @title Auto-verify accepts needs-verification status + safety net for missing status
+# @status accepted
+# @rationale task-track.sh writes "needs-verification" at implementer dispatch.
+#   The tester is supposed to overwrite with "pending" but frequently fails
+#   (confirmed by audit log entries). Auto-verify was silently skipped when
+#   proof-status was "needs-verification" or "missing" — blocking the fast path.
+#   Fix: accept both "pending" AND "needs-verification" in the auto-verify gate.
+#   Safety net: if proof-status is "missing" and RESPONSE_TEXT is non-empty,
+#   auto-write "pending" so the manual approval flow can still proceed.
+#
+# @decision DEC-TESTER-004
+# @title Check 3 completeness gate runs BEFORE auto-capture (Fix 2)
+# @status accepted
+# @rationale Check 2's auto-capture wrote verification-output.txt from ANY
+#   non-empty RESPONSE_TEXT, causing Check 3's HAS_VERIFICATION=true even for
+#   partial/incomplete testers. This meant the AND condition was never met and
+#   incomplete testers passed through to the approval flow.
+#   Fix: extract finalize_trace() to run before Check 3, then move Check 3
+#   before Check 2's auto-capture. Check 3 now reads the manifest written by
+#   finalize_trace BEFORE auto-capture contaminates HAS_VERIFICATION.
 set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
@@ -54,16 +86,21 @@ if [[ -f "$PROOF_FILE" ]]; then
 fi
 
 # Extract response text early — needed for auto-verify
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+# Field name: SubagentStop payload uses `last_assistant_message` (confirmed from Claude Code docs).
+# `.response` kept as fallback for backward compatibility.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 # --- Auto-verify: check if tester signals clean verification ---
 # Runs in Phase 1 so it completes well within the 15s timeout.
+# Fix 1 (DEC-TESTER-003): accept "needs-verification" in addition to "pending".
+# task-track.sh writes "needs-verification" at implementer dispatch; the tester
+# frequently fails to overwrite with "pending", silently defeating auto-verify.
 AUTO_VERIFIED=false
 AV_FAIL=false
 NOT_TESTED_LINES=""
 WHITELISTED_COUNT=0
 
-if [[ "$PROOF_STATUS" == "pending" ]] && echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
+if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]] && echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
     # Secondary validation — reject false claims
     # Must have High confidence (markdown bold)
     echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
@@ -110,10 +147,13 @@ if [[ "$AUTO_VERIFIED" == "true" ]]; then
     fi
     CONTEXT="Tester validation: proof-status=verified (auto-verified)."
     DIRECTIVE="AUTO-VERIFIED: Tester e2e verification passed — High confidence, full coverage, no caveats. .proof-status is verified. Dispatch Guardian NOW with 'AUTO-VERIFY-APPROVED' in the prompt. Guardian will skip its approval prompt and execute the full merge cycle directly. Present the tester's verification report to the user in parallel."
-    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
+    ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)
+    # Fix 3 (DEC-TESTER-001): use additionalContext not systemMessage.
+    # SubagentStop hooks use additionalContext — systemMessage delivery is
+    # unverified for this hook type and may be silently dropped.
     cat <<EOF
 {
-  "systemMessage": $ESCAPED
+  "additionalContext": $ESCAPED
 }
 EOF
     exit 0
@@ -122,6 +162,15 @@ fi
 # ============================================================================
 # PHASE 2 — Advisory work (runs only when not auto-verified)
 # ============================================================================
+
+# Safety net (DEC-TESTER-003): if proof-status is missing and RESPONSE_TEXT is
+# non-empty, auto-write "pending" so the manual approval flow can proceed.
+# This handles testers that forgot to write .proof-status.
+if [[ "$PROOF_STATUS" == "missing" && -n "$RESPONSE_TEXT" ]]; then
+    mkdir -p "$(dirname "$PROOF_FILE")"
+    echo "pending|$(date +%s)" > "$PROOF_FILE"
+    PROOF_STATUS="pending"
+fi
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "tester"
@@ -143,17 +192,96 @@ get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
+CONTEXT=""  # Built after issues are collected; initialized here for early-exit branches
 
 # Check 1b: Flag missing .proof-status
 if [[ "$PROOF_STATUS" == "missing" ]]; then
     ISSUES+=("Tester returned without writing .proof-status — verification evidence not collected")
 fi
 
+# --- finalize_trace: run BEFORE Check 3 so manifest.json reflects current artifacts ---
+# Fix 2 (DEC-TESTER-004): finalize_trace was previously inside Check 2 (auto-capture
+# block), meaning Check 3 would read a stale manifest. Moving finalize here ensures
+# Check 3 reads a fresh manifest outcome before auto-capture contaminates the check.
+if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
+    # Validate summary exists and is non-empty (-s checks size > 0)
+    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
+        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for tester trace $TRACE_ID"
+    fi
+fi
+
+# Check 3: Tester completeness — detect partial/incomplete runs
+# Fix 2 (DEC-TESTER-004): runs BEFORE auto-capture in Check 2.
+# A tester that only wrote strategy but never produced verification output
+# must not enter the approval flow. Force resume instead.
+# Both signals required (AND logic) — finalize_trace marks outcome="partial"
+# when test-output.txt is missing, but testers write verification-output.txt
+# instead. A tester with verification-output.txt IS complete regardless of
+# manifest outcome.
+#
+# @decision DEC-TESTER-002
+# @title Block partial/skipped tester runs before approval flow (AND logic)
+# @status accepted
+# @rationale A tester that exits after planning but before executing verification
+#   must not enter the approval flow. Two signals together detect incompleteness:
+#   1. manifest.json outcome == "partial" OR "skipped" (finalize_trace signals)
+#      "partial" = artifacts dir has files but no pass signal (started, didn't finish)
+#      "skipped" = artifacts dir is empty (exited before writing anything)
+#   2. artifacts/verification-output.txt missing (concrete evidence absent)
+#   AND logic is required because finalize_trace() marks testers as "partial"
+#   when test-output.txt is absent — but testers write verification-output.txt
+#   as their primary artifact, not test-output.txt. A tester with
+#   verification-output.txt IS complete even if finalize_trace shows "partial".
+#   The gate exits 2 (force resume) to unblock the tester.
+#   IMPORTANT: This check reads manifest.json AFTER finalize_trace() has run
+#   (DEC-TESTER-004) and BEFORE auto-capture (Check 2) writes
+#   verification-output.txt. This is the only ordering that makes the AND
+#   condition meaningful.
+TESTER_COMPLETE=true
+TRACE_OUTCOME=""
+
+if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR" ]]; then
+    if [[ -f "$TRACE_DIR/manifest.json" ]]; then
+        TRACE_OUTCOME=$(jq -r '.outcome // "unknown"' "$TRACE_DIR/manifest.json" 2>/dev/null)
+    fi
+
+    HAS_VERIFICATION=false
+    if [[ -d "$TRACE_DIR/artifacts" && -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
+        HAS_VERIFICATION=true
+    fi
+
+    # Block when outcome is partial or skipped AND verification output is missing.
+    # "partial" = artifacts dir has files but no pass signal (tester started but didn't finish).
+    # "skipped" = artifacts dir is empty (tester exited before writing anything).
+    # Both indicate the tester planned but never executed verification.
+    # AND logic prevents false positives: verification-output.txt present means
+    # the tester ran, even if finalize_trace couldn't classify it as success.
+    if [[ ("$TRACE_OUTCOME" == "partial" || "$TRACE_OUTCOME" == "skipped") && "$HAS_VERIFICATION" == "false" ]]; then
+        TESTER_COMPLETE=false
+    fi
+fi
+
+if [[ "$TESTER_COMPLETE" == "false" ]]; then
+    DIRECTIVE="INCOMPLETE: Tester returned without completing verification (trace outcome: ${TRACE_OUTCOME:-unknown}). Do NOT present confidence levels or approve merge from partial results. Resume the tester to complete verification."
+    ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
+    exit 2  # Force tester resume
+fi
+
 # Check 2: Trace artifacts include verification evidence (not just test output)
+# Fix 2 (DEC-TESTER-004): runs AFTER Check 3 so auto-capture cannot defeat
+# the completeness gate. Auto-capture here is for archival purposes only.
 if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
     # Auto-capture verification-output.txt from response text if agent didn't write it.
     # The tester's response IS the verification evidence — capturing it here ensures
-    # finalize_trace() sees an artifact and marks outcome="completed" rather than "partial".
+    # the trace archive is complete for observability purposes.
     if [[ ! -f "$TRACE_DIR/artifacts/verification-output.txt" && -n "$RESPONSE_TEXT" ]]; then
         echo "# Auto-captured from tester response at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TRACE_DIR/artifacts/verification-output.txt"
         echo "$RESPONSE_TEXT" | head -c 8000 >> "$TRACE_DIR/artifacts/verification-output.txt" 2>/dev/null || true
@@ -167,13 +295,6 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
 
     if [[ ! -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
         ISSUES+=("Trace artifact missing: verification-output.txt — tester should capture live feature output")
-    fi
-    # Validate summary exists and is non-empty (-s checks size > 0)
-    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
-    fi
-    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
-        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for tester trace $TRACE_ID"
     fi
 fi
 
@@ -209,61 +330,10 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     done
 fi
 
-# Check 3: Tester completeness — detect partial/incomplete runs
-# A tester that only wrote strategy but never produced verification output
-# must not enter the approval flow. Force resume instead.
-# Both signals required (AND logic) — finalize_trace marks outcome="partial"
-# when test-output.txt is missing, but testers write verification-output.txt
-# instead. A tester with verification-output.txt IS complete regardless of
-# manifest outcome.
-#
-# @decision DEC-TESTER-002
-# @title Block partial tester runs before approval flow (AND logic)
-# @status accepted
-# @rationale A tester that exits after planning but before executing verification
-#   must not enter the approval flow. Two signals together detect incompleteness:
-#   1. manifest.json outcome == "partial" (finalize_trace signal)
-#   2. artifacts/verification-output.txt missing (concrete evidence absent)
-#   AND logic is required because finalize_trace() marks ALL testers as "partial"
-#   when test-output.txt is absent — but testers write verification-output.txt
-#   as their primary artifact, not test-output.txt. A tester with
-#   verification-output.txt IS complete even if finalize_trace shows "partial".
-#   The gate exits 2 (force resume) to unblock the tester.
-TESTER_COMPLETE=true
-TRACE_OUTCOME=""
-
-if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR" ]]; then
-    if [[ -f "$TRACE_DIR/manifest.json" ]]; then
-        TRACE_OUTCOME=$(jq -r '.outcome // "unknown"' "$TRACE_DIR/manifest.json" 2>/dev/null)
-    fi
-
-    HAS_VERIFICATION=false
-    if [[ -d "$TRACE_DIR/artifacts" && -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
-        HAS_VERIFICATION=true
-    fi
-
-    # Block only when outcome is partial AND verification output is missing
-    # (i.e., tester planned but never executed)
-    if [[ "$TRACE_OUTCOME" == "partial" && "$HAS_VERIFICATION" == "false" ]]; then
-        TESTER_COMPLETE=false
-    fi
-fi
-
-if [[ "$TESTER_COMPLETE" == "false" ]]; then
-    DIRECTIVE="INCOMPLETE: Tester returned without completing verification (trace outcome: ${TRACE_OUTCOME:-unknown}). Do NOT present confidence levels or approve merge from partial results. Resume the tester to complete verification."
-    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
-    cat <<EOF
-{
-  "additionalContext": $ESCAPED
-}
-EOF
-    exit 2  # Force tester resume
-fi
-
 # Decision gate based on proof status
 if [[ "$PROOF_STATUS" == "verified" ]]; then
     # User has confirmed — Guardian dispatch is unblocked
-    ESCAPED=$(echo -e "$CONTEXT\nProof verified by user. Guardian dispatch is now unblocked." | jq -Rs .)
+    ESCAPED=$(printf '%s\nProof verified by user. Guardian dispatch is now unblocked.' "$CONTEXT" | jq -Rs .)
     cat <<EOF
 {
   "additionalContext": $ESCAPED
@@ -277,7 +347,7 @@ elif [[ "$PROOF_STATUS" == "pending" ]]; then
         append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
     fi
     DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
-    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
+    ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {
   "additionalContext": $ESCAPED
@@ -287,7 +357,7 @@ EOF
 else
     # proof-status missing or unknown — tester didn't complete its job
     DIRECTIVE="BLOCKED: Tester returned without completing verification.\nResume the tester to:\n1. Run the feature/system live\n2. Show actual output to the user\n3. Write pending to .proof-status\n4. Present the verification report and let the user respond naturally"
-    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
+    ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {
   "additionalContext": $ESCAPED

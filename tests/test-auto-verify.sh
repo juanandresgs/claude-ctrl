@@ -20,6 +20,24 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# ---------------------------------------------------------------------------
+# resolve_real_proof_file: find the .proof-status path that check-tester.sh
+# will actually read/write when invoked from a test context.
+#
+# detect_project_root() in the hook uses git --git-common-dir to find the
+# real repo root (resolves through worktrees). PROJECT_ROOT is that real root
+# (e.g. ~/.claude), and resolve_proof_file() returns "$PROJECT_ROOT/.proof-status"
+# — NOT "$PROJECT_ROOT/.claude/.proof-status". The .claude/ segment is part of
+# the directory name, not a subdirectory added by the hook.
+#
+# Old test code computed: "$REAL_REPO_ROOT/.claude/.proof-status" which doubled
+# the .claude/ segment (wrote to ~/.claude/.claude/.proof-status, a non-existent
+# path), while the hook read/wrote ~/.claude/.proof-status.
+# ---------------------------------------------------------------------------
+resolve_real_proof_file() {
+    bash -c "source \"$HOOKS_DIR/source-lib.sh\" && resolve_proof_file" 2>/dev/null
+}
+
 # Track test results
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -316,37 +334,46 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 7: Timing — auto-verify critical path completes within budget
+# Fix 4: use printf with \\n (not echo -e with \n) to produce valid JSON,
+# so jq can parse it and RESPONSE_TEXT is correctly populated.
+# Also assert that .proof-status changed to "verified" (not just timing).
 # ---------------------------------------------------------------------------
-run_test "Timing: check-tester.sh auto-verify path completes in <5s"
+run_test "Timing: check-tester.sh auto-verify path completes in <5s and writes verified"
 
-# detect_project_root() uses git --git-common-dir to find the real repo root,
-# resolving through worktrees. For ~/.claude worktrees, common-dir is ~/.claude/.git
-# so the real root is ~/.claude. We temporarily set .proof-status to "pending"
-# so the hook exercises the auto-verify path, then restore it after.
-COMMON_DIR=$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || echo "")
-if [[ -n "$COMMON_DIR" && "$COMMON_DIR" != /* ]]; then
-    COMMON_DIR=$(cd "$PROJECT_ROOT" && cd "$COMMON_DIR" && pwd)
-fi
-REAL_REPO_ROOT="${COMMON_DIR%/.git}"
-if [[ -z "$REAL_REPO_ROOT" ]]; then
-    REAL_REPO_ROOT="$PROJECT_ROOT"
-fi
-REAL_PROOF_FILE="$REAL_REPO_ROOT/.claude/.proof-status"
+# resolve_real_proof_file() asks the hook library for the exact path it uses,
+# so the test writes/reads the same file the hook operates on.
+REAL_PROOF_FILE=$(resolve_real_proof_file)
 SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
-# Build JSON input with AUTOVERIFY: CLEAN response (no heredoc — avoids control chars)
-AV_RESP="### Verification Assessment\n### Confidence Level\n**High** - All core paths exercised.\n### Coverage\n| Area | Status |\n|------|--------|\n| Core | Fully verified |\nAUTOVERIFY: CLEAN"
-MOCK_JSON=$(printf '{"response": "%s"}' "$(echo -e "$AV_RESP" | sed 's/"/\\"/g')")
+# Build valid JSON input using jq so string content is properly escaped.
+# echo -e / printf with \n produce literal newlines inside the JSON string value,
+# making the JSON invalid (jq parse error) and causing RESPONSE_TEXT to be empty.
+# jq -n --arg handles all escaping correctly.
+AV_RESP_TEXT="### Verification Assessment
+### Confidence Level
+**High** - All core paths exercised.
+### Coverage
+| Area | Status |
+|------|--------|
+| Core | Fully verified |
+AUTOVERIFY: CLEAN"
+MOCK_JSON=$(jq -n --arg r "$AV_RESP_TEXT" '{"last_assistant_message": $r}')
 
 # Time execution
 START_TIME=$(date +%s)
-echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" > /dev/null 2>&1 || true
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
+
+# Read .proof-status BEFORE restoring to check if auto-verify wrote "verified"
+PROOF_AFTER=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    PROOF_AFTER=$(cut -d'|' -f1 "$REAL_PROOF_FILE" 2>/dev/null || echo "")
+fi
 
 # Restore .proof-status to original value
 if [[ -n "$SAVED_PROOF" ]]; then
@@ -356,9 +383,101 @@ else
 fi
 
 if [[ $ELAPSED -lt 5 ]]; then
-    pass_test
+    if [[ "$PROOF_AFTER" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Hook completed in ${ELAPSED}s but .proof-status='${PROOF_AFTER}' (expected 'verified'). Hook output: $HOOK_OUTPUT"
+    fi
 else
     fail_test "Hook took ${ELAPSED}s (budget: <5s)"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 8: Auto-verify fires with needs-verification status (Fix 1)
+# task-track.sh writes "needs-verification" — tester often skips writing "pending".
+# Auto-verify must fire anyway so the fast path isn't silently blocked.
+# ---------------------------------------------------------------------------
+run_test "Fix 1: auto-verify fires when proof-status is needs-verification"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+# Write needs-verification (what task-track.sh writes at implementer dispatch)
+echo "needs-verification|$(date +%s)" > "$REAL_PROOF_FILE"
+
+NV_RESP_TEXT="### Verification Assessment
+### Confidence Level
+**High** - All core paths exercised.
+### Coverage
+| Area | Status |
+|------|--------|
+| Core | Fully verified |
+AUTOVERIFY: CLEAN"
+MOCK_JSON=$(jq -n --arg r "$NV_RESP_TEXT" '{"last_assistant_message": $r}')
+
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
+
+PROOF_AFTER=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    PROOF_AFTER=$(cut -d'|' -f1 "$REAL_PROOF_FILE" 2>/dev/null || echo "")
+fi
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+if [[ "$PROOF_AFTER" == "verified" ]]; then
+    if echo "$HOOK_OUTPUT" | grep -q 'AUTO-VERIFIED'; then
+        pass_test
+    else
+        fail_test "proof-status=verified but AUTO-VERIFIED directive missing. Output: $HOOK_OUTPUT"
+    fi
+else
+    fail_test "Auto-verify did not fire for needs-verification status. proof-status='${PROOF_AFTER}'. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 9: Safety net — missing proof-status + RESPONSE_TEXT → auto-written as pending
+# When the tester completely forgets to write .proof-status, the safety net in
+# Phase 2 should write "pending" so the manual approval flow can proceed.
+# ---------------------------------------------------------------------------
+run_test "Fix 1 safety net: missing proof-status + response text → auto-written as pending"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Response WITHOUT AUTOVERIFY signal — so auto-verify doesn't fire.
+# The safety net should still write "pending".
+SN_RESP_TEXT="Tester verification complete. Feature works correctly. Confidence: **High**."
+MOCK_JSON=$(jq -n --arg r "$SN_RESP_TEXT" '{"last_assistant_message": $r}')
+
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
+
+PROOF_AFTER=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    PROOF_AFTER=$(cut -d'|' -f1 "$REAL_PROOF_FILE" 2>/dev/null || echo "")
+fi
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+if [[ "$PROOF_AFTER" == "pending" ]]; then
+    pass_test
+else
+    fail_test "Safety net did not write pending. proof-status='${PROOF_AFTER}'. Output: $HOOK_OUTPUT"
 fi
 
 # Summary

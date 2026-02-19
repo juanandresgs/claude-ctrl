@@ -137,7 +137,7 @@ run_check_tester() {
         printf '%s\n' "$proof_status" > "$TEMP_REPO/.claude/.proof-status"
     fi
 
-    printf '{"response": "Tester verification complete."}\n' \
+    printf '{"last_assistant_message": "Tester verification complete."}\n' \
         > "$TEMP_REPO/input.json"
 
     local OUTPUT
@@ -156,7 +156,7 @@ run_check_tester() {
 
 # ---------------------------------------------------------------------------
 # Test 1: No artifacts at all (neither verification nor test-output)
-#   → finalize_trace sets outcome="partial" (no test-output.txt)
+#   → finalize_trace sets outcome="skipped" (artifacts dir empty — no files at all)
 #   → Signal 2 fires (no verification-output.txt)
 #   → exit 2, INCOMPLETE
 # ---------------------------------------------------------------------------
@@ -253,7 +253,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 5: INCOMPLETE directive content — must mention the outcome
-#   Partial outcome (no artifacts): finalize writes "partial", message shows it
+#   Empty artifacts dir: finalize writes "skipped", message shows it.
+#   (finalize_trace outcome logic: empty artifacts dir → "skipped";
+#    artifacts dir with files but no pass signal → "partial")
 # ---------------------------------------------------------------------------
 run_test "Check 3: INCOMPLETE directive includes trace outcome value"
 
@@ -263,11 +265,11 @@ run_check_tester "pending"
 cleanup_trace
 
 if [[ "$HOOK_EXIT_CODE" -eq 2 ]]; then
-    # finalize_trace sets outcome="partial" when no test-output.txt
-    if echo "$HOOK_OUTPUT" | grep -q "partial"; then
+    # finalize_trace sets outcome="skipped" when artifacts dir is empty
+    if echo "$HOOK_OUTPUT" | grep -qE "partial|skipped"; then
         pass_test
     else
-        fail_test "INCOMPLETE directive missing outcome value. Got: $HOOK_OUTPUT"
+        fail_test "INCOMPLETE directive missing outcome value (expected partial or skipped). Got: $HOOK_OUTPUT"
     fi
 else
     fail_test "Expected exit 2, got $HOOK_EXIT_CODE"
@@ -329,12 +331,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 8: AND logic — partial outcome + verification-output.txt MISSING → exit 2
-#   Signal 1 fires (outcome=partial: no test-output.txt).
+# Test 8: AND logic — skipped/partial outcome + verification-output.txt MISSING → exit 2
+#   Signal 1 fires (outcome=skipped: empty artifacts dir, no test-output.txt).
 #   Signal 2 fires (verification-output.txt absent).
 #   Both conditions true → TESTER_COMPLETE=false → exit 2 INCOMPLETE.
 # ---------------------------------------------------------------------------
-run_test "AND logic: partial outcome + verification-output.txt missing → exit 2 (blocked)"
+run_test "AND logic: skipped outcome + verification-output.txt missing → exit 2 (blocked)"
 
 make_trace "no" "no" "yes"
 HOOK_OUTPUT="" ; HOOK_EXIT_CODE=0
