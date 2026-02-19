@@ -32,6 +32,13 @@ source "$(dirname "$0")/source-lib.sh"
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
+# Diagnostic: log SubagentStop payload keys for field-name investigation (Issue #TBD)
+if [[ -n "$AGENT_RESPONSE" && "$AGENT_RESPONSE" != "{}" ]]; then
+    PAYLOAD_KEYS=$(echo "$AGENT_RESPONSE" | jq -r 'keys[]' 2>/dev/null | tr '\n' ',' || echo "unknown")
+    PAYLOAD_SIZE=${#AGENT_RESPONSE}
+    echo "check-explore: SubagentStop payload keys=[$PAYLOAD_KEYS] size=${PAYLOAD_SIZE}" >&2
+fi
+
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
@@ -46,9 +53,10 @@ append_session_event "agent_stop" "{\"type\":\"explore\"}" "$PROJECT_ROOT"
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "explore" 2>/dev/null || echo "")
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR_PATH="${TRACE_STORE}/${TRACE_ID}"
-    # Auto-write summary.md from response text if agent didn't write it
+    # Auto-write summary.md from response text if agent didn't write it or wrote empty file
+    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
     EXPLORE_RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
-    if [[ ! -f "$TRACE_DIR_PATH/summary.md" && -n "$EXPLORE_RESPONSE_TEXT" ]]; then
+    if [[ ! -s "$TRACE_DIR_PATH/summary.md" && -n "$EXPLORE_RESPONSE_TEXT" ]]; then
         echo "$EXPLORE_RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR_PATH/summary.md" 2>/dev/null || true
     fi
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "explore"; then

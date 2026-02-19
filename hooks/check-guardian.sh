@@ -27,6 +27,13 @@ source "$(dirname "$0")/source-lib.sh"
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
+# Diagnostic: log SubagentStop payload keys for field-name investigation (Issue #TBD)
+if [[ -n "$AGENT_RESPONSE" && "$AGENT_RESPONSE" != "{}" ]]; then
+    PAYLOAD_KEYS=$(echo "$AGENT_RESPONSE" | jq -r 'keys[]' 2>/dev/null | tr '\n' ',' || echo "unknown")
+    PAYLOAD_SIZE=${#AGENT_RESPONSE}
+    echo "check-guardian: SubagentStop payload keys=[$PAYLOAD_KEYS] size=${PAYLOAD_SIZE}" >&2
+fi
+
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
@@ -148,7 +155,8 @@ fi
 
 # --- Trace protocol: finalize trace ---
 if [[ -n "$TRACE_ID" ]]; then
-    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
+    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
 

@@ -81,7 +81,7 @@ When the task touches unfamiliar areas, read relevant files from the Resources t
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
 - Implementer: max_turns=75
 - Planner: max_turns=40
-- Tester: max_turns=25
+- Tester: max_turns=35
 - Guardian: max_turns=30
 
 ## Sacred Practices
