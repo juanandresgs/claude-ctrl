@@ -234,10 +234,34 @@ if [[ -f "$STATE_FILE" ]]; then
       .deferred[]? |
       if type == "object" then .signal_id // empty else empty end
     ' "$STATE_FILE" 2>/dev/null | tr '\n' ' ')
+
+    # Validate that all implemented entries have implemented_at timestamps.
+    # Missing timestamps prevent accurate cohort analysis (the cohort window
+    # is computed from implemented_at; without it the cohort size is always 0,
+    # causing regression checks to silently produce 0 and never re-propose).
+    # @decision DEC-OBS-OVERHAUL-004
+    # @title Warn on missing implemented_at timestamps in state.json
+    # @status accepted
+    # @rationale Without implemented_at, cohort regression detection cannot
+    #   compute the post-implementation trace window. The timestamp is mandatory
+    #   for the regression path to function. We warn (not error) so the pipeline
+    #   continues; the warning surfaces the data quality gap for operators.
+    MISSING_TS_COUNT=$(jq -r '
+      [.implemented[]? |
+       select(type == "object" and (.implemented_at // "") == "")]
+      | length
+    ' "$STATE_FILE" 2>/dev/null || echo "0")
+    if [[ "$MISSING_TS_COUNT" -gt 0 ]]; then
+        echo "WARNING: $MISSING_TS_COUNT implemented entry/entries missing implemented_at timestamp — cohort regression detection may be impaired" >&2
+    fi
 fi
 
 # --- Compute priority scores for each signal ---
 SCORE_LIST=""
+DIAG_PROCESSED=0
+DIAG_SKIPPED_IMPL=0
+DIAG_SKIPPED_DEFER=0
+DIAG_REGRESSION=0
 
 while IFS= read -r signal; do
     SIG_ID=$(echo "$signal" | jq -r '.id')
@@ -245,10 +269,12 @@ while IFS= read -r signal; do
     SEVERITY=$(echo "$signal" | jq -r '.severity')
     AFFECTED=$(echo "$signal" | jq -r '.evidence.affected_count')
     TOTAL=$(echo "$signal" | jq -r '.evidence.total')
+    DIAG_PROCESSED=$(( DIAG_PROCESSED + 1 ))
 
     # Skip if currently deferred — wait for auto_resurface() to re-enable it
     if echo "$DEFERRED_SIGS" | grep -qw "$SIG_ID" 2>/dev/null; then
         echo "Skipping $SIG_ID — currently deferred"
+        DIAG_SKIPPED_DEFER=$(( DIAG_SKIPPED_DEFER + 1 ))
         continue
     fi
 
@@ -262,8 +288,10 @@ while IFS= read -r signal; do
             echo "REGRESSION: $SIG_ID — cohort check shows fix not working on new traces, re-proposing"
             IS_REGRESSION="true"
             # Fall through — generate suggestion with regression flag
+            DIAG_REGRESSION=$(( DIAG_REGRESSION + 1 ))
         else
             echo "Skipping $SIG_ID — already implemented (cohort clean)"
+            DIAG_SKIPPED_IMPL=$(( DIAG_SKIPPED_IMPL + 1 ))
             continue
         fi
     else
@@ -343,8 +371,12 @@ while IFS= read -r signal; do
     SCORE_LIST="${SCORE_LIST}${PRIORITY}|${SIG_ID}|${IS_REGRESSION}"$'\n'
 done < <(jq -c '.improvement_signals[]' "$CACHE_FILE" 2>/dev/null)
 
+# --- Diagnostic summary: always log signal processing counts ---
+# This makes it visible why 0 suggestions were produced (all implemented, none in cache, etc.)
+echo "Diagnostic: signals processed=$DIAG_PROCESSED skipped_implemented=$DIAG_SKIPPED_IMPL skipped_deferred=$DIAG_SKIPPED_DEFER regression_reprops=$DIAG_REGRESSION"
+
 if [[ -z "$SCORE_LIST" ]]; then
-    echo "No signals to suggest (all implemented or none detected)"
+    echo "No signals to suggest — processed $DIAG_PROCESSED total: $DIAG_SKIPPED_IMPL skipped (implemented + cohort clean), $DIAG_SKIPPED_DEFER deferred, $DIAG_REGRESSION regressions detected"
     # Write an empty matrix
     jq -cn '{"matrix": [], "batches": {}, "effort_buckets": {"quick_wins": [], "moderate": [], "deep": []}}' > "$MATRIX_FILE"
     exit 0

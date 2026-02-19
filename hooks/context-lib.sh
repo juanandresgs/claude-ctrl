@@ -525,7 +525,7 @@ archive_plan() {
 # Each agent run gets a unique trace directory with manifest, summary, and artifacts.
 # Traces survive session crashes, compactions, and context overflows.
 
-TRACE_STORE="$HOME/.claude/traces"
+TRACE_STORE="${TRACE_STORE:-$HOME/.claude/traces}"
 
 # Initialize a trace directory for a new agent run.
 # Usage: init_trace "/path/to/project" "implementer"
@@ -631,20 +631,57 @@ MANIFEST
 # Usage: detect_active_trace "/path/to/project" "implementer"
 # Returns: trace_id (or empty if none active)
 detect_active_trace() {
+    # @decision DEC-OBS-OVERHAUL-002
+    # @title Session-specific marker validation in detect_active_trace
+    # @status accepted
+    # @rationale The original ls -t glob fallback races when concurrent same-type
+    #   agents run: ls -t picks the most recently modified marker, which may belong
+    #   to a different session. The fix validates CLAUDE_SESSION_ID as the primary
+    #   path. When the session-specific marker (named .active-TYPE-SESSION_ID) doesn't
+    #   exist, we iterate all candidate markers and read the manifest session_id to
+    #   find the one belonging to our session. Only when CLAUDE_SESSION_ID is
+    #   unavailable do we fall back to ls -t (with a warning). Issue #101.
     local project_root="$1"
     local agent_type="${2:-unknown}"
     local session_id="${CLAUDE_SESSION_ID:-}"
 
-    # Try session-specific marker first
+    # Primary path: session-specific marker (named .active-TYPE-SESSION_ID)
     if [[ -n "$session_id" ]]; then
         local marker="${TRACE_STORE}/.active-${agent_type}-${session_id}"
         if [[ -f "$marker" ]]; then
             cat "$marker"
             return 0
         fi
+
+        # Session-specific marker not found. Iterate all markers for this agent type
+        # and validate each one against the manifest session_id. This handles the
+        # case where the marker was written with a different session_id format but
+        # the manifest correctly records the session_id we're looking for.
+        local candidate
+        for candidate in "${TRACE_STORE}/.active-${agent_type}-"*; do
+            [[ -f "$candidate" ]] || continue
+            local candidate_trace_id
+            candidate_trace_id=$(cat "$candidate" 2>/dev/null) || continue
+            [[ -n "$candidate_trace_id" ]] || continue
+            local candidate_manifest="${TRACE_STORE}/${candidate_trace_id}/manifest.json"
+            [[ -f "$candidate_manifest" ]] || continue
+            local manifest_session
+            manifest_session=$(jq -r '.session_id // empty' "$candidate_manifest" 2>/dev/null)
+            if [[ "$manifest_session" == "$session_id" ]]; then
+                echo "$candidate_trace_id"
+                return 0
+            fi
+        done
+
+        # No marker matched our session_id — return not found
+        return 1
     fi
 
-    # Fallback: find most recent active marker for this agent type
+    # CLAUDE_SESSION_ID is unavailable: fall back to ls -t (most recent marker).
+    # Log a warning so operators know the session-safe path was bypassed.
+    # This is the original behavior, preserved for backward compatibility when
+    # session IDs are not injected (e.g., legacy hook invocations).
+    echo "WARNING: detect_active_trace: CLAUDE_SESSION_ID not set — using ls -t fallback (glob race possible)" >&2
     local latest
     latest=$(ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null | head -1)
     if [[ -n "$latest" && -f "$latest" ]]; then
@@ -840,7 +877,17 @@ finalize_trace() {
     fi
 
     # Update manifest with jq (merge new fields)
+    # @decision DEC-OBS-OVERHAUL-003
+    # @title jq error propagation in manifest writes
+    # @status accepted
+    # @rationale The previous code used `2>/dev/null` which silently swallowed jq
+    #   parse errors. If the manifest was malformed (corrupt write, encoding issue),
+    #   the update would silently fail with no indication. The fix captures jq stderr,
+    #   checks the exit code, validates the tmp_manifest is non-empty before mv,
+    #   and logs an explicit error to the audit trail so failures are discoverable.
+    #   Issue #100.
     local tmp_manifest="${manifest}.tmp"
+    local jq_err_file="${manifest}.jqerr"
     jq --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        --argjson duration "$duration" \
        --arg trace_status "$trace_status" \
@@ -858,7 +905,21 @@ finalize_trace() {
          proof_status: $proof_status,
          files_changed: $files_changed,
          end_commit: $end_commit
-       }' "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
+       }' "$manifest" > "$tmp_manifest" 2>"$jq_err_file" || {
+        local jq_err_msg
+        jq_err_msg=$(cat "$jq_err_file" 2>/dev/null)
+        echo "ERROR: finalize_trace: jq failed to update manifest for trace $trace_id: $jq_err_msg" >&2
+        rm -f "$tmp_manifest" "$jq_err_file"
+        return 1
+    }
+    rm -f "$jq_err_file"
+    # Validate tmp_manifest is non-empty before replacing the real manifest
+    if [[ ! -s "$tmp_manifest" ]]; then
+        echo "ERROR: finalize_trace: jq produced empty manifest for trace $trace_id — not replacing" >&2
+        rm -f "$tmp_manifest"
+        return 1
+    fi
+    mv "$tmp_manifest" "$manifest"
 
     # Clean active marker
     local session_id="${CLAUDE_SESSION_ID:-}"
@@ -1205,7 +1266,24 @@ refinalize_trace() {
          finished_at: $new_finished_at
        }'
     fi
-    jq "${jq_args[@]}" "$jq_expr" "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
+    # Apply the same jq error handling pattern as finalize_trace (DEC-OBS-OVERHAUL-003):
+    # use a separate error file to capture stderr (stdout goes to tmp_manifest),
+    # check exit code, validate non-empty tmp before mv.
+    local jq_err_file="${manifest}.jqerr"
+    jq "${jq_args[@]}" "$jq_expr" "$manifest" > "$tmp_manifest" 2>"$jq_err_file" || {
+        local jq_err_msg
+        jq_err_msg=$(cat "$jq_err_file" 2>/dev/null)
+        echo "ERROR: refinalize_trace: jq failed to update manifest for trace $trace_id: $jq_err_msg" >&2
+        rm -f "$tmp_manifest" "$jq_err_file"
+        return 1
+    }
+    rm -f "$jq_err_file"
+    if [[ ! -s "$tmp_manifest" ]]; then
+        echo "ERROR: refinalize_trace: jq produced empty manifest for trace $trace_id — not replacing" >&2
+        rm -f "$tmp_manifest"
+        return 1
+    fi
+    mv "$tmp_manifest" "$manifest"
 
     return 0
 }

@@ -173,6 +173,30 @@ if [[ -f "$FINDINGS_FILE" ]]; then
     fi
 fi
 
+# --- Clean up .active-* trace markers for this session ---
+# Active markers are named .active-TYPE-SESSION_ID. When a session ends normally,
+# finalize_trace() already removes the marker via the SubagentStop hook. But if
+# the session ends without SubagentStop firing (crash, /clear, early exit), the
+# marker lingers indefinitely, accumulating as an orphan. Cleaning all markers
+# for the current session here ensures they are always removed on clean exits.
+#
+# @decision DEC-OBS-OVERHAUL-005
+# @title Clean session .active-* markers in session-end.sh
+# @status accepted
+# @rationale Issue #102: 4 orphaned markers accumulated because SubagentStop
+#   didn't fire (or fired after a race). session-end.sh always fires on clean
+#   exit and provides a reliable second cleanup path. We remove only markers
+#   for the current CLAUDE_SESSION_ID, leaving other sessions' markers intact.
+#   The init_trace 2-hour age-based cleanup remains the backstop for crashed
+#   sessions where even session-end doesn't fire.
+SESSION_TRACE_STORE="${TRACE_STORE:-$HOME/.claude/traces}"
+if [[ -n "${CLAUDE_SESSION_ID:-}" && -d "$SESSION_TRACE_STORE" ]]; then
+    for _active_marker in "${SESSION_TRACE_STORE}/.active-"*"-${CLAUDE_SESSION_ID}"; do
+        [[ -f "$_active_marker" ]] && rm -f "$_active_marker" && \
+            log_info "SESSION-END" "Removed active marker: $(basename "$_active_marker")"
+    done
+fi
+
 # --- Clean up session-scoped files (these don't persist) ---
 rm -f "${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "${CLAUDE_DIR}/.session-changes"*

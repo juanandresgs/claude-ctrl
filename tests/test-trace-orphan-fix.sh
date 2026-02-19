@@ -182,10 +182,10 @@ run_test "context-lib.sh: refinalize_trace includes status in change detection" 
     "$(grep -E 'new_status.*cur_status|changed=true.*status' "$CTXLIB" 2>/dev/null | grep -q 'changed' && echo pass || echo "status change detection missing")"
 
 run_test "context-lib.sh: refinalize_trace writes status to manifest" \
-    "$(awk '/refinalize_trace\(\)/,/^}/' "$CTXLIB" 2>/dev/null | grep -q 'new_status\|status.*new_status' && echo pass || echo "status not written to manifest")"
+    "$(awk '/^refinalize_trace\(\)/,/^}/' "$CTXLIB" 2>/dev/null | grep -q 'new_status\|status.*new_status' && echo pass || echo "status not written to manifest")"
 
 run_test "context-lib.sh: refinalize_trace writes finished_at when estimated" \
-    "$(awk '/refinalize_trace\(\)/,/^}/' "$CTXLIB" 2>/dev/null | grep -q 'new_finished_at\|finished_at.*new_finished' && echo pass || echo "finished_at not written to manifest")"
+    "$(awk '/^refinalize_trace\(\)/,/^}/' "$CTXLIB" 2>/dev/null | grep -q 'new_finished_at\|finished_at.*new_finished' && echo pass || echo "finished_at not written to manifest")"
 
 run_test "context-lib.sh: has DEC-REFINALIZE-007 annotation" \
     "$(grep -q 'DEC-REFINALIZE-007' "$CTXLIB" 2>/dev/null && echo pass || echo "DEC-REFINALIZE-007 annotation missing")"
