@@ -371,5 +371,6 @@
   "autoUpdatesChannel": "latest",
   "installation": {
     "method": "native"
-  }
+  },
+  "skipDangerousModePermissionPrompt": true
 }

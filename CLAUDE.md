@@ -36,7 +36,7 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | Planning, architecture | **Planner** | No Write/Edit for source |
 | Implementation, tests | **Implementer** | No — must invoke implementer |
 | E2E verification, demos | **Tester** | No — must invoke tester |
-| Commits, merges, branches | **Guardian** | No git commit/merge/push |
+| Commits, merges, branches | **Guardian** | No git commit/merge/push/branch -d/-D |
 | Research, reading code | Orchestrator / Explore | Read/Grep/Glob only |
 | Post-guardian health check | Orchestrator | Invoke `/diagnose` when check-guardian.sh suggests it |
 | Editing `~/.claude/` config | Orchestrator | Trivial edits only (gitignore, 1-line, typos). Features use worktrees. |
@@ -96,7 +96,7 @@ When the task touches unfamiliar areas, read relevant files from the Resources t
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
 6. **No Implementation Without Plan** — MASTER_PLAN.md before first line of code. Plan produces GitHub issues. Issues drive implementation.
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
-8. **Approval Gates** — Commits, merges, force pushes require explicit user approval.
+8. **Approval Gates** — Commits, merges, force pushes, and bulk destructive ops (deleting branches, removing worktrees with uncommitted work, pruning refs) require explicit user approval and go through Guardian.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues. MASTER_PLAN.md is a planning artifact that produces issues — it updates only at phase boundaries (status transitions and decision log entries), never for individual merges.
 10. **Proof Before Commit** — The tester runs the feature live, presents evidence,
     and provides a verification assessment (methodology, coverage gaps, confidence

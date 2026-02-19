@@ -11,11 +11,13 @@
   skills/    — 8 skills (deep-research, decide, consume-content, ...)
   commands/  — 6 slash commands (backlog, compact, ...)
   scripts/   — Utility scripts (todo, update-check, batch-fetch)
-  traces/    — Agent trace protocol (52 indexed traces)
+  traces/    — Agent trace protocol (43 manifests, 39 indexed, 489 in oldTraces/)
   tests/     — Hook validation suite (121 tests)
+  observatory/ — Self-improvement flywheel (analyze, suggest, report)
 
 ### Active Work
-  v2 Governance + Observability — fuse observability into governance layer
+  Observability Platform Overhaul — fix degraded trace lifecycle, observatory pipeline, test coverage
+  v2 Session Observability — fuse observability into governance layer (partially implemented, deferred)
 
 ---
 
@@ -28,31 +30,66 @@
 
 ## Problem Statement
 
-The v1 system is stateless within sessions and amnesiac across sessions:
-- Hooks fire, decide, forget — no trajectory awareness
-- Agents pass artifacts in isolation, not sharing a narrative
-- Commits describe what changed, not how we got there
-- Sessions are ephemeral — no trace survives session end
-- Recovery from agent mistakes requires manual git surgery
-- New sessions start cold — same friction recurs across sessions
+A comprehensive audit (2026-02-18) revealed 14 significant issues across the trace
+lifecycle, observatory pipeline, and test coverage. The system is functionally degraded:
+- Observatory suggestion pipeline only produces output for cohort regressions (2/8 signals
+  are in regression; the other 6 are marked implemented but some fixes were incomplete)
+- 74% of traces (14/19 in post-refinalize index) have test_result="unknown"
+- Index out of sync: 39 entries vs 43 manifests (4 traces missing from index)
+- 489 traces in oldTraces/ invisible to observatory analysis
+- 4 orphaned active trace markers from crashed agents
+- Silent jq failures in finalize/refinalize mask manifest update errors
+- detect_active_trace() glob expansion race with concurrent same-type agents
+
+The v2 session observability features (session events, checkpoints, cross-session learning)
+were partially implemented during organic development but were never formally validated
+against their original requirements. The existing plan (Phases 0-4) is stale — 75% source
+file churn since last update, and several planned features already exist in code.
+
+**Dominant Constraint:** data quality (observatory insights are only as good as the trace data)
 
 ## Goals & Non-Goals
 
 ### Goals
-- REQ-GOAL-001: Every session leaves a persistent trace (event log + summary)
-- REQ-GOAL-002: Mid-session recovery in seconds via named checkpoints
-- REQ-GOAL-003: Commits narrate engineering journey (approaches, friction, alternatives)
-- REQ-GOAL-004: Hooks provide contextual guidance based on session trajectory
+- REQ-GOAL-001: Observatory flywheel produces actionable suggestions from trace data
+- REQ-GOAL-002: Trace manifests accurately reflect agent outcomes (test results, files changed, duration)
+- REQ-GOAL-003: Every session leaves a persistent trace (event log + summary)
+- REQ-GOAL-004: Mid-session recovery in seconds via named checkpoints
 - REQ-GOAL-005: System learns across sessions (friction patterns surfaced proactively)
 
 ### Non-Goals
 - REQ-NOGO-001: External logging service integration — local files only
 - REQ-NOGO-002: Real-time dashboard — event log is for post-hoc analysis and agent use
 - REQ-NOGO-003: Modifying the trace protocol — session events complement traces, not replace
+- REQ-NOGO-004: Reprocessing oldTraces/ data into the main index — archive is read-only reference
+- REQ-NOGO-005: Rewriting observatory from scratch — targeted fixes to existing pipeline
 
 ## Requirements
 
-### Must-Have (P0)
+### Must-Have (P0) — Observability Overhaul
+
+- REQ-P0-OBS-001: Observatory suggest.sh produces suggestions for all active signals, including regression re-proposals.
+  Acceptance: Given 2+ cohort regressions in analysis-cache.json, When suggest.sh runs, Then SUG-NNN.json files are created for each regression.
+
+- REQ-P0-OBS-002: jq failures in finalize_trace and refinalize_trace are logged, not silently swallowed.
+  Acceptance: Given a malformed manifest.json, When finalize_trace runs, Then an error is logged to stderr and the function returns non-zero.
+
+- REQ-P0-OBS-003: detect_active_trace() returns the correct trace for the current session without glob race.
+  Acceptance: Given two concurrent planner agents, When detect_active_trace is called, Then each gets its own trace_id (not the other's).
+
+- REQ-P0-OBS-004: Trace index stays in sync with manifests — rebuild_index covers all trace directories.
+  Acceptance: Given 43 manifest files exist, When rebuild_index runs, Then index.jsonl has 43 entries.
+
+- REQ-P0-OBS-005: refinalize_stale_traces runs successfully and heals orphaned/stale traces.
+  Acceptance: Given 4 orphaned active markers, When refinalize_stale_traces runs, Then markers are cleaned and stale manifests are updated.
+
+- REQ-P0-OBS-006: Observatory tests pass on main branch without worktree dependencies.
+  Acceptance: Given a fresh clone on main, When tests/test-observatory-*.sh run, Then all tests pass.
+
+- REQ-P0-OBS-007: test_result detection covers .test-status fallback in both finalize and refinalize paths.
+  Acceptance: Given a trace with .test-status=pass but no test-output.txt, When finalize_trace runs, Then test_result=pass in manifest.
+
+### Must-Have (P0) — v2 Session Observability (already partially implemented)
 
 - REQ-P0-001: `.session-events.jsonl` written atomically during sessions with structured events.
   Acceptance: After any session with tool calls, `.session-events.jsonl` exists with valid JSONL.
@@ -83,55 +120,217 @@ The v1 system is stateless within sessions and amnesiac across sessions:
 - REQ-P1-001: Session retrospective written as human-readable summary.
 - REQ-P1-002: Checkpoint frequency auto-tuned (more frequent near test failures).
 - REQ-P1-003: Cross-session friction pattern detection (same assertion failing across sessions).
+- REQ-P1-004: analyze.sh counts oldTraces/ in its dataset when computing historical baselines.
+- REQ-P1-005: Assessment report auto-regenerates when analysis-cache is newer than report.
+
+### Future Consideration (P2)
+
+- REQ-P2-001: Structured development log digest in session-init (not just prior session summaries).
+- REQ-P2-002: Historical baseline detection uses multi-day windows instead of single-day threshold.
 
 ## Definition of Done
 
-All P0 requirements satisfied. All existing hook tests continue to pass. Each phase
-independently valuable and mergeable. v2 retrospective completed after Phase 4.
+All P0 requirements satisfied. All existing hook tests continue to pass. Observatory
+flywheel produces actionable suggestions. Each phase independently valuable and mergeable.
 
 ## Architectural Decisions
 
 - DEC-V2-001: Session events as JSONL append-only log.
   Addresses: REQ-P0-001.
-  Rationale: JSONL is atomic (one write per line), grep-friendly, and doesn't require
-  parsing the entire file to append. Alternatives: SQLite (heavier, overkill for <1000
-  events/session), plain text (not structured enough for trajectory queries).
 
 - DEC-V2-002: Git ref-based checkpoints via plumbing commands.
   Addresses: REQ-P0-004, REQ-P0-005.
-  Rationale: Git refs are first-class, survive garbage collection when referenced, and
-  support random access without branch switching or stash pollution. Using write-tree +
-  commit-tree + update-ref avoids touching the working copy or staging area.
 
 - DEC-V2-003: Session archive indexed by project hash.
   Addresses: REQ-P0-003, REQ-P0-008.
-  Rationale: Project paths contain spaces and special characters. A hash of the project
-  path provides a stable, filesystem-safe directory name. Index.jsonl per project enables
-  fast cross-session queries without reading every archived session.
 
 - DEC-V2-004: Trajectory data as shell variables, not JSON.
   Addresses: REQ-P0-002.
-  Rationale: Hooks are bash scripts. Shell variables (TRAJ_TOOL_CALLS=23) are faster to
-  produce and consume than JSON parsing via jq. The event log itself is JSON for structure;
-  the aggregates are shell variables for speed.
 
 - DEC-V2-005: Session context in commits as structured text block, not metadata.
   Addresses: REQ-P0-006.
-  Rationale: Git commit messages are the universal interface — every tool (GitHub, git log,
-  blame) displays them. Structured text (Key: value) is human-readable and grep-parseable.
-  Alternatives: git notes (not pushed by default, easily lost), trailers (limited to
-  single-line values).
 
-## Intent Statements
+- DEC-OBS-OVERHAUL-001: Fix forward, not rewrite — targeted patches to existing pipeline.
+  Addresses: REQ-P0-OBS-001 through REQ-P0-OBS-007.
+  Rationale: The observatory pipeline (analyze.sh, suggest.sh, report.sh) is architecturally
+  sound. The issues are specific bugs (jq error handling, glob races, missing fallbacks),
+  not design flaws. Rewriting would lose the extensive @decision documentation and tested
+  signal metadata. Fix the bugs, heal the data, add missing tests.
 
-- **INTENT-01**: Every session leaves a trace. Event log + summary persist in `~/.claude/sessions/`.
-- **INTENT-02**: Mid-session recovery takes seconds, not minutes. `/rewind` restores to checkpoint.
-- **INTENT-03**: Commits tell engineering stories. Non-trivial commits include session context.
-- **INTENT-04**: Hooks steer, not just block. Contextual guidance based on trajectory.
-- **INTENT-05**: System learns across sessions. Prior friction surfaced proactively.
+- DEC-OBS-OVERHAUL-002: Session-specific marker lookup before glob fallback in detect_active_trace.
+  Addresses: REQ-P0-OBS-003.
+  Rationale: The glob fallback (`ls -t .active-TYPE-*`) races when concurrent agents of
+  the same type exist. The session-specific marker (`CLAUDE_SESSION_ID`) is already checked
+  first but falls through to the racy glob when the session ID is missing. Fix: make the
+  glob fallback validate the marker's trace_id against the manifest's session_id.
 
-## Phase 0: Session Event Log (Foundation)
-**Status:** planned
+- DEC-OBS-OVERHAUL-003: jq error propagation via explicit error checking, not /dev/null.
+  Addresses: REQ-P0-OBS-002.
+  Rationale: 151 instances of `2>/dev/null` in context-lib.sh. Not all should be removed —
+  many are legitimate (optional fields, non-git directories). The critical path is the
+  manifest update in finalize_trace (line 844-861) where a jq failure silently drops all
+  field updates. Fix: check jq exit code and log failures for the manifest write path.
+
+## Critical Files
+- `hooks/context-lib.sh` — All trace lifecycle functions (init, finalize, refinalize, rebuild_index)
+- `skills/observatory/scripts/suggest.sh` — Suggestion pipeline (signal scoring, batch grouping)
+- `skills/observatory/scripts/analyze.sh` — Analysis pipeline (signal detection, cohort regression)
+- `observatory/state.json` — Implemented/rejected/deferred signal tracking
+- `tests/test-observatory-*.sh` — Observatory test suite (4 test files, worktree-dependent)
+
+---
+
+## Phase 0: Critical Fixes (Observatory Pipeline Revival)
+**Status:** completed
+**Decision IDs:** DEC-OBS-OVERHAUL-001, DEC-OBS-OVERHAUL-002, DEC-OBS-OVERHAUL-003
+**Requirements:** REQ-P0-OBS-001, REQ-P0-OBS-002, REQ-P0-OBS-003, REQ-P0-OBS-005
+**Issues:** #99, #100, #101, #102
+**Definition of Done:**
+- REQ-P0-OBS-001 satisfied: suggest.sh produces SUG files for regression signals AND any new unimplemented signals
+- REQ-P0-OBS-002 satisfied: finalize_trace manifest write failures are logged and detectable
+- REQ-P0-OBS-003 satisfied: detect_active_trace returns correct trace_id with concurrent agents
+- REQ-P0-OBS-005 satisfied: refinalize_stale_traces heals orphaned markers and stale manifests
+
+### Planned Decisions
+- DEC-OBS-OVERHAUL-001: Fix-forward approach for pipeline bugs — Addresses: REQ-P0-OBS-001, REQ-P0-OBS-002
+- DEC-OBS-OVERHAUL-002: Session-specific marker validation in detect_active_trace — Addresses: REQ-P0-OBS-003
+- DEC-OBS-OVERHAUL-003: jq error propagation in manifest writes — Addresses: REQ-P0-OBS-002
+
+### Work Items
+
+**C1: Verify and harden suggest.sh cohort regression path**
+- The cohort regression query (lines 258-260) works correctly in isolation but the pipeline
+  was reported as producing zero output. Investigate whether state.json entries lack
+  implemented_at timestamps (preventing cohort analysis) or whether the signal loop
+  receives no signals from analysis-cache.
+- Root cause: All 8 signals are in state.json as "implemented". The pipeline only produces
+  output for signals with cohort regressions. Currently 2 regressions exist and DO produce
+  output when run manually. The audit finding may have been from a stale analysis-cache.
+- Fix: Add defensive logging to suggest.sh so empty output is diagnosable. Validate that
+  all implemented entries in state.json have implemented_at timestamps for cohort analysis.
+
+**C2: Add jq error handling to finalize_trace manifest write**
+- Lines 844-861: `jq ... "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"`
+- The `2>/dev/null` hides jq parse errors (malformed manifest). If jq fails, the `&&`
+  prevents the mv but the error is invisible.
+- Fix: Remove `2>/dev/null` from the critical jq call. Log the error. Return non-zero.
+- Apply same pattern to refinalize_trace manifest write.
+
+**C3: Fix detect_active_trace glob race**
+- Line 649: `ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null | head -1`
+- With concurrent same-type agents, `ls -t` returns the most recently modified marker,
+  which may belong to a different session.
+- Fix: When CLAUDE_SESSION_ID is empty, iterate markers and validate each against the
+  manifest's session_id field before returning.
+
+**H1: Heal orphaned active traces**
+- 4 orphaned .active-* markers exist (though init_trace already cleans markers >2hrs old).
+- Immediate: Run refinalize_stale_traces to heal stale manifests.
+- Verify the 1 current active marker (.active-planner-*) is this session.
+
+### Critical Files
+- `hooks/context-lib.sh` — finalize_trace (lines 661-879), detect_active_trace (lines 633-656)
+- `skills/observatory/scripts/suggest.sh` — cohort regression check (lines 255-268)
+- `observatory/state.json` — implemented signal entries need implemented_at validation
+
+### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+
+## Phase 1: Data Quality (Trace Accuracy)
+**Status:** completed
+**Decision IDs:** DEC-OBS-OVERHAUL-001
+**Requirements:** REQ-P0-OBS-004, REQ-P0-OBS-006, REQ-P0-OBS-007
+**Issues:** #103, #104, #105, #106
+**Definition of Done:**
+- REQ-P0-OBS-004 satisfied: index.jsonl has entries for all manifest files
+- REQ-P0-OBS-006 satisfied: observatory test suite passes on main without worktree deps
+- REQ-P0-OBS-007 satisfied: .test-status fallback resolves unknown test results
+
+### Work Items
+
+**H2: Validate .test-status fallback effectiveness**
+- finalize_trace already has .test-status fallback (lines 727-743). refinalize_trace
+  also has it (lines 961-1012) with timestamp window validation.
+- 74% of traces still show unknown — investigate why the fallback isn't resolving them.
+  Likely: .test-status doesn't exist at finalize time (agent hasn't written it yet),
+  and refinalize hasn't been run since the fix shipped.
+- Fix: Run refinalize_stale_traces to heal existing traces. Verify fallback logic is correct.
+
+**H3: Rebuild index to sync with manifests**
+- 39 index entries vs 43 manifests. 4 traces missing from index.
+- Fix: Run rebuild_index() to resync. Add a pre-flight check to analyze.sh that
+  detects index/manifest count mismatch and auto-rebuilds.
+
+**H5: Fix missing start_commit/end_commit in traces**
+- 10 traces missing end_commit, 6 missing start_commit per audit.
+- Root cause: end_commit only captured when project_root is a git repo AND git rev-parse
+  succeeds. For worktree-based work that was already merged/deleted, this fails.
+- Fix: start_commit is already captured in init_trace. end_commit capture in finalize_trace
+  (line 838) is correct but only runs if project_root has a .git dir. For the existing
+  traces, this is data that cannot be retroactively recovered.
+
+**M5: Fix observatory tests — remove worktree dependency**
+- 4 test files depend on feature branch worktrees that no longer exist.
+- Fix: Make tests self-contained — create temporary test fixtures instead of depending
+  on worktree state. Use `mktemp -d` for isolated test environments.
+
+### Critical Files
+- `hooks/context-lib.sh` — rebuild_index (lines 1291-1326), refinalize_stale_traces (lines 1220-1273)
+- `tests/test-observatory-*.sh` — 4 test files with worktree dependencies
+- `traces/index.jsonl` — trace index (39 entries, should be 43)
+
+### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+
+## Phase 2: Pipeline Completion (Observatory Enhancement)
+**Status:** completed
+**Decision IDs:** DEC-OBS-OVERHAUL-001
+**Requirements:** REQ-P1-004, REQ-P1-005, REQ-P2-001
+**Issues:** #107, #108, #109, #110
+**Definition of Done:**
+- analyze.sh produces accurate signal counts including oldTraces/ context
+- Assessment report reflects latest analysis-cache
+- Session-init structured development log digest implemented
+
+### Work Items
+
+**H4: Count oldTraces/ in observatory analysis**
+- analyze.sh Stage 2 (artifact health scan) only counts depth-1 dirs in traces/.
+  The 489 traces in oldTraces/ are invisible.
+- Fix: Extend the artifact health scan to optionally include oldTraces/ as a
+  historical reference dataset. Do not add them to the active index — they are
+  archived data. Add a `historical_traces` section to analysis-cache.json.
+
+**M1: Auto-regenerate assessment report**
+- Assessment report is generated before latest analysis cache, making it stale.
+- Fix: Add a timestamp check in report.sh — if analysis-cache.json is newer than
+  the assessment report, regenerate before rendering.
+
+**M2: Historical baseline detection improvement**
+- NO_HISTORICAL_BASELINE flag may false-fire when all traces are from today,
+  suppressing trend analysis even when there are multiple runs within a day.
+- Fix: Use run count (>1 analysis-cache.prev.json exists) instead of calendar day
+  uniqueness as the baseline indicator.
+
+**M3: Session-init structured development log digest**
+- Currently session-init shows last trace info but not a structured summary of
+  recent development activity.
+- Fix: Build a compact digest from the last 5 traces: agent type, outcome, duration,
+  files changed. Inject as structured context at session start.
+
+### Critical Files
+- `skills/observatory/scripts/analyze.sh` — Stage 2 artifact scan, Stage 0 baseline detection
+- `skills/observatory/scripts/report.sh` — Assessment report generation
+- `hooks/session-init.sh` — Development log digest injection
+
+### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+
+## Phase 3: v2 Session Event Log (Foundation)
+**Status:** in-progress
 **Decision IDs:** DEC-V2-001, DEC-V2-003, DEC-V2-004
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
 **Issues:** #81
@@ -140,27 +339,25 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 - REQ-P0-002 satisfied: `get_session_trajectory()` returns accurate aggregates
 - REQ-P0-003 satisfied: Events archived to `~/.claude/sessions/<project>/` on session end
 
-### File Changes
+### Implementation Status
+The following are already implemented in the codebase:
+- `append_session_event()` in context-lib.sh (functional)
+- `get_session_trajectory()` in context-lib.sh (functional)
+- Session archive in session-end.sh (functional, writes index.jsonl)
+- `get_prior_sessions()` in context-lib.sh (functional)
 
-| File | Change |
-|------|--------|
-| `hooks/context-lib.sh` | Add `append_session_event()`, `get_session_trajectory()`, `get_session_summary_context()` (~80 lines) |
-| `hooks/track.sh` | Call `append_session_event "write"` after tracking file change (~3 lines) |
-| `hooks/guard.sh` | Log gate evaluations via `append_session_event "gate_eval"` (~10 lines) |
-| `hooks/session-init.sh` | Initialize `.session-events.jsonl` with `session_start` event (~5 lines) |
-| `hooks/session-end.sh` | Archive event log to `~/.claude/sessions/`, add to cleanup (~15 lines) |
-
-### Test Plan
-- Write events, read back, verify JSONL format
-- `get_session_trajectory()` returns correct aggregates from sample event log
-- Session archive created in correct directory with correct content
+### Remaining Work
+- Validate event schema matches the planned schema (below)
+- Verify `get_session_trajectory()` accuracy against known event logs
+- Add unit tests for session event functions
+- Ensure all planned event sources are wired (track.sh, guard.sh, checkpoint.sh)
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 1: Checkpoints & Rewind
-**Status:** planned
+## Phase 4: v2 Checkpoints & Rewind
+**Status:** in-progress
 **Decision IDs:** DEC-V2-002
 **Requirements:** REQ-P0-004, REQ-P0-005
 **Issues:** #82
@@ -168,34 +365,28 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 - REQ-P0-004 satisfied: Checkpoint refs created at correct frequency
 - REQ-P0-005 satisfied: `/rewind` restores working tree to checkpoint state
 
-### File Changes
+### Implementation Status
+- `hooks/checkpoint.sh` exists and is registered in settings.json
+- `skills/rewind/` skill exists with SKILL.md
+- Checkpoint refs created on Write/Edit tool calls
 
-| File | Change |
-|------|--------|
-| `hooks/checkpoint.sh` | **New** — PreToolUse hook for Write/Edit, creates git ref checkpoints (~60 lines) |
-| `skills/rewind.md` | **New** — Skill listing + restoring checkpoints (~30 lines) |
-| `hooks/subagent-start.sh` | Reset `.checkpoint-counter` on implementer start (~5 lines) |
-| `settings.json` | Register `checkpoint.sh` in PreToolUse Write/Edit matcher |
-| `agents/guardian.md` | Add checkpoint ref cleanup to merge protocol (~5 lines) |
-
-### Test Plan
-- Checkpoint ref created after threshold tool calls
-- Multiple checkpoints have sequential numbering
-- `/rewind` lists checkpoints with timestamps
-- `/rewind` restores correct file state
-- Checkpoints cleaned up after merge
+### Remaining Work
+- Validate checkpoint creation frequency and ref naming
+- Verify `/rewind` restore accuracy
+- Add tests for checkpoint lifecycle
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 2: Session Summaries in Commits
+## Phase 5: v2 Session-Aware Hooks + Commit Context
 **Status:** planned
 **Decision IDs:** DEC-V2-005
-**Requirements:** REQ-P0-006
-**Issues:** #83
+**Requirements:** REQ-P0-006, REQ-P0-007
+**Issues:** #83, #84
 **Definition of Done:**
 - REQ-P0-006 satisfied: Non-trivial commits include `--- Session Context ---` block
+- REQ-P0-007 satisfied: test-gate provides trajectory-based guidance on strike 2+
 
 ### File Changes
 
@@ -203,65 +394,8 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 |------|--------|
 | `agents/guardian.md` | Add session context protocol (~20 lines) |
 | `hooks/subagent-start.sh` | Inject session summary when spawning Guardian (~15 lines) |
-| `hooks/context-lib.sh` | Add `get_session_summary_context()` (~40 lines) |
-
-### Test Plan
-- `get_session_summary_context()` produces structured text from sample events
-- Non-trivial session (>5 tool calls) generates context block
-- Trivial session (<5 tool calls) omits context block
-
-### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-
-## Phase 3: Session-Aware Hooks
-**Status:** planned
-**Decision IDs:** (trajectory analysis additions)
-**Requirements:** REQ-P0-007
-**Issues:** #84
-**Definition of Done:**
-- REQ-P0-007 satisfied: test-gate provides trajectory-based guidance on strike 2+
-
-### File Changes
-
-| File | Change |
-|------|--------|
-| `hooks/context-lib.sh` | Add `detect_approach_pivots()` (~30 lines) |
+| `hooks/context-lib.sh` | Add `get_session_summary_context()`, `detect_approach_pivots()` |
 | `hooks/test-gate.sh` | Trajectory-aware guidance on strike 2+ (~30 lines replacement) |
-| `hooks/session-summary.sh` | Structured retrospective with trajectory data (~40 lines) |
-
-### Test Plan
-- `detect_approach_pivots()` finds repeated edit+fail patterns in sample events
-- test-gate on strike 2+ with event log mentions specific assertion and files
-- test-gate without event log falls back to current behavior
-- Session summary includes trajectory narrative
-
-### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-
-## Phase 4: Cross-Session Learning
-**Status:** planned
-**Decision IDs:** DEC-V2-003
-**Requirements:** REQ-P0-008
-**Issues:** #85
-**Definition of Done:**
-- REQ-P0-008 satisfied: Prior session friction injected at session start after 3+ sessions
-
-### File Changes
-
-| File | Change |
-|------|--------|
-| `hooks/session-end.sh` | Write session index entry to `~/.claude/sessions/<project>/index.jsonl` (~20 lines) |
-| `hooks/session-init.sh` | Read + inject prior session context and friction patterns (~25 lines) |
-| `hooks/context-lib.sh` | Add `get_prior_sessions()` (~30 lines) |
-
-### Test Plan
-- Session index entry written with correct schema
-- Index trimmed to last 20 entries
-- `get_prior_sessions()` returns recent summaries and friction patterns
-- session-init injects prior session context when index exists
-- Friction patterns detected from recurring entries across sessions
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
@@ -288,11 +422,9 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
   "project": "name",
   "started": "ISO8601",
   "duration_min": N,
-  "agents": ["type1", "type2"],
   "files_touched": ["path1", "path2"],
   "tool_calls": N,
   "checkpoints": N,
-  "rewinds": N,
   "pivots": N,
   "friction": ["description1"],
   "outcome": "committed|tests-passing|tests-failing",
@@ -303,19 +435,45 @@ independently valuable and mergeable. v2 retrospective completed after Phase 4.
 ## Worktree Strategy
 
 Main is sacred. Each phase works in its own worktree:
-- **Phase 0:** `~/.claude/.worktrees/v2-phase-0` on branch `feature/v2-phase-0`
-- **Phases 1-4:** Sequential worktrees after Phase 0 merges
+- **Phase 0:** `~/.claude/.worktrees/obs-overhaul-phase-0` on branch `fix/obs-critical`
+- **Phase 1:** `~/.claude/.worktrees/obs-overhaul-phase-1` on branch `fix/obs-data-quality`
+- **Phase 2:** `~/.claude/.worktrees/obs-overhaul-phase-2` on branch `feature/obs-pipeline-completion`
+- **Phases 3-5:** Sequential worktrees after overhaul merges
 
-Implementation order: Phase 0 (foundation, must be first) -> Phase 1 (checkpoints) ->
-Phase 2 (commit context) -> Phase 3 (smart hooks) -> Phase 4 (cross-session).
-Each phase is independently valuable and mergeable.
+Implementation order: Phase 0 (critical fixes, must be first) -> Phase 1 (data quality,
+depends on Phase 0 healing) -> Phase 2 (pipeline completion) -> Phases 3-5 (v2 features,
+deferred until observatory is healthy).
+
+Phase 0 and Phase 1 can be done in rapid succession (same worktree if desired).
+Phase 2 is independent and can parallelize with Phase 1.
 
 ## References
 
-### New State Files
+### State Files
 | File | Scope | Written By | Read By |
 |------|-------|-----------|---------|
 | `.session-events.jsonl` | Session | track.sh, guard.sh, checkpoint.sh | context-lib.sh, session-summary.sh |
 | `~/.claude/sessions/<project>/<session>.jsonl` | Persistent | session-end.sh | session-init.sh |
 | `~/.claude/sessions/<project>/index.jsonl` | Persistent | session-end.sh | session-init.sh |
 | `refs/checkpoints/<branch>/N` | Branch-scoped | checkpoint.sh | /rewind, Guardian |
+| `observatory/state.json` | Persistent | observatory skill | suggest.sh, analyze.sh |
+| `observatory/analysis-cache.json` | Persistent | analyze.sh | suggest.sh, report.sh |
+| `traces/index.jsonl` | Persistent | finalize_trace, rebuild_index | analyze.sh, session-init.sh |
+
+### Audit Findings Reference
+| ID | Severity | Summary | Phase |
+|----|----------|---------|-------|
+| C1 | Critical | suggest.sh pipeline produces zero output (all signals implemented, cohort regression path untested) | 0 |
+| C2 | Critical | Silent jq failures in finalize/refinalize manifest writes | 0 |
+| C3 | Critical | detect_active_trace glob race with concurrent agents | 0 |
+| H1 | High | 4 orphaned active trace markers (>16h old) | 0 |
+| H2 | High | 74% of traces have test_result="unknown" | 1 |
+| H3 | High | Index out of sync: 39 entries vs 43 manifests | 1 |
+| H4 | High | oldTraces/ (489) not counted in observatory analysis | 2 |
+| H5 | High | 10 traces missing end_commit, 6 missing start_commit | 1 |
+| M1 | Medium | Assessment report stale — generated before latest analysis cache | 2 |
+| M2 | Medium | Historical baseline detection may false-flag | 2 |
+| M3 | Medium | Session-init lacks structured development log digest | 2 |
+| M4 | Medium | Phase 4 Cross-Session Learning not implemented | 3 (already done) |
+| M5 | Medium | Observatory tests depend on feature branch worktrees | 1 |
+| M6 | Medium | SUG-file mapping fragile — renumbering on each run | N/A (by design, DEC-OBS-022) |
