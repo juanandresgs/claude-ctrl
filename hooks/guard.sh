@@ -47,6 +47,17 @@ set -euo pipefail
 _GUARD_COMPLETED=false
 _guard_deny_on_crash() {
     if [[ "$_GUARD_COMPLETED" != "true" ]]; then
+        # During merge on ~/.claude, degrade to allow instead of deny.
+        # Prevents deadlock when guard.sh itself has conflicts or runtime
+        # errors during merge resolution. Without this, crash-deny +
+        # branch-guard.sh creates a circular block where neither Write
+        # nor Bash can fix guard.sh.
+        local _merge_git_dir
+        _merge_git_dir="$(git -C "$HOME/.claude" rev-parse --absolute-git-dir 2>/dev/null || echo "")"
+        if [[ -n "$_merge_git_dir" && -f "$_merge_git_dir/MERGE_HEAD" ]]; then
+            return  # Degrade to allow — merge deadlock prevention
+        fi
+
         cat <<'CRASHJSON'
 {
   "hookSpecificOutput": {
