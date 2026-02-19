@@ -9,7 +9,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/commits/main)
 [![Shell](https://img.shields.io/badge/language-bash-green.svg)](hooks/)
 
-A batteries-included governance layer for Claude Code. Four specialized agents handle planning, implementation, verification, and git operations. Thirty-three shell scripts enforce the rules at every lifecycle event, regardless of context window pressure.
+A batteries-included governance layer for Claude Code. Four specialized agents handle planning, implementation, verification, and git operations. Shell scripts enforce the rules at every lifecycle event, regardless of context window pressure.
 
 **Instructions guide. Hooks enforce.**
 
@@ -19,13 +19,13 @@ A batteries-included governance layer for Claude Code. Four specialized agents h
 
 ```
 ~/.claude/
-├── hooks/          # 30 hook scripts + 3 shared libraries
+├── hooks/          # Hook scripts and shared libraries
 ├── agents/         # 4 agent definitions (Planner, Implementer, Tester, Guardian)
 ├── skills/         # 11 skills across 3 domains
-├── commands/       # 3 slash commands (/compact, /backlog, /approve)
+├── commands/       # Slash commands (/compact, /backlog)
 ├── scripts/        # 7 utility scripts + lib/
 ├── observatory/    # Self-improving trace analysis
-├── traces/         # Agent execution archive (491 indexed)
+├── traces/         # Agent execution archive
 ├── tests/          # Hook validation suite
 ├── ARCHITECTURE.md # Definitive technical reference (18 sections)
 ├── CLAUDE.md       # Session instructions (loaded every time)
@@ -220,7 +220,7 @@ These are non-negotiable. Each one is enforced by hooks that run every time, reg
 |---|----------|-------------|
 | 1 | **Always Use Git** | `session-init.sh` injects git state; `guard.sh` blocks destructive operations |
 | 2 | **Main is Sacred** | `branch-guard.sh` blocks writes on main; `guard.sh` blocks commits on main |
-| 3 | **No /tmp/** | `guard.sh` rewrites `/tmp/` paths to project `tmp/` directory |
+| 3 | **No /tmp/** | `guard.sh` denies `/tmp/` paths and directs model to use project `tmp/` directory |
 | 4 | **Nothing Done Until Tested** | `test-gate.sh` warns then blocks source writes when tests fail; `guard.sh` requires test evidence for commits |
 | 5 | **Solid Foundations** | `mock-gate.sh` detects and escalates internal mocking (warn → deny) |
 | 6 | **No Implementation Without Plan** | `plan-check.sh` denies source writes without MASTER_PLAN.md |
@@ -246,7 +246,8 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| **guard.sh** | PreToolUse:Bash | `/tmp/` rewrite, main protection, `--force-with-lease`, test evidence gate |
+| **guard.sh** | PreToolUse:Bash | Main protection, `/tmp/` denial, `--force-with-lease`, test evidence gate |
+| **doc-freshness.sh** | PreToolUse:Bash | Enforce documentation freshness at merge time; blocks merges to main when tracked docs are critically stale |
 | **auto-review.sh** | PreToolUse:Bash | Three-tier command classifier: auto-approve safe, defer risky to user |
 | **checkpoint.sh** | PreToolUse:Write\|Edit | Git ref-based snapshots before writes (restoreable via `/rewind`) |
 | **test-gate.sh** | PreToolUse:Write\|Edit | Escalating gate: warn then block when tests fail |
@@ -296,6 +297,8 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 | **check-implementer.sh** | SubagentStop:implementer | Enforce proof-of-work (live demo + tests) before commits |
 | **check-tester.sh** | SubagentStop:tester | Auto-verify evaluation; write `.proof-status` if High confidence + clean |
 | **check-guardian.sh** | SubagentStop:guardian | Validate commit message format and issue linkage |
+| **check-explore.sh** | SubagentStop:Explore | Post-exploration validation for Explore agents; validates research output quality |
+| **check-general-purpose.sh** | SubagentStop:general-purpose | Post-execution validation for general-purpose agents; validates output quality |
 
 ---
 
@@ -365,7 +368,6 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 |---------|---------|
 | `/compact` | Generate structured context summary before compaction (prevents amnesia) |
 | `/backlog` | Unified backlog management — list, create, close, triage todos via GitHub Issues |
-| `/approve` | Quick-approve tester verification evidence to unblock Guardian dispatch |
 
 ---
 
@@ -388,8 +390,8 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | Behavior | Default CC | With This System |
 |----------|-----------|-----------------|
 | Branch management | Works on whatever branch | Blocked from writing on main; worktree isolation enforced |
-| Temporary files | Writes to `/tmp/` | Rewritten to project `tmp/` directory |
-| Force push | Executes directly | Rewritten to `--force-with-lease`; requires approval |
+| Temporary files | Writes to `/tmp/` | Denied with redirect to project `tmp/` directory |
+| Force push | Executes directly | Denied to main/master; `--force` elsewhere rewritten to `--force-with-lease` |
 | Test discipline | Tests optional | Writes blocked when tests fail; commits require test evidence |
 | Mocking | Mocks anything | Internal mocks warned then blocked; external boundary mocks only |
 | Planning | Implements immediately | Plan mode by default; MASTER_PLAN.md required before code |
@@ -423,7 +425,7 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | test-gate blocking unexpectedly | Check `.claude/.test-status` — stale from previous session? Delete it |
 | SessionStart not injecting context | Known bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)). `prompt-submit.sh` mitigates on first prompt |
 | CWD bricked after worktree deletion | guard.sh Check 0.5 auto-recovers on next Bash call. Prevention: never `cd` into worktrees from orchestrator — use absolute paths |
-| Stale `.proof-status` blocking commits | Delete `.claude/.proof-status` manually, or run `/approve` to re-trigger the gate |
+| Stale `.proof-status` blocking commits | Delete `.claude/.proof-status` manually, or re-run the tester to generate fresh evidence |
 
 ## Recovery and Uninstall
 

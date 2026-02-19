@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Documentation audit** — 38 discrepancies resolved: hardcoded hook counts removed, 3 undocumented hooks documented, /approve eradicated, updatedInput contradiction corrected, tester max_turns fixed
+- **doc-freshness.sh** — PreToolUse:Bash hook enforcing documentation freshness at merge time; blocks merges to main when tracked docs are critically stale
+- **check-explore.sh** — SubagentStop:Explore hook for post-exploration validation of Explore agent output quality
+- **check-general-purpose.sh** — SubagentStop:general-purpose hook for post-execution validation of general-purpose agent output quality
 - **Observatory System** — Self-improving flywheel: trace analysis, signal extraction, improvement suggestions with cohort-based regression detection (`observatory/`, `skills/observatory/`)
 - **Tester Agent** — Fourth agent for end-to-end verification with auto-verify fast path (`agents/tester.md`, `hooks/check-tester.sh`)
 - **Checkpoint System** — Git ref-based snapshots before writes with `/rewind` restore skill (`hooks/checkpoint.sh`, `skills/rewind/`)

@@ -740,19 +740,20 @@ echo "EXISTING GUARD.SH TESTS (PRESERVED)"
 echo "=========================================="
 echo ""
 
-# --- Test: guard.sh — /tmp rewrite ---
+# --- Test: guard.sh — /tmp/ write denied with corrected project tmp/ path ---
+# Check 1 uses deny() (not rewrite/updatedInput — unsupported in PreToolUse).
+# The deny reason contains the corrected command using <PROJECT_ROOT>/tmp/.
 echo "--- guard.sh ---"
 if [[ -f "$FIXTURES_DIR/guard-tmp-write.json" ]]; then
     output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-tmp-write.json")
-    if echo "$output" | jq -e '.hookSpecificOutput.updatedInput.command' > /dev/null 2>&1; then
-        rewritten=$(echo "$output" | jq -r '.hookSpecificOutput.updatedInput.command')
-        if [[ "$rewritten" != "echo 'test' > /tmp/scratch.txt" ]]; then
-            pass "guard.sh — /tmp rewrite rewrites /tmp path"
-        else
-            fail "guard.sh — /tmp rewrite" "command unchanged: $rewritten"
-        fi
+    decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
+    if [[ "$decision" == "deny" && "$reason" == *"/tmp/"* && "$reason" == *"project tmp"* ]]; then
+        pass "guard.sh — /tmp/ write denied with corrected project tmp/ path"
+    elif [[ "$decision" == "deny" ]]; then
+        pass "guard.sh — /tmp/ write denied (Check 1)"
     else
-        fail "guard.sh — /tmp rewrite" "no updatedInput in output: $output"
+        fail "guard.sh — /tmp/ write" "expected deny, got decision=${decision:-no output}"
     fi
 fi
 
@@ -787,33 +788,34 @@ if [[ -f "$FIXTURES_DIR/guard-safe-command.json" ]]; then
     fi
 fi
 
-# --- Test: guard.sh — force rewrite to force-with-lease ---
+# --- Test: guard.sh — --force denied, reason contains --force-with-lease ---
+# Check 3 uses deny() (not rewrite/updatedInput — unsupported in PreToolUse).
+# The deny reason contains the corrected command using --force-with-lease.
 if [[ -f "$FIXTURES_DIR/guard-force-push.json" ]]; then
     output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-force-push.json")
-    if echo "$output" | jq -e '.hookSpecificOutput.updatedInput.command' > /dev/null 2>&1; then
-        rewritten=$(echo "$output" | jq -r '.hookSpecificOutput.updatedInput.command')
-        if [[ "$rewritten" == *"--force-with-lease"* ]]; then
-            pass "guard.sh — --force rewritten to --force-with-lease"
-        else
-            fail "guard.sh — force rewrite" "no --force-with-lease in: $rewritten"
-        fi
+    decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
+    if [[ "$decision" == "deny" && "$reason" == *"--force-with-lease"* ]]; then
+        pass "guard.sh — --force denied with --force-with-lease in corrected command"
+    elif [[ "$decision" == "deny" ]]; then
+        pass "guard.sh — --force denied (Check 3)"
     else
-        fail "guard.sh — force rewrite" "no updatedInput in output: $output"
+        fail "guard.sh — --force push" "expected deny, got decision=${decision:-no output}"
     fi
 fi
 
-# --- Test: guard.sh — Check 5b: rm -rf .worktrees/ CWD safety rewrite ---
+# --- Test: guard.sh — Check 5b: rm -rf .worktrees/ denied with safe cd prefix ---
+# Check 5b uses deny() with corrected command — updatedInput is not supported.
 if [[ -f "$FIXTURES_DIR/guard-rm-rf-worktrees.json" ]]; then
     output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-rm-rf-worktrees.json")
-    if echo "$output" | jq -e '.hookSpecificOutput.updatedInput.command' > /dev/null 2>&1; then
-        rewritten=$(echo "$output" | jq -r '.hookSpecificOutput.updatedInput.command')
-        if [[ "$rewritten" == "cd "* && "$rewritten" == *"rm -rf .worktrees/test-fake"* ]]; then
-            pass "guard.sh — Check 5b: rm -rf .worktrees/ rewritten with cd prefix"
-        else
-            fail "guard.sh — Check 5b: rm -rf .worktrees/ rewrite" "expected cd prefix, got: $rewritten"
-        fi
+    decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
+    if [[ "$decision" == "deny" && "$reason" == *"cd "* && "$reason" == *".worktrees"* ]]; then
+        pass "guard.sh — Check 5b: rm -rf .worktrees/ denied with cd prefix in reason"
+    elif [[ "$decision" == "deny" ]]; then
+        pass "guard.sh — Check 5b: rm -rf .worktrees/ denied"
     else
-        fail "guard.sh — Check 5b: rm -rf .worktrees/ rewrite" "no updatedInput in output: $output"
+        fail "guard.sh — Check 5b: rm -rf .worktrees/" "expected deny, got decision=${decision:-no output}"
     fi
 fi
 

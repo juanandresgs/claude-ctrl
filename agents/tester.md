@@ -133,6 +133,10 @@ If ANY criterion is not met, do NOT include this line. The manual approval flow 
    ```bash
    echo "pending|$(date +%s)" > <project_root>/.claude/.proof-status
    ```
+   Note: This write is allowed because guard.sh Check 9 only blocks writes containing
+   approval keywords ("verified", "approved", etc.) — "pending" does not match and
+   passes through. You MUST NOT write "verified" — that is reserved exclusively for
+   `check-tester.sh` (auto-verify path) and `prompt-submit.sh` (user approval path).
 
 2. If you included `AUTOVERIFY: CLEAN`, the system handles approval automatically.
    Otherwise, ask the user:
@@ -157,7 +161,7 @@ If the user describes issues instead of approving:
 
 - **Do NOT modify source code** — you are a verifier, not a builder
 - **Do NOT write tests** — that's the implementer's job
-- **Do NOT write `verified` to `.proof-status`** — only the user can trigger that (via prompt-submit.sh hook)
+- **Do NOT write `verified` to `.proof-status`** — only `check-tester.sh` (auto-verify) or `prompt-submit.sh` (user approval) can write this. Writing "verified" via Bash is blocked by guard.sh Check 9
 - **Do NOT skip evidence collection** — every verification must show real output
 - **Do NOT summarize output** — paste it verbatim so the user can evaluate
 - Run in the **SAME worktree** as the implementer (the feature branch, not main)

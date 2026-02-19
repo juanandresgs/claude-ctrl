@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
+# @file guard.sh
+# @description Sacred practice guardrails for Bash commands. PreToolUse hook
+#   (matcher: Bash) that enforces all command-level safety rules: nuclear deny
+#   for catastrophic commands, CWD protection for worktree directories, /tmp/
+#   redirection to project tmp/, force-push safety, and proof/test gates for
+#   commits and merges. All enforcements use deny() — updatedInput is NOT
+#   supported in PreToolUse hooks.
 set -euo pipefail
 
 # Sacred practice guardrails for Bash commands.
 # PreToolUse hook — matcher: Bash
 #
 # @decision DEC-GUARD-001
-# @title Multi-tier command safety gate with transparent rewrites and CWD protection
+# @title Multi-tier command safety gate with deny and CWD protection
 # @status accepted
-# @rationale Enforces Sacred Practices mechanically via deny (hard blocks) and
-#   updatedInput (transparent rewrites). Deny prevents destructive commands
-#   (rm -rf /, git reset --hard, commits on main). Rewrite fixes unsafe patterns
-#   (/tmp/ → project tmp/, --force → --force-with-lease). Nuclear deny category
-#   blocks catastrophic commands (fork bomb, dd to device, SQL DROP) unconditionally.
-#   Worktree CWD safety uses deny (not rewrite) because updatedInput is NOT supported
-#   in PreToolUse hooks — only in PermissionRequest hooks. Check 0.75 denies all
-#   cd/pushd into .worktrees/ to prevent posix_spawn ENOENT if the worktree is deleted.
-#   Check 5 and 5b deny worktree removal without safe CWD first. Check 0.5 (Path A/B
-#   canary recovery) was removed — prevention is the only reliable fix.
+# @rationale Enforces Sacred Practices mechanically via deny (hard blocks).
+#   Deny prevents destructive commands (rm -rf /, git reset --hard, commits on main)
+#   and unsafe patterns (/tmp/ writes, --force push, worktree CWD hazards).
+#   Nuclear deny category blocks catastrophic commands (fork bomb, dd to device,
+#   SQL DROP) unconditionally.
+#   updatedInput (rewrite) is NOT supported in PreToolUse hooks — only in
+#   PermissionRequest hooks — so all "soft fix" behaviors use deny() with a
+#   corrected command in the reason string. The model reads the reason and
+#   resubmits the corrected command.
+#   Check 0.75 denies all cd/pushd into .worktrees/ to prevent posix_spawn ENOENT
+#   if the worktree is deleted. Check 5 and 5b deny worktree removal without safe
+#   CWD first. Check 0.5 (Path A/B canary recovery) was removed — prevention is
+#   the only reliable fix.
 #
-# Enforces via updatedInput (transparent rewrites):
-#   - /tmp/ writes → rewritten to project tmp/ directory
-#   - git push --force → rewritten to --force-with-lease (except to main/master)
-#
-# Enforces via deny (hard blocks):
+# All enforcements use deny (hard blocks):
+#   - /tmp/ writes → denied, corrected command uses <PROJECT_ROOT>/tmp/ instead
+#   - git push --force → denied, corrected command uses --force-with-lease instead
 #   - Main is sacred (no commits on main/master)
 #   - No force push to main/master
 #   - No destructive git commands (reset --hard, clean -f, branch -D/--delete --force)
@@ -38,9 +46,9 @@ set -euo pipefail
 #   would exit non-zero and Claude Code would silently allow the command through.
 #   This meant safety checks could be bypassed by any runtime error. The EXIT
 #   trap pattern combined with a completion flag (_GUARD_COMPLETED) flips this
-#   to fail-closed: crash = deny. Normal exit paths (deny(), rewrite(), early
-#   exits) set the flag to true so the trap is a no-op for them. The trap MUST
-#   be installed before source-lib.sh because that is the most common crash point.
+#   to fail-closed: crash = deny. Normal exit paths (deny(), early exits) set
+#   the flag to true so the trap is a no-op for them. The trap MUST be installed
+#   before source-lib.sh because that is the most common crash point.
 
 # --- Fail-closed crash trap ---
 # MUST be set before source-lib.sh — that's the most common failure point.
@@ -83,14 +91,17 @@ if [[ -z "$COMMAND" ]]; then
 fi
 
 # Emit PreToolUse deny response with reason, then exit.
+# Uses jq for JSON-safe encoding — reason may contain quotes, paths, commands.
 deny() {
     local reason="$1"
+    local escaped_reason
+    escaped_reason=$(printf '%s' "$reason" | jq -Rs .)
     cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "$reason"
+    "permissionDecisionReason": $escaped_reason
   }
 }
 EOF
@@ -198,22 +209,21 @@ elif echo "$COMMAND" | grep -qE '\b(cd|pushd)\b[^;&|]*\.worktrees/[^/[:space:];&
     deny "CWD protection: cd/pushd into .worktrees/ denied — persistent CWD in a deletable directory causes posix_spawn ENOENT if the worktree is later removed, bricking ALL hooks. Use per-command subshell: ( cd .worktrees/<name> && <cmd> ) or git -C .worktrees/<name> for git commands."
 fi
 
-# --- Check 1: /tmp/ and /private/tmp/ writes → rewrite to project tmp/ ---
+# --- Check 1: /tmp/ and /private/tmp/ writes → deny, redirect to project tmp/ ---
 # On macOS, /tmp → /private/tmp (symlink). Both forms must be caught.
 # Allow: /private/tmp/claude-*/ (Claude Code scratchpad)
+# updatedInput is NOT supported in PreToolUse hooks — deny with corrected command.
 TMP_PATTERN='(>|>>|mv\s+.*|cp\s+.*|tee)\s*(/private)?/tmp/|mkdir\s+(-p\s+)?(/private)?/tmp/'
 if echo "$COMMAND" | grep -qE "$TMP_PATTERN"; then
     if echo "$COMMAND" | grep -q '/private/tmp/claude-'; then
         : # Claude scratchpad — allowed as-is
     else
-        # Rewrite both /private/tmp/ and /tmp/ to project tmp/ directory
-        # Normalize /private/tmp/ → /tmp/ first, then single replacement avoids double-expansion
+        # Build corrected command: replace /tmp/ with <PROJECT_ROOT>/tmp/
         PROJECT_ROOT=$(detect_project_root)
         PROJECT_TMP="$PROJECT_ROOT/tmp"
-        REWRITTEN=$(echo "$COMMAND" | sed "s|/private/tmp/|/tmp/|g" | sed "s|/tmp/|$PROJECT_TMP/|g")
-        # Ensure project tmp/ directory exists
-        REWRITTEN="mkdir -p $PROJECT_TMP && $REWRITTEN"
-        rewrite "$REWRITTEN" "Rewrote /tmp/ to project tmp/ directory. Sacred Practice #3: artifacts belong with their project."
+        CORRECTED=$(echo "$COMMAND" | sed "s|/private/tmp/|/tmp/|g" | sed "s|/tmp/|$PROJECT_TMP/|g")
+        CORRECTED="mkdir -p $PROJECT_TMP && $CORRECTED"
+        deny "Sacred Practice #3: use project tmp/ instead of /tmp/. Run instead: $CORRECTED"
     fi
 fi
 
@@ -356,16 +366,17 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
 fi
 
 # --- Check 3: Force push handling ---
+# updatedInput is NOT supported in PreToolUse hooks — deny with corrected command.
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bpush\s+.*(-f|--force)\b'; then
     # Hard block: force push to main/master
     if echo "$COMMAND" | grep -qE '(origin|upstream)\s+(main|master)\b'; then
         deny "Cannot force push to main/master. This is a destructive action that rewrites shared history."
     fi
-    # Soft fix: rewrite --force to --force-with-lease (safer)
+    # Soft deny: --force should be --force-with-lease (safer, won't clobber remote changes)
     if ! echo "$COMMAND" | grep -qE '\-\-force-with-lease'; then
         # Use perl for word-boundary support (macOS sed lacks \b)
-        REWRITTEN=$(echo "$COMMAND" | perl -pe 's/--force(?!-with-lease)/--force-with-lease/g; s/\s-f\s/ --force-with-lease /g')
-        rewrite "$REWRITTEN" "Rewrote --force to --force-with-lease for safety."
+        CORRECTED=$(echo "$COMMAND" | perl -pe 's/--force(?!-with-lease)/--force-with-lease/g; s/\s-f\s/ --force-with-lease /g')
+        deny "Use --force-with-lease instead of --force to avoid clobbering remote changes. Run instead: $CORRECTED"
     fi
 fi
 

@@ -20,7 +20,7 @@ All hooks receive JSON on **stdin** and emit JSON on **stdout**. Stderr is for l
 }
 ```
 
-SubagentStart/SubagentStop hooks receive `{"subagent_type": "planner|implementer|guardian", ...}`. SubagentStop hooks additionally receive `{"last_assistant_message": "...", "agent_type": "...", "agent_id": "...", "agent_transcript_path": "...", "stop_hook_active": false}` — use `.last_assistant_message` to read the agent's final response text. Stop hooks (non-subagent) receive `{"stop_hook_active": true/false}`.
+SubagentStart/SubagentStop hooks receive `{"agent_type": "planner|implementer|tester|guardian|Explore|general-purpose", ...}`. SubagentStop hooks additionally receive `{"last_assistant_message": "...", "agent_id": "...", "agent_transcript_path": "...", "stop_hook_active": false}` — use `.last_assistant_message` to read the agent's final response text. Stop hooks (non-subagent) receive `{"stop_hook_active": true/false}`.
 
 ### Stdout Responses (PreToolUse only)
 
@@ -84,13 +84,30 @@ Stop hooks have a **different schema** from PreToolUse/PostToolUse. They do NOT 
 
 Stop hooks receive `{"stop_hook_active": true/false}` on stdin. Check `stop_hook_active` to prevent re-firing loops (if a Stop hook's `systemMessage` triggers another model response, the next Stop invocation will have `stop_hook_active: true`). Note: SubagentStop hooks use `last_assistant_message` for the agent response text — see the Stdin Format note above.
 
-### Rewrite Pattern
+### Rewrite Pattern (Non-Functional in PreToolUse)
 
-Two checks in guard.sh use transparent rewrites (the model's command is silently replaced):
-1. `/tmp/` and `/private/tmp/` writes → project `tmp/` directory (Check 1). On macOS `/tmp` → `/private/tmp` symlink; both forms are caught. Claude scratchpad (`/private/tmp/claude-*/`) is exempt.
-2. `--force` → `--force-with-lease` (Check 3)
+**Important:** `updatedInput` (the rewrite mechanism) is NOT supported in PreToolUse
+hooks — it silently fails. The `rewrite()` function in guard.sh produces valid JSON
+output but the command is NOT modified. See upstream issue anthropics/claude-code#26506.
 
-Note: `updatedInput` (rewrite) is NOT supported in PreToolUse hooks — it silently fails. These rewrites are documented for completeness but are actually non-functional. See issue tracking the audit of remaining rewrite() calls. Check 5 (`git worktree remove`) and Check 5b (`rm -rf .worktrees/`) were converted from rewrite to deny — the deny message includes the correct safe command for the model to resubmit.
+The `updatedInput` format below is documented for reference only:
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "Explanation",
+    "updatedInput": { "command": "rewritten command here" }
+  }
+}
+```
+
+All active command corrections in guard.sh use `deny()` instead, with the corrected
+safe command in the reason message so the model can resubmit. Examples:
+- `/tmp/` writes → denied; model directed to use project `tmp/` directory (Check 1)
+- `--force` → denied with `--force-with-lease` alternative in message (Check 3)
+- `git worktree remove` → denied; corrected safe-CWD command in message (Check 5)
+- `rm -rf .worktrees/` → denied; corrected safe-CWD command in message (Check 5b)
 
 ---
 
@@ -142,7 +159,8 @@ SessionStart    → session-init.sh (calls update-check.sh inline, then git stat
                     ↓
 UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
-PreToolUse:Bash → guard.sh (sacred practice guardrails + rewrites)
+PreToolUse:Bash → guard.sh (sacred practice guardrails)
+                   doc-freshness.sh (documentation freshness enforcement)
                    auto-review.sh (intelligent command auto-approval)
 PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh → checkpoint.sh
                     ↓
@@ -151,7 +169,7 @@ PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-ga
 PostToolUse:W/E → lint.sh → track.sh → code-review.sh → plan-validate.sh → test-runner.sh (async)
                     ↓
 SubagentStart   → subagent-start.sh (agent-specific context)
-SubagentStop    → check-planner.sh | check-implementer.sh | check-tester.sh | check-guardian.sh
+SubagentStop    → check-planner.sh | check-implementer.sh | check-tester.sh | check-guardian.sh | check-explore.sh | check-general-purpose.sh
                     ↓
 Stop            → surface.sh (decision audit) → session-summary.sh → forward-motion.sh
                     ↓
@@ -170,7 +188,8 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 11 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`; denies cd into .worktrees/, worktree removal without safe CWD; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges (missing state files = allow, gate only active when files exist); **blocks agents from writing approval status to `.proof-status`** and **blocks deletion of `.proof-status` when verification is active** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
+| **guard.sh** | Bash | 11 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); denies `/tmp/` paths, `--force` to main, cd into .worktrees/, worktree removal without safe CWD; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges (missing state files = allow, gate only active when files exist); **blocks agents from writing approval status to `.proof-status`** and **blocks deletion of `.proof-status` when verification is active** (human gate enforcement). All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
+| **doc-freshness.sh** | Bash | Enforces documentation freshness at merge time. Blocks merges to main/master when tracked docs are critically stale (structural churn exceeds threshold). Advisory-only on feature branches. Supports bypasses: `@no-doc` annotation, doc-only commits, tier reduction when stale doc is included in the merge |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user. `git commit/push/merge` classified as risky (requires Guardian dispatch per Sacred Practice #8) |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
@@ -226,6 +245,8 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **check-implementer.sh** | SubagentStop (implementer) | 4 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"). Advisory only — proof-of-work verification moved to tester agent. Persists findings |
 | **check-tester.sh** | SubagentStop (tester) | Validates tester completed verification: (1) `.proof-status` exists (at least pending), (2) trace artifacts include verification evidence. **Auto-verify**: if tester signals `AUTOVERIFY: CLEAN` and secondary validation confirms (High confidence, full coverage, no caveats), auto-writes `verified` to `.proof-status` — Guardian dispatch is immediately unblocked. Otherwise: if proof is `pending` → exit 0 with advisory (waiting for user approval). If proof missing → exit 2 (feedback loop: resume tester). Persists findings |
 | **check-guardian.sh** | SubagentStop (guardian) | 5 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected). Advisory only. Persists findings |
+| **check-explore.sh** | SubagentStop (Explore\|explore) | Post-exploration validation for Explore agents. Validates research output quality. Advisory only — persists findings |
+| **check-general-purpose.sh** | SubagentStop (general-purpose) | Post-execution validation for general-purpose agents. Validates output quality. Advisory only — persists findings |
 
 ---
 
@@ -344,11 +365,11 @@ Three patterns recur across the hook system:
 | **plan-validate.sh** | MASTER_PLAN.md fails structural validation (missing Status fields, empty Decision Log, bad DEC-ID format) |
 | **forward-motion.sh** | Response ends with bare completion ("done") and no question, suggestion, or offer |
 
-**Transparent rewrites** — the model's command is silently replaced with a safe alternative. No denial, no feedback — the model doesn't even know the command was changed.
+**Deny with correction** — the command is denied with the safe alternative in the reason message. The model can resubmit the corrected command. Note: `updatedInput` transparent rewrites are NOT supported in PreToolUse hooks (silently fails — see issue anthropics/claude-code#26506).
 
-| Hook | Rewrites |
-|------|----------|
-| **guard.sh** | `/tmp/` → project `tmp/`, `--force` → `--force-with-lease`, `worktree remove` → prepends safe `cd` |
+| Hook | Denies with Correction |
+|------|------------------------|
+| **guard.sh** | `/tmp/` → denied, project `tmp/` path in message; `--force` → denied, `--force-with-lease` in message; `worktree remove` → denied, safe `cd`-first command in message |
 
 ---
 

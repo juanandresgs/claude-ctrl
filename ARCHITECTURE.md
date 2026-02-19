@@ -43,7 +43,7 @@ session start — via Claude Code's hook system.
 The system has four layers:
 
 1. **Instruction layer** — `CLAUDE.md` and agent prompts tell Claude what to do.
-2. **Hook layer** — 30 hook scripts + 3 shared libraries enforce it mechanically, regardless of instructions.
+2. **Hook layer** — Hook scripts and shared libraries enforce it mechanically, regardless of instructions.
 3. **Agent layer** — 4 specialized agents (Planner, Implementer, Tester, Guardian)
    divide complex work into deterministic phases.
 4. **State layer** — ~20 state files persist information between hooks, agents, and sessions.
@@ -56,8 +56,9 @@ State files bridge the gap — hooks communicate with each other through files, 
 
 ```
 ~/.claude/
-├── hooks/                    # 30 hook scripts + 3 shared libraries
+├── hooks/                    # Hook scripts and shared libraries
 │   ├── guard.sh              # PreToolUse:Bash — 11-check safety gate
+│   ├── doc-freshness.sh      # PreToolUse:Bash — documentation freshness enforcement at merge
 │   ├── auto-review.sh        # PreToolUse:Bash — three-tier command classification
 │   ├── branch-guard.sh       # PreToolUse:Write|Edit — main branch protection
 │   ├── doc-gate.sh           # PreToolUse:Write|Edit — documentation enforcement
@@ -82,6 +83,8 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── check-implementer.sh  # SubagentStop:implementer — implementation validation
 │   ├── check-tester.sh       # SubagentStop:tester — tester auto-verify
 │   ├── check-guardian.sh     # SubagentStop:guardian — guardian validation
+│   ├── check-explore.sh      # SubagentStop:Explore|explore — Explore agent output validation
+│   ├── check-general-purpose.sh # SubagentStop:general-purpose — general agent output validation
 │   ├── surface.sh            # Stop — decision audit
 │   ├── session-summary.sh    # Stop — session summary
 │   ├── forward-motion.sh     # Stop — suggest next steps
@@ -107,10 +110,9 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── prd/                  # PRD generation
 │   ├── generate-paper-snapshot/ # arXiv paper snapshots
 │   └── uplevel/              # System improvement workflow
-├── commands/                 # 3 slash commands (lightweight, no context fork)
+├── commands/                 # Slash commands (lightweight, no context fork)
 │   ├── backlog.md            # /backlog — GitHub Issues integration
-│   ├── compact.md            # /compact — context preservation
-│   └── approve.md            # /approve — proof-of-work gate escape hatch
+│   └── compact.md            # /compact — context preservation
 ├── scripts/                  # Utility scripts
 │   ├── statusline.sh         # Status bar renderer
 │   ├── worktree-roster.sh    # Worktree lifecycle tracking
@@ -118,7 +120,7 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── update-check.sh       # Git-based auto-update
 │   ├── community-check.sh    # Community PR/issue monitor
 │   └── batch-fetch.py        # Cascade-proof multi-URL fetcher
-├── traces/                   # Agent trace store (490+ indexed traces)
+├── traces/                   # Agent trace store
 │   ├── index.jsonl           # Global trace index (one entry per trace)
 │   ├── .active-<type>-<id>   # Active agent markers
 │   └── <trace_id>/           # Per-agent trace directory
@@ -134,7 +136,7 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── run-hooks.sh          # Main test runner
 │   ├── fixtures/             # Input/expected-output fixture pairs
 │   └── test-*.sh             # 30+ specialized test scripts
-└── settings.json             # Hook registry — 10 event types, 30 hooks registered
+└── settings.json             # Hook registry — 10 event types
 ```
 
 ### Component Diagram
@@ -187,7 +189,8 @@ State files bridge the gap — hooks communicate with each other through files, 
 │ PreCompact: compact-preserve.sh                                     │
 │ SubagentStart: subagent-start.sh                                    │
 │ SubagentStop: check-planner.sh, check-implementer.sh,              │
-│              check-tester.sh, check-guardian.sh                     │
+│              check-tester.sh, check-guardian.sh,                    │
+│              check-explore.sh, check-general-purpose.sh             │
 │ Stop: surface.sh, session-summary.sh, forward-motion.sh            │
 │ SessionEnd: session-end.sh                                          │
 │ Notification: notify.sh                                             │
@@ -288,9 +291,13 @@ All hooks receive JSON on stdin:
 }
 ```
 
-**Important:** `updatedInput` works in `PreToolUse` for transparent command
-rewrites. It does NOT work in `PermissionRequest` hooks. guard.sh's `rewrite()`
-function produces this output correctly.
+**Important:** `updatedInput` is NOT supported in `PreToolUse` hooks — it silently
+fails. It only works in `PermissionRequest` hooks. guard.sh's `rewrite()` function
+produces this output format, but the rewrites are non-functional in practice.
+All active command modifications in guard.sh have been converted from rewrite() to
+deny() with the corrected command in the reason message. See upstream issue
+anthropics/claude-code#26506. The `updatedInput` format above is documented for
+reference only.
 
 **PreToolUse / PostToolUse: Advisory** — injects context without blocking
 ```json
@@ -355,6 +362,8 @@ with the `additionalContext` injected. `lint.sh` uses this for auto-fix loops.
 | **SubagentStop** | `implementer` | When implementer completes | check-implementer.sh |
 | **SubagentStop** | `tester` | When tester completes | check-tester.sh |
 | **SubagentStop** | `guardian` | When guardian completes | check-guardian.sh |
+| **SubagentStop** | `Explore\|explore` | When Explore agent completes | check-explore.sh |
+| **SubagentStop** | `general-purpose` | When general-purpose agent completes | check-general-purpose.sh |
 | **Stop** | (all) | After Claude finishes responding | surface.sh, session-summary.sh, forward-motion.sh |
 | **SessionEnd** | (all) | Session termination | session-end.sh |
 | **Notification** | `permission_prompt\|idle_prompt` | Permission prompts, idle state | notify.sh |
@@ -414,21 +423,22 @@ guard.sh catches them at the system level.
 
 ```
 Check 0:  Nuclear deny — filesystem/disk/fork-bomb/permission/shutdown/RCE/SQL
-Check 0.5: CWD recovery — detect and fix deleted-worktree CWD death spiral
-  Path A: .cwd field in hook input is missing/broken → cd to git root ancestor
-  Path B: .cwd-recovery-needed canary file → prepend inline cd guard
-Check 0.75: Deny cd-into-worktree with chained commands (CWD death prevention)
-Check 1:  /tmp/ writes → rewrite to project tmp/ directory
+Check 0.75: Deny cd-into-worktree (CWD death prevention)
+Check 1:  /tmp/ writes → deny; corrected project tmp/ path in message
 Check 2:  Commits on main/master → deny (exceptions: MASTER_PLAN.md only, MERGE_HEAD)
-Check 3:  Force push to main/master → deny; --force elsewhere → --force-with-lease
+Check 3:  Force push to main/master → deny; --force elsewhere → deny with --force-with-lease suggestion
 Check 4:  git reset --hard, git clean -f, git branch -D → deny
-Check 5:  git worktree remove → rewrite with cd to main first; write canary
-Check 5b: rm -rf .worktrees/ → rewrite with cd to main first; write canary
+Check 5:  git worktree remove → deny; corrected safe command (cd first) in message
+Check 5b: rm -rf .worktrees/ → deny; corrected safe command in message
 Check 6:  git merge with failing tests → deny
 Check 7:  git commit with failing tests → deny
 Check 8:  git commit/merge without .proof-status = verified → deny
 Check 9:  Agent writes verified to .proof-status → deny
 Check 10: rm of .proof-status when gate active → deny
+
+Note: updatedInput (transparent rewrite) is NOT supported in PreToolUse hooks —
+it silently fails. All corrections use deny() with the safe alternative in the
+reason message. See upstream issue anthropics/claude-code#26506.
 ```
 
 **State files read:**
@@ -1115,7 +1125,7 @@ Step 9: Guardian commits
 
 ## 8. Observatory System — Self-Improvement Flywheel
 
-**What it does:** Analyzes the 490+ agent traces to surface data quality signals,
+**What it does:** Analyzes accumulated agent traces to surface data quality signals,
 ranks improvements by impact and feasibility, proposes one improvement at a time,
 and tracks the implementation history. Each accepted improvement makes traces
 richer, which enables better analysis — a flywheel.
@@ -1361,7 +1371,7 @@ Provides interactive system health diagnostics. Checks:
 
 ## 12. Shared Libraries
 
-Three files form the shared library layer. All 30 hooks source `source-lib.sh`
+Three files form the shared library layer. All hooks source `source-lib.sh`
 which bootstraps `log.sh` and `context-lib.sh`.
 
 ---
@@ -1377,7 +1387,7 @@ the redundancy and adds the CWD recovery guard at the single point all hooks sha
 
 **What you can count on:**
 - `[[ ! -d "${PWD:-}" ]] && { cd "${HOME}" 2>/dev/null || cd /; }` runs before any other logic.
-- All 30 hooks source this file as their first dependency.
+- All hooks source this file as their first dependency.
 
 ---
 
@@ -1776,9 +1786,10 @@ The tester agent collects evidence. Only prompt-submit.sh (user) or check-tester
 **Test status gate:** guard.sh Checks 7-8. Commits and merges blocked when
 `.test-status != pass` or `.proof-status != verified`.
 
-**Transparent rewrite:** guard.sh updates the command via `updatedInput` without
-model awareness. Used for safe fixes (/tmp/ → project/tmp/, --force → --force-with-lease,
-worktree remove → cd first).
+**Transparent rewrite:** guard.sh's `rewrite()` function emits `updatedInput` output,
+but `updatedInput` is NOT supported in PreToolUse hooks (silently fails — see upstream
+issue anthropics/claude-code#26506). All enforcement uses `deny()` with the corrected
+command in the reason message so the model can resubmit safely.
 
 **Fail-closed:** If guard.sh crashes, the EXIT trap denies the command (not allows).
 Safety is preserved even under error conditions.
