@@ -480,6 +480,105 @@ else
     fail_test "Safety net did not write pending. proof-status='${PROOF_AFTER}'. Output: $HOOK_OUTPUT"
 fi
 
+# ---------------------------------------------------------------------------
+# Test 10: Dedup guard — second SubagentStop with already-verified proof-status
+# does NOT add another auto_verify audit entry. (Fix #124)
+#
+# Simulates: tester stops (first SubagentStop auto-verifies, writes verified),
+# tester is resumed and stops again (second SubagentStop fires check-tester.sh).
+# The second run must exit 0 without appending to the audit log.
+# ---------------------------------------------------------------------------
+run_test "Fix #124 dedup: second SubagentStop with verified proof-status skips audit"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+
+# Determine audit log path the same way context-lib.sh does:
+# append_audit writes to "$root/.claude/.audit-log" where root = detect_project_root().
+AUDIT_LOG="$(bash -c "source \"$HOOKS_DIR/source-lib.sh\" && detect_project_root" 2>/dev/null)/.claude/.audit-log"
+
+# Record audit log auto_verify line count before the test
+AUDIT_BEFORE=0
+if [[ -f "$AUDIT_LOG" ]]; then
+    AUDIT_BEFORE=$(grep -c "auto_verify" "$AUDIT_LOG" 2>/dev/null || echo "0")
+fi
+
+# Write "verified" to simulate that a previous SubagentStop already auto-verified
+echo "verified|$(date +%s)" > "$REAL_PROOF_FILE"
+
+# Build a clean AUTOVERIFY response (would trigger auto-verify if dedup guard absent)
+DEDUP_RESP_TEXT="### Verification Assessment
+### Confidence Level
+**High** - All core paths exercised.
+### Coverage
+| Area | Status |
+|------|--------|
+| Core | Fully verified |
+AUTOVERIFY: CLEAN"
+MOCK_JSON=$(jq -n --arg r "$DEDUP_RESP_TEXT" '{"last_assistant_message": $r}')
+
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
+
+# Count auto_verify entries after the second run
+AUDIT_AFTER=0
+if [[ -f "$AUDIT_LOG" ]]; then
+    AUDIT_AFTER=$(grep -c "auto_verify" "$AUDIT_LOG" 2>/dev/null || echo "0")
+fi
+
+# Restore proof-status
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Verify: audit log count must not have increased (dedup guard fired)
+if [[ "$AUDIT_AFTER" -eq "$AUDIT_BEFORE" ]]; then
+    pass_test
+else
+    NEW_ENTRIES=$((AUDIT_AFTER - AUDIT_BEFORE))
+    fail_test "Dedup guard failed: ${NEW_ENTRIES} new auto_verify audit entry/entries added on second SubagentStop. Output: $HOOK_OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 11: Dedup guard — hook output for already-verified contains Guardian directive
+# The early-exit must still produce valid JSON with Guardian unblocked message.
+# ---------------------------------------------------------------------------
+run_test "Fix #124 dedup: already-verified early exit emits valid JSON with Guardian directive"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+
+echo "verified|$(date +%s)" > "$REAL_PROOF_FILE"
+
+MOCK_JSON=$(jq -n --arg r "any response" '{"last_assistant_message": $r}')
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Must produce valid JSON
+if echo "$HOOK_OUTPUT" | jq -e '.additionalContext' >/dev/null 2>&1; then
+    # Must contain Guardian unblocked signal
+    if echo "$HOOK_OUTPUT" | jq -r '.additionalContext' | grep -q 'Guardian dispatch is unblocked'; then
+        pass_test
+    else
+        fail_test "additionalContext exists but missing Guardian directive. Output: $HOOK_OUTPUT"
+    fi
+else
+    fail_test "Hook output is not valid JSON with additionalContext. Output: $HOOK_OUTPUT"
+fi
+
 # Summary
 echo ""
 echo "=========================================="

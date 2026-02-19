@@ -90,6 +90,37 @@ fi
 # `.response` kept as fallback for backward compatibility.
 RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
+# --- Dedup guard: skip auto-verify if already verified (Fix #124) ---
+# SubagentStop can fire twice for a single tester run (tester stops, is resumed,
+# stops again). Each stop event runs check-tester.sh independently. If the first
+# run already auto-verified and wrote "verified" to proof-status, the second run
+# must skip the auto-verify block entirely — otherwise a duplicate audit entry is
+# written. This guard makes auto-verify idempotent via proof-status.
+#
+# @decision DEC-TESTER-006
+# @title Early exit when proof already verified — prevents duplicate audit entries
+# @status accepted
+# @rationale SubagentStop fires once per tester stop event. When the tester stops,
+#   is resumed by the orchestrator, and stops again, check-tester.sh runs twice.
+#   The first run auto-verifies and writes "verified". The second run must not
+#   repeat the auto-verify (and its audit append). Using the proof-status file as
+#   the idempotency key is the most robust guard: it's written atomically before
+#   the audit entry, so any concurrent second run reading "verified" skips cleanly.
+#   Issue #124.
+if [[ "$PROOF_STATUS" == "verified" ]]; then
+    track_subagent_stop "$PROJECT_ROOT" "tester"
+    append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
+    CONTEXT="Tester validation: proof-status=verified (already verified — skipping duplicate auto-verify)."
+    DIRECTIVE="Already verified. Guardian dispatch is unblocked."
+    ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
+    exit 0
+fi
+
 # --- Auto-verify: check if tester signals clean verification ---
 # Runs in Phase 1 so it completes well within the 15s timeout.
 # Fix 1 (DEC-TESTER-003): accept "needs-verification" in addition to "pending".
