@@ -28,6 +28,18 @@ set -euo pipefail
 #   CWD first. Check 0.5 (Path A/B canary recovery) was removed — prevention is
 #   the only reliable fix.
 #
+#   All pattern-matching checks (2-10, 0.75, 5b) use $_stripped_cmd (quoted strings
+#   removed) for detection so that commit message content like "fix branch -D handling"
+#   does not trigger git-specific checks (fixes Issue #126/#91). Raw $COMMAND is kept
+#   for command construction (corrected commands in deny reasons), extract_git_target_dir()
+#   calls, and the [[ "$COMMAND" == "( "* ]] subshell check in Check 0.75.
+#   Dead code removed: rewrite() (broken updatedInput, Issue #98) and
+#   is_same_project() were never called — both removed.
+#   Guardian-active detection extracted to is_guardian_active() helper —
+#   eliminates copy-pasted loop in Checks 4, 4b, and 5.
+#   Check 1 sed replacement uses PROJECT_TMP_ESCAPED so paths containing & or \
+#   do not corrupt the sed substitution.
+#
 # All enforcements use deny (hard blocks):
 #   - /tmp/ writes → denied, corrected command uses <PROJECT_ROOT>/tmp/ instead
 #   - git push --force → denied, corrected command uses --force-with-lease instead
@@ -90,6 +102,15 @@ if [[ -z "$COMMAND" ]]; then
     exit 0
 fi
 
+# Strip quoted strings from COMMAND for pattern-matching detection.
+# This prevents commit message content (e.g. "fix branch -D handling") from
+# triggering git-specific checks (Issue #126/#91). All downstream checks use
+# $_stripped_cmd for grep/pattern detection. Raw $COMMAND is used only for
+# command construction (corrected commands in deny reasons) and for
+# extract_git_target_dir() calls which need actual path arguments.
+# Placed here (after COMMAND extraction, before any checks) so ALL checks share it.
+_stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
+
 # Emit PreToolUse deny response with reason, then exit.
 # Uses jq for JSON-safe encoding — reason may contain quotes, paths, commands.
 deny() {
@@ -109,26 +130,14 @@ EOF
     exit 0
 }
 
-# Transparently rewrite command with JSON-escaped replacement, emit updatedInput response.
-rewrite() {
-    local new_command="$1"
-    local reason="$2"
-    local escaped_command
-    escaped_command=$(echo "$new_command" | jq -Rs .)
-    cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "$reason",
-    "updatedInput": {
-      "command": $escaped_command
-    }
-  }
-}
-EOF
-    _GUARD_COMPLETED=true
-    exit 0
+# Check if a Guardian agent is currently active (marker files in TRACE_STORE).
+# Extracted from copy-pasted blocks in Checks 4, 4b, and 5 to eliminate duplication.
+is_guardian_active() {
+    local count=0
+    for _gm in "${TRACE_STORE}/.active-guardian-"*; do
+        [[ -f "$_gm" ]] && count=$(( count + 1 ))
+    done
+    [[ "$count" -gt 0 ]]
 }
 
 # --- Check 0: Nuclear command hard deny ---
@@ -201,10 +210,12 @@ fi
 # Does NOT match: cd /parent/.worktrees/foo/subdir (path goes deeper inside worktree)
 # The [^/[:space:];&|]+ after .worktrees/ requires a non-empty worktree name with no
 # further slashes — ensuring we match only the worktree root, not subdirectories within.
-# Skip if already subshell-wrapped (model resubmit after previous deny)
+# Skip if already subshell-wrapped (model resubmit after previous deny).
+# Note: [[ "$COMMAND" == "( "* ]] intentionally uses raw COMMAND (not _stripped_cmd)
+# to test actual command structure — not quoted-string-stripped content.
 if [[ "$COMMAND" == "( "* ]]; then
     : # Already subshell-wrapped, pass through
-elif echo "$COMMAND" | grep -qE '\b(cd|pushd)\b[^;&|]*\.worktrees/[^/[:space:];&|]+([[:space:]]|$|&&|;|\|\|)'; then
+elif echo "$_stripped_cmd" | grep -qE '\b(cd|pushd)\b[^;&|]*\.worktrees/[^/[:space:];&|]+([[:space:]]|$|&&|;|\|\|)'; then
     log_info "GUARD-CWD" "Check 0.75: Denying ALL cd/pushd into .worktrees/"
     deny "CWD protection: cd/pushd into .worktrees/ denied — persistent CWD in a deletable directory causes posix_spawn ENOENT if the worktree is later removed, bricking ALL hooks. Use per-command subshell: ( cd .worktrees/<name> && <cmd> ) or git -C .worktrees/<name> for git commands."
 fi
@@ -214,14 +225,16 @@ fi
 # Allow: /private/tmp/claude-*/ (Claude Code scratchpad)
 # updatedInput is NOT supported in PreToolUse hooks — deny with corrected command.
 TMP_PATTERN='(>|>>|mv\s+.*|cp\s+.*|tee)\s*(/private)?/tmp/|mkdir\s+(-p\s+)?(/private)?/tmp/'
-if echo "$COMMAND" | grep -qE "$TMP_PATTERN"; then
+if echo "$_stripped_cmd" | grep -qE "$TMP_PATTERN"; then
     if echo "$COMMAND" | grep -q '/private/tmp/claude-'; then
         : # Claude scratchpad — allowed as-is
     else
         # Build corrected command: replace /tmp/ with <PROJECT_ROOT>/tmp/
+        # Escape PROJECT_TMP so & and \ in the path don't corrupt sed substitution.
         PROJECT_ROOT=$(detect_project_root)
         PROJECT_TMP="$PROJECT_ROOT/tmp"
-        CORRECTED=$(echo "$COMMAND" | sed "s|/private/tmp/|/tmp/|g" | sed "s|/tmp/|$PROJECT_TMP/|g")
+        PROJECT_TMP_ESCAPED=$(printf '%s\n' "$PROJECT_TMP" | sed 's/[&/\]/\\&/g')
+        CORRECTED=$(echo "$COMMAND" | sed "s|/private/tmp/|/tmp/|g" | sed "s|/tmp/|$PROJECT_TMP_ESCAPED/|g")
         CORRECTED="mkdir -p $PROJECT_TMP && $CORRECTED"
         deny "Sacred Practice #3: use project tmp/ instead of /tmp/. Run instead: $CORRECTED"
     fi
@@ -234,8 +247,8 @@ fi
 # Two conditions: (1) command structurally writes to .proof-status (redirect
 # target outside quotes), AND (2) "verified" appears anywhere in the command.
 # This avoids false-positives on commit messages that mention both keywords.
-_proof_stripped=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
-if echo "$_proof_stripped" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$COMMAND" | grep -qiE 'verified|approved?|lgtm|looks.good|ship.it'; then
+# Uses $_stripped_cmd for the redirect detection (structural write check).
+if echo "$_stripped_cmd" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$COMMAND" | grep -qiE 'verified|approved?|lgtm|looks.good|ship.it'; then
     deny "Cannot write approval status to .proof-status directly. Only the user can verify proof-of-work (via prompt-submit.sh). Present the verification report and let the user respond naturally."
 fi
 
@@ -243,7 +256,8 @@ fi
 # Prevents agents from bypassing the gate by deleting the file.
 # Only blocks when status is pending or needs-verification (gate is active).
 # Verified status can be cleaned up freely.
-if echo "$_proof_stripped" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
+# Uses $_stripped_cmd for the rm detection.
+if echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
     _ps_dir=$(get_claude_dir)
     _ps_file="${_ps_dir}/.proof-status"
     if [[ -f "$_ps_file" ]]; then
@@ -269,7 +283,7 @@ fi
 # with the correct safe command (cd to main worktree first). rewrite() is NOT
 # used because updatedInput is not supported in PreToolUse hooks — it silently
 # fails. deny() with the corrected command in the reason is the only reliable fix.
-if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktrees/|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+).*\.worktrees/'; then
+if echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktrees/|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+).*\.worktrees/'; then
     WT_TARGET=$(echo "$COMMAND" | grep -oE '[^[:space:]]*\.worktrees/[^[:space:];&|]*' | head -1)
     if [[ -n "$WT_TARGET" ]]; then
         MAIN_WT=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
@@ -279,9 +293,9 @@ if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktre
 fi
 
 # --- Early-exit gate: skip git-specific checks for non-git commands ---
-# Strip quoted strings so text like "fix git committing" doesn't trigger.
-# Then check if `git` appears in a command position (start, or after && || | ;).
-_stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
+# Uses $_stripped_cmd (computed above). The gate checks whether `git` appears
+# in a command position (start, or after && || | ;) — after quote-stripping so
+# commit message content does not falsely keep the exit gate open.
 if ! echo "$_stripped_cmd" | grep -qE '(^|&&|\|\|?|;)\s*git\s'; then
     _GUARD_COMPLETED=true
     exit 0
@@ -318,38 +332,11 @@ extract_git_target_dir() {
     detect_project_root
 }
 
-# --- Helper: compare repo identity via git common dir ---
-# Worktrees of the same repo share the same common dir, so they are correctly
-# treated as "same project." Returns 0 (true) if same, 1 (false) if different.
-# shellcheck disable=SC2317,SC2329
-is_same_project() {
-    local target_dir="$1"
-    local current_root
-    current_root=$(detect_project_root)
-
-    # Get common dir for current project (absolute path)
-    local current_common
-    current_common=$(cd "$current_root" && git rev-parse --git-common-dir 2>/dev/null) || return 1
-    # Resolve to absolute if relative
-    if [[ "$current_common" != /* ]]; then
-        current_common=$(cd "$current_root" && cd "$current_common" && pwd)
-    fi
-
-    # Get common dir for target (absolute path)
-    local target_common
-    target_common=$(cd "$target_dir" && git rev-parse --git-common-dir 2>/dev/null) || return 1
-    if [[ "$target_common" != /* ]]; then
-        target_common=$(cd "$target_dir" && cd "$target_common" && pwd)
-    fi
-
-    [[ "$current_common" == "$target_common" ]]
-}
-
 # --- Check 2: Main is sacred (no commits on main/master) ---
 # Exceptions:
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
 #   - Merge commits (MERGE_HEAD present — landing feature branches via git merge)
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
@@ -367,29 +354,29 @@ fi
 
 # --- Check 3: Force push handling ---
 # updatedInput is NOT supported in PreToolUse hooks — deny with corrected command.
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bpush\s+.*(-f|--force)\b'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bpush\s+.*(-f|--force)\b'; then
     # Hard block: force push to main/master
-    if echo "$COMMAND" | grep -qE '(origin|upstream)\s+(main|master)\b'; then
+    if echo "$_stripped_cmd" | grep -qE '(origin|upstream)\s+(main|master)\b'; then
         deny "Cannot force push to main/master. This is a destructive action that rewrites shared history."
     fi
     # Soft deny: --force should be --force-with-lease (safer, won't clobber remote changes)
-    if ! echo "$COMMAND" | grep -qE '\-\-force-with-lease'; then
-        # Use perl for word-boundary support (macOS sed lacks \b)
+    if ! echo "$_stripped_cmd" | grep -qE '\-\-force-with-lease'; then
+        # Use perl for word-boundary support (macOS sed lacks \b). Correction built from raw COMMAND.
         CORRECTED=$(echo "$COMMAND" | perl -pe 's/--force(?!-with-lease)/--force-with-lease/g; s/\s-f\s/ --force-with-lease /g')
         deny "Use --force-with-lease instead of --force to avoid clobbering remote changes. Run instead: $CORRECTED"
     fi
 fi
 
 # --- Check 4: No destructive git commands (hard blocks) ---
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\breset\s+--hard'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\breset\s+--hard'; then
     deny "git reset --hard is destructive and discards uncommitted work. Use git stash or create a backup branch first."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bclean\s+.*-f'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bclean\s+.*-f'; then
     deny "git clean -f permanently deletes untracked files. Use git clean -n (dry run) first to see what would be deleted."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
     # @decision DEC-GUARD-BRANCH-D-001
     # @title Conditional git branch -D: Guardian-only with merge verification
     # @status accepted
@@ -402,11 +389,7 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete
     #   message names the specific branch so the user can inspect before deciding.
     #   Branch name extraction handles: git branch -D name, git -C dir branch -D name,
     #   git branch --delete --force name, git branch --force --delete name.
-    _GUARDIAN_ACTIVE=0
-    for _gm in "${TRACE_STORE}/.active-guardian-"*; do
-        [[ -f "$_gm" ]] && _GUARDIAN_ACTIVE=$(( _GUARDIAN_ACTIVE + 1 ))
-    done
-    if [[ "$_GUARDIAN_ACTIVE" -eq 0 ]]; then
+    if ! is_guardian_active; then
         deny "git branch -D / --delete --force force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
     fi
     # Guardian is active — extract branch name and verify it is merged into HEAD.
@@ -439,14 +422,10 @@ fi
 # git branch -D is handled by Check 4 (Guardian + merge-verified path above).
 # This gates git branch -d (lowercase, safe delete) to require an active Guardian
 # agent. Prevents orchestrator from bulk-deleting branches without Guardian oversight.
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-d\b'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-d\b'; then
     # Skip if already handled by Check 4 (-D / --delete --force patterns)
-    if ! echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
-        GUARDIAN_ACTIVE=0
-        for _gm in "${TRACE_STORE}/.active-guardian-"*; do
-            [[ -f "$_gm" ]] && GUARDIAN_ACTIVE=$(( GUARDIAN_ACTIVE + 1 ))
-        done
-        if [[ "$GUARDIAN_ACTIVE" -eq 0 ]]; then
+    if ! echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
+        if ! is_guardian_active; then
             deny "Cannot delete branches outside Guardian context. Dispatch Guardian for branch management (Sacred Practice #8)."
         fi
     fi
@@ -468,14 +447,10 @@ fi
 #   rewrite() is NOT used because updatedInput is not supported in PreToolUse hooks
 #   — it silently fails. deny() with the corrected command in the reason is the
 #   only reliable fix.
-if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
+if echo "$_stripped_cmd" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
     # Deny --force worktree removal outside Guardian (dirty worktrees need oversight)
-    if echo "$COMMAND" | grep -qE 'worktree[[:space:]]+remove[[:space:]].*--force|worktree[[:space:]]+remove[[:space:]]+--force'; then
-        GUARDIAN_ACTIVE=0
-        for _gm in "${TRACE_STORE}/.active-guardian-"*; do
-            [[ -f "$_gm" ]] && GUARDIAN_ACTIVE=$(( GUARDIAN_ACTIVE + 1 ))
-        done
-        if [[ "$GUARDIAN_ACTIVE" -eq 0 ]]; then
+    if echo "$_stripped_cmd" | grep -qE 'worktree[[:space:]]+remove[[:space:]].*--force|worktree[[:space:]]+remove[[:space:]]+--force'; then
+        if ! is_guardian_active; then
             deny "Cannot force-remove worktrees outside Guardian context. Dirty worktrees may contain uncommitted work. Dispatch Guardian for worktree cleanup."
         fi
     fi
@@ -486,7 +461,7 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'
 fi
 
 # --- Check 6: Test status gate for merge commands ---
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
     if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1; then
         if read_test_status "$PROJECT_ROOT"; then
@@ -505,7 +480,7 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
 fi
 
 # --- Check 7: Test status gate for commit commands ---
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
     if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1; then
         if read_test_status "$PROJECT_ROOT"; then
@@ -532,8 +507,8 @@ fi
 # to the orchestrator's CLAUDE_DIR/.proof-status. This handles the case where
 # prompt-submit.sh wrote "verified" to the orchestrator's copy (dual-write path).
 # The worktree's file takes precedence when both exist.
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
-    if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
+    if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
         PROOF_DIR=$(extract_git_target_dir "$COMMAND")
     else
         PROOF_DIR=$(detect_project_root)
@@ -564,7 +539,7 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
 fi
 
 # Log gate pass for git commands that reached the gates
-if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
+if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
     append_session_event "gate_eval" "{\"hook\":\"guard\",\"result\":\"allow\"}" "$PROJECT_ROOT"
 fi
