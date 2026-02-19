@@ -73,11 +73,41 @@ fi
 if [[ "$AGENT_TYPE" == "tester" ]]; then
     IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
     if [[ -n "$IMPL_TRACE" ]]; then
-        # Active trace means implementer hasn't returned yet
         IMPL_MANIFEST="${TRACE_STORE}/${IMPL_TRACE}/manifest.json"
         IMPL_STATUS=$(jq -r '.status // "unknown"' "$IMPL_MANIFEST" 2>/dev/null || echo "unknown")
         if [[ "$IMPL_STATUS" == "active" ]]; then
-            deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
+            # Check staleness before denying — orphaned traces shouldn't block forever
+            # @decision DEC-TESTER-GATE-HEAL-001
+            # @title Self-healing staleness check in tester dispatch gate
+            # @status accepted
+            # @rationale Gate B blocks tester dispatch when it detects an active implementer trace.
+            #   But if finalize_trace failed (timeout race, crash, session interruption), the trace
+            #   stays "active" forever, creating a permanent deadlock. Adding a staleness check (>30min)
+            #   with inline refinalize_trace repair unblocks the gate automatically. The 30-min threshold
+            #   matches refinalize_trace's own orphan window (DEC-REFINALIZE-007). Marker cleanup uses
+            #   wildcard rm because the marker's session_id suffix may not match the current session.
+            IMPL_STARTED=$(jq -r '.started_at // empty' "$IMPL_MANIFEST" 2>/dev/null)
+            IMPL_START_EPOCH=0
+            if [[ -n "$IMPL_STARTED" ]]; then
+                IMPL_START_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$IMPL_STARTED" +%s 2>/dev/null \
+                    || date -u -d "$IMPL_STARTED" +%s 2>/dev/null \
+                    || echo "0")
+            fi
+            NOW_EPOCH=$(date -u +%s)
+            STALE_THRESHOLD=1800  # 30 minutes
+
+            if [[ "$IMPL_START_EPOCH" -gt 0 && $(( NOW_EPOCH - IMPL_START_EPOCH )) -gt "$STALE_THRESHOLD" ]]; then
+                # Trace is stale — auto-heal via refinalize_trace, then clean marker
+                refinalize_trace "$IMPL_TRACE" 2>/dev/null || true
+                # Clean the marker so future checks don't hit this path
+                rm -f "${TRACE_STORE}/.active-implementer-"* 2>/dev/null || true
+                # Re-read status after repair
+                IMPL_STATUS=$(jq -r '.status // "unknown"' "$IMPL_MANIFEST" 2>/dev/null || echo "unknown")
+            fi
+
+            if [[ "$IMPL_STATUS" == "active" ]]; then
+                deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
+            fi
         fi
     fi
 fi

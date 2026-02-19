@@ -1597,6 +1597,8 @@ V2_TEST_FILES=(
     "test-observatory-flywheel-fix.sh"
     "test-observatory-remaining-fixes.sh"
     "test-obs-data-quality.sh"
+    "test-obs-pipeline.sh"
+    "test-tester-gate-heal.sh"
 )
 
 for test_file in "${V2_TEST_FILES[@]}"; do
