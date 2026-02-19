@@ -329,7 +329,7 @@ if [[ -d "$TRACE_STORE" ]]; then
     if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
         _DEV_PROJECT_NAME=$(basename "$PROJECT_ROOT")
         # Collect last 5 project traces (most recent first via tail)
-        _DEV_TRACES=$(grep "\"project_name\":\"${_DEV_PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -5 | tac 2>/dev/null || grep "\"project_name\":\"${_DEV_PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -5 | awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) print a[i]}')
+        _DEV_TRACES=$(grep "\"project_name\":\"${_DEV_PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -5 | tac 2>/dev/null || true)
         _DEV_TRACE_COUNT=$(echo "$_DEV_TRACES" | grep -c . 2>/dev/null || echo "0")
 
         if [[ "$_DEV_TRACE_COUNT" -ge 2 ]]; then
