@@ -378,7 +378,10 @@ fi
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-d\b'; then
     # Skip if already caught by Check 4 (-D / --delete --force patterns)
     if ! echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
-        GUARDIAN_ACTIVE=$(ls "${TRACE_STORE}/.active-guardian-"* 2>/dev/null | wc -l | tr -d ' ')
+        GUARDIAN_ACTIVE=0
+        for _gm in "${TRACE_STORE}/.active-guardian-"*; do
+            [[ -f "$_gm" ]] && GUARDIAN_ACTIVE=$(( GUARDIAN_ACTIVE + 1 ))
+        done
         if [[ "$GUARDIAN_ACTIVE" -eq 0 ]]; then
             deny "Cannot delete branches outside Guardian context. Dispatch Guardian for branch management (Sacred Practice #8)."
         fi
@@ -404,7 +407,10 @@ fi
 if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
     # Deny --force worktree removal outside Guardian (dirty worktrees need oversight)
     if echo "$COMMAND" | grep -qE 'worktree[[:space:]]+remove[[:space:]].*--force|worktree[[:space:]]+remove[[:space:]]+--force'; then
-        GUARDIAN_ACTIVE=$(ls "${TRACE_STORE}/.active-guardian-"* 2>/dev/null | wc -l | tr -d ' ')
+        GUARDIAN_ACTIVE=0
+        for _gm in "${TRACE_STORE}/.active-guardian-"*; do
+            [[ -f "$_gm" ]] && GUARDIAN_ACTIVE=$(( GUARDIAN_ACTIVE + 1 ))
+        done
         if [[ "$GUARDIAN_ACTIVE" -eq 0 ]]; then
             deny "Cannot force-remove worktrees outside Guardian context. Dirty worktrees may contain uncommitted work. Dispatch Guardian for worktree cleanup."
         fi

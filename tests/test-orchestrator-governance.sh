@@ -286,7 +286,7 @@ OUTPUT11=$(echo "$INPUT11" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
 assert_deny "$OUTPUT11" "guard.sh Check 5 denies worktree remove --force without Guardian"
 
 # ============================================================
-# Test 12: guard.sh Check 5 allows worktree remove --force with Guardian marker
+# Test 12: guard.sh Check 5: --force with Guardian → passes Guardian gate, CWD safety deny
 # ============================================================
 echo ""
 echo "=== Test 12: guard.sh Check 5 allows worktree remove --force with Guardian ==="
@@ -296,14 +296,18 @@ MARKER12=$(make_guardian_marker)
 REPO12=$(make_git_repo_on_main)
 INPUT12=$(make_guard_input "git worktree remove --force ${REPO12}/.worktrees/some-wt")
 OUTPUT12=$(echo "$INPUT12" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
-# With Guardian active: no deny from Check 5 — falls through to CWD rewrite
-assert_allow "$OUTPUT12" "guard.sh Check 5 allows worktree remove --force with Guardian (proceeds to rewrite)"
+# With Guardian active: passes Guardian gate but hits CWD safety deny (deny-based, not rewrite)
+if echo "$OUTPUT12" | grep -q '"permissionDecision": "deny"' && echo "$OUTPUT12" | grep -q 'CWD safety'; then
+    pass "guard.sh Check 5: worktree remove --force with Guardian passes Guardian gate, hits CWD safety deny"
+else
+    fail "guard.sh Check 5: worktree remove --force with Guardian — expected CWD safety deny, got: $OUTPUT12"
+fi
 
 rm -f "$MARKER12" 2>/dev/null || true
 CLEANUP_MARKERS=()
 
 # ============================================================
-# Test 13: guard.sh Check 5 allows normal git worktree remove (CWD rewrite)
+# Test 13: guard.sh Check 5: normal remove → CWD safety deny (deny-based, no rewrite)
 # ============================================================
 echo ""
 echo "=== Test 13: guard.sh Check 5 allows normal worktree remove (rewrite, no deny) ==="
@@ -313,7 +317,12 @@ rm -f "${TRACE_STORE}/.active-guardian-"* 2>/dev/null || true
 REPO13=$(make_git_repo_on_main)
 INPUT13=$(make_guard_input "git worktree remove ${REPO13}/.worktrees/some-wt")
 OUTPUT13=$(echo "$INPUT13" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
-assert_allow "$OUTPUT13" "guard.sh Check 5 allows normal worktree remove (no --force)"
+# Normal worktree remove: no --force so Guardian gate not triggered, hits CWD safety deny
+if echo "$OUTPUT13" | grep -q '"permissionDecision": "deny"' && echo "$OUTPUT13" | grep -q 'CWD safety'; then
+    pass "guard.sh Check 5: normal worktree remove hits CWD safety deny (deny-based, not rewrite)"
+else
+    fail "guard.sh Check 5: normal worktree remove — expected CWD safety deny, got: $OUTPUT13"
+fi
 
 # ============================================================
 # Summary
