@@ -581,9 +581,23 @@ init_trace() {
     #   use git log/show on commit hashes if they are stored at trace start. The start
     #   commit paired with end_commit (captured in finalize_trace) gives a precise range
     #   for counting files changed, recovering files_changed=0 for 79% of traces.
+    # @decision DEC-OBS-COMMIT-001
+    # @title Robust start_commit capture with fallback and diagnostic logging
+    # @status accepted
+    # @rationale 6 traces missing start_commit because git rev-parse fails silently
+    #   (e.g., empty repo, detached HEAD in some environments). Try git -C project_root
+    #   first, then bare git rev-parse as fallback. Log a diagnostic when both fail
+    #   so the cause is discoverable without breaking the trace. Issue #105.
     local start_commit=""
     if [[ "$branch" != "no-git" ]]; then
-        start_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || echo "")
+        start_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null)
+        if [[ -z "$start_commit" ]]; then
+            # Fallback: bare git rev-parse (may succeed if CWD is inside the repo)
+            start_commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+        fi
+        if [[ -z "$start_commit" ]]; then
+            echo "WARN: init_trace: could not capture start_commit for $project_root (git rev-parse failed)" >&2
+        fi
     fi
 
     # Clean up stale .active-* markers older than 2 hours
@@ -871,9 +885,24 @@ finalize_trace() {
     # Capture end_commit for retrospective file counting in refinalize_trace.
     # Paired with start_commit (written by init_trace), this enables git log --name-only
     # to count files changed between the two commits even after the worktree is removed.
+    # @decision DEC-OBS-COMMIT-002
+    # @title Robust end_commit capture with fallback and diagnostic logging
+    # @status accepted
+    # @rationale 10 traces missing end_commit because git rev-parse fails silently when
+    #   the worktree was already deleted before finalize_trace runs, or when the git dir
+    #   check passes but HEAD is not readable (e.g., repo in a weird state). Try
+    #   git -C project_root first, then bare git rev-parse as fallback. Log a diagnostic
+    #   when both fail on a known git project so the cause is discoverable. Issue #105.
     local end_commit=""
     if [[ -n "$project_root" ]] && git -C "$project_root" rev-parse --git-dir >/dev/null 2>&1; then
-        end_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || echo "")
+        end_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null)
+        if [[ -z "$end_commit" ]]; then
+            # Fallback: bare git rev-parse (may succeed if CWD is inside the repo)
+            end_commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+        fi
+        if [[ -z "$end_commit" ]]; then
+            echo "WARN: finalize_trace: could not capture end_commit for $project_root (git rev-parse failed)" >&2
+        fi
     fi
 
     # Update manifest with jq (merge new fields)
@@ -1345,6 +1374,24 @@ refinalize_stale_traces() {
             updated=$(( updated + 1 ))
         fi
     done
+
+    # Rebuild the index when any manifests were updated so index.jsonl stays in
+    # sync with manifest files. Without this, analyze.sh sees stale index entries
+    # (e.g., 39 indexed vs 43 manifests). Called here so callers (analyze.sh and
+    # direct callers) both get a consistent index after refinalization.
+    # @decision DEC-OBS-INDEX-001
+    # @title Call rebuild_index after refinalize_stale_traces updates manifests
+    # @status accepted
+    # @rationale analyze.sh calls refinalize_stale_traces then rebuild_index, but
+    #   direct callers of refinalize_stale_traces (scripts, future hooks) would get
+    #   a stale index. Moving rebuild_index into refinalize_stale_traces ensures the
+    #   index is always consistent after a refinalize run. rebuild_index is only
+    #   called when at least one trace was updated (updated > 0) to avoid unnecessary
+    #   I/O on clean runs. analyze.sh pre-stage rebuild call is now redundant but
+    #   harmless (atomic mv makes double-rebuild safe). Issue #104.
+    if [[ "$updated" -gt 0 ]]; then
+        rebuild_index 2>/dev/null || true
+    fi
 
     echo "$updated"
     return 0

@@ -1592,6 +1592,11 @@ V2_TEST_FILES=(
     "test-guard-cwd-recovery.sh"
     "test-guard-check5-spaces.sh"
     "test-guard-worktree-cd.sh"
+    "test-observatory-batch-a-fixes.sh"
+    "test-observatory-cohort-regression.sh"
+    "test-observatory-flywheel-fix.sh"
+    "test-observatory-remaining-fixes.sh"
+    "test-obs-data-quality.sh"
 )
 
 for test_file in "${V2_TEST_FILES[@]}"; do
