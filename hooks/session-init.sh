@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # Session context injection at startup.
 # SessionStart hook — matcher: startup|resume|clear|compact
 #
@@ -9,10 +7,13 @@ set -euo pipefail
 #   - MASTER_PLAN.md existence and status
 #   - Active worktrees
 #   - Stale session files from crashed sessions
+#   - Filesystem orphan scan (.worktrees/ husks auto-removed; content orphans warned)
 #
 # Known: SessionStart has a bug (Issue #10373) where output may not inject
 # for brand-new sessions. Works for /clear, /compact, resume. Implement
 # anyway — when it works it's valuable, when it doesn't there's no harm.
+
+set -euo pipefail
 
 # --- Syntax gate: validate shared libraries before sourcing ---
 # Catches corruption (merge conflicts, partial writes) before all hooks break.
@@ -120,7 +121,9 @@ if [[ -n "$GIT_BRANCH" ]]; then
             wt_name=$(basename "$wt_dir")
 
             # Skip if tracked by git
-            if echo "$GIT_WT_PATHS" | grep -qF "$wt_dir"; then
+            # Use -x for exact whole-line match to prevent prefix collisions, e.g.
+            # "feat" matching "feature-worktree-cleanup" with plain -F substring match.
+            if echo "$GIT_WT_PATHS" | grep -qxF "$wt_dir"; then
                 continue
             fi
 

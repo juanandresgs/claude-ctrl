@@ -484,9 +484,11 @@ cmd_sweep() {
             local wt_path="${wt_dir%/}"  # strip trailing slash
 
             # Check if tracked by git
-            if echo "$git_wt_paths_raw" | grep -qF "$wt_path"; then
-                # Tracked by git — check roster
-                if ! grep -qF "$wt_path" "$REGISTRY" 2>/dev/null; then
+            # Use -x for exact whole-line match to prevent prefix collisions, e.g.
+            # "feat" matching "feature-worktree-cleanup" with plain -F substring match.
+            if echo "$git_wt_paths_raw" | grep -qxF "$wt_path"; then
+                # Tracked by git — check roster (same exact-line fix)
+                if ! grep -qxF "$wt_path" "$REGISTRY" 2>/dev/null; then
                     unregistered+=("$wt_path")
                 fi
                 continue
