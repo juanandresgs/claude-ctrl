@@ -244,6 +244,30 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
             fi
         fi
 
+        # Check 7b: Post-merge worktree directory verification
+        # If the breadcrumb exists AND directory still exists after merge, attempt cleanup.
+        # This runs BEFORE the breadcrumb cleanup below so the breadcrumb is still readable.
+        BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path"
+        if [[ -f "$BREADCRUMB_7B" ]]; then
+            WT_PATH_7B=$(cat "$BREADCRUMB_7B" 2>/dev/null | tr -d '[:space:]')
+            if [[ -n "$WT_PATH_7B" && -d "$WT_PATH_7B" ]]; then
+                # Check for uncommitted changes before attempting cleanup
+                WT_DIRTY=$(git -C "$WT_PATH_7B" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+                if [[ "$WT_DIRTY" -gt 0 ]]; then
+                    ISSUES+=("WARN: Worktree $WT_PATH_7B still exists with $WT_DIRTY uncommitted change(s) — manual cleanup needed")
+                else
+                    # Safe to auto-clean husks via sweep --auto
+                    ROSTER_SCRIPT="$HOME/.claude/scripts/worktree-roster.sh"
+                    if [[ -x "$ROSTER_SCRIPT" ]]; then
+                        SWEEP_OUTPUT=$(WORKTREE_DIR="$(dirname "$WT_PATH_7B")" "$ROSTER_SCRIPT" sweep --auto 2>&1 || true)
+                        if [[ -n "$SWEEP_OUTPUT" ]]; then
+                            ISSUES+=("Post-merge cleanup: $SWEEP_OUTPUT")
+                        fi
+                    fi
+                fi
+            fi
+        fi
+
         # Clean up worktree breadcrumb and its .proof-status
         BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path"
         if [[ -f "$BREADCRUMB" ]]; then

@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # Session context injection at startup.
 # SessionStart hook — matcher: startup|resume|clear|compact
 #
@@ -9,10 +7,13 @@ set -euo pipefail
 #   - MASTER_PLAN.md existence and status
 #   - Active worktrees
 #   - Stale session files from crashed sessions
+#   - Filesystem orphan scan (.worktrees/ husks auto-removed; content orphans warned)
 #
 # Known: SessionStart has a bug (Issue #10373) where output may not inject
 # for brand-new sessions. Works for /clear, /compact, resume. Implement
 # anyway — when it works it's valuable, when it doesn't there's no harm.
+
+set -euo pipefail
 
 # --- Syntax gate: validate shared libraries before sourcing ---
 # Catches corruption (merge conflicts, partial writes) before all hooks break.
@@ -98,6 +99,64 @@ if [[ -n "$GIT_BRANCH" ]]; then
         STALE_COUNT=$(echo "$STALE_COUNT" | tr -d ' ')
         if [[ "$STALE_COUNT" -gt 0 ]]; then
             CONTEXT_PARTS+=("WARNING: $STALE_COUNT stale worktree(s) detected. Run \`worktree-roster.sh cleanup --dry-run\` to review before removing.")
+        fi
+    fi
+
+    # --- Filesystem orphan scan (safety net for Guardian-missed cleanup) ---
+    # Scans .worktrees/ for dirs not tracked by git worktree list.
+    # Husks (empty dirs) are auto-removed. Content orphans warn the user.
+    # This is a safety net for worktrees that Guardian failed to clean up
+    # (crash, manual branch deletion, etc.) that never got registered in the roster.
+    WORKTREE_BASE="$PROJECT_ROOT/.worktrees"
+    if [[ -d "$WORKTREE_BASE" ]]; then
+        # Get git-tracked worktree paths
+        GIT_WT_PATHS=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null | grep '^worktree ' | sed 's/^worktree //' || echo "")
+
+        HUSK_COUNT=0
+        ORPHAN_DIRS=()
+
+        for wt_dir in "$WORKTREE_BASE"/*/; do
+            [[ ! -d "$wt_dir" ]] && continue
+            wt_dir="${wt_dir%/}"  # strip trailing slash
+            wt_name=$(basename "$wt_dir")
+
+            # Skip if tracked by git
+            # Use -x for exact whole-line match to prevent prefix collisions, e.g.
+            # "feat" matching "feature-worktree-cleanup" with plain -F substring match.
+            if echo "$GIT_WT_PATHS" | grep -qxF "$wt_dir"; then
+                continue
+            fi
+
+            # Count real files (not just .git metadata)
+            FILE_COUNT=$(find "$wt_dir" -not -name '.git' -not -path '*/.git/*' -type f 2>/dev/null | wc -l | tr -d ' ')
+
+            if [[ "$FILE_COUNT" -eq 0 ]]; then
+                # Husk — empty dir, safe to auto-remove
+                if [[ "$PWD" == "$wt_dir"* ]]; then
+                    cd "$PROJECT_ROOT" || cd "$HOME"
+                fi
+                rm -rf "$wt_dir"
+                HUSK_COUNT=$((HUSK_COUNT + 1))
+            else
+                # Content orphan — warn but don't delete
+                ORPHAN_DIRS+=("$wt_name ($FILE_COUNT files)")
+            fi
+        done
+
+        # Prune registry after husk removal (ghosts may exist for removed dirs)
+        if [[ "$HUSK_COUNT" -gt 0 ]]; then
+            ROSTER_SCRIPT_FS="$HOME/.claude/scripts/worktree-roster.sh"
+            [[ -x "$ROSTER_SCRIPT_FS" ]] && REGISTRY="${REGISTRY:-$HOME/.claude/.worktree-roster.tsv}" "$ROSTER_SCRIPT_FS" prune 2>/dev/null || true
+            CONTEXT_PARTS+=("Cleaned $HUSK_COUNT orphaned worktree husk(s) from .worktrees/")
+        fi
+
+        if [[ ${#ORPHAN_DIRS[@]} -gt 0 ]]; then
+            CONTEXT_PARTS+=("WARNING: ${#ORPHAN_DIRS[@]} content orphan(s) in .worktrees/: ${ORPHAN_DIRS[*]}. Run \`worktree-roster.sh sweep --dry-run\` to review.")
+        fi
+
+        # Clean empty .worktrees/ parent directory after last child deleted
+        if [[ -d "$WORKTREE_BASE" ]] && [[ -z "$(ls -A "$WORKTREE_BASE" 2>/dev/null)" ]]; then
+            rmdir "$WORKTREE_BASE" 2>/dev/null || true
         fi
     fi
 fi
@@ -294,17 +353,17 @@ if [[ -d "$TRACE_STORE" ]]; then
     done
 
     # Clean orphaned .proof-status (crash recovery)
-    # At session start, if proof-status is NOT verified and no agents are active
-    # (active markers just cleaned above), the file is stale from a crashed session.
+    # At session start, if no agents are active (active markers just cleaned above),
+    # ANY .proof-status is stale — including "verified" from a session that crashed
+    # before Guardian ran. A stale "verified" would bypass the proof gate for
+    # unrelated future work, so we unconditionally remove it when no agents are active.
     PROOF_FILE="${CLAUDE_DIR}/.proof-status"
     if [[ -f "$PROOF_FILE" ]]; then
-        PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
-        if [[ "$PROOF_VAL" != "verified" ]]; then
-            ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-            if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
-                rm -f "$PROOF_FILE"
-                CONTEXT_PARTS+=("Cleaned stale .proof-status ($PROOF_VAL) — no active agents, likely from crashed session")
-            fi
+        ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
+            PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
+            rm -f "$PROOF_FILE"
+            CONTEXT_PARTS+=("Cleaned stale .proof-status ($PROOF_VAL) — no active agents, likely from crashed session")
         fi
     fi
 
