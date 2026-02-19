@@ -326,25 +326,20 @@ is_same_project() {
 
 # --- Check 2: Main is sacred (no commits on main/master) ---
 # Exceptions:
-#   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
 #   - Merge commits (MERGE_HEAD present — landing feature branches via git merge)
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
-    REPO_ROOT=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")
-    # Skip if this is the .claude config directory (meta-infrastructure)
-    if [[ "$REPO_ROOT" != */.claude ]]; then
-        CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-        if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-            # Check if ONLY MASTER_PLAN.md is staged (plan files allowed per Core Dogma)
-            STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
-            if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
-                : # Allow - plan file commits on main are permitted
-            elif GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --absolute-git-dir 2>/dev/null) && [[ -f "$GIT_DIR/MERGE_HEAD" ]]; then
-                : # Allow — completing a merge is the intended workflow
-            else
-                deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
-            fi
+    CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+        # Check if ONLY MASTER_PLAN.md is staged (plan files allowed per Core Dogma)
+        STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
+        if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
+            : # Allow - plan file commits on main are permitted
+        elif GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --absolute-git-dir 2>/dev/null) && [[ -f "$GIT_DIR/MERGE_HEAD" ]]; then
+            : # Allow — completing a merge is the intended workflow
+        else
+            deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
         fi
     fi
 fi
@@ -376,6 +371,20 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete
     deny "git branch -D / --delete --force force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
+# --- Check 4b: Branch deletion requires Guardian context ---
+# git branch -D is hard-denied by Check 4. This gates git branch -d (safe delete)
+# to require an active Guardian agent. Prevents orchestrator from bulk-deleting
+# branches without Guardian oversight.
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-d\b'; then
+    # Skip if already caught by Check 4 (-D / --delete --force patterns)
+    if ! echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
+        GUARDIAN_ACTIVE=$(ls "${TRACE_STORE}/.active-guardian-"* 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$GUARDIAN_ACTIVE" -eq 0 ]]; then
+            deny "Cannot delete branches outside Guardian context. Dispatch Guardian for branch management (Sacred Practice #8)."
+        fi
+    fi
+fi
+
 # --- Check 5: Worktree removal CWD safety deny ---
 # @decision DEC-GUARD-CHECK5-001
 # @title Use extract_git_target_dir + git -C for worktree removal — deny pattern
@@ -393,6 +402,13 @@ fi
 #   — it silently fails. deny() with the corrected command in the reason is the
 #   only reliable fix.
 if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
+    # Deny --force worktree removal outside Guardian (dirty worktrees need oversight)
+    if echo "$COMMAND" | grep -qE 'worktree[[:space:]]+remove[[:space:]].*--force|worktree[[:space:]]+remove[[:space:]]+--force'; then
+        GUARDIAN_ACTIVE=$(ls "${TRACE_STORE}/.active-guardian-"* 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$GUARDIAN_ACTIVE" -eq 0 ]]; then
+            deny "Cannot force-remove worktrees outside Guardian context. Dirty worktrees may contain uncommitted work. Dispatch Guardian for worktree cleanup."
+        fi
+    fi
     CHECK5_DIR=$(extract_git_target_dir "$COMMAND")
     MAIN_WT=$(git -C "$CHECK5_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
     MAIN_WT="${MAIN_WT:-$CHECK5_DIR}"
