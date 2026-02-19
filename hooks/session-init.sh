@@ -300,7 +300,7 @@ if [[ -d "$TRACE_STORE" ]]; then
     if [[ -f "$PROOF_FILE" ]]; then
         PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
         if [[ "$PROOF_VAL" != "verified" ]]; then
-            ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ')
+            ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ' || echo "0")
             if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
                 rm -f "$PROOF_FILE"
                 CONTEXT_PARTS+=("Cleaned stale .proof-status ($PROOF_VAL) — no active agents, likely from crashed session")
