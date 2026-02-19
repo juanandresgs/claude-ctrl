@@ -18,6 +18,7 @@ set -euo pipefail
 #   - MASTER_PLAN.md (plans are written on main by design)
 #   - Non-source files (config, docs, markdown, JSON, YAML, etc.)
 #   - Files in git worktrees (non-main branches)
+#   - Files during merge conflict resolution (MERGE_HEAD present)
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -52,6 +53,11 @@ CURRENT_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null || gi
 
 # Block writes on main/master
 if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+    # Allow during merge conflict resolution (MERGE_HEAD present)
+    # Merge conflicts in source files must be resolvable on main
+    GIT_DIR=$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || echo "")
+    [[ -n "$GIT_DIR" && -f "$GIT_DIR/MERGE_HEAD" ]] && exit 0
+
     cat <<EOF
 {
   "hookSpecificOutput": {

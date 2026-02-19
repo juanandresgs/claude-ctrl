@@ -18,6 +18,8 @@
 #  11. guard.sh Check 5 denies git worktree remove --force without Guardian
 #  12. guard.sh Check 5 allows git worktree remove --force with Guardian marker
 #  13. guard.sh Check 5 allows normal git worktree remove (CWD rewrite, no deny)
+#  14. branch-guard allows .sh edit on main during merge (MERGE_HEAD present)
+#  15. guard.sh crash-deny degrades to allow during merge (MERGE_HEAD present)
 #
 # @decision DEC-GOVERNANCE-TEST-001
 # @title Test suite for orchestrator governance hardening
@@ -322,6 +324,45 @@ if echo "$OUTPUT13" | grep -q '"permissionDecision": "deny"' && echo "$OUTPUT13"
     pass "guard.sh Check 5: normal worktree remove hits CWD safety deny (deny-based, not rewrite)"
 else
     fail "guard.sh Check 5: normal worktree remove — expected CWD safety deny, got: $OUTPUT13"
+fi
+
+# ============================================================
+# Test 14: branch-guard allows .sh edit on main during merge (MERGE_HEAD)
+# ============================================================
+echo ""
+echo "=== Test 14: branch-guard allows .sh edit on main during merge ==="
+
+REPO14=$(make_git_repo_on_main)
+GIT_DIR14=$(git -C "$REPO14" rev-parse --absolute-git-dir 2>/dev/null)
+echo "deadbeef" > "${GIT_DIR14}/MERGE_HEAD"
+
+INPUT14=$(make_branch_guard_input "${REPO14}/scripts/deploy.sh")
+OUTPUT14=$(echo "$INPUT14" | bash "$HOOKS_DIR/branch-guard.sh" 2>/dev/null) || true
+assert_allow "$OUTPUT14" "branch-guard allows .sh edit on main during merge (MERGE_HEAD present)"
+
+rm -f "${GIT_DIR14}/MERGE_HEAD" 2>/dev/null || true
+
+# ============================================================
+# Test 15: guard.sh crash-deny degrades to allow during merge
+# ============================================================
+echo ""
+echo "=== Test 15: guard.sh crash-deny degrades to allow during merge ==="
+
+META_GIT_DIR=$(git -C "$HOME/.claude" rev-parse --absolute-git-dir 2>/dev/null || echo "")
+if [[ -n "$META_GIT_DIR" ]]; then
+    # Create temporary MERGE_HEAD in ~/.claude
+    echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "${META_GIT_DIR}/MERGE_HEAD"
+
+    # Feed guard.sh invalid JSON — this will crash the script (jq parse error)
+    # and trigger crash-deny. With MERGE_HEAD present, should degrade to allow.
+    rm -f "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
+    OUTPUT15=$(echo "not-valid-json-at-all" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+
+    rm -f "${META_GIT_DIR}/MERGE_HEAD" 2>/dev/null || true
+
+    assert_allow "$OUTPUT15" "guard.sh crash-deny degrades to allow during merge"
+else
+    pass "Test 15 skipped — cannot determine ~/.claude git dir"
 fi
 
 # ============================================================
