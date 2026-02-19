@@ -74,10 +74,12 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
             # @status accepted
             # @rationale Gate B blocks tester dispatch when it detects an active implementer trace.
             #   But if finalize_trace failed (timeout race, crash, session interruption), the trace
-            #   stays "active" forever, creating a permanent deadlock. Adding a staleness check (>30min)
-            #   with inline refinalize_trace repair unblocks the gate automatically. The 30-min threshold
-            #   matches refinalize_trace's own orphan window (DEC-REFINALIZE-007). Marker cleanup uses
+            #   stays "active" forever, creating a permanent deadlock. Adding a staleness check (>5min)
+            #   with inline refinalize_trace repair unblocks the gate automatically. The 5-min threshold
+            #   is chosen to exceed the longest expected implementer hook run while being short enough
+            #   to avoid blocking tester dispatch on legitimately stuck traces. Marker cleanup uses
             #   wildcard rm because the marker's session_id suffix may not match the current session.
+            #   See DEC-TESTER-GATE-HEAL-002 for why the threshold was reduced from 30 to 5 minutes.
             IMPL_STARTED=$(jq -r '.started_at // empty' "$IMPL_MANIFEST" 2>/dev/null)
             IMPL_START_EPOCH=0
             if [[ -n "$IMPL_STARTED" ]]; then
@@ -86,11 +88,22 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
                     || echo "0")
             fi
             NOW_EPOCH=$(date -u +%s)
-            STALE_THRESHOLD=1800  # 30 minutes
+            STALE_THRESHOLD=300  # 5 minutes — matches check-implementer.sh timeout (15s) with margin
 
             if [[ "$IMPL_START_EPOCH" -gt 0 && $(( NOW_EPOCH - IMPL_START_EPOCH )) -gt "$STALE_THRESHOLD" ]]; then
                 # Trace is stale — auto-heal via refinalize_trace, then clean marker
                 refinalize_trace "$IMPL_TRACE" 2>/dev/null || true
+                # Force status to "completed" — refinalize_trace updates artifacts but NOT status.
+                # Without this flip, the re-read below still sees "active" and the deny fires.
+                # @decision DEC-TESTER-GATE-HEAL-002
+                # @title Reduce staleness threshold and fix status flip in tester dispatch gate
+                # @status accepted
+                # @rationale DEC-TESTER-GATE-HEAL-001 added staleness self-heal but used a 30-minute
+                #   threshold (too long for 5s hook timeout orphans) and refinalize_trace doesn't set
+                #   status: "completed" (only finalize_trace does). Reducing to 5 minutes and forcing
+                #   the status flip makes the self-heal actually work. Issues #127, #128.
+                jq '. + {status: "completed"}' "$IMPL_MANIFEST" > "${IMPL_MANIFEST}.tmp" 2>/dev/null \
+                    && mv "${IMPL_MANIFEST}.tmp" "$IMPL_MANIFEST" 2>/dev/null || true
                 # Clean the marker so future checks don't hit this path
                 rm -f "${TRACE_STORE}/.active-implementer-"* 2>/dev/null || true
                 # Re-read status after repair

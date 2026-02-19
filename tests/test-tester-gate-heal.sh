@@ -12,9 +12,11 @@
 # @rationale When finalize_trace fails (timeout race, crash, session interruption),
 #   Gate B in task-track.sh detects an active implementer trace and denies tester
 #   dispatch permanently — a deadlock. The self-healing fix calls refinalize_trace
-#   on traces older than 30 minutes. These tests verify: (1) stale traces are
-#   auto-healed and tester is allowed, (2) fresh traces still block tester, and
-#   (3) markers are cleaned up after auto-heal so the path doesn't repeat.
+#   on traces older than 5 minutes and forces status: "completed" (refinalize_trace
+#   alone does not write status). These tests verify: (1) stale traces are auto-healed
+#   and tester is allowed, (2) fresh traces still block tester, (3) markers are cleaned
+#   up after auto-heal, and (4) new tests at the 5-min boundary and status flip.
+#   See DEC-TESTER-GATE-HEAL-002 for threshold reduction rationale (issues #127, #128).
 #
 # Usage: bash tests/test-tester-gate-heal.sh
 # Returns: 0 if all tests pass, 1 if any fail
@@ -135,11 +137,14 @@ run_gate_b() {
     fi
     local now_epoch
     now_epoch=$(date -u +%s)
-    local stale_threshold=1800  # 30 minutes
+    local stale_threshold=300  # 5 minutes — matches check-implementer.sh timeout (15s) with margin
 
     if [[ "$impl_start_epoch" -gt 0 && $(( now_epoch - impl_start_epoch )) -gt "$stale_threshold" ]]; then
         # Stale — auto-heal
         refinalize_trace "$trace_id" 2>/dev/null || true
+        # Force status to "completed" — refinalize_trace does NOT write status field
+        jq '. + {status: "completed"}' "$impl_manifest" > "${impl_manifest}.tmp" 2>/dev/null \
+            && mv "${impl_manifest}.tmp" "$impl_manifest" 2>/dev/null || true
         # Clean markers (wildcard because session suffix may differ)
         rm -f "${FAKE_TRACE_STORE}/.active-implementer-"* 2>/dev/null || true
         # Re-read status after repair
@@ -204,6 +209,40 @@ else
 fi
 
 # ============================================================
+# Test 5b: Gate B code — has DEC-TESTER-GATE-HEAL-002 annotation (issues #127, #128)
+# ============================================================
+echo "Running: task-track.sh Gate B: has DEC-TESTER-GATE-HEAL-002 annotation"
+if grep -q 'DEC-TESTER-GATE-HEAL-002' "$TASK_TRACK" 2>/dev/null; then
+    pass "task-track.sh Gate B: has DEC-TESTER-GATE-HEAL-002 annotation"
+else
+    fail "task-track.sh Gate B: has DEC-TESTER-GATE-HEAL-002 annotation" "annotation not found"
+fi
+
+# ============================================================
+# Test 5c: Gate B code — STALE_THRESHOLD is 300 (5 min), not 1800 (30 min)
+# ============================================================
+echo "Running: task-track.sh Gate B: STALE_THRESHOLD=300 (not 1800)"
+if grep -q 'STALE_THRESHOLD=300' "$TASK_TRACK" 2>/dev/null; then
+    pass "task-track.sh Gate B: STALE_THRESHOLD=300 (not 1800)"
+else
+    fail "task-track.sh Gate B: STALE_THRESHOLD=300 (not 1800)" \
+         "STALE_THRESHOLD=300 not found — threshold may not have been reduced from 1800"
+fi
+
+# ============================================================
+# Test 5d: Gate B code — forces status flip via jq after refinalize_trace
+# ============================================================
+echo "Running: task-track.sh Gate B: contains jq status flip after refinalize_trace"
+if grep -q 'status.*completed.*refinalize\|refinalize.*status.*completed\|jq.*status.*completed\|completed.*jq.*IMPL_MANIFEST' "$TASK_TRACK" 2>/dev/null \
+    || grep -q 'status: "completed"' "$TASK_TRACK" 2>/dev/null \
+    || (grep -q 'jq.*completed' "$TASK_TRACK" 2>/dev/null && grep -q 'IMPL_MANIFEST' "$TASK_TRACK" 2>/dev/null); then
+    pass "task-track.sh Gate B: contains jq status flip after refinalize_trace"
+else
+    fail "task-track.sh Gate B: contains jq status flip after refinalize_trace" \
+         "jq status flip not found in task-track.sh"
+fi
+
+# ============================================================
 # Test 6: Functional — stale trace (45 min old) auto-heals
 # Verifies: refinalize_trace is called, status transitions to completed,
 # and gate logic allows tester dispatch.
@@ -236,18 +275,20 @@ else
 fi
 
 # ============================================================
-# Test 8: Functional — fresh trace (5 min old) still blocks tester
+# Test 8: Functional — fresh trace (exactly at 5-min boundary) still blocks tester
+# Threshold condition is strictly greater-than (> 300), so a trace started exactly
+# 300 seconds ago is NOT stale yet — the gate must deny.
 # ============================================================
-echo "Running: Functional: fresh trace (5 min ago) still blocks tester dispatch"
+echo "Running: Functional: fresh trace (exactly 5 min ago) still blocks tester dispatch"
 FRESH_TRACE_ID="impl-fresh-$(date +%s)-$$"
-FRESH_STARTED=$(make_started_at -300)  # 5 minutes ago
+FRESH_STARTED=$(make_started_at -300)  # exactly 5 minutes ago — not yet stale
 make_impl_trace "$FRESH_TRACE_ID" "$FRESH_STARTED" "active"
 
 FRESH_RESULT=$(run_gate_b "$FRESH_TRACE_ID")
 if [[ "$FRESH_RESULT" == "denied" ]]; then
-    pass "Functional: fresh trace (5 min ago) still blocks tester dispatch"
+    pass "Functional: fresh trace (exactly 5 min ago) still blocks tester dispatch"
 else
-    fail "Functional: fresh trace (5 min ago) still blocks tester dispatch" \
+    fail "Functional: fresh trace (exactly 5 min ago) still blocks tester dispatch" \
          "gate returned '$FRESH_RESULT' — expected 'denied'"
 fi
 
@@ -289,6 +330,47 @@ if [[ "$DONE_RESULT" == "allowed" ]]; then
 else
     fail "Functional: completed trace (non-active) is allowed through gate" \
          "gate returned '$DONE_RESULT' — expected 'allowed'"
+fi
+
+# ============================================================
+# Test 11: Functional — trace just over 5-min threshold auto-heals (DEC-TESTER-GATE-HEAL-002)
+# A trace started 360 seconds ago (6 min) exceeds the 300-second threshold and must
+# auto-heal. This validates the reduced threshold works at the near-boundary.
+# ============================================================
+echo "Running: Functional: trace just over 5-min threshold (6 min ago) auto-heals"
+NEAR_STALE_TRACE_ID="impl-near-stale-$(date +%s)-$$"
+NEAR_STALE_STARTED=$(make_started_at -360)  # 6 minutes ago — just over threshold
+make_impl_trace "$NEAR_STALE_TRACE_ID" "$NEAR_STALE_STARTED" "active"
+
+NEAR_RESULT=$(run_gate_b "$NEAR_STALE_TRACE_ID")
+if [[ "$NEAR_RESULT" == "allowed" ]]; then
+    pass "Functional: trace just over 5-min threshold (6 min ago) auto-heals"
+else
+    fail "Functional: trace just over 5-min threshold (6 min ago) auto-heals" \
+         "gate returned '$NEAR_RESULT' — expected 'allowed'"
+fi
+
+# ============================================================
+# Test 12: Functional — status flip actually writes "completed" to manifest
+# Verifies DEC-TESTER-GATE-HEAL-002: the jq status flip must persist so
+# re-reads after refinalize_trace see "completed" rather than "active".
+# ============================================================
+echo "Running: Functional: status flip writes completed to manifest (not just in-memory)"
+FLIP_TRACE_ID="impl-flip-$(date +%s)-$$"
+FLIP_STARTED=$(make_started_at -420)  # 7 minutes ago — stale
+make_impl_trace "$FLIP_TRACE_ID" "$FLIP_STARTED" "active"
+
+# Run gate B — triggers auto-heal + status flip
+run_gate_b "$FLIP_TRACE_ID" > /dev/null
+
+# Read manifest directly — not via run_gate_b — to confirm the flip persisted on disk
+FLIP_STATUS=$(jq -r '.status // "unknown"' \
+    "${FAKE_TRACE_STORE}/${FLIP_TRACE_ID}/manifest.json" 2>/dev/null)
+if [[ "$FLIP_STATUS" == "completed" ]]; then
+    pass "Functional: status flip writes completed to manifest (not just in-memory)"
+else
+    fail "Functional: status flip writes completed to manifest (not just in-memory)" \
+         "manifest status is '$FLIP_STATUS' — expected 'completed'"
 fi
 
 # ============================================================

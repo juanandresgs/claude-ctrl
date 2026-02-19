@@ -280,7 +280,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-implementer.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
