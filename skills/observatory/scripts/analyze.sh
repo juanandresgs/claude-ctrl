@@ -121,8 +121,9 @@ fi
 
 # --- Stage 0: Dataset Integrity Check ---
 # Detects data loss (trace count dropped >30%) and missing historical baseline
-# (all traces on same calendar day). These flags suppress trend analysis and add
-# a "Data Integrity" section to the report to prevent false trend signals.
+# (no prior analysis run exists with a different generated_at). These flags
+# suppress trend analysis and add a "Data Integrity" section to the report to
+# prevent false trend signals.
 #
 # @decision DEC-TRACE-PROT-004
 # @title Stage 0 dataset integrity check before analysis
@@ -130,22 +131,46 @@ fi
 # @rationale Trend comparisons (Stage 4b) are only meaningful when the dataset
 #   is stable. If traces were deleted since the last run, the signal count delta
 #   reflects data loss rather than real improvements — a false "improving" trend.
-#   Similarly, if all traces come from the same calendar day, there is no
-#   historical baseline for trend comparison. Stage 0 detects both conditions
-#   using the prev_trace_count stored in the previous analysis-cache.json and
-#   the started_at dates in manifest files. DATA_LOSS_SUSPECTED and
-#   NO_HISTORICAL_BASELINE flags are written to dataset_integrity in the cache.
+#   DATA_LOSS_SUSPECTED and NO_HISTORICAL_BASELINE flags are written to
+#   dataset_integrity in the cache.
+#
+# @decision DEC-OBS-P2-109
+# @title NO_HISTORICAL_BASELINE uses prior-run detection, not calendar-day uniqueness
+# @status accepted
+# @rationale The original implementation set NO_HISTORICAL_BASELINE when all active
+#   traces fell on the same calendar day. This false-flagged multi-run observatory
+#   sessions within a single day (e.g., developer runs /observatory three times on
+#   the same day). The correct indicator of "no historical baseline" is whether a
+#   prior analysis run exists: if analysis-cache.prev.json is absent or has the
+#   same generated_at as the current run (meaning this is the first run), trends
+#   cannot be computed. A single-day-only warning is kept as a secondary advisory
+#   in the dataset_integrity output but does NOT suppress trend analysis.
+#   Fix for issue #109.
 DATA_LOSS_SUSPECTED=false
 NO_HISTORICAL_BASELINE=false
+SINGLE_DAY_ONLY=false
 PREV_TRACE_COUNT=0
+PREV_GENERATED_AT=""
 
-# Read previous trace count from previous cache (before it was overwritten above)
+# Read previous trace count and generated_at from previous cache
 if [[ -f "$PREV_CACHE_FILE" ]]; then
     PREV_TRACE_COUNT=$(jq -r '.trace_stats.total // 0' "$PREV_CACHE_FILE" 2>/dev/null || echo "0")
+    PREV_GENERATED_AT=$(jq -r '.generated_at // ""' "$PREV_CACHE_FILE" 2>/dev/null || echo "")
 fi
 
-# Count actual trace directories (filesystem, not index — index may be stale)
-CURRENT_TRACE_DIR_COUNT=$(find "$TRACE_STORE" -maxdepth 1 -mindepth 1 -type d ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+# Count active trace directories only (exclude oldTraces/ and hidden dirs)
+# oldTraces/ is archived data — it must not inflate the active trace count.
+#
+# @decision DEC-OBS-P2-107
+# @title Exclude oldTraces/ from active trace directory count in Stage 0
+# @status accepted
+# @rationale oldTraces/ contains 489 archived traces that should not be counted
+#   as active traces. Including them would inflate CURRENT_TRACE_DIR_COUNT,
+#   making the data-loss detection threshold meaningless and skewing artifact
+#   health stats. Stage 2c (below) reads oldTraces/ separately for historical context.
+#   Fix for issue #107.
+CURRENT_TRACE_DIR_COUNT=$(find "$TRACE_STORE" -maxdepth 1 -mindepth 1 -type d \
+    ! -name '.*' ! -name 'oldTraces' 2>/dev/null | wc -l | tr -d ' ')
 CURRENT_TRACE_DIR_COUNT="${CURRENT_TRACE_DIR_COUNT:-0}"
 
 # Data loss: current < prev * 0.7 (i.e., >30% drop)
@@ -156,16 +181,29 @@ if [[ "$PREV_TRACE_COUNT" -gt 0 && "$CURRENT_TRACE_DIR_COUNT" -lt "$PREV_TRACE_C
     fi
 fi
 
-# No historical baseline: all manifest started_at dates are the same calendar day
+# No historical baseline: no prior analysis run with a different generated_at.
+# This is the correct indicator — calendar-day uniqueness was too aggressive and
+# blocked trend analysis for all single-day multi-run scenarios (issue #109).
+if [[ -z "$PREV_GENERATED_AT" ]]; then
+    # No prev cache at all — first run ever
+    NO_HISTORICAL_BASELINE=true
+fi
+# Note: if PREV_GENERATED_AT matches GENERATED_AT that would be a clock issue;
+# in practice prev cache is from a prior run so they will always differ once
+# the new cache is written. We do NOT compare them here since GENERATED_AT is
+# set later (Stage 6). The presence of prev cache is sufficient signal.
+
+# Secondary advisory: detect single-day-only runs (informational, does not suppress trends)
 UNIQUE_DAYS=0
 if [[ "$CURRENT_TRACE_DIR_COUNT" -gt 0 ]]; then
-    UNIQUE_DAYS=$(find "$TRACE_STORE" -maxdepth 2 -name 'manifest.json' -type f 2>/dev/null \
+    UNIQUE_DAYS=$(find "$TRACE_STORE" -maxdepth 2 -name 'manifest.json' -type f \
+        ! -path '*/oldTraces/*' 2>/dev/null \
         | xargs jq -r '.started_at // empty' 2>/dev/null \
         | cut -c1-10 \
         | sort -u \
         | wc -l | tr -d ' ')
-    if [[ "$UNIQUE_DAYS" -le 1 && "$CURRENT_TRACE_DIR_COUNT" -ge 2 ]]; then
-        NO_HISTORICAL_BASELINE=true
+    if [[ "${UNIQUE_DAYS:-0}" -le 1 && "$CURRENT_TRACE_DIR_COUNT" -ge 2 ]]; then
+        SINGLE_DAY_ONLY=true
     fi
 fi
 
@@ -215,8 +253,18 @@ TRACE_STATS=$(echo "$TRACE_STATS" | jq \
     --argjson pct "$FILES_ZERO_PCT" \
     '. + {files_changed_zero_pct: ($pct | round * 10 / 10)}')
 
-# --- Stage 2: Artifact health (scan actual trace dirs) ---
-# Includes proof_unknown_count for SIG-PROOF-UNKNOWN detection
+# --- Stage 2: Artifact health (scan active trace dirs only) ---
+# Excludes oldTraces/ — archived traces are not expected to have current
+# artifact patterns and must not skew completeness rates.
+# Includes proof_unknown_count for SIG-PROOF-UNKNOWN detection.
+#
+# @decision DEC-OBS-P2-107-STAGE2
+# @title Exclude oldTraces/ from Stage 2 artifact health scan
+# @status accepted
+# @rationale oldTraces/ contains archived traces with older artifact conventions.
+#   Including them in completeness rates produces misleadingly low rates (e.g., 2%)
+#   that drown out signals from current traces. Stage 2c collects oldTraces aggregate
+#   stats separately. Fix for issue #107.
 TOTAL_TRACE_DIRS=0
 SUMMARY_EXISTS=0
 TEST_OUTPUT_EXISTS=0
@@ -238,7 +286,53 @@ while IFS= read -r trace_dir; do
             (( PROOF_UNKNOWN++ )) || true
         fi
     fi
-done < <(find "$TRACE_STORE" -maxdepth 1 -mindepth 1 -type d ! -name '.git' 2>/dev/null | sort)
+done < <(find "$TRACE_STORE" -maxdepth 1 -mindepth 1 -type d \
+    ! -name '.git' ! -name 'oldTraces' 2>/dev/null | sort)
+
+# --- Stage 2c: Historical traces aggregate (oldTraces/) ---
+# oldTraces/ is an archive of older traces that are not indexed in index.jsonl.
+# This stage reads their manifests to produce aggregate stats for historical
+# context (e.g., "489 historical + 43 active traces"). It does NOT modify
+# the active index.
+#
+# @decision DEC-OBS-P2-107-STAGE2C
+# @title Stage 2c reads oldTraces/ manifests for historical aggregate stats
+# @status accepted
+# @rationale The observatory needs historical context to provide meaningful trend
+#   anchors. Instead of ignoring 489 archived traces, we aggregate their outcome
+#   distribution and agent type breakdown. These stats appear in analysis-cache.json
+#   under historical_traces and are referenced by report.sh for context lines like
+#   "489 historical + 43 active". The active index is unchanged. Fix for issue #107.
+HISTORICAL_TRACES='{"available": false, "total": 0, "outcome_dist": {}, "agent_type_dist": {}}'
+OLD_TRACES_DIR="${TRACE_STORE}/oldTraces"
+
+if [[ -d "$OLD_TRACES_DIR" ]]; then
+    OLD_MANIFESTS=()
+    while IFS= read -r mf; do
+        [[ -n "$mf" ]] && OLD_MANIFESTS+=("$mf")
+    done < <(find "$OLD_TRACES_DIR" -maxdepth 2 -name 'manifest.json' -type f 2>/dev/null | sort)
+
+    OLD_TOTAL="${#OLD_MANIFESTS[@]}"
+    if [[ "$OLD_TOTAL" -gt 0 ]]; then
+        # Single-pass aggregate of all old manifests
+        HISTORICAL_TRACES=$(jq -sc '
+          {
+            available: true,
+            total: length,
+            outcome_dist: (
+              group_by(.outcome // "unknown") |
+              map({key: (.[0].outcome // "unknown"), value: length}) |
+              from_entries
+            ),
+            agent_type_dist: (
+              group_by(.agent_type // "unknown") |
+              map({key: (.[0].agent_type // "unknown"), value: length}) |
+              from_entries
+            )
+          }
+        ' "${OLD_MANIFESTS[@]}" 2>/dev/null || echo '{"available": true, "total": '"$OLD_TOTAL"', "outcome_dist": {}, "agent_type_dist": {}, "parse_error": true}')
+    fi
+fi
 
 # Compute completeness rates
 compute_rate() {
@@ -691,8 +785,8 @@ STALE_MARKERS_OBJ=$(jq -cn \
 
 # Stage 0 post-processing: suppress trends when dataset integrity is compromised.
 # Trend analysis is meaningless if traces were deleted between runs (DATA_LOSS_SUSPECTED)
-# or if there is no historical baseline (NO_HISTORICAL_BASELINE — all same day).
-# In either case, set TRENDS to null to prevent false "improving" signals.
+# or if there is no historical baseline (NO_HISTORICAL_BASELINE — no prior analysis run).
+# SINGLE_DAY_ONLY is informational only and does NOT suppress trends (issue #109 fix).
 if [[ "$DATA_LOSS_SUSPECTED" == "true" || "$NO_HISTORICAL_BASELINE" == "true" ]]; then
     TRENDS="null"
 fi
@@ -701,13 +795,17 @@ fi
 DATASET_INTEGRITY=$(jq -cn \
     --argjson data_loss "$DATA_LOSS_SUSPECTED" \
     --argjson no_baseline "$NO_HISTORICAL_BASELINE" \
+    --argjson single_day_only "$SINGLE_DAY_ONLY" \
     --argjson prev_count "$PREV_TRACE_COUNT" \
     --argjson curr_count "$CURRENT_TRACE_DIR_COUNT" \
+    --argjson unique_days "${UNIQUE_DAYS:-0}" \
     '{
       data_loss_suspected: $data_loss,
       no_historical_baseline: $no_baseline,
+      single_day_only: $single_day_only,
       prev_trace_count: $prev_count,
-      current_trace_dir_count: $curr_count
+      current_trace_dir_count: $curr_count,
+      unique_days: $unique_days
     }')
 
 jq -cn \
@@ -721,6 +819,7 @@ jq -cn \
     --argjson stale_markers "$STALE_MARKERS_OBJ" \
     --argjson cohort_regressions "$COHORT_REGRESSIONS" \
     --argjson dataset_integrity "$DATASET_INTEGRITY" \
+    --argjson historical_traces "$HISTORICAL_TRACES" \
     '{
       version: 3,
       generated_at: $generated_at,
@@ -732,8 +831,14 @@ jq -cn \
       trends: $trends,
       agent_breakdown: $agent_breakdown,
       stale_markers: $stale_markers,
-      dataset_integrity: $dataset_integrity
+      dataset_integrity: $dataset_integrity,
+      historical_traces: $historical_traces
     }' > "$CACHE_FILE"
 
 SIG_COUNT=$(echo "$SIGNALS" | jq 'length')
-echo "Analysis complete: $TOTAL traces, $SIG_COUNT signals detected → $CACHE_FILE"
+HIST_TOTAL=$(echo "$HISTORICAL_TRACES" | jq '.total // 0' 2>/dev/null || echo "0")
+if [[ "$HIST_TOTAL" -gt 0 ]]; then
+    echo "Analysis complete: $TOTAL active + $HIST_TOTAL historical traces, $SIG_COUNT signals detected → $CACHE_FILE"
+else
+    echo "Analysis complete: $TOTAL traces, $SIG_COUNT signals detected → $CACHE_FILE"
+fi

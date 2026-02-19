@@ -409,7 +409,7 @@ fi
 echo ""
 echo "=== Issue #106: Observatory tests registered in run-hooks.sh ==="
 
-# Test 13: run-hooks.sh references all 4 observatory test files + new test
+# Test 13: run-hooks.sh references all observatory test files (5 original + Phase 2 test)
 echo ""
 echo "--- Test 13: run-hooks.sh includes all observatory test files ---"
 RUN_HOOKS="${SCRIPT_DIR}/run-hooks.sh"
@@ -419,13 +419,14 @@ for tf in \
     "test-observatory-cohort-regression.sh" \
     "test-observatory-flywheel-fix.sh" \
     "test-observatory-remaining-fixes.sh" \
-    "test-obs-data-quality.sh"; do
+    "test-obs-data-quality.sh" \
+    "test-obs-pipeline.sh"; do
     if ! grep -q "$tf" "$RUN_HOOKS" 2>/dev/null; then
         missing_tests+=("$tf")
     fi
 done
 if [[ "${#missing_tests[@]}" -eq 0 ]]; then
-    pass "#106: All 5 observatory test files are registered in run-hooks.sh"
+    pass "#106: All 6 observatory test files are registered in run-hooks.sh"
 else
     fail "#106: Missing from run-hooks.sh: ${missing_tests[*]}"
 fi

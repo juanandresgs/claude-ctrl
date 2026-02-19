@@ -310,6 +310,65 @@ if [[ -d "$TRACE_STORE" ]]; then
             fi
         fi
     fi
+
+    # --- Development Log Digest (issue #110) ---
+    # Build a compact digest of the last 5 traces for the current project.
+    # Each line shows: date, agent type, outcome, duration, files changed, branch.
+    # Omitted when fewer than 2 project traces exist (not enough history to be useful).
+    #
+    # @decision DEC-OBS-P2-110
+    # @title Compact development log digest injected at session start
+    # @status accepted
+    # @rationale New sessions start with minimal context about recent development
+    #   activity. Injecting a structured digest of the last 5 traces lets the agent
+    #   quickly orient: what was recently done, what branch it was on, and whether
+    #   prior work succeeded. Limited to 5 traces and 7 output lines to avoid context
+    #   bloat. Requires at least 2 project traces to have meaningful "recent activity"
+    #   (single-trace sessions have the "Last trace:" line above for coverage).
+    #   Fix for issue #110.
+    if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
+        _DEV_PROJECT_NAME=$(basename "$PROJECT_ROOT")
+        # Collect last 5 project traces (most recent first via tail)
+        _DEV_TRACES=$(grep "\"project_name\":\"${_DEV_PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -5 | tac 2>/dev/null || grep "\"project_name\":\"${_DEV_PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -5 | awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) print a[i]}')
+        _DEV_TRACE_COUNT=$(echo "$_DEV_TRACES" | grep -c . 2>/dev/null || echo "0")
+
+        if [[ "$_DEV_TRACE_COUNT" -ge 2 ]]; then
+            _DEV_LOG_LINES=()
+            while IFS= read -r trace_entry; do
+                [[ -z "$trace_entry" ]] && continue
+                _DL_DATE=$(echo "$trace_entry" | jq -r '.started_at // ""' 2>/dev/null | cut -c1-10)
+                _DL_AGENT=$(echo "$trace_entry" | jq -r '.agent_type // "?"' 2>/dev/null)
+                _DL_OUTCOME=$(echo "$trace_entry" | jq -r '.outcome // "?"' 2>/dev/null)
+                _DL_DUR=$(echo "$trace_entry" | jq -r '.duration_seconds // ""' 2>/dev/null)
+                _DL_FILES=$(echo "$trace_entry" | jq -r '.files_changed // ""' 2>/dev/null)
+                _DL_BRANCH=$(echo "$trace_entry" | jq -r '.branch // ""' 2>/dev/null)
+
+                # Format duration: show as Xm Ys if >= 60s, else just Xs
+                _DL_DUR_FMT=""
+                if [[ -n "$_DL_DUR" && "$_DL_DUR" =~ ^[0-9]+$ && "$_DL_DUR" -gt 0 ]]; then
+                    if [[ "$_DL_DUR" -ge 60 ]]; then
+                        _DL_DUR_FMT="$(( _DL_DUR / 60 ))m$(( _DL_DUR % 60 ))s"
+                    else
+                        _DL_DUR_FMT="${_DL_DUR}s"
+                    fi
+                fi
+
+                # Build compact line
+                _DL_LINE="${_DL_DATE} | ${_DL_AGENT} | ${_DL_OUTCOME}"
+                [[ -n "$_DL_DUR_FMT" ]] && _DL_LINE="${_DL_LINE} | ${_DL_DUR_FMT}"
+                [[ -n "$_DL_FILES" ]] && _DL_LINE="${_DL_LINE} | ${_DL_FILES} files"
+                [[ -n "$_DL_BRANCH" && "$_DL_BRANCH" != "unknown" ]] && _DL_LINE="${_DL_LINE} | ${_DL_BRANCH}"
+                _DEV_LOG_LINES+=("  ${_DL_LINE}")
+            done <<< "$_DEV_TRACES"
+
+            if [[ "${#_DEV_LOG_LINES[@]}" -ge 2 ]]; then
+                CONTEXT_PARTS+=("Development Log (last ${#_DEV_LOG_LINES[@]} sessions for ${_DEV_PROJECT_NAME}):")
+                for _dl in "${_DEV_LOG_LINES[@]}"; do
+                    CONTEXT_PARTS+=("$_dl")
+                done
+            fi
+        fi
+    fi
 fi
 
 # --- Todo HUD (listing with active-session annotations) ---

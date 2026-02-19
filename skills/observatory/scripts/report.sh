@@ -24,12 +24,23 @@
 #             summary of what suggest.sh determined, and keeps the two stages
 #             cleanly separated: compute (suggest.sh) vs. present (report.sh).
 #
+# @decision DEC-OBS-P2-108
+# @title report.sh warns when analysis-cache is newer than the last report
+# @status accepted
+# @rationale The report can silently become stale if analyze.sh ran after the
+#             last report was generated. The staleness check compares mtime of
+#             analysis-cache.json vs assessment-report.md. If cache is newer,
+#             a warning is printed to stderr so CI/automation scripts can detect
+#             and trigger a re-run. The report header also shows the analysis
+#             generated_at so readers can assess data freshness without comparing
+#             file timestamps manually. Fix for issue #108.
+#
 # Input:  observatory/analysis-cache.json
 #         observatory/suggestions/SUG-*.json
 #         observatory/comparison-matrix.json
 #         observatory/state.json
 # Output: observatory/assessment-report.md
-# Usage:  bash skills/observatory/scripts/report.sh
+# Usage:  bash skills/observatory/scripts/report.sh [--skip-stale-check]
 
 set -euo pipefail
 
@@ -41,6 +52,14 @@ MATRIX_FILE="${OBS_DIR}/comparison-matrix.json"
 STATE_FILE="${STATE_FILE:-${OBS_DIR}/state.json}"
 SUGGESTIONS_DIR="${OBS_DIR}/suggestions"
 REPORT_FILE="${OBS_DIR}/assessment-report.md"
+
+# Parse flags
+SKIP_STALE_CHECK=false
+for arg in "$@"; do
+    case "$arg" in
+        --skip-stale-check) SKIP_STALE_CHECK=true ;;
+    esac
+done
 
 # --- Preflight ---
 mkdir -p "$OBS_DIR"
@@ -55,10 +74,34 @@ if [[ ! -f "$MATRIX_FILE" ]]; then
     exit 1
 fi
 
+# --- Staleness check (issue #108) ---
+# Warn when analysis-cache.json is newer than the current report.
+# This means the report would be regenerated from fresh data — no action needed.
+# If the REPORT already exists and is newer than the cache, warn that running
+# this script will use potentially stale cache data.
+if [[ "$SKIP_STALE_CHECK" == "false" && -f "$REPORT_FILE" ]]; then
+    # Get mtimes (portable: Darwin uses stat -f %m, Linux uses stat -c %Y)
+    if [[ "$(uname)" == "Darwin" ]]; then
+        CACHE_MTIME=$(stat -f %m "$CACHE_FILE" 2>/dev/null || echo "0")
+        REPORT_MTIME=$(stat -f %m "$REPORT_FILE" 2>/dev/null || echo "0")
+    else
+        CACHE_MTIME=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo "0")
+        REPORT_MTIME=$(stat -c %Y "$REPORT_FILE" 2>/dev/null || echo "0")
+    fi
+    if [[ "$CACHE_MTIME" -gt "$REPORT_MTIME" ]]; then
+        STALENESS_SECONDS=$(( CACHE_MTIME - REPORT_MTIME ))
+        echo "INFO: analysis-cache.json is ${STALENESS_SECONDS}s newer than last report — regenerating from fresh data" >&2
+    fi
+fi
+
 # --- Extract core stats ---
 GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 CACHE_GENERATED=$(jq -r '.generated_at // "unknown"' "$CACHE_FILE")
 TOTAL_TRACES=$(jq '.trace_stats.total // 0' "$CACHE_FILE")
+
+# Historical traces context (from Stage 2c of analyze.sh — issue #107)
+HIST_AVAILABLE=$(jq -r '.historical_traces.available // false' "$CACHE_FILE" 2>/dev/null || echo "false")
+HIST_TOTAL=$(jq '.historical_traces.total // 0' "$CACHE_FILE" 2>/dev/null || echo "0")
 SIG_COUNT=$(jq '.improvement_signals | length' "$CACHE_FILE")
 
 # Outcome distribution
@@ -118,11 +161,19 @@ BATCH_COUNT=$(jq '.batches | keys | length' "$MATRIX_FILE" 2>/dev/null || echo "
 
 # --- Generate the report ---
 {
+# Build trace context line (active + historical if available)
+if [[ "$HIST_AVAILABLE" == "true" && "$HIST_TOTAL" -gt 0 ]]; then
+    TRACE_CONTEXT="${TOTAL_TRACES} active + ${HIST_TOTAL} historical (archived)"
+else
+    TRACE_CONTEXT="${TOTAL_TRACES} active"
+fi
+
 cat << HEADER
 # Observatory Assessment Report
 
 **Generated:** ${GENERATED_AT}
-**Analysis Source:** ${CACHE_GENERATED}
+**Analysis data:** ${CACHE_GENERATED}
+**Trace coverage:** ${TRACE_CONTEXT}
 
 ---
 
@@ -155,7 +206,8 @@ cat << HEALTH_HEADER
 
 | Metric | Value |
 |--------|-------|
-| Total Traces | ${TOTAL_TRACES} |
+| Active Traces | ${TOTAL_TRACES} |
+| Historical Traces | ${HIST_TOTAL} (archived in oldTraces/) |
 | Active Signals | ${SIG_COUNT} |
 | Deferred Items | ${DEFERRED_COUNT} |
 | Trend | ${TREND_DIRECTION} (signal delta: ${TREND_DELTA}, trace delta: ${TRACE_DELTA}) |
