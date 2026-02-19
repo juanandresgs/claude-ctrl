@@ -93,19 +93,26 @@ fi
 #
 # Gate C.1: Block implementer on main/master (Sacred Practice #2).
 # @decision DEC-TASK-GATE-001
-# @title Block implementer dispatch on main/master branch
+# @title Block implementer dispatch on main/master unless worktree exists
 # @status accepted
 # @rationale Sacred Practice #2 states feature work must happen in worktrees, never on
-#   main. Enforcing this at dispatch time (before the agent starts) prevents agents from
-#   accidentally writing source files to main. Without this gate, an orchestrator
-#   that forgets to create a worktree silently allows main to be dirtied — discovered
-#   only after the fact. Early denial is always better than late recovery.
-#   The gate now applies universally — ~/.claude follows the same governance as any project.
+#   main. Enforcing this at dispatch time prevents agents from accidentally writing
+#   source files to main. The gate checks for linked worktrees — if any non-main
+#   worktree exists, the orchestrator followed the practice (created worktree first).
+#   branch-guard.sh provides primary protection (blocks source edits on main).
+#   This gate is defense-in-depth: deny only when NO worktrees exist at all.
 if [[ "$AGENT_TYPE" == "implementer" ]]; then
     # Gate C.1: Block implementer on main/master (Sacred Practice #2).
     CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-        deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch. Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
+        # Allow if linked worktrees exist — evidence of Sacred Practice #2 compliance.
+        # The orchestrator creates the worktree first, then dispatches the implementer.
+        # branch-guard.sh provides primary protection against source edits on main.
+        WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+            | grep -c '^worktree ' || echo "0")
+        if [[ "$WORKTREE_COUNT" -le 1 ]]; then
+            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch. Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
+        fi
     fi
 
     # Gate C.2: Activate proof gate — creates .proof-status = needs-verification.

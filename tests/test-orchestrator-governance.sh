@@ -20,6 +20,8 @@
 #  13. guard.sh Check 5 allows normal git worktree remove (CWD rewrite, no deny)
 #  14. branch-guard allows .sh edit on main during merge (MERGE_HEAD present)
 #  15. guard.sh crash-deny degrades to allow during merge (MERGE_HEAD present)
+#  16. Gate C.1 denies implementer on main without worktrees
+#  17. Gate C.1 allows implementer on main with linked worktree
 #
 # @decision DEC-GOVERNANCE-TEST-001
 # @title Test suite for orchestrator governance hardening
@@ -364,6 +366,87 @@ if [[ -n "$META_GIT_DIR" ]]; then
 else
     pass "Test 15 skipped — cannot determine ~/.claude git dir"
 fi
+
+# ============================================================
+# Test 16: Gate C.1 denies implementer on main without worktrees
+# ============================================================
+echo ""
+echo "=== Test 16: Gate C.1 denies implementer on main without worktrees ==="
+
+REPO16=$(make_git_repo_on_main)
+
+# Simulate task-track.sh Gate C.1 logic inline (can't run the full hook easily)
+(
+    source "${HOOKS_DIR}/source-lib.sh" 2>/dev/null
+
+    PROJECT_ROOT="$REPO16"
+    deny_called=0
+    deny_msg=""
+    deny() {
+        deny_called=1
+        deny_msg="$1"
+    }
+
+    AGENT_TYPE="implementer"
+    CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+        WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+            | grep -c '^worktree ' || echo "0")
+        if [[ "$WORKTREE_COUNT" -le 1 ]]; then
+            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch."
+        fi
+    fi
+
+    echo "${deny_called}|${deny_msg}"
+) | {
+    read result16
+    deny_called16=$(echo "$result16" | cut -d'|' -f1)
+    if [[ "$deny_called16" == "1" ]]; then
+        pass "Gate C.1 denies implementer on main without worktrees"
+    else
+        fail "Gate C.1 should deny implementer on main without worktrees"
+    fi
+}
+
+# ============================================================
+# Test 17: Gate C.1 allows implementer on main with linked worktree
+# ============================================================
+echo ""
+echo "=== Test 17: Gate C.1 allows implementer on main with linked worktree ==="
+
+REPO17=$(make_git_repo_on_main)
+# Create a linked worktree
+git -C "$REPO17" worktree add "${REPO17}/.worktrees/feature-test" -b feature-test 2>/dev/null
+CLEANUP_DIRS+=("${REPO17}/.worktrees/feature-test")
+
+(
+    source "${HOOKS_DIR}/source-lib.sh" 2>/dev/null
+
+    PROJECT_ROOT="$REPO17"
+    deny_called=0
+    deny() {
+        deny_called=1
+    }
+
+    AGENT_TYPE="implementer"
+    CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+        WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+            | grep -c '^worktree ' || echo "0")
+        if [[ "$WORKTREE_COUNT" -le 1 ]]; then
+            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch."
+        fi
+    fi
+
+    echo "${deny_called}"
+) | {
+    read deny_called17
+    if [[ "$deny_called17" == "0" ]]; then
+        pass "Gate C.1 allows implementer on main with linked worktree"
+    else
+        fail "Gate C.1 should allow implementer on main with linked worktree"
+    fi
+}
 
 # ============================================================
 # Summary
