@@ -145,6 +145,24 @@ if [[ "$AUTO_VERIFIED" == "true" ]]; then
     else
         append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
     fi
+
+    # @decision DEC-TESTER-005
+    # @title Finalize trace in auto-verify fast path (Phase 1)
+    # @status accepted
+    # @rationale Phase 1 auto-verify exits at line ~159 without running Phase 2,
+    #   which contains detect_active_trace + finalize_trace. This leaves traces
+    #   permanently "active" with stale markers in TRACE_STORE. Fix: detect and
+    #   finalize the active trace within the auto-verify block before early exit.
+    #   Issue #123.
+    AV_TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
+    if [[ -n "$AV_TRACE_ID" ]]; then
+        AV_TRACE_DIR="${TRACE_STORE}/${AV_TRACE_ID}"
+        if [[ ! -s "$AV_TRACE_DIR/summary.md" && -n "$RESPONSE_TEXT" ]]; then
+            echo "$RESPONSE_TEXT" | head -c 4000 > "$AV_TRACE_DIR/summary.md" 2>/dev/null || true
+        fi
+        finalize_trace "$AV_TRACE_ID" "$PROJECT_ROOT" "tester" 2>/dev/null || true
+    fi
+
     CONTEXT="Tester validation: proof-status=verified (auto-verified)."
     DIRECTIVE="AUTO-VERIFIED: Tester e2e verification passed — High confidence, full coverage, no caveats. .proof-status is verified. Dispatch Guardian NOW with 'AUTO-VERIFY-APPROVED' in the prompt. Guardian will skip its approval prompt and execute the full merge cycle directly. Present the tester's verification report to the user in parallel."
     ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)
@@ -177,14 +195,16 @@ track_subagent_stop "$PROJECT_ROOT" "tester"
 append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: detect and prepare for finalization ---
-# If detect_active_trace returns empty, log to audit — the tester may not have
-# initialized a trace (e.g., quick verifications). This is not a fatal error.
+# If detect_active_trace returns empty, log trace_skip (not trace_orphan) — the
+# tester may not have initialized a trace (e.g., quick verifications, or
+# init_trace failed silently). This is informational, not a real orphan
+# (Issue #123 Fix 3).
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
 TRACE_DIR=""
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
 else
-    append_audit "$PROJECT_ROOT" "trace_orphan" "detect_active_trace returned empty for tester — no trace to finalize"
+    append_audit "$PROJECT_ROOT" "trace_skip" "detect_active_trace returned empty for tester — no trace to finalize"
 fi
 
 get_git_state "$PROJECT_ROOT"

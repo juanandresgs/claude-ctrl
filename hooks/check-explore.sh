@@ -48,8 +48,10 @@ append_session_event "agent_stop" "{\"type\":\"explore\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: finalize active explore trace ---
 # Runs before overflow-detection logic to avoid timeout races.
-# If no active trace exists, log to audit (not an error — explore agents don't
-# always use the trace protocol, especially for quick lookups).
+# If no active trace exists, no audit entry is written — this is expected normal
+# behavior. subagent-start.sh line 39 explicitly skips trace init for Bash|Explore
+# agents, so Explore agents NEVER have an active trace. Emitting trace_orphan here
+# was pure noise and the main source of orphan spam (Issue #123 Fix 1).
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "explore" 2>/dev/null || echo "")
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR_PATH="${TRACE_STORE}/${TRACE_ID}"
@@ -64,9 +66,9 @@ if [[ -n "$TRACE_ID" ]]; then
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "explore"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for explore trace $TRACE_ID"
     fi
-else
-    append_audit "$PROJECT_ROOT" "trace_orphan" "detect_active_trace returned empty for explore — no trace to finalize"
 fi
+# No else branch: empty detect_active_trace for explore is always expected.
+# subagent-start.sh skips trace init for Bash|Explore — silence is correct.
 
 ISSUES=()
 

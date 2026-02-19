@@ -4,6 +4,13 @@
 # exists and calls finalize_trace, refinalize_trace repairs orphaned "active"
 # status, and settings.json has general-purpose matcher registered.
 #
+# Issue #123: Updated to verify that empty-detection (no trace initialized)
+# does NOT log trace_orphan in check-explore.sh (removed — Explore agents never
+# have traces per subagent-start.sh line 39), and logs trace_skip (not
+# trace_orphan) in check-general-purpose.sh and check-tester.sh (informational,
+# not indicative of a real orphan). Also verifies check-tester.sh Phase 1
+# auto-verify path finalizes the active trace before exiting.
+#
 # @decision DEC-TEST-ORPHAN-001
 # @title Test suite for trace orphan finalization fixes
 # @status accepted
@@ -11,6 +18,9 @@
 #   in check-explore.sh, no SubagentStop handler for general-purpose agents, and
 #   refinalize_trace being unable to repair active status. These tests verify all
 #   three fixes and the timeout-ordering change in check-implementer/planner.
+#   Issue #123 adds four more assertions: explore empty-detection no longer emits
+#   trace_orphan, general-purpose and tester empty-detection emit trace_skip, and
+#   tester Phase 1 auto-verify path calls finalize_trace before exiting.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,8 +58,13 @@ run_test "check-explore.sh: calls finalize_trace" \
 run_test "check-explore.sh: calls detect_active_trace for explore" \
     "$(grep -q 'detect_active_trace.*explore' "$EXPLORE_SH" 2>/dev/null && echo pass || echo "detect_active_trace for explore missing")"
 
-run_test "check-explore.sh: error logs orphan to audit on empty TRACE_ID" \
-    "$(grep -q 'trace_orphan.*detect_active_trace returned empty for explore' "$EXPLORE_SH" 2>/dev/null && echo pass || echo "audit log for empty TRACE_ID missing")"
+# Issue #123 Fix 1: Explore agents NEVER have traces (subagent-start.sh skips
+# trace init for Bash|Explore). No trace_orphan should be logged on empty
+# detect_active_trace — that is normal behavior, not an orphan.
+run_test "check-explore.sh: does NOT log trace_orphan on empty TRACE_ID (Fix #123)" \
+    "$(grep -q 'trace_orphan.*detect_active_trace returned empty for explore' "$EXPLORE_SH" 2>/dev/null \
+        && echo "FAIL: trace_orphan still logged for empty explore TRACE_ID" \
+        || echo pass)"
 
 run_test "check-explore.sh: logs finalize_trace failure to audit" \
     "$(grep -q 'trace_orphan.*finalize_trace failed for explore' "$EXPLORE_SH" 2>/dev/null && echo pass || echo "audit log for finalize_trace failure missing")"
@@ -90,8 +105,16 @@ run_test "check-general-purpose.sh: calls finalize_trace" \
 run_test "check-general-purpose.sh: calls detect_active_trace for general-purpose" \
     "$(grep -q 'detect_active_trace.*general-purpose' "$GP_SH" 2>/dev/null && echo pass || echo "detect_active_trace for general-purpose missing")"
 
-run_test "check-general-purpose.sh: logs orphan to audit on empty TRACE_ID" \
-    "$(grep -q 'trace_orphan.*detect_active_trace returned empty for general-purpose' "$GP_SH" 2>/dev/null && echo pass || echo "audit log for empty TRACE_ID missing")"
+# Issue #123 Fix 2: general-purpose agents DO get trace init (fall-through to *
+# in subagent-start.sh), but init_trace can fail silently. Empty detection is
+# informational — use trace_skip, not trace_orphan.
+run_test "check-general-purpose.sh: logs trace_skip (not trace_orphan) on empty TRACE_ID (Fix #123)" \
+    "$(grep -q 'trace_skip.*detect_active_trace returned empty for general-purpose' "$GP_SH" 2>/dev/null && echo pass || echo "trace_skip log for empty TRACE_ID missing")"
+
+run_test "check-general-purpose.sh: does NOT log trace_orphan on empty TRACE_ID (Fix #123)" \
+    "$(grep -q 'trace_orphan.*detect_active_trace returned empty for general-purpose' "$GP_SH" 2>/dev/null \
+        && echo "FAIL: trace_orphan still logged for empty general-purpose TRACE_ID" \
+        || echo pass)"
 
 run_test "check-general-purpose.sh: valid bash syntax" \
     "$(bash -n "$GP_SH" 2>/dev/null && echo pass || echo "syntax error")"
@@ -149,16 +172,40 @@ run_test "check-planner.sh: has DEC-PLANNER-STOP-002 annotation" \
     "$(grep -q 'DEC-PLANNER-STOP-002' "$PLANNER_SH" 2>/dev/null && echo pass || echo "DEC-PLANNER-STOP-002 annotation missing")"
 
 # ============================================================
-# Group 6: check-tester.sh — orphan logging added
+# Group 6: check-tester.sh — empty-detection is trace_skip, Phase 1 finalizes
 # ============================================================
 
 TESTER_SH="${HOOKS_DIR}/check-tester.sh"
 
-run_test "check-tester.sh: logs empty TRACE_ID to audit" \
-    "$(grep -q 'trace_orphan.*detect_active_trace returned empty for tester' "$TESTER_SH" 2>/dev/null && echo pass || echo "audit log for empty tester TRACE_ID missing")"
+# Issue #123 Fix 3: tester empty-detection is informational (init can fail
+# silently). Use trace_skip, not trace_orphan.
+run_test "check-tester.sh: logs trace_skip (not trace_orphan) on empty TRACE_ID (Fix #123)" \
+    "$(grep -q 'trace_skip.*detect_active_trace returned empty for tester' "$TESTER_SH" 2>/dev/null && echo pass || echo "trace_skip log for empty tester TRACE_ID missing")"
+
+run_test "check-tester.sh: does NOT log trace_orphan on empty TRACE_ID (Fix #123)" \
+    "$(grep -q 'trace_orphan.*detect_active_trace returned empty for tester' "$TESTER_SH" 2>/dev/null \
+        && echo "FAIL: trace_orphan still logged for empty tester TRACE_ID" \
+        || echo pass)"
 
 run_test "check-tester.sh: finalize_trace failure logged to audit" \
     "$(grep -q 'trace_orphan.*finalize_trace failed for tester' "$TESTER_SH" 2>/dev/null && echo pass || echo "audit log for finalize failure missing")"
+
+# Issue #123 Fix 4: Phase 1 auto-verify path must call detect_active_trace and
+# finalize_trace before the early exit to prevent stale active markers in
+# TRACE_STORE. We check that within the AUTO_VERIFIED==true block, both calls
+# appear before the exit 0.
+run_test "check-tester.sh: Phase 1 auto-verify block calls detect_active_trace (Fix #123)" \
+    "$(awk '/if \[\[ "\$AUTO_VERIFIED" == "true" \]\]/,/^fi$/{print}' "$TESTER_SH" 2>/dev/null \
+        | grep -q 'detect_active_trace' && echo pass \
+        || echo "detect_active_trace not in Phase 1 auto-verify block")"
+
+run_test "check-tester.sh: Phase 1 auto-verify block calls finalize_trace (Fix #123)" \
+    "$(awk '/if \[\[ "\$AUTO_VERIFIED" == "true" \]\]/,/^fi$/{print}' "$TESTER_SH" 2>/dev/null \
+        | grep -q 'finalize_trace' && echo pass \
+        || echo "finalize_trace not in Phase 1 auto-verify block")"
+
+run_test "check-tester.sh: has DEC-TESTER-005 annotation (Fix #123)" \
+    "$(grep -q 'DEC-TESTER-005' "$TESTER_SH" 2>/dev/null && echo pass || echo "DEC-TESTER-005 annotation missing")"
 
 # ============================================================
 # Group 7: refinalize_trace status repair in context-lib.sh

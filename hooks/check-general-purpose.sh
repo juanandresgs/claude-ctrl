@@ -55,7 +55,11 @@ if [[ -n "$TRACE_ID" ]]; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for general-purpose trace $TRACE_ID"
     fi
 else
-    append_audit "$PROJECT_ROOT" "trace_orphan" "detect_active_trace returned empty for general-purpose — no trace to finalize"
+    # trace_skip (not trace_orphan): general-purpose agents DO get trace init
+    # (fall-through to * in subagent-start.sh), but init_trace can fail silently
+    # (stderr redirected to /dev/null). This is informational, not a real orphan
+    # (Issue #123 Fix 2).
+    append_audit "$PROJECT_ROOT" "trace_skip" "detect_active_trace returned empty for general-purpose — no trace to finalize"
 fi
 
 # Output minimal additionalContext
