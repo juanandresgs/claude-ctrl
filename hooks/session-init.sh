@@ -233,22 +233,97 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
             "$_PLAN_FILE" 2>/dev/null | head -15)
         [[ -n "$_ARCH" ]] && CONTEXT_PARTS+=("$_ARCH")
 
-        # 3. Active Initiatives: full detail (bounded by how many active initiatives exist)
-        _ACTIVE=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives/{exit} f{print}' \
+        # 3. Active Initiatives: compact summary (REQ-P0-004 — bounded under 250 lines total)
+        # Full initiative blocks can be 300+ lines for real plans. Extract a 5-8 line
+        # summary per initiative: name, status, goal, phase counts. Agents read the
+        # full plan via Read tool when they need work items, issue cross-references, etc.
+        #
+        # @decision DEC-PLAN-005
+        # @title Compact per-initiative summary instead of full Active Initiatives block
+        # @status accepted
+        # @rationale E2E test showed real MASTER_PLAN.md with 2 active initiatives
+        #   produced 796-line injection (731 lines from Active Initiatives alone) — 3x
+        #   the 250-line target (REQ-P0-004). T13 caught this with realistic fixtures.
+        #   Fix: extract name+status+goal+phase-counts (~5 lines per initiative) rather
+        #   than dumping the entire block. Full detail is always available via Read tool.
+        _ACTIVE_HEADER=$(awk '/^## Active Initiatives/{found=1; print; next} found && /^## /{exit} found{print}' \
+            "$_PLAN_FILE" 2>/dev/null | head -3)
+        [[ -n "$_ACTIVE_HEADER" ]] && CONTEXT_PARTS+=("$_ACTIVE_HEADER")
+
+        # Parse each ### Initiative: block for a compact summary
+        _ACTIVE_SECTION=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives/{exit} f{print}' \
             "$_PLAN_FILE" 2>/dev/null)
-        [[ -n "$_ACTIVE" ]] && CONTEXT_PARTS+=("$_ACTIVE")
+        if [[ -n "$_ACTIVE_SECTION" ]]; then
+            _INIT_SUMMARY=""
+            _CUR_INIT=""
+            _CUR_STATUS=""
+            _CUR_GOAL=""
+            _PLANNED_PHASES=0
+            _INPROG_PHASES=0
+            _DONE_PHASES=0
+            _IN_PHASE=false   # true after a #### Phase N: header — next Status: is phase-level
+
+            _flush_initiative() {
+                if [[ -n "$_CUR_INIT" ]]; then
+                    local _phase_line="Phases: ${_PLANNED_PHASES} planned, ${_INPROG_PHASES} in-progress, ${_DONE_PHASES} completed"
+                    _INIT_SUMMARY+="### Initiative: ${_CUR_INIT}"$'\n'
+                    [[ -n "$_CUR_STATUS" ]] && _INIT_SUMMARY+="**Status:** ${_CUR_STATUS}"$'\n'
+                    [[ -n "$_CUR_GOAL" ]] && _INIT_SUMMARY+="**Goal:** ${_CUR_GOAL}"$'\n'
+                    _INIT_SUMMARY+="${_phase_line}"$'\n'
+                fi
+            }
+
+            while IFS= read -r _line; do
+                if [[ "$_line" =~ ^'### Initiative: '(.*) ]]; then
+                    # New initiative block — flush previous, reset state
+                    _flush_initiative
+                    _CUR_INIT="${BASH_REMATCH[1]}"
+                    _CUR_STATUS=""
+                    _CUR_GOAL=""
+                    _PLANNED_PHASES=0
+                    _INPROG_PHASES=0
+                    _DONE_PHASES=0
+                    _IN_PHASE=false
+                elif [[ "$_line" =~ ^'#### Phase' ]]; then
+                    # Phase header — next Status: belongs to this phase
+                    _IN_PHASE=true
+                elif [[ -n "$_CUR_INIT" ]]; then
+                    if [[ "$_IN_PHASE" == "true" ]] && echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                        # Phase-level status — count it
+                        if echo "$_line" | grep -qE '\bplanned\b'; then
+                            _PLANNED_PHASES=$((_PLANNED_PHASES + 1))
+                        elif echo "$_line" | grep -qE '\bin-progress\b'; then
+                            _INPROG_PHASES=$((_INPROG_PHASES + 1))
+                        elif echo "$_line" | grep -qE '\bcompleted\b'; then
+                            _DONE_PHASES=$((_DONE_PHASES + 1))
+                        fi
+                        _IN_PHASE=false  # consumed
+                    elif [[ "$_IN_PHASE" == "false" ]] && echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                        # Initiative-level status
+                        _CUR_STATUS=$(echo "$_line" | sed 's/\*\*Status:\*\*[[:space:]]*//')
+                    elif echo "$_line" | grep -qE '^\*\*Goal:\*\*'; then
+                        _CUR_GOAL=$(echo "$_line" | sed 's/\*\*Goal:\*\*[[:space:]]*//')
+                    fi
+                fi
+            done <<< "$_ACTIVE_SECTION"
+            _flush_initiative
+
+            [[ -n "$_INIT_SUMMARY" ]] && CONTEXT_PARTS+=("$_INIT_SUMMARY")
+        fi
 
         # 4. Last 10 Decision Log entries (most recent decisions give context)
+        # || true: grep returns 1 when no entries exist; pipefail would kill the script.
         _DEC_LOG_ENTRIES=$(awk '/^## Decision Log/{f=1} f && /^---/{exit} f && /^\|/{print}' \
-            "$_PLAN_FILE" 2>/dev/null | grep -vE '^\|\s*Date\s*\|' | tail -10)
+            "$_PLAN_FILE" 2>/dev/null | grep -vE '^\|\s*Date\s*\|' | tail -10 || true)
         if [[ -n "$_DEC_LOG_ENTRIES" ]]; then
             CONTEXT_PARTS+=("Recent decisions (last 10):")
             CONTEXT_PARTS+=("$_DEC_LOG_ENTRIES")
         fi
 
         # 5. Completed Initiatives: one-liner table rows only (not full blocks)
+        # || true: grep returns 1 when table is empty; pipefail would kill the script.
         _COMPLETED_ROWS=$(awk '/^## Completed Initiatives/{f=1} f{print}' \
-            "$_PLAN_FILE" 2>/dev/null | grep -E '^\|' | grep -vE '^\|\s*Initiative\s*\||\|\s*-+\s*\|' | head -60)
+            "$_PLAN_FILE" 2>/dev/null | grep -E '^\|' | grep -vE '^\|\s*Initiative\s*\||\|\s*-+\s*\|' | head -60 || true)
         if [[ -n "$_COMPLETED_ROWS" ]]; then
             _COMPLETED_COUNT=$(echo "$_COMPLETED_ROWS" | wc -l | tr -d ' ')
             CONTEXT_PARTS+=("Completed initiatives (${_COMPLETED_COUNT}):")

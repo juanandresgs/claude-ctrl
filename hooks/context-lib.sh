@@ -149,15 +149,22 @@ get_plan_status() {
         fi
 
         # Phase counts within Active Initiatives section (for status display)
-        PLAN_TOTAL_PHASES=$(echo "$_active_section" | grep -cE '^\#\#\#\#\s+Phase\s+[0-9]' 2>/dev/null || echo "0")
+        # head -1 guard: grep -cE can return "0\n0" on macOS when content triggers binary
+        # detection (large sections with non-ASCII chars). Matches the head -1 guard on
+        # _has_initiatives (line 98). Without it, arithmetic at write_statusline_cache
+        # line 754 crashes: "0\n0: syntax error in expression".
+        PLAN_TOTAL_PHASES=$(echo "$_active_section" | grep -cE '^\#\#\#\#\s+Phase\s+[0-9]' 2>/dev/null | head -1 || echo "0")
         PLAN_TOTAL_PHASES=${PLAN_TOTAL_PHASES:-0}
+        [[ "$PLAN_TOTAL_PHASES" =~ ^[0-9]+$ ]] || PLAN_TOTAL_PHASES=0
         # Completed/in-progress counts: count phase-level Status lines only (#### Phase lines)
         # We count all Status: lines in active section; initiative Status lines are also counted
         # but that's acceptable for display purposes (plan-check uses PLAN_LIFECYCLE, not these)
-        PLAN_COMPLETED_PHASES=$(echo "$_active_section" | grep -cE '\*\*Status:\*\*\s*completed' 2>/dev/null || echo "0")
+        PLAN_COMPLETED_PHASES=$(echo "$_active_section" | grep -cE '\*\*Status:\*\*\s*completed' 2>/dev/null | head -1 || echo "0")
         PLAN_COMPLETED_PHASES=${PLAN_COMPLETED_PHASES:-0}
-        PLAN_IN_PROGRESS_PHASES=$(echo "$_active_section" | grep -cE '\*\*Status:\*\*\s*in-progress' 2>/dev/null || echo "0")
+        [[ "$PLAN_COMPLETED_PHASES" =~ ^[0-9]+$ ]] || PLAN_COMPLETED_PHASES=0
+        PLAN_IN_PROGRESS_PHASES=$(echo "$_active_section" | grep -cE '\*\*Status:\*\*\s*in-progress' 2>/dev/null | head -1 || echo "0")
         PLAN_IN_PROGRESS_PHASES=${PLAN_IN_PROGRESS_PHASES:-0}
+        [[ "$PLAN_IN_PROGRESS_PHASES" =~ ^[0-9]+$ ]] || PLAN_IN_PROGRESS_PHASES=0
 
         # Lifecycle: active if any initiative is active, dormant otherwise
         if [[ "$PLAN_ACTIVE_INITIATIVES" -gt 0 ]]; then
