@@ -79,18 +79,22 @@ EOF
     exit 0
 fi
 
-# --- Plan lifecycle check: completed plan is NOT an active plan ---
+# --- Plan lifecycle check: dormant plan has no active work ---
+# DEC-PLAN-003: "dormant" replaces "completed" for living plan format.
+# dormant = all initiatives completed (new format) or all phases completed (old format).
+# active  = has at least one active initiative (new) or in-progress phase (old).
+# none    = no MASTER_PLAN.md (handled above).
 get_plan_status "$PROJECT_ROOT"
-if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
-    cat <<COMPLETE_EOF
+if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+    cat <<DORMANT_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "BLOCKED: MASTER_PLAN.md has all phases completed ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES). A completed plan is not an active plan.\\n\\nAction: Archive the completed plan and invoke the Planner agent to create a new MASTER_PLAN.md for the current work."
+    "permissionDecisionReason": "BLOCKED: MASTER_PLAN.md is dormant — all initiatives are completed (or plan has no active initiatives).\\n\\nAction: Add a new initiative to MASTER_PLAN.md before writing code. Invoke the Planner agent with create-or-amend workflow."
   }
 }
-COMPLETE_EOF
+DORMANT_EOF
     exit 0
 fi
 

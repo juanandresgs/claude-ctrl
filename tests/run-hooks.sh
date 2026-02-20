@@ -1201,19 +1201,20 @@ cat > "$PL_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 PLAN_EOF
 
 # Source context-lib and test lifecycle detection
+# DEC-PLAN-003: old-format all-phases-done now returns "dormant" (replaces "completed")
 (
     source "$HOOKS_DIR/context-lib.sh"
     get_plan_status "$PL_TEST_DIR"
-    if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+    if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
         echo "COMPLETED_OK"
     else
         echo "COMPLETED_FAIL:$PLAN_LIFECYCLE"
     fi
 ) | while IFS= read -r line; do
     if [[ "$line" == "COMPLETED_OK" ]]; then
-        pass "lifecycle — completed plan detected"
+        pass "lifecycle — completed plan detected (dormant)"
     elif [[ "$line" == COMPLETED_FAIL* ]]; then
-        fail "lifecycle — completed plan" "expected 'completed', got: ${line#COMPLETED_FAIL:}"
+        fail "lifecycle — completed plan" "expected 'dormant', got: ${line#COMPLETED_FAIL:}"
     fi
 done
 

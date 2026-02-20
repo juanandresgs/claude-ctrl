@@ -197,30 +197,169 @@ if [[ -x "$COMMUNITY_SCRIPT" ]]; then
     fi
 fi
 
-# --- MASTER_PLAN.md preamble: project identity ---
-if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
-    PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
-    if [[ -n "$PREAMBLE" ]]; then
-        CONTEXT_PARTS+=("$PREAMBLE")
-    fi
-fi
-
-# --- MASTER_PLAN.md ---
+# --- MASTER_PLAN.md tiered injection (DEC-PLAN-004) ---
+# Bounded extraction: Identity + Architecture + Active Initiatives (full) +
+# last 10 Decision Log entries + Completed Initiatives one-liner list.
+# Total injection stays under ~250 lines even with 50+ completed initiatives.
+#
+# @decision DEC-PLAN-004
+# @title Tiered session injection with bounded extraction
+# @status accepted
+# @rationale Injecting the whole plan would grow unbounded as initiatives accumulate.
+#   Tiered extraction keeps context useful regardless of plan age: Identity gives project
+#   basics (~10 lines), Architecture gives structure (~10 lines), Active Initiatives give
+#   full work detail (bounded by active work), recent Decision Log entries give context
+#   (~10 lines), Completed Initiatives are one-liners from the table (~1 line each).
+#   Old format falls back to the previous preamble + phase-count pattern.
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
-    if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
-        CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is COMPLETED (all $PLAN_TOTAL_PHASES phases done). Source writes are BLOCKED until a new plan is created. Archive the completed plan first.")
-    else
-        PLAN_LINE="Plan:"
-        [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
-        [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
-        [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
-        CONTEXT_PARTS+=("$PLAN_LINE")
+    _PLAN_FILE="$PROJECT_ROOT/MASTER_PLAN.md"
 
-        if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
-            CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+    # Detect format: new (### Initiative:) vs old (## Phase N:)
+    _HAS_INITIATIVES=$(grep -cE '^\#\#\#\s+Initiative:' "$_PLAN_FILE" 2>/dev/null || echo "0")
+
+    if [[ "$_HAS_INITIATIVES" -gt 0 ]]; then
+        # --- New living-document format: tiered injection ---
+
+        # 1. Identity section (~10 lines)
+        _IDENTITY=$(awk '/^## Identity/{f=1} f && /^## / && !/^## Identity/{exit} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null | head -15)
+        [[ -n "$_IDENTITY" ]] && CONTEXT_PARTS+=("$_IDENTITY")
+
+        # 2. Architecture section (~10 lines)
+        _ARCH=$(awk '/^## Architecture/{f=1} f && /^## / && !/^## Architecture/{exit} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null | head -15)
+        [[ -n "$_ARCH" ]] && CONTEXT_PARTS+=("$_ARCH")
+
+        # 3. Active Initiatives: compact summary (REQ-P0-004 — bounded under 250 lines total)
+        # Full initiative blocks can be 300+ lines for real plans. Extract a 5-8 line
+        # summary per initiative: name, status, goal, phase counts. Agents read the
+        # full plan via Read tool when they need work items, issue cross-references, etc.
+        #
+        # @decision DEC-PLAN-005
+        # @title Compact per-initiative summary instead of full Active Initiatives block
+        # @status accepted
+        # @rationale E2E test showed real MASTER_PLAN.md with 2 active initiatives
+        #   produced 796-line injection (731 lines from Active Initiatives alone) — 3x
+        #   the 250-line target (REQ-P0-004). T13 caught this with realistic fixtures.
+        #   Fix: extract name+status+goal+phase-counts (~5 lines per initiative) rather
+        #   than dumping the entire block. Full detail is always available via Read tool.
+        _ACTIVE_HEADER=$(awk '/^## Active Initiatives/{found=1; print; next} found && /^## /{exit} found{print}' \
+            "$_PLAN_FILE" 2>/dev/null | head -3)
+        [[ -n "$_ACTIVE_HEADER" ]] && CONTEXT_PARTS+=("$_ACTIVE_HEADER")
+
+        # Parse each ### Initiative: block for a compact summary
+        _ACTIVE_SECTION=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives/{exit} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null)
+        if [[ -n "$_ACTIVE_SECTION" ]]; then
+            _INIT_SUMMARY=""
+            _CUR_INIT=""
+            _CUR_STATUS=""
+            _CUR_GOAL=""
+            _PLANNED_PHASES=0
+            _INPROG_PHASES=0
+            _DONE_PHASES=0
+            _IN_PHASE=false   # true after a #### Phase N: header — next Status: is phase-level
+
+            _flush_initiative() {
+                if [[ -n "$_CUR_INIT" ]]; then
+                    local _phase_line="Phases: ${_PLANNED_PHASES} planned, ${_INPROG_PHASES} in-progress, ${_DONE_PHASES} completed"
+                    _INIT_SUMMARY+="### Initiative: ${_CUR_INIT}"$'\n'
+                    [[ -n "$_CUR_STATUS" ]] && _INIT_SUMMARY+="**Status:** ${_CUR_STATUS}"$'\n'
+                    [[ -n "$_CUR_GOAL" ]] && _INIT_SUMMARY+="**Goal:** ${_CUR_GOAL}"$'\n'
+                    _INIT_SUMMARY+="${_phase_line}"$'\n'
+                fi
+            }
+
+            while IFS= read -r _line; do
+                if [[ "$_line" =~ ^'### Initiative: '(.*) ]]; then
+                    # New initiative block — flush previous, reset state
+                    _flush_initiative
+                    _CUR_INIT="${BASH_REMATCH[1]}"
+                    _CUR_STATUS=""
+                    _CUR_GOAL=""
+                    _PLANNED_PHASES=0
+                    _INPROG_PHASES=0
+                    _DONE_PHASES=0
+                    _IN_PHASE=false
+                elif [[ "$_line" =~ ^'#### Phase' ]]; then
+                    # Phase header — next Status: belongs to this phase
+                    _IN_PHASE=true
+                elif [[ -n "$_CUR_INIT" ]]; then
+                    if [[ "$_IN_PHASE" == "true" ]] && echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                        # Phase-level status — count it
+                        if echo "$_line" | grep -qE '\bplanned\b'; then
+                            _PLANNED_PHASES=$((_PLANNED_PHASES + 1))
+                        elif echo "$_line" | grep -qE '\bin-progress\b'; then
+                            _INPROG_PHASES=$((_INPROG_PHASES + 1))
+                        elif echo "$_line" | grep -qE '\bcompleted\b'; then
+                            _DONE_PHASES=$((_DONE_PHASES + 1))
+                        fi
+                        _IN_PHASE=false  # consumed
+                    elif [[ "$_IN_PHASE" == "false" ]] && echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                        # Initiative-level status
+                        _CUR_STATUS=$(echo "$_line" | sed 's/\*\*Status:\*\*[[:space:]]*//')
+                    elif echo "$_line" | grep -qE '^\*\*Goal:\*\*'; then
+                        _CUR_GOAL=$(echo "$_line" | sed 's/\*\*Goal:\*\*[[:space:]]*//')
+                    fi
+                fi
+            done <<< "$_ACTIVE_SECTION"
+            _flush_initiative
+
+            [[ -n "$_INIT_SUMMARY" ]] && CONTEXT_PARTS+=("$_INIT_SUMMARY")
+        fi
+
+        # 4. Last 10 Decision Log entries (most recent decisions give context)
+        # || true: grep returns 1 when no entries exist; pipefail would kill the script.
+        _DEC_LOG_ENTRIES=$(awk '/^## Decision Log/{f=1} f && /^---/{exit} f && /^\|/{print}' \
+            "$_PLAN_FILE" 2>/dev/null | grep -vE '^\|\s*Date\s*\|' | tail -10 || true)
+        if [[ -n "$_DEC_LOG_ENTRIES" ]]; then
+            CONTEXT_PARTS+=("Recent decisions (last 10):")
+            CONTEXT_PARTS+=("$_DEC_LOG_ENTRIES")
+        fi
+
+        # 5. Completed Initiatives: one-liner table rows only (not full blocks)
+        # || true: grep returns 1 when table is empty; pipefail would kill the script.
+        _COMPLETED_ROWS=$(awk '/^## Completed Initiatives/{f=1} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null | grep -E '^\|' | grep -vE '^\|\s*Initiative\s*\||\|\s*-+\s*\|' | head -60 || true)
+        if [[ -n "$_COMPLETED_ROWS" ]]; then
+            _COMPLETED_COUNT=$(echo "$_COMPLETED_ROWS" | wc -l | tr -d ' ')
+            CONTEXT_PARTS+=("Completed initiatives (${_COMPLETED_COUNT}):")
+            CONTEXT_PARTS+=("$_COMPLETED_ROWS")
+        fi
+
+        # Lifecycle status line
+        if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is dormant — all initiatives completed. Add a new initiative before writing code.")
+        else
+            _INIT_LINE="Plan: ${PLAN_ACTIVE_INITIATIVES} active initiative(s)"
+            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && _INIT_LINE="$_INIT_LINE | ${PLAN_COMPLETED_PHASES}/${PLAN_TOTAL_PHASES} phases done"
+            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && _INIT_LINE="$_INIT_LINE | age: ${PLAN_AGE_DAYS}d"
+            CONTEXT_PARTS+=("$_INIT_LINE")
+
+            if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
+                CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+            fi
+        fi
+    else
+        # --- Old format: preamble + phase count (backward compatibility) ---
+        PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$_PLAN_FILE" | head -30)
+        [[ -n "$PREAMBLE" ]] && CONTEXT_PARTS+=("$PREAMBLE")
+
+        if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is dormant (all $PLAN_TOTAL_PHASES phases done). Add a new initiative before writing code.")
+        else
+            PLAN_LINE="Plan:"
+            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
+            [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+            CONTEXT_PARTS+=("$PLAN_LINE")
+
+            if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
+                CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+            fi
         fi
     fi
 else
