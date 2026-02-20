@@ -15,13 +15,26 @@
 #   from being both builder and judge of its own work.
 #
 # @decision DEC-IMPL-STOP-002
-# @title Move finalize_trace before git/plan state checks to beat timeout
+# @title Move finalize_trace before auto-capture blocks to beat timeout
 # @status accepted
 # @rationale The 5s hook timeout was causing finalize_trace to be skipped when
-#   get_git_state and get_plan_status ran first and consumed most of the budget.
-#   Moving trace detection + finalization immediately after PROJECT_ROOT detection
-#   ensures the trace is sealed even when downstream advisory checks time out.
-#   Error logging via append_audit captures finalization failures for diagnosis.
+#   auto-capture git commands (files-changed, test-output) ran first and consumed
+#   most of the budget. Moving finalize_trace immediately after the summary.md
+#   fallback ensures the marker cleanup and trace sealing complete even when the
+#   git auto-capture blocks time out. Auto-capture still runs after finalize_trace
+#   for best-effort artifact collection without blocking marker removal.
+#   See DEC-STALE-MARKER-001 for the root cause this ordering addresses.
+#
+# @decision DEC-STALE-MARKER-001
+# @title Order finalize_trace before auto-capture to prevent stale .active-* markers
+# @status accepted
+# @rationale When a SubagentStop hook times out at 5s, any code after the timeout
+#   point is silently skipped. If auto-capture git commands (3 git calls + sort)
+#   consume the budget before finalize_trace runs, the .active-implementer-* marker
+#   is never cleaned up. That stale marker causes Gate B in task-track.sh to
+#   permanently block tester dispatch on the next session. Fix: finalize_trace runs
+#   immediately after the summary.md fallback (which it depends on) and before any
+#   git auto-capture. Auto-capture is best-effort; marker cleanup is mandatory.
 set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
@@ -61,9 +74,18 @@ if [[ -n "$TRACE_ID" ]]; then
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
 
-    # Auto-capture files-changed.txt if agent didn't write it.
+    # finalize_trace MUST run before auto-capture git commands to prevent stale markers.
+    # See DEC-STALE-MARKER-001: if the hook times out during git commands, finalize_trace
+    # (and its .active-* marker cleanup) would be silently skipped, permanently blocking
+    # tester dispatch. summary.md fallback must precede this call — finalize_trace reads
+    # it to determine crashed vs completed status.
+    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "implementer"; then
+        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for implementer trace $TRACE_ID"
+    fi
+
+    # Auto-capture files-changed.txt if agent didn't write it (best-effort, runs after finalize).
     # Collects unstaged diffs, staged diffs, and recent commit file names so
-    # finalize_trace() can compute files_changed > 0 even when the agent omitted
+    # refinalize_trace() can compute files_changed > 0 even when the agent omitted
     # the artifact. Uses || true on every git command — hook must not abort on
     # non-git paths or failed subcommands.
     if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/files-changed.txt" ]]; then
@@ -73,7 +95,7 @@ if [[ -n "$TRACE_ID" ]]; then
         sort -u "$TRACE_DIR/artifacts/files-changed.txt" -o "$TRACE_DIR/artifacts/files-changed.txt" 2>/dev/null || true
     fi
 
-    # Auto-capture test-output.txt from .test-status if agent didn't write it.
+    # Auto-capture test-output.txt from .test-status if agent didn't write it (best-effort).
     # .test-status format is "result|fail_count|timestamp". The capture adds a
     # human-readable prefix so report.sh can display it as evidence text.
     if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/test-output.txt" ]]; then
@@ -88,10 +110,6 @@ if [[ -n "$TRACE_ID" ]]; then
             [[ "$TS_RESULT" == "pass" ]] && echo "Tests passed" >> "$TRACE_DIR/artifacts/test-output.txt"
             [[ "$TS_RESULT" == "fail" ]] && echo "Tests failed" >> "$TRACE_DIR/artifacts/test-output.txt"
         fi
-    fi
-
-    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "implementer"; then
-        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for implementer trace $TRACE_ID"
     fi
 fi
 

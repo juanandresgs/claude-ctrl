@@ -60,11 +60,39 @@ if [[ -f "$START_SHA_FILE" ]]; then
     rm -f "$START_SHA_FILE"
 fi
 
-# --- Trace protocol: detect and prepare for finalization ---
+# Extract agent's response text early (needed for summary.md fallback and advisory checks below).
+# Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
+# `.response` kept as fallback for backward compatibility with any non-standard payloads.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
+
+# --- Trace protocol: finalize BEFORE advisory checks to beat 5s timeout ---
+# @decision DEC-STALE-MARKER-001
+# @title Order finalize_trace before advisory checks to prevent stale .active-* markers
+# @status accepted
+# @rationale The 5s SubagentStop hook timeout means any code after the budget is consumed
+#   is silently skipped. If get_git_state, get_plan_status, and ~150 lines of advisory
+#   checks run before finalize_trace, the .active-guardian-* marker is never removed on
+#   timeout. Stale markers from previous guardian runs can interfere with future dispatch.
+#   Fix: detect trace, write summary.md fallback (which finalize_trace depends on), call
+#   finalize_trace, THEN run advisory checks. Auto-capture (commit-info.txt) stays after
+#   finalize_trace since it's best-effort artifact enrichment, not marker cleanup.
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "guardian" 2>/dev/null || echo "")
 TRACE_DIR=""
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+fi
+
+if [[ -n "$TRACE_ID" ]]; then
+    # Fallback: if agent didn't write summary.md or wrote empty file, save response excerpt.
+    # Must run before finalize_trace — finalize reads summary.md to determine crashed vs completed.
+    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
+    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+
+    # finalize_trace MUST run before advisory checks (get_git_state etc.) to prevent stale markers.
+    # See DEC-STALE-MARKER-001: advisory checks can consume the 5s budget before this runs.
+    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "guardian" || true
 fi
 
 get_git_state "$PROJECT_ROOT"
@@ -72,11 +100,6 @@ get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
-
-# Extract agent's response text first (needed for phase-boundary detection)
-# Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
-# `.response` kept as fallback for backward compatibility with any non-standard payloads.
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 # Detect plan completion state from actual plan content (not fragile response text matching)
 get_plan_status "$PROJECT_ROOT"
@@ -219,25 +242,18 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
-# --- Trace protocol: finalize trace ---
-if [[ -n "$TRACE_ID" ]]; then
-    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
-    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
-    fi
-
+# --- Trace protocol: auto-capture commit-info.txt (best-effort, runs after finalize) ---
+# finalize_trace already ran above (before advisory checks). This block enriches
+# the trace artifacts retrospectively — it does NOT affect marker cleanup.
+if [[ -n "$TRACE_ID" && -d "$TRACE_DIR/artifacts" ]]; then
     # Auto-capture commit-info.txt: last commit subject + diff stat.
     # Provides concrete evidence of what the guardian committed without requiring
     # the agent to explicitly write an artifact. Uses || true — git may fail on
     # non-git roots or when HEAD~1 doesn't exist (first commit).
-    if [[ -d "$TRACE_DIR/artifacts" ]]; then
-        {
-            git -C "$PROJECT_ROOT" log --oneline -1 2>/dev/null || true
-            git -C "$PROJECT_ROOT" diff --stat HEAD~1..HEAD 2>/dev/null || true
-        } > "$TRACE_DIR/artifacts/commit-info.txt" 2>/dev/null || true
-    fi
-
-    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "guardian"
+    {
+        git -C "$PROJECT_ROOT" log --oneline -1 2>/dev/null || true
+        git -C "$PROJECT_ROOT" diff --stat HEAD~1..HEAD 2>/dev/null || true
+    } > "$TRACE_DIR/artifacts/commit-info.txt" 2>/dev/null || true
 fi
 
 # Response size advisory

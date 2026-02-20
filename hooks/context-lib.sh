@@ -1670,6 +1670,26 @@ refinalize_trace() {
                     || date -u -d "@${estimated_end}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                     || echo "")
             fi
+
+            # @decision DEC-STALE-MARKER-002
+            # @title Clean .active-* markers during refinalize_trace status repair
+            # @status accepted
+            # @rationale When refinalize_trace transitions a trace from status="active" to
+            #   status="completed", the .active-{agent_type}-* markers should also be removed.
+            #   This provides defense-in-depth: if finalize_trace's marker cleanup failed
+            #   (timeout, crash), refinalize_trace's status repair also handles the marker.
+            #   Only cleans markers whose content matches this trace_id to avoid removing
+            #   markers belonging to concurrent active traces of the same agent type.
+            local rf_agent_type
+            rf_agent_type=$(jq -r '.agent_type // empty' "$manifest" 2>/dev/null)
+            if [[ -n "$rf_agent_type" ]]; then
+                for marker in "${TRACE_STORE}/.active-${rf_agent_type}-"*; do
+                    [[ -f "$marker" ]] || continue
+                    local marker_trace
+                    marker_trace=$(cat "$marker" 2>/dev/null)
+                    [[ "$marker_trace" == "$trace_id" ]] && rm -f "$marker"
+                done
+            fi
         fi
     fi
 

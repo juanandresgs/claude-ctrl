@@ -68,7 +68,19 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
     if [[ -n "$IMPL_TRACE" ]]; then
         IMPL_MANIFEST="${TRACE_STORE}/${IMPL_TRACE}/manifest.json"
         IMPL_STATUS=$(jq -r '.status // "unknown"' "$IMPL_MANIFEST" 2>/dev/null || echo "unknown")
-        if [[ "$IMPL_STATUS" == "active" ]]; then
+        if [[ "$IMPL_STATUS" == "completed" || "$IMPL_STATUS" == "crashed" ]]; then
+            # @decision DEC-STALE-MARKER-003
+            # @title Clean stale markers when trace already finalized in Gate B
+            # @status accepted
+            # @rationale When a marker exists but the trace manifest shows completed/crashed,
+            #   the marker is stale (finalize_trace's cleanup failed — e.g. timeout race).
+            #   The marker was not cleaned by finalize_trace or refinalize_trace yet.
+            #   Clean it here and allow tester dispatch rather than falling through to the
+            #   5-minute staleness check. This is the fast path: manifest already shows done,
+            #   so no refinalize needed — just rm the stale marker and allow dispatch.
+            rm -f "${TRACE_STORE}/.active-implementer-"* 2>/dev/null || true
+            # Fall through — no deny needed, tester dispatch is allowed
+        elif [[ "$IMPL_STATUS" == "active" ]]; then
             # Check staleness before denying — orphaned traces shouldn't block forever
             # @decision DEC-TESTER-GATE-HEAL-001
             # @title Self-healing staleness check in tester dispatch gate
