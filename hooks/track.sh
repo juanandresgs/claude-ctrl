@@ -70,26 +70,48 @@ PROOF_FILE="$(get_claude_dir)/.proof-status"
 if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
     if [[ "$PROOF_STATUS" == "verified" ]]; then
-        # Only invalidate for source file changes (not tests, config, docs).
-        # Use RELATIVE_PATH (relative to project root) for exclusion checks so that
-        # ancestor directories containing ".claude" (e.g. ~/.claude/tmp/test-XXXX/main.sh)
-        # do not false-positive the exclusion. The extension check stays on the full
-        # FILE_PATH since extensions are at the tail and unaffected by directory depth.
-        # @decision DEC-TRACK-001
-        # @title Use relative path for proof invalidation exclusions in track.sh
+        # @decision DEC-TRACK-GUARDIAN-001
+        # @title Skip proof invalidation when Guardian agent is active
         # @status accepted
-        # @rationale Using the absolute FILE_PATH for exclusion matching caused all
-        #   source files in the meta-repo (~/.claude) to be excluded because their
-        #   absolute paths contain ".claude". Changing to relative path (FILE_PATH
-        #   stripped of PROJECT_ROOT prefix) restricts the exclusion to the filename
-        #   and path within the project, not the project's ancestor directories.
-        #   Also fixes the same issue for projects whose absolute paths contain
-        #   any of the exclusion keywords (node_modules, .git, vendor, etc. in the
-        #   path above the project root are now ignored). Fixes #135/#43.
-        RELATIVE_PATH="${FILE_PATH#${PROJECT_ROOT}/}"
-        if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
-           && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
-            echo "pending|$(date +%s)" > "$PROOF_FILE"
+        # @rationale Guardian's commit/merge workflow can trigger Write/Edit events
+        #   (e.g., merge conflict resolution, hook-generated file updates). Without
+        #   this guard, track.sh fires on those writes and resets .proof-status from
+        #   verified→pending mid-workflow. Guard.sh Check 8 then blocks the commit
+        #   because the proof is no longer verified — a deadlock where Guardian's own
+        #   actions prevent it from completing. The fix: if a Guardian agent is active
+        #   (marker file exists in TRACE_STORE), skip the invalidation entirely.
+        #   The proof was already verified by the user before Guardian dispatched; a
+        #   write during Guardian's merge cycle does NOT represent new unverified work.
+        #   Pattern mirrors guard.sh's is_guardian_active() check at lines 133-141.
+        #   Inlined here (not extracted to context-lib.sh) to keep the fix minimal and
+        #   avoid changing the shared library surface for a single call site. Fixes #49.
+        _guardian_active=false
+        for _gm in "${TRACE_STORE}/.active-guardian-"*; do
+            [[ -f "$_gm" ]] && { _guardian_active=true; break; }
+        done
+
+        if [[ "$_guardian_active" == "false" ]]; then
+            # Only invalidate for source file changes (not tests, config, docs).
+            # Use RELATIVE_PATH (relative to project root) for exclusion checks so that
+            # ancestor directories containing ".claude" (e.g. ~/.claude/tmp/test-XXXX/main.sh)
+            # do not false-positive the exclusion. The extension check stays on the full
+            # FILE_PATH since extensions are at the tail and unaffected by directory depth.
+            # @decision DEC-TRACK-001
+            # @title Use relative path for proof invalidation exclusions in track.sh
+            # @status accepted
+            # @rationale Using the absolute FILE_PATH for exclusion matching caused all
+            #   source files in the meta-repo (~/.claude) to be excluded because their
+            #   absolute paths contain ".claude". Changing to relative path (FILE_PATH
+            #   stripped of PROJECT_ROOT prefix) restricts the exclusion to the filename
+            #   and path within the project, not the project's ancestor directories.
+            #   Also fixes the same issue for projects whose absolute paths contain
+            #   any of the exclusion keywords (node_modules, .git, vendor, etc. in the
+            #   path above the project root are now ignored). Fixes #135/#43.
+            RELATIVE_PATH="${FILE_PATH#${PROJECT_ROOT}/}"
+            if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
+               && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
+                echo "pending|$(date +%s)" > "$PROOF_FILE"
+            fi
         fi
     fi
 fi
