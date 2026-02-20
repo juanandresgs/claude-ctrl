@@ -514,7 +514,13 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
         PROOF_DIR=$(detect_project_root)
     fi
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1; then
-        PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
+        # DEC-PROOF-PATH-003: use get_claude_dir()-style logic to avoid double-nesting
+        # when PROOF_DIR is ~/.claude (meta-repo). ${HOME}/.claude/.claude/ never exists.
+        if [[ "$PROOF_DIR" == "${HOME}/.claude" ]]; then
+            PROOF_FILE="${PROOF_DIR}/.proof-status"
+        else
+            PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
+        fi
         # Fallback: if worktree file is absent, check orchestrator's CLAUDE_DIR
         if [[ ! -f "$PROOF_FILE" ]]; then
             ORCH_PROOF_FILE="$(get_claude_dir)/.proof-status"

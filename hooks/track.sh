@@ -53,7 +53,20 @@ fi
 
 # --- Invalidate proof-status when non-test source files change ---
 # If user verified the feature and then source code changes, proof is stale.
-PROOF_FILE="$TRACKING_DIR/.proof-status"
+# @decision DEC-PROOF-PATH-003
+# @title Use get_claude_dir() for proof-status path in track.sh and guard.sh
+# @status accepted
+# @rationale For the meta-repo (PROJECT_ROOT = ~/.claude), TRACKING_DIR is
+#   set to "$PROJECT_ROOT/.claude" = "~/.claude/.claude" which produces a
+#   double-nested path. PROOF_FILE then becomes "~/.claude/.claude/.proof-status"
+#   — a path that never exists — so the invalidation guard silently does nothing.
+#   get_claude_dir() (from log.sh) already handles this: it returns PROJECT_ROOT
+#   as-is when PROJECT_ROOT == ~/.claude, and PROJECT_ROOT/.claude otherwise.
+#   Using it here ensures the proof-status path is consistent with where
+#   resolve_proof_file(), prompt-submit.sh, and check-tester.sh write the file.
+#   Same fix applied to guard.sh Check 8 (DEC-PROOF-PATH-003). Fixes meta-repo
+#   proof invalidation and guard.sh's double-nested proof read on git commit.
+PROOF_FILE="$(get_claude_dir)/.proof-status"
 if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
     if [[ "$PROOF_STATUS" == "verified" ]]; then
