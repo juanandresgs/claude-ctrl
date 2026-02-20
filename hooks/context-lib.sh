@@ -92,14 +92,24 @@ get_plan_status() {
     PLAN_NOGO_COUNT=${PLAN_NOGO_COUNT:-0}
 
     # --- Lifecycle detection: new format (### Initiative:) takes priority ---
-    # New format has "### Initiative:" headers with "**Status:** active|completed".
-    local _has_initiatives
+    # New format is identified by "## Active Initiatives" or "## Completed Initiatives"
+    # section headers. Using section headers as the discriminator (not just ### Initiative:
+    # counts) means an empty Active Initiatives section is still recognized as new-format
+    # and returns "dormant" rather than falling through to the old-format path which
+    # defaults to "active". This fixes the edge case where all initiatives have been
+    # compressed into the Completed table, leaving an empty Active section.
+    local _has_initiatives _is_new_format
     # grep -cE can return "0\n0" on macOS (binary/text split) — take first line only
     _has_initiatives=$(grep -cE '^\#\#\#\s+Initiative:' "$root/MASTER_PLAN.md" 2>/dev/null | head -1 || echo "0")
     _has_initiatives=${_has_initiatives:-0}
     [[ "$_has_initiatives" =~ ^[0-9]+$ ]] || _has_initiatives=0
 
-    if [[ "$_has_initiatives" -gt 0 ]]; then
+    # New format also detected by section-level headers even when Active section is empty
+    _is_new_format=$(grep -cE '^## (Active|Completed) Initiatives' "$root/MASTER_PLAN.md" 2>/dev/null | head -1 || echo "0")
+    _is_new_format=${_is_new_format:-0}
+    [[ "$_is_new_format" =~ ^[0-9]+$ ]] || _is_new_format=0
+
+    if [[ "$_has_initiatives" -gt 0 || "$_is_new_format" -gt 0 ]]; then
         # New living-document format: parse ### Initiative: blocks with Status fields.
         # Extract only the Active Initiatives section (stops at ## Completed Initiatives).
         local _active_section
