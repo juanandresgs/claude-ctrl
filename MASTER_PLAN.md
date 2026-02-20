@@ -453,8 +453,9 @@ then Phase 8 (pure refactoring, no behavioral change, lowest risk).
 ---
 
 ### Initiative: MASTER_PLAN Redesign
-**Status:** active
+**Status:** completed
 **Started:** 2026-02-19
+**Completed:** 2026-02-20
 **Goal:** Transform MASTER_PLAN.md from disposable task tracker to living project record (#138, #115)
 
 > MASTER_PLAN.md was designed as a disposable task tracker that gets archived and replaced
@@ -753,7 +754,7 @@ bounded under 250 lines. plan-check lifecycle gate allows work when active initi
 <!-- Guardian appends here after phase completion -->
 
 #### Phase 4: Test Suite + Validation
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-PLAN-003
 **Requirements:** All REQ-P0 validated
 **Issues:** #142
@@ -761,7 +762,7 @@ bounded under 250 lines. plan-check lifecycle gate allows work when active initi
 - All existing tests pass (no regressions from format change)
 - New tests validate initiative-level lifecycle detection
 - New tests validate bounded session injection
-- Full test suite green
+- Full test suite green (352 tests, 0 failures)
 
 ##### Planned Decisions
 - DEC-PLAN-003: Initiative-level lifecycle — validate none/active/dormant transitions — Addresses: REQ-P0-003, REQ-P0-005
@@ -794,7 +795,7 @@ bounded under 250 lines. plan-check lifecycle gate allows work when active initi
 - `tests/test-plan-injection.sh` — New: bounded injection tests
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- 2026-02-20: DEC-PLAN-003 validated — 16 new tests across 2 suites confirm initiative lifecycle transitions and bounded injection. Bug fix: empty Active Initiatives section now correctly returns dormant.
 
 #### Plan Redesign Worktree Strategy
 
