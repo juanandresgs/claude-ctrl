@@ -197,30 +197,94 @@ if [[ -x "$COMMUNITY_SCRIPT" ]]; then
     fi
 fi
 
-# --- MASTER_PLAN.md preamble: project identity ---
-if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
-    PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
-    if [[ -n "$PREAMBLE" ]]; then
-        CONTEXT_PARTS+=("$PREAMBLE")
-    fi
-fi
-
-# --- MASTER_PLAN.md ---
+# --- MASTER_PLAN.md tiered injection (DEC-PLAN-004) ---
+# Bounded extraction: Identity + Architecture + Active Initiatives (full) +
+# last 10 Decision Log entries + Completed Initiatives one-liner list.
+# Total injection stays under ~250 lines even with 50+ completed initiatives.
+#
+# @decision DEC-PLAN-004
+# @title Tiered session injection with bounded extraction
+# @status accepted
+# @rationale Injecting the whole plan would grow unbounded as initiatives accumulate.
+#   Tiered extraction keeps context useful regardless of plan age: Identity gives project
+#   basics (~10 lines), Architecture gives structure (~10 lines), Active Initiatives give
+#   full work detail (bounded by active work), recent Decision Log entries give context
+#   (~10 lines), Completed Initiatives are one-liners from the table (~1 line each).
+#   Old format falls back to the previous preamble + phase-count pattern.
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
-    if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
-        CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is COMPLETED (all $PLAN_TOTAL_PHASES phases done). Source writes are BLOCKED until a new plan is created. Archive the completed plan first.")
-    else
-        PLAN_LINE="Plan:"
-        [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
-        [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
-        [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
-        CONTEXT_PARTS+=("$PLAN_LINE")
+    _PLAN_FILE="$PROJECT_ROOT/MASTER_PLAN.md"
 
-        if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
-            CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+    # Detect format: new (### Initiative:) vs old (## Phase N:)
+    _HAS_INITIATIVES=$(grep -cE '^\#\#\#\s+Initiative:' "$_PLAN_FILE" 2>/dev/null || echo "0")
+
+    if [[ "$_HAS_INITIATIVES" -gt 0 ]]; then
+        # --- New living-document format: tiered injection ---
+
+        # 1. Identity section (~10 lines)
+        _IDENTITY=$(awk '/^## Identity/{f=1} f && /^## / && !/^## Identity/{exit} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null | head -15)
+        [[ -n "$_IDENTITY" ]] && CONTEXT_PARTS+=("$_IDENTITY")
+
+        # 2. Architecture section (~10 lines)
+        _ARCH=$(awk '/^## Architecture/{f=1} f && /^## / && !/^## Architecture/{exit} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null | head -15)
+        [[ -n "$_ARCH" ]] && CONTEXT_PARTS+=("$_ARCH")
+
+        # 3. Active Initiatives: full detail (bounded by how many active initiatives exist)
+        _ACTIVE=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives/{exit} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null)
+        [[ -n "$_ACTIVE" ]] && CONTEXT_PARTS+=("$_ACTIVE")
+
+        # 4. Last 10 Decision Log entries (most recent decisions give context)
+        _DEC_LOG_ENTRIES=$(awk '/^## Decision Log/{f=1} f && /^---/{exit} f && /^\|/{print}' \
+            "$_PLAN_FILE" 2>/dev/null | grep -vE '^\|\s*Date\s*\|' | tail -10)
+        if [[ -n "$_DEC_LOG_ENTRIES" ]]; then
+            CONTEXT_PARTS+=("Recent decisions (last 10):")
+            CONTEXT_PARTS+=("$_DEC_LOG_ENTRIES")
+        fi
+
+        # 5. Completed Initiatives: one-liner table rows only (not full blocks)
+        _COMPLETED_ROWS=$(awk '/^## Completed Initiatives/{f=1} f{print}' \
+            "$_PLAN_FILE" 2>/dev/null | grep -E '^\|' | grep -vE '^\|\s*Initiative\s*\||\|\s*-+\s*\|' | head -60)
+        if [[ -n "$_COMPLETED_ROWS" ]]; then
+            _COMPLETED_COUNT=$(echo "$_COMPLETED_ROWS" | wc -l | tr -d ' ')
+            CONTEXT_PARTS+=("Completed initiatives (${_COMPLETED_COUNT}):")
+            CONTEXT_PARTS+=("$_COMPLETED_ROWS")
+        fi
+
+        # Lifecycle status line
+        if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is dormant — all initiatives completed. Add a new initiative before writing code.")
+        else
+            _INIT_LINE="Plan: ${PLAN_ACTIVE_INITIATIVES} active initiative(s)"
+            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && _INIT_LINE="$_INIT_LINE | ${PLAN_COMPLETED_PHASES}/${PLAN_TOTAL_PHASES} phases done"
+            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && _INIT_LINE="$_INIT_LINE | age: ${PLAN_AGE_DAYS}d"
+            CONTEXT_PARTS+=("$_INIT_LINE")
+
+            if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
+                CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+            fi
+        fi
+    else
+        # --- Old format: preamble + phase count (backward compatibility) ---
+        PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$_PLAN_FILE" | head -30)
+        [[ -n "$PREAMBLE" ]] && CONTEXT_PARTS+=("$PREAMBLE")
+
+        if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is dormant (all $PLAN_TOTAL_PHASES phases done). Add a new initiative before writing code.")
+        else
+            PLAN_LINE="Plan:"
+            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
+            [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+            CONTEXT_PARTS+=("$PLAN_LINE")
+
+            if [[ "$PLAN_SOURCE_CHURN_PCT" -ge 10 ]]; then
+                CONTEXT_PARTS+=("WARNING: Plan may be stale (${PLAN_SOURCE_CHURN_PCT}% source file churn since last update)")
+            fi
         fi
     fi
 else

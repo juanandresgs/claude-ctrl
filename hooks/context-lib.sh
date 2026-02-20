@@ -51,6 +51,15 @@ get_git_state() {
 }
 
 # --- MASTER_PLAN.md status ---
+# @decision DEC-PLAN-003
+# @title Initiative-level lifecycle replaces document-level
+# @status accepted
+# @rationale PLAN_LIFECYCLE becomes none/active/dormant based on ### Initiative: headers
+#   and their **Status:** fields. "dormant" replaces "completed" — the living plan is
+#   never "completed." Old format (## Phase N:) still supported for backward compatibility.
+#   New format (### Initiative:): active if any initiative has Status: active,
+#   dormant if all initiatives have Status: completed or Active section is empty.
+#   PLAN_ACTIVE_INITIATIVES: count of ### Initiative: blocks with Status: active.
 get_plan_status() {
     local root="$1"
     PLAN_EXISTS=false
@@ -58,6 +67,8 @@ get_plan_status() {
     PLAN_TOTAL_PHASES=0
     PLAN_COMPLETED_PHASES=0
     PLAN_IN_PROGRESS_PHASES=0
+    PLAN_ACTIVE_INITIATIVES=0
+    PLAN_TOTAL_INITIATIVES=0
     PLAN_AGE_DAYS=0
     PLAN_COMMITS_SINCE=0
     PLAN_CHANGED_SOURCE_FILES=0
@@ -79,19 +90,97 @@ get_plan_status() {
     PLAN_P0_COUNT=${PLAN_P0_COUNT:-0}
     PLAN_NOGO_COUNT=$(grep -coE 'REQ-NOGO-[0-9]+' "$root/MASTER_PLAN.md" 2>/dev/null || true)
     PLAN_NOGO_COUNT=${PLAN_NOGO_COUNT:-0}
-    PLAN_TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$root/MASTER_PLAN.md" 2>/dev/null || true)
-    PLAN_TOTAL_PHASES=${PLAN_TOTAL_PHASES:-0}
-    PLAN_COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$root/MASTER_PLAN.md" 2>/dev/null || true)
-    PLAN_COMPLETED_PHASES=${PLAN_COMPLETED_PHASES:-0}
-    PLAN_IN_PROGRESS_PHASES=$(grep -cE '\*\*Status:\*\*\s*in-progress' "$root/MASTER_PLAN.md" 2>/dev/null || true)
-    PLAN_IN_PROGRESS_PHASES=${PLAN_IN_PROGRESS_PHASES:-0}
 
-    # Plan lifecycle state: none (no plan), active (has incomplete phases), completed (all phases done)
-    # PLAN_LIFECYCLE defaults to "none" (set above, before early return).
-    if [[ "$PLAN_TOTAL_PHASES" -gt 0 && "$PLAN_COMPLETED_PHASES" -eq "$PLAN_TOTAL_PHASES" ]]; then
-        PLAN_LIFECYCLE="completed"
+    # --- Lifecycle detection: new format (### Initiative:) takes priority ---
+    # New format has "### Initiative:" headers with "**Status:** active|completed".
+    local _has_initiatives
+    # grep -cE can return "0\n0" on macOS (binary/text split) — take first line only
+    _has_initiatives=$(grep -cE '^\#\#\#\s+Initiative:' "$root/MASTER_PLAN.md" 2>/dev/null | head -1 || echo "0")
+    _has_initiatives=${_has_initiatives:-0}
+    [[ "$_has_initiatives" =~ ^[0-9]+$ ]] || _has_initiatives=0
+
+    if [[ "$_has_initiatives" -gt 0 ]]; then
+        # New living-document format: parse ### Initiative: blocks with Status fields.
+        # Extract only the Active Initiatives section (stops at ## Completed Initiatives).
+        local _active_section
+        _active_section=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives/{exit} f{print}' \
+            "$root/MASTER_PLAN.md" 2>/dev/null || echo "")
+
+        # Count initiative blocks in Active Initiatives section
+        PLAN_TOTAL_INITIATIVES=$(echo "$_active_section" | grep -cE '^\#\#\#\s+Initiative:' 2>/dev/null || echo "0")
+        PLAN_TOTAL_INITIATIVES=${PLAN_TOTAL_INITIATIVES:-0}
+
+        # Count active initiatives: ### Initiative: blocks with **Status:** active
+        # Parse sequentially: enter initiative block on ### Initiative:, capture first Status line
+        PLAN_ACTIVE_INITIATIVES=0
+        local _completed_count=0
+        if [[ -n "$_active_section" ]]; then
+            local _in_init=false _init_status=""
+            while IFS= read -r _line; do
+                if echo "$_line" | grep -qE '^\#\#\#\s+Initiative:'; then
+                    # Finalize previous initiative
+                    if [[ "$_in_init" == "true" ]]; then
+                        if [[ "$_init_status" == "active" ]]; then
+                            PLAN_ACTIVE_INITIATIVES=$((PLAN_ACTIVE_INITIATIVES + 1))
+                        elif [[ "$_init_status" == "completed" ]]; then
+                            _completed_count=$((_completed_count + 1))
+                        fi
+                    fi
+                    _in_init=true
+                    _init_status=""
+                elif [[ "$_in_init" == "true" && -z "$_init_status" ]] && \
+                     echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                    # First Status line after the Initiative header is the initiative status
+                    if echo "$_line" | grep -qiE 'active'; then
+                        _init_status="active"
+                    elif echo "$_line" | grep -qiE 'completed'; then
+                        _init_status="completed"
+                    fi
+                fi
+            done <<< "$_active_section"
+            # Finalize last initiative
+            if [[ "$_in_init" == "true" ]]; then
+                if [[ "$_init_status" == "active" ]]; then
+                    PLAN_ACTIVE_INITIATIVES=$((PLAN_ACTIVE_INITIATIVES + 1))
+                elif [[ "$_init_status" == "completed" ]]; then
+                    _completed_count=$((_completed_count + 1))
+                fi
+            fi
+        fi
+
+        # Phase counts within Active Initiatives section (for status display)
+        PLAN_TOTAL_PHASES=$(echo "$_active_section" | grep -cE '^\#\#\#\#\s+Phase\s+[0-9]' 2>/dev/null || echo "0")
+        PLAN_TOTAL_PHASES=${PLAN_TOTAL_PHASES:-0}
+        # Completed/in-progress counts: count phase-level Status lines only (#### Phase lines)
+        # We count all Status: lines in active section; initiative Status lines are also counted
+        # but that's acceptable for display purposes (plan-check uses PLAN_LIFECYCLE, not these)
+        PLAN_COMPLETED_PHASES=$(echo "$_active_section" | grep -cE '\*\*Status:\*\*\s*completed' 2>/dev/null || echo "0")
+        PLAN_COMPLETED_PHASES=${PLAN_COMPLETED_PHASES:-0}
+        PLAN_IN_PROGRESS_PHASES=$(echo "$_active_section" | grep -cE '\*\*Status:\*\*\s*in-progress' 2>/dev/null || echo "0")
+        PLAN_IN_PROGRESS_PHASES=${PLAN_IN_PROGRESS_PHASES:-0}
+
+        # Lifecycle: active if any initiative is active, dormant otherwise
+        if [[ "$PLAN_ACTIVE_INITIATIVES" -gt 0 ]]; then
+            PLAN_LIFECYCLE="active"
+        else
+            # All initiatives in Active section are completed, or section is empty
+            PLAN_LIFECYCLE="dormant"
+        fi
     else
-        PLAN_LIFECYCLE="active"
+        # Old format: ## Phase N: headers at document level (backward compatibility)
+        PLAN_TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$root/MASTER_PLAN.md" 2>/dev/null || true)
+        PLAN_TOTAL_PHASES=${PLAN_TOTAL_PHASES:-0}
+        PLAN_COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$root/MASTER_PLAN.md" 2>/dev/null || true)
+        PLAN_COMPLETED_PHASES=${PLAN_COMPLETED_PHASES:-0}
+        PLAN_IN_PROGRESS_PHASES=$(grep -cE '\*\*Status:\*\*\s*in-progress' "$root/MASTER_PLAN.md" 2>/dev/null || true)
+        PLAN_IN_PROGRESS_PHASES=${PLAN_IN_PROGRESS_PHASES:-0}
+
+        # Old format lifecycle: "dormant" replaces "completed" (DEC-PLAN-003)
+        if [[ "$PLAN_TOTAL_PHASES" -gt 0 && "$PLAN_COMPLETED_PHASES" -eq "$PLAN_TOTAL_PHASES" ]]; then
+            PLAN_LIFECYCLE="dormant"
+        else
+            PLAN_LIFECYCLE="active"
+        fi
     fi
 
     # Plan age
@@ -2307,6 +2396,143 @@ check_trace_count_canary() {
     echo "${current_count}|$(date +%s)" > "$canary_file" 2>/dev/null || true
 }
 
+# --- Initiative compression: move completed initiative to Completed Initiatives ---
+# @decision DEC-PLAN-006
+# @title compress_initiative() helper for initiative lifecycle transitions
+# @status accepted
+# @rationale When all phases of an initiative are done, Guardian (or the user) can call
+#   compress_initiative() to move it from ## Active Initiatives to ## Completed Initiatives.
+#   The compressed form is a table row: name, period, phase count, key decisions, archive ref.
+#   This keeps the living plan readable as initiatives accumulate. The function is a pure
+#   file transform — it reads MASTER_PLAN.md, removes the initiative block from the Active
+#   section, and appends a compressed row to the Completed section. Idempotent: if the
+#   initiative is already in Completed, it is not added again.
+#
+# Usage: compress_initiative <plan_file> <initiative_name>
+#   <plan_file>       — absolute path to MASTER_PLAN.md
+#   <initiative_name> — name exactly as it appears after "### Initiative: "
+#
+# Populates no globals. Modifies <plan_file> in place (atomic via temp file).
+compress_initiative() {
+    local plan_file="$1"
+    local init_name="$2"
+
+    [[ ! -f "$plan_file" ]] && return 1
+    [[ -z "$init_name" ]] && return 1
+
+    # Already compressed? If name appears in Completed Initiatives table, skip.
+    local _completed_section
+    _completed_section=$(awk '/^## Completed Initiatives/{f=1} f{print}' "$plan_file" 2>/dev/null || echo "")
+    if echo "$_completed_section" | grep -qF "| $init_name "; then
+        return 0  # idempotent
+    fi
+
+    # Extract the initiative block from Active Initiatives section
+    # Block starts at "### Initiative: <name>" and ends before the next "### Initiative:" or "## "
+    local _init_block=""
+    local _in_block=false
+    local _started_line
+    while IFS= read -r _line; do
+        if echo "$_line" | grep -qE "^### Initiative: ${init_name}$"; then
+            _in_block=true
+            _init_block="${_line}"$'\n'
+            continue
+        fi
+        if [[ "$_in_block" == "true" ]]; then
+            # Stop at next ### Initiative: or ## section header
+            if echo "$_line" | grep -qE '^### Initiative:|^## '; then
+                break
+            fi
+            _init_block+="${_line}"$'\n'
+        fi
+    done < "$plan_file"
+
+    if [[ -z "$_init_block" ]]; then
+        return 1  # initiative not found
+    fi
+
+    # Extract metadata from the block for the compressed row
+    local _started _goal _dec_ids _phase_count
+    _started=$(echo "$_init_block" | grep -iE '^\*\*Started:\*\*' | head -1 | sed 's/\*\*Started:\*\*[[:space:]]*//' | tr -d '\n')
+    _goal=$(echo "$_init_block" | grep -iE '^\*\*Goal:\*\*' | head -1 | sed 's/\*\*Goal:\*\*[[:space:]]*//' | tr -d '\n')
+    _phase_count=$(echo "$_init_block" | grep -cE '^#### Phase' 2>/dev/null || echo "0")
+    _dec_ids=$(echo "$_init_block" | grep -oE 'DEC-[A-Z]+-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//' || echo "—")
+    [[ -z "$_dec_ids" ]] && _dec_ids="—"
+    [[ -z "$_started" ]] && _started="unknown"
+
+    # Build compressed row
+    local _today
+    _today=$(date '+%Y-%m-%d' 2>/dev/null || echo "unknown")
+    local _period="${_started} — ${_today}"
+    local _compressed_row="| ${init_name} | ${_period} | ${_phase_count} | ${_dec_ids} | — |"
+
+    # Write updated file: remove initiative block from Active Initiatives, append to Completed
+    local _tmp_file
+    _tmp_file=$(mktemp "${plan_file}.compress.XXXXXX" 2>/dev/null) || return 1
+
+    local _in_active=false _in_target=false _skip_block=false
+    local _in_completed=false _completed_header_written=false
+    local _appended=false
+
+    while IFS= read -r _line; do
+        # Track section boundaries
+        if echo "$_line" | grep -qE '^## Active Initiatives'; then
+            _in_active=true
+            _in_completed=false
+            printf '%s\n' "$_line" >> "$_tmp_file"
+            continue
+        fi
+        if echo "$_line" | grep -qE '^## Completed Initiatives'; then
+            _in_active=false
+            _in_completed=true
+            printf '%s\n' "$_line" >> "$_tmp_file"
+            continue
+        fi
+        if echo "$_line" | grep -qE '^## ' && ! echo "$_line" | grep -qE '^## Active|^## Completed'; then
+            _in_active=false
+            _in_completed=false
+        fi
+
+        # In Active section: skip the target initiative block
+        if [[ "$_in_active" == "true" ]]; then
+            if echo "$_line" | grep -qE "^### Initiative: ${init_name}$"; then
+                _skip_block=true
+                continue
+            fi
+            if [[ "$_skip_block" == "true" ]]; then
+                # End of block: next ### Initiative: or ## section
+                if echo "$_line" | grep -qE '^### Initiative:|^## '; then
+                    _skip_block=false
+                    # Don't skip this line — it starts the next block
+                    printf '%s\n' "$_line" >> "$_tmp_file"
+                fi
+                # Skip all lines within the target block
+                continue
+            fi
+        fi
+
+        # In Completed section: append compressed row after the table header if not yet done
+        if [[ "$_in_completed" == "true" && "$_appended" == "false" ]]; then
+            printf '%s\n' "$_line" >> "$_tmp_file"
+            # After the header row (| --- | line), append the compressed row
+            if echo "$_line" | grep -qE '^\|[-| ]+\|'; then
+                printf '%s\n' "$_compressed_row" >> "$_tmp_file"
+                _appended=true
+            fi
+            continue
+        fi
+
+        printf '%s\n' "$_line" >> "$_tmp_file"
+    done < "$plan_file"
+
+    # If Completed section had no separator row yet, just append at end
+    if [[ "$_appended" == "false" ]]; then
+        printf '%s\n' "$_compressed_row" >> "$_tmp_file"
+    fi
+
+    mv "$_tmp_file" "$plan_file"
+}
+
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_doc_freshness get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace refinalize_trace refinalize_stale_traces rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions backup_trace_manifests check_trace_count_canary
+export -f get_git_state get_plan_status get_doc_freshness get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan compress_initiative init_trace detect_active_trace finalize_trace index_trace refinalize_trace refinalize_stale_traces rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions backup_trace_manifests check_trace_count_canary

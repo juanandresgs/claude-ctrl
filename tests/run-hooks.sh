@@ -1201,19 +1201,20 @@ cat > "$PL_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 PLAN_EOF
 
 # Source context-lib and test lifecycle detection
+# DEC-PLAN-003: old-format all-phases-done now returns "dormant" (replaces "completed")
 (
     source "$HOOKS_DIR/context-lib.sh"
     get_plan_status "$PL_TEST_DIR"
-    if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+    if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
         echo "COMPLETED_OK"
     else
         echo "COMPLETED_FAIL:$PLAN_LIFECYCLE"
     fi
 ) | while IFS= read -r line; do
     if [[ "$line" == "COMPLETED_OK" ]]; then
-        pass "lifecycle — completed plan detected"
+        pass "lifecycle — completed plan detected (dormant)"
     elif [[ "$line" == COMPLETED_FAIL* ]]; then
-        fail "lifecycle — completed plan" "expected 'completed', got: ${line#COMPLETED_FAIL:}"
+        fail "lifecycle — completed plan" "expected 'dormant', got: ${line#COMPLETED_FAIL:}"
     fi
 done
 
@@ -1513,6 +1514,7 @@ else
 fi
 
 # Test 6: finalize_trace marks crashed when no summary
+# DEC-OBS-OUTCOME-001: no artifacts dir → outcome=skipped (not crashed); status=crashed either way.
 output=$(
     source "$HOOKS_DIR/context-lib.sh"
     TRACE_STORE="$TR_TEST_DIR/traces"
@@ -1524,14 +1526,15 @@ output=$(
     crash_status=$(jq -r '.status' "$TRACE_STORE/$TRACE_ID/manifest.json" 2>/dev/null)
     crash_outcome=$(jq -r '.outcome' "$TRACE_STORE/$TRACE_ID/manifest.json" 2>/dev/null)
 
-    if [[ "$crash_status" == "crashed" && "$crash_outcome" == "crashed" ]]; then
+    # status must be "crashed"; outcome is "crashed" if artifacts dir exists, "skipped" if not
+    if [[ "$crash_status" == "crashed" && ( "$crash_outcome" == "crashed" || "$crash_outcome" == "skipped" ) ]]; then
         echo "CRASH_OK"
     else
         echo "CRASH_FAIL:status=$crash_status outcome=$crash_outcome"
     fi
 )
 if [[ "$output" == "CRASH_OK" ]]; then
-    pass "trace — no summary marks as crashed"
+    pass "trace — no summary marks as crashed (status=crashed, outcome=skipped)"
 else
     fail "trace — crash detection" "$output"
 fi
