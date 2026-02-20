@@ -81,7 +81,7 @@ project's institutional memory.
 ## Active Initiatives
 
 ### Initiative: v3 Hardening and Reliability
-**Status:** active
+**Status:** completed
 **Started:** 2026-02-19
 **Goal:** Make the existing enforcement layer bulletproof — no new features, just reliability
 
@@ -203,7 +203,7 @@ evidence. Each phase independently valuable and mergeable.
   that the shared version lacks. Port the robust version into context-lib.sh, then replace.
 
 #### Phase 6: Auto-Verify Pipeline Repair
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-V3-001, DEC-V3-004
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004, REQ-P0-009
 **Issues:** #129, #121, #122, #125, #130, #131, #132, #133
@@ -258,7 +258,7 @@ evidence. Each phase independently valuable and mergeable.
 
 
 #### Phase 7: Proof-of-Work Chain Completion
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-V3-003
 **Requirements:** REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008, REQ-P0-010
 **Issues:** #41, #42, #43, #44, #92, #134, #135, #136
@@ -356,7 +356,7 @@ Based on comprehensive codebase audit (2026-02-19):
 
 
 #### Phase 8: Shared Library Consolidation
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-V3-005
 **Requirements:** REQ-P1-001, REQ-P1-002, REQ-P1-003
 **Issues:** #7, #137
@@ -576,7 +576,7 @@ bounded under 250 lines. plan-check lifecycle gate allows work when active initi
   initiative from Active to Completed within the same plan file.
 
 #### Phase 1: Format Spec + Agent Update
-**Status:** in-progress
+**Status:** completed
 **Decision IDs:** DEC-PLAN-001, DEC-PLAN-002, DEC-PLAN-005
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-007
 **Issues:** #139
@@ -623,7 +623,7 @@ bounded under 250 lines. plan-check lifecycle gate allows work when active initi
 - 2026-02-19: DEC-PLAN-005 executed — migration performed by planner, v3 content preserved faithfully.
 
 #### Phase 2: Core Hook Updates
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-PLAN-003, DEC-PLAN-004, DEC-PLAN-006
 **Requirements:** REQ-P0-003, REQ-P0-004, REQ-P0-005, REQ-P0-006, REQ-P0-009
 **Issues:** #140
@@ -814,6 +814,7 @@ then Phase 3 (secondary hooks + docs), then Phase 4 (tests validate everything).
 | Initiative | Period | Phases | Key Decisions | Archived |
 |-----------|--------|--------|---------------|----------|
 | v2 Governance + Observability | 2026-02-18 to 2026-02-19 | 6 phases (0-5), all completed | DEC-GUARDIAN-001, DEC-PLANNER-STOP-001, DEC-OBS-P2-110, DEC-V2-005 | `archived-plans/2026-02-19_v2-governance-observability.md` |
+| v3 Hardening & Reliability | 2026-02-19 to 2026-02-20 | 3 phases (6-8), all completed | DEC-V3-001..005, DEC-TRACK-001, DEC-PROOF-PATH-003 | Inline (completed initiative above) |
 
 **v2 Summary:** Fused observability into governance layer. Session event logs, named checkpoints,
 cross-session learning, structured commit context, observatory pipeline, trace lifecycle
