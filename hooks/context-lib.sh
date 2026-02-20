@@ -461,16 +461,37 @@ get_doc_freshness() {
 }
 
 # --- Session tracking ---
+# @decision DEC-V3-005
+# @title Robust session file lookup with glob fallback and legacy name support
+# @status accepted
+# @rationale surface.sh had the most complete implementation: session-ID lookup,
+#   generic fallback, glob fallback, and legacy .session-decisions support. The
+#   shared library had only session-ID + generic fallback — missing the glob and
+#   legacy paths. Porting the full implementation here eliminates divergence and
+#   ensures all callers (compact-preserve.sh, surface.sh, session-summary.sh)
+#   use the same lookup order. Zero behavioral change for callers already using
+#   get_session_changes().
 get_session_changes() {
     local root="$1"
     SESSION_CHANGED_COUNT=0
     SESSION_FILE=""
 
+    local claude_dir="$root/.claude"
     local session_id="${CLAUDE_SESSION_ID:-}"
-    if [[ -n "$session_id" && -f "$root/.claude/.session-changes-${session_id}" ]]; then
-        SESSION_FILE="$root/.claude/.session-changes-${session_id}"
-    elif [[ -f "$root/.claude/.session-changes" ]]; then
-        SESSION_FILE="$root/.claude/.session-changes"
+
+    if [[ -n "$session_id" && -f "${claude_dir}/.session-changes-${session_id}" ]]; then
+        SESSION_FILE="${claude_dir}/.session-changes-${session_id}"
+    elif [[ -f "${claude_dir}/.session-changes" ]]; then
+        SESSION_FILE="${claude_dir}/.session-changes"
+    else
+        # Glob fallback for any session file (e.g. from a different session ID)
+        # shellcheck disable=SC2012
+        SESSION_FILE=$(ls "${claude_dir}/.session-changes"* 2>/dev/null | head -1 || echo "")
+        # Also check legacy name (.session-decisions)
+        if [[ -z "$SESSION_FILE" ]]; then
+            # shellcheck disable=SC2012
+            SESSION_FILE=$(ls "${claude_dir}/.session-decisions"* 2>/dev/null | head -1 || echo "")
+        fi
     fi
 
     if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then

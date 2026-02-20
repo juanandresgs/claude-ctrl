@@ -17,7 +17,8 @@ HOOK_INPUT=$(read_input)
 
 # --- Prevent re-firing loops ---
 # stop_hook_active is true if this Stop hook already ran and produced output
-STOP_ACTIVE=$(echo "$HOOK_INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
+STOP_ACTIVE=$(get_field '.stop_hook_active')
+STOP_ACTIVE="${STOP_ACTIVE:-false}"
 if [[ "$STOP_ACTIVE" == "true" ]]; then
     exit 0
 fi
@@ -26,22 +27,9 @@ fi
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
-# Find session tracking file (try session-scoped first, fall back to legacy)
-SESSION_ID="${CLAUDE_SESSION_ID:-}"
-if [[ -n "$SESSION_ID" && -f "${CLAUDE_DIR}/.session-changes-${SESSION_ID}" ]]; then
-    CHANGES="${CLAUDE_DIR}/.session-changes-${SESSION_ID}"
-elif [[ -f "${CLAUDE_DIR}/.session-changes" ]]; then
-    CHANGES="${CLAUDE_DIR}/.session-changes"
-else
-    # Glob fallback for any session file
-    # shellcheck disable=SC2012
-    CHANGES=$(ls "${CLAUDE_DIR}/.session-changes"* 2>/dev/null | head -1 || echo "")
-    # Also check legacy name
-    if [[ -z "$CHANGES" ]]; then
-        # shellcheck disable=SC2012
-        CHANGES=$(ls "${CLAUDE_DIR}/.session-decisions"* 2>/dev/null | head -1 || echo "")
-    fi
-fi
+# Find session tracking file via shared library (DEC-V3-005)
+get_session_changes "$PROJECT_ROOT"
+CHANGES="${SESSION_FILE:-}"
 
 # Exit silently if no changes tracked
 [[ -z "$CHANGES" || ! -f "$CHANGES" ]] && exit 0

@@ -20,7 +20,7 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
-PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
+PROMPT=$(get_field '.prompt')
 
 # Exit silently if no prompt — but first check if the approval gate is active.
 # If .proof-status is pending and the prompt is empty (e.g. image-only submit),

@@ -17,7 +17,7 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
-AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
+AGENT_TYPE=$(get_field '.agent_type')
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)

@@ -18,7 +18,7 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
-FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Only validate MASTER_PLAN.md
 if [[ ! "$FILE_PATH" =~ MASTER_PLAN\.md$ ]]; then

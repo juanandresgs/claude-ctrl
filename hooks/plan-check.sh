@@ -37,14 +37,14 @@ is_skippable_path "$FILE_PATH" && exit 0
 
 # --- Fast-mode: skip small/scoped changes ---
 # Edit tool is inherently scoped (substring replacement) — skip plan check
-TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+TOOL_NAME=$(get_field '.tool_name')
 if [[ "$TOOL_NAME" == "Edit" ]]; then
     exit 0
 fi
 
 # Write tool: skip small files (<20 lines) — trivial fixes don't need a plan
 if [[ "$TOOL_NAME" == "Write" ]]; then
-    CONTENT_LINES=$(echo "$HOOK_INPUT" | jq -r '.tool_input.content // ""' 2>/dev/null | wc -l | tr -d ' ')
+    CONTENT_LINES=$(get_field '.tool_input.content' | wc -l | tr -d ' ')
     if [[ "$CONTENT_LINES" -lt 20 ]]; then
         # Log the bypass so surface.sh can report unplanned small writes
         cat <<FAST_EOF

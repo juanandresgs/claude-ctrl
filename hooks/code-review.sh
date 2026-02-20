@@ -15,8 +15,8 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
-FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
-TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+FILE_PATH=$(get_field '.tool_input.file_path')
+TOOL_NAME=$(get_field '.tool_name')
 
 # Exit silently if no file path
 [[ -z "$FILE_PATH" ]] && exit 0

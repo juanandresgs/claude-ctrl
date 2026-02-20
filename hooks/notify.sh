@@ -19,9 +19,11 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
-NOTIFICATION_TYPE=$(echo "$HOOK_INPUT" | jq -r '.notification_type // empty' 2>/dev/null)
-MESSAGE=$(echo "$HOOK_INPUT" | jq -r '.message // "Claude Code needs attention"' 2>/dev/null)
-TITLE=$(echo "$HOOK_INPUT" | jq -r '.title // "Claude Code"' 2>/dev/null)
+NOTIFICATION_TYPE=$(get_field '.notification_type')
+MESSAGE=$(get_field '.message')
+MESSAGE="${MESSAGE:-Claude Code needs attention}"
+TITLE=$(get_field '.title')
+TITLE="${TITLE:-Claude Code}"
 
 # Only notify on macOS
 [[ "$(uname)" != "Darwin" ]] && exit 0

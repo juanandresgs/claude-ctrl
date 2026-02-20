@@ -39,7 +39,7 @@ TOOL_NAME=$(get_field '.tool_name')
 [[ "$TOOL_NAME" != "Skill" ]] && exit 0
 
 SKILL_NAME=$(get_field '.tool_input.skill')
-SKILL_ARGS=$(echo "$HOOK_INPUT" | jq -r '.tool_input.args // empty')
+SKILL_ARGS=$(get_field '.tool_input.args')
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 

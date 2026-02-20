@@ -19,7 +19,8 @@ source "$(dirname "$0")/source-lib.sh"
 HOOK_INPUT=$(read_input)
 
 # Prevent re-firing loops
-STOP_ACTIVE=$(echo "$HOOK_INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
+STOP_ACTIVE=$(get_field '.stop_hook_active')
+STOP_ACTIVE="${STOP_ACTIVE:-false}"
 if [[ "$STOP_ACTIVE" == "true" ]]; then
     exit 0
 fi
@@ -42,14 +43,9 @@ set +e
 backup_trace_manifests 2>/dev/null
 set -e
 
-# Find session tracking file
-SESSION_ID="${CLAUDE_SESSION_ID:-}"
-CHANGES=""
-if [[ -n "$SESSION_ID" && -f "${CLAUDE_DIR}/.session-changes-${SESSION_ID}" ]]; then
-    CHANGES="${CLAUDE_DIR}/.session-changes-${SESSION_ID}"
-elif [[ -f "${CLAUDE_DIR}/.session-changes" ]]; then
-    CHANGES="${CLAUDE_DIR}/.session-changes"
-fi
+# Find session tracking file via shared library (DEC-V3-005)
+get_session_changes "$PROJECT_ROOT"
+CHANGES="${SESSION_FILE:-}"
 
 # No tracking file → no summary needed
 if [[ -z "$CHANGES" || ! -f "$CHANGES" ]]; then
@@ -61,7 +57,8 @@ TOTAL_FILES=$(sort -u "$CHANGES" 2>/dev/null | wc -l | tr -d ' ') || TOTAL_FILES
 [[ "$TOTAL_FILES" -eq 0 ]] && exit 0
 
 # Count source vs non-source
-SOURCE_EXTS='(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)'
+# Use shared SOURCE_EXTENSIONS from context-lib.sh (DEC-V3-005)
+SOURCE_EXTS="($SOURCE_EXTENSIONS)"
 SOURCE_COUNT=$(sort -u "$CHANGES" 2>/dev/null | grep -cE "\\.${SOURCE_EXTS}$") || SOURCE_COUNT=0
 CONFIG_COUNT=$(( TOTAL_FILES - SOURCE_COUNT ))
 
