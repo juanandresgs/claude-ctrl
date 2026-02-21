@@ -13,8 +13,8 @@ Create, list, close, and triage todos (GitHub Issues labeled `claude-todo`).
 **IMPORTANT:** For read-only list commands, redirect `--json` output to a scratchpad file so the user never sees raw JSON in the Bash tool output. Then use the Read tool to silently parse the file and format a clean table.
 
 Pattern:
-1. `mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list <flags> --json > "$SCRATCHPAD/backlog.json"` (Bash — produces no visible output)
-2. Read `$SCRATCHPAD/backlog.json` (Read tool — silent ingestion)
+1. `mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list <flags> --json > "~/.claude/tmp/scratchpad/backlog.json"` (Bash — produces no visible output)
+2. Read `~/.claude/tmp/scratchpad/backlog.json` (Read tool — silent ingestion)
 3. Format the parsed data into the display table below
 
 Write commands (add, done) stay as-is — their confirmation output is useful raw. The `stale` command doesn't support `--json` — its raw output is short and already well-formatted, so run it directly.
@@ -25,9 +25,9 @@ Parse `$ARGUMENTS` to determine the action:
 
 ### No arguments → List all todos
 ```bash
-mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list --all --json > "$SCRATCHPAD/backlog.json"
+mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list --all --json > "~/.claude/tmp/scratchpad/backlog.json"
 ```
-Read `$SCRATCHPAD/backlog.json`, then format into the markdown table described in Display Format below.
+Read `~/.claude/tmp/scratchpad/backlog.json`, then format into the markdown table described in Display Format below.
 
 ### First word is `done` → Close a todo
 ```bash
@@ -42,7 +42,7 @@ Extract the issue number from the remaining arguments. If the user specifies `--
 Show stale items and ask the user which to close, keep, or reprioritize.
 
 ### First word is `review` → Interactive triage
-1. Run `mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list --all --json > "$SCRATCHPAD/backlog.json"`, then Read the file.
+1. Run `mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list --all --json > "~/.claude/tmp/scratchpad/backlog.json"`, then Read the file.
 2. Parse the JSON.
 3. **Cross-reference scan:** Before presenting items, identify semantically related issues across both scopes (project and global). Flag pairs/clusters that should be linked or merged.
 4. Present each todo one by one, noting any related issues found
@@ -51,11 +51,11 @@ Show stale items and ask the user which to close, keep, or reprioritize.
 
 ### Argument is `--project`, `--global`, or `--config` alone → Scoped listing
 ```bash
-mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list --project --json > "$SCRATCHPAD/backlog.json"
-mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list --global --json > "$SCRATCHPAD/backlog.json"
-mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list --config --json > "$SCRATCHPAD/backlog.json"
+mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list --project --json > "~/.claude/tmp/scratchpad/backlog.json"
+mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list --global --json > "~/.claude/tmp/scratchpad/backlog.json"
+mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list --config --json > "~/.claude/tmp/scratchpad/backlog.json"
 ```
-Read `$SCRATCHPAD/backlog.json`, then format into the markdown table described in Display Format below.
+Read `~/.claude/tmp/scratchpad/backlog.json`, then format into the markdown table described in Display Format below.
 
 ### First word is `group` → Add component label to issues
 ```bash
@@ -70,7 +70,7 @@ Labels the specified issues with `component:<name>`. Example: `group auth 31 28`
 
 ### Argument is `--grouped` → Grouped listing by component
 ```bash
-mkdir -p "$SCRATCHPAD" && ~/.claude/scripts/todo.sh list --all --grouped > "$SCRATCHPAD/backlog-grouped.txt"
+mkdir -p "~/.claude/tmp/scratchpad" && ~/.claude/scripts/todo.sh list --all --grouped > "~/.claude/tmp/scratchpad/backlog-grouped.txt"
 ```
 Read the file and present to the user. Issues are grouped by `component:*` label with an "ungrouped" bucket for untagged issues. Useful for `review --grouped` to triage one component at a time.
 
