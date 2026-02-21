@@ -1424,13 +1424,14 @@ else
     fail "trace — manifest schema" "$output"
 fi
 
-# Test 3: init_trace creates active marker
+# Test 3: init_trace creates active marker (project-scoped since DEC-ISOLATION-002)
 output=$(
     source "$HOOKS_DIR/context-lib.sh"
     TRACE_STORE="$TR_TEST_DIR/traces"
     CLAUDE_SESSION_ID="test-session-123"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
-    marker="$TRACE_STORE/.active-test-agent-test-session-123"
+    phash=$(project_hash "$TR_TEST_DIR")
+    marker="$TRACE_STORE/.active-test-agent-test-session-123-${phash}"
     if [[ -f "$marker" ]]; then
         marker_content=$(cat "$marker")
         if [[ "$marker_content" == "$TRACE_ID" ]]; then
@@ -1439,7 +1440,7 @@ output=$(
             echo "MARKER_FAIL:content mismatch"
         fi
     else
-        echo "MARKER_FAIL:marker not found"
+        echo "MARKER_FAIL:marker not found (expected $marker)"
     fi
 )
 if [[ "$output" == "MARKER_OK" ]]; then

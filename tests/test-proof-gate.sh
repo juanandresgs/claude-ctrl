@@ -60,22 +60,30 @@ fi
 # These tests validate the Guardian gate behavior in task-track.sh
 
 # Helper to run task-track.sh with mock input
+# Since DEC-ISOLATION-001, Gate A reads the project-scoped .proof-status-{phash} file.
+# This helper writes to the scoped filename so Gate A finds it correctly.
 run_task_track() {
     local agent_type="$1"
-    local proof_file="$2"  # Path to .proof-status or "missing"
+    local proof_file="$2"  # Proof-status content or "missing"
 
     # Create a temp git repo (not meta-repo)
-    local TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-repo-XXXXXX")
+    local TEMP_REPO
+    TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-repo-XXXXXX")
     git -C "$TEMP_REPO" init > /dev/null 2>&1
     mkdir -p "$TEMP_REPO/.claude"
 
-    # Set up .proof-status if not missing
+    # Compute project hash for this temp repo (matches what task-track.sh will compute)
+    local PHASH
+    PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+
+    # Set up .proof-status-{phash} (scoped) if not missing
     if [[ "$proof_file" != "missing" ]]; then
-        echo "$proof_file" > "$TEMP_REPO/.claude/.proof-status"
+        echo "$proof_file" > "$TEMP_REPO/.claude/.proof-status-${PHASH}"
     fi
 
     # Mock input JSON
-    local INPUT_JSON=$(cat <<EOF
+    local INPUT_JSON
+    INPUT_JSON=$(cat <<EOF
 {
   "tool_name": "Task",
   "tool_input": {
@@ -135,10 +143,12 @@ else
 fi
 
 # --- Test 10: task-track.sh Gate C (Implementer activation) ---
+# Since DEC-ISOLATION-001, Gate C writes .proof-status-{phash} (scoped).
 run_test "Gate C: Implementer dispatch creates needs-verification"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-impl-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
+IMPL_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
 
 INPUT_JSON=$(cat <<'EOF'
 {
@@ -155,39 +165,44 @@ cd "$TEMP_REPO" && \
     CLAUDE_PROJECT_DIR="$TEMP_REPO" \
     echo "$INPUT_JSON" | bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
 
-if [[ -f "$TEMP_REPO/.claude/.proof-status" ]]; then
-    STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status")
+# Check scoped file (.proof-status-{phash}) written by Gate C.2
+if [[ -f "$TEMP_REPO/.claude/.proof-status-${IMPL_PHASH}" ]]; then
+    STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status-${IMPL_PHASH}")
     if [[ "$STATUS" == "needs-verification" ]]; then
         pass_test
     else
-        fail_test "Created .proof-status with wrong status: $STATUS"
+        fail_test "Created .proof-status-${IMPL_PHASH} with wrong status: $STATUS"
     fi
 else
-    fail_test "Implementer did not create .proof-status"
+    fail_test "Implementer did not create .proof-status-${IMPL_PHASH} (scoped)"
 fi
 
+cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 # --- Test 11: gate activation only when missing ---
+# Since DEC-ISOLATION-001, check uses scoped .proof-status-{phash}.
 run_test "Gate C: Implementer does not overwrite existing .proof-status"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-exist-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
-echo "pending|99999" > "$TEMP_REPO/.claude/.proof-status"
+EXIST_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+echo "pending|99999" > "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}"
 
 cd "$TEMP_REPO" && \
     CLAUDE_PROJECT_DIR="$TEMP_REPO" \
     echo "$INPUT_JSON" | bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
 
-STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status")
-TIMESTAMP=$(cut -d'|' -f2 "$TEMP_REPO/.claude/.proof-status")
+STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}")
+TIMESTAMP=$(cut -d'|' -f2 "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}")
 
 if [[ "$STATUS" == "pending" && "$TIMESTAMP" == "99999" ]]; then
     pass_test
 else
-    fail_test "Implementer overwrote existing .proof-status"
+    fail_test "Implementer overwrote existing .proof-status-${EXIST_PHASH}"
 fi
 
+cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 # --- Tests 12-15: guard.sh Check 6-7 (test-status gate inversion) ---
@@ -268,20 +283,28 @@ fi
 
 # --- Tests 16-17: guard.sh Check 8 (proof-status gate inversion) ---
 
-# Helper to run guard.sh with proof-status mock
+# Helper to run guard.sh with proof-status mock.
+# Since DEC-ISOLATION-001, guard.sh Check 8 reads the project-scoped
+# .proof-status-{phash} file first. Write to the scoped file so the check finds it.
 run_guard_proof() {
     local command="$1"
-    local proof_file="$2"  # Path to .proof-status or "missing"
+    local proof_file="$2"  # Proof-status content or "missing"
 
-    local TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-proof-XXXXXX")
+    local TEMP_REPO
+    TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-proof-XXXXXX")
     git -C "$TEMP_REPO" init > /dev/null 2>&1
     mkdir -p "$TEMP_REPO/.claude"
 
+    local PHASH
+    PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+
     if [[ "$proof_file" != "missing" ]]; then
-        echo "$proof_file" > "$TEMP_REPO/.claude/.proof-status"
+        # Write scoped file (primary) so guard.sh Check 8 finds it
+        echo "$proof_file" > "$TEMP_REPO/.claude/.proof-status-${PHASH}"
     fi
 
-    local INPUT_JSON=$(cat <<EOF
+    local INPUT_JSON
+    INPUT_JSON=$(cat <<EOF
 {
   "tool_name": "Bash",
   "tool_input": {
@@ -323,11 +346,15 @@ fi
 
 # --- Tests 18-20: guard.sh Check 10 (block .proof-status deletion) ---
 
+# Check 10 tests: guard.sh reads the scoped .proof-status-{phash} file (DEC-ISOLATION-001).
+# The rm command targets the unscoped filename (pattern match in guard.sh detects it),
+# but the status check reads the scoped file. Write status to the scoped file.
 run_test "Check 10: Block rm .proof-status when needs-verification"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-del-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
-echo "needs-verification|12345" > "$TEMP_REPO/.claude/.proof-status"
+C10_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+echo "needs-verification|12345" > "$TEMP_REPO/.claude/.proof-status-${C10_PHASH}"
 
 INPUT_JSON=$(cat <<EOF
 {
@@ -348,14 +375,15 @@ else
     fail_test "Deletion allowed when needs-verification"
 fi
 
-cd "$PROJECT_ROOT"  # Ensure we're not in TEMP_REPO before deleting
+cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 run_test "Check 10: Block rm .proof-status when pending"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-pend-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
-echo "pending|12345" > "$TEMP_REPO/.claude/.proof-status"
+C10_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+echo "pending|12345" > "$TEMP_REPO/.claude/.proof-status-${C10_PHASH}"
 
 INPUT_JSON=$(cat <<EOF
 {
@@ -376,14 +404,15 @@ else
     fail_test "Deletion allowed when pending"
 fi
 
-cd "$PROJECT_ROOT"  # Ensure we're not in TEMP_REPO before deleting
+cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 run_test "Check 10: Allow rm .proof-status when verified"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-ver-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
-echo "verified|12345" > "$TEMP_REPO/.claude/.proof-status"
+C10_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+echo "verified|12345" > "$TEMP_REPO/.claude/.proof-status-${C10_PHASH}"
 
 INPUT_JSON=$(cat <<EOF
 {
@@ -404,7 +433,7 @@ else
     pass_test
 fi
 
-cd "$PROJECT_ROOT"  # Ensure we're not in TEMP_REPO before deleting
+cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 # --- Summary ---

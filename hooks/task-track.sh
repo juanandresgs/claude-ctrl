@@ -50,9 +50,19 @@ EOF
 # --- Gate A: Guardian requires .proof-status = verified (when active) ---
 # Gate is only active when .proof-status file exists (created by implementer dispatch).
 # Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
+# Checks project-scoped file first, falls back to unscoped for backward compat.
 if [[ "$AGENT_TYPE" == "guardian" ]]; then
-    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
-    if [[ -f "$PROOF_FILE" ]]; then
+    _PHASH=$(project_hash "$PROJECT_ROOT")
+    SCOPED_PROOF_FILE="${CLAUDE_DIR}/.proof-status-${_PHASH}"
+    LEGACY_PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    if [[ -f "$SCOPED_PROOF_FILE" ]]; then
+        PROOF_FILE="$SCOPED_PROOF_FILE"
+    elif [[ -f "$LEGACY_PROOF_FILE" ]]; then
+        PROOF_FILE="$LEGACY_PROOF_FILE"
+    else
+        PROOF_FILE=""
+    fi
+    if [[ -n "$PROOF_FILE" && -f "$PROOF_FILE" ]]; then
         PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
         if [[ "$PROOF_STATUS" != "verified" ]]; then
             deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
@@ -163,15 +173,18 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         fi
     fi
 
-    # Gate C.2: Activate proof gate — creates .proof-status = needs-verification.
+    # Gate C.2: Activate proof gate — creates .proof-status-{phash} = needs-verification.
     # This activates Gate A, blocking Guardian until verification completes.
-    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    # Writes to project-scoped file to prevent cross-project contamination.
+    _PHASH=$(project_hash "$PROJECT_ROOT")
+    PROOF_FILE="${CLAUDE_DIR}/.proof-status-${_PHASH}"
     if [[ ! -f "$PROOF_FILE" ]]; then
         mkdir -p "$(dirname "$PROOF_FILE")"
         echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
     fi
 
     # Write breadcrumb: detect the most recent worktree (excluding main).
+    # Uses project-scoped file name to prevent cross-project contamination.
     # git worktree list --porcelain outputs blocks separated by blank lines;
     # the first block is always the main worktree. We capture the last
     # non-main worktree path seen in the output.
@@ -179,8 +192,8 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         | awk -v main="$PROJECT_ROOT" '/^worktree /{path=$2} path && path != main {last=path} END{print last}' \
         || echo "")
     if [[ -n "$ACTIVE_WORKTREE" && -d "$ACTIVE_WORKTREE" ]]; then
-        echo "$ACTIVE_WORKTREE" > "${CLAUDE_DIR}/.active-worktree-path"
-        log_info "TASK-TRACK" "Breadcrumb written: active worktree is $ACTIVE_WORKTREE"
+        echo "$ACTIVE_WORKTREE" > "${CLAUDE_DIR}/.active-worktree-path-${_PHASH}"
+        log_info "TASK-TRACK" "Breadcrumb written (scoped): active worktree is $ACTIVE_WORKTREE"
     fi
 fi
 

@@ -492,7 +492,7 @@ test_plan_check_blocks_dormant() {
     result=$(printf '%s\n' $(seq 1 25) | \
         jq -Rs --arg path "$dir/src/main.sh" \
             '{"tool_name":"Write","tool_input":{"file_path":$path,"content":.}}' | \
-        CLAUDE_DIR="$dir/.claude" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null || echo "")
+        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -qiE '"permissionDecision": *"deny"'; then

@@ -107,11 +107,20 @@ if [[ -f "$SESSION_EVENT_FILE" && -s "$SESSION_EVENT_FILE" ]]; then
         FRICTION_JSON="$TEST_FAIL_MSG"
     fi
 
-    # Determine session outcome from proof-status or test-status
+    # Determine session outcome from proof-status or test-status.
+    # Check scoped proof-status first, fall back to legacy for backward compat.
     OUTCOME="unknown"
-    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    _SES_PHASH=$(project_hash "$PROJECT_ROOT")
+    _SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_SES_PHASH}"
+    if [[ -f "$_SCOPED_PROOF" ]]; then
+        PROOF_FILE="$_SCOPED_PROOF"
+    elif [[ -f "${CLAUDE_DIR}/.proof-status" ]]; then
+        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    else
+        PROOF_FILE=""
+    fi
     TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
-    if [[ -f "$PROOF_FILE" ]]; then
+    if [[ -n "$PROOF_FILE" && -f "$PROOF_FILE" ]]; then
         PS_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
         [[ "$PS_VAL" == "verified" ]] && OUTCOME="committed"
     fi
@@ -210,7 +219,7 @@ rm -f "${CLAUDE_DIR}/.mock-gate-strikes"
 rm -f "${CLAUDE_DIR}/.track."*
 rm -f "${CLAUDE_DIR}/.skill-result"*
 rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
-rm -f "${CLAUDE_DIR}/.active-worktree-path"
+rm -f "${CLAUDE_DIR}/.active-worktree-path"*
 rm -f "${CLAUDE_DIR}/.cwd-recovery-needed"
 
 # DO NOT delete (cross-session state):

@@ -123,8 +123,17 @@ case "$AGENT_TYPE" in
         fi
         CONTEXT_PARTS+=("After tests pass, return to orchestrator. The tester agent handles live verification — you do NOT demo or write .proof-status.")
         # Inject current proof status with contextual guidance (W7-2: #42 residual, #134)
-        _PROOF_FILE="${CLAUDE_DIR}/.proof-status"
-        if [[ -f "$_PROOF_FILE" ]]; then
+        # Check project-scoped proof-status file first, fall back to legacy for backward compat.
+        _PROOF_PHASH=$(project_hash "$PROJECT_ROOT")
+        _PROOF_SCOPED="${CLAUDE_DIR}/.proof-status-${_PROOF_PHASH}"
+        if [[ -f "$_PROOF_SCOPED" ]]; then
+            _PROOF_FILE="$_PROOF_SCOPED"
+        elif [[ -f "${CLAUDE_DIR}/.proof-status" ]]; then
+            _PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+        else
+            _PROOF_FILE=""
+        fi
+        if [[ -n "$_PROOF_FILE" && -f "$_PROOF_FILE" ]]; then
             _PROOF_VAL=$(cut -d'|' -f1 "$_PROOF_FILE" 2>/dev/null || echo "")
             case "$_PROOF_VAL" in
                 verified)
@@ -150,8 +159,24 @@ case "$AGENT_TYPE" in
         # Inject latest implementer trace path
         IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
         if [[ -z "$IMPL_TRACE" ]]; then
-            # Try finding most recent completed implementer trace
-            IMPL_TRACE=$(ls -t "${TRACE_STORE}"/implementer-*/manifest.json 2>/dev/null | head -1 | xargs -I{} dirname {} 2>/dev/null | xargs basename 2>/dev/null || echo "")
+            # Try finding most recent completed implementer trace for THIS project only.
+            # Critical fix: the original ls -t was unscoped — it returned the most recent
+            # implementer trace globally, regardless of project. Now validates manifest.project.
+            # @decision DEC-ISOLATION-007
+            # @title subagent-start ls -t fallback validates manifest project field
+            # @status accepted
+            # @rationale Without project validation, tester agents on Project B would receive
+            #   the implementer trace context from Project A (the most recently modified trace).
+            #   This causes the tester to verify the wrong code. Fix: iterate manifests sorted
+            #   by mtime, validate .project == PROJECT_ROOT, use the first match.
+            for _mf in $(ls -t "${TRACE_STORE}"/implementer-*/manifest.json 2>/dev/null); do
+                [[ -f "$_mf" ]] || continue
+                _proj=$(jq -r '.project // empty' "$_mf" 2>/dev/null)
+                if [[ "$_proj" == "$PROJECT_ROOT" ]]; then
+                    IMPL_TRACE=$(basename "$(dirname "$_mf")")
+                    break
+                fi
+            done
         fi
         if [[ -n "$IMPL_TRACE" ]]; then
             CONTEXT_PARTS+=("Implementer trace: ${TRACE_STORE}/${IMPL_TRACE} — read summary.md and artifacts/ to understand what was built.")

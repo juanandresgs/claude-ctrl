@@ -455,6 +455,17 @@ if [[ -f "$REAL_PROOF_FILE" ]]; then
     rm -f "$REAL_PROOF_FILE"
 fi
 
+# Also clear the legacy .proof-status so the backward-compat fallback in
+# resolve_proof_file() doesn't return a stale "verified" from a prior test.
+# DEC-ISOLATION-001: resolve_proof_file() falls back to .proof-status when no
+# scoped file exists — the dedup guard in check-tester.sh would fire on it.
+_LEGACY_PROOF="$(dirname "$REAL_PROOF_FILE")/.proof-status"
+_SAVED_LEGACY=""
+if [[ -f "$_LEGACY_PROOF" ]]; then
+    _SAVED_LEGACY=$(cat "$_LEGACY_PROOF")
+    rm -f "$_LEGACY_PROOF"
+fi
+
 # Response WITHOUT AUTOVERIFY signal — so auto-verify doesn't fire.
 # The safety net should still write "pending".
 SN_RESP_TEXT="Tester verification complete. Feature works correctly. Confidence: **High**."
@@ -467,11 +478,17 @@ if [[ -f "$REAL_PROOF_FILE" ]]; then
     PROOF_AFTER=$(cut -d'|' -f1 "$REAL_PROOF_FILE" 2>/dev/null || echo "")
 fi
 
-# Restore
+# Restore scoped file
 if [[ -n "$SAVED_PROOF" ]]; then
     echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
 else
     rm -f "$REAL_PROOF_FILE"
+fi
+# Restore legacy file
+if [[ -n "$_SAVED_LEGACY" ]]; then
+    echo "$_SAVED_LEGACY" > "$_LEGACY_PROOF"
+else
+    rm -f "$_LEGACY_PROOF"
 fi
 
 if [[ "$PROOF_AFTER" == "pending" ]]; then
@@ -726,15 +743,30 @@ cat > "${FAKE_TRACE_DIR}/summary.md" <<'SUMMARY_EOF'
 AUTOVERIFY: CLEAN
 SUMMARY_EOF
 
-# Write a basic manifest so detect_active_trace can find this trace
+# Resolve the PROJECT_ROOT that check-tester.sh will compute (via detect_project_root →
+# git rev-parse --show-toplevel). From a worktree CWD, --show-toplevel returns the worktree
+# path (not the main repo root), which is exactly what CLAUDE_PROJECT_DIR=unset detect_project_root()
+# returns. The manifest.project and phash must match this value for tier-1/tier-2 detection.
+T15_PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PROJECT_ROOT")
+T15_PROJECT_ROOT="${T15_PROJECT_ROOT%/}"
+
+# Write a basic manifest so detect_active_trace can find this trace.
+# The "project" field must match the PROJECT_ROOT check-tester.sh will compute —
+# otherwise the tier-2 validation in detect_active_trace rejects this marker.
 SESSION_ID_FOR_TEST="${CLAUDE_SESSION_ID:-test-session-$$}"
 cat > "${FAKE_TRACE_DIR}/manifest.json" <<MANIFEST_EOF
-{"version":"1","trace_id":"${FAKE_TRACE_ID}","agent_type":"tester","session_id":"${SESSION_ID_FOR_TEST}","project":"/Users/turla/.claude","status":"active","started_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"version":"1","trace_id":"${FAKE_TRACE_ID}","agent_type":"tester","session_id":"${SESSION_ID_FOR_TEST}","project":"${T15_PROJECT_ROOT}","status":"active","started_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 MANIFEST_EOF
 
-# Create the active marker so detect_active_trace returns this trace
+# Create BOTH the scoped and old-format active markers.
+# detect_active_trace() tier-1 checks the scoped marker (.active-tester-{session}-{phash});
+# tier-2 checks the old-format marker and validates manifest.project.
+# Creating both ensures the test works whether tier-1 or tier-2 succeeds first.
+_T15_PHASH=$(echo "$T15_PROJECT_ROOT" | shasum -a 256 | cut -c1-8)
 ACTIVE_MARKER="${TRACE_STORE_PATH}/.active-tester-${SESSION_ID_FOR_TEST}"
+SCOPED_MARKER="${TRACE_STORE_PATH}/.active-tester-${SESSION_ID_FOR_TEST}-${_T15_PHASH}"
 echo "$FAKE_TRACE_ID" > "$ACTIVE_MARKER"
+echo "$FAKE_TRACE_ID" > "$SCOPED_MARKER"
 
 # Empty last_assistant_message — should trigger fallback to summary.md
 MOCK_JSON_FALLBACK=$(jq -n '{"last_assistant_message": ""}')
@@ -748,8 +780,8 @@ HOOK_OUTPUT_FB=$(cat "$_T15_STDOUT")
 HOOK_STDERR_FB=$(cat "$_T15_STDERR")
 rm -f "$_T15_STDOUT" "$_T15_STDERR"
 
-# Clean up fake trace and marker (marker may already be gone if finalize_trace ran)
-rm -f "$ACTIVE_MARKER"
+# Clean up fake trace and both markers (may already be gone if finalize_trace ran)
+rm -f "$ACTIVE_MARKER" "$SCOPED_MARKER"
 rm -rf "$FAKE_TRACE_DIR"
 
 # Read proof status

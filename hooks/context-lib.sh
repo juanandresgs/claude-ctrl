@@ -46,6 +46,14 @@
 #                                      DRIFT_MISSING_DECISIONS,
 #                                      DRIFT_LAST_AUDIT_EPOCH
 
+# project_hash — compute deterministic 8-char hash of a project root path.
+# Duplicated from log.sh so context-lib.sh can be sourced independently.
+# Both definitions are identical; double-sourcing is safe (last definition wins).
+# @decision DEC-ISOLATION-001 (see log.sh for full rationale)
+project_hash() {
+    echo "${1:?project_hash requires a path argument}" | shasum -a 256 | cut -c1-8
+}
+
 # --- Git state ---
 get_git_state() {
     local root="$1"
@@ -1086,8 +1094,17 @@ init_trace() {
 }
 MANIFEST
 
-    # Active marker for detection
-    echo "${trace_id}" > "${TRACE_STORE}/.active-${agent_type}-${session_id}"
+    # Active marker for detection — scoped to project hash to prevent cross-project contamination
+    # @decision DEC-ISOLATION-002
+    # @title Project-scoped active markers in init_trace
+    # @status accepted
+    # @rationale Without project scoping, a marker from Project A blocks or misleads
+    #   detection logic in Project B sessions. The phash suffix isolates each project's
+    #   markers. detect_active_trace() uses three-tier lookup: scoped first, old format
+    #   with manifest validation, then ls -t fallback with manifest validation.
+    local phash
+    phash=$(project_hash "$project_root")
+    echo "${trace_id}" > "${TRACE_STORE}/.active-${agent_type}-${session_id}-${phash}"
 
     echo "${trace_id}"
 }
@@ -1106,22 +1123,51 @@ detect_active_trace() {
     #   exist, we iterate all candidate markers and read the manifest session_id to
     #   find the one belonging to our session. Only when CLAUDE_SESSION_ID is
     #   unavailable do we fall back to ls -t (with a warning). Issue #101.
+    #
+    # @decision DEC-ISOLATION-003
+    # @title Three-tier project-scoped lookup in detect_active_trace
+    # @status accepted
+    # @rationale Adding project hash to markers (DEC-ISOLATION-002) requires updating
+    #   detection to find the new format first. Three tiers ensure backward compat:
+    #   1. Scoped: .active-TYPE-SESSION-PHASH (new format, exact match for this project)
+    #   2. Old format: .active-TYPE-SESSION — validate manifest.project == project_root
+    #   3. ls -t fallback (no session ID) — validate manifest.project == project_root
+    #   This prevents cross-project contamination while supporting pre-migration markers.
     local project_root="$1"
     local agent_type="${2:-unknown}"
     local session_id="${CLAUDE_SESSION_ID:-}"
+    local phash
+    phash=$(project_hash "$project_root")
 
-    # Primary path: session-specific marker (named .active-TYPE-SESSION_ID)
+    # Primary path: session-specific scoped marker (new format: .active-TYPE-SESSION-PHASH)
     if [[ -n "$session_id" ]]; then
-        local marker="${TRACE_STORE}/.active-${agent_type}-${session_id}"
-        if [[ -f "$marker" ]]; then
-            cat "$marker"
+        local scoped_marker="${TRACE_STORE}/.active-${agent_type}-${session_id}-${phash}"
+        if [[ -f "$scoped_marker" ]]; then
+            cat "$scoped_marker"
             return 0
         fi
 
-        # Session-specific marker not found. Iterate all markers for this agent type
-        # and validate each one against the manifest session_id. This handles the
-        # case where the marker was written with a different session_id format but
-        # the manifest correctly records the session_id we're looking for.
+        # Secondary path: old format marker .active-TYPE-SESSION (no phash)
+        # Validate that the manifest project matches our project_root.
+        local old_marker="${TRACE_STORE}/.active-${agent_type}-${session_id}"
+        if [[ -f "$old_marker" ]]; then
+            local old_trace_id
+            old_trace_id=$(cat "$old_marker" 2>/dev/null)
+            if [[ -n "$old_trace_id" ]]; then
+                local old_manifest="${TRACE_STORE}/${old_trace_id}/manifest.json"
+                if [[ -f "$old_manifest" ]]; then
+                    local manifest_project
+                    manifest_project=$(jq -r '.project // empty' "$old_manifest" 2>/dev/null)
+                    if [[ "$manifest_project" == "$project_root" ]]; then
+                        echo "$old_trace_id"
+                        return 0
+                    fi
+                fi
+            fi
+        fi
+
+        # Tertiary path: iterate all markers for this agent type.
+        # Validate both session_id AND project from manifest.
         local candidate
         for candidate in "${TRACE_STORE}/.active-${agent_type}-"*; do
             [[ -f "$candidate" ]] || continue
@@ -1130,29 +1176,38 @@ detect_active_trace() {
             [[ -n "$candidate_trace_id" ]] || continue
             local candidate_manifest="${TRACE_STORE}/${candidate_trace_id}/manifest.json"
             [[ -f "$candidate_manifest" ]] || continue
-            local manifest_session
+            local manifest_session manifest_project
             manifest_session=$(jq -r '.session_id // empty' "$candidate_manifest" 2>/dev/null)
-            if [[ "$manifest_session" == "$session_id" ]]; then
+            manifest_project=$(jq -r '.project // empty' "$candidate_manifest" 2>/dev/null)
+            if [[ "$manifest_session" == "$session_id" && "$manifest_project" == "$project_root" ]]; then
                 echo "$candidate_trace_id"
                 return 0
             fi
         done
 
-        # No marker matched our session_id — return not found
+        # No marker matched our session_id and project — return not found
         return 1
     fi
 
     # CLAUDE_SESSION_ID is unavailable: fall back to ls -t (most recent marker).
+    # Validate manifest project to avoid cross-project contamination.
     # Log a warning so operators know the session-safe path was bypassed.
-    # This is the original behavior, preserved for backward compatibility when
-    # session IDs are not injected (e.g., legacy hook invocations).
-    echo "WARNING: detect_active_trace: CLAUDE_SESSION_ID not set — using ls -t fallback (glob race possible)" >&2
-    local latest
-    latest=$(ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null | head -1)
-    if [[ -n "$latest" && -f "$latest" ]]; then
-        cat "$latest"
-        return 0
-    fi
+    echo "WARNING: detect_active_trace: CLAUDE_SESSION_ID not set — using ls -t fallback with project validation" >&2
+    local mf_path
+    for mf_path in $(ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null); do
+        [[ -f "$mf_path" ]] || continue
+        local fallback_trace_id
+        fallback_trace_id=$(cat "$mf_path" 2>/dev/null)
+        [[ -n "$fallback_trace_id" ]] || continue
+        local fallback_manifest="${TRACE_STORE}/${fallback_trace_id}/manifest.json"
+        [[ -f "$fallback_manifest" ]] || continue
+        local fb_project
+        fb_project=$(jq -r '.project // empty' "$fallback_manifest" 2>/dev/null)
+        if [[ "$fb_project" == "$project_root" ]]; then
+            echo "$fallback_trace_id"
+            return 0
+        fi
+    done
 
     return 1
 }
@@ -1401,10 +1456,22 @@ finalize_trace() {
     fi
     mv "$tmp_manifest" "$manifest"
 
-    # Clean active marker
+    # Clean active marker — remove both scoped and unscoped variants for full cleanup
+    # @decision DEC-ISOLATION-004
+    # @title finalize_trace cleans both scoped and unscoped markers
+    # @status accepted
+    # @rationale Markers may exist in old format (no phash) from pre-migration sessions,
+    #   or in new format (with phash). Cleaning both ensures no orphaned markers linger
+    #   regardless of which format init_trace used. The wildcard loop catches any
+    #   content-matched markers regardless of their name format.
     local session_id="${CLAUDE_SESSION_ID:-}"
+    local phash
+    phash=$(project_hash "$project_root")
+    # Remove new scoped format
+    rm -f "${TRACE_STORE}/.active-${agent_type}-${session_id}-${phash}" 2>/dev/null
+    # Remove old unscoped format
     rm -f "${TRACE_STORE}/.active-${agent_type}-${session_id}" 2>/dev/null
-    # Also try wildcard cleanup for this agent type (handles session ID mismatch)
+    # Wildcard cleanup: any marker whose content matches this trace_id (any format)
     for marker in "${TRACE_STORE}/.active-${agent_type}-"*; do
         if [[ -f "$marker" ]]; then
             local marker_trace

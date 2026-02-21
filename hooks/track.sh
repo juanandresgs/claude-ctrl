@@ -66,7 +66,17 @@ fi
 #   resolve_proof_file(), prompt-submit.sh, and check-tester.sh write the file.
 #   Same fix applied to guard.sh Check 8 (DEC-PROOF-PATH-003). Fixes meta-repo
 #   proof invalidation and guard.sh's double-nested proof read on git commit.
-PROOF_FILE="$(get_claude_dir)/.proof-status"
+_PROOF_PHASH=$(project_hash "$PROJECT_ROOT")
+_PROOF_SCOPED="$(get_claude_dir)/.proof-status-${_PROOF_PHASH}"
+_PROOF_LEGACY="$(get_claude_dir)/.proof-status"
+# Check scoped file first; fall back to legacy for backward compat
+if [[ -f "$_PROOF_SCOPED" ]]; then
+    PROOF_FILE="$_PROOF_SCOPED"
+elif [[ -f "$_PROOF_LEGACY" ]]; then
+    PROOF_FILE="$_PROOF_LEGACY"
+else
+    PROOF_FILE="$_PROOF_SCOPED"
+fi
 if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
     if [[ "$PROOF_STATUS" == "verified" ]]; then

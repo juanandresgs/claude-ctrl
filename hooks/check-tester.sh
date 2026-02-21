@@ -216,10 +216,15 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
         ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
         WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
         echo "verified|$(date +%s)" > "$PROOF_FILE"
-        # Dual-write: keep orchestrator's copy in sync so guard.sh can find it
-        # regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
+        # Dual-write: keep orchestrator's scoped and legacy copies in sync so guard.sh
+        # can find it regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
+        _PHASH=$(project_hash "$PROJECT_ROOT")
+        ORCH_SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
         ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
-        if [[ "$PROOF_FILE" != "$ORCH_PROOF" ]]; then
+        if [[ "$PROOF_FILE" != "$ORCH_SCOPED_PROOF" ]]; then
+            echo "verified|$(date +%s)" > "$ORCH_SCOPED_PROOF"
+        fi
+        if [[ "$PROOF_FILE" != "$ORCH_PROOF" && "$ORCH_SCOPED_PROOF" != "$ORCH_PROOF" ]]; then
             echo "verified|$(date +%s)" > "$ORCH_PROOF"
         fi
         AUTO_VERIFIED=true

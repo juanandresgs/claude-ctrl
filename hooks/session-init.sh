@@ -513,19 +513,28 @@ if [[ -d "$TRACE_STORE" ]]; then
     done
 
     # Clean orphaned .proof-status (crash recovery)
-    # At session start, if no agents are active (active markers just cleaned above),
-    # ANY .proof-status is stale — including "verified" from a session that crashed
-    # before Guardian ran. A stale "verified" would bypass the proof gate for
-    # unrelated future work, so we unconditionally remove it when no agents are active.
-    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
-    if [[ -f "$PROOF_FILE" ]]; then
-        ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-        if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
-            PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
-            rm -f "$PROOF_FILE"
-            CONTEXT_PARTS+=("Cleaned stale .proof-status ($PROOF_VAL) — no active agents, likely from crashed session")
+    # At session start, if no agents are active FOR THIS PROJECT (active markers just
+    # cleaned above), any .proof-status for this project is stale — including "verified"
+    # from a session that crashed before Guardian ran. A stale "verified" would bypass
+    # the proof gate for unrelated future work.
+    # @decision DEC-ISOLATION-008
+    # @title session-init counts only this project's active markers for proof cleanup
+    # @status accepted
+    # @rationale The original check used `ls .active-*` globally — counting markers from
+    #   ALL projects. If Project A had an active agent, Project B's stale proof-status
+    #   would be preserved even though no agents were running for Project B. Fix: count
+    #   only markers with the project hash suffix. Also clean the scoped proof file.
+    _PHASH=$(project_hash "$PROJECT_ROOT")
+    ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-*-"${_PHASH}" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    for PROOF_FILE in "${CLAUDE_DIR}/.proof-status-${_PHASH}" "${CLAUDE_DIR}/.proof-status"; do
+        if [[ -f "$PROOF_FILE" ]]; then
+            if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
+                PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
+                rm -f "$PROOF_FILE"
+                CONTEXT_PARTS+=("Cleaned stale $(basename "$PROOF_FILE") ($PROOF_VAL) — no active agents for this project, likely from crashed session")
+            fi
         fi
-    fi
+    done
 
     # Surface last completed trace for current project
     if [[ -f "$TRACE_STORE/index.jsonl" ]]; then

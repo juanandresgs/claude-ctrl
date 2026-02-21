@@ -259,7 +259,12 @@ fi
 # Uses $_stripped_cmd for the rm detection.
 if echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
     _ps_dir=$(get_claude_dir)
-    _ps_file="${_ps_dir}/.proof-status"
+    _ps_phash=$(project_hash "$(detect_project_root)")
+    # Check scoped file first, fall back to legacy
+    _ps_file="${_ps_dir}/.proof-status-${_ps_phash}"
+    if [[ ! -f "$_ps_file" ]]; then
+        _ps_file="${_ps_dir}/.proof-status"
+    fi
     if [[ -f "$_ps_file" ]]; then
         _ps_val=$(cut -d'|' -f1 "$_ps_file")
         if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
@@ -516,16 +521,24 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1; then
         # DEC-PROOF-PATH-003: use get_claude_dir()-style logic to avoid double-nesting
         # when PROOF_DIR is ~/.claude (meta-repo). ${HOME}/.claude/.claude/ never exists.
+        # DEC-ISOLATION-005: project-scoped fallback chain for proof-status lookup.
+        # Priority: worktree path > orch scoped > orch legacy (for backward compat).
+        _proof_dir_phash=$(project_hash "$PROOF_DIR")
+        _orch_claude_dir=$(get_claude_dir)
         if [[ "$PROOF_DIR" == "${HOME}/.claude" ]]; then
-            PROOF_FILE="${PROOF_DIR}/.proof-status"
+            PROOF_FILE="${PROOF_DIR}/.proof-status-${_proof_dir_phash}"
+            [[ -f "$PROOF_FILE" ]] || PROOF_FILE="${PROOF_DIR}/.proof-status"
         else
             PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
         fi
-        # Fallback: if worktree file is absent, check orchestrator's CLAUDE_DIR
+        # Fallback chain: orch scoped → orch legacy
         if [[ ! -f "$PROOF_FILE" ]]; then
-            ORCH_PROOF_FILE="$(get_claude_dir)/.proof-status"
-            if [[ -f "$ORCH_PROOF_FILE" ]]; then
-                PROOF_FILE="$ORCH_PROOF_FILE"
+            ORCH_SCOPED_FILE="${_orch_claude_dir}/.proof-status-${_proof_dir_phash}"
+            ORCH_FILE="${_orch_claude_dir}/.proof-status"
+            if [[ -f "$ORCH_SCOPED_FILE" ]]; then
+                PROOF_FILE="$ORCH_SCOPED_FILE"
+            elif [[ -f "$ORCH_FILE" ]]; then
+                PROOF_FILE="$ORCH_FILE"
             fi
         fi
         if [[ -f "$PROOF_FILE" ]]; then

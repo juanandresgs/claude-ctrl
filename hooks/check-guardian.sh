@@ -274,19 +274,33 @@ fi
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_COMMIT=$(echo "$RESPONSE_TEXT" | grep -iE 'committed|commit.*successful|pushed|merge.*complete' || echo "")
     if [[ -n "$HAS_COMMIT" ]]; then
-        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
-        if [[ -f "$PROOF_FILE" ]]; then
-            PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
-            if [[ "$PROOF_VAL" == "verified" ]]; then
-                rm -f "$PROOF_FILE"
-                log_info "CHECK-GUARDIAN" "Cleaned .proof-status after successful commit"
+        # Clean both scoped and legacy proof-status files after successful commit.
+        # @decision DEC-ISOLATION-006
+        # @title check-guardian cleans both scoped and legacy proof-status files
+        # @status accepted
+        # @rationale The scoped file (.proof-status-{phash}) is the primary write target
+        #   since DEC-ISOLATION-001. The legacy file (.proof-status) may exist from
+        #   pre-migration sessions or dual-writes. Cleaning both ensures the gate is
+        #   fully reset for the next implementation cycle regardless of file format.
+        _PHASH=$(project_hash "$PROJECT_ROOT")
+        SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
+        LEGACY_PROOF="${CLAUDE_DIR}/.proof-status"
+        for PROOF_FILE in "$SCOPED_PROOF" "$LEGACY_PROOF"; do
+            if [[ -f "$PROOF_FILE" ]]; then
+                PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
+                if [[ "$PROOF_VAL" == "verified" ]]; then
+                    rm -f "$PROOF_FILE"
+                    log_info "CHECK-GUARDIAN" "Cleaned $(basename "$PROOF_FILE") after successful commit"
+                fi
             fi
-        fi
+        done
 
         # Check 7b: Post-merge worktree directory verification
         # If the breadcrumb exists AND directory still exists after merge, attempt cleanup.
         # This runs BEFORE the breadcrumb cleanup below so the breadcrumb is still readable.
-        BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path"
+        # Check scoped breadcrumb first, then legacy.
+        BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path-${_PHASH}"
+        [[ -f "$BREADCRUMB_7B" ]] || BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path"
         if [[ -f "$BREADCRUMB_7B" ]]; then
             WT_PATH_7B=$(cat "$BREADCRUMB_7B" 2>/dev/null | tr -d '[:space:]')
             if [[ -n "$WT_PATH_7B" && -d "$WT_PATH_7B" ]]; then
@@ -307,17 +321,18 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
             fi
         fi
 
-        # Clean up worktree breadcrumb and its .proof-status
-        BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path"
-        if [[ -f "$BREADCRUMB" ]]; then
-            WORKTREE_PATH=$(cat "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]')
-            if [[ -n "$WORKTREE_PATH" && -d "$WORKTREE_PATH" ]]; then
-                rm -f "${WORKTREE_PATH}/.claude/.proof-status"
-                log_info "CHECK-GUARDIAN" "Cleaned worktree .proof-status at $WORKTREE_PATH"
+        # Clean up all breadcrumb variants (scoped and legacy) and their worktree .proof-status
+        for BREADCRUMB in "${CLAUDE_DIR}/.active-worktree-path-${_PHASH}" "${CLAUDE_DIR}/.active-worktree-path"; do
+            if [[ -f "$BREADCRUMB" ]]; then
+                WORKTREE_PATH=$(cat "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]')
+                if [[ -n "$WORKTREE_PATH" && -d "$WORKTREE_PATH" ]]; then
+                    rm -f "${WORKTREE_PATH}/.claude/.proof-status"
+                    log_info "CHECK-GUARDIAN" "Cleaned worktree .proof-status at $WORKTREE_PATH"
+                fi
+                rm -f "$BREADCRUMB"
+                log_info "CHECK-GUARDIAN" "Cleaned breadcrumb: $(basename "$BREADCRUMB")"
             fi
-            rm -f "$BREADCRUMB"
-            log_info "CHECK-GUARDIAN" "Cleaned .active-worktree-path breadcrumb"
-        fi
+        done
     fi
 fi
 
