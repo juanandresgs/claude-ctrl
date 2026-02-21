@@ -647,7 +647,7 @@ while IFS= read -r hook; do
     if ! echo "$REGISTERED_HOOKS" | grep -q "^$hook$"; then
         # Exempt utility libraries (not hooks)
         case "$hook" in
-            log.sh|context-lib.sh|source-lib.sh)
+            log.sh|context-lib.sh|source-lib.sh|state-registry.sh)
                 ;;
             *)
                 UNREGISTERED_HOOKS+="$hook "
@@ -1640,6 +1640,84 @@ for test_file in "${V2_TEST_FILES[@]}"; do
         skipped=$((skipped + 1))
     fi
 done
+
+
+# ===== State Governance Tests =====
+# Phase 1: Registry lint (verifies all hook writes are registered)
+# Phase 2: Multi-context second pass (re-runs state-writing tests from a temp CWD
+#   to catch CWD assumptions — e.g. T08's .git file-vs-directory issue where a hook
+#   assumes CWD contains a real .git directory rather than the gitdir pointer file
+#   written by git worktree add).
+#
+# @decision DEC-STATE-GOV-001
+# @title Multi-context second pass in run-hooks.sh for CWD assumption detection
+# @status accepted
+# @rationale Several hooks use detect_project_root() or get_claude_dir() which
+#   walk up from CWD to find .git. If CWD is a non-git temp directory, these
+#   functions fall back to HOME or produce different paths than expected. Running
+#   a subset of state-writing tests from a temp CWD catches this class of bugs
+#   without requiring a full second run of the entire suite (which is slow).
+#   The subset is: proof gate, project isolation, and state registry — exactly
+#   the tests that validate state file paths and scoping.
+echo ""
+echo "=== State Governance Tests ==="
+
+# --- Pass 1: State registry lint ---
+echo ""
+echo "--- State Registry Lint (Pass 1: normal CWD) ---"
+REGISTRY_TEST="$SCRIPT_DIR/test-state-registry.sh"
+if [[ -f "$REGISTRY_TEST" ]]; then
+    if bash "$REGISTRY_TEST"; then
+        echo "  test-state-registry.sh: ALL PASSED"
+    else
+        echo "  test-state-registry.sh: FAILURES DETECTED"
+        failed=$((failed + 1))
+    fi
+else
+    echo "  SKIP: test-state-registry.sh not found"
+    skipped=$((skipped + 1))
+fi
+
+# --- Pass 2: Multi-context re-run from temp CWD ---
+# Create a temp directory that is NOT a git repo, set it as CWD for the subprocess,
+# and re-run the state-writing tests. This verifies hooks don't assume CWD=git root.
+echo ""
+echo "--- Multi-Context Pass (Pass 2: non-git temp CWD) ---"
+
+MULTI_CTX_TMPDIR=$(mktemp -d)
+
+# Tests to re-run in alien CWD (state-writing tests most sensitive to CWD assumptions)
+MULTI_CTX_TESTS=(
+    "test-proof-gate.sh"
+    "test-project-isolation.sh"
+    "test-state-registry.sh"
+)
+
+MULTI_CTX_PASS2_FAILED=0
+for mc_test in "${MULTI_CTX_TESTS[@]}"; do
+    mc_test_path="$SCRIPT_DIR/$mc_test"
+    if [[ -f "$mc_test_path" ]]; then
+        echo ""
+        echo "  [Pass 2] Running $mc_test from temp CWD: $MULTI_CTX_TMPDIR"
+        # Run in a subshell with CWD set to the temp dir (not a git repo)
+        if bash -c "cd '$MULTI_CTX_TMPDIR' && bash '$mc_test_path'" 2>&1 | sed 's/^/    /'; then
+            echo "  [Pass 2] $mc_test: ALL PASSED (alien CWD)"
+        else
+            echo "  [Pass 2] $mc_test: FAILURES DETECTED (alien CWD — possible CWD assumption bug)"
+            MULTI_CTX_PASS2_FAILED=$((MULTI_CTX_PASS2_FAILED + 1))
+            failed=$((failed + 1))
+        fi
+    else
+        echo "  [Pass 2] SKIP: $mc_test not found"
+    fi
+done
+
+safe_cleanup "$MULTI_CTX_TMPDIR" "$SCRIPT_DIR"
+
+if [[ "$MULTI_CTX_PASS2_FAILED" -eq 0 ]]; then
+    echo ""
+    echo "  Multi-context pass: all ${#MULTI_CTX_TESTS[@]} tests passed from non-git CWD"
+fi
 
 
 # --- Summary ---

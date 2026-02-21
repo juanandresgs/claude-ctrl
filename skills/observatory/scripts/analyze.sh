@@ -868,6 +868,171 @@ if [[ -f "$STATE_FILE" ]]; then
     done < <(jq -c '.implemented[] | select(type == "object")' "$STATE_FILE" 2>/dev/null || true)
 fi
 
+# --- Stage 5b: Cross-project state contamination detection ---
+#
+# Reads traces/index.jsonl, groups traces by session_id, and checks whether
+# any single session produced traces for more than one distinct project_name.
+# A session touching multiple projects is a contamination risk: state files
+# scoped to project A (proof-status, active-worktree-path) may be read by
+# project B's hooks if CLAUDE_DIR resolves the same way for both.
+#
+# Secondary check: scans .active-* marker files in TRACE_STORE and detects
+# markers whose embedded phash (12-char suffix) appears alongside markers
+# from a different phash in the same session. A session writing markers for
+# two distinct phashes has definitely written cross-project state.
+#
+# Emits SIG-CROSS-PROJECT-STATE when contamination is detected.
+#
+# Implementation uses only POSIX-compatible tools (awk, sort, uniq) because
+# the observatory runs on macOS with bash 3.2 where declare -A is unavailable.
+#
+# @decision DEC-OBS-022
+# @title Stage 5b cross-project state contamination detection (bash 3.2 compatible)
+# @status accepted
+# @rationale Project isolation bugs are silent: the wrong proof-status file is read,
+#   the wrong breadcrumb is followed, and the wrong worktree is cleaned up. These bugs
+#   only surface when two projects are active in the same session — a relatively rare
+#   event that makes them hard to notice manually. Automated detection via session_id
+#   grouping of trace index entries gives the observatory visibility into this class
+#   without requiring any code changes to the hooks being monitored.
+#   Uses awk+sort+uniq for bash 3.2 compatibility (no declare -A available on macOS).
+
+CROSS_PROJECT_CONTAMINATION_COUNT=0
+CROSS_PROJECT_SESSIONS="[]"
+
+# Guard: only run when the trace index exists
+if [[ -f "$TRACE_INDEX" ]]; then
+    # Step 1: Find sessions that appear with more than one project_name in the index.
+    # jq extracts session_id+project_name pairs; awk groups by session_id to count
+    # distinct project names per session. Sessions with >1 distinct project are suspects.
+    #
+    # Output format per line: <session_id> <distinct_project_count> <project_names_csv>
+    MULTI_PROJECT_SESSIONS=""
+    MULTI_PROJECT_SESSIONS=$(jq -r \
+        'select(.session_id != null and .session_id != "" and .project_name != null and .project_name != "") |
+         [.session_id, .project_name] | @tsv' \
+        "$TRACE_INDEX" 2>/dev/null \
+        | sort -u \
+        | awk '
+            {
+                sid = $1
+                proj = $2
+                if (!(sid in seen_projects) || index(seen_projects[sid], proj) == 0) {
+                    if (sid in seen_projects) {
+                        seen_projects[sid] = seen_projects[sid] "," proj
+                        counts[sid]++
+                    } else {
+                        seen_projects[sid] = proj
+                        counts[sid] = 1
+                    }
+                }
+            }
+            END {
+                for (sid in counts) {
+                    if (counts[sid] > 1) {
+                        print sid "\t" counts[sid] "\t" seen_projects[sid]
+                    }
+                }
+            }
+        ' 2>/dev/null || true)
+
+    # Step 2: For each multi-project session, record it as a contamination event.
+    if [[ -n "$MULTI_PROJECT_SESSIONS" ]]; then
+        while IFS=$'\t' read -r sid pcount projs; do
+            [[ -z "$sid" ]] && continue
+            CROSS_PROJECT_CONTAMINATION_COUNT=$((CROSS_PROJECT_CONTAMINATION_COUNT + 1))
+            CROSS_PROJECT_SESSIONS=$(echo "$CROSS_PROJECT_SESSIONS" | jq \
+                --arg session_id "$sid" \
+                --argjson distinct_projects "$pcount" \
+                --arg projects "$projs" \
+                '. + [{"session_id": $session_id, "distinct_projects": $distinct_projects, "project_names": $projects}]' \
+                2>/dev/null || echo "$CROSS_PROJECT_SESSIONS")
+        done <<< "$MULTI_PROJECT_SESSIONS"
+    fi
+
+    # Step 3: Secondary check — scan .active-* marker filenames for sessions
+    # that wrote markers with more than one distinct 12-char phash suffix.
+    # Marker format: .active-{type}-{session_id}-{phash12}
+    # We extract (session_id, phash) pairs by stripping the known prefix and suffix.
+    # awk groups by session_id and counts distinct phashes.
+    STALE_MARKER_DIR="$TRACE_STORE"
+    MARKER_CONTAM_SESSIONS=""
+    if [[ -d "$STALE_MARKER_DIR" ]]; then
+        MARKER_CONTAM_SESSIONS=$(find "$STALE_MARKER_DIR" -maxdepth 1 \
+            -name '.active-*-*' -type f 2>/dev/null \
+            | while IFS= read -r mf; do
+                mname=$(basename "$mf")
+                # Extract phash: last 12 hex chars before end
+                if [[ "$mname" =~ -([0-9a-f]{12})$ ]]; then
+                    phash="${BASH_REMATCH[1]}"
+                    # Strip .active- prefix, type, and phash suffix to get session_id
+                    # Remove ".active-TYPE-" prefix (TYPE has no '-' by convention)
+                    rest="${mname#.active-*-}"
+                    # rest is now "SESSION_ID-PHASH"
+                    session_part="${rest%-${phash}}"
+                    if [[ -n "$session_part" && -n "$phash" ]]; then
+                        printf '%s\t%s\n' "$session_part" "$phash"
+                    fi
+                fi
+              done \
+            | sort -u \
+            | awk '
+                {
+                    sid = $1; phash = $2
+                    if (!(sid in phashes) || index(phashes[sid], phash) == 0) {
+                        if (sid in phashes) {
+                            phashes[sid] = phashes[sid] "," phash
+                            counts[sid]++
+                        } else {
+                            phashes[sid] = phash
+                            counts[sid] = 1
+                        }
+                    }
+                }
+                END {
+                    for (sid in counts) {
+                        if (counts[sid] > 1) print sid "\t" counts[sid] "\t" phashes[sid]
+                    }
+                }
+            ' 2>/dev/null || true)
+    fi
+
+    if [[ -n "$MARKER_CONTAM_SESSIONS" ]]; then
+        while IFS=$'\t' read -r sid hcount hashes; do
+            [[ -z "$sid" ]] && continue
+            # Avoid double-counting sessions already caught by Step 2
+            already_counted=false
+            if [[ "$CROSS_PROJECT_SESSIONS" == *"\"$sid\""* ]]; then
+                already_counted=true
+            fi
+            if [[ "$already_counted" == "false" ]]; then
+                CROSS_PROJECT_CONTAMINATION_COUNT=$((CROSS_PROJECT_CONTAMINATION_COUNT + 1))
+                CROSS_PROJECT_SESSIONS=$(echo "$CROSS_PROJECT_SESSIONS" | jq \
+                    --arg session_id "$sid" \
+                    --argjson distinct_hashes "$hcount" \
+                    --arg phashes "$hashes" \
+                    '. + [{"session_id": $session_id, "distinct_hashes_from_markers": $distinct_hashes, "phashes": $phashes}]' \
+                    2>/dev/null || echo "$CROSS_PROJECT_SESSIONS")
+            fi
+        done <<< "$MARKER_CONTAM_SESSIONS"
+    fi
+fi
+
+if [[ "${CROSS_PROJECT_CONTAMINATION_COUNT:-0}" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$CROSS_PROJECT_CONTAMINATION_COUNT" \
+        --argjson total "$TOTAL" \
+        --argjson sessions "$CROSS_PROJECT_SESSIONS" \
+        '. + [{
+          "id": "SIG-CROSS-PROJECT-STATE",
+          "category": "state_isolation",
+          "severity": "high",
+          "description": "Sessions active across multiple projects — cross-project state contamination risk detected",
+          "evidence": {"affected_count": $affected, "total": $total, "contaminated_sessions": $sessions},
+          "root_cause": "Hooks writing .active-* markers or .proof-status files without project hash scoping, causing state from one project to bleed into another project'\''s session"
+        }]')
+fi
+
 # --- Stage 6: Assemble and write output ---
 GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
