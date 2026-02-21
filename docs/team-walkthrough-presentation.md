@@ -445,7 +445,7 @@ Unlike hooks (deterministic, binary), skills require judgment:
 
 ```bash
 # Clone with submodules (research-verified, last30days)
-git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude
+git clone --recurse-submodules git@github.com:juanandresgs/claude-ctrl.git ~/.claude
 
 # Verify structure
 ls ~/.claude/

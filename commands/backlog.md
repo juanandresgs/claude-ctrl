@@ -106,7 +106,7 @@ After creating the issue:
 
 - **Default (no flag)**: Saves to / lists from current project's GitHub repo issues
 - **`--global`**: Uses the global backlog repo (`<your-github-user>/cc-todos`, auto-detected)
-- **`--config`**: Uses the harness repo (`~/.claude` git remote, e.g. `user/claude-system`). For filing harness bugs and config improvements from any project directory.
+- **`--config`**: Uses the harness repo (`~/.claude` git remote, e.g. `user/claude-ctrl`). For filing harness bugs and config improvements from any project directory.
 - If not in a git repo, automatically falls back to global
 
 ## Display Format
@@ -130,7 +130,7 @@ Example:
 | 42 | | Fix auth middleware | 2026-01-20 | |
 | 43 | | Add rate limiting | 2026-02-01 | assigned |
 
-**CONFIG** [user/claude-system] (1 open)
+**CONFIG** [user/claude-ctrl] (1 open)
 
 | # | Pri | Title | Created | Status |
 |---|-----|-------|---------|--------|

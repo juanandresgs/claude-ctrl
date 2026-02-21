@@ -164,5 +164,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hook input sanitization via `log.sh` shared library
 - Safe temporary directory handling (project `tmp/`, not `/tmp/`)
 
-[Unreleased]: https://github.com/juanandresgs/claude-system/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/juanandresgs/claude-system/releases/tag/v2.0.0
+[Unreleased]: https://github.com/juanandresgs/claude-ctrl/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/juanandresgs/claude-ctrl/releases/tag/v2.0.0

@@ -16,7 +16,7 @@ We take security issues seriously. If you discover a security vulnerability in t
 ### Where to Report
 
 **Preferred:** Use GitHub's private security advisory feature:
-1. Navigate to the [Security tab](https://github.com/juanandresgs/claude-system/security)
+1. Navigate to the [Security tab](https://github.com/juanandresgs/claude-ctrl/security)
 2. Click "Report a vulnerability"
 3. Fill out the form with details
 

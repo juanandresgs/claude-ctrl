@@ -1,17 +1,19 @@
 <p align="center">
-  <img src="assets/banner.jpeg" alt="The Systems Thinker's Claude Code Governance Platform" width="100%">
+  <img src="assets/banner.jpeg" alt="The Systems Thinker's Deterministic Claude Code Control Plane" width="100%">
 </p>
 
-# The Systems Thinker's Claude Code Governance Platform
+# The Systems Thinker's Deterministic Claude Code Control Plane
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/stargazers)
-[![Last commit](https://img.shields.io/github/last-commit/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/commits/main)
+[![GitHub stars](https://img.shields.io/github/stars/juanandresgs/claude-ctrl)](https://github.com/juanandresgs/claude-ctrl/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/juanandresgs/claude-ctrl)](https://github.com/juanandresgs/claude-ctrl/commits/main)
 [![Shell](https://img.shields.io/badge/language-bash-green.svg)](hooks/)
 
 A batteries-included governance layer for Claude Code. Four specialized agents handle planning, implementation, verification, and git operations. Shell scripts enforce the rules at every lifecycle event, regardless of context window pressure.
 
 **Instructions guide. Hooks enforce.**
+
+*Formerly `claude-system`.*
 
 ---
 
@@ -113,10 +115,10 @@ Instructions are probabilistic. Hooks are mechanical. That's the difference.
 
 ```bash
 # SSH
-git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude
+git clone --recurse-submodules git@github.com:juanandresgs/claude-ctrl.git ~/.claude
 
 # Or HTTPS
-git clone --recurse-submodules https://github.com/juanandresgs/claude-system.git ~/.claude
+git clone --recurse-submodules https://github.com/juanandresgs/claude-ctrl.git ~/.claude
 ```
 
 If you already have a `~/.claude` directory, back it up first: `tar czf ~/claude-backup-$(date +%Y%m%d).tar.gz ~/.claude`

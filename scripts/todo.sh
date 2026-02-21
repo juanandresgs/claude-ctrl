@@ -86,7 +86,7 @@ CONF
     echo "Cached global repo: $GLOBAL_REPO → $CONFIG_FILE" >&2
 }
 
-# Derive config repo (owner/claude-system) from ~/.claude git remote, caching result.
+# Derive config repo (owner/claude-ctrl) from ~/.claude git remote, caching result.
 resolve_config_repo() {
     # Fast path: cached value
     if [[ -f "$CONFIG_FILE" ]]; then

@@ -1,4 +1,4 @@
-# Contributing to claude-system
+# Contributing to claude-ctrl
 
 Thanks for your interest in improving Claude Code's SDLC enforcement. This guide covers the most common contribution types and what to expect.
 
@@ -6,7 +6,7 @@ Thanks for your interest in improving Claude Code's SDLC enforcement. This guide
 
 ```bash
 # Clone the repo
-git clone --recurse-submodules git@github.com:juanandresgs/claude-system.git ~/.claude-dev
+git clone --recurse-submodules git@github.com:juanandresgs/claude-ctrl.git ~/.claude-dev
 
 # Test a hook manually
 echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/guard.sh
