@@ -52,9 +52,30 @@ TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "planner" 2>/dev/null || echo "")
 TRACE_DIR=""
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
-    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
-    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    # Use 10-byte minimum threshold instead of -s (size > 0).
+    # See DEC-PLANNER-STOP-003: -s passes for a 1-byte newline written when
+    # RESPONSE_TEXT is empty (max_turns exhausted or force-stopped).
+    #
+    # @decision DEC-PLANNER-STOP-003
+    # @title Use 10-byte minimum threshold for planner summary.md fallback check
+    # @status accepted
+    # @rationale Same root cause as DEC-IMPL-STOP-003: the -s check passes for a
+    #   1-byte newline written when RESPONSE_TEXT is empty. The 10-byte threshold
+    #   catches both missing and trivially empty summary files. When RESPONSE_TEXT
+    #   is empty, a diagnostic message is written instead so the orchestrator has
+    #   context about why the planner stopped without producing output.
+    _sum_size=$(wc -c < "$TRACE_DIR/summary.md" 2>/dev/null || echo 0)
+    if [[ ! -f "$TRACE_DIR/summary.md" ]] || [[ "$_sum_size" -lt 10 ]]; then
+        if [[ -z "${RESPONSE_TEXT// /}" ]]; then
+            {
+                echo "# Agent returned empty response ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+                echo "Agent type: planner"
+                echo "Duration: ${SECONDS:-unknown}s"
+                echo "Likely cause: max_turns exhausted or force-stopped"
+            } > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        else
+            echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        fi
     fi
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "planner"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for planner trace $TRACE_ID"

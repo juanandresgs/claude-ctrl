@@ -253,8 +253,19 @@ if [[ "$AUTO_VERIFIED" == "true" ]]; then
     AV_TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
     if [[ -n "$AV_TRACE_ID" ]]; then
         AV_TRACE_DIR="${TRACE_STORE}/${AV_TRACE_ID}"
-        if [[ ! -s "$AV_TRACE_DIR/summary.md" && -n "$RESPONSE_TEXT" ]]; then
-            echo "$RESPONSE_TEXT" | head -c 4000 > "$AV_TRACE_DIR/summary.md" 2>/dev/null || true
+        # Use 10-byte minimum threshold — see DEC-TESTER-007 below.
+        _av_sum_size=$(wc -c < "$AV_TRACE_DIR/summary.md" 2>/dev/null || echo 0)
+        if [[ ! -f "$AV_TRACE_DIR/summary.md" ]] || [[ "$_av_sum_size" -lt 10 ]]; then
+            if [[ -z "${RESPONSE_TEXT// /}" ]]; then
+                {
+                    echo "# Agent returned empty response ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+                    echo "Agent type: tester"
+                    echo "Duration: ${SECONDS:-unknown}s"
+                    echo "Likely cause: max_turns exhausted or force-stopped"
+                } > "$AV_TRACE_DIR/summary.md" 2>/dev/null || true
+            else
+                echo "$RESPONSE_TEXT" | head -c 4000 > "$AV_TRACE_DIR/summary.md" 2>/dev/null || true
+            fi
         fi
         finalize_trace "$AV_TRACE_ID" "$PROJECT_ROOT" "tester" 2>/dev/null || true
     fi
@@ -320,9 +331,29 @@ fi
 # block), meaning Check 3 would read a stale manifest. Moving finalize here ensures
 # Check 3 reads a fresh manifest outcome before auto-capture contaminates the check.
 if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
-    # Validate summary exists and is non-empty (-s checks size > 0)
-    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    # Validate summary exists and has meaningful content (10-byte minimum).
+    # See DEC-TESTER-007: -s (size > 0) was fooled by 1-byte newline from empty RESPONSE_TEXT.
+    #
+    # @decision DEC-TESTER-007
+    # @title Use 10-byte minimum threshold for tester summary.md fallback check
+    # @status accepted
+    # @rationale Same root cause as DEC-IMPL-STOP-003: the -s check passes for a
+    #   1-byte newline written when RESPONSE_TEXT is empty (max_turns exhausted).
+    #   The 10-byte threshold catches both missing and trivially empty summary files.
+    #   When RESPONSE_TEXT is empty, a diagnostic message is written so the
+    #   orchestrator has context about why the tester stopped without reporting.
+    _sum_size=$(wc -c < "$TRACE_DIR/summary.md" 2>/dev/null || echo 0)
+    if [[ ! -f "$TRACE_DIR/summary.md" ]] || [[ "$_sum_size" -lt 10 ]]; then
+        if [[ -z "${RESPONSE_TEXT// /}" ]]; then
+            {
+                echo "# Agent returned empty response ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+                echo "Agent type: tester"
+                echo "Duration: ${SECONDS:-unknown}s"
+                echo "Likely cause: max_turns exhausted or force-stopped"
+            } > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        else
+            echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        fi
     fi
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for tester trace $TRACE_ID"

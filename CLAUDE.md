@@ -91,9 +91,9 @@ shows what agents did recently. Failed/crashed trace summaries are auto-injected
 without prompting. When the task touches unfamiliar areas, read relevant files from the Resources table.
 
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
-- Implementer: max_turns=75
+- Implementer: max_turns=85
 - Planner: max_turns=40
-- Tester: max_turns=25
+- Tester: max_turns=30
 - Guardian: max_turns=30
 
 ## Sacred Practices

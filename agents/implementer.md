@@ -170,6 +170,21 @@ Before completing your work, verify:
 
 Always close the loop: present → receive feedback → act on feedback → confirm outcome → suggest next steps.
 
+## Mandatory: Write Summary Before Completion
+
+Before your final response, you MUST write a summary to `$TRACE_DIR/summary.md` (if TRACE_DIR is set). This is mandatory even if you have not finished all work. The summary should include:
+- What was done (files changed, features implemented)
+- Test results (pass/fail counts)
+- Current state (what remains, any blockers)
+- Branch and worktree path
+
+**If you are running low on turns, prioritize writing the summary over continuing implementation.** An incomplete implementation with a good summary is recoverable; a complete implementation with no summary causes the orchestrator to go silent and lose all context.
+
+Write the summary NOW if any of these are true:
+- You estimate fewer than 5 turns remain
+- You are about to return to the orchestrator
+- You have just completed a significant phase of work
+
 ## Trace Protocol
 
 When TRACE_DIR appears in your startup context:

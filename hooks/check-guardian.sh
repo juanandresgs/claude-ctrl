@@ -83,11 +83,32 @@ if [[ -n "$TRACE_ID" ]]; then
 fi
 
 if [[ -n "$TRACE_ID" ]]; then
-    # Fallback: if agent didn't write summary.md or wrote empty file, save response excerpt.
+    # Fallback: if agent didn't write summary.md or wrote a near-empty file (e.g. 1-byte \n),
+    # save response excerpt or a diagnostic message.
     # Must run before finalize_trace — finalize reads summary.md to determine crashed vs completed.
-    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
-    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    # Using 10-byte minimum instead of -s (size>0) — see DEC-GUARDIAN-STOP-001 below.
+    #
+    # @decision DEC-GUARDIAN-STOP-001
+    # @title Use 10-byte minimum threshold for guardian summary.md fallback check
+    # @status accepted
+    # @rationale Same root cause as DEC-IMPL-STOP-003: the -s check (size > 0) passes for
+    #   a 1-byte newline written when RESPONSE_TEXT is empty (max_turns exhausted or
+    #   force-stopped). The 10-byte threshold catches both missing and trivially empty
+    #   summary files. When RESPONSE_TEXT is empty, a diagnostic message is written
+    #   instead so the orchestrator has context about why the guardian stopped without
+    #   completing its commit/merge cycle.
+    _sum_size=$(wc -c < "$TRACE_DIR/summary.md" 2>/dev/null || echo 0)
+    if [[ ! -f "$TRACE_DIR/summary.md" ]] || [[ "$_sum_size" -lt 10 ]]; then
+        if [[ -z "${RESPONSE_TEXT// /}" ]]; then
+            {
+                echo "# Agent returned empty response ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+                echo "Agent type: guardian"
+                echo "Duration: ${SECONDS:-unknown}s"
+                echo "Likely cause: max_turns exhausted or force-stopped"
+            } > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        else
+            echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        fi
     fi
 
     # finalize_trace MUST run before advisory checks (get_git_state etc.) to prevent stale markers.

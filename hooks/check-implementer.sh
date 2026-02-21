@@ -68,10 +68,32 @@ fi
 RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 if [[ -n "$TRACE_ID" ]]; then
-    # Fallback: if agent didn't write summary.md or wrote empty file, save response excerpt
-    # -s checks file exists AND has size > 0 (catches 1-byte empty files)
-    if [[ ! -s "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    # Fallback: if agent didn't write summary.md or wrote a near-empty file (e.g. 1-byte \n),
+    # save response excerpt or a diagnostic message.
+    # Using a 10-byte minimum instead of -s (size>0) because stop hooks that receive an empty
+    # RESPONSE_TEXT write "echo '' > summary.md" producing a 1-byte newline that -s considers
+    # non-empty. A 10-byte threshold reliably catches both missing and trivially empty files.
+    #
+    # @decision DEC-IMPL-STOP-003
+    # @title Use 10-byte minimum threshold for summary.md fallback check
+    # @status accepted
+    # @rationale The -s test (size > 0) was fooled by stop hooks writing a 1-byte newline from
+    #   an empty RESPONSE_TEXT. The orchestrator then received an empty summary.md, lost all
+    #   context, and went silent. A 10-byte threshold catches both missing and trivially empty
+    #   files. When RESPONSE_TEXT itself is empty/whitespace, we write a diagnostic message
+    #   with timestamp and likely cause so the orchestrator can surface it to the user.
+    _sum_size=$(wc -c < "$TRACE_DIR/summary.md" 2>/dev/null || echo 0)
+    if [[ ! -f "$TRACE_DIR/summary.md" ]] || [[ "$_sum_size" -lt 10 ]]; then
+        if [[ -z "${RESPONSE_TEXT// /}" ]]; then
+            {
+                echo "# Agent returned empty response ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+                echo "Agent type: implementer"
+                echo "Duration: ${SECONDS:-unknown}s"
+                echo "Likely cause: max_turns exhausted or force-stopped"
+            } > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        else
+            echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+        fi
     fi
 
     # finalize_trace MUST run before auto-capture git commands to prevent stale markers.

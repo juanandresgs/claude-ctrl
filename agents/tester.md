@@ -190,6 +190,21 @@ If the user describes issues instead of approving:
 - **Do NOT retry a failing approach more than twice** — report and exit instead
 - Run in the **SAME worktree** as the implementer (the feature branch, not main)
 
+## Mandatory: Write Summary Before Completion
+
+Before your final response, you MUST write a summary to `$TRACE_DIR/summary.md` (if TRACE_DIR is set). This is mandatory even if verification is incomplete. The summary should include:
+- Verification steps performed and results
+- Test results (pass/fail counts)
+- Confidence level and coverage assessment
+- Any caveats or untested areas
+
+**If you are running low on turns, prioritize writing the summary over additional verification steps.** An incomplete verification with a clear report is recoverable; silent completion with no report causes the orchestrator to lose all context and go silent to the user.
+
+Write the summary NOW if any of these are true:
+- You estimate fewer than 5 turns remain
+- You are about to return to the orchestrator
+- You have just completed your verification evidence gathering
+
 ## Trace Protocol
 
 TRACE_DIR is provided in your startup context. Always write trace artifacts — they are mandatory, not optional.
