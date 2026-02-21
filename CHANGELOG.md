@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `feature/observatory-stdout`: Observatory report.sh now prints a concise stdout summary (regressions, health, signals, batches) after writing the full report file, so callers get actionable output without reading the file
+
 ### Fixed
 - `fix/sigpipe-crashes`: SIGPIPE (exit 141) crashes in session-init.sh and context-lib.sh when MASTER_PLAN.md has large sections — replaced 20 pipe patterns with SIGPIPE-safe equivalents (awk inline limits, bash builtins, single-pass awk); added 14-test SIGPIPE resistance suite
 - `fix/stale-marker-blocking-tester`: Stale `.active-*` marker race condition blocking tester dispatch — reorder `finalize_trace` before timeout-heavy ops in check-implementer.sh and check-guardian.sh, add marker cleanup in `refinalize_trace()`, add completed-status fast path in task-track.sh Gate B
