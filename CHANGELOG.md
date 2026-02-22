@@ -8,12 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `feature/architect-skill`: Phase 1 `/architect` skill — content-agnostic structural mapper with `detect_content.sh` (language/framework detection, monorepo support), 4 Mermaid diagram templates (concept-map, data-flow, module-dependency, sequence), manifest schema, and 22-assertion test suite
 - `feature/project-isolation`: Cross-project state isolation via 8-char SHA-256 project hash — scopes .proof-status, .active-worktree-path, and trace markers per project root to prevent state contamination across concurrent Claude Code sessions; three-tier backward-compatible lookup; 20 new isolation tests
 
 ### Changed
 - `feature/observatory-stdout`: Observatory report.sh now prints a concise stdout summary (regressions, health, signals, batches) after writing the full report file, so callers get actionable output without reading the file
 
 ### Fixed
+- `fix/guard-worktree-loop`: Checks 5/5b infinite denial loop on worktree removal — CWD-conditional deny only fires when shell CWD is inside .worktrees/ (the dangerous case); when CWD is already safe, removal is allowed; 10-test regression suite added
 - `fix/sigpipe-crashes`: SIGPIPE (exit 141) crashes in session-init.sh and context-lib.sh when MASTER_PLAN.md has large sections — replaced 20 pipe patterns with SIGPIPE-safe equivalents (awk inline limits, bash builtins, single-pass awk); added 14-test SIGPIPE resistance suite
 - `fix/stale-marker-blocking-tester`: Stale `.active-*` marker race condition blocking tester dispatch — reorder `finalize_trace` before timeout-heavy ops in check-implementer.sh and check-guardian.sh, add marker cleanup in `refinalize_trace()`, add completed-status fast path in task-track.sh Gate B
 

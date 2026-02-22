@@ -1,0 +1,182 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claude.ai/skills/architect/manifest-schema",
+  "title": "Architect Manifest",
+  "description": "Machine-readable structural manifest produced by the /architect skill. Contains all nodes (modules, topics, sections), edges (dependencies, references), and generated Mermaid diagrams.",
+  "type": "object",
+  "required": ["content_type", "root", "generated", "nodes", "diagrams"],
+  "additionalProperties": false,
+  "properties": {
+    "content_type": {
+      "type": "string",
+      "enum": ["codebase", "documents", "mixed", "single_file", "empty"],
+      "description": "Classification of the analyzed content. Produced by detect_content.sh."
+    },
+    "root": {
+      "type": "string",
+      "description": "Absolute path to the analyzed root directory or file."
+    },
+    "generated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when this manifest was generated."
+    },
+    "depth": {
+      "type": "string",
+      "enum": ["essentials", "deep"],
+      "description": "Depth used when generating this manifest. 'essentials' has no per_node diagrams; 'deep' has full per-node detail.",
+      "default": "deep"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Non-fatal issues encountered during analysis (e.g., unreadable paths, binary-heavy directories, permission errors)."
+    },
+    "nodes": {
+      "type": "array",
+      "description": "Structural nodes: modules, services, libraries, configs, topics, sections, or concepts.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "type", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-_]*$",
+            "description": "Slug identifier for this node. Used as Mermaid node ID and module file name."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable display name."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["module", "service", "library", "config", "concept", "topic", "section"],
+            "description": "Structural role of this node."
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative path from root to this node's directory or file."
+          },
+          "description": {
+            "type": "string",
+            "description": "1-2 sentence description of this node's purpose and responsibility."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Key files within this node (relative paths)."
+          },
+          "edges": {
+            "type": "array",
+            "description": "Outbound relationships from this node to other nodes.",
+            "items": {
+              "type": "object",
+              "required": ["target", "type"],
+              "additionalProperties": false,
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "description": "ID of the target node."
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["depends-on", "consumed-by", "extends", "references", "contains"],
+                  "description": "Relationship type. depends-on: this node imports/uses target. consumed-by: target uses this node. extends: this node inherits from target. references: this node links to target. contains: this node is a parent of target."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Optional human-readable explanation of this relationship."
+                }
+              }
+            }
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Quantitative measurements for this node.",
+            "properties": {
+              "files": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of files in this node."
+              },
+              "loc": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Lines of code (source files only)."
+              },
+              "complexity": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Qualitative complexity rating. low: simple utility or config. medium: moderate logic. high: many responsibilities or deep dependencies."
+              }
+            }
+          }
+        }
+      }
+    },
+    "diagrams": {
+      "type": "object",
+      "description": "Generated Mermaid diagram strings.",
+      "required": ["system"],
+      "additionalProperties": false,
+      "properties": {
+        "system": {
+          "type": "string",
+          "description": "Full system-level Mermaid diagram showing all nodes and their relationships."
+        },
+        "per_node": {
+          "type": "object",
+          "description": "Per-node sub-diagrams showing each node's immediate neighbors. Keys are node IDs.",
+          "additionalProperties": {
+            "type": "string",
+            "description": "Mermaid diagram string for this node's neighborhood."
+          }
+        }
+      }
+    },
+    "detect_info": {
+      "type": "object",
+      "description": "Raw output from detect_content.sh, preserved for traceability.",
+      "properties": {
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "files": {"type": "integer"},
+              "percentage": {"type": "integer"}
+            }
+          }
+        },
+        "file_counts": {
+          "type": "object",
+          "properties": {
+            "total": {"type": "integer"},
+            "source": {"type": "integer"},
+            "docs": {"type": "integer"},
+            "config": {"type": "integer"}
+          }
+        },
+        "entry_points": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "framework_signals": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "doc_formats": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}
