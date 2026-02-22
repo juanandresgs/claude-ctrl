@@ -489,6 +489,82 @@ fi
 rm -rf "$REPO" "$TRACE"
 
 # ===========================================================================
+# Test 11: Full pipeline — task-track.sh initializes tester trace, post-task.sh
+#          finds it and auto-verifies (DEC-PROOF-LIFE-004 integration test)
+#
+# Contract: When task-track.sh fires for a tester dispatch (PreToolUse:Task),
+#   it calls init_trace() which creates a .active-tester-* marker. The tester
+#   then writes summary.md to that trace directory. When post-task.sh fires
+#   (PostToolUse:Task), it finds the marker via detect_active_trace() and
+#   processes the summary to produce auto-verify.
+# ===========================================================================
+
+run_test "T11: full pipeline — task-track.sh init_trace breadcrumb → post-task.sh auto-verify"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+TASK_TRACK_SH="${HOOKS_DIR}/task-track.sh"
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+# Step 1: Simulate PreToolUse:Task for a tester dispatch (as task-track.sh would see it)
+TESTER_INPUT_JSON='{"tool_name":"Task","tool_input":{"subagent_type":"tester","prompt":"verify the feature"}}'
+TASK_TRACK_OUT=$(
+    export CLAUDE_PROJECT_DIR="$REPO"
+    export TRACE_STORE="$TRACE"
+    export CLAUDE_SESSION_ID="test-session-t11-$$"
+    cd "$REPO"
+    echo "$TESTER_INPUT_JSON" | bash "$TASK_TRACK_SH" 2>/dev/null
+) || true
+
+# Step 2: Verify .active-tester-* marker was created by init_trace
+ACTIVE_MARKER=$(ls "$TRACE"/.active-tester-* 2>/dev/null | head -1 || echo "")
+if [[ -z "$ACTIVE_MARKER" ]]; then
+    fail_test "task-track.sh did not create .active-tester-* marker in TRACE_STORE"
+    rm -rf "$REPO" "$TRACE"
+else
+    # Step 3: Get the trace_id from the marker and write summary.md as the tester would
+    TRACE_ID=$(cat "$ACTIVE_MARKER" 2>/dev/null || echo "")
+    if [[ -z "$TRACE_ID" ]]; then
+        fail_test ".active-tester-* marker exists but is empty (no trace_id)"
+        rm -rf "$REPO" "$TRACE"
+    else
+        TRACE_DIR_PATH="${TRACE}/${TRACE_ID}"
+        mkdir -p "${TRACE_DIR_PATH}/artifacts"
+        cat > "${TRACE_DIR_PATH}/summary.md" <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+**Confidence:** **High**
+
+All features verified in the full pipeline test.
+SUMMARY_EOF
+
+        # Step 4: Run post-task.sh (simulating PostToolUse:Task for tester completion)
+        POST_TASK_INPUT='{"tool_name":"Task","tool_input":{"subagent_type":"tester","prompt":"verify the feature"}}'
+        (
+            export CLAUDE_PROJECT_DIR="$REPO"
+            export TRACE_STORE="$TRACE"
+            export CLAUDE_SESSION_ID="test-session-t11-$$"
+            cd "$REPO"
+            echo "$POST_TASK_INPUT" | bash "$POST_TASK_SH" 2>/dev/null
+        ) || true
+
+        # Step 5: Verify proof-status is now verified
+        if [[ -f "$REPO/.claude/.proof-status" ]]; then
+            STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+            if [[ "$STATUS" == "verified" ]]; then
+                pass_test
+            else
+                fail_test "Expected 'verified' after full pipeline, got '$STATUS'"
+            fi
+        else
+            fail_test ".proof-status was deleted during pipeline test"
+        fi
+        rm -rf "$REPO" "$TRACE"
+    fi
+fi
+
+# ===========================================================================
 # Syntax check
 # ===========================================================================
 
@@ -497,6 +573,13 @@ if bash -n "$POST_TASK_SH"; then
     pass_test
 else
     fail_test "post-task.sh has syntax errors"
+fi
+
+run_test "Syntax: task-track.sh is valid bash"
+if bash -n "${HOOKS_DIR}/task-track.sh"; then
+    pass_test
+else
+    fail_test "task-track.sh has syntax errors"
 fi
 
 # ===========================================================================
