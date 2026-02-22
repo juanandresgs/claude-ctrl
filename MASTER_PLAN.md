@@ -6,7 +6,7 @@
 **Languages:** bash (78%), markdown (15%), python (7%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-02-18
-**Last updated:** 2026-02-21
+**Last updated:** 2026-02-22
 
 This is the Claude Code configuration directory. It shapes how Claude Code operates
 across all projects via lifecycle hooks, specialized agents, research skills, and
@@ -78,6 +78,9 @@ project's institutional memory.
 | 2026-02-21 | DEC-GOV-001 | state-governance | State file registry as structural gate | Declarative JSON registry with lint test catches unscoped writes at test time |
 | 2026-02-21 | DEC-GOV-002 | state-governance | Multi-CWD test execution | Second pass with alternate CWD catches environment assumptions |
 | 2026-02-21 | DEC-GOV-003 | state-governance | Observatory signal for cross-project state reads | Fits existing analyzer pipeline, surfaces contamination in reports |
+| 2026-02-22 | DEC-PROOF-LIFE-001 | proof-lifecycle | New post-task.sh handler for PostToolUse:Task auto-verify | SubagentStop never fires; PostToolUse:Task is the reliable hook event for tester completion |
+| 2026-02-22 | DEC-PROOF-LIFE-002 | proof-lifecycle | Read summary.md via tester breadcrumb instead of last_assistant_message | PostToolUse:Task lacks last_assistant_message; Trace Protocol guarantees summary.md is written before return |
+| 2026-02-22 | DEC-PROOF-LIFE-003 | proof-lifecycle | Preserve SubagentStop hooks as dead code with deprecation annotation | SubagentStop may be fixed upstream; dedup guard (DEC-TESTER-006) prevents double auto-verify if both paths fire |
 
 ---
 
@@ -1070,6 +1073,232 @@ from registry definitions).
 |-------|----------|
 | #115 | Multi-instance plan file scoping (different problem, same isolation domain) |
 | DEC-ISOLATION-001..007 | Prior reactive fixes for cross-project contamination |
+
+---
+
+### Initiative: Proof-Status Lifecycle Hardening
+**Status:** active
+**Started:** 2026-02-22
+**Goal:** Migrate auto-verify from dead SubagentStop hook to PostToolUse:Task so it fires in production
+
+> Auto-verify is the fast path that bypasses manual user approval when the tester produces a
+> clean verification (AUTOVERIFY: CLEAN with High confidence). It was built into check-tester.sh
+> (SubagentStop:tester) but SubagentStop hooks never fire in Claude Code (confirmed by
+> DEC-CACHE-003 for SubagentStart; SubagentStop has the same issue, confirmed by production
+> observation on 2026-02-21). Every clean tester verification requires manual user approval,
+> adding friction to the proof-before-commit workflow. This initiative migrates the auto-verify
+> logic to PostToolUse:Task, which fires reliably.
+
+**Dominant Constraint:** reliability (auto-verify is a critical fast path; if it doesn't fire, the proof gate adds friction without reducing risk)
+
+#### Goals
+- REQ-GOAL-001: Auto-verify fires in production when tester produces AUTOVERIFY: CLEAN with High confidence
+- REQ-GOAL-002: No regression in proof-status invalidation for non-Guardian writes
+- REQ-GOAL-003: Dead SubagentStop code documented as deprecated, not removed (upstream may fix)
+
+#### Non-Goals
+- REQ-NOGO-001: Removing SubagentStop hooks from settings.json — leave as dead code, upstream may fix
+- REQ-NOGO-002: Refactoring check-tester.sh Phase 2 (advisory/completeness) logic — only Phase 1 auto-verify migrates
+- REQ-NOGO-003: Merging with State Governance initiative — different subsystem, different concern
+- REQ-NOGO-004: Fixing upstream SubagentStop event (#96/updatedInput) — blocked upstream
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-001: PostToolUse:Task handler detects tester completion and runs auto-verify.
+  Acceptance: Given tester task returns, When post-task.sh fires, Then it detects subagent_type=tester
+  and reads the tester's summary.md from the active trace directory.
+
+- REQ-P0-002: Auto-verify writes .proof-status=verified when secondary validation passes.
+  Acceptance: Given summary.md contains "AUTOVERIFY: CLEAN" and "**High**" confidence with no
+  "Partially verified" or non-environmental "Not tested", When post-task.sh validates, Then
+  .proof-status is set to "verified" with dual-write to orchestrator's scoped and legacy copies.
+
+- REQ-P0-003: AUTO-VERIFIED directive emitted in additionalContext for orchestrator.
+  Acceptance: Given auto-verify succeeds, When post-task.sh exits, Then JSON output contains
+  additionalContext with "AUTO-VERIFIED" and Guardian dispatch instruction.
+
+- REQ-P0-004: check-tester.sh Phase 1 annotated as deprecated with pointer to post-task.sh.
+  Acceptance: Given check-tester.sh auto-verify block (lines 89-285), When read, Then @deprecated
+  annotation explains PostToolUse:Task is the live path and this code is retained for upstream fix.
+
+- REQ-P0-005: PostToolUse:Task handler registered in settings.json.
+  Acceptance: Given settings.json, When inspected, Then PostToolUse section has a Task matcher
+  entry pointing to hooks/post-task.sh with timeout 15.
+
+- REQ-P0-006: Test suite validates PostToolUse:Task auto-verify end-to-end.
+  Acceptance: Given synthetic tester trace with AUTOVERIFY: CLEAN in summary.md, When post-task.sh
+  runs with mock environment, Then .proof-status transitions to "verified" and JSON output
+  contains AUTO-VERIFIED.
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: PostToolUse:Task also handles non-tester agents (implementer finalize_trace).
+- REQ-P1-002: Diagnostic logging in post-task.sh for debugging (subagent type, trace ID, validation steps).
+
+**Future Consideration (P2)**
+
+- REQ-P2-001: Consolidate all SubagentStop handlers into PostToolUse:Task when upstream confirms SubagentStop is abandoned.
+- REQ-P2-002: Auto-resume incomplete testers from PostToolUse:Task (currently in check-tester.sh Phase 2).
+
+#### Definition of Done
+
+Auto-verify fires in production on the next clean tester run. proof-status transitions from
+needs-verification/pending to verified without manual user approval. PostToolUse:Task handler
+registered and tested. check-tester.sh deprecated annotation added. cc-todos#49 closed (already
+fixed). Issue #147 resolved.
+
+#### Architectural Decisions
+
+- DEC-PROOF-LIFE-001: New post-task.sh handler for PostToolUse:Task auto-verify.
+  Addresses: REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-005.
+  Rationale: PostToolUse:Task fires reliably (unlike SubagentStop). A dedicated handler keeps
+  tester-specific verification logic separate from task-track.sh dispatch gating. The handler
+  reads summary.md from the tester's trace directory (since PostToolUse doesn't receive
+  last_assistant_message) and runs the same secondary validation as check-tester.sh Phase 1.
+  Alternatives considered: extending task-track.sh for both Pre and Post (rejected — mixes
+  dispatch gating with verification in an already 200-line file with different payload structure).
+
+- DEC-PROOF-LIFE-002: Read summary.md via tester breadcrumb instead of last_assistant_message.
+  Addresses: REQ-P0-001, REQ-P0-003.
+  Rationale: PostToolUse:Task does not provide last_assistant_message in its payload. The tester's
+  AUTOVERIFY signal is written to TRACE_DIR/summary.md per the Trace Protocol. The handler detects
+  the active tester trace via detect_active_trace() and reads summary.md. This is the same
+  fallback path already implemented in check-tester.sh (DEC-V3-001, lines 128-151) but promoted
+  to the primary path.
+
+- DEC-PROOF-LIFE-003: Preserve SubagentStop hooks as dead code with deprecation annotation.
+  Addresses: REQ-NOGO-001.
+  Rationale: SubagentStop may be fixed upstream. Removing the hooks loses the logic. The @deprecated
+  annotation explains that PostToolUse:Task is the live path. The dedup guard (DEC-TESTER-006,
+  check-tester.sh line 170) prevents double auto-verify if upstream fixes SubagentStop and both
+  paths fire simultaneously.
+
+#### Phase 1: Auto-Verify Migration
+**Status:** planned
+**Decision IDs:** DEC-PROOF-LIFE-001, DEC-PROOF-LIFE-002, DEC-PROOF-LIFE-003
+**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004, REQ-P0-005, REQ-P0-006
+**Issues:** #150
+**Definition of Done:**
+- REQ-P0-001 satisfied: post-task.sh detects tester and reads summary.md
+- REQ-P0-002 satisfied: .proof-status=verified on AUTOVERIFY: CLEAN + High confidence
+- REQ-P0-003 satisfied: AUTO-VERIFIED in additionalContext output
+- REQ-P0-004 satisfied: @deprecated annotation on check-tester.sh Phase 1
+- REQ-P0-005 satisfied: PostToolUse:Task registered in settings.json
+- REQ-P0-006 satisfied: test-post-task-autoverify.sh passes all cases
+
+##### Planned Decisions
+- DEC-PROOF-LIFE-001: New post-task.sh with auto-verify extracted from check-tester.sh Phase 1 — Addresses: REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-005
+- DEC-PROOF-LIFE-002: Read summary.md via detect_active_trace() — Addresses: REQ-P0-001, REQ-P0-003
+- DEC-PROOF-LIFE-003: @deprecated annotation on check-tester.sh auto-verify — Addresses: REQ-P0-004
+
+##### Work Items
+
+**W1-1: Create hooks/post-task.sh PostToolUse:Task handler**
+- Source source-lib.sh for shared functions.
+- Extract subagent_type from tool_input (same field used by task-track.sh).
+- If subagent_type != "tester", exit 0 (no-op for non-tester agents).
+- Find active tester trace via detect_active_trace(PROJECT_ROOT, "tester").
+- Read TRACE_DIR/summary.md as RESPONSE_TEXT.
+- Read current .proof-status via resolve_proof_file().
+- Dedup guard: if already "verified", emit advisory and exit 0 (mirrors DEC-TESTER-006).
+- Run secondary validation (same logic as check-tester.sh lines 194-231):
+  - Accept "pending" or "needs-verification" status.
+  - Require AUTOVERIFY: CLEAN signal in RESPONSE_TEXT.
+  - Require **High** confidence (markdown bold).
+  - Reject "Partially verified".
+  - Reject non-environmental "Not tested" (whitelist browser/viewport/device/network).
+  - Reject **Medium** or **Low** confidence.
+- If validation passes: write "verified|timestamp" to proof file with dual-write
+  (scoped + legacy copies for guard.sh compatibility).
+- Track agent stop, append audit entry.
+- Finalize trace via finalize_trace().
+- Emit JSON with additionalContext containing AUTO-VERIFIED directive.
+- If validation fails or no signal: emit advisory context and exit 0.
+
+**W1-2: Register PostToolUse:Task handler in settings.json**
+- Add to PostToolUse section (after the Skill matcher block):
+  ```json
+  {
+    "matcher": "Task",
+    "hooks": [
+      {
+        "type": "command",
+        "command": "$HOME/.claude/hooks/post-task.sh",
+        "timeout": 15
+      }
+    ]
+  }
+  ```
+- Timeout 15s matches check-tester.sh SubagentStop timeout.
+
+**W1-3: Add @deprecated annotation to check-tester.sh Phase 1**
+- Before the Phase 1 header comment (line 74), add:
+  ```bash
+  # @deprecated DEC-PROOF-LIFE-003
+  # @title Phase 1 auto-verify is dead code — SubagentStop:tester never fires
+  # @status deprecated
+  # @rationale SubagentStop hooks do not fire in Claude Code (DEC-CACHE-003).
+  #   Auto-verify logic has been migrated to hooks/post-task.sh (PostToolUse:Task).
+  #   This code is retained because: (1) SubagentStop may be fixed upstream,
+  #   (2) the dedup guard at line 170 (DEC-TESTER-006) prevents double auto-verify
+  #   if both paths fire simultaneously. Do not delete without confirming upstream status.
+  #   See: Issue #147, DEC-PROOF-LIFE-001.
+  ```
+
+**W1-4: Close cc-todos#49 (already fixed)**
+- Run: `gh issue close 49 -c "Fixed in commit 368b3c4 (DEC-TRACK-GUARDIAN-001). Tests: test-track-guardian-exemption.sh (6 tests, all passing)."`
+- This is a housekeeping item, not implementation work.
+
+**W1-5: Create tests/test-post-task-autoverify.sh**
+- Test 1: Tester with AUTOVERIFY: CLEAN + High confidence -> proof = verified, output has AUTO-VERIFIED.
+- Test 2: Tester with AUTOVERIFY: CLEAN + Medium confidence -> proof stays pending (rejected).
+- Test 3: Tester with AUTOVERIFY: CLEAN + "Partially verified" -> proof stays pending (rejected).
+- Test 4: Tester with AUTOVERIFY: CLEAN + "Not tested" (non-environmental) -> proof stays pending.
+- Test 5: Tester with AUTOVERIFY: CLEAN + "Not tested: requires browser" -> proof = verified (whitelisted).
+- Test 6: Tester without AUTOVERIFY signal -> proof stays pending (no-op).
+- Test 7: proof-status already verified -> dedup guard, no duplicate audit entry.
+- Test 8: Non-tester agent (implementer) -> exit 0 immediately (no-op).
+- Test 9: No active tester trace -> exit 0 with advisory.
+- Test 10: Syntax check — post-task.sh is valid bash.
+- Each test creates isolated temp repo with mock trace directory and summary.md.
+- TAP-compatible output. All tests use make_temp_repo pattern from test-track-guardian-exemption.sh.
+
+##### Critical Files
+- `hooks/post-task.sh` — New: PostToolUse:Task auto-verify handler
+- `hooks/check-tester.sh` — @deprecated annotation on Phase 1 (lines 74-285)
+- `settings.json` — PostToolUse:Task registration
+- `hooks/context-lib.sh` — detect_active_trace(), resolve_proof_file(), finalize_trace() (existing, used by new handler)
+- `hooks/source-lib.sh` — Bootstrap for all hooks (existing)
+- `tests/test-post-task-autoverify.sh` — New: 10 auto-verify migration tests
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Proof-Status Lifecycle Worktree Strategy
+
+Main is sacred. Each phase works in its own worktree:
+- **Phase 1:** `~/.claude/.worktrees/proof-autoverify` on branch `feature/autoverify-migration`
+
+#### Proof-Status Lifecycle References
+
+##### Related Decisions
+| DEC-ID | Source | Relevance |
+|--------|--------|-----------|
+| DEC-CACHE-003 | task-track.sh | Confirmed SubagentStart never fires; same issue affects SubagentStop |
+| DEC-TESTER-001 | check-tester.sh | Original auto-verify design (SubagentStop-based) |
+| DEC-TESTER-006 | check-tester.sh | Dedup guard prevents double auto-verify |
+| DEC-V3-001 | check-tester.sh | summary.md fallback for AUTOVERIFY signal |
+| DEC-TRACK-GUARDIAN-001 | track.sh | Guardian race fix (cc-todos#49, already implemented) |
+
+##### Related Issues
+| Issue | Relation |
+|-------|----------|
+| #147 | Primary issue: auto-verify dead code migration |
+| cc-todos#49 | Guardian race condition — already fixed, needs closure |
+| #129 | Original diagnostic logging for auto-verify pipeline |
+| #96 | Upstream: updatedInput not supported in PreToolUse |
 
 ---
 
