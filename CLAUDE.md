@@ -83,7 +83,7 @@ report, engage in Q&A, user approval triggers prompt-submit.sh gate transition.
 - Guardian dispatch: requires `.proof-status = verified` when file exists (PreToolUse:Task gate in task-track.sh). Missing file = no gate (bootstrap path — implementer dispatch activates the gate by writing `needs-verification`)
 - The user's approval (verified, approved, lgtm, looks good, ship it) triggers `.proof-status = verified` via prompt-submit.sh — no agent can write it
 
-**Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.
+**Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/) and return a cohesive summary of their work (aim for 200-500 tokens). Read TRACE_DIR/summary.md for full details on demand.
 
 **Silent Return Recovery:** When an agent returns with no visible content (empty Task result), the check-*.sh hook injects the trace summary into additionalContext — read it in the system-reminder before acting. If even that is missing, read the latest trace summary directly: `traces/<agent-type>-<latest>/summary.md`. Never proceed blind after an empty agent return — the trace always has context.
 
