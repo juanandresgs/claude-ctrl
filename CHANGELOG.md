@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/observatory-stdout`: Observatory report.sh now prints a concise stdout summary (regressions, health, signals, batches) after writing the full report file, so callers get actionable output without reading the file
 
 ### Fixed
+- `fix/bazaar-autonomous`: KEYCHAIN_DIR anchor-walk resolves keychain path from any CWD (DEC-BAZAAR-010), markdown fence stripping prevents ```json/``` artifacts in LLM output parsing (DEC-BAZAAR-011); 9 new tests (75 total)
 - `fix/guard-worktree-loop`: Checks 5/5b infinite denial loop on worktree removal — CWD-conditional deny only fires when shell CWD is inside .worktrees/ (the dangerous case); when CWD is already safe, removal is allowed; 10-test regression suite added
 - `fix/sigpipe-crashes`: SIGPIPE (exit 141) crashes in session-init.sh and context-lib.sh when MASTER_PLAN.md has large sections — replaced 20 pipe patterns with SIGPIPE-safe equivalents (awk inline limits, bash builtins, single-pass awk); added 14-test SIGPIPE resistance suite
 - `fix/stale-marker-blocking-tester`: Stale `.active-*` marker race condition blocking tester dispatch — reorder `finalize_trace` before timeout-heavy ops in check-implementer.sh and check-guardian.sh, add marker cleanup in `refinalize_trace()`, add completed-status fast path in task-track.sh Gate B
