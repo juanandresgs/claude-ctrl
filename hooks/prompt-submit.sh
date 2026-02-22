@@ -22,29 +22,36 @@ source "$(dirname "$0")/source-lib.sh"
 HOOK_INPUT=$(read_input)
 PROMPT=$(get_field '.prompt')
 
-# Exit silently if no prompt — but first check if the approval gate is active.
-# If .proof-status is pending and the prompt is empty (e.g. image-only submit),
-# the keyword gate cannot fire. Emit a context advisory so the orchestrator knows
-# text input is required. Reference /approve as the escape hatch.
+# Handle empty prompt (Enter-only submit).
+# @decision DEC-PROMPT-002
+# @title Treat Enter-only submits as continuation, not errors
+# @status accepted
+# @rationale The model was interpreting text-free turns as "empty sends" and
+#   commenting on it, frustrating the user. Root cause: no guidance was injected
+#   for empty prompts (silent exit on non-proof path, alarming advisory on proof
+#   path). Fix: always inject a short hint telling the model to treat Enter as
+#   approval/continuation. Proof gate path still notes the keyword requirement
+#   but without the "error" framing.
 if [[ -z "$PROMPT" ]]; then
+    _EMPTY_HINT="User pressed Enter without text. This is normal interaction — treat as approval or continuation of the current flow. Do NOT comment on the empty message."
     _EMPTY_CLAUDE_DIR=$(get_claude_dir 2>/dev/null || echo "")
     if [[ -n "$_EMPTY_CLAUDE_DIR" ]]; then
         _EMPTY_PROOF="${_EMPTY_CLAUDE_DIR}/.proof-status"
         if [[ -f "$_EMPTY_PROOF" ]]; then
             _EMPTY_STATUS=$(cut -d'|' -f1 "$_EMPTY_PROOF" 2>/dev/null || echo "")
             if [[ "$_EMPTY_STATUS" == "pending" ]]; then
-                cat <<'EOFEMPTY'
-{
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "APPROVAL GATE ACTIVE: .proof-status is pending but no text was detected in this prompt. Approval keywords (approved, lgtm, looks good, verified, ship it) must appear as TEXT. Image-only or empty submits cannot trigger the gate. Suggest /approve as an escape hatch."
-  }
-}
-EOFEMPTY
-                exit 0
+                _EMPTY_HINT="User pressed Enter without text. Approval gate is active (.proof-status=pending) — approval keywords must appear as text. Remind the user to type 'approved' or use /approve. Do NOT comment on the message being empty."
             fi
         fi
     fi
+    cat <<EOFEMPTY
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "$_EMPTY_HINT"
+  }
+}
+EOFEMPTY
     exit 0
 fi
 

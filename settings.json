@@ -238,6 +238,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/post-task.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Notification": [

@@ -167,6 +167,7 @@ PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-ga
 [Tool executes]
                     ↓
 PostToolUse:W/E → lint.sh → track.sh → code-review.sh → plan-validate.sh → test-runner.sh (async)
+PostToolUse:Task → post-task.sh (auto-verify on tester completion)
                     ↓
 SubagentStart   → subagent-start.sh (agent-specific context)
 SubagentStop    → check-planner.sh | check-implementer.sh | check-tester.sh | check-guardian.sh | check-explore.sh | check-general-purpose.sh
@@ -210,6 +211,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **skill-result.sh** | Skill | Reads `.skill-result.md` from forked skills, injects as `additionalContext` to parent session. Surfaces research/analysis results from `context: fork` skills (deep-research, decide, consume-content, prd) back to orchestrator. Truncates files over 4000 bytes. Deletes file after reading to prevent stale results. Exit 0 silently if file doesn't exist |
 | **webfetch-fallback.sh** | WebFetch | Fires when WebFetch tool fails (non-200 response or error). Suggests `mcp__fetch__fetch` as alternative fetch method. Exit 0 (advisory only) |
 | **playwright-cleanup.sh** | mcp__playwright__browser_snapshot | Cleanup after Playwright browser snapshots. Prevents stale browser state accumulation |
+| **post-task.sh** | Task | PostToolUse:Task handler that detects tester completions and performs auto-verify. Reads summary.md from the tester trace via the active-tester breadcrumb (PostToolUse lacks `last_assistant_message`), validates `AUTOVERIFY: CLEAN` signal with secondary checks (**High** confidence, no **Medium**/**Low**, no "Partially verified", no non-environmental "Not tested"), writes `verified` to proof-status at all three paths (worktree, orchestrator scoped, orchestrator legacy). Emits `AUTO-VERIFIED` directive in `additionalContext` on success. Replaces the dead SubagentStop:tester auto-verify path. Safety net: if proof-status is missing when tester completes, writes `needs-verification` so the manual approval flow can proceed |
 
 ### Session Lifecycle
 

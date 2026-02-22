@@ -24,9 +24,15 @@ set -euo pipefail
 #   corrected command in the reason string. The model reads the reason and
 #   resubmits the corrected command.
 #   Check 0.75 denies all cd/pushd into .worktrees/ to prevent posix_spawn ENOENT
-#   if the worktree is deleted. Check 5 and 5b deny worktree removal without safe
-#   CWD first. Check 0.5 (Path A/B canary recovery) was removed — prevention is
-#   the only reliable fix.
+#   if the worktree is deleted. Check 5 and 5b deny worktree removal ONLY when
+#   CWD is inside a .worktrees/ path (the dangerous case). When CWD is already
+#   safe (project root, /tmp, home, etc.), removal is allowed — the posix_spawn
+#   ENOENT risk only applies when the shell's persistent CWD is the deleted
+#   directory. Unconditional deny created an infinite loop (Issue #guard-loop):
+#   the corrected "cd <safe> && rm/git worktree remove ..." still matched the
+#   pattern, so every resubmission was denied again with another cd prepended.
+#   Check 0.5 (Path A/B canary recovery) was removed — prevention is the only
+#   reliable fix.
 #
 #   All pattern-matching checks (2-10, 0.75, 5b) use $_stripped_cmd (quoted strings
 #   removed) for detection so that commit message content like "fix branch -D handling"
@@ -47,8 +53,8 @@ set -euo pipefail
 #   - No force push to main/master
 #   - No destructive git commands (reset --hard, clean -f, branch -D without Guardian + merge check)
 #   - cd/pushd into .worktrees/ (use subshell or git -C instead)
-#   - git worktree remove without cd to main first
-#   - rm -rf .worktrees/ without cd to main first
+#   - git worktree remove when CWD is inside a .worktrees/ path
+#   - rm -rf .worktrees/ when CWD is inside a .worktrees/ path
 #
 # @decision DEC-INTEGRITY-002
 # @title Deny-on-crash EXIT trap for fail-closed behavior
@@ -95,6 +101,11 @@ source "$(dirname "$0")/source-lib.sh"
 
 HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')
+# CWD from the hook input JSON — the Bash tool's current working directory at
+# invocation time. Used by Checks 5 and 5b to gate worktree removal denials:
+# only deny when CWD is inside a .worktrees/ path (the dangerous case).
+# Falls back to empty string; checks that use it must handle empty gracefully.
+CWD=$(get_field '.cwd')
 
 # Exit silently if no command
 if [[ -z "$COMMAND" ]]; then
@@ -279,21 +290,31 @@ fi
 # Must run BEFORE the early-exit gate which skips all non-git commands.
 #
 # @decision DEC-GUARD-002
-# @title Two-tier worktree CWD safety: git worktree remove + raw rm — deny pattern
+# @title Two-tier worktree CWD safety: git worktree remove + raw rm — conditional deny
 # @status accepted
 # @rationale Check 5 only catches `git worktree remove`. The death spiral also
 # occurs when the agent runs `rm -rf .worktrees/` directly, or when
 # worktree-roster.sh cleanup falls through to rm -rf internally. This check
-# intercepts rm with recursive+force targeting any .worktrees/ path and denies
-# with the correct safe command (cd to main worktree first). rewrite() is NOT
-# used because updatedInput is not supported in PreToolUse hooks — it silently
-# fails. deny() with the corrected command in the reason is the only reliable fix.
+# intercepts rm with recursive+force targeting any .worktrees/ path.
+# The deny is CONDITIONAL on CWD being inside a .worktrees/ path: only that
+# case risks posix_spawn ENOENT (the shell's persistent CWD is deleted).
+# When CWD is already safe (project root, /tmp, home, etc.) the removal is
+# allowed — unconditional deny created an infinite loop where every corrected
+# "cd <safe> && rm -rf .worktrees/..." resubmission still matched the pattern.
+# rewrite() is NOT used because updatedInput is not supported in PreToolUse
+# hooks — it silently fails. deny() with the corrected command in the reason
+# is the only reliable fix for the dangerous case.
 if echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.worktrees/|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+).*\.worktrees/'; then
     WT_TARGET=$(echo "$COMMAND" | grep -oE '[^[:space:]]*\.worktrees/[^[:space:];&|]*' | head -1)
     if [[ -n "$WT_TARGET" ]]; then
-        MAIN_WT=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
-        MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
-        deny "CWD safety: removing worktree directory requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
+        # Only deny if CWD is inside a worktree (at risk of posix_spawn ENOENT).
+        # When CWD is already safe, allow the removal through.
+        if [[ "$CWD" == *"/.worktrees/"* ]]; then
+            MAIN_WT=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
+            MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
+            deny "CWD safety: removing worktree directory requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
+        fi
+        # CWD is safe — allow the removal
     fi
 fi
 
@@ -438,7 +459,7 @@ fi
 
 # --- Check 5: Worktree removal CWD safety deny ---
 # @decision DEC-GUARD-CHECK5-001
-# @title Use extract_git_target_dir + git -C for worktree removal — deny pattern
+# @title Use extract_git_target_dir + git -C for worktree removal — conditional deny
 # @status accepted
 # @rationale The original sed+xargs approach failed for `git -C "path with spaces"
 #   worktree remove` because the sed pattern expected `git worktree` directly
@@ -449,20 +470,31 @@ fi
 #   the correct repo directory, then pass it to git -C so worktree list targets the
 #   right repo regardless of hook CWD. The || echo "" prevents pipeline failure
 #   from crashing under set -euo pipefail.
+#   The CWD deny is CONDITIONAL: only fire when CWD is inside a .worktrees/ path.
+#   Unconditional deny created an infinite loop — the corrected "cd <safe> && git
+#   worktree remove ..." command still matched the pattern, so every resubmission
+#   was denied again with another cd prepended. When CWD is already safe, allow
+#   the removal through.
 #   rewrite() is NOT used because updatedInput is not supported in PreToolUse hooks
 #   — it silently fails. deny() with the corrected command in the reason is the
-#   only reliable fix.
+#   only reliable fix for the dangerous case.
 if echo "$_stripped_cmd" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
-    # Deny --force worktree removal outside Guardian (dirty worktrees need oversight)
+    # Deny --force worktree removal outside Guardian (dirty worktrees need oversight).
+    # This check is CWD-independent: --force is dangerous regardless of where CWD is.
     if echo "$_stripped_cmd" | grep -qE 'worktree[[:space:]]+remove[[:space:]].*--force|worktree[[:space:]]+remove[[:space:]]+--force'; then
         if ! is_guardian_active; then
             deny "Cannot force-remove worktrees outside Guardian context. Dirty worktrees may contain uncommitted work. Dispatch Guardian for worktree cleanup."
         fi
     fi
-    CHECK5_DIR=$(extract_git_target_dir "$COMMAND")
-    MAIN_WT=$(git -C "$CHECK5_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
-    MAIN_WT="${MAIN_WT:-$CHECK5_DIR}"
-    deny "CWD safety: worktree removal requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
+    # Only deny if CWD is inside a worktree (at risk of posix_spawn ENOENT).
+    # When CWD is already safe, allow the removal through.
+    if [[ "$CWD" == *"/.worktrees/"* ]]; then
+        CHECK5_DIR=$(extract_git_target_dir "$COMMAND")
+        MAIN_WT=$(git -C "$CHECK5_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1 || echo "")
+        MAIN_WT="${MAIN_WT:-$CHECK5_DIR}"
+        deny "CWD safety: worktree removal requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
+    fi
+    # CWD is safe — allow the removal
 fi
 
 # --- Check 6: Test status gate for merge commands ---
