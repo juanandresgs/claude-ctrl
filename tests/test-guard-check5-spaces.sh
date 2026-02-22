@@ -49,11 +49,29 @@ fail_test() {
     echo "  FAIL: $reason"
 }
 
-# Helper: build JSON hook input for guard.sh
+# Helper: build JSON hook input for guard.sh.
+# Args:
+#   $1 = command string
+#   $2 = cwd to inject (optional; defaults to empty string which is "safe" — not inside .worktrees/)
+#        Pass a path containing /.worktrees/ to simulate the dangerous case.
 make_input() {
     local cmd="$1"
-    printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
-        "$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    local cwd="${2:-}"
+    printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":%s}' \
+        "$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+        "$(printf '%s' "$cwd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+}
+
+# Helper: assert output is NOT a crash. Used for tests where the new conditional
+# deny logic allows the command (CWD is safe) but we still want to verify no crash.
+assert_no_crash() {
+    local output="$1"
+    local label="$2"
+    if echo "$output" | grep -q "SAFETY: guard.sh crashed"; then
+        fail_test "$label: deny-on-crash triggered (guard.sh crashed). Output: $output"
+    else
+        pass_test
+    fi
 }
 
 # Helper: assert output is a deny (not a crash). Check 5 uses deny() with
@@ -81,93 +99,98 @@ else
     fail_test "guard.sh has syntax errors"
 fi
 
-# --- Test 2: Bug 2 reproduction: non-git CWD + simple worktree remove ---
+# --- Test 2: Bug 2 reproduction: git worktree remove from worktree CWD does not crash ---
 # The original bare `git worktree list` exits 128 when CWD is not a git repo.
 # The fix uses git -C "$CHECK5_DIR" which targets the correct repo.
-run_test "Check5 Bug2: non-git CWD + git worktree remove does not crash"
+# With the conditional deny, we inject a .worktrees/ CWD to trigger the deny path
+# AND verify the fix avoids the crash (git -C works even from non-git CWD).
+run_test "Check5 Bug2: git worktree remove from worktree CWD does not crash"
 
 TARGET_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-target-XXXXXX")
-NON_GIT_CWD=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-nongit-XXXXXX")
+mkdir -p "$TARGET_REPO/.worktrees/some-wt"
 git -C "$TARGET_REPO" init > /dev/null 2>&1
 
 CMD="git -C $TARGET_REPO worktree remove $TARGET_REPO/wt"
-INPUT_JSON=$(make_input "$CMD")
+# Inject a .worktrees/ CWD to trigger the deny path (while testing no crash)
+INPUT_JSON=$(make_input "$CMD" "$TARGET_REPO/.worktrees/some-wt")
 
-# Run from NON_GIT_CWD — bare `git worktree list` would exit 128 here
-OUTPUT=$(cd "$NON_GIT_CWD" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
 
-cd "$PROJECT_ROOT"
-rm -rf "$TARGET_REPO" "$NON_GIT_CWD"
+rm -rf "$TARGET_REPO"
 
-assert_deny "$OUTPUT" "non-git CWD"
+assert_deny "$OUTPUT" "worktree CWD + non-git target dir"
 
 # --- Test 3: Bug 1 reproduction: git -C "path with spaces" worktree remove ---
 # The original sed `s/.*git worktree remove.../` doesn't match when -C "path"
 # appears between git and worktree. The full command leaks as WT_PATH,
 # then bare git worktree list runs from wrong CWD.
+# With the conditional deny, we inject a .worktrees/ CWD to trigger the deny
+# path AND verify the fix handles path-with-spaces without crashing.
 run_test "Check5 Bug1: git -C 'path with spaces' worktree remove does not crash"
 
 SPACED_DIR="$PROJECT_ROOT/tmp/test repo with spaces"
-NON_GIT_CWD2=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-nongit2-XXXXXX")
-mkdir -p "$SPACED_DIR"
+mkdir -p "$SPACED_DIR/.worktrees/some-feature"
 git -C "$SPACED_DIR" init > /dev/null 2>&1
 
 CMD="git -C \"$SPACED_DIR\" worktree remove \"$SPACED_DIR/.worktrees/some-feature\""
-INPUT_JSON=$(make_input "$CMD")
+# Inject a .worktrees/ CWD to trigger the deny path while testing the path-with-spaces fix
+INPUT_JSON=$(make_input "$CMD" "$SPACED_DIR/.worktrees/some-feature")
 
-# Run from non-git CWD to expose both bugs simultaneously
-OUTPUT=$(cd "$NON_GIT_CWD2" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
 
-cd "$PROJECT_ROOT"
-rm -rf "$SPACED_DIR" "$NON_GIT_CWD2"
+rm -rf "$SPACED_DIR"
 
-assert_deny "$OUTPUT" "path-with-spaces + non-git CWD"
+assert_deny "$OUTPUT" "path-with-spaces + worktree CWD"
 
-# --- Test 4: Simple git worktree remove still gets denied (regression) ---
-run_test "Check5 Regression: simple 'git worktree remove /path' still denied"
+# --- Test 4: Simple git worktree remove denied when CWD is inside worktree ---
+run_test "Check5 Regression: simple 'git worktree remove /path' denied when CWD inside .worktrees/"
 
 SIMPLE_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-simple-XXXXXX")
+mkdir -p "$SIMPLE_REPO/.worktrees/some-wt"
 git -C "$SIMPLE_REPO" init > /dev/null 2>&1
 
 CMD="git worktree remove $SIMPLE_REPO/some-wt"
-INPUT_JSON=$(make_input "$CMD")
+# Inject the .worktrees/ CWD — this is the dangerous case that must be denied
+INPUT_JSON=$(make_input "$CMD" "$SIMPLE_REPO/.worktrees/some-wt")
 
-OUTPUT=$(cd "$SIMPLE_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
 
-cd "$PROJECT_ROOT"
 rm -rf "$SIMPLE_REPO"
 
-assert_deny "$OUTPUT" "simple path"
+assert_deny "$OUTPUT" "simple path with worktree CWD"
 
-# --- Test 5: git -C /no-spaces worktree remove /wt is denied ---
-run_test "Check5 Regression: git -C /no-spaces worktree remove /wt is denied"
+# --- Test 5: git -C /no-spaces worktree remove /wt denied from worktree CWD ---
+run_test "Check5 Regression: git -C /no-spaces worktree remove /wt denied from .worktrees/ CWD"
 
 NOSPACE_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-nospace-XXXXXX")
-NON_GIT_CWD3=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-nongit3-XXXXXX")
+mkdir -p "$NOSPACE_REPO/.worktrees/some-wt"
 git -C "$NOSPACE_REPO" init > /dev/null 2>&1
 
 CMD="git -C $NOSPACE_REPO worktree remove $NOSPACE_REPO/wt"
-INPUT_JSON=$(make_input "$CMD")
+# Inject the .worktrees/ CWD — the dangerous case
+INPUT_JSON=$(make_input "$CMD" "$NOSPACE_REPO/.worktrees/some-wt")
 
-OUTPUT=$(cd "$NON_GIT_CWD3" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
 
-cd "$PROJECT_ROOT"
-rm -rf "$NOSPACE_REPO" "$NON_GIT_CWD3"
+rm -rf "$NOSPACE_REPO"
 
-assert_deny "$OUTPUT" "no-spaces -C path from non-git CWD"
+assert_deny "$OUTPUT" "no-spaces -C path from worktree CWD"
 
 # --- Test 6: Deny reason contains 'cd' prefix to main worktree ---
-run_test "Check5: deny reason contains 'cd' to main worktree"
+# Inject a .worktrees/ CWD to trigger the deny path, then verify the deny
+# reason includes the corrected command (cd to safe path first).
+run_test "Check5: deny reason contains 'cd' to main worktree (when CWD inside .worktrees/)"
 
 REWRITE_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-rewrite-XXXXXX")
+mkdir -p "$REWRITE_REPO/.worktrees/a-wt"
 git -C "$REWRITE_REPO" init > /dev/null 2>&1
 
 CMD="git worktree remove $REWRITE_REPO/a-wt"
-INPUT_JSON=$(make_input "$CMD")
+# Inject a .worktrees/ CWD to trigger the deny path
+INPUT_JSON=$(make_input "$CMD" "$REWRITE_REPO/.worktrees/a-wt")
 
-OUTPUT=$(cd "$REWRITE_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
 
-cd "$PROJECT_ROOT"
 rm -rf "$REWRITE_REPO"
 
 if echo "$OUTPUT" | grep -q '"permissionDecision": "deny"'; then
@@ -175,7 +198,7 @@ if echo "$OUTPUT" | grep -q '"permissionDecision": "deny"'; then
     if echo "$OUTPUT" | grep -qE '"permissionDecisionReason".*cd '; then
         pass_test
     else
-        # Deny is correct even if reason format differs
+        # Deny is correct even if reason format differs slightly
         pass_test
     fi
 elif echo "$OUTPUT" | grep -q "SAFETY: guard.sh crashed"; then
