@@ -131,6 +131,14 @@ git for-each-ref "refs/checkpoints/${BRANCH}/" --format='%(refname)' | xargs -I{
 
 Checkpoint refs are branch-scoped and only valuable during active development. Once a branch is merged, its checkpoints are obsolete — the merge commit itself is the durable record.
 
+### Pre-Push Validation
+
+Before pushing to remote, run the test suite to catch issues locally:
+```bash
+bash tests/run-hooks.sh
+```
+If tests fail, abort the push and report the failures. The `.githooks/pre-push` hook enforces this mechanically, but you should also check proactively — catching failures before the push attempt gives better error context.
+
 ### 4. Repository Health
 - Report clear status of repository state
 - Track divergence from remote

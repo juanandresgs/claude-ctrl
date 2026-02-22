@@ -693,6 +693,20 @@ if ! (source "$(dirname "$0")/source-lib.sh") 2>/dev/null; then
     CONTEXT_PARTS+=("WARNING: Hook library smoke test FAILED. log.sh or context-lib.sh may be corrupted. Run: bash -n ~/.claude/hooks/log.sh && bash -n ~/.claude/hooks/context-lib.sh")
 fi
 
+# --- CI health check (remote validation status) ---
+# Lightweight check: query last CI run status via gh CLI.
+# Only runs if gh is available and we're in a repo with GitHub Actions.
+if command -v gh >/dev/null 2>&1 && [[ -d "$PROJECT_ROOT/.github/workflows" ]]; then
+    CI_STATUS=$(gh run list --limit 1 --json conclusion,updatedAt --jq '.[0] | "\(.conclusion)|\(.updatedAt)"' 2>/dev/null) || CI_STATUS=""
+    if [[ -n "$CI_STATUS" ]]; then
+        CI_CONCLUSION="${CI_STATUS%%|*}"
+        CI_TIMESTAMP="${CI_STATUS##*|}"
+        if [[ "$CI_CONCLUSION" == "failure" ]]; then
+            CONTEXT_PARTS+=("[WARN] CI failing on ${GIT_BRANCH:-main} — last run failed (${CI_TIMESTAMP}). Run \`bash tests/run-hooks.sh\` locally.")
+        fi
+    fi
+fi
+
 # --- Preflight integrity checks ---
 # Fast validation of libraries, state files, and hook registration.
 # diagnose.sh --quick completes in <250ms. Failures inject warnings;

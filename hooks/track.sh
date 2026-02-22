@@ -117,7 +117,7 @@ if [[ -f "$PROOF_FILE" ]]; then
             #   Also fixes the same issue for projects whose absolute paths contain
             #   any of the exclusion keywords (node_modules, .git, vendor, etc. in the
             #   path above the project root are now ignored). Fixes #135/#43.
-            RELATIVE_PATH="${FILE_PATH#${PROJECT_ROOT}/}"
+            RELATIVE_PATH="${FILE_PATH#"${PROJECT_ROOT}/"}"
             if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
                && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
                 echo "pending|$(date +%s)" > "$PROOF_FILE"

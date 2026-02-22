@@ -2018,7 +2018,8 @@ backup_trace_manifests() {
     [[ "${#rel_paths[@]}" -eq 0 ]] && return 0
 
     # Create archive named by date+timestamp
-    local archive="${store}/.manifest-backup-$(date +%Y-%m-%dT%H%M%S).tar.gz"
+    local archive
+    archive="${store}/.manifest-backup-$(date +%Y-%m-%dT%H%M%S).tar.gz"
 
     # tar from store root with relative paths
     tar -czf "$archive" -C "$store" "${rel_paths[@]}" 2>/dev/null || {

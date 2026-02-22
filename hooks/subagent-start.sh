@@ -219,7 +219,7 @@ case "$AGENT_TYPE" in
         # Save HEAD SHA for commit detection in check-guardian.sh (W3-1: commit event emission)
         # check-guardian.sh compares current HEAD against this SHA after Guardian runs
         # to detect whether a commit occurred and emit a `commit` session event.
-        git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null \
+        git -C "$PROJECT_ROOT" rev-parse HEAD \
             > "${CLAUDE_DIR}/.guardian-start-sha" 2>/dev/null || true
         # Inject test status
         TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"

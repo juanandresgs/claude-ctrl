@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Pre-push hook — validates shell scripts before pushing to remote.
+# Install: git config core.hooksPath .githooks
+#
+# @decision DEC-CI-PREPUSH-001
+# @title Local pre-push validation prevents CI breakage
+# @status accepted
+# @rationale CI failures went unnoticed for 5+ consecutive commits because
+#   there was no local validation before push. This hook runs the same checks
+#   as CI (shellcheck + test suite) before allowing push to proceed.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+echo "=== Pre-push validation ==="
+
+# 1. Bash syntax check on all hook scripts
+echo "--- Syntax check (bash -n) ---"
+failed=0
+for script in "$REPO_ROOT"/hooks/*.sh; do
+    if ! bash -n "$script" 2>/dev/null; then
+        echo "FAIL: $script has syntax errors"
+        bash -n "$script" 2>&1 | head -5
+        failed=1
+    fi
+done
+if [[ $failed -eq 1 ]]; then
+    echo "ABORT: Fix syntax errors before pushing."
+    exit 1
+fi
+echo "OK: All scripts pass syntax check"
+
+# 2. Shellcheck with same exclusions as CI
+echo "--- Shellcheck ---"
+EXCLUSIONS="SC2034,SC1091,SC2002,SC2012,SC2015,SC2126,SC2317,SC2329,SC2045,SC2001,SC2153"
+failed=0
+for script in "$REPO_ROOT"/hooks/*.sh; do
+    if ! shellcheck -e "$EXCLUSIONS" "$script" >/dev/null 2>&1; then
+        echo "FAIL: $script"
+        shellcheck -e "$EXCLUSIONS" "$script" 2>&1 | head -10
+        failed=1
+    fi
+done
+if [[ $failed -eq 1 ]]; then
+    echo "ABORT: Fix shellcheck errors before pushing."
+    exit 1
+fi
+echo "OK: All scripts pass shellcheck"
+
+# 3. Test suite
+echo "--- Test suite ---"
+if [[ -f "$REPO_ROOT/tests/run-hooks.sh" ]]; then
+    if ! bash "$REPO_ROOT/tests/run-hooks.sh" 2>&1; then
+        echo "ABORT: Test suite failed. Fix tests before pushing."
+        exit 1
+    fi
+    echo "OK: Test suite passed"
+else
+    echo "SKIP: tests/run-hooks.sh not found"
+fi
+
+echo "=== Pre-push validation passed ==="
