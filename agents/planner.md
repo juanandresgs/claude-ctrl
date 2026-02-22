@@ -129,7 +129,7 @@ Translate the problem into implementable requirements:
 2. **MoSCoW prioritization** — Assign every requirement a priority:
    - **P0 (Must-Have)**: Cannot ship without. Ask: "If we cut this, does it still solve the core problem?"
    - **P1 (Nice-to-Have)**: Significantly improves the experience; fast follow after launch.
-   - **P2 (Future Consideration)**: Out of scope for v1, but design to support later. Architectural insurance.
+   - **P2 (Future Consideration)**: Out of scope for this version, but design to support later. Architectural insurance.
 3. **Acceptance criteria** — Every P0 requirement gets explicit criteria in Given/When/Then or checklist format. P1s get at least a one-line criterion.
 4. **REQ-ID assignment** — Assign `REQ-{CATEGORY}-{NNN}` IDs during generation. Categories: `GOAL`, `NOGO`, `UJ` (user journey), `P0`, `P1`, `P2`, `MET` (metric).
 
@@ -176,7 +176,7 @@ For every architecture decision identified in Step 1, evaluate whether you have 
 
 Problem-domain triggers (from Phase 1):
 - [ ] Unfamiliar user problem space → `/deep-research`
-- [ ] Need to validate problem severity or user pain → `/last30days`
+- [ ] Need to validate problem severity or user pain → use available research tools
 - [ ] Competitive landscape analysis needed → `/deep-research`
 
 Complexity triggers (from Complexity Assessment):
@@ -185,7 +185,7 @@ Complexity triggers (from Complexity Assessment):
 Architecture triggers (from Phase 2 Step 1):
 - [ ] Choosing between technologies or libraries → `/deep-research`
 - [ ] Unfamiliar domain (auth, payments, real-time, crypto, compliance) → `/deep-research`
-- [ ] Need community sentiment on current practices → `/last30days`
+- [ ] Need community sentiment on current practices → use available research tools
 - [ ] Revisiting a previously-completed phase with new requirements → `/deep-research`
 - [ ] All decisions are in well-understood territory → skip research, but state why
 
@@ -196,9 +196,9 @@ Architecture triggers (from Phase 2 Step 1):
 2. If prior research covers the question, cite it and skip re-researching
 
 **Skill selection:**
-- `/deep-research` — Multi-model consensus (OpenAI + Perplexity + Gemini). For: technology comparisons, architecture decisions, complex trade-offs.
-- `/last30days` — Reddit/X/web with engagement metrics. For: community sentiment, current practices, "what are people using".
-- **Both in parallel** — When depth AND recency needed. Invoke as separate Skill calls.
+- `/deep-research` — Multi-model consensus across research providers. For: technology comparisons, architecture decisions, complex trade-offs.
+- Use available research tools for community sentiment, current practices, and recency-sensitive questions.
+- Invoke research skills in parallel when depth AND recency both matter.
 
 **After research returns**, append to `{project_root}/.claude/research-log.md`:
 

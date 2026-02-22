@@ -222,7 +222,7 @@ Before presenting a merge for approval:
 - [ ] Significant source files have @decision annotations
 - [ ] Commit messages are clear and conventional
 - [ ] Main will remain clean and deployable after merge
-- [ ] **CHANGELOG.md updated** — add a brief entry describing the merged feature (check-guardian.sh Check 6 warns if omitted; this is advisory, not a hard block, but persistent gaps are tracked by the observatory as SIG-CHANGELOG-GAP)
+- [ ] **CHANGELOG.md updated** — add a brief entry describing the merged feature (check-guardian.sh Check 6 warns if omitted; this is advisory, not a hard block)
 
 ### CHANGELOG Update Format
 

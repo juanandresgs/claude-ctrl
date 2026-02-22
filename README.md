@@ -342,19 +342,15 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 
 | Skill | Purpose |
 |-------|---------|
-| **observatory** | Self-improving flywheel: analyze agent traces, surface improvement signals, suggest configuration updates |
 | **diagnose** | System health check: hook integrity, state file consistency, configuration validation |
 | **rewind** | List and restore git-ref checkpoints created by `checkpoint.sh` |
-| **uplevel** | Six-dimensional repository health audit — security, testing, quality, docs, staleness, standards |
 
 **Research:**
 
 | Skill | Purpose |
 |-------|---------|
-| **deep-research** | Multi-model research via OpenAI + Perplexity + Gemini with comparative synthesis |
-| **last30days** | Recent community discussions from Reddit, X, and web with engagement metrics |
+| **deep-research** | Multi-model research synthesis with comparative analysis |
 | **consume-content** | Structured content analysis and extraction from URLs or documents |
-| **generate-paper-snapshot** | Academic paper analysis and summarization |
 
 **Workflow:**
 
@@ -377,13 +373,10 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 
 | Script | Purpose |
 |--------|---------|
-| `todo.sh` | GitHub Issues backend for `/backlog` command |
 | `worktree-roster.sh` | Worktree inventory, stale detection, cleanup |
 | `statusline.sh` | Status bar enrichment from `.statusline-cache` |
 | `update-check.sh` | Auto-update with breaking change detection |
-| `community-check.sh` | Community engagement monitoring |
 | `batch-fetch.py` | Cascade-proof multi-URL fetching (use for 3+ URLs) |
-| `lib/keychain.py` | macOS keychain integration for API keys |
 
 ---
 

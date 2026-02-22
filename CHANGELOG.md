@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **check-explore.sh** — SubagentStop:Explore hook for post-exploration validation of Explore agent output quality
 - **check-general-purpose.sh** — SubagentStop:general-purpose hook for post-execution validation of general-purpose agent output quality
 - **Worktree Sweep** — Three-way reconciliation (filesystem/git/registry) with session-init orphan scan, post-merge Check 7b auto-cleanup, and proof-status leak fix (`scripts/worktree-roster.sh`, `hooks/session-init.sh`, `hooks/check-guardian.sh`)
-- **Observatory System** — Self-improving flywheel: trace analysis, signal extraction, improvement suggestions with cohort-based regression detection (`observatory/`, `skills/observatory/`)
+- **Trace Analysis System** — Agent trace indexing and outcome classification (`hooks/context-lib.sh`)
 - **Tester Agent** — Fourth agent for end-to-end verification with auto-verify fast path (`agents/tester.md`, `hooks/check-tester.sh`)
 - **Checkpoint System** — Git ref-based snapshots before writes with `/rewind` restore skill (`hooks/checkpoint.sh`, `skills/rewind/`)
 - **CWD Recovery** — Three-path system for worktree deletion CWD death spiral: directed recovery (Check 0.5 Path A), canary-based recovery (Path B), prevention (Check 0.75) in `guard.sh`
@@ -98,14 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plan lifecycle state machine with completed-plan source write protection
   - `surface.sh` decision audit on session end
 
-- **Repository Health**
-  - `/uplevel` skill: Six-dimensional health scoring (security, testing, quality, docs, staleness, standards)
-  - Automated issue creation from audit findings
-  - Integration with `/decide` for remediation planning
-
 - **Research & Context**
-  - `deep-research` skill: Multi-model synthesis (OpenAI + Perplexity + Gemini)
-  - `last30days` skill: Recent community discussions with engagement metrics
+  - `deep-research` skill: Multi-model synthesis across research providers
   - `prd` skill: Deep-dive product requirement documents
   - `context-preservation` skill: Structured summaries across compaction
   - Dual-path compaction preservation (persistent file + directive)

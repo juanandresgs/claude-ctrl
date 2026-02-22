@@ -163,41 +163,7 @@ if [[ -n "$GIT_BRANCH" ]]; then
     fi
 fi
 
-# --- Run community check in background (non-blocking, 1-hour TTL) ---
-# The .community-status file will be ready by the time statusline renders.
-# Display moved to statusline.sh and todo.sh for better visibility.
-#
-# @decision DEC-COMMUNITY-003
-# @title Rate-limit community-check.sh to 1-hour TTL to prevent redundant API calls
-# @status accepted
-# @rationale community-check.sh makes GitHub API requests (gh issue list per repo)
-# that add 0.5-2s of startup latency during rapid session cycling (/clear, /compact,
-# terminal re-attach). A 1-hour TTL reuses the previous result within the window —
-# community contributions don't change on sub-minute timescales, so freshness is not
-# meaningfully compromised. The TTL is read from .community-status "checked_at" field,
-# which community-check.sh already writes. If the file is absent or malformed, the
-# check always runs. Users who need immediate refresh can delete .community-status.
-# NOTE: session-init.sh runs at top-level (not inside a function), so _COMM_ prefix
-# is used instead of `local` to avoid polluting the function-local namespace.
-COMMUNITY_SCRIPT="$HOME/.claude/scripts/community-check.sh"
-_COMM_STATUS_FILE="$HOME/.claude/.community-status"
-_COMM_TTL=3600  # 1 hour in seconds
-_COMM_SHOULD_RUN=true
-
-if [[ -x "$COMMUNITY_SCRIPT" ]]; then
-    if [[ -f "$_COMM_STATUS_FILE" ]]; then
-        _COMM_CHECKED_AT=$(jq -r '.checked_at // 0' "$_COMM_STATUS_FILE" 2>/dev/null || echo "0")
-        _COMM_NOW=$(date +%s)
-        _COMM_AGE=$(( _COMM_NOW - _COMM_CHECKED_AT ))
-        if [[ "$_COMM_AGE" -lt "$_COMM_TTL" ]]; then
-            _COMM_SHOULD_RUN=false
-        fi
-    fi
-    if [[ "$_COMM_SHOULD_RUN" == "true" ]]; then
-        "$COMMUNITY_SCRIPT" 2>/dev/null &
-        disown 2>/dev/null || true
-    fi
-fi
+# Community check removed (private component)
 
 # --- MASTER_PLAN.md tiered injection (DEC-PLAN-004) ---
 # Bounded extraction: Identity + Architecture + Active Initiatives (full) +
@@ -610,16 +576,7 @@ if [[ -d "$TRACE_STORE" ]]; then
     fi
 fi
 
-# --- Todo HUD (listing with active-session annotations) ---
-TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-    HUD_OUTPUT=$("$TODO_SCRIPT" hud 2>/dev/null || echo "")
-    if [[ -n "$HUD_OUTPUT" ]]; then
-        while IFS= read -r line; do
-            CONTEXT_PARTS+=("$line")
-        done <<< "$HUD_OUTPUT"
-    fi
-fi
+# Todo HUD removed (requires todo.sh — personal component)
 
 # --- Pending agent findings ---
 FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
@@ -630,12 +587,7 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     done < "$FINDINGS_FILE"
 fi
 
-# --- Observatory suggestions ---
-OBS_STATE="$HOME/.claude/observatory/state.json"
-if [[ -f "$OBS_STATE" ]]; then
-    OBS_PENDING=$(jq -r 'select(.pending_suggestion != null) | "\(.pending_title) (priority: \(.pending_priority))"' "$OBS_STATE" 2>/dev/null)
-    [[ -n "$OBS_PENDING" ]] && CONTEXT_PARTS+=("Observatory: improvement ready — $OBS_PENDING. Run /observatory to review.")
-fi
+# Observatory suggestions removed (private component)
 
 # --- Reset prompt-count so first-prompt fallback re-fires after /clear ---
 # The first-prompt path in prompt-submit.sh is the reliable HUD injection point.

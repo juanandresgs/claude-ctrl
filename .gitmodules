@@ -1,4 +1,0 @@
-[submodule "skills/last30days"]
-	path = skills/last30days
-	url = https://github.com/juanandresgs/last30days-skill.git
-	ignore = dirty

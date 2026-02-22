@@ -170,19 +170,7 @@ else
     fi
 fi
 
-# --- Pending todos reminder ---
-TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-    TODO_COUNTS=$("$TODO_SCRIPT" count --all 2>/dev/null || echo "0|0|0|0")
-    TODO_PROJECT=$(echo "$TODO_COUNTS" | cut -d'|' -f1)
-    TODO_GLOBAL=$(echo "$TODO_COUNTS" | cut -d'|' -f2)
-    TODO_CONFIG=$(echo "$TODO_COUNTS" | cut -d'|' -f3)
-    TODO_TOTAL=$((TODO_PROJECT + TODO_GLOBAL + TODO_CONFIG))
-
-    if [[ "$TODO_TOTAL" -gt 0 ]]; then
-        SUMMARY+="\nTodos: ${TODO_PROJECT} project + ${TODO_GLOBAL} global + ${TODO_CONFIG} config pending."
-    fi
-fi
+# Todo reminder removed (requires todo.sh — personal component)
 
 SUMMARY+="\nNext: $NEXT_ACTION"
 

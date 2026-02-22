@@ -98,27 +98,21 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── implementer.md        # Implementer agent — test-first development
 │   ├── tester.md             # Tester agent — e2e verification
 │   └── guardian.md           # Guardian agent — git operations
-├── skills/                   # 11 skill directories
-│   ├── observatory/          # Self-improvement flywheel (analyze, suggest, implement)
+├── skills/                   # 7 skill directories
 │   ├── deep-research/        # Multi-provider research synthesis
 │   ├── decide/               # Interactive decision configurator
 │   ├── consume-content/      # URL → structured digest
 │   ├── context-preservation/ # Pre-compaction context capture (/compact)
 │   ├── diagnose/             # System health diagnostics
 │   ├── rewind/               # Checkpoint recovery (/rewind)
-│   ├── last30days/           # Recent community activity research
-│   ├── prd/                  # PRD generation
-│   ├── generate-paper-snapshot/ # arXiv paper snapshots
-│   └── uplevel/              # System improvement workflow
+│   └── prd/                  # PRD generation
 ├── commands/                 # Slash commands (lightweight, no context fork)
 │   ├── backlog.md            # /backlog — GitHub Issues integration
 │   └── compact.md            # /compact — context preservation
 ├── scripts/                  # Utility scripts
 │   ├── statusline.sh         # Status bar renderer
 │   ├── worktree-roster.sh    # Worktree lifecycle tracking
-│   ├── todo.sh               # GitHub Issues todo integration (1500+ lines)
 │   ├── update-check.sh       # Git-based auto-update
-│   ├── community-check.sh    # Community PR/issue monitor
 │   └── batch-fetch.py        # Cascade-proof multi-URL fetcher
 ├── traces/                   # Agent trace store
 │   ├── index.jsonl           # Global trace index (one entry per trace)
@@ -127,11 +121,6 @@ State files bridge the gap — hooks communicate with each other through files, 
 │       ├── manifest.json     # Trace metadata (agent type, project, outcome)
 │       ├── summary.md        # Agent's own summary (≤1500 tokens)
 │       └── artifacts/        # Evidence files (test-output.txt, diff.patch, etc.)
-├── observatory/              # Self-improvement state
-│   ├── state.json            # v3 — pending/implemented/rejected suggestions
-│   ├── history.jsonl         # Accepted/rejected suggestion log
-│   ├── analysis-cache.json   # Analysis cache (invalidated on new traces)
-│   └── suggestions/          # Batch assessment files
 ├── tests/                    # Hook validation suite
 │   ├── run-hooks.sh          # Main test runner
 │   ├── fixtures/             # Input/expected-output fixture pairs
@@ -804,20 +793,17 @@ what agent is active, what needs attention.
 2. Launches background update-check for next session.
 3. Git state: branch, dirty count, worktree count, main-branch warning.
 4. Stale worktree detection (via `worktree-roster.sh prune`).
-5. Community-check background launch (1-hour TTL).
-6. MASTER_PLAN.md preamble (first 30 lines before `---`).
-7. Plan status: phase progress, age, staleness warning (≥10% churn).
-8. Research log status: entry count, recent topics.
-9. Preserved context from pre-compaction (if `.preserved-context` exists).
-10. Stale session files from crashed sessions.
-11. Trace protocol: crashed trace detection, last completed trace for project.
-12. Todo HUD (via `todo.sh hud`).
-13. Pending agent findings from `.agent-findings`.
-14. Observatory suggestions (pending from `observatory/state.json`).
-15. Syntax gate: validates `source-lib.sh`, `log.sh`, `context-lib.sh` before sourcing.
+5. MASTER_PLAN.md preamble (first 30 lines before `---`).
+6. Plan status: phase progress, age, staleness warning (≥10% churn).
+7. Research log status: entry count, recent topics.
+8. Preserved context from pre-compaction (if `.preserved-context` exists).
+9. Stale session files from crashed sessions.
+10. Trace protocol: crashed trace detection, last completed trace for project.
+11. Pending agent findings from `.agent-findings`.
+12. Syntax gate: validates `source-lib.sh`, `log.sh`, `context-lib.sh` before sourcing.
 
 **State files read:** `.update-status`, `.preserved-context`, `.session-changes*`,
-`observatory/state.json`, `.agent-findings`, traces index
+`.agent-findings`, traces index
 **State files written:** `.statusline-cache`, `.prompt-count-*` (reset)
 
 ---
@@ -1505,13 +1491,9 @@ project root unless marked as `~/.claude/` (global).
 | `.preserved-context` | `.claude/` | Text with `RESUME DIRECTIVE:` section | compact-preserve.sh | session-init.sh | Context snapshot before compaction (one-shot) |
 | `.active-worktree-path` | `.claude/` | Absolute path (one line) | task-track.sh | log.sh `resolve_proof_file()` | Breadcrumb: which worktree is the active implementation target |
 | `.update-status` | `~/.claude/` | `status\|local\|remote\|count\|epoch\|summary` | update-check.sh | session-init.sh | One-shot update notification (cleared after display) |
-| `.community-status` | `~/.claude/` | JSON | community-check.sh | statusline.sh | Community PR/issue activity (1-hour TTL) |
 | `.worktree-roster.tsv` | `~/.claude/` | TSV: `path\|branch\|issue\|session\|pid\|created_at` | worktree-roster.sh | session-init.sh, statusline.sh | Worktree lifecycle tracking |
-| `.todo-count` | `~/.claude/` | Integer | todo.sh | statusline.sh | Cached pending todo count for status bar |
 | `.cwd-recovery-needed` | `~/.claude/` | Deleted worktree path | guard.sh (Check 5/5b), check-guardian.sh | guard.sh (Check 0.5 Path B) | One-shot CWD recovery canary |
-| `observatory/state.json` | `~/.claude/` | JSON v3 | observatory skill | session-init.sh | Improvement suggestion pipeline state |
-| `observatory/history.jsonl` | `~/.claude/` | JSONL | observatory skill | observatory skill | Accepted/rejected suggestion log |
-| `traces/index.jsonl` | `~/.claude/` | JSONL (one entry per trace) | context-lib.sh `index_trace()` | session-init.sh, observatory | Global trace index for cross-project searching |
+| `traces/index.jsonl` | `~/.claude/` | JSONL (one entry per trace) | context-lib.sh `index_trace()` | session-init.sh | Global trace index for cross-project searching |
 
 ---
 
@@ -1758,7 +1740,7 @@ Done. Feature merged to main.
 | DEC-COMPACT-001 | prompt-submit.sh | accepted | First-prompt fallback for session-init bug (#10373) |
 | DEC-UPDATE-001 | update-check.sh | accepted | Git-based auto-update with breaking change detection |
 | DEC-UPDATE-BG-001 | session-init.sh | accepted | Background update-check with previous-session result display |
-| DEC-COMMUNITY-003 | session-init.sh | accepted | Rate-limit community-check.sh to 1-hour TTL |
+| DEC-UPDATE-BG-002 | session-init.sh | accepted | Background update-check: display result in next session |
 | DEC-LOG-001 | log.sh | accepted | Shared logging and path utilities for all hooks |
 | DEC-PROOF-PATH-002 | log.sh | accepted | resolve_proof_file: breadcrumb-based worktree proof-status resolution |
 | DEC-QUICKFIX-001 | log.sh | accepted | Fix double-nested paths when PROJECT_ROOT is ~/.claude |

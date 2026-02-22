@@ -162,7 +162,7 @@ test_skill_invoked_event_fields() {
     local hook_input
     hook_input=$(jq -n '{
         tool_name: "Skill",
-        tool_input: {skill: "observatory", args: "analyze traces"}
+        tool_input: {skill: "diagnose", args: "check hooks"}
     }')
 
     invoke_hook "$hook_input" "$tmp_dir" "$fake_session"
@@ -181,7 +181,7 @@ test_skill_invoked_event_fields() {
     agent_type_val=$(echo "$last_event" | jq -r '.agent_type // empty' 2>/dev/null)
     has_args=$(echo "$last_event" | jq -r 'has("args")' 2>/dev/null || echo "false")
 
-    if [[ "$skill_val" == "observatory" && "$agent_type_val" == "tester" && "$has_args" == "true" ]]; then
+    if [[ "$skill_val" == "diagnose" && "$agent_type_val" == "tester" && "$has_args" == "true" ]]; then
         pass_test
     else
         fail_test "Field values wrong: skill='$skill_val' agent_type='$agent_type_val' has_args=$has_args — event: $last_event"

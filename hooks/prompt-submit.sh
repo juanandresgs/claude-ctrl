@@ -81,16 +81,7 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
         CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
     fi
 
-    # Inject todo HUD (same as session-init)
-    TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-    if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-        HUD_OUTPUT=$("$TODO_SCRIPT" hud 2>/dev/null || echo "")
-        if [[ -n "$HUD_OUTPUT" ]]; then
-            while IFS= read -r line; do
-                CONTEXT_PARTS+=("$line")
-            done <<< "$HUD_OUTPUT"
-        fi
-    fi
+    # Todo HUD removed (requires todo.sh — personal component)
 
     # --- First-encounter plan assessment ---
     # When plan is stale, scan @decision coverage and inject assessment
@@ -175,21 +166,7 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     rm -f "$FINDINGS_FILE"
 fi
 
-# --- Auto-claim: detect issue references in action prompts ---
-TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-if [[ -x "$TODO_SCRIPT" ]]; then
-    ISSUE_REF=$(echo "$PROMPT" | grep -oiE '\b(work|fix|implement|tackle|start|handle|address)\b.*#([0-9]+)' | grep -oE '#[0-9]+' | head -1 || true)
-    if [[ -n "$ISSUE_REF" ]]; then
-        ISSUE_NUM="${ISSUE_REF#\#}"
-        # Auto-claim — fire and forget, don't block the prompt
-        if [[ -d "$PROJECT_ROOT/.git" ]]; then
-            "$TODO_SCRIPT" claim "$ISSUE_NUM" --auto 2>/dev/null || true
-        else
-            "$TODO_SCRIPT" claim "$ISSUE_NUM" --global --auto 2>/dev/null || true
-        fi
-        CONTEXT_PARTS+=("Auto-claimed todo #${ISSUE_NUM} for this session.")
-    fi
-fi
+# Auto-claim removed (requires todo.sh — personal component)
 
 # --- Detect deferred-work language → suggest /todo ---
 if echo "$PROMPT" | grep -qiE '\blater\b|\bdefer\b|\bbacklog\b|\beventually\b|\bsomeday\b|\bpark (this|that|it)\b|\bremind me\b|\bcome back to\b|\bfuture\b.*\b(todo|task|idea)\b|\bnote.*(for|to) (later|self)\b'; then
@@ -254,9 +231,9 @@ fi
 if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|community|reddit)\b|\brecent\b|\btrending\b|\bdeep dive\b|\bwhich is better\b|\bpros and cons\b'; then
     get_research_status "$PROJECT_ROOT"
     if [[ "$RESEARCH_EXISTS" == "true" ]]; then
-        CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before invoking /deep-research or /last30days.")
+        CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before invoking /deep-research.")
     else
-        CONTEXT_PARTS+=("No prior research. /deep-research for deep analysis, /last30days for recent community discussions.")
+        CONTEXT_PARTS+=("No prior research. /deep-research for deep analysis and technology comparisons.")
     fi
 fi
 

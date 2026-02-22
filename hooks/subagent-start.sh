@@ -96,7 +96,7 @@ case "$AGENT_TYPE" in
         if [[ "$RESEARCH_EXISTS" == "true" ]]; then
             CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries ($RESEARCH_RECENT_TOPICS). Read .claude/research-log.md before researching — avoid duplicates.")
         else
-            CONTEXT_PARTS+=("No prior research. /deep-research for tech comparisons, /last30days for community sentiment.")
+            CONTEXT_PARTS+=("No prior research. /deep-research for tech comparisons and architecture decisions.")
         fi
         if [[ -n "$TRACE_DIR" ]]; then
             CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (analysis.md, decisions.json). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")

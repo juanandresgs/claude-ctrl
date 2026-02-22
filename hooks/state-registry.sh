@@ -86,9 +86,8 @@ STATE_REGISTRY=(
     # --- CWD recovery ---
     ".cwd-recovery-needed|global|check-guardian.sh|CWD recovery canary written after worktree deletion"
 
-    # --- Update/community status (scripts/) ---
+    # --- Update status (scripts/) ---
     ".update-status|global-scripts|scripts/update-check.sh|Background update check result (status|local|remote|count|ts|summary)"
-    ".community-status|global-scripts|scripts/community-check.sh|Community activity check result (JSON)"
 
     # --- Plan archive breadcrumb ---
     ".last-plan-archived|per-project|context-lib.sh|Breadcrumb after plan archive (archived=name, epoch=ts)"
