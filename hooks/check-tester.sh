@@ -426,6 +426,18 @@ fi
 # Fix 2 (DEC-TESTER-004): runs AFTER Check 3 so auto-capture cannot defeat
 # the completeness gate. Auto-capture here is for archival purposes only.
 if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
+    # --- Observatory Phase 1: Snapshot pre-capture artifact existence ---
+    # @decision DEC-OBS-V2-001
+    # @title Snapshot artifact existence before auto-capture for compliance attribution
+    # @status accepted
+    # @rationale The observatory needs to know whether agents wrote artifacts themselves
+    #   or whether the check hook had to reconstruct them. Snapshotting before auto-capture
+    #   is the only reliable way to make this distinction.
+    TESTER_PRE_VERIFICATION_OUTPUT=false
+    TESTER_PRE_SUMMARY=false
+    [[ -f "$TRACE_DIR/artifacts/verification-output.txt" ]] && TESTER_PRE_VERIFICATION_OUTPUT=true
+    [[ -f "$TRACE_DIR/summary.md" ]] && TESTER_PRE_SUMMARY=true
+
     # Auto-capture verification-output.txt from response text if agent didn't write it.
     # The tester's response IS the verification evidence — capturing it here ensures
     # the trace archive is complete for observability purposes.
@@ -443,6 +455,30 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
     if [[ ! -f "$TRACE_DIR/artifacts/verification-output.txt" ]]; then
         ISSUES+=("Trace artifact missing: verification-output.txt — tester should capture live feature output")
     fi
+
+    # --- Observatory Phase 1: Write compliance.json after auto-capture ---
+    _vo_present=false; _vo_source="null"
+    _sm_tester_present=false; _sm_tester_source="null"
+
+    [[ -f "$TRACE_DIR/artifacts/verification-output.txt" ]] && _vo_present=true
+    [[ -f "$TRACE_DIR/summary.md" ]] && _sm_tester_present=true
+
+    $_vo_present && { $TESTER_PRE_VERIFICATION_OUTPUT && _vo_source='"agent"' || _vo_source='"auto-capture"'; }
+    $_sm_tester_present && { $TESTER_PRE_SUMMARY && _sm_tester_source='"agent"' || _sm_tester_source='"auto-capture"'; }
+
+    cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_TESTER_EOF
+{
+  "agent_type": "tester",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_sm_tester_present, "source": $_sm_tester_source},
+    "verification-output.txt": {"present": $_vo_present, "source": $_vo_source}
+  },
+  "test_result": "not-provided",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_TESTER_EOF
 fi
 
 # Response size advisory

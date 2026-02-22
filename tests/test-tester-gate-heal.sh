@@ -179,13 +179,16 @@ else
 fi
 
 # ============================================================
-# Test 3: Gate B code — calls refinalize_trace on stale traces
+# Test 3: Gate B code — forces status completion for stale traces
+# Observatory v2 (DEC-OBS-V2-002) removed refinalize_trace(); Gate B now
+# forces status directly via jq without calling refinalize_trace first.
 # ============================================================
-echo "Running: task-track.sh Gate B: calls refinalize_trace for stale traces"
-if grep -q 'refinalize_trace.*IMPL_TRACE\|refinalize_trace.*\$IMPL_TRACE' "$TASK_TRACK" 2>/dev/null; then
-    pass "task-track.sh Gate B: calls refinalize_trace for stale traces"
+echo "Running: task-track.sh Gate B: forces status completion for stale traces"
+if grep -q 'jq.*status.*completed\|status.*completed.*jq\|status: "completed"' "$TASK_TRACK" 2>/dev/null \
+    && grep -q 'IMPL_MANIFEST' "$TASK_TRACK" 2>/dev/null; then
+    pass "task-track.sh Gate B: forces status completion for stale traces (via jq, no refinalize_trace)"
 else
-    fail "task-track.sh Gate B: calls refinalize_trace for stale traces" "refinalize_trace call not found in Gate B"
+    fail "task-track.sh Gate B: forces status completion for stale traces" "jq status flip not found in Gate B"
 fi
 
 # ============================================================

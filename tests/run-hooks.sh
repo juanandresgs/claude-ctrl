@@ -1480,6 +1480,23 @@ output=$(
     echo "# Test Summary" > "$trace_dir/summary.md"
     echo "All tests passed" > "$trace_dir/artifacts/test-output.txt"
     echo "file1.sh" > "$trace_dir/artifacts/files-changed.txt"
+    # Write compliance.json (Observatory v2: finalize_trace reads test_result from here,
+    # not from test-output.txt directly). Also marks files-changed.txt present so
+    # finalize_trace counts files_changed from the artifact.
+    cat > "$trace_dir/compliance.json" <<'COMPLIANCEJSON'
+{
+  "agent_type": "finalize-agent",
+  "checked_at": "2026-02-21T03:00:00Z",
+  "artifacts": {
+    "summary.md": {"present": true, "source": "agent"},
+    "test-output.txt": {"present": true, "source": "auto-capture"},
+    "files-changed.txt": {"present": true, "source": "agent"}
+  },
+  "test_result": "pass",
+  "test_result_source": "test-output.txt",
+  "issues_count": 0
+}
+COMPLIANCEJSON
 
     finalize_trace "$TRACE_ID" "$TR_TEST_DIR" "finalize-agent"
 
@@ -1612,10 +1629,8 @@ V2_TEST_FILES=(
     "test-guard-cwd-recovery.sh"
     "test-guard-check5-spaces.sh"
     "test-guard-worktree-cd.sh"
-    "test-observatory-batch-a-fixes.sh"
-    "test-observatory-cohort-regression.sh"
-    "test-observatory-flywheel-fix.sh"
-    "test-observatory-remaining-fixes.sh"
+    "test-observatory-metrics.sh"
+    "test-observatory-convergence.sh"
     "test-obs-data-quality.sh"
     "test-obs-pipeline.sh"
     "test-tester-gate-heal.sh"

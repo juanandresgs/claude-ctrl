@@ -1032,14 +1032,8 @@ init_trace() {
         branch="no-git"
     fi
 
-    # Capture start_commit for retrospective file counting in refinalize_trace.
-    # @decision DEC-REFINALIZE-004
-    # @title Capture start_commit in init_trace for commit-range file counting
-    # @status accepted
-    # @rationale refinalize_trace() cannot use git diff (worktree may be gone) but CAN
-    #   use git log/show on commit hashes if they are stored at trace start. The start
-    #   commit paired with end_commit (captured in finalize_trace) gives a precise range
-    #   for counting files changed, recovering files_changed=0 for 79% of traces.
+    # Capture start_commit for retrospective analysis.
+    # Paired with end_commit (captured in finalize_trace), brackets the agent's work.
     # @decision DEC-OBS-COMMIT-001
     # @title Robust start_commit capture with fallback and diagnostic logging
     # @status accepted
@@ -1215,6 +1209,23 @@ detect_active_trace() {
 # Finalize a trace after agent completion.
 # Updates manifest with outcome, duration, test results. Indexes the trace.
 # Usage: finalize_trace "trace_id" "/path/to/project" "implementer"
+# finalize_trace() — Seal a trace manifest with metrics and clean up active markers.
+#
+# Observatory v2 design: reads test_result and files_changed from compliance.json
+# written by check-*.sh hooks. No fallback chains. If compliance.json doesn't exist
+# (legacy traces), values default to "not-provided"/0. Accept "not-provided" as valid.
+#
+# @decision DEC-OBS-V2-002
+# @title finalize_trace reads compliance.json — no fallback chains
+# @status accepted
+# @rationale The old finalize_trace had ~150 lines of fallback logic (.test-status
+#   chains, git diff fallback, verification-output.txt heuristics) to reconstruct
+#   what agents should have recorded. Observatory v2 inverts this: check-*.sh hooks
+#   record compliance.json at the agent boundary with authoritative source attribution.
+#   finalize_trace reads compliance.json directly. If compliance.json doesn't exist
+#   (legacy trace), defaults are "not-provided"/0 — NOT reconstructed. This eliminates
+#   the broken feedback loop: observatory now detects missing compliance recording
+#   rather than silently reconstructing it.
 finalize_trace() {
     local trace_id="$1"
     local project_root="$2"
@@ -1245,56 +1256,22 @@ finalize_trace() {
         fi
     fi
 
-    # Determine outcome from artifacts
-    local outcome="unknown"
-    local test_result="unknown"
-    local proof_status="unknown"
+    # Read test_result and files_changed from compliance.json (Observatory v2).
+    # compliance.json is written by check-*.sh hooks with authoritative source attribution.
+    # If compliance.json doesn't exist (legacy trace), use defaults — do NOT reconstruct.
+    local test_result="not-provided"
+    local files_changed=0
+    local compliance_file="${trace_dir}/compliance.json"
 
-    # Check test output
-    if [[ -f "${trace_dir}/artifacts/test-output.txt" ]]; then
-        if grep -qiE 'passed|success|ok' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
-            test_result="pass"
-        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
-            test_result="fail"
-        fi
-    fi
+    if [[ -f "$compliance_file" ]]; then
+        local compliance_test_result
+        compliance_test_result=$(jq -r '.test_result // "not-provided"' "$compliance_file" 2>/dev/null)
+        [[ -n "$compliance_test_result" ]] && test_result="$compliance_test_result"
 
-    # Fallback: check verification-output.txt for tester agents.
-    # Testers write verification-output.txt (not test-output.txt) as their
-    # primary evidence artifact. Check for pass/success signals in it.
-    if [[ "$test_result" == "unknown" && -f "${trace_dir}/artifacts/verification-output.txt" ]]; then
-        if grep -qiE 'passed|success|ok|successful' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
-            test_result="pass"
-        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
-            test_result="fail"
-        fi
-    fi
-
-    # Fallback: check .test-status file when test-output.txt didn't resolve a result.
-    # Most agents write .test-status to the project root (or .claude/) instead of the
-    # trace artifacts dir, causing 97.8% of traces to show unknown test_result.
-    # Priority: project_root/.test-status > project_root/.claude/.test-status.
-    # @decision DEC-OBS-SUG002
-    # @title Add .test-status fallback to finalize_trace
-    # @status accepted
-    # @rationale Agents consistently write .test-status but rarely write test-output.txt
-    #             as a trace artifact. This fallback recovers test_result from the file
-    #             agents already produce, without changing agent behavior. test-output.txt
-    #             (checked above) takes priority because it contains richer evidence.
-    if [[ "$test_result" == "unknown" ]]; then
-        local test_status_file=""
-        if [[ -f "${project_root}/.test-status" ]]; then
-            test_status_file="${project_root}/.test-status"
-        elif [[ -f "${project_root}/.claude/.test-status" ]]; then
-            test_status_file="${project_root}/.claude/.test-status"
-        fi
-        if [[ -n "$test_status_file" ]]; then
-            local ts_content
-            ts_content=$(cat "$test_status_file" 2>/dev/null | tr -d '[:space:]')
-            if [[ "$ts_content" == "pass" || "$ts_content" == "passed" ]]; then
-                test_result="pass"
-            elif [[ "$ts_content" == "fail" || "$ts_content" == "failed" ]]; then
-                test_result="fail"
+        # Read files_changed from compliance artifacts if present
+        if jq -e '.artifacts["files-changed.txt"].present == true' "$compliance_file" >/dev/null 2>&1; then
+            if [[ -f "${trace_dir}/artifacts/files-changed.txt" ]]; then
+                files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
             fi
         fi
     fi
@@ -1302,6 +1279,7 @@ finalize_trace() {
     # Check proof status from project
     # Prefer the local .claude/.proof-status; fall back to get_claude_dir() to
     # handle the ~/.claude meta-repo case (avoids double-nesting ~/.claude/.claude/).
+    local proof_status="unknown"
     local proof_file="${project_root}/.claude/.proof-status"
     if [[ ! -f "$proof_file" ]]; then
         proof_file="$(get_claude_dir)/.proof-status"
@@ -1327,11 +1305,12 @@ finalize_trace() {
     #   actionable signals — timeout patterns indicate agent loops; skipped patterns
     #   indicate hook or dispatch failures. Order matters: timeout check uses duration
     #   which is already computed; skipped checks the artifacts dir existence.
+    local outcome="unknown"
     if [[ "$test_result" == "pass" ]]; then
         outcome="success"
     elif [[ "$test_result" == "fail" ]]; then
         outcome="failure"
-    elif [[ "$duration" -gt 600 && "$test_result" == "unknown" ]]; then
+    elif [[ "$duration" -gt 600 && "$test_result" == "not-provided" ]]; then
         outcome="timeout"
     elif [[ ! -d "${trace_dir}/artifacts" ]]; then
         outcome="skipped"
@@ -1339,42 +1318,6 @@ finalize_trace() {
         outcome="skipped"
     else
         outcome="partial"
-    fi
-
-    # Count files changed
-    local files_changed=0
-    if [[ -f "${trace_dir}/artifacts/files-changed.txt" ]]; then
-        files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
-    fi
-
-    # Fallback: use git diff when files-changed.txt artifact is missing.
-    # Most agents modify files but don't write files-changed.txt as a trace artifact,
-    # causing 97% of traces to show files_changed=0.
-    # @decision DEC-OBS-SUG003
-    # @title Add git diff fallback to finalize_trace files_changed count
-    # @status accepted
-    # @rationale Agents consistently modify files but rarely write files-changed.txt.
-    #             git diff --stat against the worktree or recent commits recovers accurate
-    #             file counts without changing agent behavior. Uncommitted changes are
-    #             checked first (most relevant for in-flight traces); staged changes are
-    #             the secondary fallback.
-    if [[ "$files_changed" -eq 0 && -n "$project_root" ]]; then
-        # Try git diff --stat for uncommitted changes first
-        local git_stat
-        git_stat=$(git -C "$project_root" diff --stat 2>/dev/null | tail -1)
-        if [[ -n "$git_stat" ]]; then
-            files_changed=$(echo "$git_stat" | awk '{print $1}')
-            # Validate it's a number
-            [[ "$files_changed" =~ ^[0-9]+$ ]] || files_changed=0
-        fi
-        # If still 0, try staged changes
-        if [[ "$files_changed" -eq 0 ]]; then
-            git_stat=$(git -C "$project_root" diff --cached --stat 2>/dev/null | tail -1)
-            if [[ -n "$git_stat" ]]; then
-                files_changed=$(echo "$git_stat" | awk '{print $1}')
-                [[ "$files_changed" =~ ^[0-9]+$ ]] || files_changed=0
-            fi
-        fi
     fi
 
     # Check if summary exists; if not, it's likely a crash.
@@ -1388,17 +1331,14 @@ finalize_trace() {
         fi
     fi
 
-    # Capture end_commit for retrospective file counting in refinalize_trace.
-    # Paired with start_commit (written by init_trace), this enables git log --name-only
-    # to count files changed between the two commits even after the worktree is removed.
+    # Capture end_commit for retrospective analysis.
     # @decision DEC-OBS-COMMIT-002
     # @title Robust end_commit capture with fallback and diagnostic logging
     # @status accepted
     # @rationale 10 traces missing end_commit because git rev-parse fails silently when
     #   the worktree was already deleted before finalize_trace runs, or when the git dir
-    #   check passes but HEAD is not readable (e.g., repo in a weird state). Try
-    #   git -C project_root first, then bare git rev-parse as fallback. Log a diagnostic
-    #   when both fail on a known git project so the cause is discoverable. Issue #105.
+    #   check passes but HEAD is not readable. Try git -C project_root first, then bare
+    #   git rev-parse as fallback. Log a diagnostic when both fail. Issue #105.
     local end_commit=""
     if [[ -n "$project_root" ]] && git -C "$project_root" rev-parse --git-dir >/dev/null 2>&1; then
         end_commit=$(git -C "$project_root" rev-parse HEAD 2>/dev/null)
@@ -1513,427 +1453,10 @@ index_trace() {
     fi
 }
 
-# Re-finalize a single trace whose manifest was sealed before artifacts arrived.
-# Reads artifacts from the trace dir, re-evaluates test_result, files_changed,
-# duration_seconds, and outcome, then updates the manifest only if values changed.
-# Does NOT call index_trace() — caller decides when to rebuild the index.
-# Does NOT check .test-status (project-scoped, may have changed since trace time).
-# Does NOT use git diff fallback for files_changed (worktree may be gone).
-#
-# @decision DEC-REFINALIZE-002
-# @title Re-finalize uses finished_at for duration, not current time
-# @status accepted
-# @rationale finalize_trace() uses now_epoch (current time) for duration because it runs
-#   at SubagentStop time. refinalize_trace() runs retrospectively — possibly days later.
-#   Using current time would inflate duration_seconds to absurd values. Instead, we
-#   parse finished_at from the manifest to get the correct end time. If finished_at is
-#   missing, we skip duration correction (leave as-is) rather than guess.
-#
-# Usage: refinalize_trace "trace_id"
-# Returns: 0 if manifest was updated, 1 if no changes needed
-refinalize_trace() {
-    local trace_id="$1"
-    local trace_dir="${TRACE_STORE}/${trace_id}"
-    local manifest="${trace_dir}/manifest.json"
 
-    [[ ! -f "$manifest" ]] && return 1
-
-    # Read current manifest values
-    local cur_test_result cur_files_changed cur_duration cur_outcome cur_started_at
-    cur_test_result=$(jq -r '.test_result // "unknown"' "$manifest" 2>/dev/null)
-    cur_files_changed=$(jq -r '.files_changed // 0' "$manifest" 2>/dev/null)
-    cur_duration=$(jq -r '.duration_seconds // 0' "$manifest" 2>/dev/null)
-    cur_outcome=$(jq -r '.outcome // "unknown"' "$manifest" 2>/dev/null)
-    cur_started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
-
-    # --- Re-evaluate test_result from artifacts ---
-    local test_result="unknown"
-
-    if [[ -f "${trace_dir}/artifacts/test-output.txt" ]]; then
-        if grep -qiE 'passed|success|ok' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
-            test_result="pass"
-        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
-            test_result="fail"
-        fi
-    fi
-
-    # Fallback: check verification-output.txt (tester agents write this instead)
-    if [[ "$test_result" == "unknown" && -f "${trace_dir}/artifacts/verification-output.txt" ]]; then
-        if grep -qiE 'passed|success|ok|successful' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
-            test_result="pass"
-        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
-            test_result="fail"
-        fi
-    fi
-
-    # Fallback: check .test-status from the project directory.
-    # @decision DEC-REFINALIZE-005
-    # @title Add .test-status fallback to refinalize_trace with timestamp window validation
-    # @status accepted
-    # @rationale 72% of new traces have test_result=unknown because agents write .test-status
-    #   (not test-output.txt). finalize_trace() already reads .test-status but at seal time
-    #   the file may not yet exist. refinalize_trace() runs retrospectively when the file
-    #   has had time to land. Timestamp validation (mtime within trace window + 10-min buffer)
-    #   prevents misattribution when multiple agents ran against the same project sequentially.
-    #   This is safe because agents have finished writing before refinalize runs.
-    if [[ "$test_result" == "unknown" ]]; then
-        local rf_project_root
-        rf_project_root=$(jq -r '.project // empty' "$manifest" 2>/dev/null)
-        if [[ -n "$rf_project_root" ]]; then
-            local test_status_file=""
-            if [[ -f "${rf_project_root}/.test-status" ]]; then
-                test_status_file="${rf_project_root}/.test-status"
-            elif [[ -f "${rf_project_root}/.claude/.test-status" ]]; then
-                test_status_file="${rf_project_root}/.claude/.test-status"
-            fi
-            if [[ -n "$test_status_file" ]]; then
-                local ts_content
-                ts_content=$(cut -d'|' -f1 "$test_status_file" 2>/dev/null | tr -d '[:space:]')
-                # Verify .test-status timestamp is within the trace's time window.
-                # Prevents misattribution when multiple agents ran sequentially.
-                local ts_mod
-                ts_mod=$(stat -f '%m' "$test_status_file" 2>/dev/null \
-                    || stat -c '%Y' "$test_status_file" 2>/dev/null \
-                    || echo "0")
-                local trace_start_epoch trace_end_epoch
-                trace_start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$cur_started_at" +%s 2>/dev/null \
-                    || date -u -d "$cur_started_at" +%s 2>/dev/null \
-                    || echo "0")
-                local finished_at_val
-                finished_at_val=$(jq -r '.finished_at // empty' "$manifest" 2>/dev/null)
-                trace_end_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$finished_at_val" +%s 2>/dev/null \
-                    || date -u -d "$finished_at_val" +%s 2>/dev/null \
-                    || echo "0")
-                # Allow 10-minute buffer after trace end for late writes
-                local buffer=600
-                if [[ "$ts_mod" -ge "$trace_start_epoch" && \
-                      "$trace_start_epoch" -gt 0 && \
-                      "$ts_mod" -le $(( trace_end_epoch + buffer )) ]]; then
-                    if [[ "$ts_content" == "pass" || "$ts_content" == "passed" ]]; then
-                        test_result="pass"
-                    elif [[ "$ts_content" == "fail" || "$ts_content" == "failed" ]]; then
-                        test_result="fail"
-                    fi
-                fi
-            fi
-        fi
-    fi
-
-    # --- Re-evaluate files_changed from artifact (no git fallback — worktree may be gone) ---
-    local files_changed=0
-    if [[ -f "${trace_dir}/artifacts/files-changed.txt" ]]; then
-        files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
-    fi
-
-    # Fallback: use commit hashes stored in manifest to count files changed via git log.
-    # @decision DEC-REFINALIZE-006
-    # @title Commit-hash-based file counting fallback in refinalize_trace
-    # @status accepted
-    # @rationale 79% of traces have files_changed=0 because agents commit files rather than
-    #   writing files-changed.txt. start_commit (init_trace) and end_commit (finalize_trace)
-    #   bracket the work. git log --name-only between those commits counts unique files changed
-    #   even after the worktree is removed, as long as the commit objects exist in any repo
-    #   that contains them. We check project root first, then ~/.claude as fallback for merged
-    #   worktrees. cat-file -t validates the commit exists before running git log.
-    if [[ "$files_changed" -eq 0 ]]; then
-        local fc_start_commit fc_end_commit fc_project_root
-        fc_start_commit=$(jq -r '.start_commit // empty' "$manifest" 2>/dev/null)
-        fc_end_commit=$(jq -r '.end_commit // empty' "$manifest" 2>/dev/null)
-        fc_project_root=$(jq -r '.project // empty' "$manifest" 2>/dev/null)
-
-        if [[ -n "$fc_end_commit" && -n "$fc_project_root" ]]; then
-            # Find a repo that contains the end_commit — try project root, then ~/.claude
-            local git_repo=""
-            for candidate in "$fc_project_root" "$HOME/.claude"; do
-                if [[ -d "$candidate" ]] && git -C "$candidate" rev-parse --git-dir >/dev/null 2>&1; then
-                    if git -C "$candidate" cat-file -t "$fc_end_commit" >/dev/null 2>&1; then
-                        git_repo="$candidate"
-                        break
-                    fi
-                fi
-            done
-
-            if [[ -n "$git_repo" ]]; then
-                local git_files=0
-                if [[ -n "$fc_start_commit" ]] && \
-                   git -C "$git_repo" cat-file -t "$fc_start_commit" >/dev/null 2>&1; then
-                    # Count unique files changed between start and end commits
-                    git_files=$(git -C "$git_repo" log --name-only --format="" \
-                        "${fc_start_commit}..${fc_end_commit}" 2>/dev/null \
-                        | sort -u | grep -c '.' 2>/dev/null) || git_files=0
-                else
-                    # No valid start_commit — count files in the end commit only
-                    git_files=$(git -C "$git_repo" show --name-only --format="" \
-                        "$fc_end_commit" 2>/dev/null \
-                        | grep -c '.' 2>/dev/null) || git_files=0
-                fi
-                [[ "$git_files" =~ ^[0-9]+$ ]] && files_changed="$git_files"
-            fi
-        fi
-    fi
-
-    # --- Fix duration_seconds if <= 0 using started_at + finished_at from manifest ---
-    local duration="$cur_duration"
-    if [[ "$cur_duration" -le 0 ]]; then
-        local started_at finished_at
-        started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
-        finished_at=$(jq -r '.finished_at // empty' "$manifest" 2>/dev/null)
-        if [[ -n "$started_at" && -n "$finished_at" ]]; then
-            local start_epoch end_epoch
-            start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
-                || date -u -d "$started_at" +%s 2>/dev/null \
-                || echo "0")
-            end_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$finished_at" +%s 2>/dev/null \
-                || date -u -d "$finished_at" +%s 2>/dev/null \
-                || echo "0")
-            if [[ "$start_epoch" -gt 0 && "$end_epoch" -gt "$start_epoch" ]]; then
-                duration=$(( end_epoch - start_epoch ))
-            fi
-        fi
-    fi
-
-    # --- Re-evaluate outcome using canonical logic ---
-    local outcome="unknown"
-
-    if [[ "$test_result" == "pass" ]]; then
-        outcome="success"
-    elif [[ "$test_result" == "fail" ]]; then
-        outcome="failure"
-    elif [[ "$duration" -gt 600 && "$test_result" == "unknown" ]]; then
-        outcome="timeout"
-    elif [[ ! -d "${trace_dir}/artifacts" ]]; then
-        outcome="skipped"
-    elif [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
-        outcome="skipped"
-    else
-        outcome="partial"
-    fi
-
-    # Preserve "crashed" outcome if summary.md is missing (don't downgrade to partial)
-    if [[ ! -f "${trace_dir}/summary.md" && "$outcome" != "skipped" ]]; then
-        outcome="crashed"
-    fi
-
-    # --- Status repair: transition stuck "active" traces to "completed" ---
-    # Orphaned traces (where finalize_trace was never called) keep status="active"
-    # indefinitely. If a trace has been "active" for more than 30 minutes, we
-    # assume the agent is gone and transition it to "completed" with an estimated
-    # finished_at. This does not affect traces that already have status="completed"
-    # or "crashed".
-    #
-    # @decision DEC-REFINALIZE-007
-    # @title Repair orphaned active status in refinalize_trace
-    # @status accepted
-    # @rationale Three bug sources leave traces permanently "active":
-    #   1. check-explore.sh and check-general-purpose.sh (no finalize_trace call)
-    #   2. Timeout races where finalize_trace is reached too late in the 5s budget
-    #   3. Agent crashes before SubagentStop fires
-    #   All three leave status="active" with no finished_at. Running refinalize_trace
-    #   retrospectively can detect these orphans (>30 min old, still active) and
-    #   transition them to "completed" so they appear correctly in reports and
-    #   don't inflate active-agent counts. finished_at is estimated from the latest
-    #   artifact mtime or started_at + duration_seconds when available.
-    local cur_status
-    cur_status=$(jq -r '.status // "unknown"' "$manifest" 2>/dev/null)
-    local new_status="$cur_status"
-    local new_finished_at=""
-
-    if [[ "$cur_status" == "active" ]]; then
-        local now_epoch_rf
-        now_epoch_rf=$(date -u +%s)
-        local start_epoch_rf=0
-        if [[ -n "$cur_started_at" ]]; then
-            start_epoch_rf=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$cur_started_at" +%s 2>/dev/null \
-                || date -u -d "$cur_started_at" +%s 2>/dev/null \
-                || echo "0")
-        fi
-        local orphan_threshold=1800  # 30 minutes
-        if [[ "$start_epoch_rf" -gt 0 && \
-              $(( now_epoch_rf - start_epoch_rf )) -gt "$orphan_threshold" ]]; then
-            new_status="completed"
-            # Estimate finished_at: try latest artifact mtime, then started_at + duration
-            local estimated_end=0
-            if [[ -d "${trace_dir}/artifacts" ]]; then
-                local latest_artifact
-                latest_artifact=$(ls -t "${trace_dir}/artifacts/" 2>/dev/null | head -1)
-                if [[ -n "$latest_artifact" ]]; then
-                    estimated_end=$(stat -f '%m' "${trace_dir}/artifacts/${latest_artifact}" 2>/dev/null \
-                        || stat -c '%Y' "${trace_dir}/artifacts/${latest_artifact}" 2>/dev/null \
-                        || echo "0")
-                fi
-            fi
-            if [[ "$estimated_end" -eq 0 && "$duration" -gt 0 ]]; then
-                estimated_end=$(( start_epoch_rf + duration ))
-            fi
-            if [[ "$estimated_end" -gt 0 ]]; then
-                new_finished_at=$(date -u -r "$estimated_end" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                    || date -u -d "@${estimated_end}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                    || echo "")
-            fi
-
-            # @decision DEC-STALE-MARKER-002
-            # @title Clean .active-* markers during refinalize_trace status repair
-            # @status accepted
-            # @rationale When refinalize_trace transitions a trace from status="active" to
-            #   status="completed", the .active-{agent_type}-* markers should also be removed.
-            #   This provides defense-in-depth: if finalize_trace's marker cleanup failed
-            #   (timeout, crash), refinalize_trace's status repair also handles the marker.
-            #   Only cleans markers whose content matches this trace_id to avoid removing
-            #   markers belonging to concurrent active traces of the same agent type.
-            local rf_agent_type
-            rf_agent_type=$(jq -r '.agent_type // empty' "$manifest" 2>/dev/null)
-            if [[ -n "$rf_agent_type" ]]; then
-                for marker in "${TRACE_STORE}/.active-${rf_agent_type}-"*; do
-                    [[ -f "$marker" ]] || continue
-                    local marker_trace
-                    marker_trace=$(cat "$marker" 2>/dev/null)
-                    [[ "$marker_trace" == "$trace_id" ]] && rm -f "$marker"
-                done
-            fi
-        fi
-    fi
-
-    # --- Check if anything actually changed ---
-    local changed=false
-    [[ "$test_result" != "$cur_test_result" ]] && changed=true
-    [[ "$files_changed" != "$cur_files_changed" ]] && changed=true
-    [[ "$duration" != "$cur_duration" ]] && changed=true
-    [[ "$outcome" != "$cur_outcome" ]] && changed=true
-    [[ "$new_status" != "$cur_status" ]] && changed=true
-
-    if ! $changed; then
-        return 1
-    fi
-
-    # --- Atomic manifest update ---
-    local tmp_manifest="${manifest}.tmp"
-    local jq_args=(
-        --argjson duration "$duration"
-        --arg test_result "$test_result"
-        --argjson files_changed "$files_changed"
-        --arg outcome "$outcome"
-        --arg new_status "$new_status"
-    )
-    local jq_expr='. + {
-         duration_seconds: $duration,
-         test_result: $test_result,
-         files_changed: $files_changed,
-         outcome: $outcome,
-         status: $new_status
-       }'
-    # Only inject finished_at if we computed one (avoid overwriting existing value)
-    if [[ -n "$new_finished_at" ]]; then
-        jq_args+=(--arg new_finished_at "$new_finished_at")
-        jq_expr='. + {
-         duration_seconds: $duration,
-         test_result: $test_result,
-         files_changed: $files_changed,
-         outcome: $outcome,
-         status: $new_status,
-         finished_at: $new_finished_at
-       }'
-    fi
-    # Apply the same jq error handling pattern as finalize_trace (DEC-OBS-OVERHAUL-003):
-    # use a separate error file to capture stderr (stdout goes to tmp_manifest),
-    # check exit code, validate non-empty tmp before mv.
-    local jq_err_file="${manifest}.jqerr"
-    jq "${jq_args[@]}" "$jq_expr" "$manifest" > "$tmp_manifest" 2>"$jq_err_file" || {
-        local jq_err_msg
-        jq_err_msg=$(cat "$jq_err_file" 2>/dev/null)
-        echo "ERROR: refinalize_trace: jq failed to update manifest for trace $trace_id: $jq_err_msg" >&2
-        rm -f "$tmp_manifest" "$jq_err_file"
-        return 1
-    }
-    rm -f "$jq_err_file"
-    if [[ ! -s "$tmp_manifest" ]]; then
-        echo "ERROR: refinalize_trace: jq produced empty manifest for trace $trace_id — not replacing" >&2
-        rm -f "$tmp_manifest"
-        return 1
-    fi
-    mv "$tmp_manifest" "$manifest"
-
-    return 0
-}
-
-# Scan all traces and re-finalize those with stale data (test_result=unknown,
-# files_changed=0, or duration_seconds<=0). Optionally limit to traces started
-# within max_age_hours (skip older traces to bound runtime).
-#
-# Usage: refinalize_stale_traces [max_age_hours]
-# Prints: count of traces updated to stdout
-# Returns: 0 always
-refinalize_stale_traces() {
-    local max_age_hours="${1:-}"
-    local updated=0
-    local now_epoch
-    now_epoch=$(date -u +%s)
-
-    for manifest in "${TRACE_STORE}"/*/manifest.json; do
-        [[ ! -f "$manifest" ]] && continue
-
-        # Check staleness criteria
-        local tr fc dur
-        tr=$(jq -r '.test_result // "unknown"' "$manifest" 2>/dev/null)
-        fc=$(jq -r '.files_changed // 0' "$manifest" 2>/dev/null)
-        dur=$(jq -r '.duration_seconds // 0' "$manifest" 2>/dev/null)
-
-        local is_stale=false
-        [[ "$tr" == "unknown" ]] && is_stale=true
-        [[ "$fc" -eq 0 ]] && is_stale=true
-        [[ "$dur" -le 0 ]] && is_stale=true
-
-        if ! $is_stale; then
-            continue
-        fi
-
-        # If max_age_hours provided, skip traces older than the threshold
-        if [[ -n "$max_age_hours" ]]; then
-            local started_at
-            started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
-            if [[ -n "$started_at" ]]; then
-                local start_epoch
-                start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
-                    || date -u -d "$started_at" +%s 2>/dev/null \
-                    || echo "0")
-                if [[ "$start_epoch" -gt 0 ]]; then
-                    local age_hours=$(( (now_epoch - start_epoch) / 3600 ))
-                    if [[ "$age_hours" -gt "$max_age_hours" ]]; then
-                        continue
-                    fi
-                fi
-            fi
-        fi
-
-        local trace_id
-        trace_id=$(jq -r '.trace_id // empty' "$manifest" 2>/dev/null)
-        [[ -z "$trace_id" ]] && continue
-
-        if refinalize_trace "$trace_id"; then
-            updated=$(( updated + 1 ))
-        fi
-    done
-
-    # Rebuild the index when any manifests were updated so index.jsonl stays in
-    # sync with manifest files. Without this, analyze.sh sees stale index entries
-    # (e.g., 39 indexed vs 43 manifests). Called here so callers (analyze.sh and
-    # direct callers) both get a consistent index after refinalization.
-    # @decision DEC-OBS-INDEX-001
-    # @title Call rebuild_index after refinalize_stale_traces updates manifests
-    # @status accepted
-    # @rationale analyze.sh calls refinalize_stale_traces then rebuild_index, but
-    #   direct callers of refinalize_stale_traces (scripts, future hooks) would get
-    #   a stale index. Moving rebuild_index into refinalize_stale_traces ensures the
-    #   index is always consistent after a refinalize run. rebuild_index is only
-    #   called when at least one trace was updated (updated > 0) to avoid unnecessary
-    #   I/O on clean runs. analyze.sh pre-stage rebuild call is now redundant but
-    #   harmless (atomic mv makes double-rebuild safe). Issue #104.
-    if [[ "$updated" -gt 0 ]]; then
-        rebuild_index 2>/dev/null || true
-    fi
-
-    echo "$updated"
-    return 0
-}
+# refinalize_trace() and refinalize_stale_traces() were deleted in Observatory v2.
+# Replaced by compliance.json recording in check-*.sh hooks. (DEC-OBS-V2-002)
+# Deleted: 2026-02-21 (Observatory v2 Phase 1). Remove from call sites.
 
 # Rebuild the trace index from scratch by reading every manifest.json.
 # Writes a fresh index.jsonl sorted by started_at.
@@ -2694,4 +2217,4 @@ compress_initiative() {
 
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_doc_freshness get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan compress_initiative init_trace detect_active_trace finalize_trace index_trace refinalize_trace refinalize_stale_traces rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions backup_trace_manifests check_trace_count_canary
+export -f get_git_state get_plan_status get_doc_freshness get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan compress_initiative init_trace detect_active_trace finalize_trace index_trace rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions backup_trace_manifests check_trace_count_canary

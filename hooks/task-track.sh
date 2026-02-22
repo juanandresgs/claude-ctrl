@@ -114,17 +114,16 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
             STALE_THRESHOLD=300  # 5 minutes — matches check-implementer.sh timeout (15s) with margin
 
             if [[ "$IMPL_START_EPOCH" -gt 0 && $(( NOW_EPOCH - IMPL_START_EPOCH )) -gt "$STALE_THRESHOLD" ]]; then
-                # Trace is stale — auto-heal via refinalize_trace, then clean marker
-                refinalize_trace "$IMPL_TRACE" 2>/dev/null || true
-                # Force status to "completed" — refinalize_trace updates artifacts but NOT status.
-                # Without this flip, the re-read below still sees "active" and the deny fires.
+                # Trace is stale — force status to "completed" to unblock tester dispatch.
+                # Observatory v2: refinalize_trace() was deleted; status repair is done directly here.
                 # @decision DEC-TESTER-GATE-HEAL-002
                 # @title Reduce staleness threshold and fix status flip in tester dispatch gate
                 # @status accepted
                 # @rationale DEC-TESTER-GATE-HEAL-001 added staleness self-heal but used a 30-minute
-                #   threshold (too long for 5s hook timeout orphans) and refinalize_trace doesn't set
-                #   status: "completed" (only finalize_trace does). Reducing to 5 minutes and forcing
+                #   threshold (too long for 5s hook timeout orphans). Reducing to 5 minutes and forcing
                 #   the status flip makes the self-heal actually work. Issues #127, #128.
+                #   Observatory v2 (DEC-OBS-V2-002) removed refinalize_trace — status is flipped
+                #   directly here since that was the meaningful part of the repair.
                 jq '. + {status: "completed"}' "$IMPL_MANIFEST" > "${IMPL_MANIFEST}.tmp" 2>/dev/null \
                     && mv "${IMPL_MANIFEST}.tmp" "$IMPL_MANIFEST" 2>/dev/null || true
                 # Clean the marker so future checks don't hit this path

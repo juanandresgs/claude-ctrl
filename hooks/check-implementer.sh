@@ -105,10 +105,26 @@ if [[ -n "$TRACE_ID" ]]; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for implementer trace $TRACE_ID"
     fi
 
+    # --- Observatory Phase 1: Snapshot pre-capture artifact existence ---
+    # Record which artifacts existed BEFORE auto-capture runs. This lets compliance.json
+    # distinguish "agent wrote it" from "hook auto-captured it" for observatory metrics.
+    # @decision DEC-OBS-V2-001
+    # @title Snapshot artifact existence before auto-capture for compliance attribution
+    # @status accepted
+    # @rationale The observatory needs to know whether agents wrote artifacts themselves
+    #   (good compliance) or whether the check hook had to reconstruct them (poor compliance).
+    #   Snapshotting before auto-capture is the only reliable way to make this distinction.
+    IMPL_PRE_FILES_CHANGED=false
+    IMPL_PRE_TEST_OUTPUT=false
+    if [[ -d "$TRACE_DIR/artifacts" ]]; then
+        [[ -f "$TRACE_DIR/artifacts/files-changed.txt" ]] && IMPL_PRE_FILES_CHANGED=true
+        [[ -f "$TRACE_DIR/artifacts/test-output.txt" ]] && IMPL_PRE_TEST_OUTPUT=true
+    fi
+
     # Auto-capture files-changed.txt if agent didn't write it (best-effort, runs after finalize).
     # Collects unstaged diffs, staged diffs, and recent commit file names so
-    # refinalize_trace() can compute files_changed > 0 even when the agent omitted
-    # the artifact. Uses || true on every git command — hook must not abort on
+    # the observatory can count files_changed > 0 even when the agent omitted the artifact.
+    # Uses || true on every git command — hook must not abort on
     # non-git paths or failed subcommands.
     if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/files-changed.txt" ]]; then
         git -C "$PROJECT_ROOT" diff --name-only 2>/dev/null > "$TRACE_DIR/artifacts/files-changed.txt" || true
@@ -132,6 +148,57 @@ if [[ -n "$TRACE_ID" ]]; then
             [[ "$TS_RESULT" == "pass" ]] && echo "Tests passed" >> "$TRACE_DIR/artifacts/test-output.txt"
             [[ "$TS_RESULT" == "fail" ]] && echo "Tests failed" >> "$TRACE_DIR/artifacts/test-output.txt"
         fi
+    fi
+
+
+    # --- Observatory Phase 1: Write compliance.json after auto-capture ---
+    # Records which artifacts exist, their source (agent vs auto-capture), and test result.
+    # finalize_trace (v2) reads this file directly — no fallback chains needed.
+    if [[ -d "$TRACE_DIR/artifacts" ]]; then
+        # Determine source for each artifact
+        _fc_present=false; _fc_source="null"
+        _to_present=false; _to_source="null"
+        _sm_present=false; _sm_source="null"
+        _dp_present=false; _dp_source="null"
+
+        [[ -f "$TRACE_DIR/artifacts/files-changed.txt" ]] && _fc_present=true
+        [[ -f "$TRACE_DIR/artifacts/test-output.txt" ]] && _to_present=true
+        [[ -f "$TRACE_DIR/summary.md" ]] && _sm_present=true
+        [[ -f "$TRACE_DIR/artifacts/diff.patch" ]] && _dp_present=true
+
+        # Source attribution: if it existed before auto-capture → "agent", else → "auto-capture"
+        $_fc_present && { $IMPL_PRE_FILES_CHANGED && _fc_source='"agent"' || _fc_source='"auto-capture"'; }
+        $_to_present && { $IMPL_PRE_TEST_OUTPUT && _to_source='"agent"' || _to_source='"auto-capture"'; }
+        $_sm_present && _sm_source='"agent"'  # summary.md is always agent-written (fallback writes it as agent response)
+        $_dp_present && _dp_source='"agent"'  # diff.patch is always agent-written if present
+
+        # Determine test_result from .test-status
+        _ts_result="not-provided"
+        _ts_source="null"
+        _TS_FILE=""
+        [[ -f "${CLAUDE_DIR}/.test-status" ]] && _TS_FILE="${CLAUDE_DIR}/.test-status"
+        [[ -z "$_TS_FILE" && -f "$PROJECT_ROOT/.test-status" ]] && _TS_FILE="$PROJECT_ROOT/.test-status"
+        [[ -z "$_TS_FILE" && -f "$PROJECT_ROOT/.claude/.test-status" ]] && _TS_FILE="$PROJECT_ROOT/.claude/.test-status"
+        if [[ -n "$_TS_FILE" ]]; then
+            _ts_result=$(cut -d'|' -f1 "$_TS_FILE" 2>/dev/null | tr -d '[:space:]' || echo "not-provided")
+            _ts_source='".test-status"'
+        fi
+
+        cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_EOF
+{
+  "agent_type": "implementer",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_sm_present, "source": $_sm_source},
+    "test-output.txt": {"present": $_to_present, "source": $_to_source},
+    "files-changed.txt": {"present": $_fc_present, "source": $_fc_source},
+    "diff.patch": {"present": $_dp_present, "source": $_dp_source}
+  },
+  "test_result": "$_ts_result",
+  "test_result_source": $_ts_source,
+  "issues_count": 0
+}
+COMPLIANCE_EOF
     fi
 fi
 

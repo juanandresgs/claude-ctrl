@@ -28,13 +28,9 @@ fi
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
-# Re-finalize stale traces from this session (catches late-arriving artifacts).
-# Bounded to last 4 hours to avoid rescanning ancient traces on every Stop.
-# Wrapped in set +e because refinalize_stale_traces always returns 0 but
-# sub-calls (jq, date) may exit non-zero on malformed manifests.
-set +e
-refinalize_stale_traces 4 >/dev/null 2>&1
-set -e
+# Observatory v2: refinalize_stale_traces() was deleted (DEC-OBS-V2-002).
+# Compliance data is now recorded at agent boundaries by check-*.sh hooks.
+# No stale-trace re-finalization needed at session end.
 
 # Backup trace manifests at session end (defense against data loss between sessions).
 # ~2s for 500 manifests. Keeps last 3 compressed archives in TRACE_STORE.

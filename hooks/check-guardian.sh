@@ -267,6 +267,18 @@ fi
 # finalize_trace already ran above (before advisory checks). This block enriches
 # the trace artifacts retrospectively — it does NOT affect marker cleanup.
 if [[ -n "$TRACE_ID" && -d "$TRACE_DIR/artifacts" ]]; then
+    # --- Observatory Phase 1: Snapshot pre-capture artifact existence ---
+    # @decision DEC-OBS-V2-001
+    # @title Snapshot artifact existence before auto-capture for compliance attribution
+    # @status accepted
+    # @rationale The observatory needs to know whether agents wrote artifacts themselves
+    #   or whether the check hook had to reconstruct them. Snapshotting before auto-capture
+    #   is the only reliable way to make this distinction.
+    GUARDIAN_PRE_SUMMARY=false
+    GUARDIAN_PRE_COMMIT_INFO=false
+    [[ -f "$TRACE_DIR/summary.md" ]] && GUARDIAN_PRE_SUMMARY=true
+    [[ -f "$TRACE_DIR/artifacts/commit-info.txt" ]] && GUARDIAN_PRE_COMMIT_INFO=true
+
     # Auto-capture commit-info.txt: last commit subject + diff stat.
     # Provides concrete evidence of what the guardian committed without requiring
     # the agent to explicitly write an artifact. Uses || true — git may fail on
@@ -275,6 +287,30 @@ if [[ -n "$TRACE_ID" && -d "$TRACE_DIR/artifacts" ]]; then
         git -C "$PROJECT_ROOT" log --oneline -1 2>/dev/null || true
         git -C "$PROJECT_ROOT" diff --stat HEAD~1..HEAD 2>/dev/null || true
     } > "$TRACE_DIR/artifacts/commit-info.txt" 2>/dev/null || true
+
+    # --- Observatory Phase 1: Write compliance.json after auto-capture ---
+    _gd_sm_present=false; _gd_sm_source="null"
+    _gd_ci_present=false; _gd_ci_source="null"
+
+    [[ -f "$TRACE_DIR/summary.md" ]] && _gd_sm_present=true
+    [[ -f "$TRACE_DIR/artifacts/commit-info.txt" ]] && _gd_ci_present=true
+
+    $_gd_sm_present && { $GUARDIAN_PRE_SUMMARY && _gd_sm_source='"agent"' || _gd_sm_source='"auto-capture"'; }
+    $_gd_ci_present && { $GUARDIAN_PRE_COMMIT_INFO && _gd_ci_source='"agent"' || _gd_ci_source='"auto-capture"'; }
+
+    cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_GUARDIAN_EOF
+{
+  "agent_type": "guardian",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_gd_sm_present, "source": $_gd_sm_source},
+    "commit-info.txt": {"present": $_gd_ci_present, "source": $_gd_ci_source}
+  },
+  "test_result": "not-provided",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_GUARDIAN_EOF
 fi
 
 # Response size advisory

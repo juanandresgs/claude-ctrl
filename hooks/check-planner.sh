@@ -80,6 +80,30 @@ if [[ -n "$TRACE_ID" ]]; then
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "planner"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for planner trace $TRACE_ID"
     fi
+
+    # --- Observatory Phase 1: Write compliance.json for planner trace ---
+    # Planners write summary.md as their primary artifact. No auto-capture runs
+    # for planners, so any artifact present was written by the agent.
+    # @decision DEC-OBS-V2-001
+    # @title Snapshot artifact existence before auto-capture for compliance attribution
+    # @status accepted
+    # @rationale The observatory needs to know whether agents wrote artifacts themselves.
+    #   Planners have no auto-capture blocks, so all artifacts are agent-sourced.
+    _pl_sm_present=false; _pl_sm_source="null"
+    [[ -f "$TRACE_DIR/summary.md" ]] && _pl_sm_present=true && _pl_sm_source='"agent"'
+
+    cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_PLANNER_EOF
+{
+  "agent_type": "planner",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_pl_sm_present, "source": $_pl_sm_source}
+  },
+  "test_result": "not-provided",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_PLANNER_EOF
 fi
 
 # --- Advisory checks (run after finalize to avoid timeout races) ---
