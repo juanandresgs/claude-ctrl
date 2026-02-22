@@ -6,7 +6,7 @@
 **Languages:** bash (78%), markdown (15%), python (7%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-02-18
-**Last updated:** 2026-02-23
+**Last updated:** 2026-02-22
 
 This is the Claude Code configuration directory. It shapes how Claude Code operates
 across all projects via lifecycle hooks, specialized agents, research skills, and
@@ -86,6 +86,7 @@ project's institutional memory.
 | 2026-02-22 | DEC-ARCH-003 | architect | Mermaid templates with dynamic population | Templates ensure valid syntax; dynamic generation risks errors |
 | 2026-02-22 | DEC-ARCH-004 | architect | Manifest.json as Phase 1/Phase 2 contract | Clean separation; new backends just read manifest.json |
 | 2026-02-22 | DEC-ARCH-005 | architect | Phase 2 dispatch via batched Task subagents | Per-node dispatch too many subagents; batch 3-5 keeps it manageable |
+| 2026-02-22 | DEC-BAZAAR-009 | bazaar-completion | Remove lib/ from conftest.py sys.path | lib/http.py shadows stdlib http; SCRIPTS_DIR alone suffices for package discovery |
 
 ---
 
@@ -1426,7 +1427,7 @@ into improvements.md.
   manifest node data.
 
 #### Phase 1: Core Skill (Map Only)
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-ARCH-001, DEC-ARCH-002, DEC-ARCH-003, DEC-ARCH-004
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004, REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008
 **Issues:** #23
@@ -1507,7 +1508,7 @@ into improvements.md.
 <!-- Guardian appends here after phase completion -->
 
 #### Phase 2: Backend Integration
-**Status:** planned
+**Status:** in-progress
 **Decision IDs:** DEC-ARCH-005
 **Requirements:** REQ-GOAL-004, REQ-P2-001
 **Issues:** #24
@@ -1582,6 +1583,187 @@ Implementation order: Phase 1 first (core skill with map functionality), then Ph
 | uplevel | Project detection script, parallel subagent dispatch, area-based analysis |
 | consume-content | Content type detection, read-write-verify pipeline |
 | decide | Config JSON schema, integration with planner |
+
+---
+
+### Initiative: Bazaar Competitive Analytical Marketplace -- Completion
+**Status:** active
+**Started:** 2026-02-22
+**Goal:** Harden and validate the /bazaar skill so it can merge to main and operate in production
+
+> The /bazaar skill implements a competitive analytical marketplace: diverse ideation via multiple
+> LLM providers, judicial funding of the best ideas, obsessive deep-research on funded ideas,
+> analyst translation of research into actionable insights, and a market-proportional final report.
+> The skill is 90%+ built (SKILL.md, bazaar_dispatch.py, aggregate.py, report.py, 4 archetype
+> families, provider wrappers, 66 passing tests) but lives in an unmerged worktree. Two gaps
+> remain: a test import inconsistency (conftest.py adds lib/ to sys.path, contradicting the
+> production fix that avoids this to prevent http.py shadowing Python's stdlib http module),
+> and no live E2E validation has been performed.
+
+**Dominant Constraint:** simplicity (skill is nearly done; minimize changes, validate, merge)
+
+#### Goals
+- REQ-GOAL-001: /bazaar skill available on main branch and invocable in production
+- REQ-GOAL-002: Test imports consistent with production imports (no stdlib shadowing)
+- REQ-GOAL-003: At least one successful E2E run with real API providers
+
+#### Non-Goals
+- REQ-NOGO-001: Adding new archetypes or providers -- ship what exists, extend later
+- REQ-NOGO-002: Performance optimization of dispatch parallelism -- works well enough
+- REQ-NOGO-003: Integration with /architect or other skills -- separate initiative
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-001: conftest.py does not add lib/ to sys.path (prevents http.py shadowing).
+  Acceptance: Given conftest.py, When inspected, Then only SCRIPTS_DIR is on sys.path
+  (lib/ is discoverable as a package via SCRIPTS_DIR).
+
+- REQ-P0-002: All 66 existing tests pass after conftest.py fix.
+  Acceptance: Given conftest fix applied, When pytest runs, Then 66 passed, 0 failed.
+
+- REQ-P0-003: /bazaar skill merges to main and is invocable.
+  Acceptance: Given main branch, When `/bazaar "test question"` is invoked, Then skill
+  starts execution (SKILL.md discovered by Claude Code skill loader).
+
+- REQ-P0-004: E2E validation with at least one real API provider.
+  Acceptance: Given at least one API key (Anthropic, OpenAI, Gemini, or Perplexity),
+  When /bazaar runs a real analytical question, Then all 6 phases complete and a
+  report is produced.
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: E2E validation with all 4 providers for maximum diversity.
+- REQ-P1-002: Report output quality review -- coherent synthesis, proper citations.
+
+**Future Consideration (P2)**
+
+- REQ-P2-001: Archetype tuning based on real output quality assessment.
+- REQ-P2-002: Provider fallback chain when API keys are missing.
+
+#### Definition of Done
+
+conftest.py import fix applied. 66 tests pass. Branch merged to main. At least one E2E
+run completes all 6 bazaar phases and produces a report. Issue created and closed.
+
+#### Architectural Decisions
+
+- DEC-BAZAAR-009: Remove lib/ from conftest.py sys.path to match production import strategy.
+  Addresses: REQ-P0-001, REQ-P0-002.
+  Rationale: bazaar_dispatch.py explicitly avoids adding lib/ to sys.path because lib/http.py
+  shadows Python's stdlib http module (see line 71 comment). conftest.py contradicts this by
+  adding LIB_DIR as a fallback. Since SCRIPTS_DIR on sys.path makes lib/ discoverable as a
+  package (import lib.anthropic_chat works), the LIB_DIR fallback is unnecessary and harmful.
+
+#### Phase 1: Hardening
+**Status:** planned
+**Decision IDs:** DEC-BAZAAR-009
+**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
+**Issues:** #26
+**Definition of Done:**
+- REQ-P0-001 satisfied: conftest.py only adds SCRIPTS_DIR to sys.path
+- REQ-P0-002 satisfied: 66 tests pass after fix
+- REQ-P0-003 satisfied: branch merged to main
+
+##### Planned Decisions
+- DEC-BAZAAR-009: Remove LIB_DIR from conftest.py sys.path -- aligns test imports with production -- Addresses: REQ-P0-001, REQ-P0-002
+
+##### Work Items
+
+**W1-1: Fix conftest.py import shadowing**
+- Remove line 21 (`sys.path.insert(0, str(LIB_DIR))`) from tests/conftest.py
+- Remove LIB_DIR variable definition (line 16)
+- Remove docstring reference to lib/ fallback (lines 7-8)
+- SCRIPTS_DIR remains -- it enables `import lib.anthropic_chat` via package discovery
+
+**W1-2: Verify test suite passes**
+- Run: `python3 -m pytest skills/bazaar/tests/ --tb=short -q`
+- Expected: 66 passed, 0 failed
+- If any test breaks, it was relying on bare `import anthropic_chat` instead of
+  `import lib.anthropic_chat` -- fix the import in the test file
+
+**W1-3: Merge to main via Guardian**
+- Branch: feature/bazaar-skill in .worktrees/feat-bazaar
+- Guardian commit + merge to main
+- Verify skill directory appears at skills/bazaar/ on main
+
+##### Critical Files
+- `skills/bazaar/tests/conftest.py` -- Import path fix (remove LIB_DIR)
+- `skills/bazaar/scripts/bazaar_dispatch.py` -- Reference: lines 71-75 show correct import strategy
+- `skills/bazaar/SKILL.md` -- Skill definition (already complete)
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 2: E2E Validation
+**Status:** planned
+**Decision IDs:** none (validation only)
+**Requirements:** REQ-P0-004
+**Issues:** #27
+**Definition of Done:**
+- REQ-P0-004 satisfied: /bazaar completes all 6 phases on a real question with real API
+
+##### Planned Decisions
+- None -- this phase is pure validation
+
+##### Work Items
+
+**W2-1: Run /bazaar with a real analytical question**
+- Invoke: `/bazaar "What are the most effective approaches to reducing LLM hallucination in production systems?"`
+- Verify each phase executes: ideation (5 ideators), judging (3 judges), obsessive research
+  (top-funded ideas dispatched), analysis (3 analysts), aggregation, report generation
+- Capture output report path
+
+**W2-2: Validate report quality**
+- Read generated report
+- Verify: multiple perspectives represented, research citations present, analyst insights
+  coherent, market-proportional weighting visible in report structure
+- Flag any phase failures or empty sections for remediation
+
+##### Critical Files
+- `skills/bazaar/SKILL.md` -- Orchestration workflow (all 6 phases)
+- `skills/bazaar/scripts/aggregate.py` -- Aggregation logic
+- `skills/bazaar/scripts/report.py` -- Report generation
+- `skills/bazaar/templates/report-template.md` -- Report format
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Bazaar Completion Worktree Strategy
+
+Main is sacred. Phase 1 uses the existing worktree:
+- **Phase 1:** `~/.claude/.worktrees/feat-bazaar` on branch `feature/bazaar-skill`
+- **Phase 2:** On main (post-merge E2E validation)
+
+Implementation order: Phase 1 first (fix + merge), then Phase 2 (validate on main).
+
+#### Bazaar Completion References
+
+##### Existing Code Inventory
+| Component | Path | Status |
+|-----------|------|--------|
+| SKILL.md | skills/bazaar/SKILL.md | Complete (20k, 6-phase workflow) |
+| Dispatch engine | skills/bazaar/scripts/bazaar_dispatch.py | Complete (parallel ThreadPoolExecutor) |
+| Aggregation | skills/bazaar/scripts/aggregate.py | Complete (market-proportional weighting) |
+| Report generator | skills/bazaar/scripts/report.py | Complete (template-based) |
+| Provider wrappers | skills/bazaar/scripts/lib/ | Complete (anthropic, openai, gemini, perplexity) |
+| Archetypes | skills/bazaar/archetypes/ | Complete (4 families: ideators, judges, obsessives, analysts) |
+| Provider config | skills/bazaar/providers.json | Complete (4 providers with models) |
+| Tests | skills/bazaar/tests/ | 66 passing (dispatch, aggregate, report) |
+| Report template | skills/bazaar/templates/report-template.md | Complete |
+
+##### Existing Decisions (in code @decision annotations)
+| DEC-ID | Title |
+|--------|-------|
+| DEC-BAZAAR-001 | Multi-provider model diversity as "temperature" |
+| DEC-BAZAAR-002 | Archetype system prompt families |
+| DEC-BAZAAR-003 | Market-proportional aggregation weighting |
+| DEC-BAZAAR-004 | bazaar_dispatch.py for non-tool phases, Task agents for tool phases |
+| DEC-BAZAAR-005 | Judge funding as idea selection mechanism |
+| DEC-BAZAAR-006 | Analyst persona diversity (skeptic, pragmatist, synthesizer) |
+| DEC-BAZAAR-007 | Report template with market voice sections |
+| DEC-BAZAAR-008 | Mock mode for deterministic testing |
 
 ---
 
