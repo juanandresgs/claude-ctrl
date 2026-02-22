@@ -159,6 +159,23 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
             fi
         fi
     fi
+
+    # Initialize tester trace so post-task.sh can find it via detect_active_trace().
+    # SubagentStart (which normally calls init_trace) doesn't fire (DEC-CACHE-003),
+    # so init_trace() for testers never runs via the normal path.
+    # Gate C already initializes implementer traces — this mirrors that pattern for testers.
+    # post-task.sh reads the .active-tester-* marker to locate summary.md for auto-verify.
+    #
+    # @decision DEC-PROOF-LIFE-004
+    # @title Initialize tester trace in task-track.sh (PreToolUse:Task) for post-task.sh breadcrumb
+    # @status accepted
+    # @rationale SubagentStart doesn't fire (DEC-CACHE-003), so init_trace() for testers
+    #   never runs. post-task.sh needs the .active-tester-* marker to find summary.md.
+    #   Gate C already initializes implementer traces — this mirrors that pattern for testers.
+    TESTER_TRACE_ID=$(init_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
+    if [[ -n "$TESTER_TRACE_ID" ]]; then
+        log_info "TASK-TRACK" "initialized tester trace=${TESTER_TRACE_ID}"
+    fi
 fi
 
 # --- Gate C: Implementer dispatch activates proof gate ---
