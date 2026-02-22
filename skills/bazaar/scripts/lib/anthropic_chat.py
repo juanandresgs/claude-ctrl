@@ -38,7 +38,7 @@ def chat(
     api_key: str,
     system_prompt: str,
     user_prompt: str,
-    model: str = "claude-opus-4-5",
+    model: str = "claude-opus-4-6",
     max_tokens: int = 4096,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> Tuple[str, str]:
@@ -48,7 +48,7 @@ def chat(
         api_key: Anthropic API key
         system_prompt: System-level instructions for the model
         user_prompt: User message content
-        model: Model identifier (e.g., claude-opus-4-5)
+        model: Model identifier (e.g., claude-opus-4-6)
         max_tokens: Maximum tokens in the response
         timeout: Request timeout in seconds
 

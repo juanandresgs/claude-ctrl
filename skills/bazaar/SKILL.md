@@ -147,7 +147,7 @@ Build `$WORK_DIR/ideation_dispatches.json`:
     {
       "id": "methodical",
       "provider": "anthropic",
-      "model": "claude-opus-4-5",
+      "model": "claude-opus-4-6",
       "system_prompt_file": "{ARCHETYPES}/ideators/methodical.md",
       "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
       "output_file": "{WORK_DIR}/ideators/methodical.json"
@@ -155,7 +155,7 @@ Build `$WORK_DIR/ideation_dispatches.json`:
     {
       "id": "contrarian",
       "provider": "openai",
-      "model": "gpt-4o",
+      "model": "gpt-5.2",
       "system_prompt_file": "{ARCHETYPES}/ideators/contrarian.md",
       "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
       "output_file": "{WORK_DIR}/ideators/contrarian.json"
@@ -163,7 +163,7 @@ Build `$WORK_DIR/ideation_dispatches.json`:
     {
       "id": "pattern-matcher",
       "provider": "gemini",
-      "model": "gemini-2.0-flash",
+      "model": "gemini-3.1-pro-preview",
       "system_prompt_file": "{ARCHETYPES}/ideators/pattern-matcher.md",
       "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
       "output_file": "{WORK_DIR}/ideators/pattern-matcher.json"
@@ -171,7 +171,7 @@ Build `$WORK_DIR/ideation_dispatches.json`:
     {
       "id": "edge-case-hunter",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-5",
+      "model": "claude-sonnet-4-6",
       "system_prompt_file": "{ARCHETYPES}/ideators/edge-case-hunter.md",
       "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
       "output_file": "{WORK_DIR}/ideators/edge-case-hunter.json"
@@ -179,7 +179,7 @@ Build `$WORK_DIR/ideation_dispatches.json`:
     {
       "id": "systems-thinker",
       "provider": "openai",
-      "model": "gpt-4o",
+      "model": "gpt-5.2",
       "system_prompt_file": "{ARCHETYPES}/ideators/systems-thinker.md",
       "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
       "output_file": "{WORK_DIR}/ideators/systems-thinker.json"
@@ -254,10 +254,10 @@ print('\n'.join(lines))
 ```
 
 Build `$WORK_DIR/judge_dispatches.json` with 4 judge archetypes:
-- pragmatist → anthropic/claude-opus-4-5
-- visionary → gemini/gemini-2.0-flash (or anthropic if unavailable)
-- risk-manager → openai/gpt-4o (or anthropic if unavailable)
-- quant → anthropic/claude-sonnet-4-5
+- pragmatist → anthropic/claude-opus-4-6
+- visionary → gemini/gemini-3.1-pro-preview (or anthropic if unavailable)
+- risk-manager → openai/gpt-5.2 (or anthropic if unavailable)
+- quant → anthropic/claude-sonnet-4-6
 
 Each judge's user_prompt: `"{SCENARIOS_PROMPT}\n\nAllocate 1000 units across these scenarios."`
 
@@ -367,7 +367,7 @@ Build `$WORK_DIR/search_dispatches.json` — one dispatch per funded scenario:
     {
       "id": "search-{SCENARIO_ID}",
       "provider": "perplexity",
-      "model": "sonar",
+      "model": "sonar-deep-research",
       "system_prompt_file": "{ARCHETYPES}/obsessives/search-obsessive.md",
       "user_prompt": "Research this scenario for live web signals:\n\nScenario: {TITLE}\nDescription: {DESCRIPTION}\nKey focus: Find current evidence (last 6-18 months) for or against this scenario.",
       "output_file": "{WORK_DIR}/obsessives/{SCENARIO_ID}_search.json"
@@ -441,7 +441,7 @@ Follow the analyst archetype protocol. Translate these signals into structured f
     dispatches.append({
         "id": f"analyst-{sid}",
         "provider": "anthropic",
-        "model": "claude-opus-4-5",
+        "model": "claude-opus-4-6",
         "system_prompt_file": "$SKILL_DIR/archetypes/analysts/analyst.md",
         "user_prompt": user_prompt,
         "output_file": f"$WORK_DIR/analysts/{sid}_analysis.json"

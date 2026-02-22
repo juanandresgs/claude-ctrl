@@ -68,9 +68,9 @@ LIB_DIR = SCRIPT_DIR / "lib"
 KEYCHAIN_DIR = Path(__file__).parents[4] / "scripts" / "lib"  # ~/.claude/scripts/lib
 
 # Add SCRIPT_DIR so 'lib' can be imported as a package (for relative imports within lib/)
+# NOTE: Do NOT add LIB_DIR to sys.path — it contains http.py which shadows Python's
+# stdlib http package, breaking urllib.request internally.
 sys.path.insert(0, str(SCRIPT_DIR))
-# Also add LIB_DIR as fallback for bare module imports
-sys.path.insert(0, str(LIB_DIR))
 if KEYCHAIN_DIR.exists():
     sys.path.insert(0, str(KEYCHAIN_DIR))
 
@@ -98,12 +98,10 @@ def _load_provider(provider: str):
         raise ImportError(f"Unknown provider: {provider!r}")
 
     # Import as lib.<module> so relative imports within the module work.
-    # This requires lib/ to be on sys.path as a package (via __init__.py).
-    try:
-        return importlib.import_module(f"lib.{module_name}")
-    except ImportError:
-        # Fallback: bare import (when lib/ itself is on sys.path)
-        return importlib.import_module(module_name)
+    # SCRIPT_DIR is on sys.path, so lib/ is found as a package via __init__.py.
+    # Relative imports (from . import http) within provider modules resolve to
+    # lib/http.py without shadowing the stdlib http package.
+    return importlib.import_module(f"lib.{module_name}")
 
 
 def _get_api_key(provider: str) -> Optional[str]:

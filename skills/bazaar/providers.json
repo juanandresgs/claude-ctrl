@@ -4,8 +4,8 @@
     "anthropic": {
       "env_key": "ANTHROPIC_API_KEY",
       "module": "anthropic_chat",
-      "default_model": "claude-opus-4-5",
-      "fallback_model": "claude-sonnet-4-5",
+      "default_model": "claude-opus-4-6",
+      "fallback_model": "claude-sonnet-4-6",
       "max_tokens": 4096,
       "role": ["ideator", "judge", "analyst"],
       "description": "Anthropic Claude — strong reasoning and structured output"
@@ -13,8 +13,8 @@
     "openai": {
       "env_key": "OPENAI_API_KEY",
       "module": "openai_chat",
-      "default_model": "gpt-4o",
-      "fallback_model": "gpt-4o-mini",
+      "default_model": "gpt-5.2",
+      "fallback_model": "gpt-4o",
       "max_tokens": 4096,
       "role": ["ideator", "judge", "analyst"],
       "description": "OpenAI GPT — broad knowledge and strong JSON mode"
@@ -22,8 +22,8 @@
     "gemini": {
       "env_key": "GEMINI_API_KEY",
       "module": "gemini_chat",
-      "default_model": "gemini-2.0-flash",
-      "fallback_model": "gemini-1.5-flash",
+      "default_model": "gemini-3.1-pro-preview",
+      "fallback_model": "gemini-2.0-flash",
       "max_tokens": 4096,
       "role": ["ideator", "judge", "analyst"],
       "description": "Google Gemini — multimodal reasoning and large context"
@@ -31,8 +31,8 @@
     "perplexity": {
       "env_key": "PERPLEXITY_API_KEY",
       "module": "perplexity_chat",
-      "default_model": "sonar",
-      "fallback_model": "sonar",
+      "default_model": "sonar-deep-research",
+      "fallback_model": "sonar-pro",
       "max_tokens": 4096,
       "role": ["obsessive"],
       "description": "Perplexity Sonar — live web search with citations"

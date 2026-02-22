@@ -38,7 +38,7 @@ def chat(
     api_key: str,
     system_prompt: str,
     user_prompt: str,
-    model: str = "sonar",
+    model: str = "sonar-deep-research",
     max_tokens: int = 4096,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> Tuple[str, str]:
@@ -51,7 +51,7 @@ def chat(
         api_key: Perplexity API key
         system_prompt: System-level instructions for the model
         user_prompt: User message content (search query / research task)
-        model: Model identifier (e.g., sonar, sonar-pro)
+        model: Model identifier (e.g., sonar-deep-research, sonar-pro)
         max_tokens: Maximum tokens in the response
         timeout: Request timeout in seconds
 

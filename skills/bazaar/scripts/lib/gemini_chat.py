@@ -36,7 +36,7 @@ def chat(
     api_key: str,
     system_prompt: str,
     user_prompt: str,
-    model: str = "gemini-2.0-flash",
+    model: str = "gemini-3.1-pro-preview",
     max_tokens: int = 4096,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> Tuple[str, str]:
@@ -49,7 +49,7 @@ def chat(
         api_key: Google Gemini API key
         system_prompt: System-level instructions for the model
         user_prompt: User message content
-        model: Model identifier (e.g., gemini-2.0-flash, gemini-1.5-flash)
+        model: Model identifier (e.g., gemini-3.1-pro-preview, gemini-2.0-flash)
         max_tokens: Maximum tokens in the response (maps to maxOutputTokens)
         timeout: Request timeout in seconds
 
