@@ -79,7 +79,12 @@ CLAUDE_DIR=$(get_claude_dir)
 # SubagentStop:tester does not reliably fire in Claude Code (confirmed dead in
 # practice). PostToolUse:Task fires after every Task tool call and is the
 # correct hook for detecting tester completions. Issue #150, DEC-PROOF-LIFE-001.
+#
+# Gate: set CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true to re-enable this block.
+# Disabled by default since post-task.sh is the authoritative auto-verify path.
 # ============================================================================
+
+if [[ "${CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY:-}" == "true" ]]; then
 
 # Check 1: .proof-status exists (tester should have written pending)
 # Use resolve_proof_file() so worktree scenarios find the right path.
@@ -205,8 +210,8 @@ WHITELISTED_COUNT=0
 
 if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]] && echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
     # Secondary validation — reject false claims
-    # Must have High confidence (markdown bold)
-    echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
+    # Must have High confidence (markdown bold or plain-text formats)
+    echo "$RESPONSE_TEXT" | grep -qiE '(\*\*High\*\*|[Cc]onfidence:?\s*High|High confidence)' || AV_FAIL=true
     # Must NOT have "Partially verified" in coverage
     echo "$RESPONSE_TEXT" | grep -qi 'Partially verified' && AV_FAIL=true
     # Must NOT have non-environmental "Not tested" entries.
@@ -221,24 +226,13 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
             AV_FAIL=true
         fi
     fi
-    # Must NOT have Medium or Low confidence
-    echo "$RESPONSE_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*' && AV_FAIL=true
+    # Must NOT have Medium or Low confidence (markdown bold or plain-text formats)
+    echo "$RESPONSE_TEXT" | grep -qiE '(\*\*(Medium|Low)\*\*|[Cc]onfidence:?\s*(Medium|Low)|(Medium|Low) confidence)' && AV_FAIL=true
 
     if [[ "$AV_FAIL" == "false" ]]; then
         ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
         WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
-        echo "verified|$(date +%s)" > "$PROOF_FILE"
-        # Dual-write: keep orchestrator's scoped and legacy copies in sync so guard.sh
-        # can find it regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
-        _PHASH=$(project_hash "$PROJECT_ROOT")
-        ORCH_SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-        ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
-        if [[ "$PROOF_FILE" != "$ORCH_SCOPED_PROOF" ]]; then
-            echo "verified|$(date +%s)" > "$ORCH_SCOPED_PROOF"
-        fi
-        if [[ "$PROOF_FILE" != "$ORCH_PROOF" && "$ORCH_SCOPED_PROOF" != "$ORCH_PROOF" ]]; then
-            echo "verified|$(date +%s)" > "$ORCH_PROOF"
-        fi
+        write_proof_status "verified" "$PROJECT_ROOT"
         AUTO_VERIFIED=true
     fi
 fi
@@ -296,9 +290,25 @@ EOF
     exit 0
 fi
 
+fi # end CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY gate
+
 # ============================================================================
 # PHASE 2 — Advisory work (runs only when not auto-verified)
 # ============================================================================
+
+# Ensure Phase 2 variables are initialized even when Phase 1 gate is disabled.
+# When CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY is unset, PROOF_FILE/PROOF_STATUS/RESPONSE_TEXT
+# were never defined above — initialize them here so Phase 2 logic is safe.
+if [[ -z "${PROOF_FILE:-}" ]]; then
+    PROOF_FILE=$(resolve_proof_file)
+    PROOF_STATUS="missing"
+    if [[ -f "$PROOF_FILE" ]]; then
+        PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+    fi
+fi
+if [[ -z "${RESPONSE_TEXT+x}" ]]; then
+    RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
+fi
 
 # Safety net (DEC-TESTER-003): if proof-status is missing and RESPONSE_TEXT is
 # non-empty, auto-write "pending" so the manual approval flow can proceed.

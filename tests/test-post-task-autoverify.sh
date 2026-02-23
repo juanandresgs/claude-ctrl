@@ -565,6 +565,149 @@ SUMMARY_EOF
 fi
 
 # ===========================================================================
+# Test 12: ## Confidence: High (no bold) + AUTOVERIFY: CLEAN → should verify
+# Contract: plain-text confidence header is accepted by format-tolerant matching.
+# ===========================================================================
+
+run_test "T12: Confidence: High (no bold) + AUTOVERIFY: CLEAN → verified"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+SUMMARY=$(cat <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+## Confidence: High
+
+All features verified. No caveats.
+SUMMARY_EOF
+)
+
+make_tester_trace "$TRACE" "$REPO" "$SUMMARY" > /dev/null
+run_post_task "tester" "$REPO" "$TRACE"
+
+if [[ -f "$REPO/.claude/.proof-status" ]]; then
+    STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+    if [[ "$STATUS" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Expected 'verified' for 'Confidence: High' (no bold), got '$STATUS'"
+    fi
+else
+    fail_test ".proof-status was deleted"
+fi
+rm -rf "$REPO" "$TRACE"
+
+# ===========================================================================
+# Test 13: High confidence (inline) + AUTOVERIFY: CLEAN → should verify
+# Contract: "High confidence" inline phrase is accepted by format-tolerant matching.
+# ===========================================================================
+
+run_test "T13: High confidence (inline) + AUTOVERIFY: CLEAN → verified"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+SUMMARY=$(cat <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+High confidence — all tests passed, no anomalies observed.
+SUMMARY_EOF
+)
+
+make_tester_trace "$TRACE" "$REPO" "$SUMMARY" > /dev/null
+run_post_task "tester" "$REPO" "$TRACE"
+
+if [[ -f "$REPO/.claude/.proof-status" ]]; then
+    STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+    if [[ "$STATUS" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Expected 'verified' for 'High confidence' inline, got '$STATUS'"
+    fi
+else
+    fail_test ".proof-status was deleted"
+fi
+rm -rf "$REPO" "$TRACE"
+
+# ===========================================================================
+# Test 14: ## Confidence: Medium (no bold) + AUTOVERIFY: CLEAN → should reject
+# Contract: plain-text Medium confidence is rejected by format-tolerant matching.
+# ===========================================================================
+
+run_test "T14: Confidence: Medium (no bold) + AUTOVERIFY: CLEAN → stays pending"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+SUMMARY=$(cat <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+## Confidence: Medium
+
+Core paths verified but some edge cases remain.
+SUMMARY_EOF
+)
+
+make_tester_trace "$TRACE" "$REPO" "$SUMMARY" > /dev/null
+run_post_task "tester" "$REPO" "$TRACE"
+
+if [[ -f "$REPO/.claude/.proof-status" ]]; then
+    STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+    if [[ "$STATUS" == "pending" ]]; then
+        pass_test
+    else
+        fail_test "Expected 'pending' for 'Confidence: Medium' (no bold), got '$STATUS'"
+    fi
+else
+    fail_test ".proof-status was deleted"
+fi
+rm -rf "$REPO" "$TRACE"
+
+# ===========================================================================
+# Test 15: Diagnostic output when secondary validation fails (additionalContext)
+# Contract: when AV_FAIL=true, post-task.sh emits JSON with additionalContext
+#   explaining why auto-verify was blocked (not a silent exit 0).
+# ===========================================================================
+
+run_test "T15: secondary validation fail → additionalContext with diagnostic reason"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+SUMMARY=$(cat <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+**Confidence:** **Medium**
+
+Most features verified.
+SUMMARY_EOF
+)
+
+make_tester_trace "$TRACE" "$REPO" "$SUMMARY" > /dev/null
+OUTPUT=$(run_post_task "tester" "$REPO" "$TRACE")
+
+# Should output JSON with additionalContext explaining the block
+if echo "$OUTPUT" | grep -q '"additionalContext"'; then
+    if echo "$OUTPUT" | grep -qi 'auto-verify blocked\|blocked\|manual approval'; then
+        pass_test
+    else
+        fail_test "additionalContext present but missing diagnostic reason: $OUTPUT"
+    fi
+else
+    fail_test "Expected additionalContext in output for secondary validation failure, got: $OUTPUT"
+fi
+rm -rf "$REPO" "$TRACE"
+
+# ===========================================================================
 # Syntax check
 # ===========================================================================
 

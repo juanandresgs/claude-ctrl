@@ -51,13 +51,26 @@ HOOK_INPUT=$(read_input)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
 SUBAGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || echo "")
 
+# Diagnostic: confirm hook fires (DEC-AV-DIAG-001)
+append_audit "$(detect_project_root 2>/dev/null || echo /)" "post_task_fire" \
+    "subagent_type=${SUBAGENT_TYPE:-empty} tool_name=${TOOL_NAME:-empty}" 2>/dev/null || true
+
+# Fallback: PostToolUse:Task may not provide tool_input.subagent_type (undocumented).
+# Detect active tester trace as proxy.
+if [[ "$TOOL_NAME" == "Task" && -z "$SUBAGENT_TYPE" ]]; then
+    _fb_trace=$(detect_active_trace "$(detect_project_root 2>/dev/null || echo /)" "tester" 2>/dev/null || echo "")
+    if [[ -n "$_fb_trace" ]]; then
+        SUBAGENT_TYPE="tester"
+        log_info "POST-TASK" "subagent_type empty — detected active tester trace, assuming tester"
+    fi
+fi
+
 # Only act on Task tool completions for the tester subagent
 if [[ "$TOOL_NAME" != "Task" || "$SUBAGENT_TYPE" != "tester" ]]; then
     exit 0
 fi
 
 PROJECT_ROOT=$(detect_project_root)
-CLAUDE_DIR=$(get_claude_dir)
 
 log_info "POST-TASK" "tester Task completed — checking for AUTOVERIFY signal"
 
@@ -134,9 +147,9 @@ AV_FAIL=false
 NOT_TESTED_LINES=""
 WHITELISTED_COUNT=0
 
-# Must have **High** confidence (markdown bold)
-if ! echo "$SUMMARY_TEXT" | grep -qi '\*\*High\*\*'; then
-    log_info "POST-TASK" "secondary validation FAIL: missing **High** confidence"
+# Must have High confidence (markdown bold or plain-text formats)
+if ! echo "$SUMMARY_TEXT" | grep -qiE '(\*\*High\*\*|[Cc]onfidence:?\s*High|High confidence)'; then
+    log_info "POST-TASK" "secondary validation FAIL: missing High confidence"
     AV_FAIL=true
 fi
 
@@ -146,8 +159,8 @@ if echo "$SUMMARY_TEXT" | grep -qi 'Partially verified'; then
     AV_FAIL=true
 fi
 
-# Must NOT have **Medium** or **Low** confidence
-if echo "$SUMMARY_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*'; then
+# Must NOT have Medium or Low confidence (markdown bold or plain-text formats)
+if echo "$SUMMARY_TEXT" | grep -qiE '(\*\*(Medium|Low)\*\*|[Cc]onfidence:?\s*(Medium|Low)|(Medium|Low) confidence)'; then
     log_info "POST-TASK" "secondary validation FAIL: Medium or Low confidence found"
     AV_FAIL=true
 fi
@@ -171,26 +184,29 @@ fi
 # --- Apply result ---
 if [[ "$AV_FAIL" == "true" ]]; then
     log_info "POST-TASK" "secondary validation FAILED — proof stays $PROOF_STATUS"
-    append_audit "$PROJECT_ROOT" "auto_verify_rejected" "post-task: AUTOVERIFY: CLEAN found but secondary validation failed (proof=$PROOF_STATUS)"
+    append_audit "$PROJECT_ROOT" "auto_verify_rejected" \
+        "post-task: AUTOVERIFY: CLEAN found but secondary validation failed (proof=$PROOF_STATUS)"
+    # Build diagnostic reason for orchestrator visibility
+    _AV_REASONS=""
+    echo "$SUMMARY_TEXT" | grep -qiE '(\*\*High\*\*|[Cc]onfidence:?\s*High|High confidence)' \
+        || _AV_REASONS="${_AV_REASONS}missing High confidence; "
+    echo "$SUMMARY_TEXT" | grep -qi 'Partially verified' \
+        && _AV_REASONS="${_AV_REASONS}has Partially verified; "
+    echo "$SUMMARY_TEXT" | grep -qiE '(\*\*(Medium|Low)\*\*|[Cc]onfidence:?\s*(Medium|Low)|(Medium|Low) confidence)' \
+        && _AV_REASONS="${_AV_REASONS}has Medium/Low confidence; "
+    [[ -n "${NON_ENV_LINES:-}" ]] && _AV_REASONS="${_AV_REASONS}non-environmental Not tested; "
+    ESCAPED=$(printf 'Auto-verify blocked: %s Manual approval required.' \
+        "${_AV_REASONS:-unknown reason}" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
     exit 0
 fi
 
 # All checks passed — write verified to all three paths
-TS=$(date +%s)
-echo "verified|${TS}" > "$PROOF_FILE"
-
-# Dual-write: keep orchestrator's scoped and legacy copies in sync
-# so guard.sh can find it regardless of which path it checks.
-_PHASH=$(project_hash "$PROJECT_ROOT")
-ORCH_SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
-
-if [[ "$PROOF_FILE" != "$ORCH_SCOPED_PROOF" ]]; then
-    echo "verified|${TS}" > "$ORCH_SCOPED_PROOF"
-fi
-if [[ "$PROOF_FILE" != "$ORCH_PROOF" && "$ORCH_SCOPED_PROOF" != "$ORCH_PROOF" ]]; then
-    echo "verified|${TS}" > "$ORCH_PROOF"
-fi
+write_proof_status "verified" "$PROJECT_ROOT"
 
 # Audit trail
 if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then

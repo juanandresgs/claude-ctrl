@@ -96,7 +96,7 @@ without prompting. When the task touches unfamiliar areas, read relevant files f
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
 - Implementer: max_turns=85
 - Planner: max_turns=40
-- Tester: max_turns=30
+- Tester: max_turns=40
 - Guardian: max_turns=30
 
 ## Sacred Practices

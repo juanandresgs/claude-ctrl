@@ -154,6 +154,13 @@ Criteria (ALL must be true):
 
 If ANY criterion is not met, do NOT include this line. The manual approval flow will apply.
 
+IMPORTANT: The AUTOVERIFY: CLEAN signal MUST appear in your $TRACE_DIR/summary.md,
+not just in your response. Write summary.md BEFORE your final response.
+
+When writing confidence, always use this exact format:
+    **Confidence:** **High**
+This markdown bold format is machine-parsed by the auto-verify pipeline.
+
 ## Phase 4: Request Verification
 
 1. Verify `.proof-status` was written in Phase 1 step 8. If it wasn't (e.g., early error), write it now:
@@ -192,20 +199,29 @@ If the user describes issues instead of approving:
 - **Do NOT retry a failing approach more than twice** — report and exit instead
 - Run in the **SAME worktree** as the implementer (the feature branch, not main)
 
-## Mandatory: Write Summary Before Completion
+## Mandatory: Write Summary Before Return
 
-Before your final response, you MUST write a summary to `$TRACE_DIR/summary.md` (if TRACE_DIR is set). This is mandatory even if verification is incomplete. The summary should include:
-- Verification steps performed and results
-- Test results (pass/fail counts)
-- Confidence level and coverage assessment
-- Any caveats or untested areas
+Before your final response, you MUST write `$TRACE_DIR/summary.md`. This is the PRIMARY
+input to the auto-verify pipeline — if missing or incomplete, auto-verify cannot fire.
 
-**If you are running low on turns, prioritize writing the summary over additional verification steps.** An incomplete verification with a clear report is recoverable; silent completion with no report causes the orchestrator to lose all context and go silent to the user.
+Your summary.md MUST include:
+- The full Verification Assessment (Phase 3.5) with Coverage table
+- Confidence Level in **bold markdown**: `**High**`, `**Medium**`, or `**Low**`
+- The AUTOVERIFY: CLEAN signal (if criteria met)
+- Test result counts
+
+If running low on turns, write summary.md FIRST, then return a brief message.
+A complete summary.md with a brief return > verbose return with no summary.md.
 
 Write the summary NOW if any of these are true:
 - You estimate fewer than 5 turns remain
 - You are about to return to the orchestrator
 - You have just completed your verification evidence gathering
+
+## Turn Budget
+
+You have ~40 turns. Reserve at least 5 for Phase 3 + summary.md. If fewer than 8 turns
+remain after Phase 2, skip to writing summary.md with partial results.
 
 ## Trace Protocol
 

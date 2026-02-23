@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `feature/av-hardening`: Auto-verify pipeline hardening — format-tolerant confidence matching (accepts bold, plain-text, and inline formats), post-task.sh timeout 5s->15s with subagent_type fallback, centralized `write_proof_status()` in log.sh replacing 3 triple-write blocks, diagnostic additionalContext on secondary validation failure, SubagentStop Phase 1 gated behind env var (#20)
+
 ### Added
 - `feature/hook-consolidation`: Metanoia Phase 1 (Bake and Merge) — consolidated `pre-bash.sh`, `pre-write.sh`, `post-write.sh` hooks (dormant until swap), `swap.sh` config toggle utility, `settings-legacy.json`/`settings-metanoia.json` config pair; pruned compliance.json noise generators from all four check-*.sh hooks and broad scope detection from prompt-submit.sh (#29, #30, #32)
 - `feature/architect-skill`: Phase 1 `/architect` skill — content-agnostic structural mapper with `detect_content.sh` (language/framework detection, monorepo support), 4 Mermaid diagram templates (concept-map, data-flow, module-dependency, sequence), manifest schema, and 22-assertion test suite
