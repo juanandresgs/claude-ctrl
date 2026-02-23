@@ -6,7 +6,7 @@
 **Languages:** bash (78%), markdown (15%), python (7%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-02-18
-**Last updated:** 2026-02-22
+**Last updated:** 2026-02-23 (Metanoia initiative added)
 
 This is the Claude Code configuration directory. It shapes how Claude Code operates
 across all projects via lifecycle hooks, specialized agents, research skills, and
@@ -87,6 +87,17 @@ project's institutional memory.
 | 2026-02-22 | DEC-ARCH-004 | architect | Manifest.json as Phase 1/Phase 2 contract | Clean separation; new backends just read manifest.json |
 | 2026-02-22 | DEC-ARCH-005 | architect | Phase 2 dispatch via batched Task subagents | Per-node dispatch too many subagents; batch 3-5 keeps it manageable |
 | 2026-02-22 | DEC-BAZAAR-009 | bazaar-completion | Remove lib/ from conftest.py sys.path | lib/http.py shadows stdlib http; SCRIPTS_DIR alone suffices for package discovery |
+| 2026-02-22 | DEC-BAZAAR-012 | bazaar-completion | Local output directory replaces /tmp | Artifacts must be persistent and inspectable; CWD-relative bazaar-YYYYMMDD-HHMMSS/ |
+| 2026-02-22 | DEC-BAZAAR-013 | bazaar-completion | Disk-based state passing with phase BLUF summaries | Agent reads only BLUFs; Python scripts handle data plumbing via disk paths |
+| 2026-02-22 | DEC-BAZAAR-014 | bazaar-completion | bazaar_summarize.py generates phase BLUFs | Deterministic Python for concise summaries; keeps generation out of agent token budget |
+| 2026-02-22 | DEC-BAZAAR-015 | bazaar-completion | SKILL.md rewrite with context discipline | Explicit prohibitions against reading full JSON; agent presents only BLUFs |
+| 2026-02-22 | DEC-BAZAAR-016 | bazaar-completion | bazaar-manifest.json as run index | Machine-readable record of run: question, phases, artifacts, BLUFs |
+| 2026-02-23 | DEC-META-001 | metanoia | Output buffering for multi-JSON prevention | Buffer advisories in variables, emit single JSON at end; guarantees one JSON object per hook invocation |
+| 2026-02-23 | DEC-META-002 | metanoia | Differential test harness for old vs new hooks | Pipe same input through old hooks (separate) and new hook (single), diff permissionDecision fields |
+| 2026-02-23 | DEC-META-003 | metanoia | Trace corpus extraction for real-world test data | Mine 489 traces for real hook inputs; deduplicate to 50-100 unique inputs per hook type |
+| 2026-02-23 | DEC-META-004 | metanoia | Dual settings files with swap script for rollback | settings-legacy.json + settings-metanoia.json + swap.sh; validates JSON before overwrite |
+| 2026-02-23 | DEC-META-005 | metanoia | Gradual rollout: pre-bash then post-write then pre-write | Safest first (guard.sh denies always exit), highest risk last (pre-write has 6 gates) |
+| 2026-02-23 | DEC-META-006 | metanoia | Bake period: 5+ sessions per rollout stage | Any regression resets stage count; all 3 stages pass bake before merge |
 
 ---
 
@@ -1606,11 +1617,17 @@ Implementation order: Phase 1 first (core skill with map functionality), then Ph
 - REQ-GOAL-001: /bazaar skill available on main branch and invocable in production
 - REQ-GOAL-002: Test imports consistent with production imports (no stdlib shadowing)
 - REQ-GOAL-003: At least one successful E2E run with real API providers
+- REQ-GOAL-004: All 6 bazaar phases complete autonomously in a single /bazaar invocation
+- REQ-GOAL-005: All artifacts persisted to structured local directory, not /tmp
+- REQ-GOAL-006: Agent presents BLUF summaries; users inspect full artifacts on disk
 
 #### Non-Goals
 - REQ-NOGO-001: Adding new archetypes or providers -- ship what exists, extend later
 - REQ-NOGO-002: Performance optimization of dispatch parallelism -- works well enough
 - REQ-NOGO-003: Integration with /architect or other skills -- separate initiative
+- REQ-NOGO-004: Multi-command workflow -- user should NOT need to run separate phase commands
+- REQ-NOGO-005: Changing the archetype system or provider dispatch logic -- those work fine
+- REQ-NOGO-006: Reducing analytical depth to fit context -- quality must not degrade
 
 #### Requirements
 
@@ -1637,15 +1654,55 @@ Implementation order: Phase 1 first (core skill with map functionality), then Ph
 - REQ-P1-001: E2E validation with all 4 providers for maximum diversity.
 - REQ-P1-002: Report output quality review -- coherent synthesis, proper citations.
 
+- REQ-P0-005: All artifacts written to structured local directory (not /tmp).
+  Acceptance: Given /bazaar invoked from CWD, When skill runs, Then all outputs appear in
+  `./bazaar-YYYYMMDD-HHMMSS/` with subdirectories: ideators/, judges/, obsessives/,
+  analysts/, and top-level brief.md, funded_scenarios.json, bazaar-report.md.
+
+- REQ-P0-006: Output directory contains a manifest file tying all artifacts together.
+  Acceptance: Given a completed bazaar run, When bazaar-manifest.json is read, Then it
+  contains: question, timestamps, provider availability, phase completion status with
+  artifact paths, and BLUF summaries for each phase.
+
+- REQ-P0-007: Each phase produces a BLUF summary (5-15 lines) that the agent presents.
+  Acceptance: Given Phase N completes, When agent continues, Then it presents a concise
+  BLUF (counts, key findings, issues) and does NOT display raw JSON or full data.
+
+- REQ-P0-008: Agent does not read full JSON outputs into context between phases.
+  Acceptance: Given Phase N writes outputs to disk, When Phase N+1 starts, Then the
+  agent calls Python scripts that read from disk directly; the agent reads only the
+  BLUF summary file (phase-N-bluf.md).
+
+- REQ-P0-009: Restructured SKILL.md enables autonomous completion of all 6 phases.
+  Acceptance: Given /bazaar invoked with a real analytical question, When skill executes
+  as forked agent, Then all 6 phases complete and bazaar-report.md is produced without
+  manual intervention.
+
+- REQ-P0-010: New bazaar_summarize.py generates phase BLUFs from disk artifacts.
+  Acceptance: Given phase outputs exist on disk, When bazaar_summarize.py is called
+  with phase number and output directory, Then it writes phase-N-bluf.md with concise
+  metrics and findings.
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: E2E validation with all 4 providers for maximum diversity.
+- REQ-P1-002: Report output quality review -- coherent synthesis, proper citations.
+- REQ-P1-003: bazaar-manifest.json includes per-phase timing data for performance analysis.
+- REQ-P1-004: Output directory name configurable via --output flag.
+
 **Future Consideration (P2)**
 
 - REQ-P2-001: Archetype tuning based on real output quality assessment.
 - REQ-P2-002: Provider fallback chain when API keys are missing.
+- REQ-P2-003: Incremental re-run: resume from last completed phase on failure.
+- REQ-P2-004: HTML report generation with interactive funding visualization.
 
 #### Definition of Done
 
-conftest.py import fix applied. 66 tests pass. Branch merged to main. At least one E2E
-run completes all 6 bazaar phases and produces a report. Issue created and closed.
+conftest.py import fix applied. 75 tests pass. Branch merged to main. At least one E2E
+run completes all 6 bazaar phases autonomously and produces a report in a structured local
+directory. Agent presents BLUF summaries without reading full intermediate data into context.
+Issue created and closed.
 
 #### Architectural Decisions
 
@@ -1656,8 +1713,50 @@ run completes all 6 bazaar phases and produces a report. Issue created and close
   adding LIB_DIR as a fallback. Since SCRIPTS_DIR on sys.path makes lib/ discoverable as a
   package (import lib.anthropic_chat works), the LIB_DIR fallback is unnecessary and harmful.
 
+- DEC-BAZAAR-012: Local output directory replaces /tmp for all bazaar artifacts.
+  Addresses: REQ-P0-005, REQ-P0-006, REQ-GOAL-005.
+  Rationale: User requirement: artifacts must be persistent and inspectable. /tmp is ephemeral
+  and lost on reboot. CWD-relative output directory (bazaar-YYYYMMDD-HHMMSS/) mirrors the
+  natural artifact hierarchy demonstrated in the E2E run. Subdirectories: ideators/, judges/,
+  obsessives/, analysts/ plus top-level brief.md, funded_scenarios.json, bazaar-report.md,
+  and bazaar-manifest.json.
+
+- DEC-BAZAAR-013: Disk-based state passing with phase BLUF summaries.
+  Addresses: REQ-P0-007, REQ-P0-008, REQ-GOAL-004, REQ-GOAL-006.
+  Rationale: The E2E run stalled at Phase 3 because the agent's context accumulated full JSON
+  outputs from ideators and judges (~15-30KB per archetype). The fix: each phase writes full
+  data to disk and a concise phase-N-bluf.md (5-15 lines). The agent reads ONLY BLUFs into
+  context. Python scripts handle all data plumbing between phases via disk paths, not agent
+  context. Alternatives rejected: (1) phase-specific sub-skills (too much infrastructure,
+  breaks single-command UX), (2) controller dispatching phases as Task agents (skill-within-
+  skill not well-supported, max_turns overhead), (3) SKILL.md simplification alone (necessary
+  but insufficient -- the file itself is only ~5K tokens; context bloat comes from intermediate
+  data the agent reads during execution).
+
+- DEC-BAZAAR-014: New bazaar_summarize.py generates phase BLUFs from disk artifacts.
+  Addresses: REQ-P0-007, REQ-P0-010, REQ-GOAL-006.
+  Rationale: Deterministic Python script reads phase outputs from disk and produces concise
+  markdown BLUFs. Keeps summary generation out of the agent's token budget. Called after each
+  phase's existing Python scripts complete. Output: phase-N-bluf.md with counts, key findings,
+  top items, and any errors/warnings.
+
+- DEC-BAZAAR-015: SKILL.md rewrite with explicit context discipline instructions.
+  Addresses: REQ-P0-009, REQ-GOAL-004.
+  Rationale: Without explicit instructions, the agent naturally tries to read and display
+  intermediate data (JSON outputs, full dispatch files). The restructured SKILL.md must contain
+  explicit prohibitions: "NEVER read the full JSON output files", "NEVER display raw data to
+  the user", "Read ONLY phase-N-bluf.md files", "Let Python scripts pass data between phases
+  via disk". These instructions are as important as the workflow itself.
+
+- DEC-BAZAAR-016: Manifest/index file ties all artifacts together.
+  Addresses: REQ-P0-006, REQ-P0-010, REQ-GOAL-005.
+  Rationale: A top-level bazaar-manifest.json records: question, timestamps, provider
+  availability, phase completion status, artifact paths, and BLUF summaries. Serves as both
+  a table of contents for humans and a machine-readable record. Updated after each phase
+  completes by bazaar_summarize.py.
+
 #### Phase 1: Hardening
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-BAZAAR-009
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
 **Issues:** #26
@@ -1697,7 +1796,7 @@ run completes all 6 bazaar phases and produces a report. Issue created and close
 <!-- Guardian appends here after phase completion -->
 
 #### Phase 2: E2E Validation
-**Status:** planned
+**Status:** completed
 **Decision IDs:** none (validation only)
 **Requirements:** REQ-P0-004
 **Issues:** #27
@@ -1730,28 +1829,174 @@ run completes all 6 bazaar phases and produces a report. Issue created and close
 ##### Decision Log
 <!-- Guardian appends here after phase completion -->
 
+#### Phase 3: Output Codification & Autonomous Execution
+**Status:** planned
+**Decision IDs:** DEC-BAZAAR-012, DEC-BAZAAR-013, DEC-BAZAAR-014, DEC-BAZAAR-015, DEC-BAZAAR-016
+**Requirements:** REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008, REQ-P0-009, REQ-P0-010
+**Issues:** (to be created)
+**Definition of Done:**
+- REQ-P0-005 satisfied: All artifacts in structured local directory (not /tmp)
+- REQ-P0-006 satisfied: bazaar-manifest.json present with full run metadata
+- REQ-P0-007 satisfied: Each phase produces phase-N-bluf.md presented to user
+- REQ-P0-008 satisfied: Agent reads no full JSON outputs between phases
+- REQ-P0-009 satisfied: All 6 phases complete autonomously in forked agent
+- REQ-P0-010 satisfied: bazaar_summarize.py produces BLUFs for all phases
+
+##### Planned Decisions
+- DEC-BAZAAR-012: Local output directory (bazaar-YYYYMMDD-HHMMSS/) replaces /tmp -- persistent, inspectable artifacts -- Addresses: REQ-P0-005, REQ-P0-006
+- DEC-BAZAAR-013: Disk-based state passing -- agent reads only BLUFs, Python scripts handle data plumbing via disk -- Addresses: REQ-P0-007, REQ-P0-008, REQ-GOAL-004
+- DEC-BAZAAR-014: bazaar_summarize.py generates phase BLUFs from disk artifacts -- Addresses: REQ-P0-007, REQ-P0-010
+- DEC-BAZAAR-015: SKILL.md rewrite with explicit context discipline (never read full JSON, present only BLUFs) -- Addresses: REQ-P0-009
+- DEC-BAZAAR-016: bazaar-manifest.json as run index/table of contents -- Addresses: REQ-P0-006
+
+##### Work Items
+
+**W3-1: Create bazaar_summarize.py phase BLUF generator**
+- New file: `skills/bazaar/scripts/bazaar_summarize.py`
+- CLI: `bazaar_summarize.py <phase_number> <output_dir>`
+- Phase 1 (brief): Read brief.md, output question, scope, key uncertainties
+- Phase 2 (ideation): Read ideators/*.json, output: N ideators, M unique scenarios,
+  list scenario IDs + titles (one line each), any failures
+- Phase 3 (funding): Read funded_scenarios.json, output: funding table (rank, ID,
+  title, percent), Kendall's W, Gini coefficient, top-funded scenario
+- Phase 4 (research): Read obsessives/*.json, output: N domain obsessives completed,
+  M search obsessives completed, signal counts per scenario, any failures
+- Phase 5 (analysis): Read analysts/*.json, output: N analysts completed, key themes
+  extracted, confidence levels, any failures
+- Phase 6 (report): Read bazaar-report.md, output: word count, section count,
+  report path, funding summary table
+- Output: writes `<output_dir>/phase-N-bluf.md` (5-15 lines markdown)
+- Also updates bazaar-manifest.json with phase completion status and BLUF text
+- Tests: add test_summarize.py with fixtures for each phase
+
+**W3-2: Restructure SKILL.md for local output and context discipline**
+- Replace `WORK_DIR=$(mktemp -d /tmp/bazaar-XXXXXX)` with:
+  `WORK_DIR="./bazaar-$(date +%Y%m%d-%H%M%S)"` (CWD-relative)
+- Add `## Context Discipline` section near the top with explicit rules:
+  1. "NEVER use Read tool to open JSON files in ideators/, judges/, obsessives/, analysts/"
+  2. "After each phase's Python scripts complete, run bazaar_summarize.py"
+  3. "Read ONLY the phase-N-bluf.md file and present its contents to the user"
+  4. "Python scripts accept disk paths and handle all data plumbing"
+  5. "Your context is precious -- every JSON blob you read reduces your ability to
+     complete later phases"
+- Remove inline JSON examples from dispatch file construction (the agent can construct
+  these from the archetype paths and provider config without seeing a full example)
+- Replace verbose inline Python snippets with calls to Python scripts that accept
+  command-line arguments (e.g., scenario deduplication becomes a function in
+  bazaar_summarize.py or a new utility)
+- Add `bazaar_summarize.py` call after each phase
+- After Phase 6, add call to finalize bazaar-manifest.json
+
+**W3-3: Create bazaar_prepare.py for dispatch file construction**
+- New file: `skills/bazaar/scripts/bazaar_prepare.py`
+- CLI: `bazaar_prepare.py <phase> <output_dir> <providers_json> [options]`
+- Phase 2 (ideation): builds ideation_dispatches.json from archetype paths + providers
+- Phase 3 (funding): builds judge_dispatches.json from scenarios + archetype paths
+- Phase 5 (analysis): builds analyst_dispatches.json from funded scenarios + obsessive outputs
+- This removes the largest inline code blocks from SKILL.md (the dispatch JSON
+  construction, which is ~100 lines of inline Python currently)
+- The agent calls: `python3 bazaar_prepare.py ideation "$WORK_DIR" "$PROVIDERS_JSON"`
+  instead of constructing the dispatch JSON inline
+
+**W3-4: Implement bazaar-manifest.json generation**
+- Schema:
+  ```json
+  {
+    "question": "...",
+    "started": "ISO-8601",
+    "completed": "ISO-8601 or null",
+    "output_dir": "absolute path",
+    "providers": {"anthropic": true, "openai": true, ...},
+    "phases": {
+      "1": {"status": "completed", "artifacts": ["brief.md"], "bluf": "..."},
+      "2": {"status": "completed", "artifacts": ["ideators/..."], "bluf": "..."},
+      ...
+    },
+    "report_path": "bazaar-report.md",
+    "word_count": 3000,
+    "scenarios_funded": 5
+  }
+  ```
+- bazaar_summarize.py creates/updates this file after each phase
+- Initial creation in SKILL.md Setup section (question + providers + start time)
+
+**W3-5: Refactor scenario deduplication into Python utility**
+- Move the inline Python deduplication snippet (SKILL.md lines 208-231) into
+  bazaar_prepare.py as a `deduplicate_scenarios(output_dir)` function
+- CLI: `bazaar_prepare.py dedup "$WORK_DIR"`
+- Reads ideators/*.json, deduplicates, writes all_scenarios.json
+- Returns count to stdout for the BLUF
+
+**W3-6: Refactor analyst output collection into Python utility**
+- Move the inline analyst output collection (SKILL.md lines 483-498) into
+  bazaar_prepare.py as a `collect_analyst_outputs(output_dir)` function
+- CLI: `bazaar_prepare.py collect-analysts "$WORK_DIR"`
+- Reads analysts/*.json, collects into analyst_outputs.json
+- Returns count to stdout
+
+**W3-7: Update tests for new scripts**
+- Add `tests/test_summarize.py`:
+  - Test phase 2 BLUF from sample ideator outputs (fixture)
+  - Test phase 3 BLUF from sample funded scenarios (fixture)
+  - Test phase 6 BLUF from sample report
+  - Test manifest creation and update
+  - Test missing artifacts handling (graceful degradation)
+- Add `tests/test_prepare.py`:
+  - Test ideation dispatch generation from providers.json + archetypes
+  - Test judge dispatch generation from scenarios
+  - Test analyst dispatch generation from funded scenarios
+  - Test deduplication logic
+  - Test analyst output collection
+- Update existing tests if any import paths change
+- Target: 75+ total tests (current 75 + new tests)
+
+**W3-8: E2E validation of restructured skill**
+- Run `/bazaar "What are the most effective approaches to reducing LLM hallucination
+  in production systems?"` with the restructured SKILL.md
+- Verify: all 6 phases complete autonomously (no manual intervention)
+- Verify: local output directory contains all expected artifacts
+- Verify: bazaar-manifest.json is complete and accurate
+- Verify: bazaar-report.md is coherent and has market-proportional sections
+- Verify: agent presented only BLUF summaries (not raw JSON) at each phase
+
+##### Critical Files
+- `skills/bazaar/scripts/bazaar_summarize.py` -- New: phase BLUF generation + manifest
+- `skills/bazaar/scripts/bazaar_prepare.py` -- New: dispatch construction + dedup + collection
+- `skills/bazaar/SKILL.md` -- Major restructure: context discipline, local output, BLUF flow
+- `skills/bazaar/scripts/bazaar_dispatch.py` -- No changes (still handles parallel dispatch)
+- `skills/bazaar/scripts/aggregate.py` -- No changes (still handles funding aggregation)
+- `skills/bazaar/scripts/report.py` -- No changes (still handles report generation)
+- `skills/bazaar/tests/test_summarize.py` -- New: BLUF generation tests
+- `skills/bazaar/tests/test_prepare.py` -- New: dispatch preparation tests
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
 #### Bazaar Completion Worktree Strategy
 
-Main is sacred. Phase 1 uses the existing worktree:
-- **Phase 1:** `~/.claude/.worktrees/feat-bazaar` on branch `feature/bazaar-skill`
-- **Phase 2:** On main (post-merge E2E validation)
+Main is sacred. Each phase works in its own worktree:
+- **Phase 1:** `~/.claude/.worktrees/feat-bazaar` on branch `feature/bazaar-skill` (completed)
+- **Phase 2:** On main (post-merge E2E validation) (completed)
+- **Phase 3:** `~/.claude/.worktrees/bazaar-codify` on branch `feature/bazaar-output-codification`
 
-Implementation order: Phase 1 first (fix + merge), then Phase 2 (validate on main).
+Implementation order: Phase 1 (fix + merge) -> Phase 2 (validate on main) -> Phase 3 (restructure for autonomous execution).
 
 #### Bazaar Completion References
 
 ##### Existing Code Inventory
 | Component | Path | Status |
 |-----------|------|--------|
-| SKILL.md | skills/bazaar/SKILL.md | Complete (20k, 6-phase workflow) |
+| SKILL.md | skills/bazaar/SKILL.md | Needs restructure (20k, 6-phase workflow -- Phase 3 target) |
 | Dispatch engine | skills/bazaar/scripts/bazaar_dispatch.py | Complete (parallel ThreadPoolExecutor) |
 | Aggregation | skills/bazaar/scripts/aggregate.py | Complete (market-proportional weighting) |
 | Report generator | skills/bazaar/scripts/report.py | Complete (template-based) |
 | Provider wrappers | skills/bazaar/scripts/lib/ | Complete (anthropic, openai, gemini, perplexity) |
 | Archetypes | skills/bazaar/archetypes/ | Complete (4 families: ideators, judges, obsessives, analysts) |
 | Provider config | skills/bazaar/providers.json | Complete (4 providers with models) |
-| Tests | skills/bazaar/tests/ | 66 passing (dispatch, aggregate, report) |
+| Tests | skills/bazaar/tests/ | 75 passing (dispatch, aggregate, report) |
 | Report template | skills/bazaar/templates/report-template.md | Complete |
+| **bazaar_summarize.py** | skills/bazaar/scripts/bazaar_summarize.py | **Phase 3: new** |
+| **bazaar_prepare.py** | skills/bazaar/scripts/bazaar_prepare.py | **Phase 3: new** |
 
 ##### Existing Decisions (in code @decision annotations)
 | DEC-ID | Title |
@@ -1764,6 +2009,497 @@ Implementation order: Phase 1 first (fix + merge), then Phase 2 (validate on mai
 | DEC-BAZAAR-006 | Analyst persona diversity (skeptic, pragmatist, synthesizer) |
 | DEC-BAZAAR-007 | Report template with market voice sections |
 | DEC-BAZAAR-008 | Mock mode for deterministic testing |
+| DEC-BAZAAR-010 | KEYCHAIN_DIR anchor walk |
+| DEC-BAZAAR-011 | Markdown fence stripping |
+
+##### E2E Run Observations (Phase 2)
+| Observation | Impact on Phase 3 |
+|-------------|-------------------|
+| Agent stalled at Phase 3 (Judicial Funding) | Context exhaustion from accumulated JSON -- DEC-BAZAAR-013 |
+| All output in /tmp, lost on reboot | Need local persistent directory -- DEC-BAZAAR-012 |
+| Agent tried to display all raw data | Need BLUF discipline in SKILL.md -- DEC-BAZAAR-015 |
+| Phases 3-6 completed manually | Proves phases work; issue is context, not logic |
+| Inline JSON dispatch construction is verbose | Factor into bazaar_prepare.py -- W3-3 |
+
+---
+
+### Initiative: Metanoia -- Hook System Restructuring
+**Status:** active
+**Started:** 2026-02-23
+**Goal:** Safely transition from 11+3 individual hooks to 3 consolidated hooks with zero behavioral regressions
+
+> The efficacy review (woolly-twirling-wolf.md) measured 200ms-1.5s overhead per Bash command
+> and 800ms-12s per Write/Edit cycle, with 60-160ms wasted per hook on redundant source-lib.sh
+> loading. The consolidation (pre-write.sh, post-write.sh, pre-bash.sh) was built in worktree
+> hook-consolidation/ and passes 20/22 tests. However, code review found a critical safety defect:
+> pre-write.sh has 7 advisory JSON outputs that don't exit, meaning a later deny can be silently
+> dropped when Claude Code only parses one JSON object from stdout. This initiative fixes the
+> defect, validates with real production traces, and rolls out gradually with instant rollback.
+
+**Dominant Constraint:** safety (multi-JSON defect is a bypass risk; consolidated hooks must be provably equivalent to originals)
+
+#### Goals
+- REQ-GOAL-001: Zero behavioral regressions when switching from legacy hooks to consolidated hooks
+- REQ-GOAL-002: Multi-JSON safety defect eliminated before any production exposure
+- REQ-GOAL-003: Real-world trace corpus validates consolidated hooks against production inputs
+- REQ-GOAL-004: Instant rollback to legacy hooks at any point during rollout
+
+#### Non-Goals
+- REQ-NOGO-001: context-lib.sh split into focused modules -- separate performance initiative
+- REQ-NOGO-002: Adding new hook functionality -- behavioral equivalence only
+- REQ-NOGO-003: Pruning noise generators (auto-review, code-review removal) -- out of scope
+- REQ-NOGO-004: Hook timing instrumentation -- separate scope (Phase 3 of efficacy review)
+- REQ-NOGO-005: session-init.sh or check-*.sh changes -- different subsystems
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-001: All advisory JSON outputs in pre-write.sh, post-write.sh, and pre-bash.sh buffered.
+  Acceptance: Given any gate sequence in a consolidated hook, When multiple gates produce output,
+  Then exactly one JSON object appears on stdout (either a deny or combined advisories).
+
+- REQ-P0-002: Buffered advisories folded into deny reason when deny occurs.
+  Acceptance: Given Gate N emits advisory and Gate M emits deny (N < M), When the hook exits,
+  Then the deny JSON includes the advisory text in permissionDecisionReason as supplementary context.
+
+- REQ-P0-003: Differential test harness reports decision-level parity between old and new hooks.
+  Acceptance: Given a hook input JSON, When harness runs old hooks (separate processes) and new
+  hook (single process), Then permissionDecision fields match for all inputs.
+
+- REQ-P0-004: Test corpus extracted from production traces covers real-world input distribution.
+  Acceptance: Given 489 traces, When corpus extraction runs, Then 50-100 unique inputs per hook
+  type (PreToolUse:Write|Edit, PreToolUse:Bash, PostToolUse:Write|Edit) are available as test data.
+
+- REQ-P0-005: Differential harness reports zero unexpected decision differences on full corpus.
+  Acceptance: Given extracted corpus of 150-300 inputs, When differential tests run, Then zero
+  inputs produce different permissionDecision between old and new hooks.
+
+- REQ-P0-006: Config swap mechanism enables instant rollback.
+  Acceptance: Given settings-legacy.json and settings-metanoia.json, When `bash scripts/swap.sh legacy`
+  runs, Then settings.json is replaced with legacy config and a backup is created.
+
+- REQ-P0-007: Rollout follows pre-bash -> post-write -> pre-write order.
+  Acceptance: Given Stage 1 config, When inspected, Then only pre-bash.sh is enabled
+  (post-write and pre-write still use legacy individual hooks).
+
+- REQ-P0-008: Each rollout stage bakes for 5+ sessions with zero regressions before advancing.
+  Acceptance: Given Stage N is active, When 5 sessions complete without regressions, Then
+  Stage N+1 can be enabled. Any regression resets the session count.
+
+- REQ-P0-009: Legacy hooks archived after successful full bake.
+  Acceptance: Given all 3 stages have passed bake, When merge completes, Then original
+  individual hooks are moved to hooks/legacy/ and settings.json uses consolidated hooks only.
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: Advisory text in consolidated hooks is contextually richer than individual hooks
+  (since the consolidated hook has more state available from prior gates).
+- REQ-P1-002: Differential harness produces a summary report (pass/fail counts, timing comparison).
+- REQ-P1-003: Corpus extraction deduplicates by input characteristics, not just file path.
+
+**Future Consideration (P2)**
+
+- REQ-P2-001: context-lib.sh split into focused modules (core, git, plan, trace, doc) for further
+  per-invocation startup reduction (~40-60% estimated).
+- REQ-P2-002: Hook timing instrumentation to measure actual per-hook latency in production.
+- REQ-P2-003: Adaptive context injection based on task phase (less context mid-implementation).
+
+#### Definition of Done
+
+Multi-JSON defect fixed in all 3 consolidated hooks. Differential harness validates behavioral
+parity across 150-300 real-world inputs. Config swap mechanism enables instant rollback. All 3
+rollout stages pass 5-session bake period. Worktree merged to main. Legacy hooks archived.
+Zero safety regressions throughout entire process.
+
+#### Architectural Decisions
+
+- DEC-META-001: Output buffering pattern for multi-JSON prevention.
+  Addresses: REQ-GOAL-002, REQ-P0-001, REQ-P0-002.
+  Rationale: Buffer advisory JSON in shell variables. After all gates run: if any deny occurred,
+  emit only the deny (with advisories folded into permissionDecisionReason). If no deny, combine
+  all advisories into a single JSON with joined additionalContext. Guarantees exactly one JSON
+  object on stdout per hook invocation.
+
+- DEC-META-002: Differential test harness comparing old vs new hook outputs.
+  Addresses: REQ-GOAL-001, REQ-P0-003, REQ-P0-005.
+  Rationale: A script that takes a hook input JSON, pipes it through each old hook individually
+  (capturing all outputs), then pipes it through the consolidated hook, and diffs the decisions.
+  Old hooks run as separate processes just like Claude Code would invoke them. Comparison is on
+  permissionDecision field (deny/allow). Advisory text differences are expected and acceptable.
+
+- DEC-META-003: Extract test corpus from production traces.
+  Addresses: REQ-GOAL-003, REQ-P0-004.
+  Rationale: The 489 traces contain real hook inputs from production sessions. Extract unique
+  PreToolUse:Write|Edit, PreToolUse:Bash, and PostToolUse:Write|Edit inputs. Deduplicate by
+  (tool_name, file_path pattern, key input characteristics). Target: 50-100 unique inputs per
+  hook type. Real-world distribution beats synthetic tests.
+
+- DEC-META-004: Dual settings files with swap script for rollback.
+  Addresses: REQ-GOAL-004, REQ-P0-006.
+  Rationale: Maintain settings-legacy.json and settings-metanoia.json plus a swap.sh script.
+  Rollback: `bash scripts/swap.sh legacy`. Each rollout stage modifies settings-metanoia.json
+  to enable one more consolidated hook. Script validates JSON before overwriting and creates backup.
+
+- DEC-META-005: Gradual rollout order: pre-bash first, post-write second, pre-write last.
+  Addresses: REQ-GOAL-001, REQ-P0-007.
+  Rationale: pre-bash.sh is safest (guard.sh denies always exit, doc-freshness is advisory-only,
+  highest volume so latency savings felt immediately). post-write.sh is second (no deny semantics
+  in PostToolUse). pre-write.sh is last (multi-JSON defect source, most complex gate logic).
+
+- DEC-META-006: Bake period: 5+ sessions per rollout stage, zero regressions.
+  Addresses: REQ-P0-008, REQ-P0-009.
+  Rationale: Each stage runs for at least 5 normal work sessions before advancing. A regression
+  resets the stage. After all 3 stages pass bake, full metanoia config becomes default and
+  legacy hooks are archived.
+
+#### Phase 1: Fix Multi-JSON Safety Defect
+**Status:** planned
+**Decision IDs:** DEC-META-001
+**Requirements:** REQ-P0-001, REQ-P0-002
+**Issues:** #29
+**Definition of Done:**
+- REQ-P0-001 satisfied: All advisory outputs buffered in variables, single JSON emitted at end
+- REQ-P0-002 satisfied: Deny JSON includes buffered advisory text as supplementary context
+
+##### Planned Decisions
+- DEC-META-001: Output buffering pattern -- buffer advisories in variables, emit single JSON at end -- Addresses: REQ-P0-001, REQ-P0-002
+
+##### Work Items
+
+**W1-1: Implement output buffering in pre-write.sh**
+- Add ADVISORIES array and DENY_JSON variable at top of script (after source-lib.sh)
+- Replace all 7 non-exiting `cat <<EOF ... EOF` advisory blocks with `ADVISORIES+=("message")`
+  - Line 88-95: Gate 2 small file bypass -> `ADVISORIES+=("Fast-mode bypass: ...")`
+  - Line 175-184: Gate 2 plan staleness warn -> `ADVISORIES+=("Plan staleness: ...")`
+  - Line 292-300: Gate 3 test strike 1 -> `ADVISORIES+=("Tests failing: ...")`
+  - Line 404-411: Gate 4 mock strike 1 -> `ADVISORIES+=("Internal mocks: ...")`
+  - Line 433-440: Gate 5 new markdown -> `ADVISORIES+=("New markdown file: ...")`
+  - Line 543-550: Gate 5 @decision advisory -> `ADVISORIES+=("Missing @decision: ...")`
+  - Line 554-561: Gate 5 doc header advisory -> `ADVISORIES+=("Missing doc header: ...")`
+- Add emit_buffered_output function at bottom (before Gate 6 checkpoint):
+  ```bash
+  emit_buffered_output() {
+      if [[ ${#ADVISORIES[@]} -gt 0 ]]; then
+          local combined
+          combined=$(printf '%s\n' "${ADVISORIES[@]}")
+          local escaped
+          escaped=$(echo "$combined" | jq -Rs '.[0:-1]')
+          cat <<EMIT_EOF
+  {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "additionalContext": $escaped
+    }
+  }
+  EMIT_EOF
+      fi
+  }
+  ```
+- Call emit_buffered_output after Gate 5, before Gate 6 (checkpoint is side-effect only)
+- Deny blocks remain unchanged (they exit immediately, so no buffering needed)
+
+**W1-2: Implement output buffering in post-write.sh**
+- Same pattern: buffer advisory outputs from lint, track, plan-validate hooks
+- PostToolUse has no deny semantics, so this is purely for combining multiple advisories
+- Simpler: just collect all advisories and emit one combined JSON
+
+**W1-3: Implement output buffering in pre-bash.sh**
+- Buffer doc-freshness advisory and guard.sh advisory (if both fire)
+- Guard.sh denies already exit immediately -- no change needed for deny paths
+
+**W1-4: Re-run existing test harness**
+- Run: `bash tmp/test-hooks.sh` in worktree
+- Expected: all 22 tests pass (buffering doesn't change test semantics)
+- Verify: no test expects multi-JSON output
+
+**W1-5: Add multi-JSON prevention test**
+- New test: construct input that triggers Gate 2 advisory AND Gate 3 deny
+  (small file + failing test status + 2+ strikes)
+- Assert: exactly 1 JSON object on stdout
+- Assert: that JSON has permissionDecision = "deny"
+- Assert: deny reason includes advisory context
+
+##### Critical Files
+- `hooks/pre-write.sh` -- 7 advisory output points need buffering (lines 88, 175, 292, 404, 433, 543, 554)
+- `hooks/post-write.sh` -- Advisory accumulation from lint/track/validate
+- `hooks/pre-bash.sh` -- doc-freshness + guard advisory stacking
+- `tmp/test-hooks.sh` -- Existing 22-test harness
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 2: Build Differential Test Harness
+**Status:** planned
+**Decision IDs:** DEC-META-002
+**Requirements:** REQ-P0-003
+**Issues:** #30
+**Definition of Done:**
+- REQ-P0-003 satisfied: Harness runs old hooks individually, new hook consolidated, diffs decisions
+
+##### Planned Decisions
+- DEC-META-002: Differential test harness -- run same input through old and new, compare permissionDecision -- Addresses: REQ-P0-003
+
+##### Work Items
+
+**W2-1: Create tests/test-differential.sh harness script**
+- Input: a JSON file containing hook input payload
+- For PreToolUse:Write|Edit inputs:
+  - Run each of 6 old hooks (test-gate.sh, mock-gate.sh, branch-guard.sh, doc-gate.sh,
+    plan-check.sh, checkpoint.sh) as separate processes, capture stdout
+  - Run pre-write.sh, capture stdout
+  - Extract permissionDecision from each old hook output (first deny wins, else allow)
+  - Extract permissionDecision from new hook output
+  - Compare: must match
+- For PreToolUse:Bash inputs:
+  - Run each of 3 old hooks (guard.sh, doc-freshness.sh, auto-review.sh) separately
+  - Run pre-bash.sh, capture stdout
+  - Compare permissionDecision
+- For PostToolUse:Write|Edit inputs:
+  - Run each of 5 old hooks (lint.sh, track.sh, code-review.sh, plan-validate.sh, test-runner.sh)
+  - Run post-write.sh, capture stdout
+  - Compare: advisory presence (PostToolUse has no deny)
+- TAP-compatible output per input file
+
+**W2-2: Create harness runner for batch inputs**
+- Accepts a directory of JSON input files
+- Runs test-differential.sh on each
+- Produces summary: total inputs, matches, mismatches, errors
+- Outputs mismatch details for debugging
+
+**W2-3: Validate harness against existing 22 test inputs**
+- Convert existing test-hooks.sh inputs to harness format
+- Run harness on all 22
+- Expected: 100% match (these are known-good inputs)
+
+##### Critical Files
+- `tests/test-differential.sh` -- New: core differential comparison logic
+- `tests/run-differential.sh` -- New: batch runner with summary
+- `tmp/test-hooks.sh` -- Reference: existing test inputs to convert
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 3: Extract Test Corpus and Validate
+**Status:** planned
+**Decision IDs:** DEC-META-003
+**Requirements:** REQ-P0-004, REQ-P0-005
+**Issues:** #31
+**Definition of Done:**
+- REQ-P0-004 satisfied: 50-100 unique inputs per hook type extracted from traces
+- REQ-P0-005 satisfied: Zero unexpected decision differences on full corpus
+
+##### Planned Decisions
+- DEC-META-003: Mine 489 traces for real hook inputs, deduplicate to 50-100 per type -- Addresses: REQ-P0-004, REQ-P0-005
+
+##### Work Items
+
+**W3-1: Create scripts/extract-corpus.sh**
+- Scan traces/ and traces/oldTraces/ for hook invocation logs
+- Extract PreToolUse:Write|Edit, PreToolUse:Bash, PostToolUse:Write|Edit payloads
+- Deduplicate by: tool_name + basename(file_path) + content_length_bucket
+- Write to tests/corpus/write-edit/, tests/corpus/bash/, tests/corpus/post-write/
+- Target: 50-100 unique inputs per type
+
+**W3-2: Run differential harness on extracted corpus**
+- Run tests/run-differential.sh on each corpus directory
+- Capture summary report
+- Investigate any mismatches -- expected differences (advisory text) vs unexpected (decision changes)
+
+**W3-3: Fix any discovered regressions**
+- If differential tests reveal decision mismatches, fix the consolidated hook
+- Re-run until zero unexpected differences
+- Document any expected differences (advisory text improvements) in the report
+
+##### Critical Files
+- `scripts/extract-corpus.sh` -- New: trace mining and deduplication
+- `tests/corpus/` -- New: extracted test inputs (gitignored, may contain sensitive paths)
+- `tests/run-differential.sh` -- Batch runner from Phase 2
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 4: Config Management
+**Status:** planned
+**Decision IDs:** DEC-META-004
+**Requirements:** REQ-P0-006
+**Issues:** #32
+**Definition of Done:**
+- REQ-P0-006 satisfied: swap.sh round-trips between legacy and metanoia configs without data loss
+
+##### Planned Decisions
+- DEC-META-004: Dual settings files + swap.sh with validation and backup -- Addresses: REQ-P0-006
+
+##### Work Items
+
+**W4-1: Create settings-legacy.json**
+- Copy current settings.json to settings-legacy.json
+- This is the known-good fallback configuration
+
+**W4-2: Create settings-metanoia.json**
+- Start as copy of settings-legacy.json
+- This will be progressively modified in Phase 5 to enable consolidated hooks
+
+**W4-3: Create scripts/swap.sh**
+- Usage: `bash scripts/swap.sh [legacy|metanoia|status]`
+- `legacy`: validate settings-legacy.json (jq check), backup settings.json, copy legacy
+- `metanoia`: validate settings-metanoia.json (jq check), backup settings.json, copy metanoia
+- `status`: report which config is active (diff against each, report match)
+- Backups to settings.json.bak-{timestamp}
+- Exit with error if source file doesn't exist or fails jq validation
+
+**W4-4: Test swap script**
+- Test: swap to legacy, verify settings.json matches settings-legacy.json
+- Test: swap to metanoia, verify settings.json matches settings-metanoia.json
+- Test: round-trip, verify no data loss
+- Test: swap with invalid JSON in source, verify error and no overwrite
+- Test: status command reports correct active config
+
+##### Critical Files
+- `settings-legacy.json` -- New: frozen copy of current settings.json
+- `settings-metanoia.json` -- New: progressively modified during rollout
+- `scripts/swap.sh` -- New: config swap with validation and backup
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 5: Gradual Rollout
+**Status:** planned
+**Decision IDs:** DEC-META-005, DEC-META-006
+**Requirements:** REQ-P0-007, REQ-P0-008
+**Issues:** #33
+**Definition of Done:**
+- REQ-P0-007 satisfied: Rollout follows pre-bash -> post-write -> pre-write order
+- REQ-P0-008 satisfied: Each stage bakes 5+ sessions with zero regressions
+
+##### Planned Decisions
+- DEC-META-005: Gradual rollout order -- pre-bash (safest) -> post-write (no deny) -> pre-write (most complex) -- Addresses: REQ-P0-007
+- DEC-META-006: 5+ sessions per stage bake -- regression resets count -- Addresses: REQ-P0-008
+
+##### Work Items
+
+**W5-1: Stage 1 -- Enable pre-bash.sh**
+- Modify settings-metanoia.json: replace guard.sh + doc-freshness.sh + auto-review.sh PreToolUse:Bash
+  entries with single pre-bash.sh entry
+- Copy pre-bash.sh from worktree to hooks/
+- `bash scripts/swap.sh metanoia`
+- Bake: 5 sessions of normal work
+- Monitor: no false denies, no missed denies, guard.sh safety patterns still enforced
+
+**W5-2: Stage 2 -- Enable post-write.sh**
+- Modify settings-metanoia.json: replace lint.sh + track.sh + code-review.sh + plan-validate.sh +
+  test-runner.sh PostToolUse:Write|Edit entries with single post-write.sh entry
+  (keep test-runner.sh as async -- post-write.sh handles sync hooks only)
+- Copy post-write.sh from worktree to hooks/
+- `bash scripts/swap.sh metanoia` (refresh)
+- Bake: 5 sessions
+
+**W5-3: Stage 3 -- Enable pre-write.sh**
+- Modify settings-metanoia.json: replace test-gate.sh + mock-gate.sh + branch-guard.sh +
+  doc-gate.sh + plan-check.sh + checkpoint.sh PreToolUse:Write|Edit entries with single
+  pre-write.sh entry
+- Copy pre-write.sh from worktree to hooks/
+- `bash scripts/swap.sh metanoia` (refresh)
+- Bake: 5 sessions
+- This is the highest-risk stage -- the multi-JSON fix (Phase 1) must be solid
+
+##### Critical Files
+- `settings-metanoia.json` -- Progressive modifications per stage
+- `hooks/pre-bash.sh` -- Copied from worktree at Stage 1
+- `hooks/post-write.sh` -- Copied from worktree at Stage 2
+- `hooks/pre-write.sh` -- Copied from worktree at Stage 3
+- `scripts/swap.sh` -- Activation and rollback mechanism
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 6: Bake and Merge
+**Status:** planned
+**Decision IDs:** DEC-META-006
+**Requirements:** REQ-P0-009
+**Issues:** #34
+**Definition of Done:**
+- REQ-P0-009 satisfied: Legacy hooks archived, consolidated hooks on main, zero regressions
+
+##### Planned Decisions
+- DEC-META-006: Full bake before merge -- 5+ additional sessions after all stages active -- Addresses: REQ-P0-009
+
+##### Work Items
+
+**W6-1: Full bake period**
+- Run with all 3 consolidated hooks active for 5+ sessions
+- Run differential harness one final time on full corpus
+- Confirm zero regressions
+
+**W6-2: Archive legacy hooks**
+- Create hooks/legacy/ directory
+- Move original individual hooks:
+  - test-gate.sh, mock-gate.sh, branch-guard.sh, doc-gate.sh, plan-check.sh, checkpoint.sh
+  - lint.sh, track.sh, code-review.sh, plan-validate.sh (test-runner.sh stays -- async)
+  - doc-freshness.sh, auto-review.sh
+- Keep them available for reference and emergency rollback
+
+**W6-3: Finalize settings.json**
+- settings-metanoia.json becomes the permanent settings.json
+- Remove settings-legacy.json and settings-metanoia.json
+- Keep scripts/swap.sh for potential future use
+
+**W6-4: Merge worktree to main**
+- Guardian merge of hook-consolidation worktree
+- Verify: all tests pass on main
+- Clean up worktree
+
+**W6-5: Update documentation**
+- Update HOOKS.md: document consolidated hooks, reference legacy/ for history
+- Update ARCHITECTURE.md: hook count reduced from 28 to ~18
+- Close related GitHub issues
+
+##### Critical Files
+- `hooks/legacy/` -- New directory for archived individual hooks
+- `settings.json` -- Finalized with consolidated hook entries
+- `hooks/HOOKS.md` -- Documentation update
+- `ARCHITECTURE.md` -- Hook count update
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Metanoia Worktree Strategy
+
+Phases 1-3 work in the existing worktree:
+- **Phases 1-3:** `~/.claude/.worktrees/hook-consolidation` on branch `feature/hook-consolidation`
+
+Phases 4-5 work on main (config changes, not source code):
+- **Phase 4:** On main (scripts/swap.sh, settings files are config, not source)
+- **Phase 5:** On main (config swap activation)
+
+Phase 6 is the merge:
+- **Phase 6:** Merge from `feature/hook-consolidation` to main
+
+#### Metanoia References
+
+##### Efficacy Review
+- `plans/woolly-twirling-wolf.md` -- Full hook system efficacy review with cost analysis
+- Measured: 200ms-1.5s per Bash, 800ms-12s per Write/Edit overhead
+- Recommended: selective consolidation (Phase 1), pruning (Phase 2), new infrastructure (Phase 3)
+
+##### Existing Worktree Code
+| File | Lines | Status |
+|------|-------|--------|
+| `hooks/pre-write.sh` | 657 | Built, needs multi-JSON fix |
+| `hooks/post-write.sh` | 482 | Built, needs multi-JSON fix |
+| `hooks/pre-bash.sh` | 592 | Built, needs multi-JSON fix |
+| `tmp/test-hooks.sh` | 200+ | 20/22 tests passing |
+
+##### Multi-JSON Defect Map
+| Line | Gate | Type | Risk |
+|------|------|------|------|
+| 88 | Gate 2: plan-check (small file) | advisory, no exit | **UNSAFE** |
+| 175 | Gate 2: plan-check (stale warn) | advisory, no exit | **UNSAFE** |
+| 292 | Gate 3: test-gate (strike 1) | advisory, no exit | **UNSAFE** |
+| 404 | Gate 4: mock-gate (strike 1) | advisory, no exit | **UNSAFE** |
+| 433 | Gate 5: doc-gate (new markdown) | advisory, no exit | **UNSAFE** |
+| 543 | Gate 5: doc-gate (@decision) | advisory, no exit | **UNSAFE** |
+| 554 | Gate 5: doc-gate (header) | advisory, no exit | **UNSAFE** |
 
 ---
 
