@@ -1,0 +1,381 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk *)",
+      "Bash(basename *)",
+      "Bash(cat *)",
+      "Bash(claude *)",
+      "Bash(command *)",
+      "Bash(curl *)",
+      "Bash(cut *)",
+      "Bash(date *)",
+      "Bash(diff *)",
+      "Bash(dirname *)",
+      "Bash(du *)",
+      "Bash(echo *)",
+      "Bash(env *)",
+      "Bash(file *)",
+      "Bash(find *)",
+      "Bash(glow *)",
+      "Bash(grep *)",
+      "Bash(head *)",
+      "Bash(jq *)",
+      "Bash(less *)",
+      "Bash(locate *)",
+      "Bash(ls *)",
+      "Bash(ls)",
+      "Bash(lsof *)",
+      "Bash(mdfind *)",
+      "Bash(mkdir *)",
+      "Bash(open *)",
+      "Bash(pandoc *)",
+      "Bash(pip *)",
+      "Bash(printenv *)",
+      "Bash(printf *)",
+      "Bash(pwd)",
+      "Bash(python3 *)",
+      "Bash(readlink *)",
+      "Bash(realpath *)",
+      "Bash(rg *)",
+      "Bash(shellcheck *)",
+      "Bash(sleep *)",
+      "Bash(sort *)",
+      "Bash(stat *)",
+      "Bash(tail *)",
+      "Bash(test *)",
+      "Bash(tr *)",
+      "Bash(uname)",
+      "Bash(uname *)",
+      "Bash(uniq *)",
+      "Bash(uv *)",
+      "Bash(wc *)",
+      "Bash(which *)",
+      "Bash(whoami)",
+      "Bash(gh *)",
+      "Bash(git *)",
+      "Bash(~/.claude/scripts/*.sh *)",
+      "Bash($HOME/.claude/scripts/*.sh *)",
+      "Bash(xargs *)",
+      "Bash(xxd *)",
+      "Read",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Write",
+      "Edit",
+      "Task",
+      "NotebookEdit",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "mcp__fetch__fetch",
+      "mcp__playwright__*",
+      "mcp__claude-in-chrome__*",
+      "Skill(*)"
+    ],
+    "deny": [
+      "Read(**/.env*)",
+      "Read(**/secrets/**)",
+      "Read(**/*credentials*)"
+    ],
+    "ask": [],
+    "defaultMode": "plan"
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "context7",
+    "fetch"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/session-init.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/prompt-submit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/test-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/mock-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/branch-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/doc-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/plan-check.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/checkpoint.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/pre-bash.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/task-track.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/lint.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/track.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/code-review.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/plan-validate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/test-runner.sh",
+            "timeout": 60,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/webfetch-fallback.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__playwright__browser_snapshot",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/playwright-cleanup.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/skill-result.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/post-task.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/notify.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/subagent-start.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "planner|Plan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-planner.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "implementer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-implementer.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "tester",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-tester.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "guardian",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-guardian.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Explore|explore",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-explore.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "general-purpose",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-general-purpose.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/compact-preserve.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/surface.sh",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/session-summary.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/forward-motion.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/session-end.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.claude/scripts/statusline.sh"
+  },
+  "autoUpdatesChannel": "latest",
+  "installation": {
+    "method": "native"
+  },
+  "skipDangerousModePermissionPrompt": true
+}
