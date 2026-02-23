@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `feature/hook-consolidation`: Metanoia Phase 1 (Bake and Merge) — consolidated `pre-bash.sh`, `pre-write.sh`, `post-write.sh` hooks (dormant until swap), `swap.sh` config toggle utility, `settings-legacy.json`/`settings-metanoia.json` config pair; pruned compliance.json noise generators from all four check-*.sh hooks and broad scope detection from prompt-submit.sh (#29, #30, #32)
 - `feature/architect-skill`: Phase 1 `/architect` skill — content-agnostic structural mapper with `detect_content.sh` (language/framework detection, monorepo support), 4 Mermaid diagram templates (concept-map, data-flow, module-dependency, sequence), manifest schema, and 22-assertion test suite
 - `feature/project-isolation`: Cross-project state isolation via 8-char SHA-256 project hash — scopes .proof-status, .active-worktree-path, and trace markers per project root to prevent state contamination across concurrent Claude Code sessions; three-tier backward-compatible lookup; 20 new isolation tests
 
