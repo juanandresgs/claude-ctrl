@@ -53,6 +53,37 @@ only an Anthropic key — it just loses model diversity.
 latency significantly and rarely changes results substantially when scenarios are
 well-specified. It is available via --rounds N flag for cases where the user wants
 maximum rigor, but off by default to keep the default run under 5 minutes.
+
+@decision DEC-BAZAAR-012
+@title Local output directory (bazaar-YYYYMMDD-HHMMSS/) replaces /tmp
+@status accepted
+@rationale /tmp is ephemeral — artifacts are lost on reboot and inaccessible to the
+user for inspection or resumption. A CWD-relative directory (bazaar-YYYYMMDD-HHMMSS/)
+persists until the user cleans it up, is easily inspectable, and has a clear
+timestamp for identification. This satisfies REQ-P0-005 (persistent artifacts) and
+REQ-P0-006 (bazaar-manifest.json run metadata). See DEC-BAZAAR-013 for why disk-based
+state passing is the companion change that makes this worthwhile.
+
+@decision DEC-BAZAAR-013
+@title Disk-based state passing — agent reads only BLUFs, Python scripts handle data plumbing
+@status accepted
+@rationale The forked agent stalls at Phase 3 because it reads full JSON artifacts
+(ideators/*.json, judges/*.json can be 50-200KB each) directly into its context window.
+bazaar_prepare.py externalizes all data plumbing — reading artifacts, building dispatch
+files, collecting outputs — so the agent never sees raw JSON. After each phase the agent
+runs bazaar_summarize.py and reads only the resulting 5-15 line BLUF. This satisfies
+REQ-P0-007 (BLUF after each phase), REQ-P0-008 (no full JSON reads), and REQ-P0-009
+(all 6 phases complete autonomously).
+
+@decision DEC-BAZAAR-015
+@title SKILL.md rewrite with explicit context discipline
+@status accepted
+@rationale The original SKILL.md embedded large JSON examples and inline Python snippets
+that consumed context even before the run started. Replacing these with calls to
+bazaar_prepare.py and bazaar_summarize.py reduces SKILL.md context load by ~60% and
+makes the agent's job declarative: "call this script, read this BLUF." The Context
+Discipline section makes the rule explicit and machine-checkable. This satisfies
+REQ-P0-009 (all 6 phases complete autonomously in forked agent).
 -->
 
 You are the orchestrator of the Bazaar Competitive Analytical Marketplace. Your job
@@ -72,14 +103,27 @@ Extract:
 
 Parse flags: `--rounds N`, `--words N`, `--providers anthropic,openai`
 
+## Context Discipline
+
+**Your context window is your most precious resource. Violating these rules will cause you to stall before completing all 6 phases.**
+
+1. **NEVER use the Read tool** to open JSON files in `ideators/`, `judges/`, `obsessives/`, or `analysts/` directories
+2. After each phase's Python scripts complete, run `bazaar_summarize.py` to generate the BLUF
+3. **Read ONLY the `phase-N-bluf.md` file** and present its contents to the user
+4. Python scripts accept disk paths and handle all data plumbing between phases — you do not need to see the data
+5. When constructing dispatch files, use `bazaar_prepare.py` instead of inline Python
+6. Present the BLUF summary (5-15 lines) after each phase — never raw JSON or full data
+7. Your context is precious — every JSON blob you read reduces your ability to complete later phases
+
 ## Setup
 
 ```bash
 SKILL_DIR="$HOME/.claude/skills/bazaar"
-WORK_DIR=$(mktemp -d /tmp/bazaar-XXXXXX)
+WORK_DIR="./bazaar-$(date +%Y%m%d-%H%M%S)"
 SCRIPTS="$SKILL_DIR/scripts"
 ARCHETYPES="$SKILL_DIR/archetypes"
 TEMPLATES="$SKILL_DIR/templates"
+mkdir -p "$WORK_DIR"
 ```
 
 ### Provider Detection
@@ -106,6 +150,12 @@ Store result as `PROVIDERS_JSON`. Rules:
 
 Tell the user which providers are available before proceeding.
 
+### Initialize Manifest
+
+```bash
+python3 "$SCRIPTS/bazaar_prepare.py" init "$WORK_DIR" "$QUESTION" "$SKILL_DIR/providers.json"
+```
+
 ---
 
 ## Phase 1: Problem Framing
@@ -129,7 +179,13 @@ Create `$WORK_DIR/brief.md`:
 Use `AskUserQuestion` if the question is ambiguous about scope or time horizon.
 Otherwise, infer reasonable defaults and note them in the brief.
 
-Tell the user: "Phase 1 complete. Brief prepared. Starting ideation with {N} archetypes..."
+```bash
+python3 "$SCRIPTS/bazaar_summarize.py" 1 "$WORK_DIR"
+```
+
+Read `$WORK_DIR/phase-1-bluf.md` and present the BLUF summary to the user.
+
+Tell the user: "Phase 1 complete. Starting ideation with {N} archetypes..."
 
 ---
 
@@ -139,61 +195,11 @@ Goal: Generate a rich pool of diverse scenarios using 5 ideator archetypes in pa
 
 **DEC-BAZAAR-001 applies here**: Use different providers per archetype for genuine diversity.
 
-Build `$WORK_DIR/ideation_dispatches.json`:
+Build and run ideation dispatches:
 
-```json
-{
-  "dispatches": [
-    {
-      "id": "methodical",
-      "provider": "anthropic",
-      "model": "claude-opus-4-6",
-      "system_prompt_file": "{ARCHETYPES}/ideators/methodical.md",
-      "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
-      "output_file": "{WORK_DIR}/ideators/methodical.json"
-    },
-    {
-      "id": "contrarian",
-      "provider": "openai",
-      "model": "gpt-5.2",
-      "system_prompt_file": "{ARCHETYPES}/ideators/contrarian.md",
-      "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
-      "output_file": "{WORK_DIR}/ideators/contrarian.json"
-    },
-    {
-      "id": "pattern-matcher",
-      "provider": "gemini",
-      "model": "gemini-3.1-pro-preview",
-      "system_prompt_file": "{ARCHETYPES}/ideators/pattern-matcher.md",
-      "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
-      "output_file": "{WORK_DIR}/ideators/pattern-matcher.json"
-    },
-    {
-      "id": "edge-case-hunter",
-      "provider": "anthropic",
-      "model": "claude-sonnet-4-6",
-      "system_prompt_file": "{ARCHETYPES}/ideators/edge-case-hunter.md",
-      "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
-      "output_file": "{WORK_DIR}/ideators/edge-case-hunter.json"
-    },
-    {
-      "id": "systems-thinker",
-      "provider": "openai",
-      "model": "gpt-5.2",
-      "system_prompt_file": "{ARCHETYPES}/ideators/systems-thinker.md",
-      "user_prompt": "Analytical question: {QUESTION}\n\nBrief:\n{BRIEF_CONTENT}",
-      "output_file": "{WORK_DIR}/ideators/systems-thinker.json"
-    }
-  ]
-}
-```
-
-Substitute actual values for `{ARCHETYPES}`, `{WORK_DIR}`, `{QUESTION}`, `{BRIEF_CONTENT}`.
-Apply provider degradation from Phase 0 as needed.
-
-Run:
 ```bash
 mkdir -p "$WORK_DIR/ideators"
+python3 "$SCRIPTS/bazaar_prepare.py" ideation "$WORK_DIR" "$SKILL_DIR/providers.json"
 python3 "$SCRIPTS/bazaar_dispatch.py" \
   "$WORK_DIR/ideation_dispatches.json" \
   "$WORK_DIR/ideators/" \
@@ -202,37 +208,19 @@ python3 "$SCRIPTS/bazaar_dispatch.py" \
 
 ### Scenario Deduplication
 
-After ideation completes, collect and deduplicate scenarios:
-
 ```bash
-python3 - <<'PYEOF'
-import json, sys, glob
-
-scenarios = []
-seen_ids = set()
-
-for path in glob.glob("$WORK_DIR/ideators/*.json"):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-        result = data.get("parsed") or {}
-        for s in result.get("scenarios", []):
-            sid = s.get("id", "")
-            if sid and sid not in seen_ids:
-                scenarios.append(s)
-                seen_ids.add(sid)
-    except Exception as e:
-        print(f"Skipping {path}: {e}", file=sys.stderr)
-
-print(f"Collected {len(scenarios)} unique scenarios from ideators")
-with open("$WORK_DIR/all_scenarios.json", "w") as f:
-    json.dump({"scenarios": scenarios}, f, indent=2)
-PYEOF
+python3 "$SCRIPTS/bazaar_prepare.py" dedup "$WORK_DIR"
 ```
 
 If fewer than 3 scenarios collected: "Only {N} scenarios generated. Proceeding anyway — results may be limited."
 
-Tell the user: "Phase 2 complete. {N} unique scenarios from {M} ideators. Starting judicial funding..."
+```bash
+python3 "$SCRIPTS/bazaar_summarize.py" 2 "$WORK_DIR"
+```
+
+Read `$WORK_DIR/phase-2-bluf.md` and present the BLUF summary to the user.
+
+Tell the user: "Phase 2 complete. Starting judicial funding..."
 
 ---
 
@@ -240,30 +228,11 @@ Tell the user: "Phase 2 complete. {N} unique scenarios from {M} ideators. Starti
 
 Goal: 4 judge archetypes independently allocate 1000 funding units across all scenarios.
 
-Build the scenarios list as a user prompt:
-```bash
-SCENARIOS_PROMPT=$(python3 -c "
-import json
-with open('$WORK_DIR/all_scenarios.json') as f:
-    data = json.load(f)
-lines = ['Scenarios to evaluate:']
-for s in data['scenarios']:
-    lines.append(f\"  - {s['id']}: {s['title']} — {s['description'][:100]}\")
-print('\n'.join(lines))
-")
-```
+Build and run judge dispatches:
 
-Build `$WORK_DIR/judge_dispatches.json` with 4 judge archetypes:
-- pragmatist → anthropic/claude-opus-4-6
-- visionary → gemini/gemini-3.1-pro-preview (or anthropic if unavailable)
-- risk-manager → openai/gpt-5.2 (or anthropic if unavailable)
-- quant → anthropic/claude-sonnet-4-6
-
-Each judge's user_prompt: `"{SCENARIOS_PROMPT}\n\nAllocate 1000 units across these scenarios."`
-
-Run judges in parallel:
 ```bash
 mkdir -p "$WORK_DIR/judges"
+python3 "$SCRIPTS/bazaar_prepare.py" funding "$WORK_DIR" "$SKILL_DIR/providers.json"
 python3 "$SCRIPTS/bazaar_dispatch.py" \
   "$WORK_DIR/judge_dispatches.json" \
   "$WORK_DIR/judges/" \
@@ -311,15 +280,13 @@ If `ROUNDS > 1`, repeat judicial funding up to `ROUNDS` times:
 - Scenarios with > 50% funding get more prominent placement in judge prompts
 - Run aggregate.py again, overwriting funded_scenarios.json
 
-Tell the user: "Phase 3 complete. {N} scenarios funded. Top scenario: {TOP_SCENARIO} ({PCT}%). Starting obsessive research..."
+```bash
+python3 "$SCRIPTS/bazaar_summarize.py" 3 "$WORK_DIR"
+```
 
-Display the funding table:
-```
-Rank | Scenario | Funding%
-  1  | scenario-id | 34.2%
-  2  | scenario-id | 28.1%
-  ...
-```
+Read `$WORK_DIR/phase-3-bluf.md` and present the BLUF summary to the user.
+
+Tell the user: "Phase 3 complete. Starting obsessive research..."
 
 ---
 
@@ -359,32 +326,28 @@ Run them in parallel (multiple Task agents).
 
 **Only if PERPLEXITY_API_KEY is available.**
 
-Build `$WORK_DIR/search_dispatches.json` — one dispatch per funded scenario:
+Build and run search dispatches — one per funded scenario — using the search-obsessive archetype:
 
-```json
-{
-  "dispatches": [
-    {
-      "id": "search-{SCENARIO_ID}",
-      "provider": "perplexity",
-      "model": "sonar-deep-research",
-      "system_prompt_file": "{ARCHETYPES}/obsessives/search-obsessive.md",
-      "user_prompt": "Research this scenario for live web signals:\n\nScenario: {TITLE}\nDescription: {DESCRIPTION}\nKey focus: Find current evidence (last 6-18 months) for or against this scenario.",
-      "output_file": "{WORK_DIR}/obsessives/{SCENARIO_ID}_search.json"
-    }
-  ]
-}
-```
-
-Run:
 ```bash
+mkdir -p "$WORK_DIR/obsessives"
+# Build search_dispatches.json manually: one entry per funded scenario
+# provider: perplexity, model: sonar-deep-research
+# system_prompt_file: $ARCHETYPES/obsessives/search-obsessive.md
+# output_file: $WORK_DIR/obsessives/{SCENARIO_ID}_search.json
+
 python3 "$SCRIPTS/bazaar_dispatch.py" \
   "$WORK_DIR/search_dispatches.json" \
   "$WORK_DIR/obsessives/" \
   2>&1
 ```
 
-Tell the user: "Phase 4 complete. Research gathered for {N} scenarios. Starting analyst translation..."
+```bash
+python3 "$SCRIPTS/bazaar_summarize.py" 4 "$WORK_DIR"
+```
+
+Read `$WORK_DIR/phase-4-bluf.md` and present the BLUF summary to the user.
+
+Tell the user: "Phase 4 complete. Starting analyst translation..."
 
 ---
 
@@ -395,71 +358,24 @@ Goal: Translate raw research signals into structured, decision-ready findings.
 **DEC-BAZAAR-006**: Analysts receive the obsessive research outputs but have NO additional
 research tools. They synthesize only what the obsessives found.
 
-For each funded scenario, build an analyst dispatch. The user prompt includes:
-- The scenario description
-- All domain obsessive signals
-- All search obsessive signals (if available)
+Build and run analyst dispatches:
 
 ```bash
-python3 - <<'PYEOF'
-import json, glob, sys
-from pathlib import Path
-
-scenarios = json.loads(open("$WORK_DIR/funded_scenarios.json").read())["funded_scenarios"]
-all_scenarios = {s["id"]: s for s in json.loads(open("$WORK_DIR/all_scenarios.json").read())["scenarios"]}
-
-dispatches = []
-for funded in scenarios:
-    sid = funded["scenario_id"]
-    scenario = all_scenarios.get(sid, {"id": sid, "title": sid, "description": ""})
-
-    # Collect research signals
-    signals = []
-    for pattern in [f"$WORK_DIR/obsessives/{sid}_domain.json",
-                    f"$WORK_DIR/obsessives/{sid}_search.json"]:
-        for path in glob.glob(pattern):
-            try:
-                data = json.load(open(path))
-                parsed = data.get("parsed") or data
-                signals.append(json.dumps(parsed, indent=2))
-            except Exception:
-                pass
-
-    research_block = "\n\n---\n\n".join(signals) if signals else "No research signals available."
-
-    user_prompt = f"""Scenario to analyze:
-ID: {sid}
-Title: {scenario.get('title', sid)}
-Description: {scenario.get('description', '')}
-Funding: {funded['funding_percent']:.1f}%
-
-Research signals gathered by obsessives:
-{research_block}
-
-Follow the analyst archetype protocol. Translate these signals into structured findings."""
-
-    dispatches.append({
-        "id": f"analyst-{sid}",
-        "provider": "anthropic",
-        "model": "claude-opus-4-6",
-        "system_prompt_file": "$SKILL_DIR/archetypes/analysts/analyst.md",
-        "user_prompt": user_prompt,
-        "output_file": f"$WORK_DIR/analysts/{sid}_analysis.json"
-    })
-
-with open("$WORK_DIR/analyst_dispatches.json", "w") as f:
-    json.dump({"dispatches": dispatches}, f, indent=2)
-print(f"Prepared {len(dispatches)} analyst dispatches")
-PYEOF
-
 mkdir -p "$WORK_DIR/analysts"
+python3 "$SCRIPTS/bazaar_prepare.py" analysis "$WORK_DIR" "$SKILL_DIR/providers.json"
 python3 "$SCRIPTS/bazaar_dispatch.py" \
   "$WORK_DIR/analyst_dispatches.json" \
   "$WORK_DIR/analysts/" \
   2>&1
 ```
 
-Tell the user: "Phase 5 complete. Analysis translated for {N} scenarios. Generating report..."
+```bash
+python3 "$SCRIPTS/bazaar_summarize.py" 5 "$WORK_DIR"
+```
+
+Read `$WORK_DIR/phase-5-bluf.md` and present the BLUF summary to the user.
+
+Tell the user: "Phase 5 complete. Generating report..."
 
 ---
 
@@ -480,26 +396,10 @@ python3 "$SCRIPTS/report.py" \
 ### Collect Analyst Outputs
 
 ```bash
-python3 - <<'PYEOF'
-import json, glob
-
-analyst_outputs = {}
-for path in glob.glob("$WORK_DIR/analysts/*.json"):
-    with open(path) as f:
-        data = json.load(f)
-    parsed = data.get("parsed")
-    if parsed and "scenario_id" in parsed:
-        analyst_outputs[parsed["scenario_id"]] = parsed
-
-with open("$WORK_DIR/analyst_outputs.json", "w") as f:
-    json.dump(analyst_outputs, f, indent=2)
-print(f"Collected {len(analyst_outputs)} analyst outputs")
-PYEOF
+python3 "$SCRIPTS/bazaar_prepare.py" collect-analysts "$WORK_DIR"
 ```
 
 ### Generate Report
-
-Use the report structure and analyst outputs to write the final report:
 
 ```bash
 python3 - <<'PYEOF'
@@ -512,7 +412,6 @@ structure = json.loads(open("$WORK_DIR/report_structure.json").read())
 analyst_outputs = json.loads(open("$WORK_DIR/analyst_outputs.json").read())
 template = open("$TEMPLATES/report-template.md").read()
 
-# Populate template with structure (analyst_outputs integrated)
 report = populate_template(template, structure, analyst_outputs)
 
 with open("$WORK_DIR/report_draft.md", "w") as f:
@@ -535,6 +434,12 @@ Write the executive summary last (1-2 paragraphs synthesizing across all section
 
 Save the final report to: `$WORK_DIR/bazaar-report.md`
 
+```bash
+python3 "$SCRIPTS/bazaar_summarize.py" 6 "$WORK_DIR"
+```
+
+Read `$WORK_DIR/phase-6-bluf.md` and present the BLUF summary to the user.
+
 ### Output
 
 Write `.skill-result.md` in the current directory:
@@ -546,6 +451,7 @@ Write `.skill-result.md` in the current directory:
 **Scenarios funded**: {N}
 **Word count**: ~{WORD_COUNT}
 **Providers used**: {PROVIDERS_LIST}
+**Output directory**: {WORK_DIR}
 
 ## Report
 
@@ -564,6 +470,7 @@ Write `.skill-result.md` in the current directory:
 - Judges: {N} archetypes, agreement: {KENDALLS_W} (Kendall's W)
 - Gini coefficient: {GINI} (funding concentration)
 - Work directory: {WORK_DIR}
+- Manifest: {WORK_DIR}/bazaar-manifest.json
 ```
 
 Display the report to the user.

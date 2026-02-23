@@ -1,0 +1,33 @@
+{
+  "dispatch_id": "analyst-rag-grounding",
+  "provider": "anthropic",
+  "model_used": "claude-opus-4-6",
+  "text": "{\"scenario_id\": \"rag-grounding\", \"analyst\": \"synthesis\", \"findings\": [{\"insight\": \"RAG reduces hallucination by anchoring responses to retrieved documents.\", \"supporting_signals\": [\"signal A\", \"signal B\"], \"confidence\": \"high\", \"inference_level\": \"direct\", \"implications\": \"Teams should prioritize retrieval quality over prompt engineering.\"}], \"overall_assessment\": \"RAG is the most practical near-term solution.\", \"confidence_level\": \"high\", \"signal_quality\": \"strong\", \"key_gaps\": [\"Long-tail knowledge gaps remain even with RAG\"], \"monitoring_recommendations\": [{\"indicator\": \"RAG benchmark improvement\", \"threshold\": \"RAGAS score > 0.85\", \"frequency\": \"Monthly\"}]}",
+  "parsed": {
+    "scenario_id": "rag-grounding",
+    "analyst": "synthesis",
+    "findings": [
+      {
+        "insight": "RAG reduces hallucination by anchoring responses to retrieved documents.",
+        "supporting_signals": ["signal A", "signal B"],
+        "confidence": "high",
+        "inference_level": "direct",
+        "implications": "Teams should prioritize retrieval quality over prompt engineering."
+      }
+    ],
+    "overall_assessment": "RAG is the most practical near-term solution.",
+    "confidence_level": "high",
+    "signal_quality": "strong",
+    "key_gaps": ["Long-tail knowledge gaps remain even with RAG"],
+    "monitoring_recommendations": [
+      {
+        "indicator": "RAG benchmark improvement",
+        "threshold": "RAGAS score > 0.85",
+        "frequency": "Monthly"
+      }
+    ]
+  },
+  "elapsed": 32.1,
+  "success": true,
+  "error": null
+}
