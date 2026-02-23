@@ -1833,7 +1833,7 @@ Issue created and closed.
 **Status:** planned
 **Decision IDs:** DEC-BAZAAR-012, DEC-BAZAAR-013, DEC-BAZAAR-014, DEC-BAZAAR-015, DEC-BAZAAR-016
 **Requirements:** REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008, REQ-P0-009, REQ-P0-010
-**Issues:** (to be created)
+**Issues:** #35
 **Definition of Done:**
 - REQ-P0-005 satisfied: All artifacts in structured local directory (not /tmp)
 - REQ-P0-006 satisfied: bazaar-manifest.json present with full run metadata
