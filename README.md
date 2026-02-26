@@ -15,6 +15,8 @@ A batteries-included governance layer for Claude Code. Four specialized agents h
 
 *Formerly `claude-system`.*
 
+Feb 26 2026: This project was archived for a full refactor, back by popular demand. Fixes backported, please git pull.
+
 ---
 
 ## Platform at a Glance
