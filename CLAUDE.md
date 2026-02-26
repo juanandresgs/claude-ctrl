@@ -93,6 +93,11 @@ project identity, architecture, and active work context. Development log digest 
 shows what agents did recently. Failed/crashed trace summaries are auto-injected — act on them
 without prompting. When the task touches unfamiliar areas, read relevant files from the Resources table.
 
+**Lean Planning:** For repos with existing MASTER_PLAN.md and >5 prior sessions in the
+development log, the orchestrator may skip Explore agents and plan directly from session
+context. The session-init injection already provides project identity, architecture, active
+initiatives, and recent trace history — redundant exploration wastes 10-20K tokens.
+
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
 - Implementer: max_turns=85
 - Planner: max_turns=40

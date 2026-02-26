@@ -70,7 +70,6 @@
       "mcp__context7__query-docs",
       "mcp__fetch__fetch",
       "mcp__playwright__*",
-      "mcp__claude-in-chrome__*",
       "Skill(*)"
     ],
     "deny": [
