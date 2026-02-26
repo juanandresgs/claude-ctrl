@@ -79,7 +79,12 @@ CLAUDE_DIR=$(get_claude_dir)
 # SubagentStop:tester does not reliably fire in Claude Code (confirmed dead in
 # practice). PostToolUse:Task fires after every Task tool call and is the
 # correct hook for detecting tester completions. Issue #150, DEC-PROOF-LIFE-001.
+#
+# Gate: set CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true to re-enable this block.
+# Disabled by default since post-task.sh is the authoritative auto-verify path.
 # ============================================================================
+
+if [[ "${CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY:-}" == "true" ]]; then
 
 # Check 1: .proof-status exists (tester should have written pending)
 # Use resolve_proof_file() so worktree scenarios find the right path.
@@ -108,7 +113,7 @@ if [[ "$RESPONSE_LEN" -gt 0 ]]; then
     if [[ "$AV_SIGNAL" -gt 0 ]]; then
         CONF_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci '\*\*High\*\*' 2>/dev/null || echo "0")
         PARTIAL_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci 'Partially verified' 2>/dev/null || echo "0")
-        NOT_TESTED_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci 'Not tested' 2>/dev/null || echo "0")
+        NOT_TESTED_CHECK=$(echo "$RESPONSE_TEXT" | grep -ciE '(:\s*Not tested|\|\s*Not tested)' 2>/dev/null || echo "0")
         echo "check-tester: secondary validation: High=$CONF_CHECK Partial=$PARTIAL_CHECK NotTested=$NOT_TESTED_CHECK" >&2
     fi
 else
@@ -204,16 +209,34 @@ NOT_TESTED_LINES=""
 WHITELISTED_COUNT=0
 
 if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]] && echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
+    # --- Extract Verification Assessment section for secondary validation ---
+    # Tester summaries include test descriptions mentioning keywords like
+    # "Medium confidence" or "Partially verified" as test case names. Scoping
+    # validation to the Verification Assessment section eliminates false positives.
+    # See DEC-AV-SECTION-001 in post-task.sh for full rationale.
+    # grep returns exit 1 when no match — || true prevents set -e from killing the script.
+    _CT_VA_START=$(echo "$RESPONSE_TEXT" | grep -n -E '^#{1,3} Verification Assessment' | head -1 | cut -d: -f1 || true)
+    if [[ -n "$_CT_VA_START" ]]; then
+        # Extract from VA heading to EOF. Sub-headings within VA (e.g., "## Confidence: High",
+        # "### Coverage") belong to the assessment and must be included. Stopping at the first
+        # subsequent "##" heading would incorrectly truncate VA sub-headings.
+        _CT_VALIDATION_TEXT=$(echo "$RESPONSE_TEXT" | tail -n +"${_CT_VA_START}")
+        echo "check-tester: extracted Verification Assessment section (${#_CT_VALIDATION_TEXT} chars) for secondary validation" >&2
+    else
+        _CT_VALIDATION_TEXT="$RESPONSE_TEXT"
+        echo "check-tester: no Verification Assessment section found — using full response for validation" >&2
+    fi
+
     # Secondary validation — reject false claims
-    # Must have High confidence (markdown bold)
-    echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
+    # Must have High confidence (markdown bold or plain-text formats)
+    echo "$_CT_VALIDATION_TEXT" | grep -qiE '(\*\*High\*\*|[Cc]onfidence:?\s*High|High confidence)' || AV_FAIL=true
     # Must NOT have "Partially verified" in coverage
-    echo "$RESPONSE_TEXT" | grep -qi 'Partially verified' && AV_FAIL=true
+    echo "$_CT_VALIDATION_TEXT" | grep -qi 'Partially verified' && AV_FAIL=true
     # Must NOT have non-environmental "Not tested" entries.
     # Environmental gaps (browser viewport, screen reader, physical device, etc.)
     # are whitelisted — they cannot be tested in a headless CLI context and do not
     # indicate incomplete verification of the feature under test.
-    NOT_TESTED_LINES=$(echo "$RESPONSE_TEXT" | grep -i 'Not tested' || true)
+    NOT_TESTED_LINES=$(echo "$_CT_VALIDATION_TEXT" | grep -iE '(:\s*Not tested|\|\s*Not tested)' || true)
     if [[ -n "$NOT_TESTED_LINES" ]]; then
         ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
         NON_ENV_LINES=$(echo "$NOT_TESTED_LINES" | grep -iv "$ENV_PATTERN" || true)
@@ -221,24 +244,13 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
             AV_FAIL=true
         fi
     fi
-    # Must NOT have Medium or Low confidence
-    echo "$RESPONSE_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*' && AV_FAIL=true
+    # Must NOT have Medium or Low confidence (markdown bold or plain-text formats)
+    echo "$_CT_VALIDATION_TEXT" | grep -qiE '(\*\*(Medium|Low)\*\*|[Cc]onfidence:?\s*(Medium|Low)|(Medium|Low) confidence)' && AV_FAIL=true
 
     if [[ "$AV_FAIL" == "false" ]]; then
         ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
         WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
-        echo "verified|$(date +%s)" > "$PROOF_FILE"
-        # Dual-write: keep orchestrator's scoped and legacy copies in sync so guard.sh
-        # can find it regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
-        _PHASH=$(project_hash "$PROJECT_ROOT")
-        ORCH_SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-        ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
-        if [[ "$PROOF_FILE" != "$ORCH_SCOPED_PROOF" ]]; then
-            echo "verified|$(date +%s)" > "$ORCH_SCOPED_PROOF"
-        fi
-        if [[ "$PROOF_FILE" != "$ORCH_PROOF" && "$ORCH_SCOPED_PROOF" != "$ORCH_PROOF" ]]; then
-            echo "verified|$(date +%s)" > "$ORCH_PROOF"
-        fi
+        write_proof_status "verified" "$PROJECT_ROOT"
         AUTO_VERIFIED=true
     fi
 fi
@@ -296,9 +308,25 @@ EOF
     exit 0
 fi
 
+fi # end CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY gate
+
 # ============================================================================
 # PHASE 2 — Advisory work (runs only when not auto-verified)
 # ============================================================================
+
+# Ensure Phase 2 variables are initialized even when Phase 1 gate is disabled.
+# When CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY is unset, PROOF_FILE/PROOF_STATUS/RESPONSE_TEXT
+# were never defined above — initialize them here so Phase 2 logic is safe.
+if [[ -z "${PROOF_FILE:-}" ]]; then
+    PROOF_FILE=$(resolve_proof_file)
+    PROOF_STATUS="missing"
+    if [[ -f "$PROOF_FILE" ]]; then
+        PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+    fi
+fi
+if [[ -z "${RESPONSE_TEXT+x}" ]]; then
+    RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
+fi
 
 # Safety net (DEC-TESTER-003): if proof-status is missing and RESPONSE_TEXT is
 # non-empty, auto-write "pending" so the manual approval flow can proceed.
@@ -455,18 +483,6 @@ fi
 # Fix 2 (DEC-TESTER-004): runs AFTER Check 3 so auto-capture cannot defeat
 # the completeness gate. Auto-capture here is for archival purposes only.
 if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
-    # --- Observatory Phase 1: Snapshot pre-capture artifact existence ---
-    # @decision DEC-OBS-V2-001
-    # @title Snapshot artifact existence before auto-capture for compliance attribution
-    # @status accepted
-    # @rationale The observatory needs to know whether agents wrote artifacts themselves
-    #   or whether the check hook had to reconstruct them. Snapshotting before auto-capture
-    #   is the only reliable way to make this distinction.
-    TESTER_PRE_VERIFICATION_OUTPUT=false
-    TESTER_PRE_SUMMARY=false
-    [[ -f "$TRACE_DIR/artifacts/verification-output.txt" ]] && TESTER_PRE_VERIFICATION_OUTPUT=true
-    [[ -f "$TRACE_DIR/summary.md" ]] && TESTER_PRE_SUMMARY=true
-
     # Auto-capture verification-output.txt from response text if agent didn't write it.
     # The tester's response IS the verification evidence — capturing it here ensures
     # the trace archive is complete for observability purposes.
@@ -485,29 +501,6 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
         ISSUES+=("Trace artifact missing: verification-output.txt — tester should capture live feature output")
     fi
 
-    # --- Observatory Phase 1: Write compliance.json after auto-capture ---
-    _vo_present=false; _vo_source="null"
-    _sm_tester_present=false; _sm_tester_source="null"
-
-    [[ -f "$TRACE_DIR/artifacts/verification-output.txt" ]] && _vo_present=true
-    [[ -f "$TRACE_DIR/summary.md" ]] && _sm_tester_present=true
-
-    $_vo_present && { $TESTER_PRE_VERIFICATION_OUTPUT && _vo_source='"agent"' || _vo_source='"auto-capture"'; }
-    $_sm_tester_present && { $TESTER_PRE_SUMMARY && _sm_tester_source='"agent"' || _sm_tester_source='"auto-capture"'; }
-
-    cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_TESTER_EOF
-{
-  "agent_type": "tester",
-  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "artifacts": {
-    "summary.md": {"present": $_sm_tester_present, "source": $_sm_tester_source},
-    "verification-output.txt": {"present": $_vo_present, "source": $_vo_source}
-  },
-  "test_result": "not-provided",
-  "test_result_source": null,
-  "issues_count": 0
-}
-COMPLIANCE_TESTER_EOF
 fi
 
 # Response size advisory
@@ -555,8 +548,12 @@ EOF
 elif [[ "$PROOF_STATUS" == "pending" ]]; then
     # Auto-verify was attempted above but AV_FAIL was set.
     # Check if AUTOVERIFY signal was present but failed secondary validation.
+    # Only log rejection if Phase 1 was enabled — otherwise post-task.sh handles auto-verify
+    # and logging rejection here would be misleading (auto-verify was never attempted here).
     if echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
-        append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
+        if [[ "${CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY:-}" == "true" ]]; then
+            append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
+        fi
     fi
     DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
     ESCAPED=$(printf '%s\n\n%s' "$CONTEXT" "$DIRECTIVE" | jq -Rs .)

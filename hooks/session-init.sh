@@ -409,6 +409,27 @@ ${line}"
         CONTEXT_PARTS=("${PRIORITY_CONTEXT[@]}" "${CONTEXT_PARTS[@]}")
     fi
 
+    # --- Plan file anchor injection (B2) ---
+    # @decision DEC-BUDGET-001
+    # @title Inject plan file anchor from preserved context into post-compaction session
+    # @status accepted
+    # @rationale compact-preserve.sh writes "PLAN FILE: <path>" when a recently-modified
+    #   plan exists. Re-injecting it here as a high-priority context part ensures the
+    #   post-compaction session knows exactly where to read its implementation plan.
+    #   Pattern B ([[ =~ ]]) avoids grep-in-loop SIGPIPE; `_` prefix avoids namespace
+    #   pollution. Scanning the preserve file before it is renamed keeps the logic simple.
+    _PLAN_ANCHOR_PATH=""
+    while IFS= read -r _pa_line; do
+        if [[ "$_pa_line" =~ ^PLAN\ FILE:\ (.*) ]]; then
+            _PLAN_ANCHOR_PATH="${BASH_REMATCH[1]}"
+            break
+        fi
+    done < "$PRESERVE_FILE"
+
+    if [[ -n "$_PLAN_ANCHOR_PATH" ]]; then
+        CONTEXT_PARTS+=("POST-COMPACTION: Your implementation plan is at $_PLAN_ANCHOR_PATH. Read it before proceeding — it contains your detailed approach, file paths, and reasoning.")
+    fi
+
     # Inject remaining metadata (everything except header comments and resume block)
     _in_resume=false
     _saw_resume=false
@@ -428,8 +449,26 @@ ${line}"
         CONTEXT_PARTS+=("  $line")
     done < "$PRESERVE_FILE"
 
-    # One-time use: remove after injecting so it doesn't persist across sessions
-    rm -f "$PRESERVE_FILE"
+    # --- Compaction forensics logging (B3) ---
+    # @decision DEC-BUDGET-003
+    # @title Compaction forensics log for post-mortem analysis of context loss
+    # @status accepted
+    # @rationale Instead of deleting the preserve file, renaming it to .last
+    #   lets us inspect what was preserved after the fact. The .compaction-log
+    #   accumulates a structured record (one line per compaction event) that can
+    #   be used to diagnose context loss patterns. Format: pipe-delimited for easy
+    #   parsing with cut/awk. `_` prefix avoids namespace pollution.
+    _PRESERVE_LAST="${PRESERVE_FILE}.last"
+    mv "$PRESERVE_FILE" "$_PRESERVE_LAST"
+
+    _COMPACTION_LOG="${CLAUDE_DIR}/.compaction-log"
+    _CL_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)
+    _CL_LINES=$(wc -l < "$_PRESERVE_LAST" | tr -d ' ')
+    _CL_HAS_RESUME="no"
+    [[ -n "$RESUME_BLOCK" ]] && _CL_HAS_RESUME="yes"
+    _CL_HAS_PLAN="no"
+    [[ -n "$_PLAN_ANCHOR_PATH" ]] && _CL_HAS_PLAN="$_PLAN_ANCHOR_PATH"
+    echo "${_CL_TIMESTAMP}|${_CL_LINES}|${_CL_HAS_RESUME}|${_CL_HAS_PLAN}" >> "$_COMPACTION_LOG"
 fi
 
 # --- Stale session files ---

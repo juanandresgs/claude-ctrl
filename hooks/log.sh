@@ -200,5 +200,41 @@ resolve_proof_file() {
     fi
 }
 
+# write_proof_status — atomically write status to all proof-status paths.
+#
+# Writes to: worktree proof-status (resolve_proof_file), orchestrator scoped
+# (.proof-status-{phash}), and orchestrator legacy (.proof-status) so guard.sh
+# can find the status regardless of which path it checks.
+#
+# Usage: write_proof_status "verified" [project_root]
+#
+# @decision DEC-PROOF-WRITE-001
+# @title Centralized write_proof_status() in log.sh
+# @status accepted
+# @rationale Triple-write blocks (proof-status + scoped + legacy) appeared in
+#   post-task.sh, check-tester.sh, and prompt-submit.sh with identical logic.
+#   Centralizing in log.sh eliminates duplication and ensures all callers write
+#   to all three paths consistently. Issue #150 hardening.
+write_proof_status() {
+    local status="$1"
+    local project_root="${2:-$(detect_project_root)}"
+    local ts
+    ts=$(date +%s)
+    local payload="${status}|${ts}"
+    local proof_file
+    proof_file=$(resolve_proof_file)
+    local claude_dir
+    claude_dir=$(get_claude_dir)
+    local phash
+    phash=$(project_hash "$project_root")
+    local scoped="${claude_dir}/.proof-status-${phash}"
+    local legacy="${claude_dir}/.proof-status"
+    mkdir -p "$(dirname "$proof_file")"
+    echo "$payload" > "$proof_file"
+    [[ "$proof_file" != "$scoped" ]] && echo "$payload" > "$scoped"
+    [[ "$proof_file" != "$legacy" && "$scoped" != "$legacy" ]] && echo "$payload" > "$legacy"
+    log_info "PROOF" "write_proof_status: ${status} → ${proof_file}"
+}
+
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file
+export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file write_proof_status

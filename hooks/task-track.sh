@@ -160,22 +160,30 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
         fi
     fi
 
-    # Initialize tester trace so post-task.sh can find it via detect_active_trace().
-    # SubagentStart (which normally calls init_trace) doesn't fire (DEC-CACHE-003),
-    # so init_trace() for testers never runs via the normal path.
-    # Gate C already initializes implementer traces — this mirrors that pattern for testers.
-    # post-task.sh reads the .active-tester-* marker to locate summary.md for auto-verify.
+    # NOTE: tester trace initialization removed (DEC-AV-DUAL-002).
+    # SubagentStart fires reliably for testers and creates the authoritative trace.
+    # task-track.sh's init_trace created a competing trace with the orchestrator's
+    # session_id, but the tester writes summary.md to the SubagentStart trace
+    # (different session_id). This caused post-task.sh to find the wrong trace.
+    # The active marker is now created by subagent-start.sh's init_trace.
+    # If SubagentStart stops firing in the future, re-enable this block.
+    # See also: DEC-AV-RACE-001 (session-based fallback in post-task.sh)
+    # and DEC-AV-DUAL-001 (project-scoped summary scan as final fallback).
     #
-    # @decision DEC-PROOF-LIFE-004
-    # @title Initialize tester trace in task-track.sh (PreToolUse:Task) for post-task.sh breadcrumb
+    # @decision DEC-AV-DUAL-002
+    # @title Remove duplicate tester trace init from task-track.sh
     # @status accepted
-    # @rationale SubagentStart doesn't fire (DEC-CACHE-003), so init_trace() for testers
-    #   never runs. post-task.sh needs the .active-tester-* marker to find summary.md.
-    #   Gate C already initializes implementer traces — this mirrors that pattern for testers.
-    TESTER_TRACE_ID=$(init_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
-    if [[ -n "$TESTER_TRACE_ID" ]]; then
-        log_info "TASK-TRACK" "initialized tester trace=${TESTER_TRACE_ID}"
-    fi
+    # @rationale SubagentStart fires reliably for testers (proven by e2e evidence)
+    #   and initializes the authoritative trace with the subagent's session_id.
+    #   task-track.sh was creating a competing trace with the orchestrator's session_id,
+    #   causing post-task.sh to find the wrong trace (no summary.md). Removing the
+    #   duplicate eliminates the confusion. The DEC-AV-DUAL-001 project-scoped scan
+    #   in post-task.sh provides resilience if SubagentStart regresses.
+    #
+    # DISABLED: TESTER_TRACE_ID=$(init_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
+    # DISABLED: if [[ -n "$TESTER_TRACE_ID" ]]; then
+    # DISABLED:     log_info "TASK-TRACK" "initialized tester trace=${TESTER_TRACE_ID}"
+    # DISABLED: fi
 fi
 
 # --- Gate C: Implementer dispatch activates proof gate ---

@@ -17,6 +17,14 @@ TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$TEST_DIR/.." && pwd)"
 HOOKS_DIR="$PROJECT_ROOT/hooks"
 
+# Enable SubagentStop auto-verify for all tests in this file.
+# check-tester.sh gates Phase 1 (SubagentStop auto-verify) behind this env var
+# since post-task.sh (PostToolUse:Task) is now the primary auto-verify path.
+# Tests in this file specifically exercise the Phase 1 SubagentStop path —
+# the env var must be set so the gate is open during testing.
+# See DEC-PROOF-LIFE-001 and the CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY gate in check-tester.sh.
+export CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true
+
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 

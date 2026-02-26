@@ -144,18 +144,7 @@ if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+goo
     if [[ -f "$PROOF_FILE" ]]; then
         CURRENT_STATUS=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null)
         if [[ "$CURRENT_STATUS" == "pending" || "$CURRENT_STATUS" == "needs-verification" ]]; then
-            echo "verified|$(date +%s)" > "$PROOF_FILE"
-            # Dual-write: keep orchestrator's scoped copy in sync so guard.sh can find it.
-            # Write to project-scoped file (.proof-status-{phash}) and legacy file for compat.
-            _PHASH=$(project_hash "$PROJECT_ROOT")
-            ORCH_SCOPED_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-            ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
-            if [[ "$PROOF_FILE" != "$ORCH_SCOPED_PROOF" ]]; then
-                echo "verified|$(date +%s)" > "$ORCH_SCOPED_PROOF"
-            fi
-            if [[ "$PROOF_FILE" != "$ORCH_PROOF" && "$ORCH_SCOPED_PROOF" != "$ORCH_PROOF" ]]; then
-                echo "verified|$(date +%s)" > "$ORCH_PROOF"
-            fi
+            write_proof_status "verified" "$PROJECT_ROOT"
             CONTEXT_PARTS+=("Proof-of-work verified by user. Guardian dispatch is now unblocked.")
         fi
     fi
