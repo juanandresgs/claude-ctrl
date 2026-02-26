@@ -12,6 +12,7 @@ allowed-tools:
   - AskUserQuestion
   - Write
 argument-hint: "<feature or problem description>"
+visibility: public
 ---
 
 # PRD Skill

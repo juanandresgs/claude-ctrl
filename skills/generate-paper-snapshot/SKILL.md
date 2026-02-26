@@ -2,6 +2,7 @@
 name: generate-paper-snapshot
 description: Generate a high-fidelity PaperSnapshot JSON for a paper in the LLM Study Guide curriculum. Extracts verbatim quotes, document structure, coverage map, argument flow, and editorial assessment.
 argument-hint: "[paper-slug] e.g. attention-is-all-you-need"
+visibility: private
 context: fork
 agent: general-purpose
 allowed-tools:

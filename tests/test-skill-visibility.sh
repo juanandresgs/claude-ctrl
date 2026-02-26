@@ -255,6 +255,181 @@ else
 fi
 echo "========================================="
 
+# ============================================================================
+# Frontmatter Visibility Tests (Part 2)
+# Verifies that all skills and agents have the correct visibility declarations.
+# ============================================================================
+
+echo ""
+echo "--- Frontmatter visibility checks ---"
+
+# Helper: extract visibility from a SKILL.md or agent .md frontmatter
+get_frontmatter_visibility() {
+    local file="$1"
+    local in_frontmatter=0
+    local fm_count=0
+    local visibility=""
+
+    while IFS= read -r line; do
+        if [[ "$line" == "---" ]]; then
+            fm_count=$((fm_count + 1))
+            if [[ $fm_count -eq 1 ]]; then
+                in_frontmatter=1
+                continue
+            elif [[ $fm_count -ge 2 ]]; then
+                break
+            fi
+        fi
+        if [[ $in_frontmatter -eq 1 && "$line" =~ ^visibility:[[:space:]]*(.*) ]]; then
+            visibility="${BASH_REMATCH[1]}"
+            break
+        fi
+    done < "$file"
+
+    echo "$visibility"
+}
+
+test_public_skills_have_correct_frontmatter() {
+    run_test "Public skills have visibility: public in frontmatter"
+    local expected_public=(
+        "consume-content"
+        "context-preservation"
+        "decide"
+        "deep-research"
+        "diagnose"
+        "prd"
+        "rewind"
+        "last30days"
+    )
+    local all_pass=1
+    for skill in "${expected_public[@]}"; do
+        local skill_file="$PROJECT_ROOT/skills/$skill/SKILL.md"
+        if [[ ! -f "$skill_file" ]]; then
+            echo "    WARN: $skill_file not found — skipping"
+            continue
+        fi
+        local vis
+        vis="$(get_frontmatter_visibility "$skill_file")"
+        if [[ "$vis" != "public" ]]; then
+            fail_test "skills/$skill: expected visibility=public, got '${vis:-<empty>}'"
+            all_pass=0
+        fi
+    done
+    if [[ $all_pass -eq 1 ]]; then
+        pass_test
+    fi
+}
+
+test_private_skills_have_correct_frontmatter() {
+    run_test "Private skills have visibility: private in frontmatter"
+    local expected_private=(
+        "architect"
+        "bazaar"
+        "observatory"
+        "uplevel"
+        "generate-paper-snapshot"
+    )
+    local all_pass=1
+    for skill in "${expected_private[@]}"; do
+        local skill_file="$PROJECT_ROOT/skills/$skill/SKILL.md"
+        if [[ ! -f "$skill_file" ]]; then
+            echo "    WARN: $skill_file not found — skipping"
+            continue
+        fi
+        local vis
+        vis="$(get_frontmatter_visibility "$skill_file")"
+        if [[ "$vis" != "private" && -n "$vis" ]]; then
+            fail_test "skills/$skill: expected visibility=private or empty, got '$vis'"
+            all_pass=0
+        fi
+    done
+    if [[ $all_pass -eq 1 ]]; then
+        pass_test
+    fi
+}
+
+test_agents_have_public_frontmatter() {
+    run_test "All agents have visibility: public in frontmatter"
+    local expected_agents=("planner" "implementer" "tester" "guardian")
+    local all_pass=1
+    for agent in "${expected_agents[@]}"; do
+        local agent_file="$PROJECT_ROOT/agents/$agent.md"
+        if [[ ! -f "$agent_file" ]]; then
+            fail_test "agents/$agent.md not found"
+            all_pass=0
+            continue
+        fi
+        local vis
+        vis="$(get_frontmatter_visibility "$agent_file")"
+        if [[ "$vis" != "public" ]]; then
+            fail_test "agents/$agent.md: expected visibility=public, got '${vis:-<empty>}'"
+            all_pass=0
+        fi
+    done
+    if [[ $all_pass -eq 1 ]]; then
+        pass_test
+    fi
+}
+
+test_visibility_yaml_exists_and_valid() {
+    run_test "VISIBILITY.yaml exists and has required structure"
+    local vis_file="$PROJECT_ROOT/VISIBILITY.yaml"
+
+    if [[ ! -f "$vis_file" ]]; then
+        fail_test "VISIBILITY.yaml not found at $vis_file"
+        return
+    fi
+
+    if ! grep -q "^public:" "$vis_file"; then
+        fail_test "VISIBILITY.yaml missing top-level 'public:' key"
+        return
+    fi
+
+    pass_test
+}
+
+test_visibility_yaml_categories() {
+    run_test "VISIBILITY.yaml contains required category sections"
+    local vis_file="$PROJECT_ROOT/VISIBILITY.yaml"
+    [[ ! -f "$vis_file" ]] && { fail_test "VISIBILITY.yaml not found"; return; }
+
+    local all_pass=1
+    for cat in hooks tests agents config commands; do
+        if ! grep -q "^  ${cat}:" "$vis_file"; then
+            fail_test "VISIBILITY.yaml missing '$cat:' category"
+            all_pass=0
+        fi
+    done
+    if [[ $all_pass -eq 1 ]]; then
+        pass_test
+    fi
+}
+
+test_visibility_yaml_no_private_leaks() {
+    run_test "VISIBILITY.yaml does not list known-private items in public section"
+    local vis_file="$PROJECT_ROOT/VISIBILITY.yaml"
+    [[ ! -f "$vis_file" ]] && { fail_test "VISIBILITY.yaml not found"; return; }
+
+    local all_pass=1
+    local private_items=("todo.sh" "community-check.sh" "MASTER_PLAN.md")
+    for item in "${private_items[@]}"; do
+        if grep -q "^    - ${item}" "$vis_file"; then
+            fail_test "$item should be private but appears in public list"
+            all_pass=0
+        fi
+    done
+    if [[ $all_pass -eq 1 ]]; then
+        pass_test
+    fi
+}
+
+test_public_skills_have_correct_frontmatter
+test_private_skills_have_correct_frontmatter
+test_agents_have_public_frontmatter
+test_visibility_yaml_exists_and_valid
+test_visibility_yaml_categories
+test_visibility_yaml_no_private_leaks
+
 if [[ $TESTS_FAILED -eq 0 ]]; then
     echo -e "${GREEN}All tests passed!${NC}"
     exit 0

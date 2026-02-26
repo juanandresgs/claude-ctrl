@@ -18,6 +18,7 @@ description: |
   </example>
 model: opus
 color: blue
+visibility: public
 ---
 
 <!--

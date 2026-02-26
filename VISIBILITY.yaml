@@ -1,0 +1,61 @@
+# VISIBILITY.yaml — component visibility registry
+#
+# Components not listed here default to PRIVATE.
+# Only components explicitly marked 'public' are exported to claude-ctrl.
+#
+# Skills and agents declare visibility in their own frontmatter (SKILL.md / agent .md).
+# This file governs everything else: scripts, hooks, docs, configs, directories.
+
+public:
+  hooks:
+    - guard.sh
+    - log.sh
+    - source-lib.sh
+    - context-lib.sh
+    - session-init.sh
+    - session-end.sh
+    - session-summary.sh
+    - prompt-submit.sh
+    - task-track.sh
+    - post-task.sh
+    - check-tester.sh
+    - check-guardian.sh
+    - check-implementer.sh
+    - check-planner.sh
+    - compact-preserve.sh
+    - subagent-start.sh
+    - state-registry.sh
+    - track.sh
+    - skill-result.sh
+    - HOOKS.md
+  tests:
+    - run-hooks.sh
+    - test-auto-verify.sh
+    - test-post-task-autoverify.sh
+    - test-guard.sh
+    - test-guard-check5-spaces.sh
+    - test-trace-orphan-fix.sh
+    - test-skill-visibility.sh
+    - test-compaction-survival.sh
+    - fixtures/              # entire directory
+  agents:
+    # agents declare in frontmatter, but listed here for completeness
+    - planner.md
+    - implementer.md
+    - tester.md
+    - guardian.md
+  config:
+    - settings.json
+    - CLAUDE.md
+    - CHANGELOG.md
+    - README.md
+    - ARCHITECTURE.md
+    - .gitignore
+  commands:
+    - compact.md
+    - backlog.md
+
+# Everything NOT listed above (or without `visibility: public` frontmatter) is private.
+# This includes: scripts/todo.sh, scripts/community-check.sh, observatory/,
+# MASTER_PLAN.md, archived-plans/, settings-legacy.json, settings-metanoia.json,
+# hooks/pre-bash.sh, hooks/pre-write.sh, hooks/post-write.sh, docs/, etc.

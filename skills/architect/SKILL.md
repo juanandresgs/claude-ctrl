@@ -2,6 +2,7 @@
 name: architect
 description: Content-agnostic structural analysis — maps any codebase, document set, or folder into Mermaid diagrams, per-module documentation, and a reusable manifest.
 argument-hint: "[path] [--research] [--analytics] [--depth essentials|deep] [--output path]"
+visibility: private
 context: fork
 agent: general-purpose
 allowed-tools: Bash, Read, Write, Glob, Grep, WebSearch, Task, AskUserQuestion

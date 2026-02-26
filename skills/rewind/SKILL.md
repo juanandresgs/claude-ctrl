@@ -1,6 +1,7 @@
 ---
 name: rewind
 description: List and restore to a named checkpoint from the current session. Use when the agent has gone off track and you need to recover to a previous good state.
+visibility: public
 ---
 
 # /rewind — Session Checkpoint Recovery

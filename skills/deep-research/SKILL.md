@@ -2,6 +2,7 @@
 name: deep-research
 description: Multi-model deep research with comparative assessment (OpenAI + Perplexity + Gemini). Queries 3 deep research providers in parallel and produces a comparative synthesis.
 argument-hint: "[research topic or question]"
+visibility: public
 context: fork
 agent: general-purpose
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch

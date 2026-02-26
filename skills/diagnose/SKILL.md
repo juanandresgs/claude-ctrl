@@ -1,6 +1,7 @@
 ---
 name: diagnose
 description: Validate hook integrity, state file consistency, and system health for the ~/.claude configuration.
+visibility: public
 context: fork
 agent: general-purpose
 allowed-tools:

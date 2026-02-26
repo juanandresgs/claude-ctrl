@@ -2,6 +2,7 @@
 name: consume-content
 description: Produce a faithful content-snapshot of any source material (article, report, PDF, advisory) with verbatim quotes, structural transparency, and labeled editorial.
 argument-hint: "[URL, PDF path, or file path]"
+visibility: public
 context: fork
 agent: general-purpose
 allowed-tools:

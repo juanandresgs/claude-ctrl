@@ -2,6 +2,7 @@
 name: observatory
 description: Self-improving system observatory — analyzes traces, surfaces compliance metrics, tracks convergence.
 argument-hint: "[run | report | status]"
+visibility: private
 context: fork
 agent: general-purpose
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion

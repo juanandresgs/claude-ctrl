@@ -2,6 +2,7 @@
 name: decide
 description: Generate an interactive decision configurator from research or plan analysis. Presents options as explorable cards with trade-offs, costs, and filtering. Integrates with Planner to collect DEC-ID decisions.
 argument-hint: "[topic, research path, or 'plan' to use current plan context]"
+visibility: public
 context: fork
 agent: general-purpose
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion

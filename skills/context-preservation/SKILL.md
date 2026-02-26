@@ -1,6 +1,7 @@
 ---
 name: context-preservation
 description: Generate structured context summaries for session continuity across compaction
+visibility: public
 ---
 
 # Context Preservation Skill

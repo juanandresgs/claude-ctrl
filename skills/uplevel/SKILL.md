@@ -2,6 +2,7 @@
 name: uplevel
 description: Comprehensive repository health audit — security, docs, code quality, staleness, testing, standards. Produces scored report and GitHub Issues.
 argument-hint: "[--quick] [--area security,docs,quality,staleness,testing,standards] [--fix] [--project /path]"
+visibility: private
 context: fork
 agent: general-purpose
 allowed-tools: Bash, Read, Write, Glob, Grep, WebSearch, Task, AskUserQuestion

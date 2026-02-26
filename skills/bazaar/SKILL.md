@@ -2,6 +2,7 @@
 name: bazaar
 description: Competitive analytical marketplace — diverse ideation, judicial funding, obsessive research, analyst translation, market-proportional report
 argument-hint: "[analytical question or scenario to explore]"
+visibility: private
 context: fork
 agent: general-purpose
 allowed-tools: Bash, Read, Write, Task, AskUserQuestion, WebSearch, WebFetch
