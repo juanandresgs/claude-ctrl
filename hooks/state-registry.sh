@@ -110,4 +110,8 @@ STATE_REGISTRY=(
     ".test-runner.out|per-session|test-runner.sh|Async test runner stdout/stderr capture"
     ".test-runner-last-run|per-project|test-runner.sh|Epoch of last test run (for debounce)"
     ".test-runner-lock|per-session|test-runner.sh|Lock file preventing concurrent test runs"
+
+    # --- Compaction forensics (B3) ---
+    ".preserved-context.last|per-project|session-init.sh|Renamed preserved-context for post-mortem inspection (B3)"
+    ".compaction-log|per-project|session-init.sh|Structured compaction event log: timestamp|lines|has_resume|has_plan (B3)"
 )

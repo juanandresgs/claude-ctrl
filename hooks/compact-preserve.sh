@@ -81,6 +81,52 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
     CONTEXT_PARTS+=("$PLAN_LINE")
 fi
 
+# --- Plan file anchor (B2) ---
+# @decision DEC-BUDGET-001
+# @title Plan file as compaction anchor for post-compaction context continuity
+# @status accepted
+# @rationale After compaction, Claude loses its detailed implementation approach.
+#   Storing the plan file path and a 20-line preview in the preserved context
+#   file gives the post-compaction session an actionable anchor: it knows exactly
+#   where to read to resume work. Modification-time gating (2h) ensures we only
+#   anchor to plans that were actively in use this session, not stale plans from
+#   prior work. Uses `_` prefix convention per namespace pollution rules.
+_PLAN_FILE_ANCHOR=""
+for _plan_candidate in \
+    "$PROJECT_ROOT/plans/"*.md \
+    "$PROJECT_ROOT/plan.md" \
+    "$PROJECT_ROOT/PLAN.md"; do
+    # glob may not match anything — skip if not a real file
+    [[ ! -f "$_plan_candidate" ]] && continue
+    # Check modification time: within last 2 hours (7200 seconds)
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _plan_mtime=$(stat -f %m "$_plan_candidate" 2>/dev/null || echo "0")
+    else
+        _plan_mtime=$(stat -c %Y "$_plan_candidate" 2>/dev/null || echo "0")
+    fi
+    _now=$(date +%s)
+    _age=$(( _now - _plan_mtime ))
+    if [[ "$_age" -le 7200 ]]; then
+        _PLAN_FILE_ANCHOR="$_plan_candidate"
+        break
+    fi
+done
+
+if [[ -n "$_PLAN_FILE_ANCHOR" ]]; then
+    CONTEXT_PARTS+=("PLAN FILE: $_PLAN_FILE_ANCHOR")
+    CONTEXT_PARTS+=("READ THIS FILE after compaction — it contains your detailed implementation approach.")
+    # Preview: first 20 lines, each prefixed with two spaces (Pattern B: [[ =~ ]] not grep)
+    _plan_preview_lines=()
+    _plan_line_num=0
+    while IFS= read -r _plan_line && [[ "$_plan_line_num" -lt 20 ]]; do
+        _plan_preview_lines+=("  $_plan_line")
+        _plan_line_num=$(( _plan_line_num + 1 ))
+    done < "$_PLAN_FILE_ANCHOR"
+    for _preview_line in "${_plan_preview_lines[@]}"; do
+        CONTEXT_PARTS+=("$_preview_line")
+    done
+fi
+
 # --- Session file changes ---
 get_session_changes "$PROJECT_ROOT"
 
@@ -111,6 +157,46 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
         DECISIONS_LINE=$(printf '%s, ' "${DECISIONS_FOUND[@]:0:5}")
         CONTEXT_PARTS+=("Decisions: ${DECISIONS_LINE%, }")
     fi
+
+    # --- SPECIFICS: concrete breadcrumbs for post-compaction context (B1) ---
+    # @decision DEC-BUDGET-002
+    # @title SPECIFICS section in compact-preserve.sh for concrete breadcrumbs
+    # @status accepted
+    # @rationale Basename-only file lists lose the path context needed to reopen
+    #   files after compaction. Full paths (up to 15) plus git diff --stat for
+    #   non-main branches provide the concrete breadcrumbs a post-compaction
+    #   session needs. Scoped inside the SESSION_FILE block since specifics are
+    #   only meaningful when session changes exist. Pattern A (awk NR<=N) avoids
+    #   SIGPIPE from head in pipelines; `_` prefix avoids namespace pollution.
+    _SPECIFICS_LINES=()
+    _SPECIFICS_LINES+=("SPECIFICS:")
+    _SPECIFICS_LINES+=("  Session files (full paths):")
+
+    # Full paths, up to 15 (Pattern A: awk NR<=15 not pipe to head)
+    _spec_file_count=0
+    while IFS= read -r _spec_path; do
+        [[ -z "$_spec_path" ]] && continue
+        _SPECIFICS_LINES+=("    $_spec_path")
+        _spec_file_count=$(( _spec_file_count + 1 ))
+        [[ "$_spec_file_count" -ge 15 ]] && break
+    done < <(sort -u "$SESSION_FILE")
+
+    # Recent git changes (non-main branch only)
+    _GIT_DIFF_LINES=""
+    if [[ -n "${GIT_BRANCH:-}" && "$GIT_BRANCH" != "main" && "$GIT_BRANCH" != "master" ]]; then
+        _GIT_DIFF_LINES=$(git -C "$PROJECT_ROOT" diff --stat HEAD 2>/dev/null | awk 'NR<=5{print}' || true)
+    fi
+    if [[ -n "$_GIT_DIFF_LINES" ]]; then
+        _SPECIFICS_LINES+=("  Recent git changes:")
+        while IFS= read -r _diff_line; do
+            [[ -z "$_diff_line" ]] && continue
+            _SPECIFICS_LINES+=("    $_diff_line")
+        done <<< "$_GIT_DIFF_LINES"
+    fi
+
+    for _spec_line in "${_SPECIFICS_LINES[@]}"; do
+        CONTEXT_PARTS+=("$_spec_line")
+    done
 fi
 
 # --- Test status ---
