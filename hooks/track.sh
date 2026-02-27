@@ -97,7 +97,22 @@ if [[ -f "$PROOF_FILE" ]]; then
         #   avoid changing the shared library surface for a single call site. Fixes #49.
         _guardian_active=false
         for _gm in "${TRACE_STORE}/.active-guardian-"*; do
-            [[ -f "$_gm" ]] && { _guardian_active=true; break; }
+            if [[ -f "$_gm" ]]; then
+                # TTL guard: ignore markers older than 5 minutes (stale from
+                # crashed sessions or abandoned auto-verify → guardian dispatch).
+                # @decision DEC-TRACK-GUARDIAN-TTL-001
+                # @title TTL guard on guardian markers in track.sh
+                # @status accepted
+                # @rationale Auto-verify pre-creates guardian markers before dispatch.
+                #   If the session crashes or Guardian is never dispatched, the stale
+                #   marker would permanently suppress proof invalidation. 5-minute TTL
+                #   matches staleness thresholds used elsewhere (session-end.sh).
+                _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
+                _now=$(date +%s)
+                if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                    _guardian_active=true; break
+                fi
+            fi
         done
 
         if [[ "$_guardian_active" == "false" ]]; then

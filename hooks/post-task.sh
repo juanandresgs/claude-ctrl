@@ -293,6 +293,24 @@ fi
 # All checks passed — write verified to all three paths
 write_proof_status "verified" "$PROJECT_ROOT"
 
+# Pre-create guardian marker to protect verified status during dispatch window.
+# Between this write and the orchestrator dispatching Guardian, any Write/Edit
+# triggers track.sh proof invalidation (no guardian marker exists yet).
+# Creating the marker HERE closes this race window. task-track.sh Gate A
+# overwrites with "pre-dispatch" (harmless), init_trace() overwrites with
+# trace_id (harmless), finalize_trace() cleans all markers (full lifecycle).
+# @decision DEC-AV-GUARDIAN-MARKER-001
+# @title Pre-create guardian marker on auto-verify to protect verified status
+# @status accepted
+# @rationale Between post-task.sh writing verified and the orchestrator dispatching
+#   Guardian, any Write/Edit triggers track.sh proof invalidation (no guardian marker
+#   exists yet). Pre-creating the marker here closes this window. task-track.sh Gate A
+#   overwrites with "pre-dispatch" (harmless), init_trace() overwrites with trace_id
+#   (harmless), finalize_trace() cleans all markers (full lifecycle).
+_AV_SESSION="${CLAUDE_SESSION_ID:-$$}"
+_AV_PHASH=$(project_hash "$PROJECT_ROOT")
+echo "auto-verified|$(date +%s)" > "${TRACE_STORE}/.active-guardian-${_AV_SESSION}-${_AV_PHASH}"
+
 # Audit trail
 if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then
     append_audit "$PROJECT_ROOT" "auto_verify" "post-task: AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified (${WHITELISTED_COUNT} environmental 'Not tested' item(s) whitelisted)"
