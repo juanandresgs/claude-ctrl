@@ -111,6 +111,36 @@ if [[ -n "$TRACE_ID" ]]; then
         fi
     fi
 
+    # @decision DEC-COMPLIANCE-INIT-001
+    # @title Initialize compliance.json before finalize_trace to prevent read-before-write
+    # @status accepted
+    # @rationale finalize_trace() reads compliance.json to obtain test_result and
+    #   files_changed. In check-guardian.sh, compliance.json is written AFTER
+    #   finalize_trace (post-commit artifact capture). Without initialization, finalize
+    #   reads a missing file and defaults to "not-provided"/0 — but more critically,
+    #   if a previous stale compliance.json exists from a prior trace sharing the same
+    #   directory, finalize reads wrong data. Writing a default before finalize ensures
+    #   the file always has valid guardian-appropriate defaults (no test_result since
+    #   guardians don't run tests). The commit-info.txt capture block updates the file
+    #   after finalize with richer artifact data via a second compliance.json write.
+    if [[ -d "$TRACE_DIR/artifacts" ]]; then
+        _gd_sm_present=false
+        [[ -f "$TRACE_DIR/summary.md" ]] && _gd_sm_present=true
+        cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_GUARDIAN_INIT_EOF
+{
+  "agent_type": "guardian",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_gd_sm_present, "source": "agent"},
+    "commit-info.txt": {"present": false, "source": null}
+  },
+  "test_result": "not-provided",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_GUARDIAN_INIT_EOF
+    fi
+
     # finalize_trace MUST run before advisory checks (get_git_state etc.) to prevent stale markers.
     # See DEC-STALE-MARKER-001: advisory checks can consume the 5s budget before this runs.
     finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "guardian" || true
@@ -172,7 +202,7 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
         # Extract active initiative names for context
         ACTIVE_NAMES=$(grep -E '^\#\#\#\s+Initiative:' "$PLAN" 2>/dev/null | \
             while IFS= read -r hdr; do
-                name=$(echo "$hdr" | sed 's/^###\s*Initiative:\s*//')
+                name="${hdr#*'### Initiative: '}"
                 # Check if this initiative has status: active in the next few lines
                 echo "$name"
             done | head -3 | paste -sd', ' - || echo "")

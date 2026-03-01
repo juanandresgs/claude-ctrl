@@ -169,14 +169,33 @@ case "$AGENT_TYPE" in
             #   the implementer trace context from Project A (the most recently modified trace).
             #   This causes the tester to verify the wrong code. Fix: iterate manifests sorted
             #   by mtime, validate .project == PROJECT_ROOT, use the first match.
-            for _mf in $(ls -t "${TRACE_STORE}"/implementer-*/manifest.json 2>/dev/null); do
-                [[ -f "$_mf" ]] || continue
-                _proj=$(jq -r '.project // empty' "$_mf" 2>/dev/null)
-                if [[ "$_proj" == "$PROJECT_ROOT" ]]; then
-                    IMPL_TRACE=$(basename "$(dirname "$_mf")")
-                    break
-                fi
+            # @decision DEC-ISOLATION-008
+            # @title Use find+null-sort for mtime-ordered glob instead of ls -t
+            # @status accepted
+            # @rationale SC2045: iterating over ls output is fragile (spaces in filenames).
+            #   We collect implementer manifest.json paths via glob (safe, no word-split),
+            #   then sort by mtime using stat to produce the same ordering as ls -t.
+            #   Glob produces an unsorted list; stat-based sort restores recency order.
+            _impl_manifests=()
+            for _g in "${TRACE_STORE}"/implementer-*/manifest.json; do
+                [[ -f "$_g" ]] && _impl_manifests+=("$_g")
             done
+            if [[ ${#_impl_manifests[@]} -gt 0 ]]; then
+                # Sort by mtime descending using stat (cross-platform: macOS -f %m, Linux -c %Y)
+                _stat_fmt="%m"
+                stat -f "$_stat_fmt" /dev/null >/dev/null 2>&1 || _stat_fmt="%Y"
+                while IFS= read -r _mf; do
+                    [[ -f "$_mf" ]] || continue
+                    _proj=$(jq -r '.project // empty' "$_mf" 2>/dev/null)
+                    if [[ "$_proj" == "$PROJECT_ROOT" ]]; then
+                        IMPL_TRACE=$(basename "$(dirname "$_mf")")
+                        break
+                    fi
+                done < <(for _m in "${_impl_manifests[@]}"; do
+                    _mt=$(stat -f "$_stat_fmt" "$_m" 2>/dev/null || stat -c "%Y" "$_m" 2>/dev/null || echo 0)
+                    printf '%s\t%s\n' "$_mt" "$_m"
+                done | sort -rn | cut -f2-)
+            fi
         fi
         if [[ -n "$IMPL_TRACE" ]]; then
             CONTEXT_PARTS+=("Implementer trace: ${TRACE_STORE}/${IMPL_TRACE} — read summary.md and artifacts/ to understand what was built.")
@@ -219,8 +238,7 @@ case "$AGENT_TYPE" in
         # Save HEAD SHA for commit detection in check-guardian.sh (W3-1: commit event emission)
         # check-guardian.sh compares current HEAD against this SHA after Guardian runs
         # to detect whether a commit occurred and emit a `commit` session event.
-        git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null \
-            > "${CLAUDE_DIR}/.guardian-start-sha" 2>/dev/null || true
+        git -C "$PROJECT_ROOT" rev-parse HEAD > "${CLAUDE_DIR}/.guardian-start-sha" 2>/dev/null || true
         # Inject test status
         TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then

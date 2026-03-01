@@ -96,6 +96,39 @@ if [[ -n "$TRACE_ID" ]]; then
         fi
     fi
 
+    # Initialize compliance.json with defaults before finalize_trace runs.
+    # finalize_trace reads compliance.json for test_result; writing defaults here
+    # prevents read-before-write: if the full compliance write (after auto-capture)
+    # is skipped due to timeout, finalize still gets valid defaults rather than
+    # reading a missing or stale file. See DEC-COMPLIANCE-INIT-001.
+    if [[ -d "$TRACE_DIR/artifacts" ]]; then
+        _impl_sm_present=false
+        [[ -f "$TRACE_DIR/summary.md" ]] && _impl_sm_present=true
+        # Detect test_result early from .test-status (will be overwritten after auto-capture)
+        _impl_ts_early="not-provided"
+        for _impl_ts_f in "${CLAUDE_DIR}/.test-status" "$PROJECT_ROOT/.test-status" "$PROJECT_ROOT/.claude/.test-status"; do
+            if [[ -f "$_impl_ts_f" ]]; then
+                _impl_ts_early=$(cut -d'|' -f1 "$_impl_ts_f" 2>/dev/null | tr -d '[:space:]' || echo "not-provided")
+                break
+            fi
+        done
+        cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_IMPL_INIT_EOF
+{
+  "agent_type": "implementer",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_impl_sm_present, "source": "agent"},
+    "test-output.txt": {"present": false, "source": null},
+    "files-changed.txt": {"present": false, "source": null},
+    "diff.patch": {"present": false, "source": null}
+  },
+  "test_result": "$_impl_ts_early",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_IMPL_INIT_EOF
+    fi
+
     # finalize_trace MUST run before auto-capture git commands to prevent stale markers.
     # See DEC-STALE-MARKER-001: if the hook times out during git commands, finalize_trace
     # (and its .active-* marker cleanup) would be silently skipped, permanently blocking
@@ -279,6 +312,7 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
 fi
 
 # Check 4: Test status verification
+# shellcheck disable=SC2153  # TEST_RESULT is set by read_test_status() in core-lib.sh as a global
 if read_test_status "$PROJECT_ROOT"; then
     if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt 1800 ]]; then
         ISSUES+=("Tests failing ($TEST_FAILS failures, ${TEST_AGE}s ago) — implementation not complete")

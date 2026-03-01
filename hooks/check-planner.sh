@@ -77,6 +77,25 @@ if [[ -n "$TRACE_ID" ]]; then
             echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
         fi
     fi
+    # Initialize compliance.json with planner defaults before finalize_trace runs.
+    # See DEC-COMPLIANCE-INIT-001 (check-guardian.sh): finalize_trace reads compliance.json
+    # for test_result. Without initialization, finalize reads a missing/stale file.
+    # Planners don't run tests; their primary artifact is summary.md.
+    _pl_sm_init=false
+    [[ -f "$TRACE_DIR/summary.md" ]] && _pl_sm_init=true
+    cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_PLANNER_INIT_EOF
+{
+  "agent_type": "planner",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_pl_sm_init, "source": "agent"}
+  },
+  "test_result": "not-provided",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_PLANNER_INIT_EOF
+
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "planner"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for planner trace $TRACE_ID"
     fi

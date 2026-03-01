@@ -224,22 +224,40 @@ detect_active_trace() {
     # CLAUDE_SESSION_ID is unavailable: fall back to ls -t (most recent marker).
     # Validate manifest project to avoid cross-project contamination.
     # Log a warning so operators know the session-safe path was bypassed.
-    echo "WARNING: detect_active_trace: CLAUDE_SESSION_ID not set — using ls -t fallback with project validation" >&2
+    echo "WARNING: detect_active_trace: CLAUDE_SESSION_ID not set — using glob fallback with project validation" >&2
+    # @decision DEC-TRACE-GLOB-001
+    # @title Use stat-sorted glob instead of ls -t for active marker iteration
+    # @status accepted
+    # @rationale SC2045: iterating over ls output is fragile. Collect markers via glob
+    #   (safe, no word-split), sort by mtime using stat, then iterate. This preserves
+    #   the recency-first ordering that ls -t provided while avoiding shellcheck violation.
     local mf_path
-    for mf_path in $(ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null); do
-        [[ -f "$mf_path" ]] || continue
-        local fallback_trace_id
-        fallback_trace_id=$(cat "$mf_path" 2>/dev/null)
-        [[ -n "$fallback_trace_id" ]] || continue
-        local fallback_manifest="${TRACE_STORE}/${fallback_trace_id}/manifest.json"
-        [[ -f "$fallback_manifest" ]] || continue
-        local fb_project
-        fb_project=$(jq -r '.project // empty' "$fallback_manifest" 2>/dev/null)
-        if [[ "$fb_project" == "$project_root" ]]; then
-            echo "$fallback_trace_id"
-            return 0
-        fi
+    local _markers=()
+    for mf_path in "${TRACE_STORE}/.active-${agent_type}-"*; do
+        [[ -f "$mf_path" ]] && _markers+=("$mf_path")
     done
+    if [[ ${#_markers[@]} -gt 0 ]]; then
+        local _stat_fmt="%m"
+        stat -f "$_stat_fmt" /dev/null >/dev/null 2>&1 || _stat_fmt="%Y"
+        local _sorted_marker
+        while IFS= read -r _sorted_marker; do
+            [[ -f "$_sorted_marker" ]] || continue
+            local fallback_trace_id
+            fallback_trace_id=$(cat "$_sorted_marker" 2>/dev/null)
+            [[ -n "$fallback_trace_id" ]] || continue
+            local fallback_manifest="${TRACE_STORE}/${fallback_trace_id}/manifest.json"
+            [[ -f "$fallback_manifest" ]] || continue
+            local fb_project
+            fb_project=$(jq -r '.project // empty' "$fallback_manifest" 2>/dev/null)
+            if [[ "$fb_project" == "$project_root" ]]; then
+                echo "$fallback_trace_id"
+                return 0
+            fi
+        done < <(for _m in "${_markers[@]}"; do
+            _mt=$(stat -f "$_stat_fmt" "$_m" 2>/dev/null || stat -c "%Y" "$_m" 2>/dev/null || echo 0)
+            printf '%s\t%s\n' "$_mt" "$_m"
+        done | sort -rn | cut -f2-)
+    fi
 
     return 1
 }
@@ -343,19 +361,107 @@ finalize_trace() {
     #   actionable signals — timeout patterns indicate agent loops; skipped patterns
     #   indicate hook or dispatch failures. Order matters: timeout check uses duration
     #   which is already computed; skipped checks the artifacts dir existence.
+    #
+    # @decision DEC-OBS-OUTCOME-002
+    # @title Agent-type-aware outcome classification
+    # @status accepted
+    # @rationale Non-implementer agents (guardian, tester, planner) don't run test suites,
+    #   so test_result is always "not-provided" for them — making the generic classification
+    #   produce "timeout" or "partial" even on successful runs. Agent-specific signals
+    #   provide accurate outcome detection:
+    #   - Guardian: HEAD SHA change from start → success; no change but no errors → partial;
+    #     conflict/rejection markers in summary → failure
+    #   - Tester: AUTOVERIFY: CLEAN in summary → success; summary present but no AUTOVERIFY
+    #     → partial; verification-output.txt missing → partial
+    #   - Planner: MASTER_PLAN.md modification detected → success; summary present but no
+    #     plan change → partial; long duration with no summary → timeout
+    #   - Implementer: falls through to the original test_result-based classification
     local outcome="unknown"
-    if [[ "$test_result" == "pass" ]]; then
-        outcome="success"
-    elif [[ "$test_result" == "fail" ]]; then
-        outcome="failure"
-    elif [[ "$duration" -gt 600 && "$test_result" == "not-provided" ]]; then
-        outcome="timeout"
-    elif [[ ! -d "${trace_dir}/artifacts" ]]; then
-        outcome="skipped"
-    elif [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
-        outcome="skipped"
+
+    if [[ "$agent_type" == "guardian" ]]; then
+        # Guardian success: HEAD SHA changed (commit occurred)
+        # Check CLAUDE_DIR env var first (set by production hooks), then derive from project.
+        # Using two locations handles both production (CLAUDE_DIR set) and test environments
+        # (CLAUDE_DIR may be a test-scoped temp dir).
+        local _claude_dir_local="${CLAUDE_DIR:-}"
+        [[ -z "$_claude_dir_local" ]] && _claude_dir_local="${project_root}/.claude"
+        local _start_sha_file="${_claude_dir_local}/.guardian-start-sha"
+        local _current_sha=""
+        local _start_sha=""
+        _current_sha=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || echo "")
+        # start-sha file is cleaned by check-guardian.sh after comparison; read if present
+        [[ -f "$_start_sha_file" ]] && _start_sha=$(cat "$_start_sha_file" 2>/dev/null || echo "")
+        local _summary_text=""
+        [[ -f "${trace_dir}/summary.md" ]] && _summary_text=$(cat "${trace_dir}/summary.md" 2>/dev/null || echo "")
+        if [[ -n "$_current_sha" && -n "$_start_sha" && "$_current_sha" != "$_start_sha" ]]; then
+            outcome="success"
+        elif echo "$_summary_text" | grep -qiE 'merge conflict|rejected by guard|guard denied|CONFLICT'; then
+            outcome="failure"
+        elif [[ -n "$_summary_text" && ${#_summary_text} -gt 50 ]]; then
+            outcome="partial"
+        elif [[ "$duration" -gt 600 ]]; then
+            outcome="timeout"
+        elif [[ ! -d "${trace_dir}/artifacts" ]] || [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
+            outcome="skipped"
+        else
+            outcome="partial"
+        fi
+    elif [[ "$agent_type" == "tester" ]]; then
+        # Tester success: AUTOVERIFY: CLEAN in summary (high confidence verification)
+        local _tester_summary=""
+        [[ -f "${trace_dir}/summary.md" ]] && _tester_summary=$(cat "${trace_dir}/summary.md" 2>/dev/null || echo "")
+        if echo "$_tester_summary" | grep -q 'AUTOVERIFY: CLEAN'; then
+            outcome="success"
+        elif [[ -n "$_tester_summary" && ${#_tester_summary} -gt 50 ]]; then
+            # Tester ran but didn't produce high-confidence verification
+            outcome="partial"
+        elif [[ "$duration" -gt 600 ]]; then
+            outcome="timeout"
+        elif [[ ! -d "${trace_dir}/artifacts" ]] || [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
+            outcome="skipped"
+        else
+            outcome="partial"
+        fi
+    elif [[ "$agent_type" == "planner" ]]; then
+        # Planner success: MASTER_PLAN.md was modified during this trace window
+        local _plan_path="${project_root}/MASTER_PLAN.md"
+        local _plan_modified=false
+        if [[ -f "$_plan_path" && -n "$started_at" ]]; then
+            local _plan_mtime
+            _plan_mtime=$(stat -f "%m" "$_plan_path" 2>/dev/null || stat -c "%Y" "$_plan_path" 2>/dev/null || echo 0)
+            local _start_epoch_check
+            _start_epoch_check=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+                || date -u -d "$started_at" +%s 2>/dev/null || echo 0)
+            [[ "$_plan_mtime" -gt "$_start_epoch_check" ]] && _plan_modified=true
+        fi
+        local _planner_summary=""
+        [[ -f "${trace_dir}/summary.md" ]] && _planner_summary=$(cat "${trace_dir}/summary.md" 2>/dev/null || echo "")
+        if [[ "$_plan_modified" == "true" ]]; then
+            outcome="success"
+        elif [[ "$duration" -gt 600 && ${#_planner_summary} -lt 50 ]]; then
+            outcome="timeout"
+        elif [[ -n "$_planner_summary" && ${#_planner_summary} -gt 50 ]]; then
+            outcome="partial"
+        elif [[ ! -d "${trace_dir}/artifacts" ]] || [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
+            outcome="skipped"
+        else
+            outcome="partial"
+        fi
     else
-        outcome="partial"
+        # Implementer and unknown agents: use test_result-based classification
+        if [[ "$test_result" == "pass" ]]; then
+            outcome="success"
+        elif [[ "$test_result" == "fail" ]]; then
+            outcome="failure"
+        elif [[ "$duration" -gt 600 && "$test_result" == "not-provided" ]]; then
+            outcome="timeout"
+        elif [[ ! -d "${trace_dir}/artifacts" ]]; then
+            outcome="skipped"
+        elif [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
+            outcome="skipped"
+        else
+            outcome="partial"
+        fi
     fi
 
     # Check if summary exists; if not, it's likely a crash.

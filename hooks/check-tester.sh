@@ -414,6 +414,29 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
             echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
         fi
     fi
+    # Initialize compliance.json with tester defaults before finalize_trace runs.
+    # See DEC-COMPLIANCE-INIT-001 (check-guardian.sh): finalize_trace reads this file
+    # and must find valid data even when the full compliance write (post auto-capture)
+    # is skipped due to timeout. Testers don't run test suites so test_result is
+    # always "not-provided"; verification evidence is tracked via verification-output.txt.
+    _ts_sm_present=false
+    _ts_vo_present=false
+    [[ -f "$TRACE_DIR/summary.md" ]] && _ts_sm_present=true
+    [[ -f "$TRACE_DIR/artifacts/verification-output.txt" ]] && _ts_vo_present=true
+    cat > "$TRACE_DIR/compliance.json" << COMPLIANCE_TESTER_INIT_EOF
+{
+  "agent_type": "tester",
+  "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "artifacts": {
+    "summary.md": {"present": $_ts_sm_present, "source": "agent"},
+    "verification-output.txt": {"present": $_ts_vo_present, "source": "agent"}
+  },
+  "test_result": "not-provided",
+  "test_result_source": null,
+  "issues_count": 0
+}
+COMPLIANCE_TESTER_INIT_EOF
+
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for tester trace $TRACE_ID"
     fi

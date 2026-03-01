@@ -65,6 +65,35 @@ if [[ "$TOOL_NAME" == "Task" && -z "$SUBAGENT_TYPE" ]]; then
     fi
 fi
 
+# Universal fallback: for any Task tool completion with a known agent type
+# that isn't the tester, attempt to finalize any active trace.
+# This catches edge cases where the SubagentStop hook for the agent type doesn't
+# fire reliably (same root cause as DEC-PROOF-LIFE-001 for tester).
+#
+# @decision DEC-POST-TASK-FALLBACK-001
+# @title Universal PostToolUse:Task trace finalization for non-tester agents
+# @status accepted
+# @rationale SubagentStop does not fire reliably for any agent type. The tester
+#   path above has comprehensive trace finalization. Non-tester agents (implementer,
+#   guardian, planner, or unrecognized types) have no PostToolUse handler — their
+#   traces may not get finalized if SubagentStop is skipped. This fallback detects
+#   any active trace for the completing agent type and calls finalize_trace, ensuring
+#   the observatory gets complete data regardless of hook reliability. The fallback
+#   is a no-op when the active trace was already finalized by SubagentStop.
+if [[ "$TOOL_NAME" == "Task" && "$SUBAGENT_TYPE" != "tester" && -n "$SUBAGENT_TYPE" ]]; then
+    _fb_project_root=$(detect_project_root 2>/dev/null || echo "")
+    if [[ -n "$_fb_project_root" ]]; then
+        _fb_trace_id=$(detect_active_trace "$_fb_project_root" "$SUBAGENT_TYPE" 2>/dev/null || echo "")
+        if [[ -n "$_fb_trace_id" ]]; then
+            log_info "POST-TASK" "fallback: detected active ${SUBAGENT_TYPE} trace ${_fb_trace_id} — finalizing"
+            finalize_trace "$_fb_trace_id" "$_fb_project_root" "$SUBAGENT_TYPE" 2>/dev/null || true
+            log_info "POST-TASK" "fallback: trace finalized for agent_type=${SUBAGENT_TYPE}"
+            append_audit "$_fb_project_root" "post_task_fallback_finalize" \
+                "agent_type=${SUBAGENT_TYPE} trace=${_fb_trace_id}" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # Only act on Task tool completions for the tester subagent
 if [[ "$TOOL_NAME" != "Task" || "$SUBAGENT_TYPE" != "tester" ]]; then
     exit 0

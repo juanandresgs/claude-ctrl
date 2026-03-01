@@ -186,7 +186,8 @@ if [[ "$FILE_PATH" =~ MASTER_PLAN\.md$ ]]; then
             if [[ -n "$INITIATIVE_HEADERS" ]]; then
                 while IFS= read -r init_line; do
                     INIT_LINE_NUM=$(echo "$init_line" | cut -d: -f1)
-                    INIT_NAME=$(echo "$init_line" | sed 's/^[0-9]*:### Initiative: *//')
+                    _init_after_colon="${init_line#*:}"
+                    INIT_NAME="${_init_after_colon#"### Initiative: "}"
                     NEXT_LINE=$(grep -nE '^\#\#\#\s+Initiative:|^\#\#\s+' "$PLAN_FILE_PATH" 2>/dev/null | \
                         awk -F: -v curr="$INIT_LINE_NUM" '$1 > curr {print $1; exit}')
                     [[ -z "$NEXT_LINE" ]] && NEXT_LINE=$(wc -l < "$PLAN_FILE_PATH" | tr -d ' ')
