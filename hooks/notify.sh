@@ -28,12 +28,45 @@ TITLE="${TITLE:-Claude Code}"
 # Only notify on macOS
 [[ "$(uname)" != "Darwin" ]] && exit 0
 
+# Cooldown — suppress rapid-fire notifications per session per type
+COOLDOWN_DIR="$HOME/.claude/tmp/notify-cooldown"
+COOLDOWN_SECS=30
+
+should_notify() {
+    local type="$1"
+    local session="$$"  # shell PID = Claude Code process for this session
+    local stamp_file="$COOLDOWN_DIR/${session}-${type}"
+    mkdir -p "$COOLDOWN_DIR"
+
+    # Prune stamps from dead sessions
+    for f in "$COOLDOWN_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        local pid="${f##*/}"
+        pid="${pid%%-*}"
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$f"
+        fi
+    done
+
+    if [[ -f "$stamp_file" ]]; then
+        local last now
+        last=$(cat "$stamp_file")
+        now=$(date +%s)
+        if (( now - last < COOLDOWN_SECS )); then
+            return 1  # suppress
+        fi
+    fi
+    date +%s > "$stamp_file"
+    return 0
+}
+
 # Detect which terminal is running Claude Code
 # Returns bundle ID for activation by terminal-notifier
 detect_terminal_bundle() {
     case "${TERM_PROGRAM:-}" in
         Apple_Terminal) echo "com.apple.Terminal" ;;
         iTerm.app) echo "com.googlecode.iterm2" ;;
+        ghostty) echo "com.mitchellh.ghostty" ;;
         *) echo "com.apple.Terminal" ;;  # Default fallback
     esac
 }
@@ -50,6 +83,8 @@ get_sound_for_type() {
 # Only notify for attention-needed events
 case "$NOTIFICATION_TYPE" in
     permission_prompt|idle_prompt)
+        should_notify "$NOTIFICATION_TYPE" || exit 0
+
         SOUND=$(get_sound_for_type "$NOTIFICATION_TYPE")
 
         if command -v terminal-notifier &>/dev/null; then
