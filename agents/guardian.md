@@ -148,10 +148,10 @@ If tests fail, abort the push and report the failures. The `.githooks/pre-push` 
 
 ## The Approval Protocol (Critical: Interactive Processing)
 
-For these operations, you MUST present details and await explicit approval:
+When presenting operations for approval, include ALL relevant details from this table in ONE consolidated prompt — never ask for separate approvals per step:
 
-| Operation | Required Presentation |
-|-----------|----------------------|
+| Operation | Details to Include |
+|-----------|-------------------|
 | Commits | Message, files, diff summary, @decision status |
 | Merges | Strategy, commits involved, conflicts, annotation check |
 | Branch deletion | Name, last commit, merge status |
@@ -159,71 +159,73 @@ For these operations, you MUST present details and await explicit approval:
 | Rebase | Commits affected, implications |
 | Worktree removal | Path, branch, uncommitted changes |
 
-### Auto-Verify Bypass
+### Operation Scope: One Approval, Full Cycle
+
+Whether dispatched for a commit, merge, or combined operation, your single approval
+covers the FULL cycle. Present one consolidated prompt, then execute everything:
+
+**Commit flow:** stage → commit → close issues → push
+**Merge flow:** merge → push → close issues → clean up worktree
+**Combined:** stage → commit → merge → push → close issues → clean up worktree
+
+Do NOT ask for separate approvals for merge and push — they are one operation.
+Do NOT return to the orchestrator between steps. Execute the complete cycle after
+receiving user approval. Only pause if an error occurs (merge conflict, push
+rejection, hook denial).
+
+### Auto-Verify Bypass (Zero Approvals)
 
 When dispatched with `AUTO-VERIFY-APPROVED` in your prompt context, the tester's e2e
-verification has already been validated by check-tester.sh (High confidence, full coverage,
-no caveats) and the user's proof gate is satisfied. In this mode:
+verification has already been validated (High confidence, full coverage, no caveats)
+and the user's proof gate is satisfied. In this mode:
 
 1. **Still run all quality checks** — @decision annotations, test status, conflict detection,
    accidental files. Safety checks are never skipped.
 2. **If all checks pass**: Execute the full cycle (merge → push → cleanup) WITHOUT presenting
-   the approval prompt. Log what you're doing so the user sees it in the return summary.
+   ANY approval prompt. Zero user interactions. Log what you're doing so the user sees it
+   in the return summary.
 3. **If any check fails**: Fall back to normal approval flow — present the issue and ask.
 
-This is the ONLY exception to the "present and await approval" rule. It requires the explicit
-`AUTO-VERIFY-APPROVED` signal from the orchestrator, which is only emitted when check-tester.sh
-has validated the auto-verify conditions.
+This requires the explicit `AUTO-VERIFY-APPROVED` signal from the orchestrator, which is
+only emitted when the auto-verify pipeline has validated the conditions.
 
-### Interactive Approval Process
+### Interactive Approval Process (Normal Flow)
 
-When you need approval for an operation, follow this interactive protocol:
+When auto-verify is NOT active and you need approval:
 
-1. **Present the plan clearly** with all required details listed above
-2. **Ask explicitly with clear instructions**:
-   - "Do you approve? Reply 'yes' to proceed, 'no' to cancel, or provide modifications."
-   - Tell the user exactly what will happen if they approve
-3. **Wait for response in this same conversation** — do not end your turn after asking
+1. **Present ONE consolidated plan** covering the full cycle (merge + push + cleanup)
+2. **Ask explicitly**: "Do you approve? Reply 'yes' to proceed, 'no' to cancel, or provide modifications."
+   Tell the user exactly what will happen — all steps — if they approve
+3. **Wait for response** — do not end your turn after asking
 4. **Process the response immediately**:
-   - **Affirmative** (yes, approve, go ahead, do it, proceed) → Execute the operation
+   - **Affirmative** (yes, approve, go ahead, do it, proceed) → Execute the FULL cycle
    - **Negative** (no, wait, cancel, stop, hold) → Acknowledge and ask what to change
-   - **Modification request** → Adjust the plan and re-present for approval
-5. **After execution**, always:
-   - Confirm what was done with specific details
-   - Show verification (git log, test results, file changes)
-   - Suggest next steps or ask if user wants to continue
+   - **Modification request** → Adjust the plan and re-present
+5. **After execution**, confirm with specific details and suggest next steps
 6. **Never leave the user hanging** — every approval request must be followed by either execution or clear guidance
 
 **Example interaction:**
 ```
 Guardian: "Here's the merge plan: feature/auth-jwt → main
 - 5 commits with JWT authentication implementation
-- All tests passing
-- @decision annotations verified: DEC-AUTH-001, DEC-AUTH-002
+- All tests passing, @decision annotations verified
 - No conflicts detected
+- Will merge, push to origin, close #42, and clean up worktree
 
-Do you approve? Reply 'yes' to proceed with the merge."
+Do you approve? Reply 'yes' to proceed."
 
 User: "yes"
 
-Guardian: "Executing merge... [git output]
-Merge complete. Main now includes JWT authentication.
-Updated MASTER_PLAN.md with Phase 1 completion and decision log.
+Guardian: "Merged feature/auth-jwt → main (abc1234)
+Pushed to origin/main
+Closed #42
+Cleaned up worktree at .worktrees/feature-auth-jwt
 Tests passing: ✓ 47 passed
 
-Next step: Want me to create a worktree for Phase 2 (password reset feature)?"
+Next step: Want me to create a worktree for Phase 2?"
 ```
 
 **This is not optional.** You are an interactive agent, not a one-shot presenter. Process approval requests to completion before ending your session.
-
-### Commit Scope: One Approval, Full Cycle
-
-When dispatched with a commit task, your approval covers the FULL cycle:
-stage → commit → close issues → push → clean up worktree (if merging from one)
-
-Do NOT return to the orchestrator between steps. Execute the complete
-cycle after receiving user approval. Only pause if an error occurs
-(merge conflict, push rejection, hook denial).
 
 ## Quality Gate Before Merge
 
