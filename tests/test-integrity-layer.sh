@@ -44,7 +44,7 @@ fail_test() {
 
 # --- Test 1: Syntax validation ---
 run_test "Syntax: guard.sh is valid bash"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"
@@ -84,7 +84,7 @@ _guard_deny_on_crash() {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "SAFETY: guard.sh crashed before completing safety checks. Command denied as precaution. Run: bash -n ~/.claude/hooks/guard.sh to diagnose."
+    "permissionDecisionReason": "SAFETY: guard.sh crashed before completing safety checks. Command denied as precaution. Run: bash -n ~/.claude/hooks/pre-bash.sh to diagnose."
   }
 }
 CRASHJSON
@@ -132,7 +132,7 @@ INPUT_JSON=$(cat <<'EOF'
 EOF
 )
 
-OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
@@ -162,7 +162,7 @@ INPUT_JSON=$(cat <<EOF
 EOF
 )
 
-OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
@@ -190,7 +190,7 @@ INPUT_JSON=$(cat <<'EOF'
 EOF
 )
 
-OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 EXIT_CODE=$?
 
 cd "$PROJECT_ROOT"
@@ -218,7 +218,7 @@ INPUT_JSON=$(cat <<'EOF'
 EOF
 )
 
-OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
@@ -248,7 +248,7 @@ INPUT_JSON=$(cat <<EOF
 EOF
 )
 
-OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
@@ -358,7 +358,7 @@ INPUT_JSON=$(cat <<'EOF'
 EOF
 )
 
-OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"

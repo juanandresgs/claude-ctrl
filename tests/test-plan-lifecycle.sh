@@ -363,7 +363,7 @@ test_plan_check_blocks_empty_active_section() {
     result=$(printf '%s\n' $(seq 1 25) | \
         jq -Rs --arg path "$dir/src/main.sh" \
             '{"tool_name":"Write","tool_input":{"file_path":$path,"content":.}}' | \
-        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null || echo "")
+        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -qiE '"permissionDecision": *"deny"'; then
@@ -379,12 +379,19 @@ test_plan_check_blocks_empty_active_section() {
 test_plan_check_allows_multiple_active() {
     local dir result
     dir=$(make_plan_multiple_active)
-    mkdir -p "$dir/src" "$dir/.claude"
+    # Use a .worktrees/ subdir with a feature branch so Gate 1 (branch-guard) passes.
+    # Without this, git init creates main branch and branch-guard denies the write
+    # before plan-check (Gate 2) can run.
+    local wt="$dir/.worktrees/test"
+    mkdir -p "$wt/src" "$wt/.claude"
+    git -C "$wt" init -b feature/test -q
+    cp "$dir/MASTER_PLAN.md" "$wt/MASTER_PLAN.md"
 
-    result=$(printf '%s\n' $(seq 1 25) | \
-        jq -Rs --arg path "$dir/src/main.sh" \
+    # Content starts with a shell doc comment to satisfy Gate 5 (doc-gate).
+    result=$(printf '# Plan-check test fixture\n%s\n' "$(seq 1 25 | tr '\n' ' ')" | \
+        jq -Rs --arg path "$wt/src/main.sh" \
             '{"tool_name":"Write","tool_input":{"file_path":$path,"content":.}}' | \
-        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null || echo "")
+        CLAUDE_DIR="$wt/.claude" CLAUDE_PROJECT_DIR="$wt" bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -q '"permissionDecision": *"deny"'; then

@@ -69,7 +69,7 @@ make_input() {
 assert_deny() {
     local output="$1"
     local label="$2"
-    if echo "$output" | grep -q '"permissionDecision": "deny"'; then
+    if echo "$output" | grep -qE '"permissionDecision":\s*"deny"'; then
         pass_test
     else
         fail_test "$label: expected deny but got: $output"
@@ -94,7 +94,7 @@ assert_passthrough() {
 
 # --- Test 1: Syntax check ---
 run_test "Syntax: guard.sh is valid bash"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"
@@ -109,7 +109,7 @@ NONEXISTENT_DIR="/tmp/nonexistent-worktree-$$-nuclear"
 CMD=':(){ :|:& };:'
 INPUT_JSON=$(make_input "$CMD" "$NONEXISTENT_DIR")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 assert_deny "$OUTPUT" "nuclear deny with broken CWD"
 
@@ -121,7 +121,7 @@ VALID_DIR="$PROJECT_ROOT"
 CMD="ls"
 INPUT_JSON=$(make_input "$CMD" "$VALID_DIR")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 assert_passthrough "$OUTPUT" "valid CWD passthrough"
 
@@ -132,7 +132,7 @@ run_test "Missing .cwd field → passthrough (no interference)"
 CMD="ls"
 INPUT_JSON=$(make_input "$CMD")  # No cwd argument
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 assert_passthrough "$OUTPUT" "missing cwd passthrough"
 

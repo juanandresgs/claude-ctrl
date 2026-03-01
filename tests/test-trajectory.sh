@@ -253,19 +253,20 @@ test_gate_strike2_trajectory_guidance() {
 {"ts":"$(ts_ago 70)","event":"test_run","result":"fail","failures":3,"assertion":"test_compute_result"}
 EOF
 
-    # Mock a Write tool call targeting a source file
+    # Mock a Write tool call targeting a source file.
+    # Content starts with a Python doc comment so Gate 5 (doc-gate) passes.
     local hook_input
     hook_input=$(jq -n \
         --arg file "$proj/src/compute.py" \
-        '{tool_name: "Write", tool_input: {file_path: $file, content: "x=1"}}')
+        '{tool_name: "Write", tool_input: {file_path: $file, content: "# Compute module\nx=1"}}')
 
     local output
     output=$(
         export CLAUDE_PROJECT_DIR="$proj"
-        echo "$hook_input" | bash "${HOOKS_DIR}/test-gate.sh" 2>/dev/null
+        echo "$hook_input" | bash "${HOOKS_DIR}/pre-write.sh" 2>/dev/null
     )
 
-    # Should deny with trajectory-aware message
+    # Should deny with trajectory-aware message (test-gate runs as Gate 3 inside pre-write.sh)
     if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' > /dev/null 2>&1; then
         pass "test-gate denies on strike 2 with trajectory events"
     else
@@ -305,15 +306,15 @@ test_gate_no_event_log_fallback() {
     local hook_input
     hook_input=$(jq -n \
         --arg file "$proj/src/app.py" \
-        '{tool_name: "Write", tool_input: {file_path: $file, content: "x=1"}}')
+        '{tool_name: "Write", tool_input: {file_path: $file, content: "# App module\nx=1"}}')
 
     local output
     output=$(
         export CLAUDE_PROJECT_DIR="$proj"
-        echo "$hook_input" | bash "${HOOKS_DIR}/test-gate.sh" 2>/dev/null
+        echo "$hook_input" | bash "${HOOKS_DIR}/pre-write.sh" 2>/dev/null
     )
 
-    # Should still deny (falls back to strike behavior)
+    # Should still deny (falls back to strike behavior — Gate 3 inside pre-write.sh)
     if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' > /dev/null 2>&1; then
         pass "test-gate still denies on strike 2 when no event log (fallback behavior)"
     else
@@ -335,15 +336,15 @@ test_gate_strike1_advisory_unchanged() {
     local hook_input
     hook_input=$(jq -n \
         --arg file "$proj/src/main.py" \
-        '{tool_name: "Write", tool_input: {file_path: $file, content: "x=1"}}')
+        '{tool_name: "Write", tool_input: {file_path: $file, content: "# Main module\nx=1"}}')
 
     local output
     output=$(
         export CLAUDE_PROJECT_DIR="$proj"
-        echo "$hook_input" | bash "${HOOKS_DIR}/test-gate.sh" 2>/dev/null
+        echo "$hook_input" | bash "${HOOKS_DIR}/pre-write.sh" 2>/dev/null
     )
 
-    # Strike 1 should ALLOW (with advisory, no deny)
+    # Strike 1 should ALLOW (advisory only — Gate 3 inside pre-write.sh is non-deny on first strike)
     local has_deny
     has_deny=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
     if [[ "$has_deny" != "deny" ]]; then
@@ -382,14 +383,14 @@ EOF
     git -C "$proj" config user.email "test@test.com" 2>/dev/null || true
     git -C "$proj" config user.name "Test" 2>/dev/null || true
 
-    # Run session-summary
+    # Run stop.sh (session-summary.sh was merged into stop.sh during metanoia consolidation)
     local hook_input
     hook_input='{"stop_hook_active":false}'
 
     local output
     output=$(
         export CLAUDE_PROJECT_DIR="$proj"
-        echo "$hook_input" | bash "${HOOKS_DIR}/session-summary.sh" 2>/dev/null
+        echo "$hook_input" | bash "${HOOKS_DIR}/stop.sh" 2>/dev/null
     )
 
     # Should have a systemMessage
@@ -431,7 +432,7 @@ test_session_summary_no_events_still_works() {
     local output
     output=$(
         export CLAUDE_PROJECT_DIR="$proj"
-        echo "$hook_input" | bash "${HOOKS_DIR}/session-summary.sh" 2>/dev/null
+        echo "$hook_input" | bash "${HOOKS_DIR}/stop.sh" 2>/dev/null
     )
 
     # Should still produce a systemMessage (graceful degradation)
@@ -560,10 +561,10 @@ test_gate_scale_50_events_pivot_identified() {
     local output
     output=$(
         export CLAUDE_PROJECT_DIR="$proj"
-        echo "$hook_input" | bash "${HOOKS_DIR}/test-gate.sh" 2>/dev/null
+        echo "$hook_input" | bash "${HOOKS_DIR}/pre-write.sh" 2>/dev/null
     )
 
-    # Assert 1: denied
+    # Assert 1: denied (Gate 3 inside pre-write.sh)
     run_test
     if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' > /dev/null 2>&1; then
         pass "Scale test ($total_events events): test-gate denies on strike 2"

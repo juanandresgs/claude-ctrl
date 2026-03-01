@@ -258,7 +258,7 @@ EOF
         cat <<'EOF'
 
 ##### Critical Files
-- hooks/guard.sh
+- hooks/pre-bash.sh
 - hooks/context-lib.sh
 
 #### Phase 2: Implementation
@@ -463,15 +463,23 @@ test_active_initiative_count() {
 test_plan_check_allows_active() {
     local dir result
     dir=$(make_plan_new_format_active)
-    mkdir -p "$dir/src" "$dir/.claude"
+    # Use a .worktrees/ subdir with a feature branch so Gate 1 (branch-guard) passes.
+    # Without this, git init creates main branch and branch-guard denies the write
+    # before plan-check (Gate 2) can run.
+    local wt="$dir/.worktrees/test"
+    mkdir -p "$wt/src" "$wt/.claude"
+    git -C "$wt" init -b feature/test -q
+    # Copy the plan so plan-check can find it
+    cp "$dir/MASTER_PLAN.md" "$wt/MASTER_PLAN.md"
 
     # CLAUDE_PROJECT_DIR forces detect_project_root() to return the fixture dir,
-    # ensuring get_drift_data reads from $dir/.claude/.plan-drift (empty) rather
+    # ensuring get_drift_data reads from $wt/.claude/.plan-drift (empty) rather
     # than the real ~/.claude drift cache which can have large drift counts.
-    result=$(printf '%s\n' $(seq 1 25) | \
-        jq -Rs --arg path "$dir/src/main.sh" \
+    # Content starts with a shell doc comment to satisfy Gate 5 (doc-gate).
+    result=$(printf '# Plan-check test fixture\n%s\n' "$(seq 1 25 | tr '\n' ' ')" | \
+        jq -Rs --arg path "$wt/src/main.sh" \
             '{"tool_name":"Write","tool_input":{"file_path":$path,"content":.}}' | \
-        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null || echo "")
+        CLAUDE_DIR="$wt/.claude" CLAUDE_PROJECT_DIR="$wt" bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -q '"permissionDecision": *"deny"'; then
@@ -492,7 +500,7 @@ test_plan_check_blocks_dormant() {
     result=$(printf '%s\n' $(seq 1 25) | \
         jq -Rs --arg path "$dir/src/main.sh" \
             '{"tool_name":"Write","tool_input":{"file_path":$path,"content":.}}' | \
-        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null || echo "")
+        CLAUDE_DIR="$dir/.claude" CLAUDE_PROJECT_DIR="$dir" bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -qiE '"permissionDecision": *"deny"'; then
@@ -511,7 +519,7 @@ test_plan_validate_identity_required() {
 
     result=$(jq -n --arg path "$dir/MASTER_PLAN.md" \
         '{"tool_name":"Write","tool_input":{"file_path":$path}}' | \
-        bash "$HOOKS_DIR/plan-validate.sh" 2>/dev/null || echo "")
+        bash "$HOOKS_DIR/post-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -q '"decision": *"block"'; then
@@ -546,7 +554,7 @@ EOF
 
     result=$(jq -n --arg path "$dir/MASTER_PLAN.md" \
         '{"tool_name":"Write","tool_input":{"file_path":$path}}' | \
-        bash "$HOOKS_DIR/plan-validate.sh" 2>/dev/null || echo "")
+        bash "$HOOKS_DIR/post-write.sh" 2>/dev/null || echo "")
     rm -rf "$dir"
     pass "T10: plan-validate runs on new format without crash"
 }
@@ -560,7 +568,7 @@ test_plan_validate_no_toplevel_phase_required() {
 
     result=$(jq -n --arg path "$dir/MASTER_PLAN.md" \
         '{"tool_name":"Write","tool_input":{"file_path":$path}}' | \
-        bash "$HOOKS_DIR/plan-validate.sh" 2>/dev/null || echo "")
+        bash "$HOOKS_DIR/post-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -q '"decision": *"block"'; then
@@ -608,7 +616,7 @@ EOF
 
     result=$(jq -n --arg path "$dir/MASTER_PLAN.md" \
         '{"tool_name":"Write","tool_input":{"file_path":$path}}' | \
-        bash "$HOOKS_DIR/plan-validate.sh" 2>/dev/null || echo "")
+        bash "$HOOKS_DIR/post-write.sh" 2>/dev/null || echo "")
 
     rm -rf "$dir"
     if echo "$result" | grep -q '"decision": *"block"'; then

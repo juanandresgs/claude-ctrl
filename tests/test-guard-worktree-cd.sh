@@ -62,17 +62,19 @@ make_input() {
         "$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 }
 
-# Helper: assert output is a deny with the subshell suggestion in the reason
+# Helper: assert output is a deny with the subshell suggestion in the reason.
+# NOTE: pre-bash.sh outputs compact JSON (no spaces after colons/commas), so
+# we use grep -qE with optional whitespace around the colon.
 assert_deny_with_suggestion() {
     local output="$1"
     local label="$2"
-    if echo "$output" | grep -q '"permissionDecision": "deny"' && \
+    if echo "$output" | grep -qE '"permissionDecision":\s*"deny"' && \
        echo "$output" | grep -q 'CWD protection'; then
         pass_test
-    elif echo "$output" | grep -q '"permissionDecision": "deny"' && \
+    elif echo "$output" | grep -qE '"permissionDecision":\s*"deny"' && \
          echo "$output" | grep -q "SAFETY"; then
         fail_test "$label: deny-on-crash triggered instead of deny-with-suggestion. Output: $output"
-    elif echo "$output" | grep -q '"permissionDecision": "deny"'; then
+    elif echo "$output" | grep -qE '"permissionDecision":\s*"deny"'; then
         fail_test "$label: denied but missing 'CWD protection' in reason. Output: $output"
     elif echo "$output" | grep -q '"updatedInput"'; then
         fail_test "$label: got rewrite (updatedInput) instead of deny — updatedInput is not supported in PreToolUse. Output: $output"
@@ -87,12 +89,12 @@ assert_passthrough() {
     local label="$2"
     if [[ -z "$output" ]]; then
         pass_test
-    elif echo "$output" | grep -q '"permissionDecision": "allow"' && \
+    elif echo "$output" | grep -qE '"permissionDecision":\s*"allow"' && \
          echo "$output" | grep -q '"updatedInput"'; then
         local rewritten
         rewritten=$(echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["hookSpecificOutput"]["updatedInput"]["command"])' 2>/dev/null || echo "")
         fail_test "$label: unexpected rewrite (want passthrough/empty). Rewritten to: $rewritten"
-    elif echo "$output" | grep -q '"permissionDecision": "deny"'; then
+    elif echo "$output" | grep -qE '"permissionDecision":\s*"deny"'; then
         fail_test "$label: unexpected deny (want passthrough/empty). Got: $output"
     else
         fail_test "$label: unexpected output (want empty). Got: $output"
@@ -101,7 +103,7 @@ assert_passthrough() {
 
 # --- Test 0: Syntax check ---
 run_test "Syntax: guard.sh is valid bash"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"
@@ -114,7 +116,7 @@ run_test "Check0.75: 'cd .worktrees/foo && git status' → DENY with subshell su
 
 CMD="cd .worktrees/foo && git status"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "cd relative .worktrees + git status"
 
@@ -124,7 +126,7 @@ run_test "Check0.75: 'cd /abs/.worktrees/foo && python3 -c ...' → DENY with su
 
 CMD='cd /home/user/.worktrees/feature-x && python3 -c "import sys; print(sys.version)"'
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "cd absolute .worktrees + python3"
 
@@ -134,7 +136,7 @@ run_test "Check0.75: 'pushd .worktrees/foo && make' → DENY with subshell sugge
 
 CMD="pushd .worktrees/feature-build && make test"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "pushd .worktrees + make"
 
@@ -144,7 +146,7 @@ run_test "Check0.75: 'cd .worktrees/foo ; echo done' → DENY with subshell sugg
 
 CMD="cd .worktrees/my-feature ; echo done"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "cd .worktrees + semicolon + echo"
 
@@ -156,7 +158,7 @@ run_test "Check0.75: 'cd .worktrees/foo' (bare) → DENY (no more bare-cd exempt
 
 CMD="cd .worktrees/feature-mywork"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "bare cd .worktrees (now denied)"
 
@@ -166,7 +168,7 @@ run_test "Check0.75: 'ls .worktrees/foo' → PASSTHROUGH (not a cd command)"
 
 CMD="ls .worktrees/feature-x"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_passthrough "$OUTPUT" "ls .worktrees (not a cd)"
 
@@ -177,7 +179,7 @@ run_test "Check0.75: 'git -C .worktrees/foo status' → PASSTHROUGH (git -C is s
 
 CMD="git -C .worktrees/feature-foo status"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_passthrough "$OUTPUT" "git -C .worktrees (no cd)"
 
@@ -187,7 +189,7 @@ run_test "Check0.75: 'export FOO=1 && cd .worktrees/x && cmd' → DENY with subs
 
 CMD="export FOO=bar && cd .worktrees/feature-complex && bash run.sh"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "export + cd .worktrees + bash run.sh"
 
@@ -205,7 +207,7 @@ run_test "Check0.75: 'cd .worktrees/foo || exit 1' → DENY with subshell sugges
 
 CMD="cd .worktrees/feature-fallback || exit 1"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_deny_with_suggestion "$OUTPUT" "cd .worktrees + || exit"
 
@@ -216,7 +218,7 @@ run_test "Check0.75: '( cd .worktrees/foo && ls )' → PASSTHROUGH (already subs
 
 CMD="( cd .worktrees/feature-mywork && ls )"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_passthrough "$OUTPUT" "already subshell-wrapped (model resubmit)"
 
@@ -227,7 +229,7 @@ run_test "Check0.75: '( cd .worktrees/foo && npm install )' → PASSTHROUGH (sub
 
 CMD="( cd .worktrees/feature-deps && npm install )"
 INPUT_JSON=$(make_input "$CMD")
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
 assert_passthrough "$OUTPUT" "subshell cd .worktrees + npm install"
 

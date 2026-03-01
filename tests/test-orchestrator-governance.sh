@@ -133,7 +133,7 @@ echo "=== Test 1: branch-guard denies .sh edit on main in ~/.claude ==="
 META_BRANCH=$(git -C "$META_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 if [[ "$META_BRANCH" == "main" ]]; then
     INPUT1=$(make_branch_guard_input "${META_REPO}/hooks/some-new-hook.sh")
-    OUTPUT1=$(echo "$INPUT1" | bash "$HOOKS_DIR/branch-guard.sh" 2>/dev/null) || true
+    OUTPUT1=$(echo "$INPUT1" | bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
     assert_deny "$OUTPUT1" "branch-guard denies .sh edit on main in ~/.claude"
 else
     pass "Test 1 skipped — ~/.claude not on main (branch: $META_BRANCH)"
@@ -147,7 +147,7 @@ echo "=== Test 2: branch-guard allows .md edit on main in ~/.claude ==="
 
 if [[ "$META_BRANCH" == "main" ]]; then
     INPUT2=$(make_branch_guard_input "${META_REPO}/README.md")
-    OUTPUT2=$(echo "$INPUT2" | bash "$HOOKS_DIR/branch-guard.sh" 2>/dev/null) || true
+    OUTPUT2=$(echo "$INPUT2" | bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
     assert_allow "$OUTPUT2" "branch-guard allows .md edit on main in ~/.claude"
 else
     pass "Test 2 skipped — ~/.claude not on main (branch: $META_BRANCH)"
@@ -161,7 +161,7 @@ echo "=== Test 3: branch-guard allows .json edit on main in ~/.claude ==="
 
 if [[ "$META_BRANCH" == "main" ]]; then
     INPUT3=$(make_branch_guard_input "${META_REPO}/settings.json")
-    OUTPUT3=$(echo "$INPUT3" | bash "$HOOKS_DIR/branch-guard.sh" 2>/dev/null) || true
+    OUTPUT3=$(echo "$INPUT3" | bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
     assert_allow "$OUTPUT3" "branch-guard allows .json edit on main in ~/.claude"
 else
     pass "Test 3 skipped — ~/.claude not on main (branch: $META_BRANCH)"
@@ -175,7 +175,7 @@ echo "=== Test 4: branch-guard denies .sh edit on main in other repos ==="
 
 REPO4=$(make_git_repo_on_main)
 INPUT4=$(make_branch_guard_input "${REPO4}/scripts/deploy.sh")
-OUTPUT4=$(echo "$INPUT4" | bash "$HOOKS_DIR/branch-guard.sh" 2>/dev/null) || true
+OUTPUT4=$(echo "$INPUT4" | bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
 assert_deny "$OUTPUT4" "branch-guard denies .sh edit on main in other repos"
 
 # ============================================================
@@ -188,7 +188,7 @@ if [[ "$META_BRANCH" == "main" ]]; then
     STAGED_CHECK=$(git -C "$META_REPO" diff --cached --name-only 2>/dev/null || echo "")
     GIT_DIR5=$(git -C "$META_REPO" rev-parse --absolute-git-dir 2>/dev/null || echo "")
     INPUT5=$(make_guard_input "git -C \"${META_REPO}\" commit -m 'test'")
-    OUTPUT5=$(echo "$INPUT5" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+    OUTPUT5=$(echo "$INPUT5" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
     if [[ "$STAGED_CHECK" == "MASTER_PLAN.md" ]]; then
         pass "Test 5 skipped — only MASTER_PLAN.md staged (allowed by design)"
     elif [[ -n "$GIT_DIR5" && -f "$GIT_DIR5/MERGE_HEAD" ]]; then
@@ -211,7 +211,7 @@ echo "# Plan" > "${REPO6}/MASTER_PLAN.md"
 git -C "$REPO6" add MASTER_PLAN.md 2>/dev/null
 
 INPUT6=$(make_guard_input "git -C \"${REPO6}\" commit -m 'update plan'")
-OUTPUT6=$(echo "$INPUT6" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT6=$(echo "$INPUT6" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 assert_allow "$OUTPUT6" "guard.sh Check 2 allows MASTER_PLAN.md-only commit on main"
 
 # ============================================================
@@ -225,7 +225,7 @@ GIT_DIR7=$(git -C "$REPO7" rev-parse --absolute-git-dir 2>/dev/null)
 echo "deadbeef" > "${GIT_DIR7}/MERGE_HEAD"
 
 INPUT7=$(make_guard_input "git -C \"${REPO7}\" commit -m 'merge'")
-OUTPUT7=$(echo "$INPUT7" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT7=$(echo "$INPUT7" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 assert_allow "$OUTPUT7" "guard.sh Check 2 allows merge commit (MERGE_HEAD present)"
 
 rm -f "${GIT_DIR7}/MERGE_HEAD" 2>/dev/null || true
@@ -242,7 +242,7 @@ rm -f "${TRACE_STORE}/.active-guardian-"* 2>/dev/null || true
 rm -f "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
 
 INPUT8=$(make_guard_input "git branch -d feature/old-branch")
-OUTPUT8=$(echo "$INPUT8" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT8=$(echo "$INPUT8" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 assert_deny "$OUTPUT8" "guard.sh Check 4b denies git branch -d without Guardian"
 
 # ============================================================
@@ -254,7 +254,7 @@ echo "=== Test 9: guard.sh Check 4b allows git branch -d with active Guardian ==
 MARKER9=$(make_guardian_marker)
 
 INPUT9=$(make_guard_input "git branch -d feature/old-branch")
-OUTPUT9=$(echo "$INPUT9" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT9=$(echo "$INPUT9" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 assert_allow "$OUTPUT9" "guard.sh Check 4b allows git branch -d with active Guardian"
 
 rm -f "$MARKER9" 2>/dev/null || true
@@ -270,7 +270,7 @@ echo "=== Test 10: guard.sh Check 4 still denies git branch -D regardless ==="
 MARKER10=$(make_guardian_marker)
 
 INPUT10=$(make_guard_input "git branch -D feature/old-branch")
-OUTPUT10=$(echo "$INPUT10" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT10=$(echo "$INPUT10" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 assert_deny "$OUTPUT10" "guard.sh Check 4 denies git branch -D even with Guardian marker"
 
 rm -f "$MARKER10" 2>/dev/null || true
@@ -286,7 +286,7 @@ rm -f "${TRACE_STORE}/.active-guardian-"* 2>/dev/null || true
 
 REPO11=$(make_git_repo_on_main)
 INPUT11=$(make_guard_input "git worktree remove --force ${REPO11}/.worktrees/some-wt")
-OUTPUT11=$(echo "$INPUT11" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT11=$(echo "$INPUT11" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 assert_deny "$OUTPUT11" "guard.sh Check 5 denies worktree remove --force without Guardian"
 
 # ============================================================
@@ -299,7 +299,7 @@ MARKER12=$(make_guardian_marker)
 
 REPO12=$(make_git_repo_on_main)
 INPUT12=$(make_guard_input "git worktree remove --force ${REPO12}/.worktrees/some-wt")
-OUTPUT12=$(echo "$INPUT12" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT12=$(echo "$INPUT12" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 # With Guardian active: passes Guardian gate but hits CWD safety deny (deny-based, not rewrite)
 if echo "$OUTPUT12" | grep -q '"permissionDecision": "deny"' && echo "$OUTPUT12" | grep -q 'CWD safety'; then
     pass "guard.sh Check 5: worktree remove --force with Guardian passes Guardian gate, hits CWD safety deny"
@@ -320,7 +320,7 @@ rm -f "${TRACE_STORE}/.active-guardian-"* 2>/dev/null || true
 
 REPO13=$(make_git_repo_on_main)
 INPUT13=$(make_guard_input "git worktree remove ${REPO13}/.worktrees/some-wt")
-OUTPUT13=$(echo "$INPUT13" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+OUTPUT13=$(echo "$INPUT13" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 # Normal worktree remove: no --force so Guardian gate not triggered, hits CWD safety deny
 if echo "$OUTPUT13" | grep -q '"permissionDecision": "deny"' && echo "$OUTPUT13" | grep -q 'CWD safety'; then
     pass "guard.sh Check 5: normal worktree remove hits CWD safety deny (deny-based, not rewrite)"
@@ -339,7 +339,7 @@ GIT_DIR14=$(git -C "$REPO14" rev-parse --absolute-git-dir 2>/dev/null)
 echo "deadbeef" > "${GIT_DIR14}/MERGE_HEAD"
 
 INPUT14=$(make_branch_guard_input "${REPO14}/scripts/deploy.sh")
-OUTPUT14=$(echo "$INPUT14" | bash "$HOOKS_DIR/branch-guard.sh" 2>/dev/null) || true
+OUTPUT14=$(echo "$INPUT14" | bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
 assert_allow "$OUTPUT14" "branch-guard allows .sh edit on main during merge (MERGE_HEAD present)"
 
 rm -f "${GIT_DIR14}/MERGE_HEAD" 2>/dev/null || true
@@ -358,7 +358,7 @@ if [[ -n "$META_GIT_DIR" ]]; then
     # Feed guard.sh invalid JSON — this will crash the script (jq parse error)
     # and trigger crash-deny. With MERGE_HEAD present, should degrade to allow.
     rm -f "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
-    OUTPUT15=$(echo "not-valid-json-at-all" | bash "$HOOKS_DIR/guard.sh" 2>/dev/null) || true
+    OUTPUT15=$(echo "not-valid-json-at-all" | bash "$HOOKS_DIR/pre-bash.sh" 2>/dev/null) || true
 
     rm -f "${META_GIT_DIR}/MERGE_HEAD" 2>/dev/null || true
 

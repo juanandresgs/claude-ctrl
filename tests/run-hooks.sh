@@ -117,10 +117,10 @@ git init "$BG_TEST_DIR_MAIN" >/dev/null 2>&1
 
 BG_FIXTURE_MAIN_DENY="$FIXTURES_DIR/branch-guard-main-deny.json"
 cat > "$BG_FIXTURE_MAIN_DENY" <<EOF
-{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_MAIN/src/main.ts","content":"console.log('test');\n"}}
+{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_MAIN/src/main.ts","content":"/** @file main.ts @description Test fixture. */\nconsole.log('test');\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_MAIN_DENY")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$BG_FIXTURE_MAIN_DENY")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     pass "branch-guard.sh — deny source file on main"
@@ -130,20 +130,24 @@ fi
 safe_cleanup "$BG_TEST_DIR_MAIN" "$SCRIPT_DIR"
 rm -f "$BG_FIXTURE_MAIN_DENY"
 
-# Test 2: Allow source file write on feature branch
+# Test 2: Allow source file write on feature branch inside a worktree path
+# NOTE: pre-write.sh Gate 1 now ALSO denies feature-branch writes unless the file path
+# contains /.worktrees/ (DEC-BRANCH-GUARD-FEATURE-001). We use a worktree-style path.
 BG_TEST_DIR_FEATURE=$(mktemp -d)
 git init "$BG_TEST_DIR_FEATURE" >/dev/null 2>&1
 (cd "$BG_TEST_DIR_FEATURE" && git checkout -b feature/test >/dev/null 2>&1 && git add -A && git commit -m "init" --allow-empty >/dev/null 2>&1)
+# Use a path inside .worktrees/ so Gate 1 allows it
+BG_WORKTREE_PATH="$BG_TEST_DIR_FEATURE/.worktrees/feature-test/src/main.ts"
 
 BG_FIXTURE_FEATURE_ALLOW="$FIXTURES_DIR/branch-guard-feature-allow.json"
 cat > "$BG_FIXTURE_FEATURE_ALLOW" <<EOF
-{"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_FEATURE/src/main.ts","content":"console.log('test');\n"}}
+{"tool_name":"Write","tool_input":{"file_path":"$BG_WORKTREE_PATH","content":"/** @file main.ts @description Test fixture. */\nconsole.log('test');\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_FEATURE_ALLOW")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$BG_FIXTURE_FEATURE_ALLOW")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
-    pass "branch-guard.sh — allow source file on feature branch"
+    pass "branch-guard.sh — allow source file on feature branch (worktree path)"
 else
     fail "branch-guard.sh — allow source file on feature branch" "should allow but got deny"
 fi
@@ -160,7 +164,7 @@ cat > "$BG_FIXTURE_MAIN_NONSOURCE" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_NONSOURCE/README.md","content":"# Test\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_MAIN_NONSOURCE")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$BG_FIXTURE_MAIN_NONSOURCE")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "branch-guard.sh — allow non-source file on main"
@@ -180,7 +184,7 @@ cat > "$BG_FIXTURE_PLAN" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"$BG_TEST_DIR_PLAN/MASTER_PLAN.md","content":"# Plan\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/branch-guard.sh" "$BG_FIXTURE_PLAN")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$BG_FIXTURE_PLAN")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "branch-guard.sh — allow MASTER_PLAN.md on main"
@@ -201,7 +205,7 @@ cat > "$DOC_FIXTURE_NO_HEADER" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"console.log('no header');\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_NO_HEADER")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$DOC_FIXTURE_NO_HEADER")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     pass "doc-gate.sh — deny Write without header"
@@ -216,7 +220,7 @@ cat > "$DOC_FIXTURE_WITH_HEADER" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"/**\n * @file test.ts\n * @description Test file\n */\nconsole.log('has header');\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_WITH_HEADER")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$DOC_FIXTURE_WITH_HEADER")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "doc-gate.sh — allow Write with header"
@@ -235,7 +239,7 @@ cat > "$DOC_FIXTURE_NO_DECISION" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"$LARGE_CONTENT"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_NO_DECISION")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$DOC_FIXTURE_NO_DECISION")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     pass "doc-gate.sh — deny 50+ lines without @decision"
@@ -254,7 +258,7 @@ cat > "$DOC_FIXTURE_WITH_DECISION" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"/tmp/test.ts","content":"$LARGE_CONTENT_WITH_DEC"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/doc-gate.sh" "$DOC_FIXTURE_WITH_DECISION")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$DOC_FIXTURE_WITH_DECISION")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "doc-gate.sh — allow 50+ lines with @decision"
@@ -267,17 +271,19 @@ echo ""
 # --- Test: test-gate.sh behavioral tests ---
 echo "--- test-gate.sh behavioral tests ---"
 
+# NOTE: No git init here — pre-write.sh Gate 1 (branch-guard) blocks writes on main/master.
+# test-gate tests only need a directory with .claude/ for strike-counter state; no git needed.
+# Gate 2 (plan-check) skips when there's no .git directory.
 TG_TEST_DIR=$(mktemp -d)
 mkdir -p "$TG_TEST_DIR/.claude"
-git init "$TG_TEST_DIR" >/dev/null 2>&1
 
 # Test 1: Allow when no test status (cold start)
 TG_FIXTURE_COLD="$FIXTURES_DIR/test-gate-cold.json"
 cat > "$TG_FIXTURE_COLD" <<EOF
-{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"console.log('test');\n"}}
+{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"/** @file main.ts @description Test fixture. */\nconsole.log('test');\n"}}
 EOF
 
-output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_COLD")
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/pre-write.sh" "$TG_FIXTURE_COLD")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "test-gate.sh — allow when no test status"
@@ -290,9 +296,9 @@ rm -f "$TG_FIXTURE_COLD"
 echo "pass|0|$(date +%s)" > "$TG_TEST_DIR/.claude/.test-status"
 TG_FIXTURE_PASS="$FIXTURES_DIR/test-gate-pass.json"
 cat > "$TG_FIXTURE_PASS" <<EOF
-{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"console.log('test');\n"}}
+{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"/** @file main.ts @description Test fixture. */\nconsole.log('test');\n"}}
 EOF
-output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_PASS")
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/pre-write.sh" "$TG_FIXTURE_PASS")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" && ! -f "$TG_TEST_DIR/.claude/.test-gate-strikes" ]]; then
     pass "test-gate.sh — allow + reset strikes when tests pass"
@@ -305,10 +311,10 @@ rm -f "$TG_FIXTURE_PASS"
 echo "fail|5|$(date +%s)" > "$TG_TEST_DIR/.claude/.test-status"
 TG_FIXTURE_SRC="$FIXTURES_DIR/test-gate-src.json"
 cat > "$TG_FIXTURE_SRC" <<EOF
-{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"console.log('strike1');\n"}}
+{"tool_name":"Write","tool_input":{"file_path":"$TG_TEST_DIR/src/main.ts","content":"/** @file main.ts @description Test fixture. */\nconsole.log('strike1');\n"}}
 EOF
 
-output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_SRC")
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/pre-write.sh" "$TG_FIXTURE_SRC")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 context=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
 if [[ "$decision" != "deny" && -n "$context" && "$context" == *"failing"* ]]; then
@@ -318,7 +324,7 @@ else
 fi
 
 # Test 4: Deny on second strike
-output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/test-gate.sh" "$TG_FIXTURE_SRC")
+output=$(CLAUDE_PROJECT_DIR="$TG_TEST_DIR" run_hook "$HOOKS_DIR/pre-write.sh" "$TG_FIXTURE_SRC")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     pass "test-gate.sh — deny on strike 2"
@@ -333,16 +339,18 @@ echo ""
 # --- Test: mock-gate.sh behavioral tests ---
 echo "--- mock-gate.sh behavioral tests ---"
 
+# NOTE: No git init — pre-write.sh Gate 1 blocks writes on main/master.
+# mock-gate only needs .claude/ for strike-counter state; no git needed.
 MG_TEST_DIR=$(mktemp -d)
 mkdir -p "$MG_TEST_DIR/.claude"
 
 # Test 1: Allow non-test files
 MG_FIXTURE_NONTEST="$FIXTURES_DIR/mock-gate-nontest.json"
 cat > "$MG_FIXTURE_NONTEST" <<EOF
-{"tool_name":"Write","tool_input":{"file_path":"$MG_TEST_DIR/src/main.ts","content":"console.log('not a test');\n"}}
+{"tool_name":"Write","tool_input":{"file_path":"$MG_TEST_DIR/src/main.ts","content":"/** @file main.ts @description Test fixture. */\nconsole.log('not a test');\n"}}
 EOF
 
-output=$(run_hook "$HOOKS_DIR/mock-gate.sh" "$MG_FIXTURE_NONTEST")
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$MG_FIXTURE_NONTEST")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "mock-gate.sh — allow non-test files"
@@ -357,7 +365,7 @@ cat > "$MG_FIXTURE_INTERNAL_MOCK" <<EOF
 {"tool_name":"Write","tool_input":{"file_path":"$MG_TEST_DIR/src/main.test.ts","content":"import { jest } from '@jest/globals';\njest.mock('../myModule');\n"}}
 EOF
 
-output=$(CLAUDE_PROJECT_DIR="$MG_TEST_DIR" run_hook "$HOOKS_DIR/mock-gate.sh" "$MG_FIXTURE_INTERNAL_MOCK")
+output=$(CLAUDE_PROJECT_DIR="$MG_TEST_DIR" run_hook "$HOOKS_DIR/pre-write.sh" "$MG_FIXTURE_INTERNAL_MOCK")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 context=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
 if [[ "$decision" != "deny" && -n "$context" && "$context" == *"mock"* ]]; then
@@ -367,7 +375,7 @@ else
 fi
 
 # Test 3: Deny on second mock usage
-output=$(CLAUDE_PROJECT_DIR="$MG_TEST_DIR" run_hook "$HOOKS_DIR/mock-gate.sh" "$MG_FIXTURE_INTERNAL_MOCK")
+output=$(CLAUDE_PROJECT_DIR="$MG_TEST_DIR" run_hook "$HOOKS_DIR/pre-write.sh" "$MG_FIXTURE_INTERNAL_MOCK")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     pass "mock-gate.sh — deny on strike 2"
@@ -645,9 +653,10 @@ done <<< "$REGISTERED_HOOKS"
 # Check for unregistered hooks (file exists but not in settings.json)
 while IFS= read -r hook; do
     if ! echo "$REGISTERED_HOOKS" | grep -q "^$hook$"; then
-        # Exempt utility libraries (not hooks)
+        # Exempt utility libraries (not hooks) — domain libs added during metanoia consolidation
         case "$hook" in
-            log.sh|context-lib.sh|source-lib.sh|state-registry.sh)
+            log.sh|context-lib.sh|source-lib.sh|state-registry.sh|\
+            ci-lib.sh|core-lib.sh|doc-lib.sh|git-lib.sh|plan-lib.sh|session-lib.sh|trace-lib.sh)
                 ;;
             *)
                 UNREGISTERED_HOOKS+="$hook "
@@ -745,7 +754,7 @@ echo ""
 # The deny reason contains the corrected command using <PROJECT_ROOT>/tmp/.
 echo "--- guard.sh ---"
 if [[ -f "$FIXTURES_DIR/guard-tmp-write.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-tmp-write.json")
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/guard-tmp-write.json")
     decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
     reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
     if [[ "$decision" == "deny" && "$reason" == *"/tmp/"* && "$reason" == *"project tmp"* ]]; then
@@ -759,7 +768,7 @@ fi
 
 # --- Test: guard.sh — force push to main denied ---
 if [[ -f "$FIXTURES_DIR/guard-force-push-main.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-force-push-main.json")
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/guard-force-push-main.json")
     if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision' > /dev/null 2>&1; then
         decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision')
         if [[ "$decision" == "deny" ]]; then
@@ -774,7 +783,7 @@ fi
 
 # --- Test: guard.sh — safe command passes through ---
 if [[ -f "$FIXTURES_DIR/guard-safe-command.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-safe-command.json")
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/guard-safe-command.json")
     if [[ -z "$output" || "$output" == "{}" ]]; then
         pass "guard.sh — safe command passes through (no output)"
     else
@@ -792,7 +801,7 @@ fi
 # Check 3 uses deny() (not rewrite/updatedInput — unsupported in PreToolUse).
 # The deny reason contains the corrected command using --force-with-lease.
 if [[ -f "$FIXTURES_DIR/guard-force-push.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-force-push.json")
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/guard-force-push.json")
     decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
     reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
     if [[ "$decision" == "deny" && "$reason" == *"--force-with-lease"* ]]; then
@@ -807,7 +816,7 @@ fi
 # --- Test: guard.sh — Check 5b: rm -rf .worktrees/ denied with safe cd prefix ---
 # Check 5b uses deny() with corrected command — updatedInput is not supported.
 if [[ -f "$FIXTURES_DIR/guard-rm-rf-worktrees.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-rm-rf-worktrees.json")
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/guard-rm-rf-worktrees.json")
     decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
     reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
     if [[ "$decision" == "deny" && "$reason" == *"cd "* && "$reason" == *".worktrees"* ]]; then
@@ -827,7 +836,7 @@ nuclear_assert_deny() {
     local fixture="$1" label="$2"
     if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
         local output decision
-        output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/$fixture")
+        output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/$fixture")
         decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
         if [[ "$decision" == "deny" ]]; then
             pass "guard.sh — nuclear deny: $label"
@@ -855,7 +864,7 @@ nuclear_assert_safe() {
     local fixture="$1" label="$2"
     if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
         local output decision
-        output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/$fixture")
+        output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/$fixture")
         decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
         if [[ "$decision" == "deny" ]]; then
             fail "guard.sh — false positive: $label" "should NOT deny but got deny"
@@ -886,7 +895,7 @@ cat > "$CROSS_FIXTURE" <<XEOF
 {"tool_name":"Bash","tool_input":{"command":"git -C $CROSS_TEST_DIR/other-repo.git status"}}
 XEOF
 
-output=$(run_hook "$HOOKS_DIR/guard.sh" "$CROSS_FIXTURE")
+output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$CROSS_FIXTURE")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     fail "guard.sh — cross-project git: git -C other-repo" "should pass through (Check 1.5 removed) but got deny"
@@ -896,7 +905,7 @@ fi
 
 # git status with no -C should pass through
 if [[ -f "$FIXTURES_DIR/guard-safe-command.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-safe-command.json")
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$FIXTURES_DIR/guard-safe-command.json")
     decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
     if [[ "$decision" != "deny" ]]; then
         pass "guard.sh — cross-project git: plain git status passes through"
@@ -953,7 +962,7 @@ cat > "$C2_FIXTURE_DENY" <<C2EOF
 {"tool_name":"Bash","tool_input":{"command":"git -C $C2_TEST_DIR commit -m \"direct commit on main\""}}
 C2EOF
 
-output=$(run_hook "$HOOKS_DIR/guard.sh" "$C2_FIXTURE_DENY")
+output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$C2_FIXTURE_DENY")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     pass "guard.sh — Check 2: direct commit on main denied"
@@ -976,7 +985,7 @@ cat > "$C2_FIXTURE_MERGE" <<C2EOF
 {"tool_name":"Bash","tool_input":{"command":"git -C $C2_TEST_DIR commit -m \"Merge branch 'feature' into main\""}}
 C2EOF
 
-output=$(run_hook "$HOOKS_DIR/guard.sh" "$C2_FIXTURE_MERGE")
+output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$C2_FIXTURE_MERGE")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     fail "guard.sh — Check 2: merge commit on main" "should allow but got deny"
@@ -988,79 +997,13 @@ rm -f "$C2_FIXTURE_MERGE"
 safe_cleanup "$C2_TEST_DIR" "$SCRIPT_DIR"
 echo ""
 
-# --- Test: auto-review.sh ---
-echo "--- auto-review.sh ---"
-if [[ -f "$FIXTURES_DIR/auto-review-safe.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/auto-review.sh" "$FIXTURES_DIR/auto-review-safe.json")
-    if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision' > /dev/null 2>&1; then
-        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision')
-        if [[ "$decision" == "allow" ]]; then
-            pass "auto-review.sh — safe command auto-approved"
-        else
-            fail "auto-review.sh — safe command" "expected allow, got: $decision"
-        fi
-    else
-        # No output also means pass-through (no opinion)
-        pass "auto-review.sh — safe command passes through"
-    fi
-fi
-
-# --- Test: auto-review.sh — interpreter analyzer ---
-echo "--- auto-review.sh interpreter analyzer ---"
-
-# Helper: assert auto-review approves a command
-auto_review_assert_approved() {
-    local fixture="$1" label="$2"
-    if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
-        local output decision
-        output=$(run_hook "$HOOKS_DIR/auto-review.sh" "$FIXTURES_DIR/$fixture")
-        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
-        if [[ "$decision" == "allow" ]]; then
-            pass "auto-review.sh — $label"
-        else
-            fail "auto-review.sh — $label" "expected allow, got: ${decision:-no opinion (advisory/defer)}"
-        fi
-    else
-        skip "auto-review.sh — $label" "fixture $fixture not found"
-    fi
-}
-
-# Helper: assert auto-review does NOT approve (defers to user)
-auto_review_assert_deferred() {
-    local fixture="$1" label="$2"
-    if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
-        local output decision
-        output=$(run_hook "$HOOKS_DIR/auto-review.sh" "$FIXTURES_DIR/$fixture")
-        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
-        if [[ "$decision" == "allow" ]]; then
-            fail "auto-review.sh — $label" "should NOT auto-approve but got allow"
-        else
-            pass "auto-review.sh — $label"
-        fi
-    else
-        skip "auto-review.sh — $label" "fixture $fixture not found"
-    fi
-}
-
-# Interpreter: safe forms (script files, -m module)
-auto_review_assert_approved "auto-review-python-script.json" "python3 script.py → approved (safe)"
-auto_review_assert_approved "auto-review-python-module.json" "python3 -m pytest → approved (safe)"
-auto_review_assert_approved "auto-review-node-script.json"   "node app.js → approved (safe)"
-
-# Interpreter: risky forms (inline code, interactive REPL)
-auto_review_assert_deferred "auto-review-python-inline.json" "python3 -c \"...\" → deferred (inline code)"
-auto_review_assert_deferred "auto-review-python-repl.json"   "python3 (no args) → deferred (interactive REPL)"
-auto_review_assert_deferred "auto-review-node-inline.json"   "node -e \"...\" → deferred (inline code)"
-
-# Shell: existing analyzer (regression tests)
-auto_review_assert_approved "auto-review-bash-script.json"   "bash script.sh → approved (safe)"
-auto_review_assert_deferred "auto-review-bash-inline.json"   "bash -c \"...\" → deferred (inline code)"
-echo ""
+# NOTE: auto-review.sh tests removed — hook was pruned during metanoia consolidation.
+# The hook no longer exists; all its tests have been deleted to match.
 
 # --- Test: plan-validate.sh (PostToolUse) ---
 echo "--- plan-validate.sh ---"
 if [[ -f "$FIXTURES_DIR/plan-validate-non-plan.json" ]]; then
-    output=$(run_hook "$HOOKS_DIR/plan-validate.sh" "$FIXTURES_DIR/plan-validate-non-plan.json")
+    output=$(run_hook "$HOOKS_DIR/post-write.sh" "$FIXTURES_DIR/plan-validate-non-plan.json")
     # Non-plan files should pass through silently
     if [[ -z "$output" || "$output" == "{}" ]]; then
         pass "plan-validate.sh — non-plan file passes through"
@@ -1331,9 +1274,13 @@ cat > "$PC_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 **Status:** completed
 PLAN_EOF
 
-# Feed plan-check a source file Write
-PLAN_CHECK_INPUT=$(jq -n --arg fp "$PC_TEST_DIR/src/main.ts" '{tool_name:"Write",tool_input:{file_path:$fp,content:"console.log(1);\nconsole.log(2);\nconsole.log(3);\nconsole.log(4);\nconsole.log(5);\nconsole.log(6);\nconsole.log(7);\nconsole.log(8);\nconsole.log(9);\nconsole.log(10);\nconsole.log(11);\nconsole.log(12);\nconsole.log(13);\nconsole.log(14);\nconsole.log(15);\nconsole.log(16);\nconsole.log(17);\nconsole.log(18);\nconsole.log(19);\nconsole.log(20);\nconsole.log(21);"}}')
-output=$(echo "$PLAN_CHECK_INPUT" | CLAUDE_PROJECT_DIR="$PC_TEST_DIR" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null) || true
+# NOTE: file_path uses .worktrees/ so Gate 1 (branch-guard) passes through to Gate 2 (plan-check).
+# Without this, Gate 1 blocks writes on master before plan-check can evaluate the plan lifecycle.
+PC_WORKTREE_PATH="$PC_TEST_DIR/.worktrees/feature-test/src/main.ts"
+# Content has doc header to pass Gate 5 (doc-gate), and @decision for 50+ line threshold.
+# Only 21 lines here so no @decision needed — just the header to pass Gate 5.
+PLAN_CHECK_INPUT=$(jq -n --arg fp "$PC_WORKTREE_PATH" '{tool_name:"Write",tool_input:{file_path:$fp,content:"/** @file main.ts @description Plan-check test fixture. */\nconsole.log(1);\nconsole.log(2);\nconsole.log(3);\nconsole.log(4);\nconsole.log(5);\nconsole.log(6);\nconsole.log(7);\nconsole.log(8);\nconsole.log(9);\nconsole.log(10);\nconsole.log(11);\nconsole.log(12);\nconsole.log(13);\nconsole.log(14);\nconsole.log(15);\nconsole.log(16);\nconsole.log(17);\nconsole.log(18);\nconsole.log(19);\nconsole.log(20);\nconsole.log(21);"}}')
+output=$(echo "$PLAN_CHECK_INPUT" | CLAUDE_PROJECT_DIR="$PC_TEST_DIR" bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
     reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
@@ -1357,7 +1304,7 @@ cat > "$PC_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 **Status:** in-progress
 PLAN_EOF
 
-output=$(echo "$PLAN_CHECK_INPUT" | CLAUDE_PROJECT_DIR="$PC_TEST_DIR" bash "$HOOKS_DIR/plan-check.sh" 2>/dev/null) || true
+output=$(echo "$PLAN_CHECK_INPUT" | CLAUDE_PROJECT_DIR="$PC_TEST_DIR" bash "$HOOKS_DIR/pre-write.sh" 2>/dev/null) || true
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" != "deny" ]]; then
     pass "plan-check.sh — active plan allows source writes"
@@ -1705,7 +1652,7 @@ MULTI_CTX_TMPDIR=$(mktemp -d)
 MULTI_CTX_TESTS=(
     "test-proof-gate.sh"
     "test-project-isolation.sh"
-    "test-state-registry.sh"
+    # test-state-registry.sh removed — hooks/state-registry.sh was pruned during metanoia consolidation
 )
 
 MULTI_CTX_PASS2_FAILED=0

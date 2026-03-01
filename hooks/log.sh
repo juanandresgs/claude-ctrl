@@ -200,5 +200,44 @@ resolve_proof_file() {
     fi
 }
 
+# write_proof_status — atomic write to all active .proof-status paths.
+#
+# Writes <status>|<epoch> to the resolved proof file (resolve_proof_file output).
+# Also dual-writes to the scoped file (CLAUDE_DIR/.proof-status-{phash}) so that
+# guard.sh and task-track.sh always find a consistent value regardless of which
+# path they check (worktree path vs orchestrator path).
+#
+# Usage: write_proof_status <status> [project_root]
+# Example: write_proof_status "verified" "$PROJECT_ROOT"
+#
+# Documented in HOOKS.md as the canonical write path for proof-status transitions.
+# Replaces ad-hoc echo "status|timestamp" patterns that miss dual-write coverage.
+write_proof_status() {
+    local status="${1:?write_proof_status requires a status argument}"
+    local project_root="${2:-${PROJECT_ROOT:-$(detect_project_root)}}"
+    local claude_dir
+    claude_dir=$(get_claude_dir)
+    local phash
+    phash=$(project_hash "$project_root")
+    local timestamp
+    timestamp=$(date +%s)
+    local value="${status}|${timestamp}"
+
+    # Primary: write to resolved proof file (handles worktree breadcrumb)
+    local primary_path
+    primary_path=$(resolve_proof_file)
+    if [[ -n "$primary_path" ]]; then
+        mkdir -p "$(dirname "$primary_path")" 2>/dev/null || true
+        echo "$value" > "$primary_path" 2>/dev/null || true
+    fi
+
+    # Dual-write: always write scoped file so orchestrator can find verified status
+    local scoped_path="${claude_dir}/.proof-status-${phash}"
+    if [[ "$primary_path" != "$scoped_path" ]]; then
+        mkdir -p "$(dirname "$scoped_path")" 2>/dev/null || true
+        echo "$value" > "$scoped_path" 2>/dev/null || true
+    fi
+}
+
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file
+export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file write_proof_status

@@ -365,7 +365,7 @@ MOCK_JSON=$(jq -n --arg r "$AV_RESP_TEXT" '{"last_assistant_message": $r}')
 
 # Time execution
 START_TIME=$(date +%s)
-HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 
@@ -417,7 +417,7 @@ NV_RESP_TEXT="### Verification Assessment
 AUTOVERIFY: CLEAN"
 MOCK_JSON=$(jq -n --arg r "$NV_RESP_TEXT" '{"last_assistant_message": $r}')
 
-HOOK_OUTPUT=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
+HOOK_OUTPUT=$(echo "$MOCK_JSON" | CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true bash "$HOOKS_DIR/check-tester.sh" 2>/dev/null || true)
 
 PROOF_AFTER=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
@@ -587,7 +587,10 @@ fi
 # Must produce valid JSON
 if echo "$HOOK_OUTPUT" | jq -e '.additionalContext' >/dev/null 2>&1; then
     # Must contain Guardian unblocked signal
-    if echo "$HOOK_OUTPUT" | jq -r '.additionalContext' | grep -q 'Guardian dispatch is unblocked'; then
+    # Phase 1 (CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true): "Already verified. Guardian dispatch is unblocked."
+    # Phase 2 (default path): "Guardian dispatch is now unblocked."
+    # Both contain "Guardian dispatch is" — match the common substring.
+    if echo "$HOOK_OUTPUT" | jq -r '.additionalContext' | grep -q 'Guardian dispatch is'; then
         pass_test
     else
         fail_test "additionalContext exists but missing Guardian directive. Output: $HOOK_OUTPUT"
@@ -618,7 +621,8 @@ AUTOVERIFY: CLEAN"
 MOCK_JSON=$(jq -n --arg r "$DIAG_RESP_TEXT" '{"last_assistant_message": $r}')
 
 # Capture stderr (diagnostic output) separately from stdout (JSON output)
-HOOK_STDERR=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+# CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true required: diagnostic logging runs inside the gate.
+HOOK_STDERR=$(echo "$MOCK_JSON" | CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
 
 # Restore
 if [[ -n "$SAVED_PROOF" ]]; then
@@ -657,7 +661,7 @@ DIAG_RESP_TEXT2="### Confidence Level
 AUTOVERIFY: CLEAN"
 MOCK_JSON2=$(jq -n --arg r "$DIAG_RESP_TEXT2" '{"last_assistant_message": $r}')
 
-HOOK_STDERR2=$(echo "$MOCK_JSON2" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+HOOK_STDERR2=$(echo "$MOCK_JSON2" | CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
 
 # Restore
 if [[ -n "$SAVED_PROOF" ]]; then
@@ -694,7 +698,7 @@ echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 # Empty last_assistant_message — jq returns empty string for null/missing
 MOCK_JSON_EMPTY=$(jq -n '{"last_assistant_message": ""}')
 
-HOOK_STDERR_EMPTY=$(echo "$MOCK_JSON_EMPTY" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+HOOK_STDERR_EMPTY=$(echo "$MOCK_JSON_EMPTY" | CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
 
 # Restore
 if [[ -n "$SAVED_PROOF" ]]; then
@@ -729,6 +733,12 @@ TRACE_STORE_PATH="${TRACE_STORE:-$HOME/.claude/traces}"
 FAKE_TRACE_ID="tester-$(date +%Y%m%d-%H%M%S)-test15"
 FAKE_TRACE_DIR="${TRACE_STORE_PATH}/${FAKE_TRACE_ID}"
 mkdir -p "${FAKE_TRACE_DIR}/artifacts"
+
+# Write verification-output.txt so Check 3 (completeness gate) does not block.
+# Check 3 blocks when outcome=partial|skipped AND verification-output.txt is missing.
+# Without this file the fake trace's "skipped" outcome triggers an INCOMPLETE exit
+# before the auto-verify gate runs, making the test appear to fail.
+echo "# Fake verification output for test 15" > "${FAKE_TRACE_DIR}/artifacts/verification-output.txt"
 
 # Write summary.md with AUTOVERIFY: CLEAN signal
 cat > "${FAKE_TRACE_DIR}/summary.md" <<'SUMMARY_EOF'
@@ -775,7 +785,7 @@ MOCK_JSON_FALLBACK=$(jq -n '{"last_assistant_message": ""}')
 # which would consume the active marker on the first run, breaking the second).
 _T15_STDOUT=$(mktemp "$PROJECT_ROOT/tmp/test-av-t15-XXXXXX")
 _T15_STDERR=$(mktemp "$PROJECT_ROOT/tmp/test-av-t15-XXXXXX")
-echo "$MOCK_JSON_FALLBACK" | bash "$HOOKS_DIR/check-tester.sh" >"$_T15_STDOUT" 2>"$_T15_STDERR" || true
+echo "$MOCK_JSON_FALLBACK" | CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true bash "$HOOKS_DIR/check-tester.sh" >"$_T15_STDOUT" 2>"$_T15_STDERR" || true
 HOOK_OUTPUT_FB=$(cat "$_T15_STDOUT")
 HOOK_STDERR_FB=$(cat "$_T15_STDERR")
 rm -f "$_T15_STDOUT" "$_T15_STDERR"

@@ -16,7 +16,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="${SCRIPT_DIR}/../hooks"
-CHECKPOINT_SH="${HOOKS_DIR}/checkpoint.sh"
+# checkpoint.sh was merged into pre-write.sh (Gate 6) during metanoia consolidation.
+# Tests invoke pre-write.sh with fixtures that include:
+#   - doc headers (to pass Gate 5 / doc-gate)
+#   - .worktrees/ paths (to pass Gate 1 / branch-guard feature-branch check)
+#   - short content <20 lines (to bypass Gate 2 / plan-check small-file fast-mode)
+CHECKPOINT_SH="${HOOKS_DIR}/pre-write.sh"
 LOG_SH="${HOOKS_DIR}/log.sh"
 
 # Colors for output
@@ -58,23 +63,44 @@ setup_test_repo() {
     git -C "$repo" checkout -q -b feature/test 2>/dev/null
 }
 
-# Simulate running checkpoint.sh with a given file path and env setup
+# Simulate running the checkpoint gate (now in pre-write.sh Gate 6) with a given file path.
+# The file_path MUST:
+#   - contain /.worktrees/ so Gate 1 (branch-guard feature-branch check) passes
+#   - have content with a doc header so Gate 5 (doc-gate) passes
+# Content is short (<20 lines) to trigger Gate 2 fast-mode bypass (no MASTER_PLAN.md needed).
 run_checkpoint() {
     local repo="$1"
     local file_path="$2"
     local claude_dir="$3"
     local session_id="${4:-test-session-$$}"
 
-    # Build the hook input JSON
-    local input
-    input=$(jq -n --arg fp "$file_path" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    # Use a .worktrees/ path to bypass Gate 1 branch-guard feature-branch check.
+    # If caller passed a non-worktree path, rewrite it.
+    local wt_path="$file_path"
+    if [[ "$wt_path" != *"/.worktrees/"* ]]; then
+        local fname="${file_path##*/}"
+        wt_path="${repo}/.worktrees/feature-test/${fname}"
+    fi
 
-    # Run checkpoint.sh with isolated CLAUDE_DIR and CLAUDE_SESSION_ID
+    # Build the hook input JSON with content that has a doc header (passes Gate 5)
+    local input
+    input=$(jq -n --arg fp "$wt_path" \
+        '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture — doc header for gate compliance\nprint(\"hello\")\n"}}')
+
+    # Run pre-write.sh (which contains the checkpoint gate) with isolated env
     CLAUDE_PROJECT_DIR="$repo" \
     CLAUDE_SESSION_ID="$session_id" \
     HOME="${claude_dir%/.claude}" \
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
     return $?
+}
+
+# Helper: build a worktree-scoped path for a file inside a test repo
+# Returns: $repo/.worktrees/feature-test/$basename
+wt_path() {
+    local repo="$1"
+    local file="$2"
+    echo "${repo}/.worktrees/feature-test/${file##*/}"
 }
 
 # Count checkpoint refs for a branch
@@ -98,11 +124,11 @@ test_non_git_repo() {
 
     # Run against non-git directory
     local input
-    input=$(jq -n --arg fp "$tmp/myfile.py" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    input=$(jq -n --arg fp "$tmp/myfile.py" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
     CLAUDE_PROJECT_DIR="$tmp" \
     CLAUDE_SESSION_ID="testsession" \
     HOME="$tmp" \
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
 
     local exit_code=$?
     if [[ $exit_code -eq 0 ]]; then
@@ -131,14 +157,14 @@ test_main_branch_skip() {
     # Stay on main branch
 
     local input
-    input=$(jq -n --arg fp "$tmp/a.txt" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    input=$(jq -n --arg fp "$tmp/a.txt" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
 
     # Simulate 5 writes to trigger threshold
     for i in 1 2 3 4 5; do
         CLAUDE_PROJECT_DIR="$tmp" \
         CLAUDE_SESSION_ID="testsession" \
         HOME="$tmp" \
-        bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+        bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
     done
 
     local ref_count
@@ -164,16 +190,17 @@ test_checkpoint_at_threshold() {
     mkdir -p "$claude_dir"
 
     local session_id="session-threshold-$$"
-    local file="$tmp/src.py"
+    # Use .worktrees/ path so Gate 1 (branch-guard) passes on feature/test branch
+    local file="$tmp/.worktrees/feature-test/src.py"
 
     # Simulate 4 writes — no checkpoint yet
     for i in 1 2 3 4; do
         local input
-        input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+        input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
         CLAUDE_PROJECT_DIR="$tmp" \
         CLAUDE_SESSION_ID="$session_id" \
         HOME="$tmp" \
-        bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+        bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
     done
 
     local count_before
@@ -183,11 +210,11 @@ test_checkpoint_at_threshold() {
 
     # Write 5 — threshold hit, second checkpoint
     local input
-    input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
     CLAUDE_PROJECT_DIR="$tmp" \
     CLAUDE_SESSION_ID="$session_id" \
     HOME="$tmp" \
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
 
     local count_after
     count_after=$(count_checkpoint_refs "$tmp" "feature/test")
@@ -216,14 +243,15 @@ test_first_write_new_file() {
     # Create session-changes file (simulate no prior writes)
     touch "$claude_dir/.session-changes-${session_id}"
 
-    local new_file="$tmp/new-module.py"
+    # Use .worktrees/ path so Gate 1 (branch-guard) passes on feature/test branch
+    local new_file="$tmp/.worktrees/feature-test/new-module.py"
     local input
-    input=$(jq -n --arg fp "$new_file" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    input=$(jq -n --arg fp "$new_file" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
 
     CLAUDE_PROJECT_DIR="$tmp" \
     CLAUDE_SESSION_ID="$session_id" \
     HOME="$tmp" \
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
 
     local ref_count
     ref_count=$(count_checkpoint_refs "$tmp" "feature/test")
@@ -251,18 +279,16 @@ test_checkpoint_ref_valid() {
     local session_id="session-ref-valid-$$"
     touch "$claude_dir/.session-changes-${session_id}"
 
-    local file="$tmp/app.py"
-    echo "print('hello')" > "$file"
-    git -C "$tmp" add "$file"
-    git -C "$tmp" commit -q -m "add app.py"
+    # Use .worktrees/ path so Gate 1 (branch-guard) passes on feature/test branch
+    local file="$tmp/.worktrees/feature-test/app.py"
 
     local input
-    input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
 
     CLAUDE_PROJECT_DIR="$tmp" \
     CLAUDE_SESSION_ID="$session_id" \
     HOME="$tmp" \
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
 
     # Get the checkpoint ref and verify it's a valid commit
     local ref_sha
@@ -295,14 +321,15 @@ test_counter_file_written() {
     mkdir -p "$claude_dir"
 
     local session_id="session-counter-$$"
-    local file="$tmp/some.py"
+    # Use .worktrees/ path so Gate 1 (branch-guard) passes on feature/test branch
+    local file="$tmp/.worktrees/feature-test/some.py"
     local input
-    input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp}}')
+    input=$(jq -n --arg fp "$file" '{"tool_name":"Write","tool_input":{"file_path":$fp,"content":"# Checkpoint test fixture\nprint(\"hello\")"}}')
 
     CLAUDE_PROJECT_DIR="$tmp" \
     CLAUDE_SESSION_ID="$session_id" \
     HOME="$tmp" \
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null
 
     if [[ -f "$claude_dir/.checkpoint-counter" ]]; then
         local counter_val
@@ -330,7 +357,7 @@ test_empty_file_path() {
     input='{"tool_name":"Write","tool_input":{}}'
 
     local exit_code=0
-    bash "$CHECKPOINT_SH" <<< "$input" 2>/dev/null || exit_code=$?
+    bash "$CHECKPOINT_SH" <<< "$input" >/dev/null 2>/dev/null || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         pass_test "Empty file path: exits 0 cleanly"

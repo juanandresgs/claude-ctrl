@@ -77,7 +77,7 @@ else
 fi
 
 run_test "Syntax: guard.sh is valid bash"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"
@@ -407,7 +407,7 @@ EOF
 OUTPUT=$(cd "$TEMP_WORKTREE" && \
          HOME_CLAUDE_DIR="$TEMP_ORCH" \
          CLAUDE_PROJECT_DIR="$TEMP_WORKTREE" \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny"; then
     fail_test "guard.sh blocked commit even though orchestrator has verified status"
@@ -442,7 +442,7 @@ EOF
 OUTPUT=$(cd "$TEMP_WORKTREE" && \
          HOME_CLAUDE_DIR="$TEMP_ORCH" \
          CLAUDE_PROJECT_DIR="$TEMP_WORKTREE" \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny"; then
     pass_test

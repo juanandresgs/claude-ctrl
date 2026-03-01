@@ -2,5 +2,6 @@
   "tool_name": "Bash",
   "tool_input": {
     "command": "rm -rf .worktrees/test-fake"
-  }
+  },
+  "cwd": "/Users/test/.claude/.worktrees/test-fake"
 }

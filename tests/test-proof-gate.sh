@@ -43,7 +43,7 @@ fail_test() {
 
 # --- Test 1: Syntax validation ---
 run_test "Syntax: guard.sh is valid bash"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"
@@ -149,6 +149,12 @@ TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-impl-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 IMPL_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
+# Gate C.1 requires at least one linked worktree (enforces worktree isolation).
+# Without this, task-track.sh denies implementer dispatch before Gate C.2 writes .proof-status.
+IMPL_WORKTREE="$TEMP_REPO/.worktrees/feature-test"
+mkdir -p "$IMPL_WORKTREE"
+git -C "$TEMP_REPO" worktree add "$IMPL_WORKTREE" -b feature/test > /dev/null 2>&1 || \
+    git -C "$TEMP_REPO" worktree add --detach "$IMPL_WORKTREE" > /dev/null 2>&1 || true
 
 INPUT_JSON=$(cat <<'EOF'
 {
@@ -161,9 +167,7 @@ INPUT_JSON=$(cat <<'EOF'
 EOF
 )
 
-cd "$TEMP_REPO" && \
-    CLAUDE_PROJECT_DIR="$TEMP_REPO" \
-    echo "$INPUT_JSON" | bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
+echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
 
 # Check scoped file (.proof-status-{phash}) written by Gate C.2
 if [[ -f "$TEMP_REPO/.claude/.proof-status-${IMPL_PHASH}" ]]; then
@@ -177,7 +181,6 @@ else
     fail_test "Implementer did not create .proof-status-${IMPL_PHASH} (scoped)"
 fi
 
-cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 # --- Test 11: gate activation only when missing ---
@@ -188,10 +191,13 @@ git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 EXIST_PHASH=$(echo "$TEMP_REPO" | shasum -a 256 | cut -c1-8)
 echo "pending|99999" > "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}"
+# Gate C.1 requires at least one linked worktree — add one so the hook reaches Gate C.2
+EXIST_WORKTREE="$TEMP_REPO/.worktrees/feature-exist"
+mkdir -p "$EXIST_WORKTREE"
+git -C "$TEMP_REPO" worktree add "$EXIST_WORKTREE" -b feature/exist > /dev/null 2>&1 || \
+    git -C "$TEMP_REPO" worktree add --detach "$EXIST_WORKTREE" > /dev/null 2>&1 || true
 
-cd "$TEMP_REPO" && \
-    CLAUDE_PROJECT_DIR="$TEMP_REPO" \
-    echo "$INPUT_JSON" | bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
+echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
 
 STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}")
 TIMESTAMP=$(cut -d'|' -f2 "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}")
@@ -202,7 +208,6 @@ else
     fail_test "Implementer overwrote existing .proof-status-${EXIST_PHASH}"
 fi
 
-cd "$PROJECT_ROOT"
 rm -rf "$TEMP_REPO"
 
 # --- Tests 12-15: guard.sh Check 6-7 (test-status gate inversion) ---
@@ -236,7 +241,7 @@ EOF
     # Run hook — cd into temp repo so detect_project_root finds it (not meta-repo)
     local OUTPUT
     OUTPUT=$(cd "$TEMP_REPO" && \
-             echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1)
+             echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1)
     local EXIT_CODE=$?
 
     # Cleanup - ensure we're not in TEMP_REPO before deleting
@@ -317,7 +322,7 @@ EOF
     # Run hook — cd into temp repo so detect_project_root finds it (not meta-repo)
     local OUTPUT
     OUTPUT=$(cd "$TEMP_REPO" && \
-             echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1)
+             echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1)
     local EXIT_CODE=$?
 
     # Cleanup - ensure we're not in TEMP_REPO before deleting
@@ -367,7 +372,7 @@ EOF
 )
 
 OUTPUT=$(cd "$TEMP_REPO" && \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "verification is active"; then
     pass_test
@@ -396,7 +401,7 @@ EOF
 )
 
 OUTPUT=$(cd "$TEMP_REPO" && \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "verification is active"; then
     pass_test
@@ -425,7 +430,7 @@ EOF
 )
 
 OUTPUT=$(cd "$TEMP_REPO" && \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny"; then
     fail_test "Deletion blocked when verified (should allow)"

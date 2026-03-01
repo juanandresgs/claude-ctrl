@@ -52,7 +52,7 @@ make_input() {
 run_guard() {
     local repo_dir="$1"
     local input_json="$2"
-    echo "$input_json" | (cd "$repo_dir" && bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+    echo "$input_json" | (cd "$repo_dir" && bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 }
 
 # ============================================================
@@ -60,7 +60,7 @@ run_guard() {
 # ============================================================
 
 run_test "Syntax: guard.sh is valid bash after the change"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"

@@ -84,7 +84,7 @@ assert_allow() {
 
 # --- Test 1: Syntax check ---
 run_test "Syntax: guard.sh is valid bash"
-if bash -n "$HOOKS_DIR/guard.sh"; then
+if bash -n "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "guard.sh has syntax errors"
@@ -92,7 +92,7 @@ fi
 
 # --- Test 2: Dead code removed — rewrite() must not exist ---
 run_test "Dead code: rewrite() function is removed"
-if grep -n 'rewrite()' "$HOOKS_DIR/guard.sh" | grep -v '#' | grep -q 'rewrite()'; then
+if grep -n 'rewrite()' "$HOOKS_DIR/pre-bash.sh" | grep -v '#' | grep -q 'rewrite()'; then
     fail_test "rewrite() function still present in guard.sh"
 else
     pass_test
@@ -100,7 +100,7 @@ fi
 
 # --- Test 3: Dead code removed — is_same_project() must not exist ---
 run_test "Dead code: is_same_project() function is removed"
-if grep -n 'is_same_project()' "$HOOKS_DIR/guard.sh" | grep -v '#' | grep -q 'is_same_project()'; then
+if grep -n 'is_same_project()' "$HOOKS_DIR/pre-bash.sh" | grep -v '#' | grep -q 'is_same_project()'; then
     fail_test "is_same_project() function still present in guard.sh"
 else
     pass_test
@@ -108,7 +108,7 @@ fi
 
 # --- Test 4: is_guardian_active() helper must exist ---
 run_test "Helper: is_guardian_active() function is present"
-if grep -q 'is_guardian_active()' "$HOOKS_DIR/guard.sh"; then
+if grep -q 'is_guardian_active()' "$HOOKS_DIR/pre-bash.sh"; then
     pass_test
 else
     fail_test "is_guardian_active() function not found in guard.sh"
@@ -116,7 +116,7 @@ fi
 
 # --- Test 5: is_guardian_active() called at least 3 times (replaced 3 copy-paste blocks) ---
 run_test "Helper: is_guardian_active() called 3+ times (deduplication)"
-CALL_COUNT=$(grep -c 'is_guardian_active' "$HOOKS_DIR/guard.sh" || true)
+CALL_COUNT=$(grep -c 'is_guardian_active' "$HOOKS_DIR/pre-bash.sh" || true)
 # Count includes: 1 definition + 3 calls minimum
 if [[ "$CALL_COUNT" -ge 4 ]]; then
     pass_test
@@ -141,7 +141,7 @@ git -C "$COMMIT_REPO" config user.name "Test" > /dev/null 2>&1
 CMD="git -C $COMMIT_REPO commit -m \"fix branch -D handling\""
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 rm -rf "$COMMIT_REPO"
 
@@ -161,7 +161,7 @@ git -C "$COMMIT_REPO2" config user.name "Test" > /dev/null 2>&1
 CMD="git -C $COMMIT_REPO2 commit -m \"don't commit on main\""
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 rm -rf "$COMMIT_REPO2"
 
@@ -181,7 +181,7 @@ git -C "$COMMIT_REPO3" config user.name "Test" > /dev/null 2>&1
 CMD="git -C $COMMIT_REPO3 commit -m \"use --force for deployment\""
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 rm -rf "$COMMIT_REPO3"
 
@@ -201,7 +201,7 @@ git -C "$COMMIT_REPO4" config user.name "Test" > /dev/null 2>&1
 CMD="git -C $COMMIT_REPO4 commit -m \"clean -f the build\""
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 rm -rf "$COMMIT_REPO4"
 
@@ -233,7 +233,7 @@ git -C "$BRANCH_REPO" checkout main > /dev/null 2>&1 || git -C "$BRANCH_REPO" ch
 CMD="git -C $BRANCH_REPO branch -D feature-branch"
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 rm -rf "$BRANCH_REPO"
 
@@ -245,7 +245,7 @@ run_test "Regression: git push origin main --force still denied"
 CMD="git push origin main --force"
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 assert_deny "$OUTPUT" "force push to main"
 
@@ -255,7 +255,7 @@ run_test "Regression: git reset --hard HEAD~1 still denied"
 CMD="git reset --hard HEAD~1"
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 assert_deny "$OUTPUT" "git reset --hard"
 
@@ -265,7 +265,7 @@ run_test "Regression: git clean -f (not in quotes) still denied"
 CMD="git clean -f"
 INPUT_JSON=$(make_input "$CMD")
 
-OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/guard.sh" 2>&1) || true
+OUTPUT=$(echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 assert_deny "$OUTPUT" "git clean -f"
 
