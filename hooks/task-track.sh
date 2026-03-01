@@ -217,8 +217,12 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
     #   development. The fix checks the worktree identity (main vs linked) instead of the
     #   branch name. Implementer dispatched from a linked worktree passes. Implementer
     #   dispatched from the main worktree requires at least one linked worktree to exist.
+    # Guard: git commands require a git repo. Non-git projects can't have worktrees.
+    if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree &>/dev/null; then
+        emit_deny "Cannot dispatch implementer: '$PROJECT_ROOT' is not a git repository. Initialize with: git init"
+    fi
     MAIN_WT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
-        | awk '/^worktree /{print $2; exit}')
+        | awk '/^worktree /{print $2; exit}') || MAIN_WT=""
     CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     # Resolve symlinks for comparison (macOS: /var → /private/var)
     RESOLVED_ROOT=$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P)
