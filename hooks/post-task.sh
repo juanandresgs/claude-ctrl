@@ -96,6 +96,39 @@ if [[ "$TOOL_NAME" == "Task" && "$SUBAGENT_TYPE" != "tester" && -n "$SUBAGENT_TY
     fi
 fi
 
+# --- Implementer completion: auto-dispatch tester directive ---
+# @decision DEC-IMPL-DISPATCH-001
+# @title Auto-dispatch tester directive after implementer returns
+# @status accepted
+# @rationale CLAUDE.md mandates auto-dispatch of tester after implementer returns
+#   with passing tests. Previously no hook emitted a directive, causing the
+#   orchestrator to ask "want me to dispatch tester?" instead. This handler
+#   checks test status and emits "DISPATCH TESTER NOW" when tests pass.
+if [[ "$TOOL_NAME" == "Task" && "$SUBAGENT_TYPE" == "implementer" ]]; then
+    _impl_root=$(detect_project_root 2>/dev/null || echo "")
+    if [[ -n "$_impl_root" ]]; then
+        _impl_tests_pass=false
+        # Use subshell to isolate set -u crash from non-numeric TEST_TIME
+        if (read_test_status "$_impl_root") 2>/dev/null; then
+            # Re-read in parent shell (subshell can't export globals back)
+            read_test_status "$_impl_root" 2>/dev/null || true
+            [[ "${TEST_RESULT:-}" == "pass" ]] && _impl_tests_pass=true
+        fi
+
+        if [[ "$_impl_tests_pass" == "true" ]]; then
+            _IMPL_DIR="DISPATCH TESTER NOW: Implementer returned with tests passing. Auto-dispatch tester per CLAUDE.md. Do NOT ask the user."
+        else
+            _IMPL_DIR="Implementer returned (tests: ${TEST_RESULT:-unknown}). Review findings before dispatching tester."
+        fi
+
+        _IMPL_ESC=$(printf '%s' "$_IMPL_DIR" | jq -Rs .)
+        cat <<EOF
+{ "additionalContext": $_IMPL_ESC }
+EOF
+        exit 0
+    fi
+fi
+
 # Only act on Task tool completions for the tester subagent
 if [[ "$TOOL_NAME" != "Task" || "$SUBAGENT_TYPE" != "tester" ]]; then
     exit 0

@@ -192,7 +192,7 @@ if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+goo
         CURRENT_STATUS=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null)
         if [[ "$CURRENT_STATUS" == "pending" || "$CURRENT_STATUS" == "needs-verification" ]]; then
             write_proof_status "verified" "$PROJECT_ROOT"
-            CONTEXT_PARTS+=("Proof-of-work verified by user. Guardian dispatch is now unblocked.")
+            CONTEXT_PARTS+=("DISPATCH GUARDIAN NOW: User verified proof-of-work. proof-status=verified. Auto-dispatch Guardian per CLAUDE.md. Do NOT ask 'should I commit?' — Guardian owns the approval cycle.")
         fi
     fi
 fi

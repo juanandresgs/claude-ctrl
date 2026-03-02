@@ -797,7 +797,7 @@ while IFS= read -r hook; do
     if ! echo "$REGISTERED_HOOKS" | grep -q "^$hook$"; then
         # Exempt utility libraries (not hooks) — domain libs added during metanoia consolidation
         case "$hook" in
-            log.sh|context-lib.sh|source-lib.sh|state-registry.sh|\
+            log.sh|context-lib.sh|source-lib.sh|state-registry.sh|state-lib.sh|\
             ci-lib.sh|core-lib.sh|doc-lib.sh|git-lib.sh|plan-lib.sh|session-lib.sh|trace-lib.sh)
                 ;;
             *)
@@ -1761,6 +1761,7 @@ V2_TEST_FILES=(
     "test-plan-injection.sh"
     "test-trace-classification.sh"
     "test-validation-harness.sh"
+    "test-proof-lifecycle.sh"
 )
 
 for test_file in "${V2_TEST_FILES[@]}"; do

@@ -161,6 +161,8 @@ read_test_status() {
     TEST_FAILS=$(cut -d'|' -f2 < "$status_file")
     TEST_TIME=$(cut -d'|' -f3 < "$status_file")
     local now; now=$(date +%s)
+    # Guard: non-numeric TEST_TIME causes set -u crash in arithmetic context
+    [[ "$TEST_TIME" =~ ^[0-9]+$ ]] || TEST_TIME=0
     TEST_AGE=$(( now - TEST_TIME ))
     return 0
 }

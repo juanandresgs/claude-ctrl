@@ -96,6 +96,7 @@ track_subagent_start() {
 
     # Append start record (line-based for simplicity and atomicity)
     echo "ACTIVE|${agent_type}|$(date +%s)" >> "$tracker"
+    type state_update &>/dev/null && state_update ".agents.${agent_type}.status" "active" "track_subagent_start" || true
 }
 
 track_subagent_stop() {
@@ -128,6 +129,7 @@ track_subagent_stop() {
     else
         rm -f "$tmp"
     fi
+    type state_update &>/dev/null && state_update ".agents.${agent_type}.status" "inactive" "track_subagent_stop" || true
 }
 
 get_subagent_status() {

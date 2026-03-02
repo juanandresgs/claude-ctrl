@@ -203,6 +203,11 @@ require_ci() {
     source "${_SRCLIB_DIR}/ci-lib.sh"
 }
 
+require_state() {
+    [[ -n "${_STATE_LIB_LOADED:-}" ]] && return 0
+    source "${_SRCLIB_DIR}/state-lib.sh"
+}
+
 # require_all — load all domain libraries (equivalent to old context-lib.sh behavior).
 # Use in hooks that need every domain: session-init.sh, compact-preserve.sh, etc.
 require_all() {

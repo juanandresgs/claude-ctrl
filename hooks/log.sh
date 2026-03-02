@@ -86,6 +86,28 @@ detect_project_root() {
         echo "$CLAUDE_PROJECT_DIR"
         return
     fi
+    # Anchor from hook input .cwd when $PWD diverges from session context.
+    # Prevents phash mismatch between hooks (e.g., prompt-submit.sh vs task-track.sh).
+    # .cwd is Claude Code's authoritative working directory for the hook invocation.
+    # Cache result in CLAUDE_PROJECT_DIR so subsequent calls within the same
+    # hook execution hit the fast path above.
+    if [[ -n "${HOOK_INPUT:-}" ]]; then
+        local _hook_cwd
+        _hook_cwd=$(echo "$HOOK_INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+        if [[ -n "$_hook_cwd" && -d "$_hook_cwd" ]]; then
+            local _hook_root
+            _hook_root=$(git -C "$_hook_cwd" rev-parse --show-toplevel 2>/dev/null || echo "")
+            if [[ -n "$_hook_root" && -d "$_hook_root" ]]; then
+                export CLAUDE_PROJECT_DIR="$_hook_root"
+                echo "$_hook_root"
+                return
+            fi
+            export CLAUDE_PROJECT_DIR="$_hook_cwd"
+            echo "$_hook_cwd"
+            return
+        fi
+    fi
+
     # Check if CWD is valid before using git
     if [[ -d "$PWD" ]]; then
         local root
@@ -270,7 +292,22 @@ write_proof_status() {
         fi
     fi
 
+    # Pre-create guardian marker to close proof-invalidation window.
+    # Between verification and Guardian dispatch, any source file Write/Edit
+    # triggers post-write.sh which resets verified→pending when no marker exists.
+    # This marker uses "pre-verified|<epoch>" format — post-write.sh's TTL check
+    # accepts it. task-track.sh overwrites with "pre-dispatch|<epoch>" at dispatch.
+    # finalize_trace() cleans all .active-guardian-* markers via wildcard.
+    if [[ "$proof_status" == "verified" ]]; then
+        local trace_store="${TRACE_STORE:-$HOME/.claude/traces}"
+        local session="${CLAUDE_SESSION_ID:-$$}"
+        echo "pre-verified|${timestamp}" > "${trace_store}/.active-guardian-${session}-${phash}" 2>/dev/null || true
+    fi
+
     log_info "write_proof_status" "Wrote '${proof_status}' to proof-status paths for project $(basename "$project_root") [${phash}]"
+
+    # Dual-write to state.json (audit/coordination layer)
+    type state_update &>/dev/null && state_update ".proof.status" "$proof_status" "write_proof_status" || true
 }
 
 # Export for subshells
