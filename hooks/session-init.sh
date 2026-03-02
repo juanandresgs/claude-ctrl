@@ -40,6 +40,20 @@ done
 
 source "$(dirname "$0")/source-lib.sh"
 
+# Load all domain libraries — session-init.sh uses every domain:
+#   require_git:     get_git_state (line 84), get_session_changes
+#   require_plan:    get_plan_status (line 216), get_research_status (line 402)
+#   require_trace:   TRACE_STORE variable (line 525+), active-marker cleanup
+#   require_session: write_statusline_cache (line 217), append_session_event (line 831)
+#   require_doc:     get_doc_freshness (line 394), DOC_STALE_COUNT, DOC_FRESHNESS_SUMMARY
+#   require_ci:      read_ci_status (line 758), format_ci_summary, has_github_actions
+require_git
+require_plan
+require_trace
+require_session
+require_doc
+require_ci
+
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
@@ -578,9 +592,14 @@ if [[ -d "$TRACE_STORE" ]]; then
     _CURRENT_SID="${CLAUDE_SESSION_ID:-}"
     if [[ -n "$_CURRENT_SID" ]]; then
         # At session start, only current-session markers matter (all others are stale by definition)
-        ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-*-"${_CURRENT_SID}-${_PHASH}" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        # Note: ls glob failure (no matches) returns exit 1; 2>/dev/null suppresses the error message,
+        # wc -l receives empty stdin and outputs "0". Using || true avoids the "0\n0" double-output
+        # that occurred when `|| echo "0"` was appended to a pipeline that already outputs "0".
+        ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-*-"${_CURRENT_SID}-${_PHASH}" 2>/dev/null | wc -l | tr -d ' \n' || true)
+        ACTIVE_MARKERS="${ACTIVE_MARKERS:-0}"
     else
-        ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-*-"${_PHASH}" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-*-"${_PHASH}" 2>/dev/null | wc -l | tr -d ' \n' || true)
+        ACTIVE_MARKERS="${ACTIVE_MARKERS:-0}"
     fi
     for PROOF_FILE in "${CLAUDE_DIR}/.proof-status-${_PHASH}" "${CLAUDE_DIR}/.proof-status"; do
         if [[ -f "$PROOF_FILE" ]]; then
@@ -625,7 +644,9 @@ if [[ -d "$TRACE_STORE" ]]; then
         _DEV_PROJECT_NAME=$(basename "$PROJECT_ROOT")
         # Collect last 5 project traces (most recent first via tail)
         _DEV_TRACES=$(grep "\"project_name\":\"${_DEV_PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -5 | tac 2>/dev/null || true)
-        _DEV_TRACE_COUNT=$(echo "$_DEV_TRACES" | grep -c . 2>/dev/null || echo "0")
+        # grep -c exits 1 on no matches (outputs "0") — use || true to avoid "0\n0" double-output
+        _DEV_TRACE_COUNT=$(echo "$_DEV_TRACES" | grep -c . 2>/dev/null || true)
+        _DEV_TRACE_COUNT="${_DEV_TRACE_COUNT:-0}"
 
         if [[ "$_DEV_TRACE_COUNT" -ge 2 ]]; then
             _DEV_LOG_LINES=()
@@ -754,7 +775,6 @@ fi
 # Tier 1: Read watcher state file (fast, no network call)
 # Tier 2: Fall back to gh run list query (network call, only when stale/missing)
 CI_TIER2_NEEDED=true
-require_ci
 if read_ci_status "$PROJECT_ROOT"; then
     CI_TIER2_NEEDED=false
     case "$CI_STATUS" in

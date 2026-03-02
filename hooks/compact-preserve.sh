@@ -17,6 +17,7 @@ source "$(dirname "$0")/source-lib.sh"
 require_session
 require_git
 require_plan
+require_trace  # for TRACE_STORE (active trace listing at compaction time)
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
