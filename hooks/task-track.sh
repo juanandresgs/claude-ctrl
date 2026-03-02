@@ -94,6 +94,9 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         #   cleans all markers regardless of format. Fixes #151.
         _SESSION="${CLAUDE_SESSION_ID:-$$}"
         mkdir -p "$TRACE_STORE" 2>/dev/null || true
+        # Guardian is taking over — auto-verify protection no longer needed.
+        # Clean project-scoped auto-verify markers before creating the guardian marker.
+        rm -f "${TRACE_STORE}/.active-autoverify-"*"-${_PHASH}" 2>/dev/null || true
         echo "pre-dispatch|$(date +%s)" > "${TRACE_STORE}/.active-guardian-${_SESSION}-${_PHASH}"
     fi
     # File missing → no implementation in progress → allow (bootstrap path)

@@ -429,6 +429,146 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Auto-verify → Guardian lifecycle E2E test (DEC-PROOF-RACE-001)
+#
+# Full lifecycle covering the race condition fix:
+#   Step 1: Tester completes → auto-verify marker created + "verified" written
+#   Step 2: Source write → proof-status NOT invalidated (marker protects)
+#   Step 3: Guardian dispatch → auto-verify marker cleaned, guardian marker created
+#   Step 4: Guardian commit workflow → guardian marker cleans up
+#   Step 5: Verify proof-status remained "verified" throughout
+#
+# @decision DEC-PROOF-RACE-001
+# @title Auto-verify markers protect the verified→guardian dispatch gap
+# @status accepted
+# @rationale post-write.sh could invalidate proof-status between when post-task.sh
+#   writes "verified" and when task-track.sh creates the guardian marker. The
+#   auto-verify marker fills this gap identically to the guardian marker.
+# ─────────────────────────────────────────────────────────────────────────────
+
+AV_TMPDIR="$TMPDIR/av-lifecycle-$$"
+mkdir -p "$AV_TMPDIR"
+AV_PROJECT="$AV_TMPDIR/project"
+AV_TRACES="$AV_TMPDIR/traces"
+mkdir -p "$AV_PROJECT/.claude" "$AV_TRACES"
+git -C "$AV_PROJECT" init >/dev/null 2>&1
+AV_PHASH=$(compute_phash "$AV_PROJECT")
+AV_SESSION="av-lifecycle-$$"
+AV_SCOPED_PROOF="$AV_PROJECT/.claude/.proof-status-${AV_PHASH}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T16-Step1: Tester completes — auto-verify marker created + "verified" written
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "T16a: Auto-verify lifecycle: tester completes → marker created + verified written"
+
+AV_TS=$(date +%s)
+# Simulate post-task.sh: write auto-verify marker then write "verified"
+printf 'auto-verify|%s\n' "$AV_TS" > \
+    "${AV_TRACES}/.active-autoverify-${AV_SESSION}-${AV_PHASH}"
+printf 'verified|%s\n' "$AV_TS" > "$AV_SCOPED_PROOF"
+printf 'verified|%s\n' "$AV_TS" > "$AV_PROJECT/.claude/.proof-status"
+
+AV_MARKER_EXISTS=false
+[[ -f "${AV_TRACES}/.active-autoverify-${AV_SESSION}-${AV_PHASH}" ]] && AV_MARKER_EXISTS=true
+AV_PROOF_STATUS=$(cut -d'|' -f1 "$AV_SCOPED_PROOF" 2>/dev/null || echo "missing")
+
+if [[ "$AV_MARKER_EXISTS" == "true" && "$AV_PROOF_STATUS" == "verified" ]]; then
+    pass_test
+else
+    fail_test "marker_exists=$AV_MARKER_EXISTS, proof_status=$AV_PROOF_STATUS (both must be true/verified)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T16-Step2: Source write event — proof NOT invalidated (marker protects)
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "T16b: Auto-verify lifecycle: source write → proof stays verified (marker active)"
+
+# Simulate post-write.sh proof-invalidation logic
+_av_guardian_active=false
+
+for _gm in "${AV_TRACES}/.active-guardian-"*; do
+    if [[ -f "$_gm" ]]; then
+        _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
+        _now=$(date +%s)
+        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+            _av_guardian_active=true; break
+        fi
+    fi
+done
+
+if [[ "$_av_guardian_active" == "false" ]]; then
+    for _avm in "${AV_TRACES}/.active-autoverify-"*; do
+        if [[ -f "$_avm" ]]; then
+            _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
+            _now=$(date +%s)
+            if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                _av_guardian_active=true; break
+            fi
+        fi
+    done
+fi
+
+# With marker active, invalidation would NOT happen — proof stays "verified"
+if [[ "$_av_guardian_active" == "true" ]]; then
+    # Verify proof is still verified (marker blocked invalidation)
+    AV_PROOF_AFTER_WRITE=$(cut -d'|' -f1 "$AV_SCOPED_PROOF" 2>/dev/null || echo "missing")
+    if [[ "$AV_PROOF_AFTER_WRITE" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Proof invalidated despite autoverify marker: '$AV_PROOF_AFTER_WRITE'"
+    fi
+else
+    fail_test "Auto-verify marker not detected as active during write event"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T16-Step3: Guardian dispatch — auto-verify marker cleaned, guardian marker created
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "T16c: Auto-verify lifecycle: guardian dispatch → AV marker cleaned, guardian marker created"
+
+# Simulate task-track.sh Gate A (W4a):
+# 1. Remove auto-verify markers for this project
+rm -f "${AV_TRACES}/.active-autoverify-"*"-${AV_PHASH}" 2>/dev/null || true
+# 2. Create guardian marker
+printf 'pre-dispatch|%s\n' "$(date +%s)" > \
+    "${AV_TRACES}/.active-guardian-${AV_SESSION}-${AV_PHASH}"
+
+AV_MARKER_GONE=true
+[[ -f "${AV_TRACES}/.active-autoverify-${AV_SESSION}-${AV_PHASH}" ]] && AV_MARKER_GONE=false
+GUARDIAN_MARKER_EXISTS=false
+[[ -f "${AV_TRACES}/.active-guardian-${AV_SESSION}-${AV_PHASH}" ]] && GUARDIAN_MARKER_EXISTS=true
+
+if [[ "$AV_MARKER_GONE" == "true" && "$GUARDIAN_MARKER_EXISTS" == "true" ]]; then
+    pass_test
+else
+    fail_test "av_marker_gone=$AV_MARKER_GONE guardian_marker_exists=$GUARDIAN_MARKER_EXISTS"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T16-Step4: Guardian commit — guardian marker cleaned, proof still verified
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "T16d: Auto-verify lifecycle: post-commit cleanup — proof verified throughout"
+
+# Simulate finalize_trace cleanup (removes guardian markers)
+rm -f "${AV_TRACES}/.active-guardian-"*"-${AV_PHASH}" 2>/dev/null || true
+
+GUARDIAN_MARKER_GONE=true
+[[ -f "${AV_TRACES}/.active-guardian-${AV_SESSION}-${AV_PHASH}" ]] && GUARDIAN_MARKER_GONE=false
+
+# Proof should still be "verified" — was never invalidated
+AV_FINAL_PROOF=$(cut -d'|' -f1 "$AV_SCOPED_PROOF" 2>/dev/null || echo "missing")
+
+if [[ "$GUARDIAN_MARKER_GONE" == "true" && "$AV_FINAL_PROOF" == "verified" ]]; then
+    pass_test
+else
+    fail_test "guardian_marker_gone=$GUARDIAN_MARKER_GONE, final_proof=$AV_FINAL_PROOF"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 

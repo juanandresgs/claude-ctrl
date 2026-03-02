@@ -495,6 +495,16 @@ if [[ -n "$_AV_TRACE_ID" ]]; then
     fi
 fi
 
+# Create auto-verify protection marker — prevents post-write.sh from
+# invalidating proof-status before Guardian is dispatched.
+# @decision DEC-PROOF-RACE-001: Auto-verify markers protect the verified→guardian
+# dispatch gap. Same pipe-delimited pattern as guardian markers. Cleaned up when
+# Guardian takes over at Gate A.
+_AV_SESSION="${CLAUDE_SESSION_ID:-$$}"
+_AV_PHASH=$(project_hash "$PROJECT_ROOT")
+mkdir -p "$TRACE_STORE" 2>/dev/null || true
+echo "auto-verify|$(date +%s)" > "${TRACE_STORE}/.active-autoverify-${_AV_SESSION}-${_AV_PHASH}"
+
 write_proof_status "verified" "$PROJECT_ROOT"
 
 # Audit trail

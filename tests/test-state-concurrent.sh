@@ -378,6 +378,269 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CC-07: Auto-verify marker (fresh) prevents proof invalidation on source write
+#
+# Scenario:
+#   1. Write "verified" to proof-status
+#   2. Create a fresh auto-verify marker (simulates post-task.sh auto-verify)
+#   3. Simulate post-write.sh's invalidation logic (both guardian + autoverify loops)
+#   4. Assert: proof stays "verified" — auto-verify marker blocks invalidation
+#
+# This tests DEC-PROOF-RACE-001: the auto-verify→guardian dispatch gap.
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "CC-07: Auto-verify marker (fresh) prevents proof invalidation on source write"
+
+MOCK_PROJECT_CC07="$TMPDIR/project-cc07"
+MOCK_CLAUDE_CC07="$MOCK_PROJECT_CC07/.claude"
+MOCK_TRACES_CC07="$TMPDIR/traces-cc07"
+mkdir -p "$MOCK_CLAUDE_CC07" "$MOCK_TRACES_CC07"
+git -C "$MOCK_PROJECT_CC07" init >/dev/null 2>&1
+
+PHASH_CC07=$(compute_phash "$MOCK_PROJECT_CC07")
+SESSION_CC07="cc07-session-$$"
+SCOPED_PROOF_CC07="$MOCK_CLAUDE_CC07/.proof-status-${PHASH_CC07}"
+
+# Step 1: Write verified proof manually (no guardian marker needed here)
+TS_CC07=$(date +%s)
+printf 'verified|%s\n' "$TS_CC07" > "$SCOPED_PROOF_CC07"
+printf 'verified|%s\n' "$TS_CC07" > "$MOCK_CLAUDE_CC07/.proof-status"
+
+# Step 2: Create fresh auto-verify marker (simulates post-task.sh)
+printf 'auto-verify|%s\n' "$TS_CC07" > \
+    "${MOCK_TRACES_CC07}/.active-autoverify-${SESSION_CC07}-${PHASH_CC07}"
+
+# Step 3: Simulate post-write.sh's full invalidation logic
+_guardian_active_cc07=false
+
+# Check guardian markers first (none exist in this test)
+for _gm in "${MOCK_TRACES_CC07}/.active-guardian-"*; do
+    if [[ -f "$_gm" ]]; then
+        _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
+        _now=$(date +%s)
+        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+            _guardian_active_cc07=true; break
+        fi
+    fi
+done
+
+# Check auto-verify markers (the new logic from W3)
+if [[ "$_guardian_active_cc07" == "false" ]]; then
+    for _avm in "${MOCK_TRACES_CC07}/.active-autoverify-"*; do
+        if [[ -f "$_avm" ]]; then
+            _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
+            _now=$(date +%s)
+            if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                _guardian_active_cc07=true; break
+            fi
+        fi
+    done
+fi
+
+# Step 4: Assert auto-verify marker blocked invalidation
+if [[ "$_guardian_active_cc07" == "true" ]]; then
+    PROOF_STATUS_CC07=$(cut -d'|' -f1 "$SCOPED_PROOF_CC07" 2>/dev/null || echo "missing")
+    if [[ "$PROOF_STATUS_CC07" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Proof should stay 'verified' with autoverify marker active, got '$PROOF_STATUS_CC07'"
+    fi
+else
+    fail_test "Auto-verify marker exists but was not detected as active"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CC-08: Auto-verify marker TTL expires — proof invalidation proceeds normally
+#
+# Scenario:
+#   1. Write "verified" to proof-status
+#   2. Create an EXPIRED auto-verify marker (timestamp 400s ago > TTL 300s)
+#   3. Simulate post-write.sh's invalidation logic
+#   4. Assert: _guardian_active=false (expired marker does NOT block invalidation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "CC-08: Expired auto-verify marker (TTL 400s) — proof invalidation proceeds"
+
+MOCK_PROJECT_CC08="$TMPDIR/project-cc08"
+MOCK_CLAUDE_CC08="$MOCK_PROJECT_CC08/.claude"
+MOCK_TRACES_CC08="$TMPDIR/traces-cc08"
+mkdir -p "$MOCK_CLAUDE_CC08" "$MOCK_TRACES_CC08"
+git -C "$MOCK_PROJECT_CC08" init >/dev/null 2>&1
+
+PHASH_CC08=$(compute_phash "$MOCK_PROJECT_CC08")
+SESSION_CC08="cc08-session-$$"
+SCOPED_PROOF_CC08="$MOCK_CLAUDE_CC08/.proof-status-${PHASH_CC08}"
+
+# Write verified proof
+TS_CC08=$(date +%s)
+printf 'verified|%s\n' "$TS_CC08" > "$SCOPED_PROOF_CC08"
+
+# Create EXPIRED auto-verify marker (400s ago — exceeds TTL of 300s)
+STALE_AV_TS=$(( TS_CC08 - 400 ))
+printf 'auto-verify|%s\n' "$STALE_AV_TS" > \
+    "${MOCK_TRACES_CC08}/.active-autoverify-${SESSION_CC08}-${PHASH_CC08}"
+
+# Simulate post-write.sh logic
+_guardian_active_cc08=false
+
+for _gm in "${MOCK_TRACES_CC08}/.active-guardian-"*; do
+    if [[ -f "$_gm" ]]; then
+        _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
+        _now=$(date +%s)
+        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+            _guardian_active_cc08=true; break
+        fi
+    fi
+done
+
+if [[ "$_guardian_active_cc08" == "false" ]]; then
+    for _avm in "${MOCK_TRACES_CC08}/.active-autoverify-"*; do
+        if [[ -f "$_avm" ]]; then
+            _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
+            _now=$(date +%s)
+            if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                _guardian_active_cc08=true; break
+            fi
+        fi
+    done
+fi
+
+if [[ "$_guardian_active_cc08" == "false" ]]; then
+    pass_test
+else
+    fail_test "Expired auto-verify marker (400s old) incorrectly detected as active"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CC-09: Guardian dispatch (task-track.sh Gate A) cleans auto-verify markers
+#
+# Scenario:
+#   1. Create an auto-verify marker for a project
+#   2. Simulate task-track.sh Gate A cleanup: rm ".active-autoverify-*-{PHASH}"
+#   3. Assert: marker file removed
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "CC-09: Guardian dispatch cleans auto-verify markers (task-track.sh Gate A)"
+
+MOCK_TRACES_CC09="$TMPDIR/traces-cc09"
+mkdir -p "$MOCK_TRACES_CC09"
+
+PHASH_CC09=$(compute_phash "$TMPDIR/project-cc09")
+SESSION_CC09="cc09-session-$$"
+AV_MARKER_CC09="${MOCK_TRACES_CC09}/.active-autoverify-${SESSION_CC09}-${PHASH_CC09}"
+
+# Create the auto-verify marker
+printf 'auto-verify|%s\n' "$(date +%s)" > "$AV_MARKER_CC09"
+[[ -f "$AV_MARKER_CC09" ]] || { fail_test "Could not create test marker"; continue; }
+
+# Simulate task-track.sh Gate A cleanup (W4a)
+rm -f "${MOCK_TRACES_CC09}/.active-autoverify-"*"-${PHASH_CC09}" 2>/dev/null || true
+
+if [[ ! -f "$AV_MARKER_CC09" ]]; then
+    pass_test
+else
+    fail_test "Auto-verify marker was not cleaned by Gate A cleanup"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CC-10: Both guardian and auto-verify markers coexist — proof stays verified
+#
+# Scenario:
+#   1. Write "verified" proof
+#   2. Create both a guardian marker AND an auto-verify marker
+#   3. Simulate post-write.sh logic
+#   4. Assert: guardian marker detected first → proof not invalidated
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "CC-10: Both guardian + auto-verify markers coexist — proof stays verified"
+
+MOCK_PROJECT_CC10="$TMPDIR/project-cc10"
+MOCK_CLAUDE_CC10="$MOCK_PROJECT_CC10/.claude"
+MOCK_TRACES_CC10="$TMPDIR/traces-cc10"
+mkdir -p "$MOCK_CLAUDE_CC10" "$MOCK_TRACES_CC10"
+git -C "$MOCK_PROJECT_CC10" init >/dev/null 2>&1
+
+PHASH_CC10=$(compute_phash "$MOCK_PROJECT_CC10")
+SESSION_CC10="cc10-session-$$"
+SCOPED_PROOF_CC10="$MOCK_CLAUDE_CC10/.proof-status-${PHASH_CC10}"
+
+TS_CC10=$(date +%s)
+printf 'verified|%s\n' "$TS_CC10" > "$SCOPED_PROOF_CC10"
+
+# Create both markers
+printf 'pre-dispatch|%s\n' "$TS_CC10" > \
+    "${MOCK_TRACES_CC10}/.active-guardian-${SESSION_CC10}-${PHASH_CC10}"
+printf 'auto-verify|%s\n' "$TS_CC10" > \
+    "${MOCK_TRACES_CC10}/.active-autoverify-${SESSION_CC10}-${PHASH_CC10}"
+
+# Simulate post-write.sh logic
+_guardian_active_cc10=false
+
+for _gm in "${MOCK_TRACES_CC10}/.active-guardian-"*; do
+    if [[ -f "$_gm" ]]; then
+        _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
+        _now=$(date +%s)
+        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+            _guardian_active_cc10=true; break
+        fi
+    fi
+done
+
+if [[ "$_guardian_active_cc10" == "false" ]]; then
+    for _avm in "${MOCK_TRACES_CC10}/.active-autoverify-"*; do
+        if [[ -f "$_avm" ]]; then
+            _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
+            _now=$(date +%s)
+            if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                _guardian_active_cc10=true; break
+            fi
+        fi
+    done
+fi
+
+if [[ "$_guardian_active_cc10" == "true" ]]; then
+    PROOF_CC10=$(cut -d'|' -f1 "$SCOPED_PROOF_CC10" 2>/dev/null || echo "missing")
+    if [[ "$PROOF_CC10" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Proof should stay 'verified' with both markers active, got '$PROOF_CC10'"
+    fi
+else
+    fail_test "Neither guardian nor autoverify marker was detected as active"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CC-11: Session-init glob counts auto-verify markers as active for proof cleanup
+#
+# session-init.sh uses ".active-*-{SESSION}-{PHASH}" to count active markers
+# before deciding whether to clean stale proof-status files. Auto-verify markers
+# match this pattern and must be counted so a fresh auto-verify marker prevents
+# a stale proof-status cleanup.
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "CC-11: Session-init glob counts auto-verify markers (glob pattern matches)"
+
+MOCK_TRACES_CC11="$TMPDIR/traces-cc11"
+mkdir -p "$MOCK_TRACES_CC11"
+
+SESSION_CC11="cc11-session-$$"
+PHASH_CC11=$(compute_phash "$TMPDIR/project-cc11")
+
+# Create an auto-verify marker with {SESSION}-{PHASH} suffix (session-init glob format)
+printf 'auto-verify|%s\n' "$(date +%s)" > \
+    "${MOCK_TRACES_CC11}/.active-autoverify-${SESSION_CC11}-${PHASH_CC11}"
+
+# Simulate session-init.sh marker count (the ls glob from session-init.sh line 598)
+ACTIVE_COUNT=$(ls "${MOCK_TRACES_CC11}"/.active-*-"${SESSION_CC11}-${PHASH_CC11}" 2>/dev/null | wc -l | tr -d ' \n' || true)
+ACTIVE_COUNT="${ACTIVE_COUNT:-0}"
+
+if [[ "$ACTIVE_COUNT" -gt 0 ]]; then
+    pass_test
+else
+    fail_test "session-init glob did not count auto-verify marker (count=$ACTIVE_COUNT)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 
