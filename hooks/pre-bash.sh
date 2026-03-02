@@ -125,7 +125,7 @@ _stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
 # Check if a Guardian agent is currently active (marker files in TRACE_STORE).
 is_guardian_active() {
     local count=0
-    for _gm in "${TRACE_STORE}/.active-guardian-"*; do
+    for _gm in "${TRACE_STORE:-$HOME/.claude/traces}/.active-guardian-"*; do
         [[ -f "$_gm" ]] && count=$(( count + 1 ))
     done
     [[ "$count" -gt 0 ]]

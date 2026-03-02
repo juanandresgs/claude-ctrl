@@ -28,6 +28,12 @@ AGENT_TYPE="${AGENT_TYPE:-unknown}"
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
+# Load domain libraries needed below
+require_git
+require_plan
+require_trace
+require_session
+
 # Track spawn and refresh statusline cache
 track_subagent_start "$PROJECT_ROOT" "$AGENT_TYPE"
 get_git_state "$PROJECT_ROOT"
