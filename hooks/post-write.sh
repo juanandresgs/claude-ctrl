@@ -131,6 +131,22 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                 fi
             done
 
+            # Check auto-verify markers (same TTL — protects verified→guardian gap)
+            # @decision DEC-PROOF-RACE-001: Auto-verify markers created by post-task.sh and
+            # check-tester.sh protect the window between "verified" write and Guardian dispatch.
+            # Same 5-minute TTL as guardian markers prevents permanent blocking from crashes.
+            if [[ "$_guardian_active" == "false" ]]; then
+                for _avm in "${TRACE_STORE}/.active-autoverify-"*; do
+                    if [[ -f "$_avm" ]]; then
+                        _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
+                        _now=$(date +%s)
+                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                            _guardian_active=true; break
+                        fi
+                    fi
+                done
+            fi
+
             if [[ "$_guardian_active" == "false" ]]; then
                 # @decision DEC-TRACK-001
                 # @title Use relative path for proof invalidation exclusions in track.sh

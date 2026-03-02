@@ -241,6 +241,14 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
     if [[ "$AV_FAIL" == "false" ]]; then
         ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
         WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
+        # Create auto-verify protection marker — prevents post-write.sh from
+        # invalidating proof-status before Guardian is dispatched.
+        # @decision DEC-PROOF-RACE-001: Same pattern as task-track.sh guardian marker.
+        # Cleaned up when Guardian takes over at Gate A.
+        _AV_SESSION_CT="${CLAUDE_SESSION_ID:-$$}"
+        _AV_PHASH_CT=$(project_hash "$PROJECT_ROOT")
+        mkdir -p "$TRACE_STORE" 2>/dev/null || true
+        echo "auto-verify|$(date +%s)" > "${TRACE_STORE}/.active-autoverify-${_AV_SESSION_CT}-${_AV_PHASH_CT}"
         write_proof_status "verified" "$PROJECT_ROOT"
         AUTO_VERIFIED=true
     fi
