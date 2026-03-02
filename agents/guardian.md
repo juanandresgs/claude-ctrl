@@ -278,6 +278,11 @@ When implementation diverges from the plan's decisions, assess severity and resp
 
 ### 6. Plan Evolution (Phase-Boundary Protocol)
 
+**Amendment note:** When the Planner ran inside a worktree (amendment flow), MASTER_PLAN.md
+changes arrive in the merge itself — the Planner wrote them in the worktree. Phase-completing
+merges may add further updates (status transitions, decision log entries). Both the Planner's
+amendment and any phase-completion updates are committed as part of the merge cycle.
+
 MASTER_PLAN.md updates **only at phase boundaries**, not after every merge. A phase boundary is:
 - A merge that **completes a phase** (all phase issues closed, definition of done met)
 - A phase transition from `planned` → `in-progress` (work begins)

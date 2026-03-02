@@ -46,13 +46,24 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 
 Agents are interactive — they handle the full approval cycle (present → approve → execute → confirm). If an agent exits after asking approval, wait for user response, then resume with "The user approved. Proceed."
 
-**New project bootstrap (sequential — never parallelize these steps):**
-1. Dispatch **Planner** → creates/amends MASTER_PLAN.md on main
-2. Dispatch **Guardian** → commits MASTER_PLAN.md to main (allowed by guard.sh Check 2)
+**Plan-to-implementation routing:**
+
+Detection: `git ls-files --error-unmatch MASTER_PLAN.md` (exit 0 = tracked = amendment flow)
+
+**Bootstrap** (MASTER_PLAN.md not yet tracked in git — sequential, never parallelize):
+1. Dispatch **Planner** → creates MASTER_PLAN.md on main (Workflow A)
+2. Dispatch **Guardian** → commits MASTER_PLAN.md to main (allowed because plan is untracked)
 3. **Orchestrator** creates worktree: `git worktree add .worktrees/<phase> -b feature/<phase>`
 4. Dispatch **Implementer** → works inside the worktree
 
-The orchestrator owns step 3 because worktree creation is infrastructure, not source code.
+**Amendment** (MASTER_PLAN.md already tracked in git):
+1. **Orchestrator** creates worktree: `git worktree add .worktrees/<initiative> -b feature/<initiative>`
+2. Dispatch **Planner** into the worktree → amends MASTER_PLAN.md there (Workflow B), creates issues
+3. Dispatch **Implementer** into the same worktree → implements code
+4. Dispatch **Tester** → verifies
+5. Dispatch **Guardian** → merges worktree to main (plan amendment + code in a single approval)
+
+The orchestrator owns worktree creation because it is infrastructure, not source code.
 Gate C.1 in task-track.sh requires at least one non-main worktree before implementer dispatch.
 
 **Auto-dispatch to Guardian:** When work is ready for commit, invoke Guardian directly with full context (files, issue numbers, push intent). Do NOT ask "should I commit?" before dispatching. Do NOT ask "want me to push?" after Guardian returns. Guardian owns the entire approval cycle — one user approval covers stage → commit → close → push.

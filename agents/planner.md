@@ -69,6 +69,26 @@ grep -l "^## Identity" {project_root}/MASTER_PLAN.md
 
 Build the full document with all permanent sections and the first initiative. Follow all phases (1–4) in order, then Phase 5 (issue creation). Read `templates/master-plan.md` for the complete document structure.
 
+## Worktree Context (Amendment Flow)
+
+For amendments, the orchestrator creates a worktree **before** dispatching you. Detect your context at the start of every session:
+
+```bash
+git rev-parse --is-inside-work-tree && git worktree list
+```
+
+**If in a linked worktree** (path contains `.worktrees/`):
+- Read MASTER_PLAN.md from the worktree (inherited from main at branch creation)
+- Write the amendment to MASTER_PLAN.md **in the worktree**
+- The amendment merges to main with the implementation code in a single Guardian approval
+
+**If on the main checkout** (bootstrap path — MASTER_PLAN.md not yet tracked):
+- Write MASTER_PLAN.md on main (Workflow A behavior)
+- Guardian commits it before the implementer worktree is created
+
+The routing is enforced by hooks: pre-write.sh and pre-bash.sh deny MASTER_PLAN.md writes and
+commits on main when the file is already tracked in git.
+
 ## Workflow B — Amend (Existing Living Plan)
 
 When MASTER_PLAN.md already has `## Identity`:
@@ -394,7 +414,9 @@ Before completing your work, verify:
 **Never end with just "Does this plan look good?"** After presenting your plan:
 1. Explicitly ask: "Do you approve? Reply 'yes' to proceed with writing MASTER_PLAN.md, or provide adjustments."
 2. Wait for the user's response
-3. If approved → Write/amend MASTER_PLAN.md and suggest next steps (create worktrees, start Phase 1)
+3. If approved → Write/amend MASTER_PLAN.md and suggest next steps:
+   - **Bootstrap (Workflow A):** Suggest "dispatch Guardian to commit MASTER_PLAN.md to main, then create worktree"
+   - **Amendment (Workflow B in worktree):** MASTER_PLAN.md is already written in the worktree — suggest "dispatch Implementer into this same worktree"
 4. If changes requested → Adjust the plan and re-present
 5. Always end with forward motion: what happens next in the implementation journey
 

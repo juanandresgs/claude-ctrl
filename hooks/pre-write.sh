@@ -104,10 +104,32 @@ fi
 # ============================================================
 declare_gate "branch-guard-write" "Source writes on main branch" "deny"
 
-# Skip MASTER_PLAN.md (plans are written on main by design)
-if [[ "$(basename "$FILE_PATH")" != "MASTER_PLAN.md" ]]; then
-    # Only check source files
-    if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
+# Skip MASTER_PLAN.md only for bootstrap (not yet tracked in git).
+# If it is already tracked, fall through to the normal branch guard —
+# amendments travel in a worktree and merge to main with the implementation.
+_SKIP_FOR_MASTER_PLAN=false
+if [[ "$(basename "$FILE_PATH")" == "MASTER_PLAN.md" ]]; then
+    FILE_DIR_TMP=$(dirname "$FILE_PATH")
+    REPO_ROOT_TMP=$(git -C "$FILE_DIR_TMP" rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [[ -n "$REPO_ROOT_TMP" ]] && ! git -C "$REPO_ROOT_TMP" ls-files --error-unmatch MASTER_PLAN.md &>/dev/null; then
+        _SKIP_FOR_MASTER_PLAN=true  # not tracked yet = bootstrap, bypass branch guard
+    fi
+fi
+
+if [[ "$_SKIP_FOR_MASTER_PLAN" == "true" ]]; then
+    : # Bootstrap: allow write on main (MASTER_PLAN.md not yet tracked)
+else
+    # For MASTER_PLAN.md that is already tracked, treat it like any source file
+    # (falls through to branch-guard checks below). For all other files, apply
+    # the is_source_file guard first.
+    _DO_BRANCH_CHECK=false
+    if [[ "$(basename "$FILE_PATH")" == "MASTER_PLAN.md" ]]; then
+        _DO_BRANCH_CHECK=true  # already-tracked MASTER_PLAN.md: enforce branch guard
+    elif is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
+        _DO_BRANCH_CHECK=true
+    fi
+
+    if [[ "$_DO_BRANCH_CHECK" == "true" ]]; then
         # Resolve the git repo for this file
         FILE_DIR=$(dirname "$FILE_PATH")
         if [[ ! -d "$FILE_DIR" ]]; then
@@ -121,7 +143,11 @@ if [[ "$(basename "$FILE_PATH")" != "MASTER_PLAN.md" ]]; then
                 # Allow during merge conflict resolution
                 GIT_DIR=$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || echo "")
                 if [[ -z "$GIT_DIR" || ! -f "$GIT_DIR/MERGE_HEAD" ]]; then
-                    emit_deny "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Invoke the Guardian agent to create an isolated worktree for this work."
+                    if [[ "$(basename "$FILE_PATH")" == "MASTER_PLAN.md" ]]; then
+                        emit_deny "BLOCKED: MASTER_PLAN.md is already tracked. Amend it in a worktree, not on main. Create a worktree: git worktree add .worktrees/feature-name -b feature/name"
+                    else
+                        emit_deny "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Invoke the Guardian agent to create an isolated worktree for this work."
+                    fi
                 fi
             elif [[ -n "$CURRENT_BRANCH" && "$CURRENT_BRANCH" != "HEAD" ]]; then
                 # @decision DEC-BRANCH-GUARD-FEATURE-001
