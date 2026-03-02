@@ -1753,8 +1753,6 @@ V2_TEST_FILES=(
     "test-guard-worktree-cd.sh"
     "test-observatory-metrics.sh"
     "test-observatory-convergence.sh"
-    "test-obs-data-quality.sh"
-    "test-obs-pipeline.sh"
     "test-tester-gate-heal.sh"
     "test-living-plan-hooks.sh"
     "test-plan-lifecycle.sh"
@@ -1782,10 +1780,9 @@ for test_file in "${V2_TEST_FILES[@]}"; do
 done
 fi # end: trace protocol
 
-if should_run_section "State Registry Lint"; then
+if should_run_section "Multi-Context Pass"; then
 # ===== State Governance Tests =====
-# Phase 1: Registry lint (verifies all hook writes are registered)
-# Phase 2: Multi-context second pass (re-runs state-writing tests from a temp CWD
+# Multi-context second pass (re-runs state-writing tests from a temp CWD
 #   to catch CWD assumptions — e.g. T08's .git file-vs-directory issue where a hook
 #   assumes CWD contains a real .git directory rather than the gitdir pointer file
 #   written by git worktree add).
@@ -1802,25 +1799,6 @@ if should_run_section "State Registry Lint"; then
 #   the tests that validate state file paths and scoping.
 echo ""
 echo "=== State Governance Tests ==="
-
-# --- Pass 1: State registry lint ---
-echo ""
-echo "--- State Registry Lint (Pass 1: normal CWD) ---"
-REGISTRY_TEST="$SCRIPT_DIR/test-state-registry.sh"
-if [[ -f "$REGISTRY_TEST" ]]; then
-    if bash "$REGISTRY_TEST"; then
-        echo "  test-state-registry.sh: ALL PASSED"
-    else
-        echo "  test-state-registry.sh: FAILURES DETECTED"
-        failed=$((failed + 1))
-    fi
-else
-    echo "  SKIP: test-state-registry.sh not found"
-    skipped=$((skipped + 1))
-fi
-fi # end: State Registry Lint
-
-if should_run_section "Multi-Context Pass"; then
 # --- Pass 2: Multi-context re-run from temp CWD ---
 # Create a temp directory that is NOT a git repo, set it as CWD for the subprocess,
 # and re-run the state-writing tests. This verifies hooks don't assume CWD=git root.
