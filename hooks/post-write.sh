@@ -107,25 +107,30 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
             #   Without this guard, track.sh fires on those writes and resets
             #   .proof-status from verified→pending mid-workflow, causing deadlock.
             # @decision DEC-TRACK-GUARDIAN-TTL-001
-            # @title Guardian marker TTL — 5-minute expiry prevents stale markers
+            # @title Guardian marker TTL — 10-minute expiry prevents stale markers
             # @status accepted
             # @rationale If Guardian crashes or is interrupted, its marker file persists
-            #   indefinitely, permanently blocking proof invalidation. A 5-minute TTL
+            #   indefinitely, permanently blocking proof invalidation. A 10-minute TTL
             #   ensures stale markers auto-expire. Markers now contain a timestamp
             #   (format: "pre-dispatch|<epoch>") written by check-guardian.sh.
+            #   TTL extended from 300s → 600s (W0-3) because Guardian operations involving
+            #   multi-file commits or push+close can exceed 5 minutes on slow networks.
+            #   A heartbeat (touch marker every 60s) keeps the marker fresh during active
+            #   Guardian runs so the expanded TTL only protects real long operations.
             _guardian_active=false
             # @decision DEC-TRACK-GUARDIAN-TTL-001
-            # @title Apply 5-minute TTL to guardian marker check in track.sh
+            # @title Apply 10-minute TTL to guardian marker check in track.sh
             # @status accepted
             # @rationale Guardian writes .active-guardian-* markers with format
             #   "pre-dispatch|<timestamp>" so expired markers (stale session crashes)
-            #   don't permanently exempt proof invalidation. TTL is 300s (5 min).
+            #   don't permanently exempt proof invalidation. TTL is 600s (10 min).
             #   Matches the marker format written by task-track.sh (line 88).
+            _GUARDIAN_TTL=600
             for _gm in "${TRACE_STORE}/.active-guardian-"*; do
                 if [[ -f "$_gm" ]]; then
                     _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
                     _now=$(date +%s)
-                    if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                    if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt $_GUARDIAN_TTL ]]; then
                         _guardian_active=true; break
                     fi
                 fi
@@ -134,13 +139,13 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
             # Check auto-verify markers (same TTL — protects verified→guardian gap)
             # @decision DEC-PROOF-RACE-001: Auto-verify markers created by post-task.sh and
             # check-tester.sh protect the window between "verified" write and Guardian dispatch.
-            # Same 5-minute TTL as guardian markers prevents permanent blocking from crashes.
+            # Same 10-minute TTL as guardian markers prevents permanent blocking from crashes.
             if [[ "$_guardian_active" == "false" ]]; then
                 for _avm in "${TRACE_STORE}/.active-autoverify-"*; do
                     if [[ -f "$_avm" ]]; then
                         _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
                         _now=$(date +%s)
-                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt 300 ]]; then
+                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt $_GUARDIAN_TTL ]]; then
                             _guardian_active=true; break
                         fi
                     fi

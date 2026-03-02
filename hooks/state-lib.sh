@@ -29,41 +29,58 @@
 #   VALUE:  string value to write
 #   SOURCE: identifier for the writing hook (default: $_HOOK_NAME)
 #
-# Writes to CLAUDE_DIR/state.json with atomic tmp+mv.
+# Writes to CLAUDE_DIR/state.json with atomic tmp+mv under flock.
 # Maintains .history array (capped at 20 entries) for audit trail.
+#
+# @decision DEC-STATE-002
+# @title flock on state_update() to prevent TOCTOU race conditions
+# @status accepted
+# @rationale The previous read-modify-write pattern (jq read → tmp write → mv) had
+#   a race window: two concurrent hooks could both read the same state.json, compute
+#   independent updates, and one would silently overwrite the other's write. Using
+#   flock -w 5 on a lock file serializes concurrent state_update() calls. Timeout
+#   is 5s to match write_proof_status(); on timeout we log and return 0 (non-fatal)
+#   because state.json is the audit/coordination layer — dotfiles are authoritative.
 state_update() {
     local key="${1:?state_update requires a key}"
     local value="${2:?state_update requires a value}"
     local source="${3:-${_HOOK_NAME:-unknown}}"
     local claude_dir="${CLAUDE_DIR:-$(get_claude_dir 2>/dev/null || echo "$HOME/.claude")}"
     local state_file="${claude_dir}/state.json"
+    local lockfile="${claude_dir}/.state.lock"
     local timestamp
     timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     mkdir -p "$claude_dir" 2>/dev/null || return 0
 
-    # Initialize state.json if missing
-    if [[ ! -f "$state_file" ]]; then
-        echo '{"history":[]}' > "$state_file" 2>/dev/null || return 0
-    fi
+    # Wrap critical section in flock to prevent concurrent read-modify-write races.
+    # fd 9 is used as the lock descriptor; subshell ensures the lock is released on exit.
+    (
+        flock -w 5 9 || { log_info "STATE" "lock timeout for ${key}, skipping update" 2>/dev/null || true; return 0; }
 
-    # Atomic update: read -> modify -> write via tmp
-    local tmp="${state_file}.tmp.$$"
-    jq --arg key "$key" \
-       --arg val "$value" \
-       --arg src "$source" \
-       --arg ts "$timestamp" \
-       '
-       # Set the value at the key path
-       setpath($key | split(".") | map(select(. != "")); $val) |
-       # Append to history (cap at 20)
-       .history = ([{key: $key, value: $val, source: $src, ts: $ts}] + (.history // []))[:20]
-       ' "$state_file" > "$tmp" 2>/dev/null && mv "$tmp" "$state_file" 2>/dev/null || {
-        rm -f "$tmp" 2>/dev/null
-        return 0
-    }
+        # Initialize state.json if missing
+        if [[ ! -f "$state_file" ]]; then
+            echo '{"history":[]}' > "$state_file" 2>/dev/null || return 0
+        fi
 
-    log_info "STATE" "updated ${key}=${value} (source=${source})" 2>/dev/null || true
+        # Atomic update: read -> modify -> write via tmp
+        local tmp="${state_file}.tmp.$$"
+        jq --arg key "$key" \
+           --arg val "$value" \
+           --arg src "$source" \
+           --arg ts "$timestamp" \
+           '
+           # Set the value at the key path
+           setpath($key | split(".") | map(select(. != "")); $val) |
+           # Append to history (cap at 20)
+           .history = ([{key: $key, value: $val, source: $src, ts: $ts}] + (.history // []))[:20]
+           ' "$state_file" > "$tmp" 2>/dev/null && mv "$tmp" "$state_file" 2>/dev/null || {
+            rm -f "$tmp" 2>/dev/null
+            return 0
+        }
+
+        log_info "STATE" "updated ${key}=${value} (source=${source})" 2>/dev/null || true
+    ) 9>"$lockfile"
 }
 
 # state_read KEY

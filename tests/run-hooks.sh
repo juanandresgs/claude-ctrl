@@ -125,13 +125,13 @@ _scope_pattern() {
     case "$1" in
         syntax)      echo "Syntax Validation|Configuration" ;;
         pre-bash)    echo "guard\.sh|nuclear commands|false positives|cross-project git|git-in-text|flag bypass|main is sacred" ;;
-        pre-write)   echo "branch-guard\.sh behavioral|plan-check\.sh lifecycle|plan lifecycle|plan archival|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral" ;;
+        pre-write)   echo "branch-guard\.sh behavioral|plan-check\.sh lifecycle|plan lifecycle|plan archival|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
         post-write)  echo "plan-validate\.sh|statusline\.sh|State Registry Lint" ;;
         unit)        echo "context-lib\.sh: is_source_file|context-lib\.sh: is_skippable_path|context-lib\.sh: get_git_state|context-lib\.sh: build_resume_directive" ;;
         session)     echo "session-init\.sh|prompt-submit\.sh|compact-preserve\.sh" ;;
         integration) echo "settings\.json|subagent tracking|update-check\.sh" ;;
         trace)       echo "trace protocol" ;;
-        gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral" ;;
+        gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
         state)       echo "State Registry Lint|Multi-Context Pass" ;;
         fixtures)    echo "Expanded Fixture Coverage" ;;
         todo)        echo "todo\.sh" ;;
@@ -519,6 +519,40 @@ rm -f "$MG_FIXTURE_INTERNAL_MOCK"
 safe_cleanup "$MG_TEST_DIR" "$SCRIPT_DIR"
 echo ""
 fi # end: mock-gate.sh behavioral tests
+
+# --- Test: proof-status-write-guard behavioral tests ---
+if should_run_section "proof-status-write-guard behavioral tests"; then
+echo "--- proof-status-write-guard behavioral tests (Gate 0) ---"
+
+# Test 1: Deny Write to .proof-status
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$FIXTURES_DIR/write-proof-status-deny.json")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "proof-status-write-guard — deny Write to .proof-status"
+else
+    fail "proof-status-write-guard — deny Write to .proof-status" "expected deny, got: ${decision:-no output}"
+fi
+
+# Test 2: Deny Edit to .proof-status (scoped variant)
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$FIXTURES_DIR/edit-proof-status-deny.json")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "proof-status-write-guard — deny Edit to .proof-status-<hash>"
+else
+    fail "proof-status-write-guard — deny Edit to .proof-status-<hash>" "expected deny, got: ${decision:-no output}"
+fi
+
+# Test 3: Deny Write to .test-status
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$FIXTURES_DIR/write-test-status-deny.json")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "proof-status-write-guard — deny Write to .test-status"
+else
+    fail "proof-status-write-guard — deny Write to .test-status" "expected deny, got: ${decision:-no output}"
+fi
+
+echo ""
+fi # end: proof-status-write-guard behavioral tests
 
 # =============================================================================
 # CONTEXT-LIB UNIT TESTS

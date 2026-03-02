@@ -192,6 +192,63 @@ fi
 # .proof-status to the worktree's .claude/ directory rather than CLAUDE_DIR.
 # After writing "verified", dual-writes to the orchestrator's CLAUDE_DIR so
 # guard.sh can find the status regardless of which path it checks.
+#
+# @decision DEC-PROOF-CAS-001
+# @title CAS (compare-and-swap) wrapper for proof-status verification in prompt-submit.sh
+# @status accepted
+# @rationale The original code read .proof-status (CURRENT_STATUS) and then called
+#   write_proof_status() without re-checking — a classic TOCTOU race. If two concurrent
+#   hook invocations both read "pending" and both called write_proof_status("verified"),
+#   the second write would now be rejected by the monotonic lattice (verified→verified
+#   is a no-op at the ordinal level). But the CAS pattern here makes the intent explicit:
+#   check expected state under the lock, only write if it matches. The lock in
+#   write_proof_status() (DEC-PROOF-LOCK-001) provides the mutual exclusion. This
+#   function adds the compare step as a safety net before calling into write_proof_status.
+
+# cas_proof_status EXPECTED NEW_STATUS
+#   Attempt to transition proof-status from EXPECTED to NEW_STATUS atomically.
+#   Returns 0 on success, 1 if current status doesn't match EXPECTED, 2 on lock failure.
+cas_proof_status() {
+    local expected="$1"
+    local new_val="$2"
+    local lockfile="${CLAUDE_DIR}/.proof-status.lock"
+
+    mkdir -p "$(dirname "$lockfile")" 2>/dev/null || return 2
+
+    local _cas_result=1
+    (
+        flock -w 5 9 || { return 2; }
+
+        # Re-read under lock to avoid TOCTOU
+        local proof_file
+        proof_file=$(resolve_proof_file)
+        local current="none"
+        if [[ -f "$proof_file" ]]; then
+            if validate_state_file "$proof_file" 2 2>/dev/null; then
+                current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
+            else
+                current="corrupt"
+            fi
+        fi
+
+        if [[ "$current" != "$expected" ]]; then
+            log_info "cas_proof_status" "CAS failed: expected=${expected} actual=${current}" 2>/dev/null || true
+            exit 1
+        fi
+
+        # write_proof_status acquires its own lock on the same lockfile — reentrant on macOS
+        # (BSD flock is not reentrant, so we call it from outside the lock context below)
+        exit 0
+    ) 9>"$lockfile"
+    _cas_result=$?
+
+    if [[ "$_cas_result" -eq 0 ]]; then
+        # Lock released — now call write_proof_status (which acquires its own lock)
+        write_proof_status "$new_val" "$PROJECT_ROOT" && return 0 || return 1
+    fi
+    return $_cas_result
+}
+
 PROOF_FILE=$(resolve_proof_file)
 if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+good\b|\bship\s+it\b|\bapprove\s+for\s+commit\b'; then
     if [[ -f "$PROOF_FILE" ]]; then
@@ -201,8 +258,9 @@ if echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|\blgtm\b|\blooks\s+goo
             CURRENT_STATUS=""  # corrupt — skip approval transition
         fi
         if [[ "$CURRENT_STATUS" == "pending" || "$CURRENT_STATUS" == "needs-verification" ]]; then
-            write_proof_status "verified" "$PROJECT_ROOT"
-            CONTEXT_PARTS+=("DISPATCH GUARDIAN NOW: User verified proof-of-work. proof-status=verified. Auto-dispatch Guardian per CLAUDE.md. Do NOT ask 'should I commit?' — Guardian owns the approval cycle.")
+            if cas_proof_status "$CURRENT_STATUS" "verified"; then
+                CONTEXT_PARTS+=("DISPATCH GUARDIAN NOW: User verified proof-of-work. proof-status=verified. Auto-dispatch Guardian per CLAUDE.md. Do NOT ask 'should I commit?' — Guardian owns the approval cycle.")
+            fi
         fi
     fi
 fi

@@ -97,7 +97,23 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         # Guardian is taking over — auto-verify protection no longer needed.
         # Clean project-scoped auto-verify markers before creating the guardian marker.
         rm -f "${TRACE_STORE}/.active-autoverify-"*"-${_PHASH}" 2>/dev/null || true
-        echo "pre-dispatch|$(date +%s)" > "${TRACE_STORE}/.active-guardian-${_SESSION}-${_PHASH}"
+        _GUARDIAN_MARKER="${TRACE_STORE}/.active-guardian-${_SESSION}-${_PHASH}"
+        echo "pre-dispatch|$(date +%s)" > "$_GUARDIAN_MARKER"
+
+        # Heartbeat: touch the marker every 60s so the 600s TTL window stays fresh
+        # during long Guardian operations (multi-file commit, push, PR creation).
+        # Background subshell exits automatically when the marker disappears
+        # (finalize_trace removes it) — no zombie process risk.
+        #
+        # @decision DEC-GUARDIAN-HEARTBEAT-001
+        # @title Background heartbeat keeps guardian marker fresh during long operations
+        # @status accepted
+        # @rationale With TTL extended to 600s (W0-3), a Guardian that takes >10 min
+        #   (e.g., large repo push + CI wait) would have its marker expire mid-operation,
+        #   allowing post-write.sh to reset proof verified→pending. The heartbeat touches
+        #   the marker every 60s, keeping its timestamp fresh. The || break ensures the
+        #   loop terminates when finalize_trace() removes the marker.
+        ( while sleep 60; do touch "$_GUARDIAN_MARKER" 2>/dev/null || break; done ) &
     fi
     # File missing → no implementation in progress → allow (bootstrap path)
 fi

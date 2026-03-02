@@ -55,6 +55,7 @@ require_session
 # Hooks are invoked with < /dev/null in scan mode, so stdin is empty.
 # This block MUST be before read_input() to avoid early-exit on empty FILE_PATH.
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
+    declare_gate "proof-status-content" "Direct Write/Edit to .proof-status or .test-status" "deny"
     declare_gate "branch-guard-write" "Source writes on main branch" "deny"
     declare_gate "plan-check" "Writes without MASTER_PLAN.md" "deny"
     declare_gate "test-gate-write" "Source writes while tests fail" "deny"
@@ -96,6 +97,29 @@ fi
 _IN_WORKTREE=false
 if [[ "${_FORCE_WORKTREE_CHECK:-}" != "0" && "$FILE_PATH" == *"/.worktrees/"* ]]; then
     _IN_WORKTREE=true
+fi
+
+# ============================================================
+# Gate 0: Proof-status write guard (fastest deny — content-based hard deny)
+# Closes the Write-tool loophole: agents can use Write/Edit to directly write
+# "verified" to .proof-status, bypassing the monotonic lattice in write_proof_status().
+# This gate runs before branch-guard to deny as fast as possible.
+#
+# @decision DEC-PROOF-GUARD-001
+# @title Gate 0: Block Write/Edit tool access to .proof-status and .test-status files
+# @status accepted
+# @rationale An LLM can directly invoke the Write or Edit tool on .proof-status,
+#   bypassing the monotonic lattice enforced by write_proof_status() in log.sh.
+#   The existing guard in pre-bash.sh (Check 9) only blocks shell commands (echo,
+#   tee), not Write/Edit tool calls. Gate 0 closes this loophole by denying any
+#   Write or Edit targeting a file whose path matches *proof-status* or *test-status*.
+#   All legitimate status transitions go through write_proof_status() called from
+#   hooks — agents never need to write these files directly.
+# ============================================================
+declare_gate "proof-status-content" "Direct Write/Edit to .proof-status or .test-status" "deny"
+
+if [[ "$FILE_PATH" == *proof-status* || "$FILE_PATH" == *test-status* ]]; then
+    emit_deny "Direct writes to .proof-status or .test-status are not allowed. Status transitions go through write_proof_status() in hooks only. Use the verification flow: run tests, get tester confirmation, user approval triggers prompt-submit.sh."
 fi
 
 # ============================================================
