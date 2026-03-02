@@ -28,44 +28,28 @@
 # @decision DEC-CACHE-001
 # @title Statusline cache for status bar enrichment
 # @status accepted
-# @rationale Hooks already compute git/plan/test state. Cache it so statusline.sh
-# can render rich status bar without re-computing or re-parsing. Atomic writes
-# prevent race conditions. JSON format for extensibility.
+# @rationale Hooks already compute git state and subagent counts. Cache them so
+# statusline.sh can render the two-line HUD without re-computing. Atomic write
+# prevents a partially-written file from being read by the status bar mid-render.
+# Plan phase and test status removed: statusline now sources those from stdin JSON.
 write_statusline_cache() {
     local root="$1"
     local cache_file="$root/.claude/.statusline-cache"
     mkdir -p "$root/.claude"
 
-    # Plan phase display
-    local plan_display="no plan"
-    if [[ "$PLAN_EXISTS" == "true" && "$PLAN_TOTAL_PHASES" -gt 0 ]]; then
-        local current_phase=$((PLAN_COMPLETED_PHASES + PLAN_IN_PROGRESS_PHASES))
-        [[ "$current_phase" -eq 0 ]] && current_phase=1
-        plan_display="Phase ${current_phase}/${PLAN_TOTAL_PHASES}"
-    fi
-
-    # Test status
-    local test_display="unknown"
-    local ts_file="$root/.claude/.test-status"
-    if [[ -f "$ts_file" ]]; then
-        test_display=$(cut -d'|' -f1 "$ts_file")
-    fi
-
-    # Subagent status
+    # Subagent status (populates SUBAGENT_* globals)
     get_subagent_status "$root"
 
-    # Atomic write
+    # Atomic write — only git/agent state, no plan or test fields
     local tmp_cache="${cache_file}.tmp.$$"
     jq -n \
         --arg dirty "${GIT_DIRTY_COUNT:-0}" \
         --arg wt "${GIT_WT_COUNT:-0}" \
-        --arg plan "$plan_display" \
-        --arg test "$test_display" \
         --arg ts "$(date +%s)" \
         --arg sa_count "${SUBAGENT_ACTIVE_COUNT:-0}" \
         --arg sa_types "${SUBAGENT_ACTIVE_TYPES:-}" \
         --arg sa_total "${SUBAGENT_TOTAL_COUNT:-0}" \
-        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),plan:$plan,test:$test,updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber)}' \
+        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber)}' \
         > "$tmp_cache" && mv "$tmp_cache" "$cache_file"
 }
 

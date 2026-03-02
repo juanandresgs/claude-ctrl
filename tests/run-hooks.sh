@@ -1177,12 +1177,17 @@ echo ""
 fi # end: plan-validate.sh
 
 if should_run_section "statusline.sh"; then
-# --- Test: statusline.sh — cache rendering ---
+# --- Test: statusline.sh — two-line cache rendering ---
+# Note: plan/test fields removed in statusline redesign (DEC-CACHE-002).
+# Cache now only has: dirty, worktrees, agents_active, agents_types, agents_total, updated.
 echo "--- statusline.sh ---"
 SL_TEST_DIR=$(mktemp -d)
 mkdir -p "$SL_TEST_DIR/.claude"
-echo '{"dirty":5,"worktrees":1,"plan":"Phase 2/4","test":"pass","updated":1234567890,"agents_active":0,"agents_types":"","agents_total":0}' > "$SL_TEST_DIR/.claude/.statusline-cache"
-SL_INPUT=$(jq -n --arg dir "$SL_TEST_DIR" '{model:{display_name:"opus"},workspace:{current_dir:$dir},version:"1.0.0"}')
+echo '{"dirty":5,"worktrees":1,"updated":1234567890,"agents_active":0,"agents_types":"","agents_total":0}' > "$SL_TEST_DIR/.claude/.statusline-cache"
+SL_INPUT=$(jq -n --arg dir "$SL_TEST_DIR" \
+    '{model:{display_name:"opus"},workspace:{current_dir:$dir},
+      cost:{total_cost_usd:0.42,total_duration_ms:300000},
+      context_window:{used_percentage:45}}')
 SL_OUTPUT=$(echo "$SL_INPUT" | bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
 if echo "$SL_OUTPUT" | grep -q "dirty"; then
     pass "statusline.sh — shows dirty count from cache"
@@ -1194,22 +1199,24 @@ if echo "$SL_OUTPUT" | grep -q "WT:"; then
 else
     fail "statusline.sh — worktree count" "expected 'WT:' in output: $SL_OUTPUT"
 fi
-if echo "$SL_OUTPUT" | grep -q "Phase"; then
-    pass "statusline.sh — shows plan phase from cache"
+if echo "$SL_OUTPUT" | grep -q "45%"; then
+    pass "statusline.sh — shows context window percentage on line 2"
 else
-    fail "statusline.sh — plan phase" "expected 'Phase' in output: $SL_OUTPUT"
+    fail "statusline.sh — context bar" "expected '45%' in output: $SL_OUTPUT"
 fi
-if echo "$SL_OUTPUT" | grep -q "tests"; then
-    pass "statusline.sh — shows test status from cache"
+if echo "$SL_OUTPUT" | grep -qF '$0.42'; then
+    pass "statusline.sh — shows cost on line 2"
 else
-    fail "statusline.sh — test status" "expected 'tests' in output: $SL_OUTPUT"
+    fail "statusline.sh — cost display" "expected '\$0.42' in output: $SL_OUTPUT"
 fi
 safe_cleanup "$SL_TEST_DIR" "$SCRIPT_DIR"
 echo ""
 
 # --- Test: statusline.sh — works without cache ---
 SL_TEST_DIR2=$(mktemp -d)
-SL_INPUT2=$(jq -n --arg dir "$SL_TEST_DIR2" '{model:{display_name:"opus"},workspace:{current_dir:$dir},version:"1.0.0"}')
+SL_INPUT2=$(jq -n --arg dir "$SL_TEST_DIR2" \
+    '{model:{display_name:"opus"},workspace:{current_dir:$dir},
+      cost:{},context_window:{}}')
 SL_OUTPUT2=$(echo "$SL_INPUT2" | bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
 if [[ -n "$SL_OUTPUT2" ]]; then
     pass "statusline.sh — works without cache file"
@@ -1225,8 +1232,10 @@ if should_run_section "subagent tracking"; then
 echo "--- subagent tracking ---"
 SA_TEST_DIR=$(mktemp -d)
 mkdir -p "$SA_TEST_DIR/.claude"
-echo '{"dirty":0,"worktrees":0,"plan":"no plan","test":"unknown","updated":1234567890,"agents_active":2,"agents_types":"implementer,planner","agents_total":3}' > "$SA_TEST_DIR/.claude/.statusline-cache"
-SA_INPUT=$(jq -n --arg dir "$SA_TEST_DIR" '{model:{display_name:"opus"},workspace:{current_dir:$dir},version:"1.0.0"}')
+# Cache format: no plan/test fields (removed in DEC-CACHE-002 redesign)
+echo '{"dirty":0,"worktrees":0,"updated":1234567890,"agents_active":2,"agents_types":"implementer,planner","agents_total":3}' > "$SA_TEST_DIR/.claude/.statusline-cache"
+SA_INPUT=$(jq -n --arg dir "$SA_TEST_DIR" \
+    '{model:{display_name:"opus"},workspace:{current_dir:$dir},cost:{},context_window:{}}')
 SA_OUTPUT=$(echo "$SA_INPUT" | bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
 if echo "$SA_OUTPUT" | grep -q "agents"; then
     pass "statusline.sh — shows active agent count from cache"
