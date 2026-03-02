@@ -185,12 +185,12 @@ for domain libraries. All hooks source this file as their first dependency.
 
 | Function | Library | Lines | Purpose |
 |----------|---------|-------|---------|
-| `require_git()` | `git-lib.sh` | ~200 | Git state detection, branch guards, worktree safety |
-| `require_plan()` | `plan-lib.sh` | ~700 | Plan lifecycle, staleness scoring, MASTER_PLAN.md parsing |
-| `require_trace()` | `trace-lib.sh` | ~900 | Trace init/finalize, audit trail, agent markers |
-| `require_session()` | `session-lib.sh` | ~800 | Session summary, trajectory, compaction context |
-| `require_doc()` | `doc-lib.sh` | ~400 | @decision enforcement, doc-gate rules |
-| `require_ci()` | `ci-lib.sh` | ~200 | CI detection, workflow helpers |
+| `require_git()` | `git-lib.sh` | 76 | Git state detection, branch guards, worktree safety |
+| `require_plan()` | `plan-lib.sh` | 469 | Plan lifecycle, staleness scoring, MASTER_PLAN.md parsing |
+| `require_trace()` | `trace-lib.sh` | 755 | Trace init/finalize, audit trail, agent markers |
+| `require_session()` | `session-lib.sh` | 645 | Session summary, trajectory, compaction context |
+| `require_doc()` | `doc-lib.sh` | 306 | @decision enforcement, doc-gate rules |
+| `require_ci()` | `ci-lib.sh` | 217 | CI detection, workflow helpers |
 
 Each `require_*()` is idempotent — calling `require_git()` twice is a no-op. Hooks that need
 multiple domains call them explicitly (e.g., `require_git; require_plan`). `require_all()` was
@@ -523,7 +523,7 @@ Hook registration in `../settings.json` → `hooks` object:
 ## Testing
 
 ```bash
-# Run the full test suite (131 tests)
+# Run the full test suite (162 tests)
 bash tests/run-hooks.sh
 
 # Run a targeted subset with --scope (faster feedback during hook development)
@@ -537,6 +537,7 @@ bash tests/run-hooks.sh --scope integration  # settings.json sync, subagent trac
 bash tests/run-hooks.sh --scope trace        # Trace protocol (init_trace, finalize_trace)
 bash tests/run-hooks.sh --scope gate         # Gate hook behavioral tests
 bash tests/run-hooks.sh --scope state        # State Registry Lint + Multi-Context Pass
+bash tests/run-hooks.sh --scope fixtures     # Test fixture validation
 
 # Combine multiple scopes (ORed — runs either matching section)
 bash tests/run-hooks.sh --scope unit --scope gate
