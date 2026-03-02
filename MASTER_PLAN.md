@@ -6,7 +6,7 @@
 **Languages:** Bash (85%), Markdown (10%), Python (3%), JSON (2%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-03-01
-**Last updated:** 2026-03-01
+**Last updated:** 2026-03-02
 
 The Claude Code configuration directory. It shapes how Claude Code operates across all projects via hooks, agents, skills, and instructions. Managed as a git repository (juanandresgs/claude-config-pro). The hook system enforces governance (git safety, documentation, proof gates, worktree discipline) while the agent system dispatches specialized roles (planner, implementer, tester, guardian) for all project work.
 
@@ -18,7 +18,7 @@ The Claude Code configuration directory. It shapes how Claude Code operates acro
     scripts/       — Utility scripts (batch-fetch, ci-watch, worktree-roster, statusline)
     skills/        — Research and workflow skills (deep-research, observatory, decide, prd)
     commands/      — Lightweight slash commands (compact, backlog, todos)
-    tests/         — Test suite (131 tests via run-hooks.sh + specialized test files)
+    tests/         — Test suite (159 tests via run-hooks.sh + specialized test files)
     templates/     — Document templates for plans and initiatives
     observatory/   — Self-improving flywheel: trace analysis, signal surfacing
 
@@ -51,524 +51,228 @@ The Claude Code configuration directory. It shapes how Claude Code operates acro
 | 2026-03-02 | DEC-DEDUP-001 | hook-consolidation | Tighten hooks to exact-minimum require set | Duplicate requires indicate code rot; exact-minimum aids auditing |
 | 2026-03-01 | DEC-STATE-007 | state-mgmt-reliability | Replace inline proof resolution with resolve_proof_file() | Canonical resolver handles worktree breadcrumbs correctly; inline copies diverge |
 | 2026-03-01 | DEC-STATE-008 | state-mgmt-reliability | Pervasive validate_state_file before cut | Prevents crashes on corrupt/empty/truncated state files |
+| 2026-03-02 | DEC-STATE-001 | state-mgmt-reliability | Centralized state coordination via state-lib.sh | Single library for proof lifecycle avoids scattered inline logic |
+| 2026-03-02 | DEC-STATE-GOV-001 | state-mgmt-reliability | State governance tests in run-hooks.sh | Integration tests validate hook-level proof behavior end-to-end |
+| 2026-03-02 | DEC-STATE-LIFECYCLE-001 | state-mgmt-reliability | Lifecycle E2E tests cover full proof-status state machine | Validates transitions: needs-verification -> verified -> committed with worktree isolation |
+| 2026-03-02 | DEC-STATE-CORRUPT-001 | state-mgmt-reliability | Corruption tests exercise validate_state_file edge cases | Ensures empty, truncated, malformed, binary proof files are caught before cut |
+| 2026-03-02 | DEC-STATE-CONCURRENT-001 | state-mgmt-reliability | Concurrency tests for simultaneous proof writes | Validates atomicity of write_proof_status under contention |
+| 2026-03-02 | DEC-STATE-CLEAN-E2E-001 | state-mgmt-reliability | E2E tests for clean-state.sh audit and cleanup | clean-state.sh is the only recovery path for accumulated stale state |
+| 2026-03-02 | DEC-STATE-SESSION-BOUNDARY-001 | state-mgmt-reliability | Session boundary proof cleanup tests | session-init.sh cleanup prevents cross-session contamination |
+| 2026-03-02 | DEC-STATE-AUDIT-001 | state-mgmt-reliability | clean-state.sh audit script for state file hygiene | Registry-based detection of orphaned, stale, and corrupt state files |
+| 2026-03-02 | DEC-SL-LAYOUT-001 | statusline-ia | Keep 2-line layout with domain clustering | Width analysis shows all segments fit in 2 lines; 3 lines would be more visually intrusive |
+| 2026-03-02 | DEC-SL-TOKENS-001 | statusline-ia | Display aggregate tokens as compact K notation | Raw token counts unreadable; K notation is universally understood and fits ~10 chars |
+| 2026-03-02 | DEC-SL-TODOCACHE-001 | statusline-ia | Add todo_project and todo_global to .statusline-cache | Existing cache is the natural home; avoids file proliferation |
+| 2026-03-02 | DEC-SL-COSTPERSIST-001 | statusline-ia | Append session cost to .session-cost-history | Cross-session data needs persistent file; proven pattern from .compaction-log |
 
 ---
 
 ## Active Initiatives
 
-### Initiative: Hook Consolidation Testing & Streamlining
+### Initiative: Statusline Information Architecture
 **Status:** active
 **Started:** 2026-03-02
-**Goal:** Validate, audit, and streamline the hook system after the lazy-loading performance refactor.
+**Goal:** Redesign the statusline's segment layout for clarity: domain clustering, intuitive labels, aggregate token display, and project-scoped todo counts.
 
-> The hook-perf merge introduced lazy library loading (`require_*()` in source-lib.sh), `--scope`
-> for targeted test runs, and worktree-aware gate skipping in pre-write.sh. These changes lack
-> post-merge validation — no wall-clock timing comparison exists, `--scope` edge cases are
-> untested, and the migration left inconsistencies (e.g., task-track.sh has duplicate
-> `require_git`/`require_plan` calls). context-lib.sh still exists as a compatibility shim
-> sourcing all ~3,800 lines. This initiative validates the gains, removes dead weight, and
-> updates documentation.
+> The statusline was just rewritten as a two-line HUD, but segments lack labels and logical grouping. Raw numbers like `8 dirty WT:2` require mental decoding. Three data features are missing: aggregate token spend (context pressure beyond the percentage bar), project-vs-global todo split, and approximate cost labeling. This initiative adds all three while restructuring the layout into domain-clustered segments.
 
-**Dominant Constraint:** maintainability
+**Dominant Constraint:** simplicity — statusline must remain fast (single `jq` call for stdin, single `jq` call for cache, <50ms render)
 
 #### Goals
-- REQ-GOAL-001: Validate all 131 tests pass after the hook-perf merge with zero regressions
-- REQ-GOAL-002: Produce quantitative before/after timing data proving the lazy loading gains
-- REQ-GOAL-003: Eliminate all redundant `require_*()` calls and dead code paths across hooks
-- REQ-GOAL-004: Ensure `--scope` works correctly for all 10 defined scopes plus edge cases
+- REQ-GOAL-001: Every statusline segment has a human-readable label that communicates its meaning without prior knowledge
+- REQ-GOAL-002: Segments are visually clustered by domain (project/git, session economics, context/model)
+- REQ-GOAL-003: Session token consumption is visible, giving users awareness of context window pressure beyond the percentage bar
+- REQ-GOAL-004: Todo counts distinguish project-local from global, so users know which scope has pending work
 
 #### Non-Goals
-- REQ-NOGO-001: Rewriting hook logic or changing gate behavior — purely optimization and cleanup
-- REQ-NOGO-002: Changing the domain library boundaries (git-lib, plan-lib, etc.) — they are stable
-- REQ-NOGO-003: Adding new gates or hooks — this is about consolidating what exists
+- REQ-NOGO-001: Real-time token tracking during a response — token counts update only when the statusline renders
+- REQ-NOGO-002: Actual subscription cost calculation — we show list price with `~` prefix, not personalized billing
+- REQ-NOGO-003: Interactive statusline (clickable segments, expand/collapse) — out of scope, text-only HUD
+- REQ-NOGO-004: Historical cost graphs or trend visualization — `.session-cost-history` is storage, not visualization
 
 #### Requirements
 
 **Must-Have (P0)**
 
-- REQ-P0-001: Full test suite passes on main (131/131)
-  Acceptance: Given main branch after hook-perf merge, When `bash tests/run-hooks.sh` is run, Then all 131 tests pass with exit 0
-
-- REQ-P0-002: Per-hook timing report from `.hook-timing.log` data
-  Acceptance: Given a representative session with 50+ hook invocations, When timing data is analyzed, Then a report shows p50/p95/max per hook type with comparison to pre-optimization baseline
-
-- REQ-P0-003: Duplicate `require_*()` calls removed from task-track.sh
-  Acceptance: Given task-track.sh, When inspected, Then each `require_*()` appears exactly once
-
-- REQ-P0-004: `--scope` validates all 10 scopes and handles edge cases
-  Acceptance: Given `--scope unknown`, When run, Then error message printed with available scopes
-
-- REQ-P0-005: Hook dependency audit mapping each hook to its minimum required libraries
-  Acceptance: Given the audit, When compared to actual `require_*()` calls, Then no hook loads libraries it does not use
-
-- REQ-P0-006: Documentation (HOOKS.md, README.md) reflects lazy loading architecture
-  Acceptance: Given updated docs, When a new contributor reads them, Then they understand `require_*()` pattern and `--scope` usage
+- REQ-P0-001: Domain-clustered layout — segments grouped by (1) project identity/git state, (2) session metrics/economics, (3) context/model info
+  Acceptance: Given a rendered statusline, When a user reads left-to-right, Then related data appears adjacent with no interleaving of unrelated domains
+- REQ-P0-002: Human-readable labels on all numeric segments
+  Acceptance: Given the statusline output, When inspecting each segment, Then every numeric value has a preceding label (e.g., `dirty: 3` not `3 dirty`)
+- REQ-P0-003: Cost prefixed with `~` to indicate approximate
+  Acceptance: Given cost display, When rendered, Then cost shows as `~$X.XX` not `$X.XX`
+- REQ-P0-004: Aggregate token count displayed in statusline from `total_input_tokens` + `total_output_tokens`
+  Acceptance: Given stdin JSON with token fields, When statusline renders, Then a segment shows total tokens in human-readable K notation (e.g., `tokens: 145k`)
+- REQ-P0-005: Project vs global todo split in display
+  Acceptance: Given both project and global todo counts available, When statusline renders, Then display shows split (e.g., `todos: 3p 7g`) or project-only when in a project context with a fallback to global
 
 **Nice-to-Have (P1)**
 
-- REQ-P1-001: `hook-timing-report.sh` script to parse `.hook-timing.log` and generate formatted reports
-- REQ-P1-002: Remove or refactor context-lib.sh shim to reduce test-time parse overhead
+- REQ-P1-001: Project-lifetime cost persistence across sessions via `.session-cost-history`
+  Criterion: session-end.sh appends session cost; session-init.sh sums history and writes to cache
+- REQ-P1-002: Token direction breakdown (in/out) when terminal is wide enough
+  Criterion: Wide terminals (>120 cols) show `tokens: 100k in / 45k out`; narrow show `tokens: 145k`
 
 **Future Consideration (P2)**
 
-- REQ-P2-001: Automated performance regression detection in CI (timing thresholds)
+- REQ-P2-001: 3-line layout option for very information-dense configurations
+- REQ-P2-002: Cost alerting thresholds (color change at $1, $5, $10 lifetime)
+- REQ-P2-003: Configurable segment visibility (user preferences for which segments appear)
 
 #### Definition of Done
 
-All 131 tests pass. Timing report shows measurable improvement. No duplicate require calls. Documentation updated. All P0 requirements satisfied.
+All P0 requirements satisfied. Statusline renders correctly at 80-column and 120-column widths. No new hooks added. Existing test suite passes. Performance: statusline renders in <50ms (no regression from current).
 
 #### Architectural Decisions
 
-- DEC-AUDIT-001: Map hook-to-library dependencies via static analysis (grep for function calls from each library)
-  Addresses: REQ-P0-005.
-  Rationale: Static analysis is faster and more reliable than runtime tracing for bash. Each library exports well-known function names that can be grepped.
-
-- DEC-TIMING-001: Parse `.hook-timing.log` with awk for timing reports (no new dependencies)
-  Addresses: REQ-P0-002, REQ-P1-001.
-  Rationale: The timing log uses tab-separated fields already. awk is available everywhere and handles the aggregation natively. No Python or jq needed.
-
-- DEC-DEDUP-001: Tighten task-track.sh and any other hooks with redundant requires to exact-minimum set
-  Addresses: REQ-P0-003, REQ-P0-005.
-  Rationale: Duplicate requires indicate code rot and make auditing harder. Idempotent guard means ~0ms cost but the inconsistency obscures the real dependency graph.
-
-#### Phase 1: Testing & Timing Validation
-**Status:** planned
-**Decision IDs:** DEC-TIMING-001
-**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-004
-**Issues:** #44
-**Definition of Done:**
-- REQ-P0-001 satisfied: 131/131 tests pass
-- REQ-P0-002 satisfied: Timing report produced with p50/p95/max per hook type
-- REQ-P0-004 satisfied: `--scope` edge cases tested (unknown scope, empty, --help)
-
-##### Planned Decisions
-- DEC-TIMING-001: Parse `.hook-timing.log` with awk — Addresses: REQ-P0-002, REQ-P1-001
-
-##### Work Items
-
-**W1-1: Run full test suite and capture results**
-- Execute `bash tests/run-hooks.sh` on main, verify 131/131 pass
-- Capture output for baseline evidence
-
-**W1-2: Create `scripts/hook-timing-report.sh`**
-- Parse `.hook-timing.log` tab-separated fields (timestamp, hook_name, event_type, elapsed_ms, exit_code)
-- Aggregate p50/p95/max per hook type and event type
-- Support `--since` flag for time-windowed reports
-
-**W1-3: Generate timing comparison report**
-- Run representative session (implementer + tester cycle)
-- Compare hook wall-clock times before/after optimization
-- Document findings in trace artifacts
-
-**W1-4: Test each `--scope` value individually**
-- Run `--scope syntax`, `--scope pre-bash`, `--scope pre-write`, etc.
-- Verify each produces the correct test subset (non-zero, less than full)
-
-**W1-5: Test `--scope` edge cases**
-- `--scope unknown` — should error with available scopes
-- `--scope` with no argument — should error
-- `--help` — should print usage
-- Multiple `--scope` flags — should OR the scopes
-
-##### Critical Files
-- `tests/run-hooks.sh` — test runner with --scope implementation
-- `hooks/source-lib.sh` — timing instrumentation and require_*() definitions
-- `.hook-timing.log` — raw timing data (33K+ lines)
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### Phase 2: Hook Dependency Audit & Deduplication
-**Status:** planned
-**Decision IDs:** DEC-AUDIT-001, DEC-DEDUP-001
-**Requirements:** REQ-P0-003, REQ-P0-005
-**Issues:** #45
-**Definition of Done:**
-- REQ-P0-003 satisfied: No duplicate require_*() calls in any hook
-- REQ-P0-005 satisfied: Audit table mapping every hook to its minimum required libraries
-
-##### Planned Decisions
-- DEC-AUDIT-001: Map hook-to-library dependencies via static analysis — Addresses: REQ-P0-005
-- DEC-DEDUP-001: Tighten hooks to exact-minimum require set — Addresses: REQ-P0-003
-
-##### Work Items
-
-**W2-1: Build hook dependency audit table**
-- For each hook: list functions called -> map to source library
-- Produce table: hook | require_git | require_plan | require_trace | require_session | require_doc | require_ci
-
-**W2-2: Fix task-track.sh duplicate requires**
-- Lines 22-26 duplicate lines 38-40 (require_git, require_plan appear twice)
-- Consolidate to single block before first usage
-
-**W2-3: Verify session-init.sh library needs**
-- Currently loads all via context-lib.sh shim
-- Determine actual minimum set (likely needs most, but verify)
-
-**W2-4: Tighten over-broad requires found in audit**
-- Any hook loading libraries whose functions it never calls
-
-**W2-5: Per-hook timing analysis**
-- Use timing report from Phase 1 to identify remaining bottlenecks
-- Focus on hooks with p95 > 200ms
-
-##### Critical Files
-- `hooks/task-track.sh` — duplicate require_git/require_plan on lines 22-26 and 38-40
-- `hooks/session-init.sh` — uses context-lib.sh shim, loads all ~3,800 lines
-- `hooks/context-lib.sh` — compatibility shim (49 lines)
-- `hooks/check-*.sh` — 6 check hooks with selective requires to verify
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### Phase 3: Dead Code Removal & Hot Path Optimization
-**Status:** planned
-**Decision IDs:** DEC-DEDUP-001
-**Requirements:** REQ-GOAL-003, REQ-P1-002
-**Issues:** #46
-**Definition of Done:**
-- No dead code paths in hook files
-- Hot paths (pre-bash early exit, pre-write worktree skip) verified as optimal
-- All 131 tests still pass after changes
-
-##### Planned Decisions
-- DEC-DEDUP-001: Remove dead code identified in audit — Addresses: REQ-GOAL-003
-
-##### Work Items
-
-**W3-1: Remove dead code paths identified in Phase 2 audit**
-- Functions defined but never called
-- Branches that can never execute
-
-**W3-2: Verify pre-bash.sh early-exit gate**
-- Non-git commands should exit in <30ms
-- Profile the fast path
-
-**W3-3: Verify pre-write.sh worktree detection**
-- `_IN_WORKTREE` path correctly skips plan-check and lightens doc-gate
-- Verify no false positives/negatives
-
-**W3-4: Assess context-lib.sh shim**
-- Can it be removed? (depends on what still sources it directly)
-- If kept, can it be slimmed?
-
-**W3-5: Re-run full test suite after all changes**
-- 131/131 must still pass
-- Timing comparison with Phase 1 baseline
-
-##### Critical Files
-- `hooks/pre-bash.sh` — hot path for every bash command
-- `hooks/pre-write.sh` — hot path for every write/edit (715 lines)
-- `hooks/post-write.sh` — post-tool hook, verify minimal loading
-- `hooks/context-lib.sh` — compatibility shim (removal candidate)
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### Phase 4: Documentation Update
-**Status:** planned
-**Requirements:** REQ-P0-006
-**Issues:** #47
-**Definition of Done:**
-- REQ-P0-006 satisfied: HOOKS.md documents lazy loading, --scope, worktree skipping
-
-##### Planned Decisions
-- No new architectural decisions — documentation only
-
-##### Work Items
-
-**W4-1: Update `hooks/HOOKS.md` — lazy loading architecture**
-- Document `require_*()` pattern and when to use each
-- Document `require_all()` vs selective loading
-
-**W4-2: Update `hooks/HOOKS.md` — `--scope` usage**
-- Available scopes and what each covers
-- Edge case behavior
-
-**W4-3: Update `README.md` — test runner usage**
-- Add `--scope` to test runner documentation
-
-**W4-4: Refresh `ARCHITECTURE.md` — hook subsystem**
-- Domain library split (core-lib, git-lib, plan-lib, trace-lib, session-lib, doc-lib, ci-lib)
-- Timing instrumentation
-- Line counts and load costs
-
-##### Critical Files
-- `hooks/HOOKS.md` — primary hook documentation
-- `README.md` — project overview
-- `ARCHITECTURE.md` — system architecture reference
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### Hook Consolidation Worktree Strategy
-
-Main is sacred. Each phase works in its own worktree:
-- **Phase 1:** `/Users/turla/.claude/.worktrees/hook-test-validate` on branch `feature/hook-test-validate`
-- **Phase 2:** `/Users/turla/.claude/.worktrees/hook-audit` on branch `feature/hook-audit`
-- **Phase 3:** `/Users/turla/.claude/.worktrees/hook-streamline` on branch `feature/hook-streamline`
-- **Phase 4:** `/Users/turla/.claude/.worktrees/hook-docs` on branch `feature/hook-docs`
-
-#### Hook Consolidation References
-
-- `.hook-timing.log` — 33K+ lines of raw timing data
-- `hooks/source-lib.sh` — lazy loading architecture (DEC-SPLIT-002, DEC-PERF-001, DEC-PERF-002)
-- `hooks/context-lib.sh` — compatibility shim (DEC-SPLIT-001)
-- `hooks/pre-write.sh` — worktree-aware gate skipping (DEC-PERF-003)
-
-### Initiative: State Management Reliability
-**Status:** active
-**Started:** 2026-03-01
-**Goal:** Unify all proof-status reads to use canonical `resolve_proof_file()` and harden `validate_state_file()` across the hook system.
-
-> State management has been a recurring source of bugs. 7 hooks read proof-status via inline
-> fallback logic instead of canonical `resolve_proof_file()`. This creates divergence when
-> worktrees are active. `validate_state_file()` is only called in 1 of ~10 proof-read sites.
-> This initiative unifies all reads and hardens all validation, then proves correctness with
-> comprehensive tests.
-
-**Dominant Constraint:** reliability
-
-#### Goals
-- REQ-GOAL-001: All proof-status reads use `resolve_proof_file()` — zero inline resolution
-- REQ-GOAL-002: `validate_state_file()` guards every `cut -d'|'` read
-- REQ-GOAL-003: Full E2E test coverage for state lifecycle, corruption, concurrency
-- REQ-GOAL-004: Clean-state and session-boundary cleanup verified
-
-#### Non-Goals
-- REQ-NOGO-001: Changing proof-status semantics or state machine transitions — stable and correct
-- REQ-NOGO-002: Modifying the resolver function itself — it is already correct
-- REQ-NOGO-003: Adding new state files or proof types — out of scope
-
-#### Requirements
-
-**Must-Have (P0)**
-
-- REQ-P0-001: task-track.sh, pre-bash.sh, post-write.sh use resolve_proof_file()
-  Acceptance: Given these 3 critical hooks, When proof-status is read, Then resolve_proof_file() is used instead of inline resolution
-
-- REQ-P0-002: subagent-start.sh, session-end.sh, stop.sh, prompt-submit.sh use resolve_proof_file()
-  Acceptance: Given these 4 hooks, When proof-status is read, Then resolve_proof_file() is used instead of inline resolution
-
-- REQ-P0-003: validate_state_file before every bare `cut -d'|'` on proof files
-  Acceptance: Given any proof-status read via cut, When the file is corrupt/empty/truncated, Then validate_state_file catches it before cut executes
-
-- REQ-P0-004: Full lifecycle E2E test suite
-  Acceptance: Given tests/test-state-lifecycle.sh with 12-15 tests and expanded test-proof-path-worktree.sh with 6-8 tests, When run, Then 18-23 new tests pass with zero regressions
-
-- REQ-P0-005: Corruption and concurrency test suite
-  Acceptance: Given tests/test-state-corruption.sh (8-10 tests) and test-state-concurrent.sh (4-6 tests), When run, Then 12-16 new tests pass with zero regressions
-
-- REQ-P0-006: Clean-state and session boundary test suite
-  Acceptance: Given tests/test-clean-state.sh (6-8 tests) and session boundary tests (4-6 tests), When run, Then 10-14 new tests pass with zero regressions
-
-#### Definition of Done
-
-All hooks use canonical proof resolution. validate_state_file guards every read. 40-53 new tests pass. Zero regressions in existing 131+ tests. Shellcheck clean.
-
-#### Architectural Decisions
-
-- DEC-STATE-007: Replace all inline scoped/legacy proof resolution with resolve_proof_file()
+- DEC-SL-LAYOUT-001: Keep 2-line layout with domain clustering
   Addresses: REQ-P0-001, REQ-P0-002.
-  Rationale: Canonical resolver handles worktree breadcrumb fallback correctly. Inline copies diverge when worktree logic changes, causing proof-gate failures in worktree contexts.
+  Rationale: Width analysis shows all new segments fit in 2 lines with labels. 3 lines would be more visually intrusive for minimal information gain. Line 1 = project/git/active-work, Line 2 = context/economics/code-metrics.
 
-- DEC-STATE-008: Add validate_state_file() before every bare `cut -d'|'` on proof files
-  Addresses: REQ-P0-003.
-  Rationale: Prevents crashes on corrupt/empty/truncated files. Currently only 1 of ~10 proof-read sites validates, leaving 9 sites vulnerable to malformed state.
+- DEC-SL-TOKENS-001: Display aggregate tokens as compact K notation (e.g., `145k`)
+  Addresses: REQ-P0-004, REQ-NOGO-001.
+  Rationale: Raw token counts (6+ digits) are unreadable. K notation is universally understood and fits in ~10 characters. Direction split deferred to P1 (width-dependent).
 
-#### Phase 1: Proof-Read Unification (Critical Hooks)
+- DEC-SL-TODOCACHE-001: Add `todo_project` and `todo_global` fields to `.statusline-cache` JSON
+  Addresses: REQ-P0-005.
+  Rationale: `.statusline-cache` is already written by `write_statusline_cache()` at every hook cycle and read by statusline.sh. Adding fields to the existing JSON is simpler than creating a second cache file. The existing `.todo-count` file continues to serve session-init.sh's HUD injection (different consumer).
+
+- DEC-SL-COSTPERSIST-001: Append session cost to `.session-cost-history` at session end; sum at session start into cache
+  Addresses: REQ-P1-001.
+  Rationale: Cost history must survive session boundaries. The statusline cache is session-scoped and rewritten each hook cycle. A persistent append-only file (like `.compaction-log`) is the proven pattern for cross-session data.
+
+#### Proposed Layout
+
+**Line 1: Project Identity + Git State + Active Work**
+```
+Opus claude-config-pro │ dirty: 8  wt: 2 │ agents: 3 (impl,test) │ todos: 3p 7g
+```
+
+**Line 2: Context Window + Session Economics + Code Metrics**
+```
+[████████░░░░] 67% │ tokens: 145k │ ~$0.53 │ 12m │ +45/-12 │ cache 69%
+```
+
+Domain clusters:
+- **Cluster A (Line 1 left):** Model + workspace — "where am I"
+- **Cluster B (Line 1 middle):** Git dirty + worktrees — "what state is the repo in"
+- **Cluster C (Line 1 right):** Agents + todos — "what work is active"
+- **Cluster D (Line 2 left):** Context bar + tokens — "how full is my context"
+- **Cluster E (Line 2 middle):** Cost + duration — "what has this session cost"
+- **Cluster F (Line 2 right):** Lines changed + cache — "what happened / efficiency"
+
+#### Phase 1: Statusline Rendering Overhaul
 **Status:** planned
-**Decision IDs:** DEC-STATE-007
-**Requirements:** REQ-P0-001
-**Issues:** #48
+**Decision IDs:** DEC-SL-LAYOUT-001, DEC-SL-TOKENS-001
+**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004
+**Issues:** #71, #67, #68 (token display only)
 **Definition of Done:**
-- REQ-P0-001 satisfied: task-track.sh, pre-bash.sh, post-write.sh all use resolve_proof_file()
-- Existing tests pass with zero regressions
+- REQ-P0-001 satisfied: segments grouped by domain as specified in Proposed Layout
+- REQ-P0-002 satisfied: every numeric segment has a label
+- REQ-P0-003 satisfied: cost displays as `~$X.XX`
+- REQ-P0-004 satisfied: token segment shows K notation from stdin fields
 
 ##### Planned Decisions
-- DEC-STATE-007: Replace inline proof resolution with resolve_proof_file() — Addresses: REQ-P0-001
+- DEC-SL-LAYOUT-001: 2-line domain-clustered layout — 3-line rejected as unnecessary given width analysis — Addresses: REQ-P0-001, REQ-P0-002
+- DEC-SL-TOKENS-001: Compact K notation for tokens — raw numbers unreadable, direction split deferred to P1 — Addresses: REQ-P0-004
 
 ##### Work Items
 
-**W1-1: task-track.sh Gate A — resolve_proof_file() (#48)**
-- Replace inline scoped/legacy proof-status resolution in Gate A with resolve_proof_file()
-- Verify gate behavior unchanged via existing test-proof-chain.sh tests
+**W1-0: Restructure line 1 with domain clustering and labels (#67)**
+- Reorder segments: model+workspace, then git state (dirty+wt with labels), then agents (with label), then todos
+- Add `dirty:` and `wt:` labels to git segment
+- Add `agents:` label
+- Add `todos:` label (placeholder for split — actual split in Phase 2)
 
-**W1-2: pre-bash.sh Check 8 — resolve_proof_file() (#48)**
-- Replace inline proof-status read in Check 8 with resolve_proof_file()
-- Verify early-exit and proof-gate behavior unchanged
+**W1-1: Add token count segment to line 2 (#68)**
+- Extract `total_input_tokens` + `total_output_tokens` from stdin JSON (add to the existing `jq` call)
+- Create `format_tokens()` helper: converts raw count to K notation (e.g., 145234 -> `145k`, 1500000 -> `1.5M`)
+- Insert token segment between context bar and cost: `tokens: 145k`
+- Color: dim when <50k, default when 50k-500k, yellow when >500k
 
-**W1-3: post-write.sh proof invalidation — resolve_proof_file() + write_proof_status() (#48)**
-- Replace inline proof resolution in write/edit invalidation path
-- Use both resolve_proof_file() for reads and write_proof_status() for writes
-- Verify proof invalidation behavior unchanged
+**W1-2: Prefix cost with `~` (#67 quick fix)**
+- Change `$%.2f` format to `~$%.2f` in cost_display printf
+- One-line change
+
+**W1-3: Update label formatting for line 2 segments**
+- Ensure duration, lines-changed, and cache segments have consistent label style
+- Duration already reads well (`12m`); lines and cache may need minor label tweaks
+
+##### Dispatch Plan
+- Dispatch 1: W1-0, W1-1, W1-2, W1-3 (all in statusline.sh, ~1 file, tightly coupled)
 
 ##### Critical Files
-- `hooks/task-track.sh` — Gate A proof-status check (highest-traffic proof read)
-- `hooks/pre-bash.sh` — Check 8 proof gate (every bash command)
-- `hooks/post-write.sh` — proof invalidation on file writes (715 lines)
-- `hooks/log.sh` — resolve_proof_file(), write_proof_status(), project_hash()
+- `scripts/statusline.sh` — primary file, all rendering changes happen here
 
 ##### Decision Log
 <!-- Guardian appends here after phase completion -->
 
-#### Phase 2: Lower-Priority Fixes + validate_state_file Hardening
+#### Phase 2: Data Pipeline — Todo Split + Cost Persistence
 **Status:** planned
-**Decision IDs:** DEC-STATE-007, DEC-STATE-008
-**Requirements:** REQ-P0-002, REQ-P0-003
-**Issues:** #49
+**Decision IDs:** DEC-SL-TODOCACHE-001, DEC-SL-COSTPERSIST-001
+**Requirements:** REQ-P0-005, REQ-P1-001
+**Issues:** #72, #68 (cost persistence), #69
 **Definition of Done:**
-- REQ-P0-002 satisfied: subagent-start.sh, session-end.sh, stop.sh, prompt-submit.sh all use resolve_proof_file()
-- REQ-P0-003 satisfied: validate_state_file guards every bare cut -d'|' read
+- REQ-P0-005 satisfied: statusline shows project vs global todo counts from cache
+- REQ-P1-001 satisfied: session cost persisted to `.session-cost-history`; lifetime cost readable at session start
 
 ##### Planned Decisions
-- DEC-STATE-007: Replace inline proof resolution with resolve_proof_file() — Addresses: REQ-P0-002
-- DEC-STATE-008: Pervasive validate_state_file before cut — Addresses: REQ-P0-003
+- DEC-SL-TODOCACHE-001: Todo split via statusline-cache JSON fields — avoids file proliferation — Addresses: REQ-P0-005
+- DEC-SL-COSTPERSIST-001: Cost persistence via `.session-cost-history` — proven cross-session pattern — Addresses: REQ-P1-001
 
 ##### Work Items
 
-**W2-1: subagent-start.sh — resolve_proof_file() (#49)**
-- Replace inline proof-status resolution with resolve_proof_file()
-- Verify subagent dispatch gate behavior unchanged
+**W2-0: Compute project-specific todo count in session-init.sh (#69)**
+- After the existing `todo.sh hud` call, run `todo.sh count --project` and `todo.sh count --global` (or parse HUD output)
+- If project has no GitHub remote, project count = 0 and fall back to global only
+- Write both counts to variables for cache consumption
 
-**W2-2: Informational readers — resolve_proof_file() (#49)**
-- session-end.sh, stop.sh, prompt-submit.sh use resolve_proof_file()
-- These are read-only/informational — lower risk but same inconsistency
+**W2-1: Update write_statusline_cache() in session-lib.sh (#69)**
+- Add `todo_project` and `todo_global` fields to the jq call
+- Source values from session-init.sh variables or re-derive from `.todo-count` + project count
+- Backward compatible: statusline.sh falls back to 0 if fields missing
 
-**W2-3: Pervasive validate_state_file before cut (#49)**
-- Audit all ~10 locations where `cut -d'|'` parses proof files
-- Add validate_state_file() guard before each bare cut
-- Handle validation failure gracefully (log warning, use safe default)
+**W2-2: Update statusline.sh to read todo split from cache (#69)**
+- Replace single `todo_count` read with `todo_project` + `todo_global` from cache
+- Display format: `todos: 3p 7g` when both > 0; `todos: 3p` when only project; `todos: 7g` when only global
+- Fall back to existing `.todo-count` if cache fields missing (backward compat)
+
+**W2-3: Persist session cost in session-end.sh (#68)**
+- Read `cost.total_cost_usd` from the session's last known value (stdin JSON is not available at session-end; need alternative)
+- Alternative: write cost to `.statusline-cache` during session (already done) and read it at session-end
+- Append `timestamp|cost_usd` to `.session-cost-history`
+- Trim to last 100 entries to prevent unbounded growth
+
+**W2-4: Sum lifetime cost at session start (#68)**
+- In session-init.sh, if `.session-cost-history` exists, sum the cost column
+- Write `lifetime_cost` to `.statusline-cache` via `write_statusline_cache()`
+- statusline.sh displays lifetime cost if available (e.g., `~$0.53 (life: ~$12.40)` or just the session cost if no history)
+
+##### Dispatch Plan
+- Dispatch 1: W2-0, W2-1, W2-2 (todo split pipeline — session-init -> cache -> statusline)
+- Dispatch 2: W2-3, W2-4 (cost persistence pipeline — session-end -> history -> session-init -> cache)
 
 ##### Critical Files
-- `hooks/task-track.sh` — subagent-start handler, multiple cut -d'|' sites
-- `hooks/pre-bash.sh` — prompt-submit integration, proof reads
-- `hooks/post-write.sh` — session-end and stop handlers
-- `hooks/core-lib.sh` — validate_state_file() definition
+- `hooks/session-init.sh` — computes project todo count and sums lifetime cost
+- `hooks/session-lib.sh` — `write_statusline_cache()` gets new fields
+- `hooks/session-end.sh` — persists session cost to history file
+- `scripts/statusline.sh` — reads new cache fields for display
 
 ##### Decision Log
 <!-- Guardian appends here after phase completion -->
 
-#### Phase 3: Lifecycle E2E + Resolver Consistency Tests
-**Status:** planned
-**Requirements:** REQ-P0-004
-**Issues:** #50
-**Definition of Done:**
-- REQ-P0-004 satisfied: 18-23 new tests pass
-- Zero regressions in existing suite
-
-##### Planned Decisions
-- No new architectural decisions — test-only phase
-
-##### Work Items
-
-**W3-1: New tests/test-state-lifecycle.sh (12-15 tests) (#50)**
-- Full proof-status lifecycle: needs-verification -> verified -> committed
-- Worktree lifecycle: breadcrumb creation, resolution, cleanup
-- Cross-worktree proof isolation
-- Session boundary transitions
-
-**W3-2: Expand tests/test-proof-path-worktree.sh (6-8 tests) (#50)**
-- Resolver consistency: same result from all 7 hooks for same state
-- Breadcrumb fallback when scoped file missing
-- Legacy path fallback when no breadcrumb exists
-- Edge cases: missing directories, permission errors
-
-##### Critical Files
-- `tests/test-state-lifecycle.sh` — new file (12-15 tests)
-- `tests/test-proof-path-worktree.sh` — existing file (26 tests, expand to 32-34)
-- `tests/test-proof-chain.sh` — existing proof chain tests (18 tests, verify no regressions)
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### Phase 4: Corruption + Concurrency Tests
-**Status:** planned
-**Requirements:** REQ-P0-005
-**Issues:** #51
-**Definition of Done:**
-- REQ-P0-005 satisfied: 12-16 new tests pass
-- Zero regressions in existing suite
-
-##### Planned Decisions
-- No new architectural decisions — test-only phase
-
-##### Work Items
-
-**W4-1: New tests/test-state-corruption.sh (8-10 tests) (#51)**
-- Empty proof file handling
-- Truncated proof file (missing fields)
-- Malformed delimiters (wrong separator, extra pipes)
-- Binary/garbage content in proof file
-- Permission-denied on proof file read
-- Proof file disappears mid-read (race condition)
-
-**W4-2: New tests/test-state-concurrent.sh (4-6 tests) (#51)**
-- Simultaneous proof writes from two processes
-- Read during write (partial content)
-- Rapid state transitions (write-read-write without delay)
-- File locking behavior verification
-
-##### Critical Files
-- `tests/test-state-corruption.sh` — new file (8-10 tests)
-- `tests/test-state-concurrent.sh` — new file (4-6 tests)
-- `hooks/core-lib.sh` — validate_state_file() behavior under corruption
-- `hooks/log.sh` — write_proof_status() atomicity
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### Phase 5: Clean-state E2E + Session Boundary Tests
-**Status:** planned
-**Requirements:** REQ-P0-006
-**Issues:** #52
-**Definition of Done:**
-- REQ-P0-006 satisfied: 10-14 new tests pass
-- Full suite green (131+ existing + 40-53 new tests)
-
-##### Planned Decisions
-- No new architectural decisions — test-only phase
-
-##### Work Items
-
-**W5-1: New tests/test-clean-state.sh (6-8 tests) (#52)**
-- clean-state.sh removes all proof files correctly
-- clean-state.sh preserves non-proof state files
-- clean-state.sh handles missing state directory gracefully
-- Post-cleanup: hooks function correctly with no state
-- Idempotent cleanup (running twice is safe)
-
-**W5-2: Session boundary cleanup tests (4-6 tests) (#52)**
-- Session end triggers appropriate state cleanup
-- Orphaned proof files detected and cleaned
-- Worktree removal cleans associated proof breadcrumbs
-- New session starts with clean state after prior session cleanup
-
-##### Critical Files
-- `tests/test-clean-state.sh` — new file (6-8 tests)
-- `scripts/clean-state.sh` — cleanup script under test
-- `hooks/task-track.sh` — session boundary handlers
-- `hooks/log.sh` — proof file management functions
-
-##### Decision Log
-<!-- Guardian appends here after phase completion -->
-
-#### State Management Reliability Worktree Strategy
+#### Statusline IA Worktree Strategy
 
 Main is sacred. Each phase works in its own worktree:
-- **Phase 1:** `/Users/turla/.claude/.worktrees/state-mgmt-p1` on branch `feature/state-mgmt-p1`
-- **Phase 2:** `/Users/turla/.claude/.worktrees/state-mgmt-p2` on branch `feature/state-mgmt-p2`
-- **Phase 3:** `/Users/turla/.claude/.worktrees/state-mgmt-p3` on branch `feature/state-mgmt-p3`
-- **Phase 4:** `/Users/turla/.claude/.worktrees/state-mgmt-p4` on branch `feature/state-mgmt-p4`
-- **Phase 5:** `/Users/turla/.claude/.worktrees/state-mgmt-p5` on branch `feature/state-mgmt-p5`
+- **Phase 1:** `~/.claude/.worktrees/statusline-rendering` on branch `feature/statusline-rendering`
+- **Phase 2:** `~/.claude/.worktrees/statusline-data-pipeline` on branch `feature/statusline-data-pipeline`
 
-#### State Management Reliability References
+#### Statusline IA References
 
-- `hooks/log.sh` — resolve_proof_file(), write_proof_status(), project_hash()
-- `hooks/core-lib.sh` — validate_state_file()
-- `tests/test-proof-chain.sh` — existing proof chain tests (18 tests)
-- `tests/test-proof-path-worktree.sh` — existing worktree proof tests (26 tests)
-- `scripts/clean-state.sh` — state cleanup script
+- Issue #67: Labeling and visual clustering
+- Issue #68: Aggregate token spend
+- Issue #69: Todo granularity
+- `scripts/statusline.sh` — current implementation (merged today)
+- Stdin JSON fields: `context_window.total_input_tokens`, `context_window.total_output_tokens`
+- `.statusline-cache` format: JSON written by `write_statusline_cache()` in session-lib.sh
 
 ---
 
@@ -577,6 +281,8 @@ Main is sacred. Each phase works in its own worktree:
 | Initiative | Period | Phases | Key Decisions | Archived |
 |-----------|--------|--------|---------------|----------|
 | Production Remediation (Metanoia Suite) | 2026-02-28 to 2026-03-01 | 5 | DEC-HOOKS-001 thru DEC-TEST-006 | No |
+| State Management Reliability | 2026-03-01 to 2026-03-02 | 5 | DEC-STATE-007, DEC-STATE-008 + 8 test decisions | No |
+| Hook Consolidation Testing & Streamlining | 2026-03-02 | 4 | DEC-AUDIT-001, DEC-TIMING-001, DEC-DEDUP-001 | No |
 
 ### Production Remediation (Metanoia Suite) — Summary
 
@@ -589,6 +295,29 @@ Fixed defects left by the metanoia hook consolidation (17 hooks -> 4 entry point
 5. **Validation Harness** (b36f3ad): 20 trace fixtures across 4 agent types x 5 outcomes, validation harness with 95% accuracy gate, regression detection via baseline diffing.
 
 All P0 requirements satisfied. 6 architectural decisions recorded (DEC-HOOKS-001 through DEC-TEST-006). Issues closed: #39, #40, #41, #42.
+
+### State Management Reliability — Summary
+
+Unified all proof-status reads to canonical `resolve_proof_file()` and hardened `validate_state_file()` across the hook system. Five phases over 2 days:
+
+1. **Phase 1 — Proof-Read Unification** (6158a09): task-track.sh, pre-bash.sh, post-write.sh migrated to resolve_proof_file(). #48
+2. **Phase 2 — Hardening** (d8dfe39): subagent-start.sh, session-end.sh, stop.sh, prompt-submit.sh migrated; validate_state_file guards all cut sites. #49
+3. **Phase 3 — Lifecycle E2E** (a5ad943): 12 lifecycle tests + 6 resolver consistency tests. #50
+4. **Phase 4 — Corruption + Concurrency** (dc965d3): 8 corruption tests + 6 concurrency tests. #51
+5. **Phase 5 — Clean-state + Session Boundary** (9e16837): 8 clean-state E2E tests + 6 session boundary tests. #52
+
+All 6 P0 requirements satisfied. 28 new tests added (total suite: 159 tests, 0 failures, 3 pre-existing skips). 10 decisions recorded (DEC-STATE-007, DEC-STATE-008, DEC-STATE-001, DEC-STATE-GOV-001, DEC-STATE-LIFECYCLE-001, DEC-STATE-CORRUPT-001, DEC-STATE-CONCURRENT-001, DEC-STATE-CLEAN-E2E-001, DEC-STATE-SESSION-BOUNDARY-001, DEC-STATE-AUDIT-001). Issues closed: #48, #49, #50, #51, #52.
+
+### Hook Consolidation Testing & Streamlining — Summary
+
+Validated, audited, and streamlined the hook system after the lazy-loading performance refactor (`require_*()` in source-lib.sh). Four phases in 1 day:
+
+1. **Phase 1 — Testing & Timing Validation** (#44): 159/159 tests pass, hook-timing-report.sh created with p50/p95/max per hook type, all 11 `--scope` values validated including edge cases.
+2. **Phase 2 — Hook Dependency Audit & Deduplication** (#45): Static analysis audit mapped every hook to its minimum required libraries, duplicate `require_*()` calls removed from task-track.sh and other hooks.
+3. **Phase 3 — Dead Code Removal & Hot Path** (#46): Dead code paths removed, pre-bash.sh early-exit and pre-write.sh worktree-skip verified optimal, context-lib.sh retained as test/diagnose shim, state registry lint added to test runner.
+4. **Phase 4 — Documentation Update** (43b7c5c): HOOKS.md updated with require_*() table and --scope docs, README.md updated with domain library entries and utility scripts, ARCHITECTURE.md rewritten with lazy loading diagram and performance notes.
+
+All 6 P0 requirements satisfied. 3 architectural decisions recorded (DEC-AUDIT-001, DEC-TIMING-001, DEC-DEDUP-001). Issues closed: #44, #45, #46, #47.
 
 ---
 
