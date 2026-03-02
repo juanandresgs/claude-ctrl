@@ -424,7 +424,6 @@ fi
 # --- Spawn CI watcher after push (if GitHub Actions present) ---
 # After a guardian push, start ci-watch.sh in background to monitor the CI run.
 # Prevents duplicate watchers via lock file PID check in ci-watch.sh.
-require_ci
 if has_github_actions "$PROJECT_ROOT"; then
     CI_WATCH_SCRIPT="$HOME/.claude/scripts/ci-watch.sh"
     if [[ -x "$CI_WATCH_SCRIPT" ]]; then
