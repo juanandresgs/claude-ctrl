@@ -9,7 +9,7 @@
 #   - Conditional segments appear/disappear correctly
 #   - Cache efficiency calculates and displays correctly
 #   - Domain-clustered line 1: dirty:/wt: labels, agents: label, todos: label
-#   - Token segment: tokens: Nk notation, correct color thresholds
+#   - Token segment: tks: Nk(+Sk) notation with project Σ, correct color thresholds
 #
 # @decision DEC-TEST-STATUSLINE-001
 # @title Statusline test suite validates two-line HUD correctness
@@ -583,7 +583,7 @@ test_tokens_segment_present() {
     local line2
     line2=$(run_statusline "$json" | tail -1 | strip_ansi)
 
-    if [[ "$line2" == *"tokens:"* ]]; then
+    if [[ "$line2" == *"tks:"* ]]; then
         pass_test "Token segment present in line 2"
     else
         fail_test "Token segment absent from line 2" "line2=$line2"
@@ -597,8 +597,8 @@ test_tokens_k_notation() {
     local line2
     line2=$(run_statusline "$json" | tail -1 | strip_ansi)
 
-    if [[ "$line2" == *"tokens: 145k"* ]]; then
-        pass_test "Token count 145000 displays as 'tokens: 145k'"
+    if [[ "$line2" == *"tks: 145k"* ]]; then
+        pass_test "Token count 145000 displays as 'tks: 145k'"
     else
         fail_test "Token K notation wrong" "line2=$line2"
     fi
@@ -611,8 +611,8 @@ test_tokens_raw_below_1k() {
     local line2
     line2=$(run_statusline "$json" | tail -1 | strip_ansi)
 
-    if [[ "$line2" == *"tokens: 500"* ]]; then
-        pass_test "Token count 500 displays as 'tokens: 500' (raw, no suffix)"
+    if [[ "$line2" == *"tks: 500"* ]]; then
+        pass_test "Token count 500 displays as 'tks: 500' (raw, no suffix)"
     else
         fail_test "Token raw notation wrong" "line2=$line2"
     fi
@@ -625,8 +625,8 @@ test_tokens_m_notation() {
     local line2
     line2=$(run_statusline "$json" | tail -1 | strip_ansi)
 
-    if [[ "$line2" == *"tokens: 1.5M"* ]]; then
-        pass_test "Token count 1500000 displays as 'tokens: 1.5M'"
+    if [[ "$line2" == *"tks: 1.5M"* ]]; then
+        pass_test "Token count 1500000 displays as 'tks: 1.5M'"
     else
         fail_test "Token M notation wrong" "line2=$line2"
     fi
@@ -634,13 +634,13 @@ test_tokens_m_notation() {
 
 test_tokens_zero_shows_dim() {
     run_test
-    # 0 tokens → "tokens: 0", dim color (ESC[2m)
+    # 0 tokens → "tks: 0", dim color (ESC[2m)
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{}}'
     local line2_raw
     line2_raw=$(run_statusline "$json" | tail -1)
 
-    # Dim = ESC[2m before "tokens:"
-    if printf '%s' "$line2_raw" | grep -q $'\033\[2mtokens:'; then
+    # Dim = ESC[2m before "tks:"
+    if printf '%s' "$line2_raw" | grep -q $'\033\[2mtks:'; then
         pass_test "Token count 0 shows in dim color"
     else
         fail_test "Token count 0 not dim" "raw: $(printf '%s' "$line2_raw" | cat -v)"
@@ -654,8 +654,8 @@ test_tokens_high_shows_yellow() {
     local line2_raw
     line2_raw=$(run_statusline "$json" | tail -1)
 
-    # Yellow = ESC[33m before "tokens:"
-    if printf '%s' "$line2_raw" | grep -q $'\033\[33mtokens:'; then
+    # Yellow = ESC[33m before "tks:"
+    if printf '%s' "$line2_raw" | grep -q $'\033\[33mtks:'; then
         pass_test "Token count >500k shows in yellow"
     else
         fail_test "Token count >500k not yellow" "raw: $(printf '%s' "$line2_raw" | cat -v)"
@@ -664,23 +664,23 @@ test_tokens_high_shows_yellow() {
 
 test_tokens_segment_position() {
     run_test
-    # tokens: segment should appear AFTER context bar and BEFORE cost (~$)
+    # tks: segment should appear AFTER context bar and BEFORE cost (~$)
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_cost_usd":0.50},"context_window":{"used_percentage":40,"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     line2=$(run_statusline "$json" | tail -1 | strip_ansi)
 
     local pos_bar pos_tokens pos_cost
     pos_bar=$(printf '%s' "$line2" | grep -bo '\[' | head -1 | cut -d: -f1)
-    pos_tokens=$(printf '%s' "$line2" | grep -bo 'tokens:' | head -1 | cut -d: -f1)
+    pos_tokens=$(printf '%s' "$line2" | grep -bo 'tks:' | head -1 | cut -d: -f1)
     pos_cost=$(printf '%s' "$line2" | grep -bo '~\$' | head -1 | cut -d: -f1)
 
     if [[ -n "$pos_bar" && -n "$pos_tokens" && -n "$pos_cost" ]] \
         && (( pos_bar < pos_tokens )) \
         && (( pos_tokens < pos_cost )); then
-        pass_test "Line 2 order: context bar < tokens: < ~\$cost"
+        pass_test "Line 2 order: context bar < tks: < ~\$cost"
     else
         fail_test "Line 2 segment order wrong" \
-            "line2=$line2 | positions: bar=$pos_bar tokens=$pos_tokens cost=$pos_cost"
+            "line2=$line2 | positions: bar=$pos_bar tks=$pos_tokens cost=$pos_cost"
     fi
 }
 
@@ -1020,7 +1020,7 @@ make_lifetime_token_cache() {
 
 test_lifetime_tokens_absent_when_zero_history_no_subagent() {
     run_test
-    # No past sessions (lifetime_tokens=0), no subagents → plain "tokens: 145k", no Σ
+    # No past sessions (lifetime_tokens=0), no subagents → plain "tks: 145k", no Σ
     local tmpdir
     tmpdir=$(mktemp -d)
     make_lifetime_token_cache "$tmpdir" 0 0
@@ -1030,11 +1030,11 @@ test_lifetime_tokens_absent_when_zero_history_no_subagent() {
     line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    # tokens: 145k should be present, Σ should NOT be present
-    if [[ "$line2" == *"tokens: 145k"* ]] && [[ "$line2" != *"Σ"* ]]; then
+    # tks: 145k should be present, Σ should NOT be present
+    if [[ "$line2" == *"tks: 145k"* ]] && [[ "$line2" != *"Σ"* ]]; then
         pass_test "Lifetime tokens: no Σ when lifetime=0 and no subagents (first session)"
     else
-        fail_test "Lifetime tokens: unexpected Σ on first session or wrong token display" "line2=$line2"
+        fail_test "Lifetime tokens: unexpected Σ on first session or wrong tks display" "line2=$line2"
     fi
 }
 
@@ -1050,8 +1050,8 @@ test_lifetime_tokens_shown_with_past_sessions() {
     line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    # Should show "tokens: 145k (Σ1.1M)" — 1000000 past + 145000 current
-    if [[ "$line2" == *"tokens: 145k"* ]] && [[ "$line2" == *"Σ"* ]] && [[ "$line2" == *"1.1M"* ]]; then
+    # Should show "tks: 145k │ Σ1.1M" — 1000000 past + 145000 current
+    if [[ "$line2" == *"tks: 145k"* ]] && [[ "$line2" == *"Σ"* ]] && [[ "$line2" == *"1.1M"* ]]; then
         pass_test "Lifetime tokens: Σ1.1M shown when past sessions contributed 1M tokens"
     else
         fail_test "Lifetime tokens: Σ annotation or value wrong for past sessions" "line2=$line2"
@@ -1061,7 +1061,7 @@ test_lifetime_tokens_shown_with_past_sessions() {
 test_lifetime_tokens_includes_subagent() {
     run_test
     # No past sessions, but current session has 95k subagent tokens
-    # current main=145k + subagent=95k → Σ240k
+    # current main=145k + subagent=95k → tks: 145k(+95k), no Σ (no past sessions)
     local tmpdir
     tmpdir=$(mktemp -d)
     make_lifetime_token_cache "$tmpdir" 0 95000
@@ -1071,11 +1071,11 @@ test_lifetime_tokens_includes_subagent() {
     line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    # 0 past + 145k main + 95k subagent = 240k → Σ240k
-    if [[ "$line2" == *"tokens: 145k"* ]] && [[ "$line2" == *"Σ"* ]] && [[ "$line2" == *"240k"* ]]; then
-        pass_test "Lifetime tokens: Σ240k shown when subagent adds 95k (no past sessions)"
+    # 0 past + 145k main + 95k subagent = tks: 145k(+95k), no Σ segment
+    if [[ "$line2" == *"tks: 145k"* ]] && [[ "$line2" == *"(+95k)"* ]] && [[ "$line2" != *"Σ"* ]]; then
+        pass_test "Lifetime tokens: tks: 145k(+95k) shown when subagent adds 95k, no Σ (no past sessions)"
     else
-        fail_test "Lifetime tokens: Σ with subagent only wrong" "line2=$line2"
+        fail_test "Lifetime tokens: subagent-only format wrong (expected tks: 145k(+95k), no Σ)" "line2=$line2"
     fi
 }
 
@@ -1091,9 +1091,9 @@ test_lifetime_tokens_grand_total_all_sources() {
     line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    # 500000 + 145000 + 55000 = 700000 → 700k
-    if [[ "$line2" == *"tokens: 145k"* ]] && [[ "$line2" == *"Σ"* ]] && [[ "$line2" == *"700k"* ]]; then
-        pass_test "Lifetime tokens: Σ700k = past(500k) + main(145k) + subagent(55k)"
+    # 500000 + 145000 + 55000 = 700000 → 700k; subagent shown as (+55k)
+    if [[ "$line2" == *"tks: 145k"* ]] && [[ "$line2" == *"(+55k)"* ]] && [[ "$line2" == *"Σ"* ]] && [[ "$line2" == *"700k"* ]]; then
+        pass_test "Lifetime tokens: tks: 145k(+55k) │ Σ700k = past(500k) + main(145k) + subagent(55k)"
     else
         fail_test "Lifetime tokens: grand total from all 3 sources wrong" "line2=$line2"
     fi
@@ -1125,11 +1125,11 @@ test_lifetime_tokens_dim_rendering() {
     line2_raw=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1)
     rm -rf "$tmpdir"
 
-    # Dim annotation pattern: ESC[2m(ΣNk)
-    if printf '%s' "$line2_raw" | grep -q $'\033\[2m(Σ'; then
-        pass_test "Lifetime tokens: Σ annotation rendered dim (ESC[2m)"
+    # Dim annotation pattern: ESC[2mΣNk (Σ is now a standalone dim segment)
+    if printf '%s' "$line2_raw" | grep -q $'\033\[2mΣ'; then
+        pass_test "Lifetime tokens: Σ segment rendered dim (ESC[2m)"
     else
-        fail_test "Lifetime tokens: Σ not dim-rendered" "raw: $(printf '%s' "$line2_raw" | cat -v)"
+        fail_test "Lifetime tokens: Σ segment not dim-rendered" "raw: $(printf '%s' "$line2_raw" | cat -v)"
     fi
 }
 

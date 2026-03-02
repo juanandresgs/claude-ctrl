@@ -343,7 +343,16 @@ fi
 # Context bar (always shown)
 line2=$(build_context_bar "$ctx_pct")
 
-# Token count segment (always shown after context bar)
+# Token count segment with subagent breakdown and project lifetime
+# @decision DEC-LIFETIME-TOKENS-001
+# @title Display token usage as: tks: Nk(+Sk) │ ΣTk — main, subagent, and project total
+# @status accepted
+# @rationale New format separates subagent contribution in-line (+Sk dim suffix) and
+# places the project lifetime Σ as a distinct segment after a separator. This is more
+# scannable than the previous (Σ) parenthetical: the eye lands on the current session
+# total first, the subagent cost is a minor annotation, and the cumulative Σ only
+# appears when there is genuine history (past sessions). The shorter "tks:" label saves
+# horizontal space. Supersedes DEC-SUBAGENT-TOKENS-004 and the inline (Σ) from v1.
 total_tokens_int="${total_tokens%.*}"
 total_tokens_int=$(( total_tokens_int ))
 tokens_str=$(format_tokens "$total_tokens_int")
@@ -351,33 +360,28 @@ if   (( total_tokens_int > 500000 )); then tokens_color="33"  # yellow
 elif (( total_tokens_int > 50000  )); then tokens_color="0"   # default
 else                                        tokens_color="2"   # dim
 fi
-tokens_display=$(printf '\033[%smtokens: %s\033[0m' "$tokens_color" "$tokens_str")
-line2=$(printf '%s %b %s' "$line2" "$sep" "$tokens_display")
 
-# Lifetime project token total (Σ = past sessions + current session + current subagent)
-# @decision DEC-LIFETIME-TOKENS-001
-# @title Display project lifetime tokens as Σ annotation on token segment
-# @status accepted
-# @rationale Users care more about cumulative token consumption per project than
-# per-session totals. Lifetime tokens directly map to project cost and context pressure
-# across sessions. The Σ shows the running total: all past sessions (from
-# .session-token-history summed at session-init and written to cache as lifetime_tokens)
-# + current session main tokens (total_tokens_int from stdin JSON) + current session
-# subagent tokens (cache_subagent_tokens from the subagent tracker). Dim rendering
-# matches the cost Σ pattern (DEC-LIFETIME-COST-002). The Σ annotation is only shown
-# when grand total exceeds current session tokens (i.e., there are past sessions or
-# subagent tokens), so brand-new projects with no history show plain "tokens: 145k".
-# Supersedes DEC-SUBAGENT-TOKENS-004 which only showed session+subagent total.
-cache_lifetime_tokens_int="${cache_lifetime_tokens%.*}"
-cache_lifetime_tokens_int=$(( ${cache_lifetime_tokens_int:-0} ))
+# Resolve subagent and lifetime from already-loaded cache variables
 cache_subagent_tokens_int="${cache_subagent_tokens%.*}"
 cache_subagent_tokens_int=$(( ${cache_subagent_tokens_int:-0} ))
-# Grand total = past sessions + current main + current subagent
+cache_lifetime_tokens_int="${cache_lifetime_tokens%.*}"
+cache_lifetime_tokens_int=$(( ${cache_lifetime_tokens_int:-0} ))
+
+# Build token display: tks: Nk  or  tks: Nk(+Sk)
+if (( cache_subagent_tokens_int > 0 )); then
+  subagent_str=$(format_tokens "$cache_subagent_tokens_int")
+  tokens_display=$(printf '\033[%smtks: %s\033[2m(+%s)\033[0m' "$tokens_color" "$tokens_str" "$subagent_str")
+else
+  tokens_display=$(printf '\033[%smtks: %s\033[0m' "$tokens_color" "$tokens_str")
+fi
+line2=$(printf '%s %b %s' "$line2" "$sep" "$tokens_display")
+
+# Project lifetime total as separate segment: Σ750k
+# Only shown when there are past sessions (grand total > current session total).
 _token_grand_total=$(( cache_lifetime_tokens_int + total_tokens_int + cache_subagent_tokens_int ))
-if (( _token_grand_total > total_tokens_int && _token_grand_total > 0 )); then
+if (( _token_grand_total > total_tokens_int + cache_subagent_tokens_int && _token_grand_total > 0 )); then
   grand_total_str=$(format_tokens "$_token_grand_total")
-  tokens_display=$(printf '\033[%smtokens: %s \033[2m(Σ%s)\033[0m' "$tokens_color" "$tokens_str" "$grand_total_str")
-  line2=$(printf '%s %b %s' "$(build_context_bar "$ctx_pct")" "$sep" "$tokens_display")
+  line2=$(printf '%s %b \033[2mΣ%s\033[0m' "$line2" "$sep" "$grand_total_str")
 fi
 
 # Persist main session token count for session-end.sh to read as fallback.
