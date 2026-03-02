@@ -95,10 +95,12 @@ EOF
 )
 
     # Run hook with mocked environment
+    # CLAUDE_PROJECT_DIR must prefix the bash invocation (right side of pipe),
+    # not the echo (left side). Prefixing echo only sets the env for echo itself,
+    # not for the bash subprocess that reads stdin. See Issue #53.
     local OUTPUT
     OUTPUT=$(cd "$TEMP_REPO" && \
-             CLAUDE_PROJECT_DIR="$TEMP_REPO" \
-             echo "$INPUT_JSON" | bash "$HOOKS_DIR/task-track.sh" 2>&1)
+             echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" bash "$HOOKS_DIR/task-track.sh" 2>&1)
     local EXIT_CODE=$?
 
     # Cleanup - ensure we're not in TEMP_REPO before deleting

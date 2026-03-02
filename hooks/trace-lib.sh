@@ -237,8 +237,15 @@ detect_active_trace() {
         [[ -f "$mf_path" ]] && _markers+=("$mf_path")
     done
     if [[ ${#_markers[@]} -gt 0 ]]; then
-        local _stat_fmt="%m"
-        stat -f "$_stat_fmt" /dev/null >/dev/null 2>&1 || _stat_fmt="%Y"
+        # @decision DEC-STAT-COMPAT-001
+        # @title Use stat -c (GNU/Linux) first, stat -f (BSD/macOS) as fallback
+        # @status accepted
+        # @rationale On Linux, `stat -f "%m"` means "filesystem status" and returns
+        #   hex metadata (like "ef53"), not file mtime. It succeeds (exit 0) so the
+        #   || fallback never fires. Using `stat -c "%Y"` first is correct because
+        #   -c is not a valid option on macOS BSD stat (fails immediately), allowing
+        #   the fallback to `stat -f "%m"` (correct on macOS). Fixes CI failures
+        #   in test-trace-classification.sh and test-validation-harness.sh.
         local _sorted_marker
         while IFS= read -r _sorted_marker; do
             [[ -f "$_sorted_marker" ]] || continue
@@ -254,7 +261,7 @@ detect_active_trace() {
                 return 0
             fi
         done < <(for _m in "${_markers[@]}"; do
-            _mt=$(stat -f "$_stat_fmt" "$_m" 2>/dev/null || stat -c "%Y" "$_m" 2>/dev/null || echo 0)
+            _mt=$(stat -c "%Y" "$_m" 2>/dev/null || stat -f "%m" "$_m" 2>/dev/null || echo 0)
             printf '%s\t%s\n' "$_mt" "$_m"
         done | sort -rn | cut -f2-)
     fi
@@ -428,7 +435,7 @@ finalize_trace() {
         local _plan_modified=false
         if [[ -f "$_plan_path" && -n "$started_at" ]]; then
             local _plan_mtime
-            _plan_mtime=$(stat -f "%m" "$_plan_path" 2>/dev/null || stat -c "%Y" "$_plan_path" 2>/dev/null || echo 0)
+            _plan_mtime=$(stat -c "%Y" "$_plan_path" 2>/dev/null || stat -f "%m" "$_plan_path" 2>/dev/null || echo 0)
             local _start_epoch_check
             _start_epoch_check=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
                 || date -u -d "$started_at" +%s 2>/dev/null || echo 0)

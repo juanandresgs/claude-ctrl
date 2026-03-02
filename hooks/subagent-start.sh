@@ -208,9 +208,8 @@ case "$AGENT_TYPE" in
                 [[ -f "$_g" ]] && _impl_manifests+=("$_g")
             done
             if [[ ${#_impl_manifests[@]} -gt 0 ]]; then
-                # Sort by mtime descending using stat (cross-platform: macOS -f %m, Linux -c %Y)
-                _stat_fmt="%m"
-                stat -f "$_stat_fmt" /dev/null >/dev/null 2>&1 || _stat_fmt="%Y"
+                # Sort by mtime descending using stat (cross-platform: Linux -c %Y first,
+                # macOS -f %m as fallback). See DEC-STAT-COMPAT-001 in trace-lib.sh.
                 while IFS= read -r _mf; do
                     [[ -f "$_mf" ]] || continue
                     _proj=$(jq -r '.project // empty' "$_mf" 2>/dev/null)
@@ -219,7 +218,7 @@ case "$AGENT_TYPE" in
                         break
                     fi
                 done < <(for _m in "${_impl_manifests[@]}"; do
-                    _mt=$(stat -f "$_stat_fmt" "$_m" 2>/dev/null || stat -c "%Y" "$_m" 2>/dev/null || echo 0)
+                    _mt=$(stat -c "%Y" "$_m" 2>/dev/null || stat -f "%m" "$_m" 2>/dev/null || echo 0)
                     printf '%s\t%s\n' "$_mt" "$_m"
                 done | sort -rn | cut -f2-)
             fi
