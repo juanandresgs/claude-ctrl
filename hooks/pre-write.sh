@@ -384,10 +384,9 @@ if is_test_file "$FILE_PATH"; then
                 HAS_INTERNAL_MOCK=true
             fi
 
-            # External-boundary test libraries are OK
-            if echo "$FILE_CONTENT" | grep -qE 'pytest-httpx|httpretty|responses\.|respx\.|nock\(|msw|@mswjs|wiremock|testcontainers|dockertest'; then
-                [[ "$HAS_INTERNAL_MOCK" == "false" ]] && HAS_INTERNAL_MOCK=false  # no-op: already false
-            fi
+            # External-boundary test libraries (pytest-httpx, responses, nock, msw, wiremock, testcontainers, etc.)
+            # do not constitute internal mocks — HAS_INTERNAL_MOCK remains as set above.
+            # No override needed: the Python/JS/Go checks above already classify boundary-only mocks as external.
 
             if [[ "$HAS_INTERNAL_MOCK" == "true" ]]; then
                 MOCK_STRIKES_FILE="${_CACHED_CLAUDE_DIR}/.mock-gate-strikes"
