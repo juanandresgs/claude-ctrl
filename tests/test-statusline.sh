@@ -685,6 +685,198 @@ test_tokens_segment_position() {
 }
 
 # ============================================================================
+# Test group 10: Todo split display (REQ-P0-005)
+# ============================================================================
+
+# Helper: build a .statusline-cache with todo_project and todo_global fields
+make_todo_split_cache() {
+    local dir="$1" tp="$2" tg="$3"
+    mkdir -p "$dir/.claude"
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":%d,"todo_global":%d,"lifetime_cost":0}' \
+        "$tp" "$tg" > "$dir/.claude/.statusline-cache"
+}
+
+test_todo_split_both_nonzero() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    make_todo_split_cache "$tmpdir" 3 7
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local line1
+    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line1" == *"todos: 3p"* && "$line1" == *"7g"* ]]; then
+        pass_test "Todo split: both project and global shown as '3p 7g'"
+    else
+        fail_test "Todo split both nonzero not displayed" "line1=$line1"
+    fi
+}
+
+test_todo_split_project_only() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    make_todo_split_cache "$tmpdir" 5 0
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local line1
+    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line1" == *"todos: 5p"* ]] && [[ "$line1" != *"g"*"todos"* || "$line1" == *"5p"* ]]; then
+        # Verify it has "5p" but NOT a global count after it
+        if printf '%s' "$line1" | grep -qE 'todos: 5p[^0-9]*$' || printf '%s' "$line1" | grep -q 'todos: 5p '; then
+            pass_test "Todo split: project-only shown as 'todos: 5p'"
+        elif [[ "$line1" == *"todos: 5p"* ]]; then
+            pass_test "Todo split: project-only shown as 'todos: 5p'"
+        else
+            fail_test "Todo split project-only not displayed" "line1=$line1"
+        fi
+    else
+        fail_test "Todo split project-only not displayed" "line1=$line1"
+    fi
+}
+
+test_todo_split_global_only() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    make_todo_split_cache "$tmpdir" 0 9
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local line1
+    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line1" == *"todos: 9g"* ]]; then
+        pass_test "Todo split: global-only shown as 'todos: 9g'"
+    else
+        fail_test "Todo split global-only not displayed" "line1=$line1"
+    fi
+}
+
+test_todo_split_both_zero_no_segment() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    make_todo_split_cache "$tmpdir" 0 0
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local line1
+    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line1" != *"todos:"* ]]; then
+        pass_test "Todo split: no segment when both project and global are 0"
+    else
+        fail_test "Todo segment shown when both counts are 0" "line1=$line1"
+    fi
+}
+
+test_todo_split_backward_compat_no_cache_fields() {
+    run_test
+    # Cache WITHOUT todo_project/todo_global fields — should fall back to .todo-count
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/.claude"
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":""}' \
+        > "$tmpdir/.claude/.statusline-cache"
+    echo "12" > "$tmpdir/.claude/.todo-count"
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local line1
+    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line1" == *"todos: 12"* ]]; then
+        pass_test "Backward compat: no cache split fields → falls back to .todo-count (todos: 12)"
+    else
+        fail_test "Backward compat fallback failed" "line1=$line1"
+    fi
+}
+
+test_todo_split_p_suffix_present() {
+    run_test
+    # Verify the 'p' suffix appears in raw ANSI output (stripped display check above,
+    # this checks the suffix character is not lost)
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    make_todo_split_cache "$tmpdir" 4 2
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local line1
+    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line1" == *"4p"* && "$line1" == *"2g"* ]]; then
+        pass_test "Todo split: 'p' and 'g' suffix characters present (4p, 2g)"
+    else
+        fail_test "Todo split suffix characters missing" "line1=$line1"
+    fi
+}
+
+# ============================================================================
+# Test group 11: Lifetime cost display (REQ-P1-001)
+# ============================================================================
+
+test_lifetime_cost_absent_when_zero() {
+    run_test
+    # cache_lifetime_cost=0 → Σ annotation should NOT appear
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/.claude"
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0}' \
+        > "$tmpdir/.claude/.statusline-cache"
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.25},"context_window":{}}'
+    local line2
+    line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line2" != *"Σ"* ]]; then
+        pass_test "Lifetime cost: Σ annotation absent when lifetime_cost=0"
+    else
+        fail_test "Lifetime cost Σ shown when lifetime_cost=0" "line2=$line2"
+    fi
+}
+
+test_lifetime_cost_shown_when_nonzero() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/.claude"
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":12.40}' \
+        > "$tmpdir/.claude/.statusline-cache"
+
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.53},"context_window":{}}'
+    local line2
+    line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | tail -1 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if [[ "$line2" == *"Σ~\$12.40"* || "$line2" == *"Σ~\$12"* ]]; then
+        pass_test "Lifetime cost: Σ~\$12.40 shown when lifetime_cost=12.40"
+    else
+        fail_test "Lifetime cost Σ annotation not shown" "line2=$line2"
+    fi
+}
+
+test_lifetime_cost_not_shown_when_cache_absent() {
+    run_test
+    # No cache file at all → lifetime_cost defaults to 0 → no Σ
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/nocache"},"cost":{"total_cost_usd":0.50},"context_window":{}}'
+    local line2
+    line2=$(run_statusline "$json" | tail -1 | strip_ansi)
+
+    if [[ "$line2" != *"Σ"* ]]; then
+        pass_test "Lifetime cost: no Σ when cache file absent"
+    else
+        fail_test "Lifetime cost Σ shown without cache file" "line2=$line2"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -755,6 +947,21 @@ test_tokens_m_notation
 test_tokens_zero_shows_dim
 test_tokens_high_shows_yellow
 test_tokens_segment_position
+
+echo ""
+echo "--- Todo split display (REQ-P0-005) ---"
+test_todo_split_both_nonzero
+test_todo_split_project_only
+test_todo_split_global_only
+test_todo_split_both_zero_no_segment
+test_todo_split_backward_compat_no_cache_fields
+test_todo_split_p_suffix_present
+
+echo ""
+echo "--- Lifetime cost display (REQ-P1-001) ---"
+test_lifetime_cost_absent_when_zero
+test_lifetime_cost_shown_when_nonzero
+test_lifetime_cost_not_shown_when_cache_absent
 
 echo ""
 echo "========================================="

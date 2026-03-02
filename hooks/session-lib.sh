@@ -41,6 +41,14 @@ write_statusline_cache() {
     get_subagent_status "$root"
 
     # Atomic write — only git/agent state, no plan or test fields
+    # @decision DEC-CACHE-003
+    # @title Add todo_project, todo_global, lifetime_cost fields to statusline cache
+    # @status accepted
+    # @rationale Phase 2 splits the single todo count into project-specific and global
+    # counts (REQ-P0-005). Callers set TODO_PROJECT_COUNT and TODO_GLOBAL_COUNT globals
+    # before calling write_statusline_cache(). lifetime_cost is the running sum of all
+    # session costs from .session-cost-history (REQ-P1-001). All three default to 0
+    # when not set so the cache is always valid JSON.
     local tmp_cache="${cache_file}.tmp.$$"
     jq -n \
         --arg dirty "${GIT_DIRTY_COUNT:-0}" \
@@ -49,7 +57,10 @@ write_statusline_cache() {
         --arg sa_count "${SUBAGENT_ACTIVE_COUNT:-0}" \
         --arg sa_types "${SUBAGENT_ACTIVE_TYPES:-}" \
         --arg sa_total "${SUBAGENT_TOTAL_COUNT:-0}" \
-        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber)}' \
+        --arg todo_project "${TODO_PROJECT_COUNT:-0}" \
+        --arg todo_global "${TODO_GLOBAL_COUNT:-0}" \
+        --arg lifetime_cost "${LIFETIME_COST:-0}" \
+        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber),todo_project:($todo_project|tonumber),todo_global:($todo_global|tonumber),lifetime_cost:($lifetime_cost|tonumber)}' \
         > "$tmp_cache" && mv "$tmp_cache" "$cache_file"
 }
 

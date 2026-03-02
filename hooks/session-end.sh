@@ -56,10 +56,18 @@ require_session
 # code is 0. Nobody reads diagnostic messages at session termination anyway.
 exec 2>/dev/null
 
-# Optimization: Stream input directly to jq to avoid loading potentially
-# large session history into a Bash variable (which consumes ~3-4x RAM).
-# HOOK_INPUT=$(read_input) <- removing this
-REASON=$(jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")
+# Capture stdin once so we can extract multiple fields from it.
+# The session-end JSON is small (just {reason, cost fields}) so capturing
+# into a variable is safe — no session history, unlike session event logs.
+# @decision DEC-COST-PERSIST-001
+# @title Capture session-end stdin to extract both reason and cost fields
+# @status accepted
+# @rationale The original code streamed stdin directly to jq for reason extraction.
+# Since we also need cost.total_cost_usd for .session-cost-history persistence
+# (REQ-P1-001), we capture stdin once. The session-end JSON is small (no event
+# history) so variable capture is safe. Both extractions re-use the variable.
+_SESSION_END_INPUT=$(cat)
+REASON=$(printf '%s' "$_SESSION_END_INPUT" | jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
@@ -157,6 +165,31 @@ if [[ -f "$SESSION_EVENT_FILE" && -s "$SESSION_EVENT_FILE" ]]; then
         log_info "SESSION-END" "Session index updated (outcome: $OUTCOME)"
     fi
 fi
+
+# --- Persist session cost to .session-cost-history (REQ-P1-001) ---
+# @decision DEC-COST-PERSIST-002
+# @title Append session cost to pipe-delimited history file at session-end
+# @status accepted
+# @rationale A simple pipe-delimited file (timestamp|cost_usd|session_id) is
+# the lowest-overhead persistence format: append-only, awk-summable, human-readable.
+# Cost is read from cost.total_cost_usd in the session-end JSON. This field is
+# available from Claude Code's SessionEnd hook when the model exposes it; if absent
+# (null or missing), we write 0.00 as a placeholder so the file structure is always
+# consistent. session-init.sh sums the cost column with awk for lifetime display.
+# History is trimmed to 100 entries to prevent unbounded disk growth.
+_SESSION_COST=$(printf '%s' "$_SESSION_END_INPUT" | jq -r '.cost.total_cost_usd // 0' 2>/dev/null || echo "0")
+_SESSION_COST="${_SESSION_COST:-0}"
+_COST_HISTORY="${CLAUDE_DIR}/.session-cost-history"
+_COST_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)
+echo "${_COST_TS}|${_SESSION_COST}|${CLAUDE_SESSION_ID:-unknown}" >> "$_COST_HISTORY"
+
+# Trim to last 100 entries (prevent unbounded growth)
+_COST_LINES=$(wc -l < "$_COST_HISTORY" 2>/dev/null | tr -d ' ')
+if [[ "${_COST_LINES:-0}" -gt 100 ]]; then
+    tail -100 "$_COST_HISTORY" > "${_COST_HISTORY}.tmp"
+    mv "${_COST_HISTORY}.tmp" "$_COST_HISTORY"
+fi
+log_info "SESSION-END" "Persisted session cost: ${_SESSION_COST}"
 
 # --- Age-based .agent-findings cleanup ---
 # Findings accumulate from agent hooks and are surfaced in session-init.

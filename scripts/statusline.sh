@@ -80,12 +80,24 @@ cache_dirty=0
 cache_wt=0
 cache_agents=0
 cache_agents_types=""
+cache_todo_project=-1
+cache_todo_global=-1
+cache_lifetime_cost=0
 
 if [[ -f "$CACHE_FILE" ]]; then
   cache_dirty=$(jq -r '.dirty // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
   cache_wt=$(jq -r '.worktrees // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
   cache_agents=$(jq -r '.agents_active // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
   cache_agents_types=$(jq -r '.agents_types // ""' "$CACHE_FILE" 2>/dev/null || echo "")
+  # @decision DEC-TODO-SPLIT-002
+  # @title Read todo_project/todo_global from cache with -1 sentinel for absent fields
+  # @status accepted
+  # @rationale Cache fields may be absent on old cache files (backward compat). Using -1
+  # as sentinel lets the todo segment detect "cache doesn't have split data" and fall back
+  # to the legacy .todo-count file. When both fields are 0+ the split display takes over.
+  cache_todo_project=$(jq -r 'if has("todo_project") then .todo_project else -1 end' "$CACHE_FILE" 2>/dev/null || echo -1)
+  cache_todo_global=$(jq -r 'if has("todo_global") then .todo_global else -1 end' "$CACHE_FILE" 2>/dev/null || echo -1)
+  cache_lifetime_cost=$(jq -r '.lifetime_cost // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
 fi
 
 # ---------------------------------------------------------------------------
@@ -215,8 +227,29 @@ if (( cache_agents > 0 )); then
   fi
 fi
 
-# Cluster D: Todos — todos: N, only if count > 0
-if (( todo_count > 0 )); then
+# Cluster D: Todos — split display or legacy fallback
+# @decision DEC-TODO-SPLIT-003
+# @title Todo segment: split project/global display with legacy fallback
+# @status accepted
+# @rationale When cache has todo_project/todo_global fields (>= 0), show split format:
+# "todos: 3p 7g" (both), "todos: 3p" (project only), "todos: 7g" (global only).
+# 'p' and 'g' suffixes are dim; counts are magenta. When cache fields are absent
+# (-1 sentinel), fall back to legacy .todo-count single number.
+if (( cache_todo_project >= 0 || cache_todo_global >= 0 )); then
+  # New split mode — use cache fields
+  _tp=$(( cache_todo_project > 0 ? cache_todo_project : 0 ))
+  _tg=$(( cache_todo_global > 0 ? cache_todo_global : 0 ))
+  if (( _tp > 0 && _tg > 0 )); then
+    line1=$(printf '%s %b \033[35mtodos: %d\033[2mp\033[0m\033[35m %d\033[2mg\033[0m' \
+      "$line1" "$sep" "$_tp" "$_tg")
+  elif (( _tp > 0 )); then
+    line1=$(printf '%s %b \033[35mtodos: %d\033[2mp\033[0m' "$line1" "$sep" "$_tp")
+  elif (( _tg > 0 )); then
+    line1=$(printf '%s %b \033[35mtodos: %d\033[2mg\033[0m' "$line1" "$sep" "$_tg")
+  fi
+  # Both 0: no segment shown
+elif (( todo_count > 0 )); then
+  # Legacy fallback: single count from .todo-count
   line1=$(printf '%s %b \033[35mtodos: %d\033[0m' "$line1" "$sep" "$todo_count")
 fi
 
@@ -239,12 +272,25 @@ tokens_display=$(printf '\033[%smtokens: %s\033[0m' "$tokens_color" "$tokens_str
 line2=$(printf '%s %b %s' "$line2" "$sep" "$tokens_display")
 
 # Cost (always shown, ~$X.XX, green <$1, yellow $1-5, red >$5)
+# If lifetime_cost > 0, show as: ~$0.53 (Σ~$12.40)
+# @decision DEC-LIFETIME-COST-002
+# @title Display lifetime cost as Σ annotation next to session cost
+# @status accepted
+# @rationale Appending lifetime cost as "(Σ~$N.NN)" after the session cost keeps the
+# display compact and contextual — the user sees session cost at a glance and can
+# recognize the running total from the Σ symbol. Dim rendering avoids visual noise.
 cost_int=${cost_usd%.*}  # integer part for threshold comparison
 if   (( cost_int >= 5 )); then cost_color="31"
 elif (( cost_int >= 1 )); then cost_color="33"
 else                           cost_color="32"
 fi
 cost_display=$(printf '\033[%sm~$%.2f\033[0m' "$cost_color" "$cost_usd")
+# Append lifetime sum if > 0 (strip decimals for integer comparison)
+_lifetime_int="${cache_lifetime_cost%.*}"
+_lifetime_int="${_lifetime_int:-0}"
+if (( _lifetime_int > 0 )) 2>/dev/null; then
+  cost_display=$(printf '%s \033[2m(Σ~$%.2f)\033[0m' "$cost_display" "$cache_lifetime_cost")
+fi
 line2=$(printf '%s %b %s' "$line2" "$sep" "$cost_display")
 
 # Duration (always shown, dim)

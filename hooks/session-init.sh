@@ -228,6 +228,68 @@ fi
 #   (~10 lines), Completed Initiatives are one-liners from the table (~1 line each).
 #   Old format falls back to the previous preamble + phase-count pattern.
 get_plan_status "$PROJECT_ROOT"
+
+# --- Compute todo split for statusline cache (REQ-P0-005) ---
+# @decision DEC-TODO-SPLIT-001
+# @title Compute project-specific and global todo counts before cache write
+# @status accepted
+# @rationale The statusline shows a single "todos: N" count sourced from ~/.claude/.todo-count
+# (global cc-todos repo). Phase 2 splits this into project-specific (current repo) and
+# global (cc-todos) counts. The split lets users distinguish work scoped to the current
+# project from global backlog items. If both resolve to the same repo (e.g. ~/.claude
+# uses juanandresgs/claude-config-pro which IS the project), show project count only.
+# Globals set here are read by write_statusline_cache() as TODO_PROJECT_COUNT and
+# TODO_GLOBAL_COUNT.
+TODO_PROJECT_COUNT=0
+TODO_GLOBAL_COUNT=0
+if command -v gh >/dev/null 2>&1; then
+    # Detect current repo's GitHub remote
+    _CURRENT_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "")
+    # Global cc-todos repo (personal backlog)
+    _GLOBAL_REPO="juanandresgs/cc-todos"
+
+    if [[ -n "$_CURRENT_REPO" ]]; then
+        if [[ "$_CURRENT_REPO" == "$_GLOBAL_REPO" ]]; then
+            # Same repo: show as project count only (no double-count)
+            _PROJ_COUNT=$(gh issue list --repo "$_CURRENT_REPO" --label claude-todo --state open --json number --jq length 2>/dev/null || echo "0")
+            TODO_PROJECT_COUNT="${_PROJ_COUNT:-0}"
+            TODO_GLOBAL_COUNT=0
+        else
+            # Different repos: count each independently
+            _PROJ_COUNT=$(gh issue list --repo "$_CURRENT_REPO" --label claude-todo --state open --json number --jq length 2>/dev/null || echo "0")
+            TODO_PROJECT_COUNT="${_PROJ_COUNT:-0}"
+            # Read global count from existing .todo-count file (written by todo.sh hud)
+            _TODO_COUNT_FILE="$HOME/.claude/.todo-count"
+            if [[ -f "$_TODO_COUNT_FILE" ]]; then
+                _GLOB=$(cat "$_TODO_COUNT_FILE" 2>/dev/null || echo "0")
+                [[ "$_GLOB" =~ ^[0-9]+$ ]] && TODO_GLOBAL_COUNT="$_GLOB" || TODO_GLOBAL_COUNT=0
+            fi
+        fi
+    else
+        # No GitHub remote: fall back to global count only
+        _TODO_COUNT_FILE="$HOME/.claude/.todo-count"
+        if [[ -f "$_TODO_COUNT_FILE" ]]; then
+            _GLOB=$(cat "$_TODO_COUNT_FILE" 2>/dev/null || echo "0")
+            [[ "$_GLOB" =~ ^[0-9]+$ ]] && TODO_GLOBAL_COUNT="$_GLOB" || TODO_GLOBAL_COUNT=0
+        fi
+    fi
+fi
+
+# --- Sum lifetime session cost for statusline display (REQ-P1-001) ---
+# @decision DEC-LIFETIME-COST-001
+# @title Sum lifetime cost from .session-cost-history at session start
+# @status accepted
+# @rationale .session-cost-history is a pipe-delimited file written by session-end.sh
+# containing one entry per session (timestamp|cost_usd|session_id). Summing the cost
+# column with awk at session start is inexpensive (O(N) over ~100 lines) and gives
+# the user a running lifetime spend visible in the statusline.
+LIFETIME_COST=0
+_COST_HISTORY="${CLAUDE_DIR}/.session-cost-history"
+if [[ -f "$_COST_HISTORY" ]]; then
+    _LIFETIME=$(awk -F'|' '{sum += $2} END {printf "%.6f", sum+0}' "$_COST_HISTORY" 2>/dev/null || echo "0")
+    LIFETIME_COST="${_LIFETIME:-0}"
+fi
+
 write_statusline_cache "$PROJECT_ROOT"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
