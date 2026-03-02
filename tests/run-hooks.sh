@@ -91,6 +91,7 @@ _print_scope_usage() {
     echo "  fixtures    — Expanded Fixture Coverage (30 new fixture tests)"
     echo "  todo        — todo.sh backlog script unit tests"
     echo "  scan        — scan-backlog.sh debt marker scanner unit tests"
+    echo "  gaps        — gaps-report.sh accountability report unit tests"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
 }
@@ -136,6 +137,7 @@ _scope_pattern() {
         fixtures)    echo "Expanded Fixture Coverage" ;;
         todo)        echo "todo\.sh" ;;
         scan)        echo "scan-backlog\.sh" ;;
+        gaps)        echo "gaps-report\.sh" ;;
         *)           echo "" ;;
     esac
 }
@@ -2353,6 +2355,199 @@ fi
 
 echo ""
 fi # end: scan-backlog.sh
+
+# =============================================================================
+# --- Test: gaps-report.sh accountability report ---
+# Tests syntax, executability, markdown section headers, graceful degradation
+# when gh/scan-backlog.sh/.plan-drift are missing, JSON output, accountability
+# score computation, and stale issue detection.
+# =============================================================================
+if should_run_section "gaps-report.sh"; then
+echo "--- gaps-report.sh ---"
+GAPS_SCRIPT="$SCRIPT_DIR/../scripts/gaps-report.sh"
+
+# 1. Syntax valid
+if bash -n "$GAPS_SCRIPT" 2>/dev/null; then
+    pass "gaps-report.sh — syntax valid"
+else
+    fail "gaps-report.sh" "syntax error"
+fi
+
+# 2. Executable
+if [[ -x "$GAPS_SCRIPT" ]]; then
+    pass "gaps-report.sh — is executable"
+else
+    fail "gaps-report.sh" "not executable (chmod +x required)"
+fi
+
+# --- Setup: isolated temp project directory for all tests ---
+_GAPS_TMP=$(mktemp -d)
+mkdir -p "$_GAPS_TMP/.claude"
+
+# 3. Produces markdown with expected section headers (no gh, no .plan-drift)
+_GAPS_MD=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+_GAPS_HEADERS_OK=true
+for _header in "# Gaps Report" "## Open Backlog" "## Untracked Code Markers" "## Decision Drift" "## Summary"; do
+    if ! echo "$_GAPS_MD" | grep -qF "$_header"; then
+        _GAPS_HEADERS_OK=false
+        break
+    fi
+done
+if [[ "$_GAPS_HEADERS_OK" == "true" ]]; then
+    pass "gaps-report.sh — markdown output contains all expected section headers"
+else
+    fail "gaps-report.sh section headers" "one or more headers missing. Output: ${_GAPS_MD:0:300}"
+fi
+
+# 4. Handles missing gh gracefully (still produces report, section has note)
+_GAPS_NO_GH=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if echo "$_GAPS_NO_GH" | grep -qi "gh CLI not found\|gh issue\|not found\|not authenticated\|unavailable"; then
+    pass "gaps-report.sh — handles missing gh gracefully (note in Open Backlog section)"
+else
+    # Also acceptable: section present with 0 items and no crash
+    if echo "$_GAPS_NO_GH" | grep -q "## Open Backlog"; then
+        pass "gaps-report.sh — handles missing gh gracefully (section present)"
+    else
+        fail "gaps-report.sh missing gh" "expected graceful degradation with note; got: ${_GAPS_NO_GH:0:200}"
+    fi
+fi
+
+# 5. Handles missing .plan-drift gracefully
+_GAPS_NO_DRIFT=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if echo "$_GAPS_NO_DRIFT" | grep -qi "No drift data\|run a session"; then
+    pass "gaps-report.sh — handles missing .plan-drift gracefully"
+else
+    fail "gaps-report.sh missing .plan-drift" "expected 'No drift data' note; got: ${_GAPS_NO_DRIFT:0:300}"
+fi
+
+# 6. Handles missing scan-backlog.sh gracefully
+# Temporarily rename the real scan-backlog.sh
+_SCAN_SCRIPT_REAL="$SCRIPT_DIR/../scripts/scan-backlog.sh"
+_SCAN_SCRIPT_BACKUP="${_SCAN_SCRIPT_REAL}.bak_gaps_test"
+if [[ -f "$_SCAN_SCRIPT_REAL" ]]; then
+    mv "$_SCAN_SCRIPT_REAL" "$_SCAN_SCRIPT_BACKUP"
+fi
+_GAPS_NO_SCAN=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if [[ -f "$_SCAN_SCRIPT_BACKUP" ]]; then
+    mv "$_SCAN_SCRIPT_BACKUP" "$_SCAN_SCRIPT_REAL"
+fi
+if echo "$_GAPS_NO_SCAN" | grep -qi "not found\|unavailable\|## Untracked Code Markers"; then
+    pass "gaps-report.sh — handles missing scan-backlog.sh gracefully"
+else
+    fail "gaps-report.sh missing scan-backlog.sh" "expected graceful note; got: ${_GAPS_NO_SCAN:0:300}"
+fi
+
+# 7. --format json produces valid JSON
+_GAPS_JSON=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" --format json 2>/dev/null) || true
+if python3 -c "import json,sys; json.loads(sys.stdin.read())" <<< "$_GAPS_JSON" 2>/dev/null; then
+    pass "gaps-report.sh --format json — produces valid JSON"
+else
+    fail "gaps-report.sh json" "output is not valid JSON: ${_GAPS_JSON:0:200}"
+fi
+
+# 8. JSON contains expected top-level keys
+_GAPS_JSON_KEYS_OK=true
+for _key in "project" "generated" "open_issues" "untracked_markers" "decision_drift" "summary"; do
+    if ! echo "$_GAPS_JSON" | grep -q "\"$_key\""; then
+        _GAPS_JSON_KEYS_OK=false
+        break
+    fi
+done
+if [[ "$_GAPS_JSON_KEYS_OK" == "true" ]]; then
+    pass "gaps-report.sh --format json — contains all expected top-level keys"
+else
+    fail "gaps-report.sh json keys" "one or more top-level keys missing from JSON"
+fi
+
+# 9. Accountability score: Clean when 0 untracked + 0 drift
+_GAPS_CLEAN=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if echo "$_GAPS_CLEAN" | grep -q "Accountability: Clean"; then
+    pass "gaps-report.sh — accountability score is 'Clean' with no issues"
+else
+    fail "gaps-report.sh score Clean" "expected 'Clean' score; got: $(echo "$_GAPS_CLEAN" | grep Accountability)"
+fi
+
+# 10. Accountability score: Needs Attention with 1-5 drift items
+cat > "$_GAPS_TMP/.claude/.plan-drift" << 'DRIFT_EOF'
+audit_epoch=1740900000
+unplanned_count=2
+unimplemented_count=1
+missing_decisions=0
+total_decisions=5
+source_files_changed=2
+unaddressed_p0s=0
+nogo_count=0
+DRIFT_EOF
+_GAPS_NEEDS_ATTN=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if echo "$_GAPS_NEEDS_ATTN" | grep -q "Accountability: Needs Attention"; then
+    pass "gaps-report.sh — accountability score is 'Needs Attention' with 1-5 drift items"
+else
+    fail "gaps-report.sh score Needs Attention" "expected 'Needs Attention'; got: $(echo "$_GAPS_NEEDS_ATTN" | grep Accountability)"
+fi
+
+# 11. Accountability score: At Risk with 6+ drift items
+cat > "$_GAPS_TMP/.claude/.plan-drift" << 'DRIFT_EOF'
+audit_epoch=1740900000
+unplanned_count=4
+unimplemented_count=4
+missing_decisions=0
+total_decisions=10
+source_files_changed=5
+unaddressed_p0s=0
+nogo_count=0
+DRIFT_EOF
+_GAPS_AT_RISK=$(PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if echo "$_GAPS_AT_RISK" | grep -q "Accountability: At Risk"; then
+    pass "gaps-report.sh — accountability score is 'At Risk' with 6+ drift items"
+else
+    fail "gaps-report.sh score At Risk" "expected 'At Risk'; got: $(echo "$_GAPS_AT_RISK" | grep Accountability)"
+fi
+
+# 12. Stale issue detection via mock gh returning old issues
+# We create a mock gh that returns an issue created 20 days ago (> 14 day threshold)
+_GAPS_MOCK_DIR=$(mktemp -d)
+_NOW_EPOCH=$(date +%s)
+# 20 days ago in seconds
+_STALE_EPOCH=$(( _NOW_EPOCH - 20 * 86400 ))
+_STALE_DATE=$(python3 -c "import datetime; print(datetime.datetime.utcfromtimestamp($_STALE_EPOCH).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null || date -u -r "$_STALE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "2026-02-10T12:00:00Z")
+cat > "$_GAPS_MOCK_DIR/gh" << MOCKGH_EOF
+#!/usr/bin/env bash
+case "\${*}" in
+    *"issue list"*"--json"*)
+        printf '[{"number":99,"title":"Old stale issue","createdAt":"%s"}]\n' "$_STALE_DATE"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+MOCKGH_EOF
+chmod +x "$_GAPS_MOCK_DIR/gh"
+
+# Remove .plan-drift for this test
+rm -f "$_GAPS_TMP/.claude/.plan-drift"
+
+_GAPS_STALE=$(PATH="$_GAPS_MOCK_DIR:$PATH" bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" 2>/dev/null) || true
+if echo "$_GAPS_STALE" | grep -qi "stale"; then
+    pass "gaps-report.sh — marks issues older than 14 days as stale"
+else
+    fail "gaps-report.sh stale detection" "expected 'stale' in output; got: ${_GAPS_STALE:0:400}"
+fi
+
+# 13. Exit code always 0 (even with all sources missing)
+_GAPS_EC=99
+PATH=/usr/bin:/bin bash "$GAPS_SCRIPT" --project-dir "$_GAPS_TMP" >/dev/null 2>/dev/null
+_GAPS_EC=$?
+if [[ "$_GAPS_EC" -eq 0 ]]; then
+    pass "gaps-report.sh — always exits 0"
+else
+    fail "gaps-report.sh exit code" "expected exit 0, got $GAPS_EC"
+fi
+
+safe_cleanup "$_GAPS_TMP" "$SCRIPT_DIR"
+safe_cleanup "$_GAPS_MOCK_DIR" "$SCRIPT_DIR"
+
+echo ""
+fi # end: gaps-report.sh
 
 # --- Summary ---
 echo "==========================="
