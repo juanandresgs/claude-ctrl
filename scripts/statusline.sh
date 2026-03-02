@@ -380,17 +380,20 @@ fi
 # @rationale Appending lifetime cost as "(Σ~$N.NN)" after the session cost keeps the
 # display compact and contextual — the user sees session cost at a glance and can
 # recognize the running total from the Σ symbol. Dim rendering avoids visual noise.
+# Σ = past sessions (cache_lifetime_cost) + current session (cost_usd), so the grand
+# total is always accurate and never lower than the session cost shown beside it.
 cost_int=${cost_usd%.*}  # integer part for threshold comparison
 if   (( cost_int >= 5 )); then cost_color="31"
 elif (( cost_int >= 1 )); then cost_color="33"
 else                           cost_color="32"
 fi
 cost_display=$(printf '\033[%sm~$%.2f\033[0m' "$cost_color" "$cost_usd")
-# Append lifetime sum if > 0 (strip decimals for integer comparison)
+# Append lifetime sum if > 0: Σ = past sessions + current session
 _lifetime_int="${cache_lifetime_cost%.*}"
 _lifetime_int="${_lifetime_int:-0}"
 if (( _lifetime_int > 0 )) 2>/dev/null; then
-  cost_display=$(printf '%s \033[2m(Σ~$%.2f)\033[0m' "$cost_display" "$cache_lifetime_cost")
+  _grand_cost=$(awk "BEGIN {printf \"%.2f\", $cache_lifetime_cost + $cost_usd}")
+  cost_display=$(printf '%s \033[2m(Σ~$%s)\033[0m' "$cost_display" "$_grand_cost")
 fi
 line2=$(printf '%s %b %s' "$line2" "$sep" "$cost_display")
 
