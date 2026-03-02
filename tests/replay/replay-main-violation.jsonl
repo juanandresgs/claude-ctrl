@@ -1,0 +1,8 @@
+{"tool_name":"Bash","tool_input":{"command":"git status"},"_meta":{"branch":"main","description":"check status on main","expected_decision":"allow"}}
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/replay-main-violation-repo/src/api.ts","content":"export function callApi() { return fetch('/api'); }\n"},"_meta":{"branch":"main","description":"VIOLATION: write source on main","expected_decision":"deny"}}
+{"tool_name":"Bash","tool_input":{"command":"cat src/api.ts"},"_meta":{"branch":"main","description":"read back file","expected_decision":"allow"}}
+{"tool_name":"Edit","tool_input":{"file_path":"/tmp/replay-main-violation-repo/src/api.ts","old_string":"export function callApi() { return fetch('/api'); }","new_string":"export async function callApi() { return await fetch('/api'); }"},"_meta":{"branch":"main","description":"VIOLATION: edit source on main","expected_decision":"deny"}}
+{"tool_name":"Bash","tool_input":{"command":"git commit -m 'add api'"},"_meta":{"branch":"main","description":"VIOLATION: commit on main","expected_decision":"deny"}}
+{"tool_name":"Bash","tool_input":{"command":"git push origin main"},"_meta":{"branch":"main","description":"VIOLATION: push to main","expected_decision":"deny"}}
+{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"},"_meta":{"branch":"main","description":"VIOLATION: force push to main","expected_decision":"deny"}}
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/replay-main-violation-repo/MASTER_PLAN.md","content":"# MASTER_PLAN\n## Identity\nTest project.\n"},"_meta":{"branch":"main","description":"allow: MASTER_PLAN.md is exempt on main","expected_decision":"allow"}}

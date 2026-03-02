@@ -1,0 +1,1 @@
+{"tool_name":"Edit","tool_input":{"file_path":"/tmp/project/src/core.ts","old_string":"export function core() {}","new_string":"export function core(x: string) { return x; }"},"tool_response":{"content":"File edited successfully"}}

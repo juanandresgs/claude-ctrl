@@ -1,0 +1,1 @@
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/project/tests/integration.test.sh","content":"#!/usr/bin/env bash\n# Integration test\nbash tests/run-hooks.sh\n"},"tool_response":{"content":"File written successfully"}}

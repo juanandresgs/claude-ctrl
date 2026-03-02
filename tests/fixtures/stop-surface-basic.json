@@ -1,0 +1,5 @@
+{
+  "stop_reason": "end_turn",
+  "stop_hook_active": false,
+  "assistant_response": "I updated the authentication module and added @decision annotations to the 3 changed files. Want me to run the tests now?"
+}

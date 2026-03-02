@@ -1,0 +1,5 @@
+{
+  "stop_reason": "end_turn",
+  "stop_hook_active": false,
+  "assistant_response": "Session complete. I implemented 3 new hooks (pre-bash.sh, pre-write.sh, post-write.sh) and all 47 tests pass. Should I create the commit now?"
+}

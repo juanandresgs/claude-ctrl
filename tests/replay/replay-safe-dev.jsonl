@@ -1,0 +1,12 @@
+{"tool_name":"Bash","tool_input":{"command":"ls -la src/"},"_meta":{"branch":"feature/new-feature","description":"safe ls command","expected_decision":"allow"}}
+{"tool_name":"Bash","tool_input":{"command":"git status"},"_meta":{"branch":"feature/new-feature","description":"git status check","expected_decision":"allow"}}
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/replay-safe-dev-repo/src/utils.ts","content":"export function format(x: string) { return x.trim(); }\n"},"_meta":{"branch":"feature/new-feature","description":"write utility file (feature branch, non-worktree path — guard denies)","expected_decision":"deny"}}
+{"tool_name":"Bash","tool_input":{"command":"cat src/utils.ts"},"_meta":{"branch":"feature/new-feature","description":"read back file","expected_decision":"allow"}}
+{"tool_name":"Edit","tool_input":{"file_path":"/tmp/replay-safe-dev-repo/src/utils.ts","old_string":"export function format(x: string) { return x.trim(); }","new_string":"export function format(x: string): string { return x.trim(); }"},"_meta":{"branch":"feature/new-feature","description":"add return type","expected_decision":"allow_or_deny"}}
+{"tool_name":"Bash","tool_input":{"command":"npm test"},"_meta":{"branch":"feature/new-feature","description":"run tests","expected_decision":"allow"}}
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/replay-safe-dev-repo/tests/utils.test.ts","content":"import { format } from '../src/utils';\ntest('format trims whitespace', () => { expect(format('  hi  ')).toBe('hi'); });\n"},"_meta":{"branch":"feature/new-feature","description":"write test (test files exempt from branch guard)","expected_decision":"allow"}}
+{"tool_name":"Bash","tool_input":{"command":"git diff HEAD"},"_meta":{"branch":"feature/new-feature","description":"check diff","expected_decision":"allow"}}
+{"tool_name":"Bash","tool_input":{"command":"git add src/ tests/"},"_meta":{"branch":"feature/new-feature","description":"stage files","expected_decision":"allow"}}
+{"tool_name":"Bash","tool_input":{"command":"bash scripts/lint.sh"},"_meta":{"branch":"feature/new-feature","description":"run linter","expected_decision":"allow"}}
+{"tool_name":"Bash","tool_input":{"command":"grep -r 'TODO' src/"},"_meta":{"branch":"feature/new-feature","description":"check todos","expected_decision":"allow"}}
+{"tool_name":"Bash","tool_input":{"command":"wc -l src/utils.ts"},"_meta":{"branch":"feature/new-feature","description":"line count","expected_decision":"allow"}}

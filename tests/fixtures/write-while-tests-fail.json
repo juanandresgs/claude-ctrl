@@ -1,0 +1,1 @@
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/project/src/service.ts","content":"export class Service {\n    async process(input: string): Promise<string> {\n        return input.toUpperCase();\n    }\n}\n"}}

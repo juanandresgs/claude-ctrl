@@ -1,0 +1,5 @@
+{
+  "stop_reason": "end_turn",
+  "stop_hook_active": false,
+  "assistant_response": "No source files were changed in this session. Would you like me to start implementing the feature now?"
+}

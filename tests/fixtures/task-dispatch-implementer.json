@@ -1,0 +1,8 @@
+{
+  "tool_name": "Task",
+  "tool_input": {
+    "subagent_type": "implementer",
+    "prompt": "Implement the feature described in MASTER_PLAN.md Phase 3",
+    "max_turns": 85
+  }
+}

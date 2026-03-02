@@ -1,0 +1,1 @@
+{"tool_name":"Edit","tool_input":{"file_path":"/tmp/git-main-test/src/utils.ts","old_string":"export function greet() { return 'hello'; }","new_string":"export function greet(name: string) { return `hello ${name}`; }"}}

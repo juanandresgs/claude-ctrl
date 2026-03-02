@@ -88,6 +88,7 @@ _print_scope_usage() {
     echo "  trace       — Trace protocol (init_trace, finalize_trace, detect, subagent injection)"
     echo "  gate        — Gate hook behavioral tests (branch-guard, doc-gate, test-gate, mock-gate)"
     echo "  state       — State Registry Lint + Multi-Context Pass"
+    echo "  fixtures    — Expanded Fixture Coverage (30 new fixture tests)"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
 }
@@ -130,6 +131,7 @@ _scope_pattern() {
         trace)       echo "trace protocol" ;;
         gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral" ;;
         state)       echo "State Registry Lint|Multi-Context Pass" ;;
+        fixtures)    echo "Expanded Fixture Coverage" ;;
         *)           echo "" ;;
     esac
 }
@@ -1859,6 +1861,155 @@ if [[ "$MULTI_CTX_PASS2_FAILED" -eq 0 ]]; then
     echo "  Multi-context pass: all ${#MULTI_CTX_TESTS[@]} tests passed from non-git CWD"
 fi
 fi # end: Multi-Context Pass
+
+# --- Expanded Fixture Coverage ---
+# @decision DEC-TEST-FIXTURES-001
+# @title Expanded fixture tests for 30 archive-migrated JSON fixtures
+# @status accepted
+# @rationale The 30 fixtures migrated from the metanoia archive cover additional
+#   pre-write, post-write, stop, task-track, guard, and prompt-submit scenarios.
+#   Tests verify no-crash + valid JSON for most fixtures. write-source-on-main
+#   requires a real git repo on main to trigger the branch-guard deny.
+if should_run_section "Expanded Fixture Coverage"; then
+echo ""
+echo "--- Expanded Fixture Coverage ---"
+
+# Pre-Write group (12 fixtures): write-*/edit-* → pre-write.sh
+# write-source-on-main requires a real git repo on main to produce a deny.
+EFC_MAIN_REPO=$(mktemp -d)
+git init "$EFC_MAIN_REPO" >/dev/null 2>&1
+(cd "$EFC_MAIN_REPO" && git commit -m "init" --allow-empty) >/dev/null 2>&1
+EFC_MAIN_FIXTURE="$FIXTURES_DIR/efc-write-source-on-main.json"
+cat > "$EFC_MAIN_FIXTURE" <<EFCEOF
+{"tool_name":"Write","tool_input":{"file_path":"$EFC_MAIN_REPO/src/main.ts","content":"// TypeScript source\nexport function hello() { return 'world'; }\n"}}
+EFCEOF
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$EFC_MAIN_FIXTURE")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "fixture:write-source-on-main — deny source write on main"
+else
+    fail "fixture:write-source-on-main — deny source write on main" "expected deny, got: ${decision:-no output}"
+fi
+safe_cleanup "$EFC_MAIN_REPO" "$SCRIPT_DIR"
+rm -f "$EFC_MAIN_FIXTURE"
+
+# Remaining pre-write fixtures: check no crash + valid JSON output
+for fixture_name in \
+    write-source-on-feature \
+    write-test-file \
+    write-plan-file \
+    write-claudemd-on-main \
+    write-masterplan-on-main \
+    write-checkpoint-trigger \
+    write-large-no-decision \
+    write-test-with-mocks \
+    write-while-tests-fail \
+    edit-source-on-main \
+    edit-readme-on-feature; do
+    fixture_path="$FIXTURES_DIR/${fixture_name}.json"
+    if [[ ! -f "$fixture_path" ]]; then
+        skip "fixture:${fixture_name}" "fixture file not found"
+        continue
+    fi
+    output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$fixture_path")
+    if [[ -n "$output" ]] && echo "$output" | jq '.' >/dev/null 2>&1; then
+        pass "fixture:${fixture_name} — pre-write no crash + valid JSON"
+    elif [[ -z "$output" ]]; then
+        # Empty output is acceptable for hooks that have nothing to say
+        pass "fixture:${fixture_name} — pre-write no crash (empty output)"
+    else
+        fail "fixture:${fixture_name} — pre-write" "invalid JSON output: ${output:0:100}"
+    fi
+done
+
+# Post-Write group (6 fixtures): post-* → post-write.sh
+for fixture_name in \
+    post-write-source \
+    post-write-plan \
+    post-write-test \
+    post-write-lint-target \
+    post-edit-markdown \
+    post-edit-source-verified; do
+    fixture_path="$FIXTURES_DIR/${fixture_name}.json"
+    if [[ ! -f "$fixture_path" ]]; then
+        skip "fixture:${fixture_name}" "fixture file not found"
+        continue
+    fi
+    output=$(run_hook "$HOOKS_DIR/post-write.sh" "$fixture_path")
+    if [[ -z "$output" ]] || echo "$output" | jq '.' >/dev/null 2>&1; then
+        pass "fixture:${fixture_name} — post-write no crash + valid JSON or empty"
+    else
+        fail "fixture:${fixture_name} — post-write" "invalid JSON output: ${output:0:100}"
+    fi
+done
+
+# Stop group (7 fixtures): stop-* → stop.sh
+for fixture_name in \
+    stop-normal \
+    stop-forward-motion-bare \
+    stop-forward-motion-question \
+    stop-summary-basic \
+    stop-summary-on-main \
+    stop-surface-basic \
+    stop-surface-no-changes; do
+    fixture_path="$FIXTURES_DIR/${fixture_name}.json"
+    if [[ ! -f "$fixture_path" ]]; then
+        skip "fixture:${fixture_name}" "fixture file not found"
+        continue
+    fi
+    output=$(run_hook "$HOOKS_DIR/stop.sh" "$fixture_path")
+    if [[ -z "$output" ]] || echo "$output" | jq '.' >/dev/null 2>&1; then
+        pass "fixture:${fixture_name} — stop no crash + valid JSON or empty"
+    else
+        fail "fixture:${fixture_name} — stop" "invalid JSON output: ${output:0:100}"
+    fi
+done
+
+# Task-track group (3 fixtures): task-dispatch-*/post-task-* → task-track.sh
+for fixture_name in \
+    task-dispatch-implementer \
+    task-dispatch-guardian \
+    post-task-tester; do
+    fixture_path="$FIXTURES_DIR/${fixture_name}.json"
+    if [[ ! -f "$fixture_path" ]]; then
+        skip "fixture:${fixture_name}" "fixture file not found"
+        continue
+    fi
+    output=$(run_hook "$HOOKS_DIR/task-track.sh" "$fixture_path")
+    if [[ -z "$output" ]] || echo "$output" | jq '.' >/dev/null 2>&1; then
+        pass "fixture:${fixture_name} — task-track no crash"
+    else
+        fail "fixture:${fixture_name} — task-track" "invalid JSON output: ${output:0:100}"
+    fi
+done
+
+# Guard group (1 fixture): guard-doc-freshness-stale → pre-bash.sh
+fixture_path="$FIXTURES_DIR/guard-doc-freshness-stale.json"
+if [[ -f "$fixture_path" ]]; then
+    output=$(run_hook "$HOOKS_DIR/pre-bash.sh" "$fixture_path")
+    if [[ -z "$output" ]] || echo "$output" | jq '.' >/dev/null 2>&1; then
+        pass "fixture:guard-doc-freshness-stale — pre-bash no crash + valid JSON"
+    else
+        fail "fixture:guard-doc-freshness-stale — pre-bash" "invalid JSON output: ${output:0:100}"
+    fi
+else
+    skip "fixture:guard-doc-freshness-stale" "fixture file not found"
+fi
+
+# Prompt-submit group (1 fixture): prompt-submit-approval → prompt-submit.sh
+fixture_path="$FIXTURES_DIR/prompt-submit-approval.json"
+if [[ -f "$fixture_path" ]]; then
+    output=$(run_hook "$HOOKS_DIR/prompt-submit.sh" "$fixture_path")
+    if [[ -z "$output" ]] || echo "$output" | jq '.' >/dev/null 2>&1; then
+        pass "fixture:prompt-submit-approval — prompt-submit no crash"
+    else
+        fail "fixture:prompt-submit-approval — prompt-submit" "invalid JSON output: ${output:0:100}"
+    fi
+else
+    skip "fixture:prompt-submit-approval" "fixture file not found"
+fi
+
+fi # end: Expanded Fixture Coverage
 
 # --- Summary ---
 echo "==========================="

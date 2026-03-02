@@ -1,0 +1,5 @@
+{
+  "stop_reason": "end_turn",
+  "stop_hook_active": false,
+  "assistant_response": "The implementation is complete. All tests pass and the feature is finished."
+}

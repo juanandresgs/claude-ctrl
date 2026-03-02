@@ -1,0 +1,11 @@
+{
+  "tool_name": "Task",
+  "tool_input": {
+    "subagent_type": "tester",
+    "prompt": "Verify the implementation in .worktrees/feature-auth works end-to-end.",
+    "max_turns": 40
+  },
+  "tool_response": {
+    "content": "Tester completed verification."
+  }
+}

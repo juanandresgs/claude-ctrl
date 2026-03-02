@@ -1,0 +1,5 @@
+{
+  "stop_reason": "end_turn",
+  "stop_hook_active": false,
+  "assistant_response": "I reviewed the test output and found 2 failures in the authentication module. Should I fix them now or would you prefer to investigate the root cause first?"
+}

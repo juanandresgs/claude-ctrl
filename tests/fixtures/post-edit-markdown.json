@@ -1,0 +1,1 @@
+{"tool_name":"Edit","tool_input":{"file_path":"/tmp/project/docs/guide.md","old_string":"# Guide","new_string":"# Guide\n\nUpdated."},"tool_response":{"content":"File edited successfully"}}

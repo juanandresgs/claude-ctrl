@@ -1,0 +1,1 @@
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/project/hooks/new-hook.sh","content":"#!/usr/bin/env bash\nset -euo pipefail\nread_input() { cat; }\nHOOK_INPUT=$(read_input)\nFILE=$(echo \"$HOOK_INPUT\" | jq -r '.tool_input.file_path // empty')\necho \"{}\"\n"},"tool_response":{"content":"File written successfully"}}

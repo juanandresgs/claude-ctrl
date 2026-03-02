@@ -1,0 +1,1 @@
+{"tool_name":"Write","tool_input":{"file_path":"/tmp/project/src/service.ts","content":"export class Service { process(x: string) { return x; } }"},"tool_response":{"content":"File written successfully"}}
