@@ -105,8 +105,9 @@ source "${_SRCLIB_DIR}/core-lib.sh"
 #   require_session
 #   append_session_event "write" "{}" "$PROJECT_ROOT"
 #
-# Or in hooks that need all domains (like session-init.sh):
-#   require_all  # loads all domain libraries (same as old context-lib.sh behavior)
+# Hooks that need all domains (session-init.sh, compact-preserve.sh) call each
+# require_*() explicitly — require_all() was removed in Phase 3 (dead code audit:
+# it was defined but never called; all multi-domain hooks use explicit selectors).
 #
 # @decision DEC-PERF-002
 # @title source-lib.sh loads core-lib.sh only; domain libs loaded on demand
@@ -115,8 +116,9 @@ source "${_SRCLIB_DIR}/core-lib.sh"
 #   domain libraries (3,175 lines total). Every hook paid the full parse cost.
 #   Now source-lib.sh loads only log.sh (269 lines) + core-lib.sh (398 lines) =
 #   667 lines. Domain libraries are loaded on demand via require_*() functions.
-#   Hooks that need all domains call require_all(). context-lib.sh still works
-#   as a compatibility shim for run-hooks.sh and tests that source it directly.
+#   require_all() was removed (Phase 3 dead code audit) — no production hook called
+#   it; session-init.sh and similar hooks enumerate their requires explicitly.
+#   context-lib.sh still works as a compatibility shim for tests that source it.
 
 require_git() {
     [[ -n "${_GIT_LIB_LOADED:-}" ]] && return 0
@@ -207,14 +209,7 @@ require_state() {
     [[ -n "${_STATE_LIB_LOADED:-}" ]] && return 0
     source "${_SRCLIB_DIR}/state-lib.sh"
 }
-
-# require_all — load all domain libraries (equivalent to old context-lib.sh behavior).
-# Use in hooks that need every domain: session-init.sh, compact-preserve.sh, etc.
-require_all() {
-    require_git
-    require_plan
-    require_trace
-    require_session
-    require_doc
-    require_ci
-}
+# require_state is intentionally not called from production hooks.
+# state_update/state_read are used optionally via: type state_update &>/dev/null && ...
+# (in log.sh and session-lib.sh). Tests call require_state directly.
+# See test-proof-lifecycle.sh:T09 for the test coverage of this loader.

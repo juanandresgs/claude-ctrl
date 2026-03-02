@@ -75,10 +75,10 @@ source "$(dirname "$0")/source-lib.sh"
 enable_fail_closed "pre-bash"
 
 # Lazy-load domain libraries needed by pre-bash.sh gates.
-# require_session: append_session_event, read_test_status (Check 6, 7, 8)
+# require_session: append_session_event, read_test_status — first used in Check 6/7/8 (git-specific).
+# Deferred to after the git-early-exit gate so non-git commands do not pay session-lib parse cost.
 # require_doc is loaded just before the doc-freshness section (avoids loading
 # it for the common case where a non-git command early-exits at the git gate).
-require_session
 
 # In scan mode: emit all gate declarations and exit cleanly BEFORE reading stdin.
 # Hooks are invoked with < /dev/null in scan mode, so stdin is empty.
@@ -274,6 +274,10 @@ if ! echo "$_stripped_cmd" | grep -qE '(^|&&|\|\|?|;)\s*git\s'; then
     exit 0
 fi
 
+# Load session library now — only reached for git commands.
+# Deferred from top-of-file: non-git commands exit above without paying session-lib parse cost.
+require_session
+
 # --- Helper: extract git target directory from command text ---
 extract_git_target_dir() {
     local cmd="$1"
@@ -361,7 +365,7 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bpush\b'; then
                 emit_deny "Local CI timed out after 120s. Fix CI script performance or increase timeout. Push blocked."
             else
                 _CI_FIRST50=$(echo "$_CI_OUTPUT" | head -50)
-                emit_deny "Local CI failed (exit $\_CI_EXIT). Fix failures before pushing.\n\nOutput:\n${_CI_FIRST50}"
+                emit_deny "Local CI failed (exit ${_CI_EXIT}). Fix failures before pushing.\n\nOutput:\n${_CI_FIRST50}"
             fi
         elif has_github_actions "$_CI_PROJECT_ROOT"; then
             emit_advisory "No local pre-push CI found. Consider adding .githooks/pre-push for faster feedback. Remote CI will still run."
