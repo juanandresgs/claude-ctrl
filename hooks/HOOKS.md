@@ -8,6 +8,8 @@ Technical reference for the Claude Code hook system. For philosophy and workflow
 
 All hooks receive JSON on **stdin** and emit JSON on **stdout**. Stderr is for logging only. Exit code 0 = success. Non-zero = hook error (logged, does not block).
 
+> **FD inheritance rule:** Background processes spawned in hooks (`&`) MUST redirect both stdout and stderr (`>/dev/null 2>&1 &`). When a test or tool captures hook output via `$()`, the command substitution creates an internal pipe. Background subshells inherit the pipe's write-end FDs — the `$()` blocks until ALL holders close them. A 5-minute heartbeat holding inherited FDs hangs the caller for 5 minutes. This applies even when the background process produces no output — FD inheritance is orthogonal to actual writes. See DEC-GUARDIAN-HEARTBEAT-002.
+
 > **Caveat — SessionEnd + stderr:** Claude Code reports SessionEnd hooks as "failed" if they produce any stderr output, even with exit code 0. Suppress stderr in SessionEnd hooks (`exec 2>/dev/null`) since diagnostic messages have no audience at session termination.
 
 ### Stdin Format

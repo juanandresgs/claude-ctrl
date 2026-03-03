@@ -140,7 +140,13 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         #   from 3 to 5 to accommodate Guardian max_turns=35 long operations (CHANGELOG
         #   update on feature branch, push with CI, worktree cleanup). Both exit paths
         #   are verified by e2e test.
-        ( _hb_count=0; while sleep 60; do _hb_count=$((_hb_count+1)); [[ $_hb_count -ge 5 ]] && break; [[ -f "$_GUARDIAN_MARKER" ]] || break; touch "$_GUARDIAN_MARKER"; done ) &
+        # FD inheritance fix: redirect stdout/stderr to /dev/null before backgrounding.
+        # Without this, $() command substitution in test harnesses inherits the pipe's
+        # write-end FDs through the background subshell, causing the substitution to block
+        # until the heartbeat exits (5 min). The heartbeat produces no output — this is
+        # purely to sever FD inheritance. See test-proof-gate.sh Test 5 timing assertion.
+        # @decision DEC-GUARDIAN-HEARTBEAT-002
+        ( _hb_count=0; while sleep 60; do _hb_count=$((_hb_count+1)); [[ $_hb_count -ge 5 ]] && break; [[ -f "$_GUARDIAN_MARKER" ]] || break; touch "$_GUARDIAN_MARKER"; done ) >/dev/null 2>&1 &
     fi
     # File missing → no implementation in progress → allow (bootstrap path)
 fi

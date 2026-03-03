@@ -417,7 +417,7 @@ if has_github_actions "$PROJECT_ROOT"; then
         fi
         if [[ "$_WATCHER_LIVE" == "false" ]]; then
             _CI_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-            bash "$CI_WATCH_SCRIPT" "$PROJECT_ROOT" &
+            bash "$CI_WATCH_SCRIPT" "$PROJECT_ROOT" >/dev/null 2>&1 &
             ISSUES+=("CI watcher spawned — monitoring run on ${_CI_BRANCH}")
         fi
     fi

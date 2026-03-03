@@ -208,7 +208,7 @@ if [[ -x "$COMMUNITY_SCRIPT" ]]; then
         fi
     fi
     if [[ "$_COMM_SHOULD_RUN" == "true" ]]; then
-        "$COMMUNITY_SCRIPT" 2>/dev/null &
+        "$COMMUNITY_SCRIPT" >/dev/null 2>/dev/null &
         disown 2>/dev/null || true
     fi
 fi

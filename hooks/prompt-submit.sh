@@ -320,7 +320,7 @@ if echo "$PROMPT" | grep -qiE '\blater\b|\bdefer\b|\bbacklog\b|\beventually\b|\b
     #   simple. Background & ensures zero latency impact on the prompt pipeline.
     TODO_SCRIPT_DEFER="$HOME/.claude/scripts/todo.sh"
     if [[ -x "$TODO_SCRIPT_DEFER" ]]; then
-        "$TODO_SCRIPT_DEFER" create "$DEFERRAL_TEXT" --context "session:auto-captured" &
+        "$TODO_SCRIPT_DEFER" create "$DEFERRAL_TEXT" --context "session:auto-captured" >/dev/null 2>&1 &
     fi
     CONTEXT_PARTS+=("Deferred-work language detected. Auto-captured as backlog issue. Use /backlog to review or refine.")
 fi

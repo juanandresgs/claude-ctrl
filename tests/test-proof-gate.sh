@@ -137,9 +137,13 @@ else
 fi
 
 run_test "Gate A: verified allows Guardian dispatch"
+SECONDS=0
 OUTPUT=$(run_task_track "guardian" "verified|12345" 2>&1) || true
+ELAPSED=$SECONDS
 if echo "$OUTPUT" | grep -q "deny"; then
     fail_test "Guardian blocked with verified status (should allow)"
+elif [[ "$ELAPSED" -gt 10 ]]; then
+    fail_test "Took ${ELAPSED}s (>10s) — likely FD leak from background heartbeat (see DEC-GUARDIAN-HEARTBEAT-002)"
 else
     pass_test
 fi
