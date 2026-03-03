@@ -750,8 +750,49 @@ check_trace_count_canary() {
     echo "${current_count}|$(date +%s)" > "$canary_file" 2>/dev/null || true
 }
 
+# --- Trace TTL cleanup ---
+#
+# @decision DEC-TRACE-TTL-001
+# @title Age-based trace directory cleanup with 7-day retention
+# @status accepted
+# @rationale Trace directories grow unbounded as agents run. Each agent session
+#   writes a new trace dir with manifests and artifacts. Without rotation, this
+#   accumulates indefinitely. 7 days (604800 seconds) retains enough history for
+#   the observatory to detect weekly patterns while preventing unbounded growth.
+#   Called from session-end.sh once per session exit — low enough frequency to
+#   avoid performance impact. Returns count of cleaned directories so callers can
+#   log meaningful diagnostics without needing to introspect file system state.
+#   Only non-hidden directories at depth 1 are scanned (hidden dirs are system
+#   files like .active-* markers and .manifest-backup-* archives).
+cleanup_stale_traces() {
+    local store="${TRACE_STORE:-$HOME/.claude/traces}"
+    [[ ! -d "$store" ]] && return 0
+    local ttl=604800  # 7 days in seconds
+    local now_epoch cleaned=0
+    now_epoch=$(date +%s)
+    local trace_dir
+    for trace_dir in "$store"/*/; do
+        [[ -d "$trace_dir" ]] || continue
+        # Skip hidden directories (markers, backups, canary files)
+        local dirname
+        dirname=$(basename "$trace_dir")
+        [[ "$dirname" == .* ]] && continue
+        local dir_mtime
+        if [[ "$(uname)" == "Darwin" ]]; then
+            dir_mtime=$(stat -f %m "$trace_dir" 2>/dev/null || echo "0")
+        else
+            dir_mtime=$(stat -c %Y "$trace_dir" 2>/dev/null || echo "0")
+        fi
+        if (( now_epoch - dir_mtime > ttl )); then
+            rm -rf "$trace_dir"
+            cleaned=$(( cleaned + 1 ))
+        fi
+    done
+    echo "$cleaned"
+}
+
 export TRACE_STORE
 export -f init_trace detect_active_trace finalize_trace index_trace rebuild_index
-export -f backup_trace_manifests check_trace_count_canary
+export -f backup_trace_manifests check_trace_count_canary cleanup_stale_traces
 
 _TRACE_LIB_LOADED=1

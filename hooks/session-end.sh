@@ -289,6 +289,92 @@ if [[ -n "${CLAUDE_SESSION_ID:-}" && -d "$SESSION_TRACE_STORE" ]]; then
     done
 fi
 
+# --- TTL-based trace directory cleanup (7 days) ---
+# @decision DEC-TRACE-TTL-001
+# @title Age-based trace directory cleanup runs at session-end
+# @status accepted
+# @rationale cleanup_stale_traces() (defined in trace-lib.sh) removes trace dirs
+#   older than 7 days. Running it at session-end (once per session) is low-frequency
+#   enough to avoid performance impact while preventing unbounded growth. The function
+#   returns the count of cleaned dirs so we can log meaningful diagnostics.
+require_trace
+_TRACES_CLEANED=$(cleanup_stale_traces 2>/dev/null || echo "0")
+if [[ "${_TRACES_CLEANED:-0}" -gt 0 ]]; then
+    log_info "SESSION-END" "Cleaned $_TRACES_CLEANED stale trace(s) (>7 days)"
+fi
+
+# --- Log rotation (keep last 2000 lines) ---
+# @decision DEC-LOG-ROTATE-001
+# @title Rotate hook log files at session-end to prevent unbounded growth
+# @status accepted
+# @rationale .hook-timing.log and .hook-deny.log grow with every hook invocation.
+#   A busy session (100+ prompts, each triggering 5-10 hooks) produces thousands
+#   of log lines per session. 2000 lines keeps ~2-3 weeks of history under normal
+#   usage while bounding disk usage to ~200KB per file. tail-then-mv is atomic
+#   on POSIX filesystems (mv is atomic within the same filesystem).
+for _log_file in "${CLAUDE_DIR}/.hook-timing.log" "${CLAUDE_DIR}/.hook-deny.log"; do
+    if [[ -f "$_log_file" ]]; then
+        _log_lines=$(wc -l < "$_log_file" 2>/dev/null | tr -d ' ')
+        if [[ "${_log_lines:-0}" -gt 2000 ]]; then
+            tail -2000 "$_log_file" > "${_log_file}.tmp" && mv "${_log_file}.tmp" "$_log_file"
+        fi
+    fi
+done
+
+# --- Orphaned .subagent-tokens-* cleanup (>4 hours) ---
+# @decision DEC-TOKEN-SWEEP-001
+# @title Age-based sweep of orphaned .subagent-tokens-* files
+# @status accepted
+# @rationale Each subagent invocation creates a session-scoped .subagent-tokens-<SESSION_ID>
+#   file. The current session's file is cleaned in the session-scoped cleanup block below.
+#   Files from crashed or interrupted sessions linger indefinitely. A sweep at session-end
+#   removes any that are >4 hours old — long enough to not affect any legitimate concurrent
+#   session, short enough to prevent accumulation. The 4-hour threshold is conservative:
+#   no agent session legitimately runs for more than ~30 minutes (max_turns enforcement).
+_NOW_EPOCH=$(date +%s)
+for _stale_token_file in "${CLAUDE_DIR}/.subagent-tokens-"*; do
+    [[ -f "$_stale_token_file" ]] || continue
+    # Skip current session's file (already cleaned in session-scoped block below)
+    [[ "$_stale_token_file" == *"-${CLAUDE_SESSION_ID:-$$}" ]] && continue
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _token_mtime=$(stat -f %m "$_stale_token_file" 2>/dev/null || echo "0")
+    else
+        _token_mtime=$(stat -c %Y "$_stale_token_file" 2>/dev/null || echo "0")
+    fi
+    if (( _NOW_EPOCH - _token_mtime > 14400 )); then  # 4 hours
+        rm -f "$_stale_token_file"
+    fi
+done
+
+# --- Stale state file cleanup ---
+# @decision DEC-STATE-SWEEP-001
+# @title Sweep stale state files: lock files, CI status, statusline temps
+# @status accepted
+# @rationale Lock files (.proof-status.lock, .state.lock) are scoped to a single
+#   operation and should never survive a session exit. If the session ends normally,
+#   the locking operation completed and the lock is no longer needed. If the session
+#   crashes, the lock is a zombie — removing it on next session-end unblocks future
+#   operations. CI status files (.ci-status-*) are per-run; files >24h are stale
+#   because CI runs complete in minutes. Statusline temp files (.statusline-cache.tmp.*)
+#   are left by interrupted statusline renders and have no utility after session-end.
+rm -f "${CLAUDE_DIR}/.proof-status.lock" "${CLAUDE_DIR}/.state.lock"
+
+# CI status files older than 24 hours
+for _ci_file in "${CLAUDE_DIR}/.ci-status-"*; do
+    [[ -f "$_ci_file" ]] || continue
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _ci_mtime=$(stat -f %m "$_ci_file" 2>/dev/null || echo "0")
+    else
+        _ci_mtime=$(stat -c %Y "$_ci_file" 2>/dev/null || echo "0")
+    fi
+    if (( _NOW_EPOCH - _ci_mtime > 86400 )); then  # 24 hours
+        rm -f "$_ci_file"
+    fi
+done
+
+# Stale statusline temp files (interrupted renders leave these behind)
+rm -f "${CLAUDE_DIR}/.statusline-cache.tmp."*
+
 # --- Clean up session-scoped files (these don't persist) ---
 rm -f "${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "${CLAUDE_DIR}/.session-changes"*
