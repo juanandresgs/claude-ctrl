@@ -405,6 +405,9 @@ rm -f "${CLAUDE_DIR}/.proof-epoch"*
 rm -f "${CLAUDE_DIR}/.stop-surface-"*
 rm -f "${CLAUDE_DIR}/.stop-todo-ttl"
 # .stop-backup-ttl intentionally persists (global, once per hour)
+# DEC-PERF-004: warm-path caches — session-scoped, delete on exit
+rm -f "${CLAUDE_DIR}/.stop-git-cache-"*
+rm -f "${CLAUDE_DIR}/.stop-plan-cache-"*
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail
