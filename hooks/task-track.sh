@@ -290,7 +290,13 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
     fi
 
     # Write breadcrumb: detect the most recent worktree (excluding main).
-    # Uses project-scoped file name to prevent cross-project contamination.
+    # Dual-writes session-scoped AND project-scoped breadcrumbs:
+    #   session-scoped: .active-worktree-path-{SESSION}-{PHASH}  (prevents cross-session contamination)
+    #   project-scoped: .active-worktree-path-{PHASH}            (backward compat with older hooks)
+    # Atomic write via tmp+rename prevents partial reads under concurrent hooks.
+    # Session ID from CLAUDE_SESSION_ID (fallback to $$).
+    # See DEC-SESSION-BREADCRUMB-001 in log.sh for full rationale. Issue #98.
+    #
     # git worktree list --porcelain outputs blocks separated by blank lines;
     # the first block is always the main worktree. We capture the last
     # non-main worktree path seen in the output.
@@ -298,8 +304,13 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         | awk -v main="$PROJECT_ROOT" '/^worktree /{path=$2} path && path != main {last=path} END{print last}' \
         || echo "")
     if [[ -n "$ACTIVE_WORKTREE" && -d "$ACTIVE_WORKTREE" ]]; then
-        echo "$ACTIVE_WORKTREE" > "${CLAUDE_DIR}/.active-worktree-path-${_PHASH}"
-        log_info "TASK-TRACK" "Breadcrumb written (scoped): active worktree is $ACTIVE_WORKTREE"
+        _SESSION="${CLAUDE_SESSION_ID:-$$}"
+        _SESSION_BC="${CLAUDE_DIR}/.active-worktree-path-${_SESSION}-${_PHASH}"
+        _SCOPED_BC="${CLAUDE_DIR}/.active-worktree-path-${_PHASH}"
+        # Atomic write: write to tmp then rename for both files
+        printf '%s\n' "$ACTIVE_WORKTREE" > "${_SESSION_BC}.tmp" && mv "${_SESSION_BC}.tmp" "$_SESSION_BC"
+        printf '%s\n' "$ACTIVE_WORKTREE" > "${_SCOPED_BC}.tmp" && mv "${_SCOPED_BC}.tmp" "$_SCOPED_BC"
+        log_info "TASK-TRACK" "Breadcrumb written (session+scoped): active worktree is $ACTIVE_WORKTREE [session=${_SESSION}]"
     fi
 fi
 

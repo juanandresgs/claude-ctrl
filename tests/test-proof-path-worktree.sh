@@ -792,6 +792,144 @@ fi
 rm -rf "$J8_CLAUDE" "$J8_PROJ" "$J8_WT"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Part K: Session-scoped breadcrumb tests (Issue #98)
+#
+# Verifies that session-scoped breadcrumbs (.active-worktree-path-{SESSION}-{PHASH})
+# take priority over project-scoped breadcrumbs (.active-worktree-path-{PHASH}),
+# preventing cross-session contamination when multiple sessions run concurrently.
+#
+#   K1. Session-scoped breadcrumb takes priority over project-scoped
+#   K2. Falls back to project-scoped when no session breadcrumb exists
+#   K3. Stale session breadcrumb (deleted target dir) falls back to project-scoped
+#
+# @decision DEC-SESSION-BREADCRUMB-001 — see log.sh for full rationale
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Helper: call resolve_proof_file() with explicit CLAUDE_DIR, PROJECT_ROOT, and SESSION
+_resolve_k() {
+    local claude_dir="$1"
+    local project_root="$2"
+    local session_id="${3:-}"
+    bash -c "
+        source '$HOOKS_DIR/log.sh' 2>/dev/null
+        export CLAUDE_DIR='$claude_dir'
+        export PROJECT_ROOT='$project_root'
+        export CLAUDE_SESSION_ID='$session_id'
+        resolve_proof_file 2>/dev/null
+    "
+}
+
+run_test "Part K1: session-scoped breadcrumb takes priority over project-scoped"
+K1_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-k1-cl-XXXXXX")
+K1_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-k1-proj-XXXXXX")
+K1_SESSION_WT=$(mktemp -d "$PROJECT_ROOT/tmp/test-k1-session-wt-XXXXXX")
+K1_STALE_WT=$(mktemp -d "$PROJECT_ROOT/tmp/test-k1-stale-wt-XXXXXX")
+mkdir -p "$K1_SESSION_WT/.claude"
+mkdir -p "$K1_STALE_WT/.claude"
+K1_PHASH=$(_phash_j "$K1_PROJ")
+K1_SESSION="test-session-k1-$$"
+# Session-scoped breadcrumb → K1_SESSION_WT (the correct active worktree)
+echo "$K1_SESSION_WT" > "$K1_CLAUDE/.active-worktree-path-${K1_SESSION}-${K1_PHASH}"
+# Project-scoped breadcrumb → K1_STALE_WT (a stale/wrong worktree from another session)
+echo "$K1_STALE_WT" > "$K1_CLAUDE/.active-worktree-path-${K1_PHASH}"
+# Active proof in both worktrees
+echo "pending|12345" > "$K1_SESSION_WT/.claude/.proof-status"
+echo "pending|99999" > "$K1_STALE_WT/.claude/.proof-status"
+EXPECTED_K1="$K1_SESSION_WT/.claude/.proof-status"
+
+R1=$(_resolve_k "$K1_CLAUDE" "$K1_PROJ" "$K1_SESSION")
+if [[ "$R1" == "$EXPECTED_K1" ]]; then
+    pass_test
+else
+    fail_test "Session-scoped priority: expected '$EXPECTED_K1', got '$R1' (should NOT resolve to stale '$K1_STALE_WT/.claude/.proof-status')"
+fi
+rm -rf "$K1_CLAUDE" "$K1_PROJ" "$K1_SESSION_WT" "$K1_STALE_WT"
+
+run_test "Part K2: falls back to project-scoped breadcrumb when no session breadcrumb exists"
+K2_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-k2-cl-XXXXXX")
+K2_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-k2-proj-XXXXXX")
+K2_WT=$(mktemp -d "$PROJECT_ROOT/tmp/test-k2-wt-XXXXXX")
+mkdir -p "$K2_WT/.claude"
+K2_PHASH=$(_phash_j "$K2_PROJ")
+K2_SESSION="test-session-k2-$$"
+# Only project-scoped breadcrumb (no session-scoped)
+echo "$K2_WT" > "$K2_CLAUDE/.active-worktree-path-${K2_PHASH}"
+echo "pending|12345" > "$K2_WT/.claude/.proof-status"
+EXPECTED_K2="$K2_WT/.claude/.proof-status"
+
+R1=$(_resolve_k "$K2_CLAUDE" "$K2_PROJ" "$K2_SESSION")
+if [[ "$R1" == "$EXPECTED_K2" ]]; then
+    pass_test
+else
+    fail_test "Project-scoped fallback: expected '$EXPECTED_K2', got '$R1'"
+fi
+rm -rf "$K2_CLAUDE" "$K2_PROJ" "$K2_WT"
+
+run_test "Part K3: stale session breadcrumb (deleted target) falls back to project-scoped"
+K3_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-k3-cl-XXXXXX")
+K3_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-k3-proj-XXXXXX")
+K3_VALID_WT=$(mktemp -d "$PROJECT_ROOT/tmp/test-k3-valid-wt-XXXXXX")
+mkdir -p "$K3_VALID_WT/.claude"
+K3_PHASH=$(_phash_j "$K3_PROJ")
+K3_SESSION="test-session-k3-$$"
+# Session-scoped breadcrumb → deleted worktree (stale)
+echo "/nonexistent/deleted-worktree-path" > "$K3_CLAUDE/.active-worktree-path-${K3_SESSION}-${K3_PHASH}"
+# Project-scoped breadcrumb → valid worktree (should be used as fallback)
+echo "$K3_VALID_WT" > "$K3_CLAUDE/.active-worktree-path-${K3_PHASH}"
+echo "pending|12345" > "$K3_VALID_WT/.claude/.proof-status"
+EXPECTED_K3="$K3_VALID_WT/.claude/.proof-status"
+
+R1=$(_resolve_k "$K3_CLAUDE" "$K3_PROJ" "$K3_SESSION")
+if [[ "$R1" == "$EXPECTED_K3" ]]; then
+    pass_test
+else
+    fail_test "Stale session breadcrumb fallback: expected '$EXPECTED_K3', got '$R1'"
+fi
+rm -rf "$K3_CLAUDE" "$K3_PROJ" "$K3_VALID_WT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Part L: Lattice regression test (bash 3.2 fix — Issue #97)
+#
+# Verifies that write_proof_status() correctly blocks verified → pending regression.
+# With the declare -A bug, all ordinals resolved to 0, so the regression check
+# always passed (0 < 0 = false → allowed). After the fix with _status_ordinal(),
+# the regression must be blocked.
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_test "Part L1: write_proof_status blocks verified → pending regression (bash 3.2 lattice fix)"
+L1_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-l1-cl-XXXXXX")
+L1_PROJ="$L1_CLAUDE"  # use same dir so phash is deterministic
+L1_PHASH=$(echo "$L1_PROJ" | shasum -a 256 | cut -c1-8 2>/dev/null || echo "00000000")
+# get_claude_dir() returns $PROJECT_ROOT/.claude (not $PROJECT_ROOT) when the path
+# is not $HOME/.claude. Create the subdirectory and write the proof file there.
+mkdir -p "$L1_CLAUDE/.claude"
+echo "verified|$(date +%s)" > "$L1_CLAUDE/.claude/.proof-status-${L1_PHASH}"
+
+# Attempt to write "pending" — should be BLOCKED (regression: verified(3) → pending(2))
+L1_RESULT=$(bash -c "
+    source '$HOOKS_DIR/log.sh' 2>/dev/null
+    export CLAUDE_DIR='$L1_CLAUDE'
+    export PROJECT_ROOT='$L1_PROJ'
+    if write_proof_status 'pending' '$L1_PROJ' 2>/dev/null; then
+        echo 'allowed'
+    else
+        echo 'blocked'
+    fi
+" 2>/dev/null)
+
+# Read back the file from the correct location — it should still say "verified" (not "pending")
+L1_CURRENT=$(cut -d'|' -f1 "$L1_CLAUDE/.claude/.proof-status-${L1_PHASH}" 2>/dev/null || echo "missing")
+
+if [[ "$L1_RESULT" == "blocked" && "$L1_CURRENT" == "verified" ]]; then
+    pass_test
+elif [[ "$L1_RESULT" == "allowed" && "$L1_CURRENT" == "pending" ]]; then
+    fail_test "Lattice regression NOT blocked: write_proof_status allowed verified→pending (declare -A bash 3.2 bug still present)"
+else
+    fail_test "Unexpected state: write returned '$L1_RESULT', file contains '$L1_CURRENT'"
+fi
+rm -rf "$L1_CLAUDE"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 

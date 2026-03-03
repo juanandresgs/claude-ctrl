@@ -151,34 +151,57 @@ project_hash() {
 #
 # In non-worktree scenarios (no breadcrumb): returns CLAUDE_DIR/.proof-status-{phash}
 # (falls back to .proof-status for backward compat with pre-migration state).
-# In worktree scenarios: reads .active-worktree-path-{phash} breadcrumb first,
-# then .active-worktree-path (old format). If the breadcrumb exists and the
-# worktree has a .proof-status in "pending" or "verified" state, returns the
-# worktree path. Stale breadcrumbs (deleted worktree) fall back to CLAUDE_DIR.
+# In worktree scenarios: reads breadcrumb in this priority order:
+#   1. Session-scoped: .active-worktree-path-{session_id}-{phash}  (highest priority)
+#   2. Project-scoped: .active-worktree-path-{phash}               (backward compat)
+#   3. Legacy:         .active-worktree-path                        (oldest format)
+# If the breadcrumb exists and the worktree has a .proof-status in "pending",
+# "verified", or "needs-verification" state, returns the worktree path.
+# Stale breadcrumbs (deleted worktree) fall back to CLAUDE_DIR.
 #
 # Callers that write "verified" should also dual-write to the orchestrator's
 # copy so guard.sh can find it regardless of which path it checks.
+#
+# @decision DEC-SESSION-BREADCRUMB-001
+# @title Session-scoped breadcrumb priority in resolve_proof_file()
+# @status accepted
+# @rationale When multiple Claude sessions run concurrently (e.g., two worktrees),
+#   the project-scoped breadcrumb (.active-worktree-path-{phash}) is last-write-wins.
+#   Session N's breadcrumb can point to session M's worktree, causing resolve_proof_file
+#   to read the WRONG .proof-status file. The root cause of the stale breadcrumb
+#   incident (#91): task-track.sh for one session overwrote the shared breadcrumb,
+#   making subsequent resolve calls resolve to test-health-audit instead of the active
+#   feature worktree. Session-scoped breadcrumbs (.active-worktree-path-{session}-{phash})
+#   give each session a private slot, eliminating cross-session contamination.
+#   The fallback chain preserves backward compatibility with hooks that only write
+#   project-scoped breadcrumbs. Issue #98.
 resolve_proof_file() {
     local claude_dir="${CLAUDE_DIR:-$(get_claude_dir)}"
     local project_root="${PROJECT_ROOT:-$(detect_project_root)}"
     local phash
     phash=$(project_hash "$project_root")
+    local session_id="${CLAUDE_SESSION_ID:-}"
+    local session_breadcrumb=""
+    [[ -n "$session_id" ]] && session_breadcrumb="$claude_dir/.active-worktree-path-${session_id}-${phash}"
     local scoped_breadcrumb="$claude_dir/.active-worktree-path-${phash}"
     local legacy_breadcrumb="$claude_dir/.active-worktree-path"
     local scoped_proof="$claude_dir/.proof-status-${phash}"
     local default_proof="$claude_dir/.proof-status"
 
-    # Determine which breadcrumb to use: scoped takes priority over legacy
-    local breadcrumb=""
-    if [[ -f "$scoped_breadcrumb" ]]; then
-        breadcrumb="$scoped_breadcrumb"
-    elif [[ -f "$legacy_breadcrumb" ]]; then
-        breadcrumb="$legacy_breadcrumb"
-    fi
+    # Try each breadcrumb in priority order, cascading on stale targets.
+    # A breadcrumb is "stale" if its target directory no longer exists.
+    # On stale, continue to the next breadcrumb rather than immediately falling
+    # back to scoped proof — this lets a valid project-scoped breadcrumb serve
+    # as a fallback when the session-scoped breadcrumb is stale.
+    #
+    # Candidate list: session-scoped > project-scoped > legacy
+    local _candidates=()
+    [[ -n "$session_breadcrumb" && -f "$session_breadcrumb" ]] && _candidates+=("$session_breadcrumb")
+    [[ -f "$scoped_breadcrumb" ]] && _candidates+=("$scoped_breadcrumb")
+    [[ -f "$legacy_breadcrumb" ]] && _candidates+=("$legacy_breadcrumb")
 
-    # No breadcrumb — standard (non-worktree) path
-    if [[ -z "$breadcrumb" ]]; then
-        # Return scoped proof if it has active state, else legacy, else default scoped
+    # No breadcrumb at all — standard (non-worktree) path
+    if [[ ${#_candidates[@]} -eq 0 ]]; then
         if [[ -f "$scoped_proof" ]]; then
             echo "$scoped_proof"
         elif [[ -f "$default_proof" ]]; then
@@ -189,11 +212,34 @@ resolve_proof_file() {
         return
     fi
 
-    local worktree_path
-    worktree_path=$(cat "$breadcrumb" 2>/dev/null | tr -d '[:space:]')
+    # Walk candidates; return on first live worktree with active proof
+    for _bc in "${_candidates[@]}"; do
+        local worktree_path
+        worktree_path=$(cat "$_bc" 2>/dev/null | tr -d '[:space:]')
 
-    # Stale breadcrumb: worktree directory no longer exists
-    if [[ -z "$worktree_path" || ! -d "$worktree_path" ]]; then
+        # Empty or stale breadcrumb: try next candidate
+        [[ -z "$worktree_path" || ! -d "$worktree_path" ]] && continue
+
+        local worktree_proof="$worktree_path/.claude/.proof-status"
+
+        # Check if worktree has an active proof-status (pending, verified, or needs-verification)
+        # needs-verification is written by task-track.sh at implementer dispatch — it must resolve
+        # to the worktree path so check-tester.sh reads/writes the correct file. Previously, only
+        # "pending" and "verified" were accepted, causing needs-verification to fall through to the
+        # scoped (orchestrator) file. This caused the dedup guard in check-tester.sh to fire when
+        # the scoped file had stale "verified" from a prior test or session. (Fix: W4-2, Issue #41)
+        if [[ -f "$worktree_proof" ]]; then
+            local wt_status
+            wt_status=$(cut -d'|' -f1 "$worktree_proof" 2>/dev/null || echo "")
+            if [[ "$wt_status" == "pending" || "$wt_status" == "verified" || "$wt_status" == "needs-verification" ]]; then
+                echo "$worktree_proof"
+                return
+            fi
+        fi
+
+        # Worktree exists but has no active proof — return scoped fallback immediately
+        # (no need to check further breadcrumbs; the active worktree is found but
+        # the proof was not written there yet — use orchestrator's path)
         if [[ -f "$scoped_proof" ]]; then
             echo "$scoped_proof"
         elif [[ -f "$default_proof" ]]; then
@@ -202,26 +248,9 @@ resolve_proof_file() {
             echo "$scoped_proof"
         fi
         return
-    fi
+    done
 
-    local worktree_proof="$worktree_path/.claude/.proof-status"
-
-    # Check if worktree has an active proof-status (pending, verified, or needs-verification)
-    # needs-verification is written by task-track.sh at implementer dispatch — it must resolve
-    # to the worktree path so check-tester.sh reads/writes the correct file. Previously, only
-    # "pending" and "verified" were accepted, causing needs-verification to fall through to the
-    # scoped (orchestrator) file. This caused the dedup guard in check-tester.sh to fire when
-    # the scoped file had stale "verified" from a prior test or session. (Fix: W4-2, Issue #41)
-    if [[ -f "$worktree_proof" ]]; then
-        local wt_status
-        wt_status=$(cut -d'|' -f1 "$worktree_proof" 2>/dev/null || echo "")
-        if [[ "$wt_status" == "pending" || "$wt_status" == "verified" || "$wt_status" == "needs-verification" ]]; then
-            echo "$worktree_proof"
-            return
-        fi
-    fi
-
-    # Worktree has no active proof — use orchestrator's scoped path
+    # All breadcrumbs were stale or empty — fall back to orchestrator's scoped path
     if [[ -f "$scoped_proof" ]]; then
         echo "$scoped_proof"
     elif [[ -f "$default_proof" ]]; then
@@ -310,6 +339,21 @@ write_proof_status() {
         # Use case statement instead of declare -A for bash 3 (macOS) compatibility.
         # declare -A fails on bash 3.2 (macOS default), causing the subshell to exit
         # under set -e before writing the status file. The case-based helper avoids this.
+        #
+        # @decision DEC-BASH32-001
+        # @title Replace declare -A with case function for bash 3.2 compatibility
+        # @status accepted
+        # @rationale macOS ships bash 3.2 which does not support associative arrays
+        #   (declare -A). The previous implementation used declare -A STATUS_ORDINAL
+        #   which silently fails on bash 3.2 — STATUS_ORDINAL becomes an empty regular
+        #   variable, all ordinal lookups return 0, and the lattice enforcement never
+        #   blocks regressions. The case-based _proof_ordinal() function is POSIX-
+        #   compatible and works identically on bash 3.2 and bash 4+. This was the
+        #   root cause of the proof-status gate failure during the statusline-banner
+        #   merge (#91): the user's "approved" was detected by prompt-submit.sh, but
+        #   write_proof_status() silently failed to enforce the lattice, making
+        #   "verified" unwritable because the regression check passed with ordinal 0=0.
+        #   Issue #97.
         _proof_ordinal() {
             case "$1" in
                 none)                 echo 0 ;;
@@ -376,10 +420,17 @@ write_proof_status() {
         printf '%s\n' "$content" > "${legacy_proof}.tmp" && mv "${legacy_proof}.tmp" "$legacy_proof"
 
         # 3. Worktree proof-status file (if breadcrumb exists and points to a valid dir)
+        # Use session-scoped breadcrumb as highest priority to avoid cross-session
+        # contamination (see DEC-SESSION-BREADCRUMB-001 in resolve_proof_file).
+        local _session_id="${CLAUDE_SESSION_ID:-}"
+        local _session_bc=""
+        [[ -n "$_session_id" ]] && _session_bc="${claude_dir}/.active-worktree-path-${_session_id}-${phash}"
         local scoped_breadcrumb="${claude_dir}/.active-worktree-path-${phash}"
         local legacy_breadcrumb="${claude_dir}/.active-worktree-path"
         local breadcrumb=""
-        if [[ -f "$scoped_breadcrumb" ]]; then
+        if [[ -n "$_session_bc" && -f "$_session_bc" ]]; then
+            breadcrumb="$_session_bc"
+        elif [[ -f "$scoped_breadcrumb" ]]; then
             breadcrumb="$scoped_breadcrumb"
         elif [[ -f "$legacy_breadcrumb" ]]; then
             breadcrumb="$legacy_breadcrumb"

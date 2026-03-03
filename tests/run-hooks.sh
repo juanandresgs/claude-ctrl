@@ -92,6 +92,7 @@ _print_scope_usage() {
     echo "  todo        — todo.sh backlog script unit tests"
     echo "  scan        — scan-backlog.sh debt marker scanner unit tests"
     echo "  gaps        — gaps-report.sh accountability report unit tests"
+    echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
 }
@@ -138,6 +139,7 @@ _scope_pattern() {
         todo)        echo "todo\.sh" ;;
         scan)        echo "scan-backlog\.sh" ;;
         gaps)        echo "gaps-report\.sh" ;;
+        bash32)      echo "Bash 3\.2 compatibility" ;;
         *)           echo "" ;;
     esac
 }
@@ -2633,6 +2635,42 @@ safe_cleanup "$_GAPS_MOCK_DIR" "$SCRIPT_DIR"
 
 echo ""
 fi # end: gaps-report.sh
+
+# --- Test: Bash 3.2 compatibility — no declare -A in hooks ---
+# Prevents regressions: macOS ships bash 3.2 which silently ignores declare -A.
+# If any hook uses declare -A, it breaks on macOS even when the script appears
+# to work (associative arrays become empty regular variables).
+# Issue #97: declare -A in write_proof_status() caused the proof-status gate
+# to silently fail — ordinal lookups returned 0 for all statuses, making the
+# regression check pass even when it shouldn't.
+if should_run_section "Bash 3.2 compatibility"; then
+echo ""
+echo "--- Bash 3.2 compatibility (no declare -A in hooks) ---"
+
+_HOOKS_DIR="$SCRIPT_DIR/../hooks"
+_DECLARE_A_FOUND=0
+_DECLARE_A_FILES=""
+
+for _hook_file in "$_HOOKS_DIR"/*.sh; do
+    [[ -f "$_hook_file" ]] || continue
+    # Grep for 'declare -A' on non-comment lines only.
+    # Exclude lines where 'declare -A' appears only in comments (# ...) or
+    # @decision annotation rationale text. A real usage has 'declare -A' as
+    # actual bash code (not preceded by only whitespace+#).
+    if grep -v '^\s*#' "$_hook_file" 2>/dev/null | grep -q 'declare -A'; then
+        _DECLARE_A_FOUND=$((_DECLARE_A_FOUND + 1))
+        _DECLARE_A_FILES="${_DECLARE_A_FILES} $(basename "$_hook_file")"
+    fi
+done
+
+if [[ "$_DECLARE_A_FOUND" -eq 0 ]]; then
+    pass "Bash 3.2 compat: no hooks use declare -A (associative arrays)"
+else
+    fail "Bash 3.2 compat: ${_DECLARE_A_FOUND} hook(s) use declare -A (breaks macOS bash 3.2)" "${_DECLARE_A_FILES}"
+fi
+
+echo ""
+fi # end: bash32-compat
 
 # --- Summary ---
 echo "==========================="

@@ -155,10 +155,14 @@ get_active_worktree_paths() {
 ACTIVE_WORKTREES=$(get_active_worktree_paths)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Breadcrumb files (.active-worktree-path-{phash} and .active-worktree-path)
+# 1. Breadcrumb files (.active-worktree-path*)
+#    Formats: .active-worktree-path-{session}-{phash}  (session-scoped, DEC-SESSION-BREADCRUMB-001)
+#             .active-worktree-path-{phash}              (project-scoped, backward compat)
+#             .active-worktree-path                      (legacy, pre-scoping)
+#    The glob .active-worktree-path* matches all three formats.
 # ─────────────────────────────────────────────────────────────────────────────
 
-echo "${BOLD}1. Breadcrumb files (.active-worktree-path*)${NC}"
+echo "${BOLD}1. Breadcrumb files (.active-worktree-path* — session-scoped, project-scoped, and legacy)${NC}"
 FOUND_BREADCRUMBS=0
 
 for breadcrumb in "$CLAUDE_DIR"/.active-worktree-path*; do

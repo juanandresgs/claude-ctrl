@@ -602,6 +602,52 @@ for pattern in "${CLAUDE_DIR}/.session-changes"* "${CLAUDE_DIR}/.session-decisio
 done
 [[ "$STALE_FILE_COUNT" -gt 0 ]] && CONTEXT_PARTS+=("Stale session files: $STALE_FILE_COUNT from previous session")
 
+# --- Stale breadcrumb cleanup ---
+# Clean .active-worktree-path* files from dead sessions on startup.
+# Conditions for cleaning a breadcrumb:
+#   1. Target directory doesn't exist (worktree was deleted)
+#   2. Breadcrumb is empty
+#   3. Breadcrumb file older than 24h
+# Never clean breadcrumbs belonging to the current session (CLAUDE_SESSION_ID).
+# This prevents stale breadcrumbs from resolve_proof_file() resolving to the
+# wrong worktree when a prior session left its breadcrumb behind.
+# See DEC-SESSION-BREADCRUMB-001 in log.sh for context. Issue #98.
+_STALE_BC_COUNT=0
+_CURRENT_SESSION="${CLAUDE_SESSION_ID:-}"
+_NOW_TS=$(date +%s)
+for _bc in "${CLAUDE_DIR}/.active-worktree-path"*; do
+    [[ -f "$_bc" ]] || continue
+    # Skip current session's breadcrumbs (never clean own session)
+    if [[ -n "$_CURRENT_SESSION" && "$_bc" == *"-${_CURRENT_SESSION}-"* ]]; then
+        continue
+    fi
+    _bc_target=$(cat "$_bc" 2>/dev/null | tr -d '[:space:]')
+    # Condition 1: empty breadcrumb
+    if [[ -z "$_bc_target" ]]; then
+        rm -f "$_bc"
+        _STALE_BC_COUNT=$((_STALE_BC_COUNT + 1))
+        continue
+    fi
+    # Condition 2: target directory doesn't exist (deleted worktree)
+    if [[ ! -d "$_bc_target" ]]; then
+        rm -f "$_bc"
+        _STALE_BC_COUNT=$((_STALE_BC_COUNT + 1))
+        continue
+    fi
+    # Condition 3: breadcrumb file older than 24h
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _bc_mtime=$(stat -f %m "$_bc" 2>/dev/null || echo "0")
+    else
+        _bc_mtime=$(stat -c %Y "$_bc" 2>/dev/null || echo "0")
+    fi
+    if [[ $((_NOW_TS - _bc_mtime)) -gt 86400 ]]; then
+        rm -f "$_bc"
+        _STALE_BC_COUNT=$((_STALE_BC_COUNT + 1))
+        continue
+    fi
+done
+[[ "$_STALE_BC_COUNT" -gt 0 ]] && CONTEXT_PARTS+=("Cleaned ${_STALE_BC_COUNT} stale breadcrumb(s)")
+
 # --- Trace count canary: warn if significant drop since last session ---
 # check_trace_count_canary() compares current directory count against the
 # value written at last session end. >30% drop triggers a warning.

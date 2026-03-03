@@ -311,7 +311,17 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
         ISSUES+=("Guardian removed a worktree. CWD recovery canary written if path confirmed deleted.")
         # Read .active-worktree-path breadcrumb written by task-track.sh at implementer dispatch.
         # If that path is now gone, write the canary for Check 0.5 Path B.
-        BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path"
+        # Check session-scoped breadcrumb first (highest priority), then project-scoped, then legacy.
+        _CK7_PHASH=$(project_hash "$PROJECT_ROOT")
+        _CK7_SESSION="${CLAUDE_SESSION_ID:-}"
+        BREADCRUMB=""
+        if [[ -n "$_CK7_SESSION" && -f "${CLAUDE_DIR}/.active-worktree-path-${_CK7_SESSION}-${_CK7_PHASH}" ]]; then
+            BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path-${_CK7_SESSION}-${_CK7_PHASH}"
+        elif [[ -f "${CLAUDE_DIR}/.active-worktree-path-${_CK7_PHASH}" ]]; then
+            BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path-${_CK7_PHASH}"
+        elif [[ -f "${CLAUDE_DIR}/.active-worktree-path" ]]; then
+            BREADCRUMB="${CLAUDE_DIR}/.active-worktree-path"
+        fi
         if [[ -f "$BREADCRUMB" ]]; then
             DELETED_WT=$(head -1 "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || echo "")
             if [[ -n "$DELETED_WT" && ! -d "$DELETED_WT" ]]; then
@@ -388,9 +398,16 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
         # Check 7b: Post-merge worktree directory verification
         # If the breadcrumb exists AND directory still exists after merge, attempt cleanup.
         # This runs BEFORE the breadcrumb cleanup below so the breadcrumb is still readable.
-        # Check scoped breadcrumb first, then legacy.
-        BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path-${_PHASH}"
-        [[ -f "$BREADCRUMB_7B" ]] || BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path"
+        # Check session-scoped breadcrumb first, then project-scoped, then legacy.
+        _CK7B_SESSION="${CLAUDE_SESSION_ID:-}"
+        BREADCRUMB_7B=""
+        if [[ -n "$_CK7B_SESSION" && -f "${CLAUDE_DIR}/.active-worktree-path-${_CK7B_SESSION}-${_PHASH}" ]]; then
+            BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path-${_CK7B_SESSION}-${_PHASH}"
+        elif [[ -f "${CLAUDE_DIR}/.active-worktree-path-${_PHASH}" ]]; then
+            BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path-${_PHASH}"
+        elif [[ -f "${CLAUDE_DIR}/.active-worktree-path" ]]; then
+            BREADCRUMB_7B="${CLAUDE_DIR}/.active-worktree-path"
+        fi
         if [[ -f "$BREADCRUMB_7B" ]]; then
             WT_PATH_7B=$(cat "$BREADCRUMB_7B" 2>/dev/null | tr -d '[:space:]')
             if [[ -n "$WT_PATH_7B" && -d "$WT_PATH_7B" ]]; then
@@ -411,17 +428,30 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
             fi
         fi
 
-        # Clean up all breadcrumb variants (scoped and legacy) and their worktree .proof-status
-        for BREADCRUMB in "${CLAUDE_DIR}/.active-worktree-path-${_PHASH}" "${CLAUDE_DIR}/.active-worktree-path"; do
-            if [[ -f "$BREADCRUMB" ]]; then
-                WORKTREE_PATH=$(cat "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]')
-                if [[ -n "$WORKTREE_PATH" && -d "$WORKTREE_PATH" ]]; then
-                    rm -f "${WORKTREE_PATH}/.claude/.proof-status"
-                    log_info "CHECK-GUARDIAN" "Cleaned worktree .proof-status at $WORKTREE_PATH"
-                fi
-                rm -f "$BREADCRUMB"
-                log_info "CHECK-GUARDIAN" "Cleaned breadcrumb: $(basename "$BREADCRUMB")"
+        # Clean up all breadcrumb variants (session-scoped, project-scoped, and legacy)
+        # and their worktree .proof-status files.
+        # Session-scoped breadcrumbs use the format: .active-worktree-path-{SESSION}-{PHASH}
+        # The glob pattern below matches all session-scoped variants for this project.
+        _CK_CLEANUP_SESSION="${CLAUDE_SESSION_ID:-}"
+        _BC_LIST=()
+        # Add session-scoped breadcrumb for current session (if applicable)
+        [[ -n "$_CK_CLEANUP_SESSION" ]] && _BC_LIST+=("${CLAUDE_DIR}/.active-worktree-path-${_CK_CLEANUP_SESSION}-${_PHASH}")
+        # Add project-scoped and legacy breadcrumbs
+        _BC_LIST+=("${CLAUDE_DIR}/.active-worktree-path-${_PHASH}" "${CLAUDE_DIR}/.active-worktree-path")
+        # Also glob for any other session-scoped breadcrumbs for this phash (other sessions)
+        for _BC_GLOB in "${CLAUDE_DIR}"/.active-worktree-path-*-"${_PHASH}"; do
+            [[ -f "$_BC_GLOB" ]] || continue
+            _BC_LIST+=("$_BC_GLOB")
+        done
+        for BREADCRUMB in "${_BC_LIST[@]}"; do
+            [[ -f "$BREADCRUMB" ]] || continue
+            WORKTREE_PATH=$(cat "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]')
+            if [[ -n "$WORKTREE_PATH" && -d "$WORKTREE_PATH" ]]; then
+                rm -f "${WORKTREE_PATH}/.claude/.proof-status"
+                log_info "CHECK-GUARDIAN" "Cleaned worktree .proof-status at $WORKTREE_PATH"
             fi
+            rm -f "$BREADCRUMB"
+            log_info "CHECK-GUARDIAN" "Cleaned breadcrumb: $(basename "$BREADCRUMB")"
         done
     fi
 fi

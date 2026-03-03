@@ -304,7 +304,16 @@ rm -f "${CLAUDE_DIR}/.skill-result"*
 rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
 rm -f "${CLAUDE_DIR}/.subagent-tokens-${CLAUDE_SESSION_ID:-$$}"
 rm -f "${CLAUDE_DIR}/.session-main-tokens"
-rm -f "${CLAUDE_DIR}/.active-worktree-path"*
+# Targeted breadcrumb cleanup: only remove current session's breadcrumbs.
+# The sledgehammer approach (rm -f .active-worktree-path*) would kill all
+# sessions' breadcrumbs, which is wrong in multi-session scenarios.
+# Session-init.sh cleans stragglers from other sessions on next startup.
+# See DEC-SESSION-BREADCRUMB-001 in log.sh for rationale. Issue #98.
+if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
+    rm -f "${CLAUDE_DIR}/.active-worktree-path-${CLAUDE_SESSION_ID}-"*
+else
+    rm -f "${CLAUDE_DIR}/.active-worktree-path"*
+fi
 rm -f "${CLAUDE_DIR}/.cwd-recovery-needed"
 rm -f "${CLAUDE_DIR}/.proof-epoch"*
 
