@@ -72,6 +72,27 @@ CHANGES="${SESSION_FILE:-}"
 # Output accumulator — all parts appended here, emitted once at the end
 _SUMMARY_PARTS=()
 
+# --- TTL rate-limiting helpers ---
+# @decision DEC-PERF-003 (see core-lib.sh for full rationale)
+# Sentinel files store epoch timestamps. If the file's epoch + TTL > now, skip.
+# Session-scoped sentinels include CLAUDE_SESSION_ID and auto-reset per session.
+# Global sentinels persist across sessions (backup, todo refresh).
+
+_ttl_expired() {
+    local file="$1" ttl="$2"
+    [[ ! -f "$file" ]] && return 0
+    local stamp
+    stamp=$(cat "$file" 2>/dev/null) || return 0
+    [[ ! "$stamp" =~ ^[0-9]+$ ]] && return 0
+    local now
+    now=$(date +%s)
+    (( now - stamp >= ttl ))
+}
+
+_ttl_touch() {
+    date +%s > "$1"
+}
+
 # ============================================================================
 # SECTION 1: Surface — @decision audit, plan reconciliation, DECISIONS.md
 # Ported from surface.sh (439L)
@@ -85,7 +106,8 @@ if [[ -n "$CHANGES" && -f "$CHANGES" ]]; then
     [[ "$SOURCE_COUNT_SURFACE" -gt 0 ]] && _RUN_SURFACE=true
 fi
 
-if $_RUN_SURFACE; then
+_SURFACE_SENTINEL="${CLAUDE_DIR}/.stop-surface-${CLAUDE_SESSION_ID:-$$}"
+if $_RUN_SURFACE && _ttl_expired "$_SURFACE_SENTINEL" "$STOP_SURFACE_TTL"; then
     log_info "SURFACE" "$SOURCE_COUNT_SURFACE source files modified this session"
 
     # Determine source directories to scan
@@ -412,6 +434,16 @@ if $_RUN_SURFACE; then
 
     # Clean up session tracking (surface.sh did this)
     rm -f "$CHANGES"
+    _ttl_touch "$_SURFACE_SENTINEL"
+elif $_RUN_SURFACE; then
+    # TTL not expired — use cached .plan-drift for lightweight summary
+    if [[ -f "${CLAUDE_DIR}/.plan-drift" ]]; then
+        _cached_missing=$(grep '^missing_decisions=' "${CLAUDE_DIR}/.plan-drift" | cut -d= -f2)
+        _cached_changed=$(grep '^source_files_changed=' "${CLAUDE_DIR}/.plan-drift" | cut -d= -f2)
+        _SUMMARY_PARTS+=("${_cached_changed:-0} source files changed, ${_cached_missing:-0} need @decision (cached)")
+    fi
+    # Clear CHANGES so Section 2 doesn't re-process
+    [[ -n "$CHANGES" && -f "$CHANGES" ]] && rm -f "$CHANGES"
 fi
 
 # ============================================================================
@@ -437,9 +469,13 @@ $_RUN_SURFACE && _RUN_SUMMARY=true
 if $_RUN_SUMMARY; then
     # Observatory v2: refinalize_stale_traces() deleted (DEC-OBS-V2-002).
     # Compliance data recorded at agent boundaries by check-*.sh hooks.
-    set +e
-    backup_trace_manifests 2>/dev/null
-    set -e
+    _BACKUP_SENTINEL="${CLAUDE_DIR}/.stop-backup-ttl"
+    if _ttl_expired "$_BACKUP_SENTINEL" "$STOP_BACKUP_TTL"; then
+        set +e
+        backup_trace_manifests 2>/dev/null
+        set -e
+        _ttl_touch "$_BACKUP_SENTINEL"
+    fi
 
     # Re-count files if CHANGES_2 still available
     SOURCE_COUNT_SUMMARY=0
@@ -482,15 +518,9 @@ if $_RUN_SUMMARY; then
     TEST_FAILS=0
     TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
 
-    if [[ ! -f "$TEST_STATUS_FILE" ]] && pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
-        for _i in 1 2 3; do
-            sleep 1
-            [[ -f "$TEST_STATUS_FILE" ]] && break
-        done
-        if [[ ! -f "$TEST_STATUS_FILE" ]] && ! pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
-            sleep 0.5
-        fi
-    fi
+    # Sleep loop removed (DEC-PERF-003): waiting 0-3.5s per turn for test-runner.sh
+    # is unacceptable overhead. If .test-status doesn't exist yet, TEST_RESULT stays
+    # "unknown" — the next stop.sh call catches it. Max latency: 1 turn.
 
     if [[ -f "$TEST_STATUS_FILE" ]]; then
         FILE_MOD=$(stat -c '%Y' "$TEST_STATUS_FILE" 2>/dev/null || stat -f '%m' "$TEST_STATUS_FILE" 2>/dev/null || echo "0")
@@ -560,17 +590,25 @@ if $_RUN_SUMMARY; then
         fi
     fi
 
-    # Pending todos reminder
-    TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-    if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-        TODO_COUNTS=$("$TODO_SCRIPT" count --all 2>/dev/null || echo "0|0|0|0")
-        TODO_PROJECT=$(echo "$TODO_COUNTS" | cut -d'|' -f1)
-        TODO_GLOBAL=$(echo "$TODO_COUNTS" | cut -d'|' -f2)
-        TODO_CONFIG=$(echo "$TODO_COUNTS" | cut -d'|' -f3)
+    # Pending todos — read cached .todo-count (written by session-init.sh's todo.sh hud).
+    # Background refresh if TTL expired — never blocks the Stop hook.
+    # @decision DEC-PERF-003 (see core-lib.sh)
+    TODO_CACHE="${CLAUDE_DIR}/.todo-count"
+    if [[ -f "$TODO_CACHE" ]]; then
+        TODO_PROJECT=$(cut -d'|' -f1 "$TODO_CACHE" 2>/dev/null) || TODO_PROJECT=0
+        TODO_GLOBAL=$(cut -d'|' -f2 "$TODO_CACHE" 2>/dev/null) || TODO_GLOBAL=0
+        TODO_CONFIG=$(cut -d'|' -f3 "$TODO_CACHE" 2>/dev/null) || TODO_CONFIG=0
         TODO_TOTAL=$((TODO_PROJECT + TODO_GLOBAL + TODO_CONFIG))
         if [[ "$TODO_TOTAL" -gt 0 ]]; then
             SESS_SUMMARY+="\nTodos: ${TODO_PROJECT} project + ${TODO_GLOBAL} global + ${TODO_CONFIG} config pending."
         fi
+    fi
+    # Async refresh if stale
+    _TODO_SENTINEL="${CLAUDE_DIR}/.stop-todo-ttl"
+    TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
+    if _ttl_expired "$_TODO_SENTINEL" "$STOP_TODO_TTL" && [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
+        _ttl_touch "$_TODO_SENTINEL"
+        "$TODO_SCRIPT" hud >/dev/null 2>&1 &
     fi
 
     SESS_SUMMARY+="\nNext: $NEXT_ACTION"

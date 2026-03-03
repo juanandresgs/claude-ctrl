@@ -402,6 +402,9 @@ else
 fi
 rm -f "${CLAUDE_DIR}/.cwd-recovery-needed"
 rm -f "${CLAUDE_DIR}/.proof-epoch"*
+rm -f "${CLAUDE_DIR}/.stop-surface-"*
+rm -f "${CLAUDE_DIR}/.stop-todo-ttl"
+# .stop-backup-ttl intentionally persists (global, once per hour)
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail

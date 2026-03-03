@@ -96,6 +96,19 @@ DECISION_LINE_THRESHOLD=50
 TEST_STALENESS_THRESHOLD=600    # 10 minutes in seconds
 SESSION_STALENESS_THRESHOLD=1800 # 30 minutes in seconds
 
+# TTL rate limits for expensive stop.sh operations (seconds).
+# @decision DEC-PERF-003
+# @title TTL sentinel rate-limiting for stop.sh per-turn overhead
+# @status accepted
+# @rationale stop.sh fires on every agent response turn (~85 turns/implementer).
+#   Three operations cost 2.3s+ per invocation: @decision scan, manifest backup,
+#   and todo network fetch. TTL sentinel files (epoch timestamps) gate each operation
+#   to a maximum frequency. Cost of check: ~1ms (one cat + arithmetic). Measured
+#   savings: ~2.3s/turn × 85 turns ≈ 3-4 minutes per agent session eliminated.
+STOP_SURFACE_TTL=300    # @decision scan: max once per 5 min
+STOP_TODO_TTL=600       # todo network fetch: max once per 10 min
+STOP_BACKUP_TTL=3600    # manifest backup: max once per hour
+
 # --- Source file detection ---
 # Single source of truth for source file extensions across all hooks.
 # DECISION: Consolidated extension list. Rationale: Source file regex was
@@ -430,6 +443,7 @@ _lock_fd() {
 
 # Export core utilities for subshells
 export SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
+export STOP_SURFACE_TTL STOP_TODO_TTL STOP_BACKUP_TTL
 export -f project_hash is_source_file is_skippable_path is_test_file is_claude_meta_repo
 export -f read_test_status validate_state_file atomic_write safe_cleanup append_audit _log_deny
 export -f declare_gate emit_deny emit_advisory emit_flush enable_fail_closed _hook_crash_deny
