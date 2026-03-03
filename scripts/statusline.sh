@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# statusline.sh — Claude Code three-line status HUD (conditional Line 0).
+# statusline.sh — Claude Code single-line status bar with ANSI-aware truncation.
 #
 # Purpose: Reads JSON from stdin (model, workspace, cost, context window, tokens),
 # reads .statusline-cache for git/agent state, reads .todo-count for todos,
-# and outputs two or three ANSI-formatted status lines separated by newlines.
+# and outputs a single ANSI-formatted status line, truncated to terminal width.
 #
 # @decision DEC-CACHE-002
 # @title Three-line status bar: initiative banner (Line 0) + project context + metrics
-# @status accepted
+# @status superseded by DEC-STATUSLINE-004
 # @rationale Single-line statuslines on wide monitors are hard to scan because
 # project context and session metrics compete for the same horizontal space.
 # Splitting into lines gives each domain its own visual lane: Line 0 (conditional)
@@ -40,11 +40,11 @@
 #
 # Input (stdin): JSON with .model.display_name, .workspace.current_dir,
 #   .cost.*, .context_window.*
-# Output (stdout): Two or three ANSI-formatted lines (newline-separated)
+# Output (stdout): Single ANSI-formatted line, truncated to terminal width with ...
 #
-# Line 0: [Initiative Name (Phase N/M): Phase Title]  ← only when active initiative
-# Line 1: model+workspace | dirty: N  wt: N | agents: N (types) | todos: N
-# Line 2: context bar | tokens: Nk | ~$cost | duration | +lines/-lines | cache %
+# Segment order (left to right, separated by │):
+#   initiative (Phase N/M: Title) │ model+workspace │ git │ agents │ todos │
+#   context bar │ tokens: Nk │ ~$cost │ duration │ +lines/-lines │ cache %
 #
 # @decision DEC-STATUSLINE-DEPS-001
 # @title Statusline configuration dependency chain
@@ -214,6 +214,34 @@ format_tokens() {
   else
     printf '%d' "$count"
   fi
+}
+
+# truncate_ansi str max_width — truncate ANSI string to fit terminal width
+# @decision DEC-STATUSLINE-004
+# @title ANSI-aware truncation for single-line status bar
+# @status accepted
+# @rationale Truncation must skip escape sequences when counting visible characters
+# to avoid breaking ANSI codes or misreporting width. awk is used for the slow path
+# to avoid O(n²) bash string concatenation on wide terminals with many segments.
+truncate_ansi() {
+  local str="$1" max_w="$2"
+  # Fast path: strip ANSI, check if it fits
+  local stripped
+  stripped=$(printf '%s' "$str" | sed $'s/\033\[[0-9;]*m//g')
+  if (( ${#stripped} <= max_w )); then
+    printf '%s' "$str"
+    return
+  fi
+  # Slow path: ANSI-aware truncation via awk
+  printf '%s\n' "$str" | awk -v t="$(( max_w - 3 ))" '{
+    v = 0; e = 0; n = length($0)
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (c == "\033") { e = 1; printf "%s", c }
+      else if (e) { printf "%s", c; if (c == "m") e = 0 }
+      else { if (v >= t) { printf "\033[0m..."; exit } printf "%s", c; v++ }
+    }
+  }'
 }
 
 # ---------------------------------------------------------------------------
@@ -445,10 +473,21 @@ if (( cache_efficiency >= 0 )); then
 fi
 
 # ---------------------------------------------------------------------------
-# Output: two or three lines (Line 0 omitted when no active initiative)
+# Output: Single line, truncated to terminal width with ...
+# @decision DEC-STATUSLINE-004
+# @title Single-line status bar replacing multi-line layout
+# @status accepted
+# @rationale Multi-line statusline was visually messy and wasted vertical space.
+# Single line with left-to-right priority and ANSI-aware ... truncation at
+# terminal width keeps all data present while fitting in one clean bar.
+# Supersedes DEC-CACHE-002 (three-line layout).
 # ---------------------------------------------------------------------------
+term_w="${COLUMNS:-$(tput cols 2>/dev/null || echo 120)}"
+
 if [[ -n "$line0" ]]; then
-  printf '%s\n%s\n%s' "$line0" "$line1" "$line2"
+  full_line=$(printf '%s %b %s %b %s' "$line0" "$sep" "$line1" "$sep" "$line2")
 else
-  printf '%s\n%s' "$line1" "$line2"
+  full_line=$(printf '%s %b %s' "$line1" "$sep" "$line2")
 fi
+
+truncate_ansi "$full_line" "$term_w"
