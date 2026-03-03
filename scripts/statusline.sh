@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# statusline.sh — Claude Code two-line status HUD.
+# statusline.sh — Claude Code three-line status HUD (conditional Line 0).
 #
 # Purpose: Reads JSON from stdin (model, workspace, cost, context window, tokens),
 # reads .statusline-cache for git/agent state, reads .todo-count for todos,
-# and outputs two ANSI-formatted status lines separated by a newline.
+# and outputs two or three ANSI-formatted status lines separated by newlines.
 #
 # @decision DEC-CACHE-002
-# @title Two-line status bar with session metrics on line 2
+# @title Three-line status bar: initiative banner (Line 0) + project context + metrics
 # @status accepted
 # @rationale Single-line statuslines on wide monitors are hard to scan because
 # project context and session metrics compete for the same horizontal space.
-# Splitting into two lines gives each domain its own visual lane: line 1 is
-# "where am I / what's happening", line 2 is "how much have I spent / is the
-# context getting full". Removed: time (HH:MM:SS), plan phase, test status,
-# community segment, version, worktree-roster stale detection (PID-based).
+# Splitting into lines gives each domain its own visual lane: Line 0 (conditional)
+# shows the active initiative with full name and phase context; Line 1 is "where am
+# I / what's happening" (model, workspace, git, agents, todos); Line 2 is "how much
+# have I spent / is the context getting full". Line 0 is omitted when no active
+# initiative exists so the display stays 2 lines for idle/non-plan sessions.
+# Removed: time (HH:MM:SS), plan phase inline segment, test status, community
+# segment, version, worktree-roster stale detection (PID-based).
 # Added: context window bar, cost (~$X.XX), duration (ms to human), lines
-# changed, cache %, token count (tokens: Nk).
+# changed, cache %, token count (tokens: Nk), initiative banner (Line 0).
 #
 # @decision DEC-STATUSLINE-001
 # @title Domain clustering for line 1 segments
@@ -37,8 +40,9 @@
 #
 # Input (stdin): JSON with .model.display_name, .workspace.current_dir,
 #   .cost.*, .context_window.*
-# Output (stdout): Two ANSI-formatted lines (newline-separated)
+# Output (stdout): Two or three ANSI-formatted lines (newline-separated)
 #
+# Line 0: [Initiative Name (Phase N/M): Phase Title]  ← only when active initiative
 # Line 1: model+workspace | dirty: N  wt: N | agents: N (types) | todos: N
 # Line 2: context bar | tokens: Nk | ~$cost | duration | +lines/-lines | cache %
 #
@@ -104,6 +108,7 @@ cache_subagent_tokens=0
 cache_initiative=""
 cache_phase=""
 cache_active_inits=0
+cache_total_phases=0
 
 if [[ -f "$CACHE_FILE" ]]; then
   cache_dirty=$(jq -r '.dirty // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
@@ -124,6 +129,7 @@ if [[ -f "$CACHE_FILE" ]]; then
   cache_initiative=$(jq -r '.initiative // ""' "$CACHE_FILE" 2>/dev/null || echo "")
   cache_phase=$(jq -r '.phase // ""' "$CACHE_FILE" 2>/dev/null || echo "")
   cache_active_inits=$(jq -r '.active_initiatives // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
+  cache_total_phases=$(jq -r '.total_phases // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
 fi
 
 # ---------------------------------------------------------------------------
@@ -234,54 +240,54 @@ if (( total_input > 0 && cache_read > 0 )); then
 fi
 
 # ---------------------------------------------------------------------------
+# LINE 0: Initiative banner (conditional — only when active initiative exists)
+# @decision DEC-STATUSLINE-003
+# @title Full initiative banner on dedicated Line 0 above project context
+# @status accepted
+# @rationale The former inline Cluster A.5 segment showed a cryptic "Robust+1:P0"
+# label that required mental decoding. Moving initiative context to a dedicated
+# top line (Line 0) allows the full initiative name and phase title to be shown
+# without truncation pressure. Format: "Initiative Name (Phase N/M): Phase Title"
+# where N/M is the current/total phase count and the title uses em dashes for
+# readability (-- in MASTER_PLAN.md → — in display). When no active initiative
+# exists, Line 0 is omitted and output stays 2 lines (backward compatible).
+# When multiple initiatives are active, "(+N more)" suffix is appended.
+# Color: bold cyan — visually prominent but not alarming.
+# ---------------------------------------------------------------------------
+line0=""
+if [[ -n "$cache_initiative" ]]; then
+  _banner="$cache_initiative"
+
+  # Extract phase number and title from "#### Phase N: Title -- Subtitle"
+  if [[ -n "$cache_phase" ]]; then
+    if [[ "$cache_phase" =~ Phase[[:space:]]([0-9]+):[[:space:]]*(.*) ]]; then
+      _phase_num="${BASH_REMATCH[1]}"
+      _phase_title="${BASH_REMATCH[2]}"
+      # Strip leading #### prefix if present (e.g. "#### Phase 0: Title")
+      _phase_title="${_phase_title## }"
+      _phase_title="${_phase_title%% }"
+      # Replace -- with — (em dash) for display
+      _phase_title="${_phase_title//--/—}"
+
+      _banner="${_banner} (Phase ${_phase_num}/${cache_total_phases}): ${_phase_title}"
+    fi
+  fi
+
+  # If multiple active initiatives, note the overflow
+  _extra=$(( cache_active_inits - 1 ))
+  if (( _extra > 0 )); then
+    _banner="${_banner}  (+${_extra} more)"
+  fi
+
+  line0=$(printf '\033[1;36m%s\033[0m' "$_banner")
+fi
+
+# ---------------------------------------------------------------------------
 # LINE 1: Project context — domain-clustered with labels
 # ---------------------------------------------------------------------------
 
 # Cluster A: Model + workspace
 line1=$(printf '\033[2m%s\033[0m \033[1;36m%s\033[0m' "$model" "$workspace")
-
-# Cluster A.5: Initiative context — shows active initiative name and current phase
-# @decision DEC-STATUSLINE-003
-# @title Initiative segment placement between workspace and git state
-# @status accepted
-# @rationale Placing the initiative segment immediately after workspace (Cluster A) groups
-# "where am I / what am I working on" context together before git state. Initiative names
-# are truncated to their first word when longer than 20 characters (e.g. "Backlog Auto-Capture"
-# → "Backlog") to minimize statusline width impact. Phase is extracted as PN notation from
-# "#### Phase N:" headers. When multiple initiatives are active, "+N" suffix shows the
-# overflow count. The segment is omitted entirely when no active initiative exists, matching
-# the conditional pattern used by other optional segments (agents, todos, dirty).
-# Color: cyan (same as workspace segment) to visually link "context" clusters.
-if [[ -n "$cache_initiative" ]]; then
-  # Truncate initiative name: use first word if longer than 20 chars
-  _init_display="$cache_initiative"
-  if [[ ${#_init_display} -gt 20 ]]; then
-    _init_display="${_init_display%% *}"
-  fi
-
-  # Extract phase number from "#### Phase N:" header → "PN"
-  _phase_display=""
-  if [[ -n "$cache_phase" ]]; then
-    # Match digits after "Phase " in the header
-    if [[ "$cache_phase" =~ Phase[[:space:]]([0-9]+) ]]; then
-      _phase_display="P${BASH_REMATCH[1]}"
-    fi
-  fi
-
-  # Build initiative display string
-  _init_str="$_init_display"
-  # Append +N suffix when multiple active initiatives (active_inits - 1 overflow)
-  _extra_inits=$(( cache_active_inits - 1 ))
-  if (( _extra_inits > 0 )); then
-    _init_str="${_init_str}+${_extra_inits}"
-  fi
-  # Append phase if available
-  if [[ -n "$_phase_display" ]]; then
-    _init_str="${_init_str}:${_phase_display}"
-  fi
-
-  line1=$(printf '%s %b \033[36m%s\033[0m' "$line1" "$sep" "$_init_str")
-fi
 
 # Cluster B: Git state — dirty: N  wt: N (combined segment, only if either > 0)
 if (( cache_dirty > 0 || cache_wt > 0 )); then
@@ -439,6 +445,10 @@ if (( cache_efficiency >= 0 )); then
 fi
 
 # ---------------------------------------------------------------------------
-# Output: two lines separated by newline
+# Output: two or three lines (Line 0 omitted when no active initiative)
 # ---------------------------------------------------------------------------
-printf '%s\n%s' "$line1" "$line2"
+if [[ -n "$line0" ]]; then
+  printf '%s\n%s\n%s' "$line0" "$line1" "$line2"
+else
+  printf '%s\n%s' "$line1" "$line2"
+fi

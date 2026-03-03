@@ -877,132 +877,134 @@ test_lifetime_cost_not_shown_when_cache_absent() {
 }
 
 # ============================================================================
-# Test group 12: Initiative context segment (issue #91)
+# Test group 12: Initiative banner (Line 0) — redesigned from inline segment
 # ============================================================================
 
-# Helper: build .statusline-cache with initiative/phase fields
+# Helper: build .statusline-cache with initiative/phase/total_phases fields
+# Args: dir initiative phase active_inits total_phases
 make_initiative_cache() {
-    local dir="$1" initiative="$2" phase="$3" active_inits="${4:-1}"
+    local dir="$1" initiative="$2" phase="$3" active_inits="${4:-1}" total_phases="${5:-0}"
     mkdir -p "$dir/.claude"
-    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0,"initiative":"%s","phase":"%s","active_initiatives":%d}' \
-        "$initiative" "$phase" "$active_inits" > "$dir/.claude/.statusline-cache"
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0,"initiative":"%s","phase":"%s","active_initiatives":%d,"total_phases":%d}' \
+        "$initiative" "$phase" "$active_inits" "$total_phases" > "$dir/.claude/.statusline-cache"
 }
 
-test_initiative_absent_when_no_plan() {
+test_banner_absent_when_no_plan() {
     run_test
-    # No cache file → initiative defaults to "" → segment absent
+    # No cache file → initiative defaults to "" → no Line 0 → output is 2 lines (1 newline)
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{}}'
-    local line1
-    line1=$(run_statusline "$json" | head -1 | strip_ansi)
+    local output
+    output=$(run_statusline "$json")
+    local line_count
+    line_count=$(printf '%s' "$output" | wc -l | tr -d ' ')
 
-    # Expect no initiative-looking content (no colon-P pattern or bare initiative name)
-    # The key check: segment is absent when no plan
-    if [[ "$line1" != *":P"* ]] && ! printf '%s' "$line1" | grep -qE 'P[0-9]+'; then
-        pass_test "Initiative segment absent when no cache/plan"
+    if [[ "$line_count" -eq 1 ]]; then
+        pass_test "No initiative → 2-line output (1 newline), no banner line"
     else
-        fail_test "Initiative segment shown when no plan" "line1=$line1"
+        fail_test "Expected 2-line output when no initiative" "line_count=$line_count"
     fi
 }
 
-test_initiative_present_with_phase() {
+test_banner_shows_full_initiative_and_phase() {
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
-    make_initiative_cache "$tmpdir" "Backlog" "#### Phase 3: Implementation" 1
+    # Realistic banner: "Robust State Management (Phase 0/6): Immediate Fixes — flock + Write-tool Closure"
+    make_initiative_cache "$tmpdir" "Robust State Management" \
+        "#### Phase 0: Immediate Fixes -- flock + Write-tool Closure" 1 6
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
-    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    local line0
+    line0=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"Backlog:P3"* ]]; then
-        pass_test "Initiative segment shows 'Backlog:P3' format"
+    # Line 0 should have: initiative name + "(Phase 0/6)" + phase title + em dash
+    if [[ "$line0" == *"Robust State Management"* ]] \
+        && [[ "$line0" == *"(Phase 0/6)"* ]] \
+        && [[ "$line0" == *"Immediate Fixes"* ]] \
+        && [[ "$line0" == *"—"* ]]; then
+        pass_test "Banner: full initiative name + (Phase N/M) + title with em dash"
     else
-        fail_test "Initiative+phase format wrong" "line1=$line1"
+        fail_test "Banner format wrong" "line0=$line0"
     fi
 }
 
-test_initiative_present_without_phase() {
+test_banner_shows_initiative_without_phase() {
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
-    make_initiative_cache "$tmpdir" "Backlog" "" 1
+    # No phase → banner shows initiative name only, no "(Phase N/M)"
+    make_initiative_cache "$tmpdir" "Backlog Auto-Capture" "" 1 0
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
-    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    local line0
+    line0=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"Backlog"* ]] && [[ "$line1" != *"Backlog:P"* ]]; then
-        pass_test "Initiative segment shows name only when no phase"
+    if [[ "$line0" == *"Backlog Auto-Capture"* ]] && [[ "$line0" != *"(Phase"* ]]; then
+        pass_test "Banner shows full initiative name only (no Phase N/M) when no phase"
     else
-        fail_test "Initiative without phase format wrong" "line1=$line1"
+        fail_test "Banner without phase format wrong" "line0=$line0"
     fi
 }
 
-test_initiative_truncation() {
+test_banner_shows_phase_count() {
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
-    # "Backlog Auto-Capture" is >20 chars (20 chars exactly: B-a-c-k-l-o-g- -A-u-t-o---C-a-p-t-u-r-e = 20)
-    # Use a longer name to ensure truncation: "Statusline Initiative Context"
-    make_initiative_cache "$tmpdir" "Statusline Initiative Context" "#### Phase 2: Tests" 1
+    # Phase 2 of 5 → banner must show "(Phase 2/5)"
+    make_initiative_cache "$tmpdir" "My Initiative" "#### Phase 2: Validation" 1 5
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
-    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    local line0
+    line0=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    # Long name should be truncated to first word: "Statusline"
-    if [[ "$line1" == *"Statusline"* ]] && [[ "$line1" != *"Statusline Initiative"* ]]; then
-        pass_test "Initiative name >20 chars truncated to first word"
+    if [[ "$line0" == *"(Phase 2/5)"* ]]; then
+        pass_test "Banner shows correct Phase N/M: '(Phase 2/5)'"
     else
-        fail_test "Initiative truncation wrong" "line1=$line1"
+        fail_test "Phase N/M count wrong" "line0=$line0"
     fi
 }
 
-test_initiative_multiple_shows_plus() {
+test_banner_shows_multi_initiative_suffix() {
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
-    # 3 active initiatives → first name + "+2" suffix
-    make_initiative_cache "$tmpdir" "Backlog" "#### Phase 3: Implementation" 3
+    # 3 active initiatives → banner ends with "(+2 more)"
+    make_initiative_cache "$tmpdir" "Backlog" "#### Phase 3: Implementation" 3 4
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
-    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    local line0
+    line0=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"Backlog+2:P3"* ]]; then
-        pass_test "Multiple initiatives shows '+N' suffix: 'Backlog+2:P3'"
+    if [[ "$line0" == *"(+2 more)"* ]]; then
+        pass_test "Multiple initiatives: '(+2 more)' suffix in banner"
     else
-        fail_test "Multiple initiatives +N suffix wrong" "line1=$line1"
+        fail_test "Multi-initiative suffix wrong" "line0=$line0"
     fi
 }
 
-test_initiative_position_before_dirty() {
+test_banner_is_first_line() {
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
-    mkdir -p "$tmpdir/.claude"
-    # Cache with both initiative and dirty state
-    printf '{"dirty":5,"worktrees":1,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0,"initiative":"Backlog","phase":"#### Phase 2: Implementation","active_initiatives":1}' \
-        > "$tmpdir/.claude/.statusline-cache"
+    make_initiative_cache "$tmpdir" "Statusline Banner" "#### Phase 1: Redesign" 1 3
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
-    line1=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -1 | strip_ansi)
+    local output
+    output=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null)
+    local line0 line1
+    line0=$(printf '%s' "$output" | head -1 | strip_ansi)
+    line1=$(printf '%s' "$output" | sed -n '2p' | strip_ansi)
     rm -rf "$tmpdir"
 
-    local pos_initiative pos_dirty
-    pos_initiative=$(printf '%s' "$line1" | grep -bo 'Backlog' | head -1 | cut -d: -f1)
-    pos_dirty=$(printf '%s' "$line1" | grep -bo 'dirty:' | head -1 | cut -d: -f1)
-
-    if [[ -n "$pos_initiative" && -n "$pos_dirty" ]] && (( pos_initiative < pos_dirty )); then
-        pass_test "Initiative segment appears before dirty: segment"
+    # Line 0 has the initiative; Line 1 (model line) has "Claude"
+    if [[ "$line0" == *"Statusline Banner"* ]] && [[ "$line1" == *"Claude"* ]]; then
+        pass_test "Banner is Line 0; model appears on Line 1"
     else
-        fail_test "Initiative not before dirty" \
-            "line1=$line1 | pos_initiative=$pos_initiative pos_dirty=$pos_dirty"
+        fail_test "Banner/model line order wrong" "line0=$line0 | line1=$line1"
     fi
 }
 
@@ -1221,13 +1223,13 @@ test_lifetime_cost_shown_when_nonzero
 test_lifetime_cost_not_shown_when_cache_absent
 
 echo ""
-echo "--- Initiative context segment (issue #91) ---"
-test_initiative_absent_when_no_plan
-test_initiative_present_with_phase
-test_initiative_present_without_phase
-test_initiative_truncation
-test_initiative_multiple_shows_plus
-test_initiative_position_before_dirty
+echo "--- Initiative banner Line 0 (issue #91 redesign) ---"
+test_banner_absent_when_no_plan
+test_banner_shows_full_initiative_and_phase
+test_banner_shows_initiative_without_phase
+test_banner_shows_phase_count
+test_banner_shows_multi_initiative_suffix
+test_banner_is_first_line
 
 echo ""
 echo "--- Lifetime token display (DEC-LIFETIME-TOKENS-001) ---"

@@ -142,12 +142,20 @@ get_plan_status() {
         fi
 
         # Second pass: find the first in-progress phase within the captured active initiative.
+        # Also counts total phases within that initiative for the banner display.
         # Uses _active_section already in memory — no new file I/O.
+        # @decision DEC-STATUSLINE-004
+        # @title Per-initiative phase count for banner display
+        # @status accepted
+        # @rationale The banner shows "Phase N/M" where M is the total phases in the
+        # active initiative (not across all initiatives). We count #### Phase headers
+        # within the target initiative block during the same second-pass loop that finds
+        # the in-progress phase — no additional file I/O. PLAN_TOTAL_PHASES is overwritten
+        # from the global count (all active phases) to the per-initiative count when a
+        # target initiative is found.
         if [[ -n "$PLAN_ACTIVE_INITIATIVE_NAME" && -n "$_active_section" ]]; then
-            local _p2_in_target=false _p2_current_phase="" _p2_done=false
+            local _p2_in_target=false _p2_current_phase="" _p2_done=false _p2_phase_count=0
             while IFS= read -r _line; do
-                # Already found — skip remaining lines
-                [[ "$_p2_done" == "true" ]] && break
                 # Enter target initiative block
                 if [[ "$_line" == "### Initiative: ${PLAN_ACTIVE_INITIATIVE_NAME}" ]]; then
                     _p2_in_target=true
@@ -158,17 +166,22 @@ get_plan_status() {
                     if [[ "$_line" =~ ^'### Initiative:'|^'## ' ]]; then
                         break
                     fi
-                    # Track phase headers: "#### Phase N:" — capture the full header
+                    # Track phase headers: "#### Phase N:" — capture the full header and count
                     if [[ "$_line" =~ ^'####'[[:space:]]+'Phase'[[:space:]][0-9] ]]; then
                         _p2_current_phase="$_line"
+                        _p2_phase_count=$(( _p2_phase_count + 1 ))
                     fi
-                    # When Status: in-progress follows a phase header, capture it
-                    if [[ -n "$_p2_current_phase" && "$_line" =~ ^\*\*Status:\*\*.*[Ii]n-[Pp]rogress ]]; then
+                    # When Status: in-progress follows a phase header, capture it (continue counting)
+                    if [[ -n "$_p2_current_phase" && "$_p2_done" == "false" && "$_line" =~ ^\*\*Status:\*\*.*[Ii]n-[Pp]rogress ]]; then
                         PLAN_IN_PROGRESS_PHASE="$_p2_current_phase"
                         _p2_done=true
                     fi
                 fi
             done <<< "$_active_section"
+            # Override global phase count with per-initiative count for banner accuracy
+            if [[ "$_p2_in_target" == "true" && "$_p2_phase_count" -gt 0 ]]; then
+                PLAN_TOTAL_PHASES="$_p2_phase_count"
+            fi
         fi
 
         # Phase counts within Active Initiatives section (for status display)

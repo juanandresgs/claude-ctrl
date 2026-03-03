@@ -65,7 +65,8 @@ write_statusline_cache() {
         --arg initiative "${PLAN_ACTIVE_INITIATIVE_NAME:-}" \
         --arg phase "${PLAN_IN_PROGRESS_PHASE:-}" \
         --arg active_initiatives "${PLAN_ACTIVE_INITIATIVES:-0}" \
-        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber),todo_project:($todo_project|tonumber),todo_global:($todo_global|tonumber),lifetime_cost:($lifetime_cost|tonumber),lifetime_tokens:($lifetime_tokens|tonumber),initiative:$initiative,phase:$phase,active_initiatives:($active_initiatives|tonumber)}' \
+        --arg total_phases "${PLAN_TOTAL_PHASES:-0}" \
+        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber),todo_project:($todo_project|tonumber),todo_global:($todo_global|tonumber),lifetime_cost:($lifetime_cost|tonumber),lifetime_tokens:($lifetime_tokens|tonumber),initiative:$initiative,phase:$phase,active_initiatives:($active_initiatives|tonumber),total_phases:($total_phases|tonumber)}' \
         > "$tmp_cache" && mv "$tmp_cache" "$cache_file"
 }
 
