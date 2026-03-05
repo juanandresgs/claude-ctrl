@@ -136,6 +136,10 @@ get_claude_dir() {
     local project_root="${PROJECT_ROOT:-$(detect_project_root)}"
     local home_claude="${HOME}/.claude"
 
+    # Normalize: strip trailing slashes to prevent comparison mismatch (#77)
+    project_root="${project_root%/}"
+    home_claude="${home_claude%/}"
+
     # If PROJECT_ROOT is already ~/.claude, return it as-is (don't double-nest)
     if [[ "$project_root" == "$home_claude" ]]; then
         echo "$project_root"
@@ -148,7 +152,7 @@ get_claude_dir() {
 # Usage: project_hash "/path/to/project"
 # Returns: 8-character hex string, consistent across calls for the same input.
 project_hash() {
-    echo "${1:?project_hash requires a path argument}" | $_SHA256_CMD | cut -c1-8
+    echo "${1:?project_hash requires a path argument}" | ${_SHA256_CMD:-shasum -a 256} | cut -c1-8
 }
 
 # resolve_proof_file — return the canonical .proof-status path for the current project.

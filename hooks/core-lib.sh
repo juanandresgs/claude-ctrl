@@ -80,12 +80,32 @@
 #   cache_project_context - Cache project root and claude dir
 #   Constants: SOURCE_EXTENSIONS, DECISION_LINE_THRESHOLD, etc.
 
+# Portable SHA-256 command — initialize if not already set by log.sh.
+# Guard prevents double-initialization when both core-lib.sh and log.sh are sourced.
+# @decision DEC-SHA256-INIT-001
+# @title _SHA256_CMD initialization in core-lib.sh
+# @status accepted
+# @rationale core-lib.sh can be sourced without log.sh (e.g. in tests and standalone
+#   hooks). Without this block, $_SHA256_CMD is empty and project_hash() produces
+#   .proof-status- (empty hash) instead of a valid 8-char hex hash. The guard
+#   [[ -z "${_SHA256_CMD:-}" ]] prevents double-initialization when both libraries
+#   are sourced — log.sh's definition takes precedence if it loaded first.
+if [[ -z "${_SHA256_CMD:-}" ]]; then
+    if command -v shasum >/dev/null 2>&1; then
+        _SHA256_CMD="shasum -a 256"
+    elif command -v sha256sum >/dev/null 2>&1; then
+        _SHA256_CMD="sha256sum"
+    else
+        _SHA256_CMD="cat"  # last resort — won't hash but won't crash
+    fi
+fi
+
 # project_hash — compute deterministic 8-char hash of a project root path.
 # Duplicated from log.sh so core-lib.sh can be sourced independently.
 # Both definitions are identical; double-sourcing is safe (last definition wins).
 # @decision DEC-ISOLATION-001 (see log.sh for full rationale)
 project_hash() {
-    echo "${1:?project_hash requires a path argument}" | $_SHA256_CMD | cut -c1-8
+    echo "${1:?project_hash requires a path argument}" | ${_SHA256_CMD:-shasum -a 256} | cut -c1-8
 }
 
 # --- Protected State Files Registry ---

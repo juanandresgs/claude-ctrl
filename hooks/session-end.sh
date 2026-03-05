@@ -126,6 +126,8 @@ if [[ -f "$SESSION_EVENT_FILE" && -s "$SESSION_EVENT_FILE" ]]; then
             PS_VAL=""  # corrupt — skip proof status derivation
         fi
         [[ "$PS_VAL" == "verified" ]] && OUTCOME="committed"
+        # Clean proof-status after reading — prevents stale files surviving normal session-end (Bug D)
+        [[ -n "$PROOF_FILE" && -f "$PROOF_FILE" ]] && rm -f "$PROOF_FILE"
     fi
     if [[ "$OUTCOME" == "unknown" && -f "$TEST_STATUS_FILE" ]]; then
         TS_VAL=$(cut -d'|' -f1 "$TEST_STATUS_FILE" 2>/dev/null || echo "")
@@ -372,6 +374,29 @@ for _ci_file in "${CLAUDE_DIR}/.ci-status-"*; do
     fi
 done
 
+# Proof-status files older than 4 hours (cross-project sweep — Bug C)
+# @decision DEC-PROOF-SWEEP-001
+# @title TTL-based sweep of stale .proof-status-* files at session-end
+# @status accepted
+# @rationale session-init.sh only cleans the CURRENT project's proof-status. Files from
+#   other projects (or with empty hashes from Bug A) accumulate indefinitely. A 4-hour
+#   TTL sweep at session-end removes all stale proof files regardless of project origin.
+#   4 hours mirrors the .subagent-tokens-* sweep (DEC-TOKEN-SWEEP-001) — no legitimate
+#   verification cycle lasts longer than a single agent session (~30min max_turns).
+for _proof_file in "${CLAUDE_DIR}/.proof-status-"*; do
+    [[ -f "$_proof_file" ]] || continue
+    # Skip lock files (already cleaned above)
+    [[ "$_proof_file" == *.lock ]] && continue
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _proof_mtime=$(stat -f %m "$_proof_file" 2>/dev/null || echo "0")
+    else
+        _proof_mtime=$(stat -c %Y "$_proof_file" 2>/dev/null || echo "0")
+    fi
+    if (( _NOW_EPOCH - _proof_mtime > 14400 )); then  # 4 hours
+        rm -f "$_proof_file"
+    fi
+done
+
 # Stale statusline temp files (interrupted renders leave these behind)
 rm -f "${CLAUDE_DIR}/.statusline-cache.tmp."*
 
@@ -398,6 +423,9 @@ rm -f "${CLAUDE_DIR}/.stop-todo-ttl"
 # DEC-PERF-004: warm-path caches — session-scoped, delete on exit
 rm -f "${CLAUDE_DIR}/.stop-git-cache-"*
 rm -f "${CLAUDE_DIR}/.stop-plan-cache-"*
+# Migration cleanup: remove double-nested and tmp proof files (Bug E legacy paths)
+rm -f "${CLAUDE_DIR}/.claude/.proof-status" 2>/dev/null
+rm -f "${CLAUDE_DIR}/tmp/.proof-status" 2>/dev/null
 
 # DO NOT delete (cross-session state):
 #   .audit-log       — persistent audit trail
