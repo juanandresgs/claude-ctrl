@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `feature/wave-planning-metrics`: Replace serial phase-based planning with DAG-based wave decomposition — Phase 3 output format uses dependency graphs to compute waves of parallelizable work; new per-item metrics (Weight S/M/L/XL, Gate none/review/approve, Deps W-ID list); initiative-level summary metrics (critical path, max width); 4 new DAG validation checklist items; issue labels `phase-N` to `wave-N`; both templates (master-plan.md, initiative-block.md) updated consistently
+
 ### Fixed
 - `feature/fix-bootstrap-paradox`: Bootstrap paradox mitigation — M1: CAS failure diagnostic counter in prompt-submit.sh warns orchestrator after 2+ consecutive cas_proof_status failures (detects broken gate infrastructure); M2: @plan-update/@no-source annotations bypass proof-status gate in task-track.sh for documentation-only merges; 8 new bootstrap mitigation tests (DEC-BOOTSTRAP-PARADOX-001, DEC-BOOTSTRAP-PARADOX-002, DEC-BOOTSTRAP-TEST-001) (#105)
 - `feature/fix-proof-status-accumulation`: Prevent .proof-status-* dotfile accumulation — _SHA256_CMD init guard in core-lib.sh (Bug A), trailing-slash normalization in get_claude_dir() (Bug B), 4h TTL sweep of stale proof files in session-end.sh (Bug C), post-read cleanup after outcome derivation (Bug D), legacy double-nested path removal (Bug E); 4 new proof-cleanup tests (DEC-SHA256-INIT-001, DEC-PROOF-SWEEP-001)
