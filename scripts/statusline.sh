@@ -114,26 +114,38 @@ cache_phase=""
 cache_active_inits=0
 cache_total_phases=0
 
+# @decision DEC-TODO-SPLIT-002
+# @title Read todo_project/todo_global from cache with -1 sentinel for absent fields
+# @status accepted
+# @rationale Cache fields may be absent on old cache files (backward compat). Using -1
+# as sentinel lets the todo segment detect "cache doesn't have split data" and fall back
+# to the legacy .todo-count file. When both fields are 0+ the split display takes over.
+# Consolidated into a single jq call (was 13 separate subprocess invocations) to reduce
+# ~100ms startup latency and eliminate per-field variable subprocess overhead.
 if [[ -f "$CACHE_FILE" ]]; then
-  cache_dirty=$(jq -r '.dirty // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_wt=$(jq -r '.worktrees // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_agents=$(jq -r '.agents_active // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_agents_types=$(jq -r '.agents_types // ""' "$CACHE_FILE" 2>/dev/null || echo "")
-  # @decision DEC-TODO-SPLIT-002
-  # @title Read todo_project/todo_global from cache with -1 sentinel for absent fields
-  # @status accepted
-  # @rationale Cache fields may be absent on old cache files (backward compat). Using -1
-  # as sentinel lets the todo segment detect "cache doesn't have split data" and fall back
-  # to the legacy .todo-count file. When both fields are 0+ the split display takes over.
-  cache_todo_project=$(jq -r 'if has("todo_project") then .todo_project else -1 end' "$CACHE_FILE" 2>/dev/null || echo -1)
-  cache_todo_global=$(jq -r 'if has("todo_global") then .todo_global else -1 end' "$CACHE_FILE" 2>/dev/null || echo -1)
-  cache_lifetime_cost=$(jq -r '.lifetime_cost // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_lifetime_tokens=$(jq -r '.lifetime_tokens // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_subagent_tokens=$(jq -r '.subagent_tokens // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_initiative=$(jq -r '.initiative // ""' "$CACHE_FILE" 2>/dev/null || echo "")
-  cache_phase=$(jq -r '.phase // ""' "$CACHE_FILE" 2>/dev/null || echo "")
-  cache_active_inits=$(jq -r '.active_initiatives // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-  cache_total_phases=$(jq -r '.total_phases // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
+  # Use ASCII unit separator (\u001f / \x1f) as delimiter — unlike tab, it is not a
+  # bash whitespace IFS character, so consecutive empty fields (e.g. agents_types="")
+  # are preserved correctly by `read -r`. Tab IFS collapses adjacent delimiters.
+  cache_vars=$(jq -r '[
+    (.dirty // 0 | tostring),
+    (.worktrees // 0 | tostring),
+    (.agents_active // 0 | tostring),
+    (.agents_types // ""),
+    (if has("todo_project") then .todo_project else -1 end | tostring),
+    (if has("todo_global") then .todo_global else -1 end | tostring),
+    (.lifetime_cost // 0 | tostring),
+    (.lifetime_tokens // 0 | tostring),
+    (.subagent_tokens // 0 | tostring),
+    (.initiative // ""),
+    (.phase // ""),
+    (.active_initiatives // 0 | tostring),
+    (.total_phases // 0 | tostring)
+  ] | join("\u001f")' "$CACHE_FILE" 2>/dev/null \
+    || printf '0\x1f0\x1f0\x1f\x1f-1\x1f-1\x1f0\x1f0\x1f0\x1f\x1f\x1f0\x1f0')
+  IFS=$'\x1f' read -r cache_dirty cache_wt cache_agents cache_agents_types \
+    cache_todo_project cache_todo_global cache_lifetime_cost cache_lifetime_tokens \
+    cache_subagent_tokens cache_initiative cache_phase \
+    cache_active_inits cache_total_phases <<< "$cache_vars"
 fi
 
 # ---------------------------------------------------------------------------
@@ -678,8 +690,17 @@ printf '\n'
 # Line 2: metrics (model + context bar + tokens + cost + duration + lines + cache)
 truncate_ansi "$line2" "$term_w"
 
-# Line 3: initiative highlight bar (conditional — only when active initiative exists)
+# Line 3: initiative highlight bar (always allocated to prevent resize flicker)
+# @decision DEC-STATUSLINE-005
+# @title Always emit Line 3 newline regardless of initiative presence
+# @status accepted
+# @rationale Previously the status bar conditionally emitted 2 or 3 lines. During startup,
+# session-init.sh writes the cache after the first statusline render (which had no initiative).
+# When the cache then populated initiative data, the next render emitted an extra line,
+# causing the terminal to resize the status bar and shift all content above — producing
+# the visible "flicker" in the Claude Code startup banner. By always emitting the Line 3
+# newline, the status bar height is stable at 3 lines, regardless of cache state.
+printf '\n'
 if [[ -n "$line0" ]]; then
-  printf '\n'
   truncate_ansi "$line0" "$term_w"
 fi
