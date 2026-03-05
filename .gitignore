@@ -115,6 +115,9 @@ mcp-needs-auth-cache.json
 # Bazaar skill output directories (one-shot research output)
 bazaar-*/
 
+# last30days skill cache (ephemeral research output, regenerated per run)
+skills/last30days/
+
 # Playwright MCP runtime directory
 .playwright-mcp/
 

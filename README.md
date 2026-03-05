@@ -109,6 +109,25 @@ Instructions are probabilistic. Hooks are mechanical. That's the difference.
 
 ---
 
+## Requirements
+
+| Dependency | Required | Purpose |
+|-----------|----------|---------|
+| bash 3.2+ | Yes | Hook execution (macOS/Linux compatible) |
+| git 2.20+ | Yes | Worktree isolation, branch management |
+| jq 1.6+ | Yes | JSON parsing in all hooks |
+| POSIX utils | Yes | sed, awk, grep, sort, etc. |
+| sha256sum or shasum | Yes | Project state hashing (auto-detected) |
+| lockf (macOS) or flock (Linux) | Yes | Atomic state file operations (auto-detected) |
+| gh CLI | Optional | `/backlog` command, issue tracking |
+| terminal-notifier | Optional | macOS desktop notifications |
+| shellcheck | Optional | Hook development/CI linting |
+| API keys (OpenAI/Perplexity/Gemini) | Optional | `deep-research` skill |
+
+Run `bash scripts/check-deps.sh` after cloning to verify your system.
+
+---
+
 ## Getting Started
 
 ### 1. Clone
@@ -315,6 +334,19 @@ The lazy-loading mechanism (`require_git()`, `require_plan()`, `require_trace()`
 Run benchmarks: `bash tests/bench-hooks.sh`
 Run timing report: `bash scripts/hook-timing-report.sh`
 Run scoped tests: `bash tests/run-hooks.sh --scope pre-bash`
+
+### End-to-End Benchmark (Claude-Ctrl-Performance Harness)
+
+Docker-isolated A/B comparison on T01 (simple-bugfix, Sonnet, n=3):
+
+| Metric | Without Claude-Ctrl | With Claude-Ctrl v3.0 (Metanoia) | Improvement |
+|--------|----------------------|---------------------|-------------|
+| Total tokens | 375k–505k | 178k–208k | 45–65% fewer |
+| Turns to completion | 19–26 | 12–14 | 36–47% fewer |
+| Artifact completeness | 56–67% | 100% | Full output every time |
+| Hook overhead | 0ms | ~40ms/call | Negligible governance cost |
+
+Benchmark source: [Claude-Ctrl-Performance](https://github.com/juanandresgs/Claude-Ctrl-Performance)
 
 ---
 

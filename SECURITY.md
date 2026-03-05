@@ -6,8 +6,8 @@ We actively support security updates for the following versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.0.x   | :white_check_mark: |
-| < 2.0   | :x:                |
+| 3.0.x   | :white_check_mark: |
+| < 3.0   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -27,7 +27,7 @@ We take security issues seriously. If you discover a security vulnerability in t
 In the context of a Claude Code configuration repository, security issues include:
 
 - **Hook injection vulnerabilities** — Shell command injection via hook scripts
-- **Permission bypasses** — Circumventing `branch-guard.sh`, `guard.sh`, or other safety gates
+- **Permission bypasses** — Circumventing `pre-write.sh` (branch-guard logic), `pre-bash.sh` (safety gate), or other safety gates
 - **Credential exposure** — Accidental logging or storing of API keys, tokens, or secrets
 - **Unsafe file operations** — Path traversal, arbitrary file writes, or deletion outside project scope
 - **Privilege escalation** — Hooks gaining unintended system access

@@ -9,7 +9,7 @@ Thanks for your interest in improving Claude Code's SDLC enforcement. This guide
 git clone --recurse-submodules git@github.com:juanandresgs/claude-ctrl.git ~/.claude-dev
 
 # Test a hook manually
-echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/guard.sh
+echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/pre-bash.sh
 
 # Validate settings.json
 python3 -m json.tool settings.json > /dev/null && echo "Valid JSON"
@@ -55,7 +55,7 @@ Hooks are the most likely contribution. Here's the process:
 # Behavior: Describe the enforcement behavior
 
 set -euo pipefail
-source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/source-lib.sh"
 
 read_input
 TOOL=$(get_field '.tool_name')
@@ -86,10 +86,11 @@ EOF
 
 ### 3. Use the shared libraries
 
+- **`source-lib.sh`** — Bootstrap loader: sources `log.sh` + `core-lib.sh`, provides `require_*()` lazy loaders for domain libraries. All new hooks should source this first.
 - **`log.sh`** — `read_input`, `get_field`, `detect_project_root`, `log_info`, `log_json`
-- **`context-lib.sh`** — `get_git_state`, `get_plan_status`, `is_source_file`, `is_skippable_path`
+- **`context-lib.sh`** — Backward-compatible shim that sources all domain libraries. New hooks should use `source-lib.sh` with `require_*()` lazy loaders instead.
 
-Source them with `source "$(dirname "$0")/log.sh"`. See the existing hooks for patterns.
+Source them with `source "$(dirname "$0")/source-lib.sh"`. See the existing hooks for patterns.
 
 ### 4. Test manually
 
