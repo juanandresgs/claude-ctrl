@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
-      - name: Run shellcheck on all hooks
+      - name: Run shellcheck on hooks
         run: |
           failed=0
           for script in hooks/*.sh; do
@@ -32,15 +32,45 @@ jobs:
             fi
           done
           exit $failed
+      - name: Run shellcheck on tests and scripts
+        run: |
+          # Tests and scripts have broader exclusions:
+          # SC2034,SC1091 — sourced vars, unused setup vars
+          # SC2155,SC2086,SC2129 — local+assign, word-splitting, redirect style
+          # SC2011,SC2016,SC2030,SC2031,SC2010,SC2005 — ls/grep patterns (test idioms)
+          # SC1007,SC2153 — empty var assignment, possible misspelling
+          # SC2064,SC2329 — trap quoting, unused helper functions in test suites
+          # SC1090,SC2188,SC2320,SC2162,SC2045 — dynamic source, bare redirect, exit code
+          # SC2001,SC2088,SC2015,SC2105,SC2012,SC2126,SC2295 — style/idiom warnings
+          failed=0
+          for script in tests/*.sh tests/lib/*.sh scripts/*.sh; do
+            [ -f "$script" ] || continue
+            echo "--- Checking $script ---"
+            if ! shellcheck \
+              -e SC2034,SC1091,SC2155,SC2011,SC2016,SC2030,SC2031,SC2010,SC2005,SC1007 \
+              -e SC2153,SC2064,SC2329,SC2086,SC1090,SC2129,SC2320,SC2188,SC2015,SC2162 \
+              -e SC2045,SC2001,SC2088,SC2012,SC2105,SC2126,SC2295,SC2002,SC2317 \
+              "$script"; then
+              failed=1
+            fi
+          done
+          exit $failed
 
   hook-contracts:
-    name: Validate hook contracts
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    name: Validate hook contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install jq
+      - name: Install jq (ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get install -y jq
+      - name: Verify jq available (macos)
+        if: matrix.os == 'macos-latest'
+        run: jq --version || brew install jq
       - name: Run hook contract tests
         run: bash tests/run-hooks.sh
       - name: Run standalone test suites

@@ -725,44 +725,34 @@ processes, and writes a session index entry for cross-session learning.
 
 ---
 
-### surface.sh
+### stop.sh
 
-**What it does:** Stop hook — decision audit pipeline. Scans session-changed
-source files for `@decision` coverage, REQ-ID traceability, and plan drift.
-Emits `systemMessage` with findings.
+**What it does:** Consolidated Stop hook — runs the full end-of-response pipeline:
+decision audit, session summary, and forward-motion check. Replaces the 3 previously
+separate Stop hooks (surface.sh, session-summary.sh, forward-motion.sh).
 
-**Why it exists:** session-end.sh provides cleanup; surface.sh provides insight.
-Running at every Stop (after Claude finishes responding) catches missing annotations
-while they're still easy to fix.
+**Why it exists:** session-end.sh provides cleanup; stop.sh provides insight and
+guidance. Running at every Stop (after Claude finishes responding) catches missing
+annotations while they're still easy to fix, surfaces session state, and keeps momentum.
 
-**What you can count on:**
-- Fires only when source files were modified this session.
-- Checks `@decision` coverage for changed files ≥50 lines.
-- Checks REQ-ID traceability (P0 requirements addressed by DEC-IDs).
-- Emits `systemMessage` with coverage report.
-- Writes `.plan-drift` file for plan-check.sh staleness detection.
+**Incorporated functionality:**
 
-**State files read:** `.session-changes-<SESSION_ID>`
+- **Decision audit (formerly surface.sh):** Scans session-changed source files for
+  `@decision` coverage, REQ-ID traceability, and plan drift. Fires only when source
+  files were modified this session. Checks `@decision` coverage for changed files ≥50
+  lines and REQ-ID traceability (P0 requirements addressed by DEC-IDs). Writes `.plan-drift`
+  file for plan-check staleness detection.
+
+- **Session summary (formerly session-summary.sh):** Builds session summary from state
+  files and injects it as `systemMessage`. Reports files changed, @decision count, test
+  status, and active proof-status.
+
+- **Forward motion (formerly forward-motion.sh):** Suggests the next logical action based
+  on current session state. Reads plan status and suggests "next phase," "run tests," etc.
+
+**State files read:** `.session-changes-<SESSION_ID>`, `.session-changes-*`,
+`.test-status`, `.proof-status`, `MASTER_PLAN.md`
 **State files written:** `.claude/.plan-drift`
-
----
-
-### session-summary.sh
-
-**What it does:** Stop hook — builds session summary from state files and
-injects it as `systemMessage`. Reports files changed, @decision count, test
-status, and active proof-status.
-
-**State files read:** `.session-changes-*`, `.test-status`, `.proof-status`
-
----
-
-### forward-motion.sh
-
-**What it does:** Stop hook — suggests the next logical action based on current
-session state. Reads plan status and suggests "next phase," "run tests," etc.
-
-**State files read:** `MASTER_PLAN.md`, `.test-status`
 
 ---
 
@@ -1382,26 +1372,26 @@ project root unless marked as `~/.claude/` (global).
 
 | File | Location | Format | Written by | Read by | Purpose |
 |------|----------|--------|------------|---------|---------|
-| `.test-status` | `.claude/` | `result\|fail_count\|epoch` | test-runner.sh | guard.sh, test-gate.sh, session-init.sh | Gate commits; block source writes while failing |
-| `.proof-status` | `.claude/` | `status\|epoch` | task-track.sh (create), prompt-submit.sh (verify), check-tester.sh (auto-verify) | guard.sh, task-track.sh, check-tester.sh | Verification gate — must be `verified` to commit |
-| `.session-changes-<ID>` | `.claude/` | One path per line | track.sh, checkpoint.sh | check-implementer.sh, surface.sh, check-guardian.sh | Track modified files per session |
-| `.session-events.jsonl` | `.claude/` | JSONL (one event per line) | track.sh, skill-result.sh, session-init.sh | test-gate.sh (trajectory), session-end.sh | Session trajectory for diagnosis |
+| `.test-status` | `.claude/` | `result\|fail_count\|epoch` | post-write.sh (test-runner logic) | pre-bash.sh, pre-write.sh (test-gate logic), session-init.sh | Gate commits; block source writes while failing |
+| `.proof-status` | `.claude/` | `status\|epoch` | task-track.sh (create), prompt-submit.sh (verify), check-tester.sh (auto-verify) | pre-bash.sh, task-track.sh, check-tester.sh | Verification gate — must be `verified` to commit |
+| `.session-changes-<ID>` | `.claude/` | One path per line | post-write.sh (track + checkpoint logic) | check-implementer.sh, stop.sh (surface logic), check-guardian.sh | Track modified files per session |
+| `.session-events.jsonl` | `.claude/` | JSONL (one event per line) | post-write.sh (track logic), skill-result.sh, session-init.sh | pre-write.sh (test-gate trajectory), session-end.sh | Session trajectory for diagnosis |
 | `.audit-log` | `.claude/` | `ISO8601\|event\|detail` per line | context-lib.sh `append_audit()` | (human review) | Persistent audit trail of all gate events |
 | `.agent-findings` | `.claude/` | `agent\|issue;issue` per line | check-implementer.sh, check-planner.sh | session-init.sh, prompt-submit.sh | Surface validation issues to next prompt |
 | `.statusline-cache` | `.claude/` | JSON | context-lib.sh `write_statusline_cache()` | statusline.sh | Status bar enrichment without re-computation |
 | `.subagent-tracker-<ID>` | `.claude/` | `ACTIVE\|type\|epoch` / `DONE\|type\|start\|duration` per line | context-lib.sh track_subagent_*() | statusline.sh (via get_subagent_status) | Real-time agent activity display |
-| `.plan-drift` | `.claude/` | `key=value` per line | surface.sh | plan-check.sh | Decision drift data for staleness detection |
+| `.plan-drift` | `.claude/` | `key=value` per line | stop.sh (surface logic) | pre-write.sh (plan-check logic) | Decision drift data for staleness detection |
 | `.plan-churn-cache` | `.claude/` | `HEAD\|mod\|commits\|churn%\|changed\|total` | context-lib.sh get_plan_status() | context-lib.sh get_plan_status() | Cache git churn calculations (keyed on HEAD+plan_mod) |
-| `.test-gate-strikes` | `.claude/` | `strike_count\|epoch` | test-gate.sh | test-gate.sh | Escalating test gate counter |
-| `.mock-gate-strikes` | `.claude/` | `strike_count\|epoch` | mock-gate.sh | mock-gate.sh | Escalating mock gate counter |
-| `.checkpoint-counter` | `.claude/` | Integer | checkpoint.sh | checkpoint.sh | Write counter for threshold-based checkpoints |
-| `.lint-cache` | `.claude/` | Linter name string | lint.sh | lint.sh | Cache linter detection result |
-| `.lint-breaker` | `.claude/` | (exists or not) | lint.sh | lint.sh | Circuit breaker for lint retry loops |
+| `.test-gate-strikes` | `.claude/` | `strike_count\|epoch` | pre-write.sh (test-gate logic) | pre-write.sh (test-gate logic) | Escalating test gate counter |
+| `.mock-gate-strikes` | `.claude/` | `strike_count\|epoch` | pre-write.sh (mock-gate logic) | pre-write.sh (mock-gate logic) | Escalating mock gate counter |
+| `.checkpoint-counter` | `.claude/` | Integer | pre-write.sh (checkpoint logic) | pre-write.sh (checkpoint logic) | Write counter for threshold-based checkpoints |
+| `.lint-cache` | `.claude/` | Linter name string | post-write.sh (lint logic) | post-write.sh (lint logic) | Cache linter detection result |
+| `.lint-breaker` | `.claude/` | (exists or not) | post-write.sh (lint logic) | post-write.sh (lint logic) | Circuit breaker for lint retry loops |
 | `.preserved-context` | `.claude/` | Text with `RESUME DIRECTIVE:` section | compact-preserve.sh | session-init.sh | Context snapshot before compaction (one-shot) |
 | `.active-worktree-path` | `.claude/` | Absolute path (one line) | task-track.sh | log.sh `resolve_proof_file()` | Breadcrumb: which worktree is the active implementation target |
 | `.update-status` | `~/.claude/` | `status\|local\|remote\|count\|epoch\|summary` | update-check.sh | session-init.sh | One-shot update notification (cleared after display) |
 | `.worktree-roster.tsv` | `~/.claude/` | TSV: `path\|branch\|issue\|session\|pid\|created_at` | worktree-roster.sh | session-init.sh, statusline.sh | Worktree lifecycle tracking |
-| `.cwd-recovery-needed` | `~/.claude/` | Deleted worktree path | guard.sh (Check 5/5b), check-guardian.sh | guard.sh (Check 0.5 Path B) | One-shot CWD recovery canary |
+| `.cwd-recovery-needed` | `~/.claude/` | Deleted worktree path | pre-bash.sh (Check 5/5b), check-guardian.sh | pre-bash.sh (Check 0.5 Path B) | One-shot CWD recovery canary |
 | `traces/index.jsonl` | `~/.claude/` | JSONL (one entry per trace) | context-lib.sh `index_trace()` | session-init.sh | Global trace index for cross-project searching |
 
 ---
@@ -1539,10 +1529,10 @@ GUARDIAN AGENT (agents/guardian.md, claude-opus-4-6, max_turns=30)
        [check-guardian.sh: writes .cwd-recovery-needed canary]
    │
    ▼
-[Stop: surface.sh, session-summary.sh, forward-motion.sh]
-   │ surface.sh: validation.ts has @decision → OK; writes .plan-drift
-   │ session-summary.sh: "12 files, 1 @decision, tests pass, verified"
-   │ forward-motion.sh: "Consider implementing REQ-P0-002 next"
+[Stop: stop.sh (surface + session-summary + forward-motion consolidated)]
+   │ surface logic: validation.ts has @decision → OK; writes .plan-drift
+   │ session-summary logic: "12 files, 1 @decision, tests pass, verified"
+   │ forward-motion logic: "Consider implementing REQ-P0-002 next"
    │
 [SessionEnd: session-end.sh]
    │ Cleans up .session-changes, .lint-cache, .test-gate-strikes

@@ -134,7 +134,7 @@ Settings are split: `settings.json` (tracked, universal) and `settings.local.jso
 
 ### 3. Verify
 
-On your first `claude` session, you should see the SessionStart hook inject git state, plan status, and worktree info. Try writing a file to `/tmp/test.txt` — `guard.sh` should rewrite it to `tmp/test.txt` in the project root.
+On your first `claude` session, you should see the SessionStart hook inject git state, plan status, and worktree info. Try writing a file to `/tmp/test.txt` — `pre-bash.sh` should rewrite it to `tmp/test.txt` in the project root.
 
 **Optional:** `/backlog` command uses GitHub Issues via `gh` CLI (`gh auth login`). Research skills (`deep-research`) accept OpenAI/Perplexity/Gemini API keys but degrade gracefully without them. Desktop notifications need `terminal-notifier` (macOS: `brew install terminal-notifier`).
 
@@ -324,16 +324,16 @@ These are non-negotiable. Each one is enforced by hooks that run every time, reg
 
 | # | Practice | What Enforces It |
 |---|----------|-------------|
-| 1 | **Always Use Git** | `session-init.sh` injects git state; `guard.sh` blocks destructive operations |
-| 2 | **Main is Sacred** | `branch-guard.sh` blocks writes on main; `guard.sh` blocks commits on main |
-| 3 | **No /tmp/** | `guard.sh` denies `/tmp/` paths and directs model to use project `tmp/` directory |
-| 4 | **Nothing Done Until Tested** | `test-gate.sh` warns then blocks source writes when tests fail; `guard.sh` requires test evidence for commits |
-| 5 | **Solid Foundations** | `mock-gate.sh` detects and escalates internal mocking (warn → deny) |
-| 6 | **No Implementation Without Plan** | `plan-check.sh` denies source writes without MASTER_PLAN.md |
-| 7 | **Code is Truth** | `doc-gate.sh` enforces headers and @decision on 50+ line files |
-| 8 | **Approval Gates** | `guard.sh` blocks force push; Guardian agent requires approval for all permanent ops |
-| 9 | **Track in Issues** | `plan-validate.sh` checks alignment; `check-planner.sh` validates issue creation |
-| 10 | **Proof Before Commit** | `check-tester.sh` auto-verify evaluation; `prompt-submit.sh` user approval gate; `guard.sh` evidence gate on commits |
+| 1 | **Always Use Git** | `session-init.sh` injects git state; `pre-bash.sh` blocks destructive operations |
+| 2 | **Main is Sacred** | `pre-write.sh` (branch-guard logic) blocks writes on main; `pre-bash.sh` blocks commits on main |
+| 3 | **No /tmp/** | `pre-bash.sh` denies `/tmp/` paths and directs model to use project `tmp/` directory |
+| 4 | **Nothing Done Until Tested** | `pre-write.sh` (test-gate logic) warns then blocks source writes when tests fail; `pre-bash.sh` requires test evidence for commits |
+| 5 | **Solid Foundations** | `pre-write.sh` (mock-gate logic) detects and escalates internal mocking (warn → deny) |
+| 6 | **No Implementation Without Plan** | `pre-write.sh` (plan-check logic) denies source writes without MASTER_PLAN.md |
+| 7 | **Code is Truth** | `pre-write.sh` (doc-gate logic) enforces headers and @decision on 50+ line files |
+| 8 | **Approval Gates** | `pre-bash.sh` blocks force push; Guardian agent requires approval for all permanent ops |
+| 9 | **Track in Issues** | `post-write.sh` (plan-validate logic) checks alignment; `check-planner.sh` validates issue creation |
+| 10 | **Proof Before Commit** | `check-tester.sh` auto-verify evaluation; `prompt-submit.sh` user approval gate; `pre-bash.sh` evidence gate on commits |
 
 ---
 
@@ -352,28 +352,17 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 
 **PreToolUse Hooks** — fire before every tool call; can block or rewrite:
 
-| Hook | Event | Purpose |
-|------|-------|---------|
-| **guard.sh** | PreToolUse:Bash | Main protection, `/tmp/` denial, `--force-with-lease`, test evidence gate |
-| **doc-freshness.sh** | PreToolUse:Bash | Enforce documentation freshness at merge time; blocks merges to main when tracked docs are critically stale |
-| **auto-review.sh** | PreToolUse:Bash | Three-tier command classifier: auto-approve safe, defer risky to user |
-| **checkpoint.sh** | PreToolUse:Write\|Edit | Git ref-based snapshots before writes (restoreable via `/rewind`) |
-| **test-gate.sh** | PreToolUse:Write\|Edit | Escalating gate: warn then block when tests fail |
-| **mock-gate.sh** | PreToolUse:Write\|Edit | Detect and escalate internal mocking |
-| **branch-guard.sh** | PreToolUse:Write\|Edit | Block source writes on main/master |
-| **doc-gate.sh** | PreToolUse:Write\|Edit | Enforce file headers and @decision on 50+ line files |
-| **plan-check.sh** | PreToolUse:Write\|Edit | Deny source writes without plan; staleness scoring |
+| Hook | Event | Consolidated Logic |
+|------|-------|--------------------|
+| **pre-bash.sh** | PreToolUse:Bash | Safety gate + `/tmp/` denial + `--force-with-lease` + test evidence gate (guard) + three-tier command classification (auto-review) + doc-freshness enforcement at merge |
+| **pre-write.sh** | PreToolUse:Write\|Edit | Checkpoint snapshots + test-gate (warn/block on failing tests) + mock-gate + branch-guard (blocks main) + doc-gate (headers + @decision) + plan-check (requires MASTER_PLAN.md) |
 | **task-track.sh** | PreToolUse:Task | Track subagent state and update status bar; gate Guardian on verified proof |
 
 **PostToolUse Hooks** — fire after every tool call; can lint, track, validate:
 
-| Hook | Event | Purpose |
-|------|-------|---------|
-| **lint.sh** | PostToolUse:Write\|Edit | Auto-detect linter, run on modified files, feedback loop |
-| **track.sh** | PostToolUse:Write\|Edit | Record changes, invalidate proof-of-work on source edits |
-| **test-runner.sh** | PostToolUse:Write\|Edit | Async test execution, writes `.test-status` for evidence gate |
-| **plan-validate.sh** | PostToolUse:Write\|Edit | Validate MASTER_PLAN.md format, REQ-ID syntax, decision linkage |
-| **code-review.sh** | PostToolUse:Write\|Edit | Optional LLM-based code review integration (requires Multi-MCP) |
+| Hook | Event | Consolidated Logic |
+|------|-------|--------------------|
+| **post-write.sh** | PostToolUse:Write\|Edit | Auto-linting (lint) + change tracking + proof invalidation (track) + async test execution (test-runner) + MASTER_PLAN.md format validation (plan-validate) + optional LLM code review |
 | **skill-result.sh** | PostToolUse:Skill | Reads `.skill-result.md` from forked skills, injects as context |
 | **webfetch-fallback.sh** | PostToolUse:WebFetch | Suggest `mcp__fetch__fetch` when WebFetch fails or is blocked |
 | **playwright-cleanup.sh** | PostToolUse:browser\_snapshot | Browser session cleanup after Playwright tool use |
@@ -388,13 +377,11 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 | **notify.sh** | Notification | Desktop alert when Claude needs attention (macOS) |
 | **session-end.sh** | SessionEnd | Cleanup session files, kill async processes |
 
-**Stop Hooks** — fire when Claude finishes responding:
+**Stop Hook** — fires when Claude finishes responding:
 
-| Hook | Event | Purpose |
-|------|-------|---------|
-| **surface.sh** | Stop | Decision audit: extract, validate, reconcile @decision coverage, REQ-ID traceability |
-| **session-summary.sh** | Stop | File counts, git state, workflow-aware next-action guidance |
-| **forward-motion.sh** | Stop | Ensure response ends with question, suggestion, or offer |
+| Hook | Event | Consolidated Logic |
+|------|-------|--------------------|
+| **stop.sh** | Stop | Decision audit + @decision coverage + REQ-ID traceability (surface) + file counts + git state + next-action guidance (session-summary) + forward-motion check |
 
 **SubagentStart/Stop Hooks** — fire around Task tool invocations:
 
@@ -412,7 +399,7 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 
 ## Decision Annotations
 
-The `@decision` annotation maps MASTER_PLAN.md decision IDs to source code. The Planner pre-assigns IDs (`DEC-COMPONENT-NNN`), the Implementer annotates code, the Guardian verifies coverage at merge time. `doc-gate.sh` enforces annotations on files over 50 lines.
+The `@decision` annotation maps MASTER_PLAN.md decision IDs to source code. The Planner pre-assigns IDs (`DEC-COMPONENT-NNN`), the Implementer annotates code, the Guardian verifies coverage at merge time. `pre-write.sh` (doc-gate logic) enforces annotations on files over 50 lines.
 
 ```typescript
 /**
@@ -436,7 +423,7 @@ DEC-AUTH-001 (decision)                   Addresses: REQ-P0-001
   Addresses: REQ-P0-001
 ```
 
-REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to REQ-IDs via `Addresses:`. Phases reference which REQ-IDs they satisfy. `surface.sh` audits unaddressed P0 requirements at session end. `plan-validate.sh` validates REQ-ID format on every MASTER_PLAN.md write.
+REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to REQ-IDs via `Addresses:`. Phases reference which REQ-IDs they satisfy. `stop.sh` audits unaddressed P0 requirements at session end. `post-write.sh` validates REQ-ID format on every MASTER_PLAN.md write.
 
 ---
 
@@ -529,14 +516,14 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | Desktop notifications not firing | Install `terminal-notifier` (macOS only): `brew install terminal-notifier` |
 | test-gate blocking unexpectedly | Check `.claude/.test-status` — stale from previous session? Delete it |
 | SessionStart not injecting context | Known bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)). `prompt-submit.sh` mitigates on first prompt |
-| CWD bricked after worktree deletion | guard.sh Check 0.5 auto-recovers on next Bash call. Prevention: never `cd` into worktrees from orchestrator — use absolute paths |
+| CWD bricked after worktree deletion | pre-bash.sh Check 0.5 auto-recovers on next Bash call. Prevention: never `cd` into worktrees from orchestrator — use absolute paths |
 | Stale `.proof-status` blocking commits | Delete `.claude/.proof-status` manually, or re-run the tester to generate fresh evidence |
 
 ## Recovery and Uninstall
 
 Archived files are stored in `.archive/YYYYMMDD/`. Full backups at `~/claude-backup-*.tar.gz`.
 
-To debug a hook: `echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/guard.sh`
+To debug a hook: `echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/pre-bash.sh`
 
 **Uninstall:** Remove `~/.claude` and restart Claude Code. It will recreate a default config directory. Your projects are unaffected.
 
