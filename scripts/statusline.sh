@@ -2,7 +2,7 @@
 # statusline.sh — Claude Code 3-line status bar with per-line ANSI-aware truncation.
 #
 # Purpose: Reads JSON from stdin (model, workspace, cost, context window, tokens),
-# reads .statusline-cache for git/agent state, reads .todo-count for todos,
+# reads .statusline-cache-<SESSION_ID> for git/agent state, reads .todo-count for todos,
 # and outputs 2-3 ANSI-formatted lines, each independently truncated to terminal width.
 #
 # @decision DEC-CACHE-002
@@ -55,7 +55,7 @@
 # @status accepted
 # @rationale Five runtime dependencies feed the statusline, audited 2026-03-02:
 #   1. stdin JSON (12 fields) — written by Claude Code runtime, read by single jq call (line ~54)
-#   2. .statusline-cache — written by write_statusline_cache() in session-lib.sh (6 hooks),
+#   2. .statusline-cache-<SESSION_ID> — written by write_statusline_cache() in session-lib.sh (6 hooks),
 #      read for git dirty/worktrees, agents, todo split, lifetime cost. JSON schema.
 #   3. .todo-count — written by todo.sh, read as legacy fallback only (Phase 2 split supersedes).
 #      Plain text integer. No staleness guard (acceptable: fallback-only path).
@@ -96,9 +96,9 @@ IFS=$'\t' read -r model workspace workspace_dir cost_usd duration_ms \
 # ---------------------------------------------------------------------------
 # Read .statusline-cache (git state + agents)
 # ---------------------------------------------------------------------------
-CACHE_FILE="${workspace_dir:+$workspace_dir/.claude/.statusline-cache}"
+CACHE_FILE="${workspace_dir:+$workspace_dir/.claude/.statusline-cache-${CLAUDE_SESSION_ID:-$$}}"
 # Fallback to home .claude if workspace_dir is empty
-[[ -z "$workspace_dir" ]] && CACHE_FILE="$HOME/.claude/.statusline-cache"
+[[ -z "$workspace_dir" ]] && CACHE_FILE="$HOME/.claude/.statusline-cache-${CLAUDE_SESSION_ID:-$$}"
 
 cache_dirty=0
 cache_wt=0

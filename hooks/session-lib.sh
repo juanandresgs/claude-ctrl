@@ -16,7 +16,7 @@
 #   get_session_summary_context - Build structured session summary for commits
 #   get_prior_sessions      - Read cross-session index for context injection
 #   build_resume_directive  - Compute actionable resume directive from state
-#   write_statusline_cache  - Write .statusline-cache JSON for status bar
+#   write_statusline_cache  - Write .statusline-cache-<SESSION_ID> JSON for status bar
 #   track_subagent_start    - Record ACTIVE subagent entry
 #   track_subagent_stop     - Convert ACTIVE to DONE for matching subagent
 #   get_subagent_status     - Populate SUBAGENT_* globals from tracker file
@@ -34,7 +34,7 @@
 # Plan phase and test status removed: statusline now sources those from stdin JSON.
 write_statusline_cache() {
     local root="$1"
-    local cache_file="$root/.claude/.statusline-cache"
+    local cache_file="$root/.claude/.statusline-cache-${CLAUDE_SESSION_ID:-$$}"
     mkdir -p "$root/.claude"
 
     # Subagent status (populates SUBAGENT_* globals)

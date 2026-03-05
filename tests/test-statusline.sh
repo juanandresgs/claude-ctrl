@@ -23,6 +23,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATUSLINE="${SCRIPT_DIR}/../scripts/statusline.sh"
 
+# Set a fixed session ID so statusline.sh reads the per-session cache file we create
+export CLAUDE_SESSION_ID="test-statusline-$$"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -48,7 +51,7 @@ strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
 run_statusline() {
     local json="$1"
     local home_dir="${2:-}"
-    # Run with HOME pointed at a temp dir so .todo-count and .statusline-cache are absent.
+    # Run with HOME pointed at a temp dir so .todo-count and .statusline-cache-* are absent.
     # HOME must be set on the bash invocation (right side of pipe), not just printf.
     local tmpdir=""
     if [[ -z "$home_dir" ]]; then
@@ -508,7 +511,7 @@ test_dirty_label_format() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":8,"worktrees":2,"agents_active":0,"agents_types":""}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
     local line1
@@ -530,7 +533,7 @@ test_wt_label_format() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":0,"worktrees":2,"agents_active":0,"agents_types":""}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
     local line1
@@ -552,7 +555,7 @@ test_agents_label_format() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":3,"agents_types":"impl,test"}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
     local line1
@@ -597,7 +600,7 @@ test_domain_clustering_order() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":5,"worktrees":1,"agents_active":2,"agents_types":"impl"}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
     echo "3" > "$tmpdir/.claude/.todo-count"
 
     local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
@@ -744,7 +747,7 @@ make_todo_split_cache() {
     local dir="$1" tp="$2" tg="$3"
     mkdir -p "$dir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":%d,"todo_global":%d,"lifetime_cost":0}' \
-        "$tp" "$tg" > "$dir/.claude/.statusline-cache"
+        "$tp" "$tg" > "$dir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 }
 
 test_todo_split_both_nonzero() {
@@ -841,7 +844,7 @@ test_todo_split_backward_compat_no_cache_fields() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":""}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
     echo "12" > "$tmpdir/.claude/.todo-count"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
@@ -891,7 +894,7 @@ test_lifetime_cost_absent_when_zero() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.25},"context_window":{}}'
     local line2
@@ -913,7 +916,7 @@ test_lifetime_cost_shown_when_nonzero() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":12.40}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.53},"context_window":{}}'
     local line2
@@ -953,7 +956,7 @@ make_initiative_cache() {
     local dir="$1" initiative="$2" phase="$3" active_inits="${4:-1}" total_phases="${5:-0}"
     mkdir -p "$dir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0,"initiative":"%s","phase":"%s","active_initiatives":%d,"total_phases":%d}' \
-        "$initiative" "$phase" "$active_inits" "$total_phases" > "$dir/.claude/.statusline-cache"
+        "$initiative" "$phase" "$active_inits" "$total_phases" > "$dir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 }
 
 test_banner_absent_when_no_plan() {
@@ -1092,7 +1095,7 @@ make_lifetime_token_cache() {
     local dir="$1" lifetime_tokens="$2" subagent_tokens="${3:-0}"
     mkdir -p "$dir/.claude"
     printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0,"lifetime_tokens":%d,"subagent_tokens":%d}' \
-        "$lifetime_tokens" "$subagent_tokens" > "$dir/.claude/.statusline-cache"
+        "$lifetime_tokens" "$subagent_tokens" > "$dir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 }
 
 test_lifetime_tokens_absent_when_zero_history_no_subagent() {
@@ -1230,7 +1233,7 @@ test_responsive_all_segments_wide() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":5,"worktrees":2,"agents_active":3,"agents_types":"impl,test","todo_project":4,"todo_global":7,"lifetime_cost":10,"lifetime_tokens":500000,"subagent_tokens":50000}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
     local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":1.53,"total_duration_ms":180000,"total_lines_added":42,"total_lines_removed":7},"context_window":{"used_percentage":35,"current_usage":{"cache_read_input_tokens":50000,"input_tokens":10000,"cache_creation_input_tokens":5000},"total_input_tokens":150000,"total_output_tokens":50000}}'
     local output
     output=$(run_sl_columns "$json" 200 "$tmpdir")
@@ -1257,7 +1260,7 @@ test_responsive_line1_narrow_drops_todos() {
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
     printf '{"dirty":5,"worktrees":2,"agents_active":3,"agents_types":"impl,test","todo_project":4,"todo_global":7,"lifetime_cost":0}' \
-        > "$tmpdir/.claude/.statusline-cache"
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
     local output
     output=$(run_sl_columns "$json" 55 "$tmpdir")

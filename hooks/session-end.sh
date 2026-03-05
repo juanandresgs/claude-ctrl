@@ -399,6 +399,22 @@ done
 
 # Stale statusline temp files (interrupted renders leave these behind)
 rm -f "${CLAUDE_DIR}/.statusline-cache.tmp."*
+# Session-scoped statusline cache (per-instance, cleaned on exit)
+rm -f "${CLAUDE_DIR}/.statusline-cache-${CLAUDE_SESSION_ID:-$$}"
+
+# Orphaned statusline cache files from crashed sessions (>4 hours)
+for _stale_cache in "${CLAUDE_DIR}/.statusline-cache-"*; do
+    [[ -f "$_stale_cache" ]] || continue
+    [[ "$_stale_cache" == *.tmp.* ]] && continue
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _cache_mtime=$(stat -f %m "$_stale_cache" 2>/dev/null || echo "0")
+    else
+        _cache_mtime=$(stat -c %Y "$_stale_cache" 2>/dev/null || echo "0")
+    fi
+    if (( _NOW_EPOCH - _cache_mtime > 14400 )); then  # 4 hours
+        rm -f "$_stale_cache"
+    fi
+done
 
 # --- Clean up session-scoped files (these don't persist) ---
 rm -f "${CLAUDE_DIR}/.session-events.jsonl"
