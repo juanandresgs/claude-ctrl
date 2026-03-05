@@ -18,6 +18,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # Track test results
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -58,6 +62,7 @@ run_prompt_submit() {
     # Create a temp directory with .claude/ structure
     local TEMP_DIR
     TEMP_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-interrupt-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_DIR")
     local TEMP_CLAUDE_DIR="$TEMP_DIR/.claude"
     mkdir -p "$TEMP_CLAUDE_DIR"
 

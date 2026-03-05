@@ -77,29 +77,50 @@ summary() {
 # Hook execution helpers
 # ---------------------------------------------------------------------------
 
+# HOOK_STDERR — global variable set by run_hook() and run_hook_ec().
+# Contains stderr from the last hook invocation. Useful for diagnosing
+# assertion failures: inspect $HOOK_STDERR to see hook error messages.
+# Example: [[ -z "$HOOK_STDERR" ]] || echo "Hook stderr: $HOOK_STDERR"
+HOOK_STDERR=""
+
 # run_hook HOOK_PATH INPUT_JSON
 #   Feed INPUT_JSON on stdin to the hook script.
-#   Prints hook stdout; suppresses stderr.
+#   Prints hook stdout. Captures stderr into global $HOOK_STDERR (not
+#   suppressed — available for diagnostics on assertion failure).
 #   Always returns 0 (hooks exit 0 for deny — exit code is not meaningful here).
+#
+# @decision DEC-TEST-STDERR-001
+# @title Capture hook stderr into HOOK_STDERR instead of suppressing it
+# @status accepted
+# @rationale run_hook() previously used 2>/dev/null, making debugging hook
+#   failures opaque. Tests that fail now have access to $HOOK_STDERR to see
+#   what the hook printed on stderr (e.g. bash errors, sourcing failures).
+#   Existing tests are unaffected: they don't check HOOK_STDERR by default.
+#   The capture uses a temp file to avoid subshell stderr-capture complications.
 run_hook() {
     local hook="$1" input="$2"
-    local _stdout _ec=0
-    _stdout=$(echo "$input" | bash "$hook" 2>/dev/null) || _ec=$?
+    local _stdout _stderr_file _ec=0
+    _stderr_file=$(mktemp)
+    _stdout=$(echo "$input" | bash "$hook" 2>"$_stderr_file") || _ec=$?
+    HOOK_STDERR=$(cat "$_stderr_file" 2>/dev/null || true)
+    rm -f "$_stderr_file"
     echo "$_stdout"
     return 0
 }
 
 # run_hook_ec HOOK_PATH INPUT_JSON
-#   Like run_hook but sets HOOK_STDOUT and HOOK_EXIT globals.
+#   Like run_hook but sets HOOK_STDOUT, HOOK_EXIT, and HOOK_STDERR globals.
 #   Used when the exit code matters (e.g. PostToolUse exit code 2 tests).
 run_hook_ec() {
     local hook="$1" input="$2"
-    local _tmp _ec=0
+    local _tmp _stderr_file _ec=0
     _tmp=$(mktemp)
-    bash "$hook" <<< "$input" > "$_tmp" 2>/dev/null || _ec=$?
+    _stderr_file=$(mktemp)
+    bash "$hook" <<< "$input" > "$_tmp" 2>"$_stderr_file" || _ec=$?
     HOOK_STDOUT=$(cat "$_tmp")
     HOOK_EXIT="$_ec"
-    rm -f "$_tmp"
+    HOOK_STDERR=$(cat "$_stderr_file" 2>/dev/null || true)
+    rm -f "$_tmp" "$_stderr_file"
 }
 
 # ---------------------------------------------------------------------------

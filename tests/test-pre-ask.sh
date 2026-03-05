@@ -97,7 +97,7 @@ fi
 
 # --- T02: forward-motion deny (with implementer marker) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-forward-motion.json" "implementer")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     pass "T02: forward-motion question denied for implementer"
 else
     fail "T02: forward-motion question denied for implementer" "expected deny, got: $OUTPUT"
@@ -110,7 +110,7 @@ fi
 
 # --- T03: duplicate-gate commit deny (with guardian marker) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-duplicate-gate-commit.json" "guardian")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     pass "T03: duplicate-gate commit question denied for guardian"
 else
     fail "T03: duplicate-gate commit question denied for guardian" "expected deny, got: $OUTPUT"
@@ -123,7 +123,7 @@ fi
 
 # --- T04: duplicate-gate push deny (with implementer marker) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-duplicate-gate-push.json" "implementer")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     pass "T04: duplicate-gate push question denied for implementer"
 else
     fail "T04: duplicate-gate push question denied for implementer" "expected deny, got: $OUTPUT"
@@ -131,7 +131,7 @@ fi
 
 # --- T05: obvious-answer deny (2 options, 1 recommended, with implementer marker) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-obvious-recommended.json" "implementer")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     pass "T05: obvious-answer question denied (2 options, 1 Recommended)"
 else
     fail "T05: obvious-answer question denied (2 options, 1 Recommended)" "expected deny, got: $OUTPUT"
@@ -144,7 +144,7 @@ fi
 
 # --- T06: obvious-answer allow (3 options, 1 recommended) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-obvious-3-options.json" "implementer")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail "T06: 3-option Recommended question should be ALLOWED" "got deny: $OUTPUT"
 else
     pass "T06: 3-option Recommended question allowed (genuine multi-way decision)"
@@ -152,7 +152,7 @@ fi
 
 # --- T07: tester env-var bypass (should always allow) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-tester-env-var.json" "tester")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail "T07: env-var question should be ALLOWED for tester" "got deny: $OUTPUT"
 else
     pass "T07: env-var question bypasses gate for tester"
@@ -160,7 +160,7 @@ fi
 
 # --- T08: orchestrator bypass (no active marker) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-planner-alternatives.json")  # no agent marker
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail "T08: orchestrator should ALWAYS be allowed" "got deny: $OUTPUT"
 else
     pass "T08: orchestrator context bypasses all gates"
@@ -168,7 +168,7 @@ fi
 
 # Also test with a forward-motion question from orchestrator — should allow
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-forward-motion.json")  # no agent marker
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail "T08a: orchestrator forward-motion question should be ALLOWED" "got deny: $OUTPUT"
 else
     pass "T08a: orchestrator bypasses forward-motion gate"
@@ -176,7 +176,7 @@ fi
 
 # --- T09: implementer advisory (generic check-in) ---
 OUTPUT=$(run_hook "$FIXTURE_DIR/ask-implementer-checkin.json" "implementer")
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail "T09: implementer check-in should get advisory, not deny" "got deny: $OUTPUT"
 elif echo "$OUTPUT" | grep -q "Check the plan"; then
     pass "T09: implementer check-in question gets advisory"

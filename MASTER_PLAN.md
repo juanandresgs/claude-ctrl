@@ -6,7 +6,7 @@
 **Languages:** Bash (85%), Markdown (10%), Python (3%), JSON (2%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-03-01
-**Last updated:** 2026-03-02 (backlog-auto-capture initiative added)
+**Last updated:** 2026-03-04 (production-reliability initiative added)
 
 The Claude Code configuration directory. It shapes how Claude Code operates across all projects via hooks, agents, skills, and instructions. Managed as a git repository (juanandresgs/claude-config-pro). The hook system enforces governance (git safety, documentation, proof gates, worktree discipline) while the agent system dispatches specialized roles (planner, implementer, tester, guardian) for all project work.
 
@@ -83,6 +83,11 @@ The Claude Code configuration directory. It shapes how Claude Code operates acro
 | 2026-03-02 | DEC-BL-SCAN-001 | backlog-auto-capture | Standalone scan-backlog.sh with /scan command | Script + command pattern for testability; reusable from gaps-report.sh and CI |
 | 2026-03-02 | DEC-BL-GAPS-001 | backlog-auto-capture | gaps-report.sh aggregating .plan-drift, scan-backlog.sh, gh issues | Unified accountability view from multiple existing data sources |
 | 2026-03-02 | DEC-BL-TRIGGER-001 | backlog-auto-capture | Immediate fire-and-forget auto-capture on deferral detection | Batching risks data loss on crash; immediate is reliable and simple |
+| 2026-03-04 | DEC-PROD-001 | production-reliability | Auto-discover test files via glob in CI | Hardcoded list silently excludes 52 of 61 test files; glob ensures all run |
+| 2026-03-04 | DEC-PROD-002 | production-reliability | Capture stderr to file instead of suppressing | 2>/dev/null hides real hook errors; capture preserves diagnostics |
+| 2026-03-04 | DEC-PROD-003 | production-reliability | Inline rotation in session-init.sh for state files | session-init already runs at start; tail -n 1000 rotation is O(1) additional work |
+| 2026-03-04 | DEC-PROD-004 | production-reliability | SESSION_ID-based TTL sentinel scoping | PID reuse causes false matches; SESSION_ID is unique per session |
+| 2026-03-04 | DEC-PROD-005 | production-reliability | Non-blocking macOS CI matrix job | macOS is primary dev platform but CI is Ubuntu-only; continue-on-error initially |
 
 ---
 
@@ -952,6 +957,340 @@ Main is sacred. Each phase works in its own worktree:
 - `.plan-drift` — decision drift state file written by stop.sh
 - `.doc-drift` — documentation freshness state file written by stop.sh
 - `.audit-log` — historical gap audit log written by stop.sh
+
+### Initiative: Production Reliability Assessment & Remediation
+**Status:** active
+**Started:** 2026-03-04
+**Goal:** Harden the test infrastructure, CI pipeline, and operational hygiene so that the 61-file test suite runs reliably in CI, state files don't accumulate unboundedly, and cross-platform compatibility is verified.
+
+> An audit of the claude-config-pro repository revealed that CI only exercises 9 of 61 standalone test files (validate.yml has a hardcoded list), stderr is silently suppressed in the test harness (hiding real errors), ~39 test files lack cleanup traps, state files (.session-events.jsonl, .hook-timing.log) grow without bound, and orphaned markers accumulate across sessions. Meanwhile, CI runs Ubuntu-only with no macOS coverage despite macOS being the primary development platform. This initiative systematically remediates each finding across five phases.
+
+**Dominant Constraint:** reliability — CI must catch real failures, test infrastructure must not hide errors, operational state must not degrade over time.
+
+#### Goals
+- REQ-GOAL-001: All 61 standalone test files run in CI via auto-discovery (not a hardcoded list)
+- REQ-GOAL-002: Test infrastructure surfaces real errors instead of suppressing stderr
+- REQ-GOAL-003: Operational state files have bounded growth with automatic rotation
+- REQ-GOAL-004: CI validates on both Ubuntu and macOS
+- REQ-GOAL-005: Documentation (README.md, ARCHITECTURE.md) reflects current repository state
+
+#### Non-Goals
+- REQ-NOGO-001: Rewriting the test framework — we fix specific defects, not redesign the harness
+- REQ-NOGO-002: Deleting context-lib.sh — it is actively used as a backward-compat shim by run-hooks.sh
+- REQ-NOGO-003: Removing duplicate project_hash() — intentionally documented in core-lib.sh for independent sourcing
+- REQ-NOGO-004: Deleting "ghost" test stubs — all 61 test files have assertion markers; none are empty
+- REQ-NOGO-005: Adding Windows CI — macOS + Ubuntu covers the real user base; Windows is P2 at best
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-001: CI auto-discovers and runs all test-*.sh files instead of a hardcoded list
+  Acceptance: Given a new test file `tests/test-foo.sh` is added, When CI runs, Then it is automatically included without editing validate.yml
+- REQ-P0-002: test-helpers.sh run_hook() and run_hook_ec() capture stderr for diagnostic output instead of suppressing it
+  Acceptance: Given a hook emits an error to stderr, When run_hook() executes it, Then stderr is captured and available for assertion or diagnostic display (not sent to /dev/null)
+- REQ-P0-003: grep-based JSON parsing in test-pre-ask.sh and test-ci-feedback.sh replaced with jq
+  Acceptance: Given JSON output from a hook, When the test validates a field, Then it uses jq (not grep) for extraction
+- REQ-P0-004: ~39 test files missing cleanup traps have them added
+  Acceptance: Given a test file creates temporary files or directories, When the test exits (success or failure), Then cleanup runs via trap
+- REQ-P0-005: .session-events.jsonl rotation at 1000 lines
+  Acceptance: Given .session-events.jsonl exceeds 1000 lines, When rotation runs, Then the file is truncated to the most recent 1000 lines
+- REQ-P0-006: .hook-timing.log rotation
+  Acceptance: Given .hook-timing.log exceeds a size threshold, When rotation runs, Then the file is trimmed to recent entries
+- REQ-P0-007: Orphaned implementer markers and heartbeat processes cleaned up at session start
+  Acceptance: Given stale markers from a crashed session exist, When session-init.sh runs, Then orphaned markers are removed and zombie heartbeat processes are killed
+- REQ-P0-008: TTL sentinel scoping uses SESSION_ID instead of PID
+  Acceptance: Given a guardian marker with SESSION_ID-based TTL, When the session ends, Then cleanup correctly identifies and removes markers from that session regardless of PID reuse
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: macOS CI matrix job in validate.yml
+  Criterion: CI runs on both ubuntu-latest and macos-latest; macOS failures are visible but non-blocking initially
+- REQ-P1-002: CI timeout increased from default to explicit value preventing hung jobs
+  Criterion: validate.yml specifies timeout-minutes for the test job
+- REQ-P1-003: shellcheck extended to tests/ and scripts/ directories
+  Criterion: CI runs shellcheck on hooks/, tests/, and scripts/ directories
+
+**Future Consideration (P2)**
+
+- REQ-P2-001: Windows CI support
+- REQ-P2-002: Test coverage reporting (which hooks have test coverage, which don't)
+- REQ-P2-003: Automated test file generation for new hooks
+
+#### Definition of Done
+
+All P0 requirements (001-008) satisfied. CI auto-discovers test files. stderr is captured not suppressed. grep-JSON replaced with jq. Cleanup traps present in all test files that create temp resources. State file rotation operational. Orphan cleanup in session-init.sh. Existing 159-test suite passes with no regressions. README.md and ARCHITECTURE.md updated.
+
+#### Architectural Decisions
+
+- DEC-PROD-001: Auto-discover test files via glob in CI instead of hardcoded list
+  Addresses: REQ-GOAL-001, REQ-P0-001.
+  Rationale: A hardcoded list silently excludes new test files. `for f in tests/test-*.sh` with a count assertion ensures all files run. The glob pattern is the same one developers use locally. The count assertion catches accidental file exclusions (e.g., gitignore patterns).
+
+- DEC-PROD-002: Capture stderr to a file instead of suppressing with 2>/dev/null
+  Addresses: REQ-GOAL-002, REQ-P0-002.
+  Rationale: Suppressing stderr hides hook initialization errors, missing dependencies, and bash syntax errors. Redirecting to a temp file (`2>"$stderr_file"`) preserves diagnostic output while keeping stdout clean for JSON validation. Tests can optionally assert on stderr content.
+
+- DEC-PROD-003: Inline rotation in session-init.sh for state files
+  Addresses: REQ-GOAL-003, REQ-P0-005, REQ-P0-006.
+  Rationale: session-init.sh already runs at session start and handles cleanup. Adding `tail -n 1000` rotation for .session-events.jsonl and .hook-timing.log is O(1) additional work. No daemon or cron needed. Rotation at session start means the files are bounded by 1000 lines + one session's worth of growth.
+
+- DEC-PROD-004: SESSION_ID-based sentinel scoping for TTL markers
+  Addresses: REQ-P0-007, REQ-P0-008.
+  Rationale: PID-based TTLs break when PIDs are reused (common on macOS where PIDs wrap quickly). SESSION_ID is unique per session and available in the hook environment. Markers tagged with SESSION_ID can be cleaned up precisely at session end without false matches from PID reuse.
+
+- DEC-PROD-005: Non-blocking macOS CI matrix job
+  Addresses: REQ-P1-001.
+  Rationale: macOS is the primary dev platform but CI has only run Ubuntu. Adding macOS as a matrix entry with `continue-on-error: true` initially surfaces compatibility issues without blocking merges. Once stable, remove the continue-on-error flag.
+
+#### Phase 1: Test Infrastructure Reliability
+**Status:** planned
+**Decision IDs:** DEC-PROD-001, DEC-PROD-002, DEC-PROD-003
+**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004
+**Issues:** (to be created)
+**Definition of Done:**
+- REQ-P0-001 satisfied: validate.yml uses glob-based auto-discovery for test-*.sh files
+- REQ-P0-002 satisfied: run_hook() and run_hook_ec() capture stderr to temp file
+- REQ-P0-003 satisfied: test-pre-ask.sh and test-ci-feedback.sh use jq instead of grep for JSON
+- REQ-P0-004 satisfied: all test files creating temp resources have cleanup traps
+
+##### Planned Decisions
+- DEC-PROD-001: Glob-based test auto-discovery in CI — prevents silent exclusion of new tests — Addresses: REQ-P0-001
+- DEC-PROD-002: stderr capture to temp file — surfaces real errors hidden by 2>/dev/null — Addresses: REQ-P0-002
+
+##### Work Items
+
+**W1-1: Replace hardcoded test list in validate.yml with glob auto-discovery**
+- Replace the `for test in tests/test-post-task-fallback.sh ...` block with `for test in tests/test-*.sh`
+- Add a count assertion: `test_count=$(ls tests/test-*.sh | wc -l); [ "$test_count" -ge 50 ]` as sanity check
+- Ensure run-hooks.sh still runs separately (it has its own 159-test suite)
+- File: `.github/workflows/validate.yml`
+
+**W1-2: Fix grep-based JSON parsing in test-pre-ask.sh and test-ci-feedback.sh**
+- In test-pre-ask.sh: replace grep-based JSON field extraction with jq queries
+- In test-ci-feedback.sh: replace grep-based JSON field extraction with jq queries
+- Pattern: `echo "$output" | grep 'field'` becomes `echo "$output" | jq -r '.field'`
+- Verify tests still pass after replacement
+- Files: `tests/test-pre-ask.sh`, `tests/test-ci-feedback.sh`
+
+**W1-3: Fix stderr suppression in test-helpers.sh run_hook() and run_hook_ec()**
+- Line 87: change `_stdout=$(echo "$input" | bash "$hook" 2>/dev/null)` to capture stderr to temp file
+- Line 99: change `bash "$hook" <<< "$input" > "$_tmp" 2>/dev/null` to capture stderr to temp file
+- Add `_stderr` variable available to callers for diagnostic output
+- Ensure existing tests still pass (some may implicitly depend on stderr suppression)
+- File: `tests/lib/test-helpers.sh`
+
+**W1-4: Add cleanup traps to ~39 test files missing them**
+- Identify all test files without `trap` on EXIT/ERR
+- Add standard cleanup trap: `cleanup() { rm -rf "$TEST_DIR" 2>/dev/null; }; trap cleanup EXIT`
+- Only add to files that create temporary directories or files
+- Pattern from existing files with traps (e.g., test-auto-verify.sh)
+- Files: ~39 files in `tests/test-*.sh`
+
+##### Dispatch Plan
+- Dispatch 1: W1-1, W1-2, W1-3 (CI + JSON + stderr — 3 files, tightly coupled infrastructure)
+- Dispatch 2: W1-4 (bulk trap addition — ~39 files, mechanical but large)
+
+##### Critical Files
+- `.github/workflows/validate.yml` — CI test discovery
+- `tests/lib/test-helpers.sh` — stderr capture (lines 87, 99)
+- `tests/test-pre-ask.sh` — grep-to-jq migration
+- `tests/test-ci-feedback.sh` — grep-to-jq migration
+- `tests/test-*.sh` — ~39 files for cleanup trap addition
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 2: Operational Hygiene
+**Status:** planned
+**Decision IDs:** DEC-PROD-003, DEC-PROD-004
+**Requirements:** REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008
+**Issues:** (to be created)
+**Definition of Done:**
+- REQ-P0-005 satisfied: .session-events.jsonl rotated at 1000 lines during session-init
+- REQ-P0-006 satisfied: .hook-timing.log rotated during session-init
+- REQ-P0-007 satisfied: orphaned markers cleaned at session start
+- REQ-P0-008 satisfied: TTL sentinels use SESSION_ID not PID
+
+##### Planned Decisions
+- DEC-PROD-003: Inline rotation in session-init.sh — no daemon, no cron, bounded growth — Addresses: REQ-P0-005, REQ-P0-006
+- DEC-PROD-004: SESSION_ID-based sentinel scoping — eliminates PID-reuse false matches — Addresses: REQ-P0-007, REQ-P0-008
+
+##### Work Items
+
+**W2-1: Add .session-events.jsonl rotation in session-init.sh**
+- At session start, check line count: `wc -l < .session-events.jsonl`
+- If > 1000, rotate: `tail -n 1000 .session-events.jsonl > .session-events.jsonl.tmp && mv .session-events.jsonl.tmp .session-events.jsonl`
+- Log rotation event to the file itself
+- File: `hooks/session-init.sh`
+
+**W2-2: Add .hook-timing.log rotation in session-init.sh**
+- Same pattern as W2-1: check line count, rotate if > 1000
+- Preserve the most recent entries (tail, not head)
+- File: `hooks/session-init.sh`
+
+**W2-3: Orphan marker cleanup in session-init.sh**
+- At session start, scan for `.active-guardian-*`, `.active-autoverify-*`, `.active-implementer-*` markers
+- For each marker, check if the owning process (PID or SESSION_ID in marker) is still alive
+- Remove markers for dead processes
+- Kill zombie heartbeat processes (background `touch` loops from task-track.sh)
+- File: `hooks/session-init.sh`
+
+**W2-4: Migrate TTL sentinels from PID to SESSION_ID**
+- In task-track.sh, write SESSION_ID into guardian/autoverify markers instead of PID
+- In session-init.sh cleanup, match by SESSION_ID instead of `kill -0 $PID`
+- Backward compat: handle old PID-based markers during transition (check both)
+- Files: `hooks/task-track.sh`, `hooks/session-init.sh`
+
+##### Dispatch Plan
+- Dispatch 1: W2-1, W2-2, W2-3, W2-4 (all in session-init.sh + task-track.sh — tightly coupled)
+
+##### Critical Files
+- `hooks/session-init.sh` — rotation + orphan cleanup
+- `hooks/task-track.sh` — TTL sentinel format change
+- `.session-events.jsonl` — rotation target
+- `.hook-timing.log` — rotation target
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 3: Dead Code Cleanup (Verification Only)
+**Status:** planned
+**Decision IDs:** (none — verification phase)
+**Requirements:** (verification only)
+**Issues:** (to be created)
+**Definition of Done:**
+- Verified: no empty test stubs exist (all 61 test files have assertions)
+- Verified: context-lib.sh is actively used (run-hooks.sh backward-compat shim)
+- Verified: project_hash() duplication is intentional (documented in core-lib.sh)
+- Any actual dead code found during verification is removed
+
+##### Work Items
+
+**W3-1: Verify no empty test stubs remain**
+- Run: `for f in tests/test-*.sh; do grep -cE 'assert_|pass |fail |expect' "$f"; done`
+- Confirm all files have at least one assertion marker
+- If any empty stubs found, delete them (not expected based on audit)
+
+**W3-2: Verify context-lib.sh usage and document**
+- Confirm run-hooks.sh sources context-lib.sh
+- Confirm no other path to removal exists
+- Add a comment to context-lib.sh explaining its role if not already present
+
+**W3-3: Verify project_hash() duplication is intentional**
+- Confirm core-lib.sh documents the intentional duplication
+- Confirm the two implementations are identical
+
+##### Dispatch Plan
+- Dispatch 1: W3-1, W3-2, W3-3 (verification only — quick, parallelizable)
+
+##### Critical Files
+- `tests/test-*.sh` — verification targets
+- `hooks/context-lib.sh` — verify active usage
+- `hooks/core-lib.sh` — verify project_hash() documentation
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 4: Platform & CI Hardening
+**Status:** planned
+**Decision IDs:** DEC-PROD-005
+**Requirements:** REQ-P1-001, REQ-P1-002, REQ-P1-003
+**Issues:** (to be created)
+**Definition of Done:**
+- REQ-P1-001 satisfied: macOS matrix job runs in CI (continue-on-error initially)
+- REQ-P1-002 satisfied: explicit timeout-minutes in validate.yml
+- REQ-P1-003 satisfied: shellcheck runs on tests/ and scripts/ in addition to hooks/
+
+##### Planned Decisions
+- DEC-PROD-005: Non-blocking macOS CI — surfaces platform issues without blocking merges — Addresses: REQ-P1-001
+
+##### Work Items
+
+**W4-1: Add macOS to CI matrix**
+- Add `macos-latest` to the strategy matrix in validate.yml
+- Set `continue-on-error: true` for macOS initially
+- Ensure homebrew installs jq, shellcheck if needed on macOS runner
+- File: `.github/workflows/validate.yml`
+
+**W4-2: Add explicit timeout to CI jobs**
+- Add `timeout-minutes: 15` to the test job
+- Prevents hung jobs from consuming CI minutes
+- File: `.github/workflows/validate.yml`
+
+**W4-3: Extend shellcheck to tests/ and scripts/**
+- Current CI runs shellcheck only on hooks/
+- Add `tests/*.sh`, `tests/lib/*.sh`, `scripts/*.sh` to shellcheck targets
+- Use `shellcheck -x` to follow source directives
+- May need `.shellcheckrc` for test-specific exclusions (e.g., SC2034 unused variables in test fixtures)
+- File: `.github/workflows/validate.yml`
+
+##### Dispatch Plan
+- Dispatch 1: W4-1, W4-2, W4-3 (all validate.yml changes — single file, parallel-safe)
+
+##### Critical Files
+- `.github/workflows/validate.yml` — all CI changes
+- `.shellcheckrc` — may need test-specific exclusions (new file if needed)
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 5: Documentation Freshness
+**Status:** planned
+**Decision IDs:** (none — documentation update)
+**Requirements:** REQ-GOAL-005
+**Issues:** (to be created)
+**Definition of Done:**
+- README.md reflects current hook count, test count, directory structure, and script inventory
+- ARCHITECTURE.md reflects current system design, lazy-loading pattern, and state management architecture
+
+##### Work Items
+
+**W5-1: Update README.md**
+- Update test count (currently says 159 — verify actual count)
+- Update hook entry point count and domain library list
+- Update scripts/ section with new scripts (statusline.sh, worktree-roster.sh, clean-state.sh, etc.)
+- Update commands/ section with any new commands
+- Verify all directory descriptions are current
+
+**W5-2: Update ARCHITECTURE.md**
+- Verify lazy-loading architecture description is current
+- Update state management section with any new patterns
+- Verify hook lifecycle diagram is accurate
+- Update performance characteristics if changed
+
+##### Dispatch Plan
+- Dispatch 1: W5-1, W5-2 (documentation — independent files, parallel-safe)
+
+##### Critical Files
+- `README.md` — project overview and reference
+- `ARCHITECTURE.md` — system design documentation
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Production Reliability Worktree Strategy
+
+Main is sacred. Each phase works in its own worktree:
+- **Phase 1:** `~/.claude/.worktrees/prod-test-infra` on branch `feature/prod-test-infra`
+- **Phase 2:** `~/.claude/.worktrees/prod-operational-hygiene` on branch `feature/prod-operational-hygiene`
+- **Phase 3:** `~/.claude/.worktrees/prod-dead-code-verify` on branch `feature/prod-dead-code-verify`
+- **Phase 4:** `~/.claude/.worktrees/prod-ci-hardening` on branch `feature/prod-ci-hardening`
+- **Phase 5:** `~/.claude/.worktrees/prod-docs-freshness` on branch `feature/prod-docs-freshness`
+
+Note: Phase 1 and Phase 2 can run in parallel (no dependencies). Phase 3 is a quick verification pass. Phase 4 depends on Phase 1 (CI changes build on auto-discovery). Phase 5 runs last (captures all changes).
+
+#### Production Reliability References
+
+- Audit source: Production reliability assessment (2026-03-04)
+- `.github/workflows/validate.yml` — current CI configuration with hardcoded 9-file test list
+- `tests/lib/test-helpers.sh` — test harness with stderr suppression (lines 87, 99)
+- `tests/test-pre-ask.sh` — grep-based JSON parsing target
+- `tests/test-ci-feedback.sh` — grep-based JSON parsing target
+- `hooks/session-init.sh` — rotation and orphan cleanup target
+- `hooks/task-track.sh` — TTL sentinel scoping target
+- `.session-events.jsonl` — unbounded growth state file
+- `.hook-timing.log` — unbounded growth state file
 
 ---
 

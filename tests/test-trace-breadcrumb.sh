@@ -25,6 +25,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOKS_DIR="$PROJECT_ROOT/hooks"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 PASS=0
 FAIL=0
 TOTAL=0
@@ -97,8 +101,11 @@ run_test "trace-lib.sh: normalizes Guardian to guardian" \
 
 # Set up isolated trace store in tmp
 TEST_TRACE_STORE=$(mktemp -d "$PROJECT_ROOT/tmp/test-breadcrumb-traces-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_TRACE_STORE")
 TEST_CLAUDE_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-breadcrumb-claude-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_CLAUDE_DIR")
 TEST_PROJECT=$(mktemp -d "$PROJECT_ROOT/tmp/test-breadcrumb-project-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_PROJECT")
 git -C "$TEST_PROJECT" init -q 2>/dev/null
 git -C "$TEST_PROJECT" commit --allow-empty -m "init" -q 2>/dev/null
 

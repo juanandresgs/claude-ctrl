@@ -38,6 +38,10 @@ TRACK_SH="${HOOKS_DIR}/track.sh"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # ---------------------------------------------------------------------------
 # Test tracking
 # ---------------------------------------------------------------------------
@@ -104,7 +108,10 @@ run_track() {
 
 run_test "No guardian marker: source write resets verified→pending"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
+_CLEANUP_DIRS+=("$REPO")
 TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-tge-trace-XXXXXX")
+_CLEANUP_DIRS+=("$TRACE")
 # No .active-guardian-* files in TRACE_STORE
 echo "verified|$(date +%s)" > "$REPO/.claude/.proof-status"
 
@@ -129,6 +136,7 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Guardian marker present: source write does NOT reset verified proof"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-tge-trace-XXXXXX")
 # Create a guardian marker in TRACE_STORE (simulates an active Guardian agent)
 touch "$TRACE/.active-guardian-test-session-001"
@@ -156,6 +164,7 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Guardian marker present: needs-verification proof unchanged by source write"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-tge-trace-XXXXXX")
 touch "$TRACE/.active-guardian-test-session-002"
 ORIGINAL_TS=$(date +%s)
@@ -184,6 +193,7 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Guardian marker present: pending proof unchanged by source write"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-tge-trace-XXXXXX")
 touch "$TRACE/.active-guardian-test-session-003"
 ORIGINAL_TS="11111"
@@ -211,6 +221,7 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "After guardian marker removed: source write resumes invalidation"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-tge-trace-XXXXXX")
 # Create then immediately remove the guardian marker (simulates guardian completing)
 touch "$TRACE/.active-guardian-test-session-004"

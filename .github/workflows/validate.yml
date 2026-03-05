@@ -45,16 +45,13 @@ jobs:
         run: bash tests/run-hooks.sh
       - name: Run standalone test suites
         run: |
+          # Auto-discover all standalone test files (deterministic sort order)
           failed=0
-          for test in tests/test-post-task-fallback.sh tests/test-auto-verify.sh \
-                      tests/test-finalize-trace-v2.sh tests/test-proof-lifecycle.sh \
-                      tests/test-guard-worktree-cd.sh tests/test-clean-state.sh \
-                      tests/test-proof-gate.sh tests/test-guard-commit-msg.sh \
-                      tests/test-source-lib.sh; do
-            echo "--- Running $(basename $test) ---"
+          while IFS= read -r test; do
+            echo "--- Running $(basename "$test") ---"
             if ! bash "$test"; then
               echo "FAILED: $test"
               failed=1
             fi
-          done
+          done < <(find tests/ -maxdepth 1 \( -name 'test-*.sh' -o -name 'test_*.sh' \) | sort)
           exit $failed

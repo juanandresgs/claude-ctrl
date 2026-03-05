@@ -27,6 +27,10 @@ PASS=0
 FAIL=0
 SKIP=0
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 HOOKS_DIR="$(cd "$(dirname "$0")/.." && pwd)/hooks"
 
 pass() { echo "PASS: $1"; PASS=$((PASS+1)); }

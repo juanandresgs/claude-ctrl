@@ -177,6 +177,49 @@ if [[ -n "$GIT_BRANCH" ]]; then
     fi
 fi
 
+# --- File rotation (DEC-PROD-003) ---
+# Cap session events JSONL at 1000 lines to prevent unbounded growth
+#
+# @decision DEC-PROD-003
+# @title Cap session-events.jsonl and hook-timing.log at 1000 lines
+# @status accepted
+# @rationale These files grow without bound across sessions. At 1000 lines each
+#   (~100KB) they are still useful for recent-session analysis but don't bloat
+#   the project directory. Rotation happens at session start (session-init.sh)
+#   which is the natural "housekeeping" point before context injection runs.
+_EVENTS_FILE="${CLAUDE_DIR}/.session-events.jsonl"
+if [[ -f "$_EVENTS_FILE" ]]; then
+  _EVENTS_LINES=$(wc -l < "$_EVENTS_FILE" 2>/dev/null || echo 0)
+  if [[ "$_EVENTS_LINES" -gt 1000 ]]; then
+    tail -n 1000 "$_EVENTS_FILE" > "${_EVENTS_FILE}.tmp" && mv "${_EVENTS_FILE}.tmp" "$_EVENTS_FILE"
+  fi
+fi
+
+# Cap hook timing log at 1000 lines
+_TIMING_FILE="${CLAUDE_DIR}/.hook-timing.log"
+if [[ -f "$_TIMING_FILE" ]]; then
+  _TIMING_LINES=$(wc -l < "$_TIMING_FILE" 2>/dev/null || echo 0)
+  if [[ "$_TIMING_LINES" -gt 1000 ]]; then
+    tail -n 1000 "$_TIMING_FILE" > "${_TIMING_FILE}.tmp" && mv "${_TIMING_FILE}.tmp" "$_TIMING_FILE"
+  fi
+fi
+
+# --- Orphan marker cleanup (DEC-PROD-004) ---
+# Sweep agent markers older than 1 hour to prevent stale blocking
+#
+# @decision DEC-PROD-004
+# @title Sweep stale agent markers on session start
+# @status accepted
+# @rationale Agent markers (.active-implementer-*, .active-guardian-*, .active-autoverify-*)
+#   are written when agents start and removed when they finish. A crash leaves them
+#   behind permanently, blocking future agent dispatch. Sweeping on session start
+#   (1-hour TTL) ensures a crashed session's markers don't block the next session.
+if [[ -d "${CLAUDE_DIR}/traces" ]]; then
+  find "${CLAUDE_DIR}/traces" -name '.active-implementer-*' -mmin +60 -delete 2>/dev/null || true
+  find "${CLAUDE_DIR}/traces" -name '.active-guardian-*' -mmin +60 -delete 2>/dev/null || true
+  find "${CLAUDE_DIR}/traces" -name '.active-autoverify-*' -mmin +60 -delete 2>/dev/null || true
+fi
+
 # --- Run community check in background (non-blocking, 1-hour TTL) ---
 # The .community-status file will be ready by the time statusline renders.
 # Display moved to statusline.sh and todo.sh for better visibility.

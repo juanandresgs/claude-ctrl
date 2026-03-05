@@ -47,6 +47,10 @@ TASK_TRACK_SH="${HOOKS_DIR}/task-track.sh"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # ---------------------------------------------------------------------------
 # Test tracking
 # ---------------------------------------------------------------------------
@@ -171,7 +175,9 @@ run_task_track_agent() {
 
 run_test "Baseline race: no guardian marker + source write → proof resets to pending"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(make_temp_trace)
+_CLEANUP_DIRS+=("${TRACE}")
 BASELINE_PHASH=$(echo "$REPO" | $_SHA256_CMD | cut -c1-8)
 # No .active-guardian-* files in TRACE_STORE — simulates the race window.
 # Write to the canonical scoped path so track.sh reads it correctly.
@@ -200,7 +206,9 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Fix: Gate A creates .active-guardian-* marker when proof is verified"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(make_temp_trace)
+_CLEANUP_DIRS+=("${TRACE}")
 PHASH=$(echo "$REPO" | $_SHA256_CMD | cut -c1-8)
 
 run_task_track_guardian "$REPO" "$TRACE" "verified|$(date +%s)"
@@ -224,7 +232,9 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Fix end-to-end: dispatch-time marker prevents verified→pending reset"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(make_temp_trace)
+_CLEANUP_DIRS+=("${TRACE}")
 PHASH=$(echo "$REPO" | $_SHA256_CMD | cut -c1-8)
 
 # Step 1: write verified proof (scoped)
@@ -267,7 +277,9 @@ fi
 
 run_test "Non-guardian dispatch (implementer): no .active-guardian-* marker created"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(make_temp_trace)
+_CLEANUP_DIRS+=("${TRACE}")
 
 run_task_track_agent "$REPO" "$TRACE" "implementer" "missing"
 
@@ -288,7 +300,9 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Gate A denies (pending proof): no .active-guardian-* marker created"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(make_temp_trace)
+_CLEANUP_DIRS+=("${TRACE}")
 
 run_task_track_guardian "$REPO" "$TRACE" "pending|12345"
 
@@ -309,7 +323,9 @@ rm -rf "$REPO" "$TRACE"
 
 run_test "Marker naming: .active-guardian-{session}-{phash} pattern"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 TRACE=$(make_temp_trace)
+_CLEANUP_DIRS+=("${TRACE}")
 PHASH=$(echo "$REPO" | $_SHA256_CMD | cut -c1-8)
 EXPECTED_SESSION="test-session-race-001"
 

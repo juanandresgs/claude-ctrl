@@ -25,6 +25,10 @@ HOOKS_DIR="$(dirname "$SCRIPT_DIR")/hooks"
 # Source log.sh for project_hash and related helpers
 source "$HOOKS_DIR/log.sh"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # ============================================================================
 # Test infrastructure
 # ============================================================================

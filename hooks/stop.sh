@@ -132,7 +132,15 @@ if [[ -n "$CHANGES" && -f "$CHANGES" ]]; then
     [[ "$SOURCE_COUNT_SURFACE" -gt 0 ]] && _RUN_SURFACE=true
 fi
 
-_SURFACE_SENTINEL="${CLAUDE_DIR}/.stop-surface-${CLAUDE_SESSION_ID:-$$}"
+# @decision DEC-PROD-005
+# @title Use CLAUDE_SESSION_ID for sentinel scoping to prevent cross-session TTL collisions
+# @status accepted
+# @rationale When multiple sessions run concurrently (e.g. parallel worktrees), using $$
+#   (PID) causes each session to create its own TTL sentinel, defeating the rate limit.
+#   CLAUDE_SESSION_ID is unique per Claude session and consistent across all turns within
+#   a session — it provides correct scoping for session-bounded TTL sentinels.
+_SESSION_KEY="${CLAUDE_SESSION_ID:-$$}"
+_SURFACE_SENTINEL="${CLAUDE_DIR}/.stop-surface-${_SESSION_KEY}"
 if $_RUN_SURFACE && _ttl_expired "$_SURFACE_SENTINEL" "$STOP_SURFACE_TTL"; then
     log_info "SURFACE" "$SOURCE_COUNT_SURFACE source files modified this session"
 
@@ -544,7 +552,7 @@ if $_RUN_SUMMARY; then
     # Git state can change from implementer writes, so TTL is kept short.
     # Note: _ttl_expired/_ttl_touch use a SEPARATE sentinel file from the data
     # cache, because _ttl_touch overwrites the file with just the epoch.
-    _GIT_CACHE="${CLAUDE_DIR}/.stop-git-cache-${CLAUDE_SESSION_ID:-$$}"
+    _GIT_CACHE="${CLAUDE_DIR}/.stop-git-cache-${_SESSION_KEY}"
     _GIT_CACHE_SENT="${_GIT_CACHE}.ttl"
     _GIT_CACHE_TTL=60
     if _ttl_expired "$_GIT_CACHE_SENT" "$_GIT_CACHE_TTL"; then
@@ -563,7 +571,7 @@ if $_RUN_SUMMARY; then
 
     # OPT-1: Cache get_plan_status() in .stop-plan-cache-{SESSION_ID} (TTL=STOP_SURFACE_TTL)
     # Plan doesn't change between consecutive agent turns.
-    _PLAN_CACHE="${CLAUDE_DIR}/.stop-plan-cache-${CLAUDE_SESSION_ID:-$$}"
+    _PLAN_CACHE="${CLAUDE_DIR}/.stop-plan-cache-${_SESSION_KEY}"
     _PLAN_CACHE_SENT="${_PLAN_CACHE}.ttl"
     if _ttl_expired "$_PLAN_CACHE_SENT" "$STOP_SURFACE_TTL"; then
         get_plan_status "$PROJECT_ROOT"

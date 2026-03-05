@@ -30,6 +30,10 @@ source "$SCRIPT_DIR/lib/test-helpers.sh"
 
 # HOOKS_DIR is set by test-helpers.sh sourcing
 REPLAY_FILE=""
+
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
 VERBOSE=false
 
 # ---------------------------------------------------------------------------
@@ -69,11 +73,13 @@ fi
 # Sandbox setup — single CLAUDE_DIR for the run
 # ---------------------------------------------------------------------------
 SANDBOX_DIR=$(make_temp)
+_CLEANUP_DIRS+=("${SANDBOX_DIR}")
 export CLAUDE_PROJECT_DIR="$SANDBOX_DIR"
 export CLAUDE_SESSION_ID="replay-test-$$"
 
 # Create a minimal git repo on main for Bash events with branch context
 SANDBOX_MAIN_REPO=$(make_temp)
+_CLEANUP_DIRS+=("${SANDBOX_MAIN_REPO}")
 git init "$SANDBOX_MAIN_REPO" >/dev/null 2>&1
 (
     cd "$SANDBOX_MAIN_REPO"
@@ -83,6 +89,7 @@ git init "$SANDBOX_MAIN_REPO" >/dev/null 2>&1
 
 # Create a feature repo for feature-branch events
 SANDBOX_FEATURE_REPO=$(make_temp)
+_CLEANUP_DIRS+=("${SANDBOX_FEATURE_REPO}")
 git init "$SANDBOX_FEATURE_REPO" >/dev/null 2>&1
 (
     cd "$SANDBOX_FEATURE_REPO"

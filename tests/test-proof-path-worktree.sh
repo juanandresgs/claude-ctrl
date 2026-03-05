@@ -37,6 +37,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -142,7 +146,11 @@ _scoped_proof_path() {
 
 run_test "resolve_proof_file: returns scoped CLAUDE_DIR path (no proof file exists)"
 T_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-rpf-XXXXXX")
+_CLEANUP_DIRS+=("${T_CLAUDE}")
+_CLEANUP_DIRS+=("$T_CLAUDE")
 T_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-rpf-proj-XXXXXX")
+_CLEANUP_DIRS+=("${T_PROJ}")
+_CLEANUP_DIRS+=("$T_PROJ")
 RESULT=$(_resolve_proof_file "$T_CLAUDE" "$T_PROJ")
 EXPECTED=$(_scoped_proof_path "$T_CLAUDE" "$T_PROJ")
 if [[ "$RESULT" == "$EXPECTED" ]]; then
@@ -196,7 +204,9 @@ rm -rf "$T_CLAUDE" "$T_PROJ"
 run_test "resolve_proof_file: different projects get different paths (isolation)"
 T_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-rpf-XXXXXX")
 T_PROJ_A=$(mktemp -d "$PROJECT_ROOT/tmp/test-rpf-projA-XXXXXX")
+_CLEANUP_DIRS+=("${T_PROJ_A}")
 T_PROJ_B=$(mktemp -d "$PROJECT_ROOT/tmp/test-rpf-projB-XXXXXX")
+_CLEANUP_DIRS+=("${T_PROJ_B}")
 PATH_A=$(_resolve_proof_file "$T_CLAUDE" "$T_PROJ_A")
 PATH_B=$(_resolve_proof_file "$T_CLAUDE" "$T_PROJ_B")
 if [[ "$PATH_A" != "$PATH_B" ]]; then
@@ -229,11 +239,13 @@ run_test "task-track: implementer dispatch from main worktree without linked wor
 # Gate C.1 blocks implementer dispatch from the main worktree when no linked worktrees exist.
 # Gate C.2 (writes .proof-status-{phash}) only runs AFTER C.1 passes.
 TEMP_ORCHESTRATOR=$(mktemp -d "$PROJECT_ROOT/tmp/test-tt-orch-XXXXXX")
+_CLEANUP_DIRS+=("${TEMP_ORCHESTRATOR}")
 git -C "$TEMP_ORCHESTRATOR" init > /dev/null 2>&1
 git -C "$TEMP_ORCHESTRATOR" commit --allow-empty -m "init" > /dev/null 2>&1
 mkdir -p "$TEMP_ORCHESTRATOR/.claude"
 
 TT_INPUT_FILE=$(mktemp "$PROJECT_ROOT/tmp/test-tt-input-XXXXXX.json")
+_CLEANUP_DIRS+=("${TT_INPUT_FILE}")
 cat > "$TT_INPUT_FILE" <<'TTEOF'
 {
   "tool_name": "Task",
@@ -261,6 +273,7 @@ rm -rf "$TEMP_ORCHESTRATOR"
 
 run_test "task-track: Gate C.2 writes canonical scoped .proof-status-{phash} (no breadcrumb)"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-tt-gate-XXXXXX")
+_CLEANUP_DIRS+=("${TEMP_REPO}")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 git -C "$TEMP_REPO" commit --allow-empty -m "init" > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
@@ -309,6 +322,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "prompt-submit: 'verified' keyword transitions pending -> verified (scoped path)"
 TEMP_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-ps-XXXXXX")
+_CLEANUP_DIRS+=("${TEMP_PROJ}")
 git -C "$TEMP_PROJ" init > /dev/null 2>&1
 mkdir -p "$TEMP_PROJ/.claude"
 TEMP_PHASH=$(echo "$TEMP_PROJ" | $_SHA256_CMD | cut -c1-8)
@@ -383,6 +397,7 @@ TEMP_PHASH=$(echo "$TEMP_PROJ" | $_SHA256_CMD | cut -c1-8)
 echo "pending|12345" > "$TEMP_PROJ/.claude/.proof-status-${TEMP_PHASH}"
 # Simulate: legacy breadcrumb pointing to a worktree (should NOT be followed)
 FAKE_WT=$(mktemp -d "$PROJECT_ROOT/tmp/test-ps-fakewt-XXXXXX")
+_CLEANUP_DIRS+=("${FAKE_WT}")
 mkdir -p "$FAKE_WT/.claude"
 # No breadcrumb written — DEC-PROOF-SINGLE-001 eliminates them
 
@@ -608,6 +623,7 @@ run_test ".gitignore: no breadcrumb (.active-worktree-path) entry needed — bre
 # should not be created by any hook in normal operation.
 # Test: run a full task-track implementer dispatch and verify no breadcrumb written.
 TEMP_I=$(mktemp -d "$PROJECT_ROOT/tmp/test-gi-XXXXXX")
+_CLEANUP_DIRS+=("${TEMP_I}")
 git -C "$TEMP_I" init > /dev/null 2>&1
 git -C "$TEMP_I" commit --allow-empty -m "init" > /dev/null 2>&1
 mkdir -p "$TEMP_I/.claude"
@@ -660,7 +676,9 @@ _resolve_j() {
 
 run_test "Part J1: all callers resolve to same canonical scoped path"
 J1_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-j1-cl-XXXXXX")
+_CLEANUP_DIRS+=("${J1_CLAUDE}")
 J1_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-j1-proj-XXXXXX")
+_CLEANUP_DIRS+=("${J1_PROJ}")
 J1_PHASH=$(echo "$J1_PROJ" | $_SHA256_CMD | cut -c1-8)
 EXPECTED_J1="$J1_CLAUDE/.proof-status-${J1_PHASH}"
 
@@ -683,6 +701,7 @@ run_test "Part J2: write via write_proof_status → read via resolve_proof_file 
 # set PROJECT_ROOT to the project and let get_claude_dir return <project>/.claude,
 # then set CLAUDE_DIR to the same value so resolve_proof_file agrees.
 J2_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-j2-proj-XXXXXX")
+_CLEANUP_DIRS+=("${J2_PROJ}")
 J2_CLAUDE="$J2_PROJ/.claude"
 mkdir -p "$J2_CLAUDE"
 git -C "$J2_PROJ" init --quiet > /dev/null 2>&1
@@ -708,8 +727,11 @@ rm -rf "$J2_PROJ"
 
 run_test "Part J3: project isolation — two projects write independent canonical files"
 J3_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-j3-cl-XXXXXX")
+_CLEANUP_DIRS+=("${J3_CLAUDE}")
 J3_PROJ_A=$(mktemp -d "$PROJECT_ROOT/tmp/test-j3-projA-XXXXXX")
+_CLEANUP_DIRS+=("${J3_PROJ_A}")
 J3_PROJ_B=$(mktemp -d "$PROJECT_ROOT/tmp/test-j3-projB-XXXXXX")
+_CLEANUP_DIRS+=("${J3_PROJ_B}")
 git -C "$J3_PROJ_A" init --quiet > /dev/null 2>&1
 git -C "$J3_PROJ_B" init --quiet > /dev/null 2>&1
 J3_PHASH_A=$(echo "$J3_PROJ_A" | $_SHA256_CMD | cut -c1-8)
@@ -731,7 +753,9 @@ rm -rf "$J3_CLAUDE" "$J3_PROJ_A" "$J3_PROJ_B"
 
 run_test "Part J4: no proof file → resolve_proof_file returns scoped path as default write target"
 J4_CLAUDE=$(mktemp -d "$PROJECT_ROOT/tmp/test-j4-cl-XXXXXX")
+_CLEANUP_DIRS+=("${J4_CLAUDE}")
 J4_PROJ=$(mktemp -d "$PROJECT_ROOT/tmp/test-j4-proj-XXXXXX")
+_CLEANUP_DIRS+=("${J4_PROJ}")
 J4_PHASH=$(echo "$J4_PROJ" | $_SHA256_CMD | cut -c1-8)
 EXPECTED_J4="$J4_CLAUDE/.proof-status-${J4_PHASH}"
 

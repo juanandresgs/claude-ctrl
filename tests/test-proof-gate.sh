@@ -27,6 +27,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # Track test results
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -160,6 +164,7 @@ fi
 # Since DEC-ISOLATION-001, Gate C writes .proof-status-{phash} (scoped).
 run_test "Gate C: Implementer dispatch creates needs-verification"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-impl-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 IMPL_PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)

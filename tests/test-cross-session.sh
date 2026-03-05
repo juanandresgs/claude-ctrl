@@ -49,6 +49,10 @@ fail() { echo -e "${RED}FAIL${NC} $1: $2"; failed=$((failed + 1)); }
 # Source context-lib for safe_cleanup in the MAIN shell only
 source "$CONTEXT_LIB"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # Helper: create a synthetic session index entry JSON line
 make_index_entry() {
     local id="$1" outcome="${2:-tests-passing}" friction="${3:-}"
@@ -110,8 +114,11 @@ echo ""
 echo "--- Test 1: empty when no index file ---"
 
 T1_HOME=$(mktemp -d)
+_CLEANUP_DIRS+=("${T1_HOME}")
 T1_PROJ=$(mktemp -d)
+_CLEANUP_DIRS+=("${T1_PROJ}")
 T1_OUT=$(mktemp)
+_CLEANUP_DIRS+=("${T1_OUT}")
 
 call_get_prior_sessions "$T1_HOME" "$T1_PROJ" "$T1_OUT"
 result=$(cat "$T1_OUT")
@@ -133,9 +140,12 @@ echo ""
 echo "--- Test 2: empty when fewer than 3 sessions ---"
 
 T2_HOME=$(mktemp -d)
+_CLEANUP_DIRS+=("${T2_HOME}")
 T2_PROJ=$(mktemp -d)
+_CLEANUP_DIRS+=("${T2_PROJ}")
 T2_SESSIONS=$(setup_sessions_dir "$T2_HOME" "$T2_PROJ")
 T2_OUT=$(mktemp)
+_CLEANUP_DIRS+=("${T2_OUT}")
 
 # Write only 2 entries (below threshold of 3)
 make_index_entry "sess-001" "tests-passing" >> "$T2_SESSIONS/index.jsonl"
@@ -161,9 +171,12 @@ echo ""
 echo "--- Test 3: structured text with 3+ sessions ---"
 
 T3_HOME=$(mktemp -d)
+_CLEANUP_DIRS+=("${T3_HOME}")
 T3_PROJ=$(mktemp -d)
+_CLEANUP_DIRS+=("${T3_PROJ}")
 T3_SESSIONS=$(setup_sessions_dir "$T3_HOME" "$T3_PROJ")
 T3_OUT=$(mktemp)
+_CLEANUP_DIRS+=("${T3_OUT}")
 
 make_index_entry "sess-001" "tests-failing" >> "$T3_SESSIONS/index.jsonl"
 make_index_entry "sess-002" "tests-passing" >> "$T3_SESSIONS/index.jsonl"
@@ -202,9 +215,12 @@ echo ""
 echo "--- Test 4: recurring friction detection ---"
 
 T4_HOME=$(mktemp -d)
+_CLEANUP_DIRS+=("${T4_HOME}")
 T4_PROJ=$(mktemp -d)
+_CLEANUP_DIRS+=("${T4_PROJ}")
 T4_SESSIONS=$(setup_sessions_dir "$T4_HOME" "$T4_PROJ")
 T4_OUT=$(mktemp)
+_CLEANUP_DIRS+=("${T4_OUT}")
 
 # 3 sessions: 2 share the same friction string, 1 has none
 make_index_entry "sess-001" "tests-failing" "test_foo_bar assertion failed" >> "$T4_SESSIONS/index.jsonl"
@@ -237,7 +253,9 @@ echo ""
 echo "--- Test 5: index trimming to 20 entries ---"
 
 T5_HOME=$(mktemp -d)
+_CLEANUP_DIRS+=("${T5_HOME}")
 T5_PROJ=$(mktemp -d)
+_CLEANUP_DIRS+=("${T5_PROJ}")
 T5_SESSIONS=$(setup_sessions_dir "$T5_HOME" "$T5_PROJ")
 T5_INDEX="$T5_SESSIONS/index.jsonl"
 
@@ -283,8 +301,10 @@ echo ""
 echo "--- Test 6: session index entry schema validation ---"
 
 T6_DIR=$(mktemp -d)
+_CLEANUP_DIRS+=("${T6_DIR}")
 mkdir -p "$T6_DIR/.claude"
 T6_OUT=$(mktemp)
+_CLEANUP_DIRS+=("${T6_OUT}")
 
 cat > "$T6_DIR/.claude/.session-events.jsonl" <<'EVENTS'
 {"ts":"2026-02-17T10:00:00Z","event":"session_start","project":"test-project"}
@@ -381,9 +401,12 @@ echo ""
 echo "--- Test 7: non-recurring friction not shown as recurring ---"
 
 T7_HOME=$(mktemp -d)
+_CLEANUP_DIRS+=("${T7_HOME}")
 T7_PROJ=$(mktemp -d)
+_CLEANUP_DIRS+=("${T7_PROJ}")
 T7_SESSIONS=$(setup_sessions_dir "$T7_HOME" "$T7_PROJ")
 T7_OUT=$(mktemp)
+_CLEANUP_DIRS+=("${T7_OUT}")
 
 # 3 sessions each with a DIFFERENT friction string
 make_index_entry "sess-001" "tests-failing" "test_alpha failed" >> "$T7_SESSIONS/index.jsonl"

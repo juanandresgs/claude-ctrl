@@ -30,6 +30,9 @@ SCRIPTS_DIR="$PROJECT_ROOT/scripts"
 
 mkdir -p "$PROJECT_ROOT/tmp"
 
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -137,6 +140,7 @@ fi
 
 run_test "test_ci_lib_find_local_ci: .githooks/pre-push is highest priority"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-find-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 mkdir -p "$TEMP_REPO/.githooks" "$TEMP_REPO/.claude" "$TEMP_REPO"
 cat > "$TEMP_REPO/.githooks/pre-push" <<'EOF'
 #!/usr/bin/env bash
@@ -164,6 +168,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_lib_find_local_ci: .claude/pre-push.sh is second priority"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-find2-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 mkdir -p "$TEMP_REPO/.claude"
 cat > "$TEMP_REPO/.claude/pre-push.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -181,6 +186,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_lib_find_local_ci: Makefile ci-local is third priority"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-find3-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 cat > "$TEMP_REPO/Makefile" <<'EOF'
 ci-local:
 	echo "ci-local"
@@ -196,6 +202,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_lib_find_local_ci: returns empty when nothing found"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-find4-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 
 RESULT=$(bash -c "source '$HOOKS_DIR/core-lib.sh'; source '$HOOKS_DIR/ci-lib.sh'; find_local_ci '$TEMP_REPO'" 2>/dev/null || true)
 if [[ -z "$RESULT" ]]; then
@@ -211,6 +218,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_lib_read_write: round-trip state file"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-rw-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 TEMP_CLAUDE_DIR="${TEMP_REPO}/.claude"
 mkdir -p "$TEMP_CLAUDE_DIR"
@@ -234,6 +242,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_lib_read_write: failure status round-trip"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-rw2-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 TEMP_CLAUDE_DIR="${TEMP_REPO}/.claude"
 mkdir -p "$TEMP_CLAUDE_DIR"
@@ -256,6 +265,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_lib_read_write: read returns 1 when no state file"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-rw3-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 TEMP_CLAUDE_DIR="${TEMP_REPO}/.claude"
 mkdir -p "$TEMP_CLAUDE_DIR"
@@ -327,6 +337,7 @@ fi
 
 run_test "test_ci_local_gate_pass: passing local CI allows push"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-gate-pass-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.githooks"
 cat > "$TEMP_REPO/.githooks/pre-push" <<'EOF'
@@ -340,7 +351,7 @@ INPUT=$(jq -n --arg cwd "$TEMP_REPO" \
 OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 # Should NOT deny
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail_test "Push was denied but local CI passed: $OUTPUT"
 else
     pass_test
@@ -349,6 +360,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_local_gate_deny: failing local CI blocks push"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-gate-deny-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.githooks"
 cat > "$TEMP_REPO/.githooks/pre-push" <<'EOF'
@@ -362,7 +374,7 @@ INPUT=$(jq -n --arg cwd "$TEMP_REPO" \
     '{"tool_name":"Bash","tool_input":{"command":"git push origin main","cwd":$cwd}}')
 OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     pass_test
 else
     fail_test "Push was not denied when local CI failed: $OUTPUT"
@@ -371,6 +383,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_local_gate_advisory: no pre-push but .github/workflows exists emits advisory"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-gate-adv-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.github/workflows"
 cat > "$TEMP_REPO/.github/workflows/ci.yml" <<'EOF'
@@ -388,7 +401,7 @@ INPUT=$(jq -n --arg cwd "$TEMP_REPO" \
 OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 # Should NOT deny, but may emit advisory
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail_test "Push was denied when advisory expected: $OUTPUT"
 else
     pass_test
@@ -397,6 +410,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_local_gate_skip: no pre-push and no workflows → silent pass"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-gate-skip-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 # No .githooks/, no .claude/pre-push.sh, no Makefile, no .github/workflows
 
@@ -404,7 +418,7 @@ INPUT=$(jq -n --arg cwd "$TEMP_REPO" \
     '{"tool_name":"Bash","tool_input":{"command":"git push origin main","cwd":$cwd}}')
 OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     fail_test "Push was denied when nothing found (should silent pass): $OUTPUT"
 else
     pass_test
@@ -413,6 +427,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_local_gate_timeout: slow script triggers timeout denial"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-gate-timeout-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.githooks"
 # Use a 200s sleep to simulate a slow CI (will be killed by 120s timeout)
@@ -432,7 +447,7 @@ INPUT=$(jq -n --arg cwd "$TEMP_REPO" \
 OUTPUT=$(cd "$TEMP_REPO" && echo "$INPUT" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 # Exit code 124 from the script should be treated as timeout
-if echo "$OUTPUT" | grep -q '"deny"'; then
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
     pass_test
 else
     fail_test "Expected denial for timeout-exit-code script: $OUTPUT"
@@ -441,6 +456,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_local_gate_force_push_skip: force push skips ci-local-gate"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-gate-force-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.githooks"
 cat > "$TEMP_REPO/.githooks/pre-push" <<'EOF'
@@ -471,6 +487,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_ci_watch_lock: second invocation exits if lock holds live PID"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-watch-lock-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 TEMP_CLAUDE_DIR="$TEMP_REPO"
 mkdir -p "$TEMP_CLAUDE_DIR"
@@ -528,6 +545,7 @@ fi
 
 run_test "test_prompt_submit_ci_keyword: CI keyword with state file injects status"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-prompt-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 TEMP_CLAUDE_DIR="${TEMP_REPO}/.claude"
@@ -555,6 +573,7 @@ rm -rf "$TEMP_REPO"
 
 run_test "test_prompt_submit_ci_keyword: no state file = no injection"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ci-prompt2-XXXXXX")
+_CLEANUP_DIRS+=("$TEMP_REPO")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 TEMP_CLAUDE_DIR="${TEMP_REPO}/.claude"

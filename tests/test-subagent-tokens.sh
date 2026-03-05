@@ -33,6 +33,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 TESTS_RUN=0
+
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
 TESTS_PASSED=0
 TESTS_FAILED=0
 

@@ -28,6 +28,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # ---------------------------------------------------------------------------
 # resolve_real_proof_file: find the .proof-status path that check-tester.sh
 # will actually read/write when invoked from a test context.
@@ -108,6 +112,8 @@ run_auto_verify() {
 # ---------------------------------------------------------------------------
 run_test "Auto-verify: clean verification with High confidence and full coverage"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 
@@ -154,6 +160,7 @@ rm -rf "$MOCK_DIR"
 # ---------------------------------------------------------------------------
 run_test "Auto-verify rejection: Medium confidence"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 
@@ -178,6 +185,7 @@ rm -rf "$MOCK_DIR"
 # ---------------------------------------------------------------------------
 run_test "Auto-verify rejection 3a: non-environmental 'Not tested' blocks (e.g. edge cases)"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 
@@ -209,6 +217,7 @@ rm -rf "$MOCK_DIR"
 # ---------------------------------------------------------------------------
 run_test "Auto-verify pass 3b: environmental-only 'Not tested' is whitelisted"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 
@@ -246,6 +255,7 @@ rm -rf "$MOCK_DIR"
 # ---------------------------------------------------------------------------
 run_test "Auto-verify rejection 3c: mixed real + environmental gaps still blocks"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 
@@ -277,6 +287,7 @@ rm -rf "$MOCK_DIR"
 # ---------------------------------------------------------------------------
 run_test "Auto-verify rejection: contains 'Partially verified'"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 
@@ -306,6 +317,7 @@ rm -rf "$MOCK_DIR"
 # ---------------------------------------------------------------------------
 run_test "No auto-verify signal: manual flow preserved"
 MOCK_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-av-XXXXXX")
+_CLEANUP_DIRS+=("$MOCK_DIR")
 mkdir -p "$MOCK_DIR/.claude"
 PROOF_FILE="$MOCK_DIR/.claude/.proof-status"
 

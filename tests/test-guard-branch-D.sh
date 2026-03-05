@@ -21,6 +21,10 @@ TRACE_STORE="${TRACE_STORE:-$HOME/.claude/traces}"
 
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -73,12 +77,14 @@ fi
 run_test "Check 4: git branch -D denied with no Guardian active"
 
 REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-branch-D-no-guardian-XXXXXX")
+_CLEANUP_DIRS+=("$REPO")
 git -C "$REPO" init -q
 git -C "$REPO" commit --allow-empty -m "root" -q
 
 # Ensure no active guardian markers for this test (clean TRACE_STORE for test isolation)
 # We point TRACE_STORE at a temp dir with no .active-guardian-* files
 FAKE_TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-branch-D-trace-XXXXXX")
+_CLEANUP_DIRS+=("$FAKE_TRACE")
 
 OUTPUT=$(TRACE_STORE="$FAKE_TRACE" run_guard "$REPO" "$(make_input 'git branch -D some-branch')")
 

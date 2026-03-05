@@ -24,6 +24,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -130,6 +134,7 @@ run_test "Issue #126: git commit -m 'fix branch -D handling' must NOT be denied 
 
 # We need a git repo on a non-main branch for the commit check to pass through
 COMMIT_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-commitmsg-XXXXXX")
+_CLEANUP_DIRS+=("$COMMIT_REPO")
 git -C "$COMMIT_REPO" init > /dev/null 2>&1
 git -C "$COMMIT_REPO" checkout -b feature-test > /dev/null 2>&1
 # Create a file so there's something to commit
@@ -151,6 +156,7 @@ assert_allow "$OUTPUT" "commit msg with 'branch -D'"
 run_test "Issue #91: git commit -m 'don't commit on main' must NOT be denied by Check 2"
 
 COMMIT_REPO2=$(mktemp -d "$PROJECT_ROOT/tmp/test-commitmsg2-XXXXXX")
+_CLEANUP_DIRS+=("$COMMIT_REPO2")
 git -C "$COMMIT_REPO2" init > /dev/null 2>&1
 git -C "$COMMIT_REPO2" checkout -b feature-test2 > /dev/null 2>&1
 echo "test2" > "$COMMIT_REPO2/file2.txt"
@@ -171,6 +177,7 @@ assert_allow "$OUTPUT" "commit msg with 'commit on main'"
 run_test "Issue #126: git commit -m 'use --force for deployment' must NOT be denied by Check 3"
 
 COMMIT_REPO3=$(mktemp -d "$PROJECT_ROOT/tmp/test-commitmsg3-XXXXXX")
+_CLEANUP_DIRS+=("$COMMIT_REPO3")
 git -C "$COMMIT_REPO3" init > /dev/null 2>&1
 git -C "$COMMIT_REPO3" checkout -b feature-test3 > /dev/null 2>&1
 echo "test3" > "$COMMIT_REPO3/file3.txt"
@@ -191,6 +198,7 @@ assert_allow "$OUTPUT" "commit msg with '--force'"
 run_test "Issue #126: git commit -m 'clean -f the build' must NOT be denied by Check 4"
 
 COMMIT_REPO4=$(mktemp -d "$PROJECT_ROOT/tmp/test-commitmsg4-XXXXXX")
+_CLEANUP_DIRS+=("$COMMIT_REPO4")
 git -C "$COMMIT_REPO4" init > /dev/null 2>&1
 git -C "$COMMIT_REPO4" checkout -b feature-test4 > /dev/null 2>&1
 echo "test4" > "$COMMIT_REPO4/file4.txt"
@@ -216,6 +224,7 @@ assert_allow "$OUTPUT" "commit msg with 'clean -f'"
 run_test "Regression: git branch -D on unmerged branch still denied"
 
 BRANCH_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-branchD-XXXXXX")
+_CLEANUP_DIRS+=("$BRANCH_REPO")
 git -C "$BRANCH_REPO" init > /dev/null 2>&1
 git -C "$BRANCH_REPO" config user.email "test@test.com" > /dev/null 2>&1
 git -C "$BRANCH_REPO" config user.name "Test" > /dev/null 2>&1
@@ -274,6 +283,7 @@ run_test "Comment stripping: comment with 'git commit' + git ls-tree on main mus
 
 # This test must run while the current branch is main (or the test repo's default)
 COMMENT_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-comment-XXXXXX")
+_CLEANUP_DIRS+=("$COMMENT_REPO")
 git -C "$COMMENT_REPO" init > /dev/null 2>&1
 git -C "$COMMENT_REPO" config user.email "test@test.com" > /dev/null 2>&1
 git -C "$COMMENT_REPO" config user.name "Test" > /dev/null 2>&1

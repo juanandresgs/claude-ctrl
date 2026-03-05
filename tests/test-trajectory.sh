@@ -29,6 +29,10 @@ NC='\033[0m'
 # Test counters
 TESTS_RUN=0
 TESTS_PASSED=0
+
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
 TESTS_FAILED=0
 
 pass() {

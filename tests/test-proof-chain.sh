@@ -49,6 +49,10 @@ SESSION_INIT_SH="${HOOKS_DIR}/session-init.sh"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # ---------------------------------------------------------------------------
 # Test tracking
 # ---------------------------------------------------------------------------
@@ -229,6 +233,7 @@ run_task_track() {
 
 run_test "Check 8: commit denied when .proof-status is missing-then-created (no-file bootstrap)"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # No .proof-status = bootstrap path, commit allowed
 OUTPUT=$(run_guard "git commit -m test" "$REPO")
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "proof"; then
@@ -240,6 +245,7 @@ rm -rf "$REPO"
 
 run_test "Check 8: commit denied when .proof-status is pending"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 OUTPUT=$(run_guard "git commit -m test" "$REPO" "pending|$(date +%s)")
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "proof"; then
     pass_test
@@ -250,6 +256,7 @@ rm -rf "$REPO"
 
 run_test "Check 8: commit passes when .proof-status is verified"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # Set test-status to pass so Check 7 doesn't block us
 echo "pass|0|$(date +%s)" > "$REPO/.claude/.test-status"
 OUTPUT=$(run_guard "git commit -m test" "$REPO" "verified|$(date +%s)")
@@ -264,6 +271,7 @@ run_test "Check 8: meta-repo (non-git temp) has no .proof-status = commit allowe
 # Tests that the bootstrap path (no .proof-status file) allows commits.
 # The meta-repo (~/.claude) has no .proof-status at rest — same behavior expected.
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # Verify no .proof-status exists
 rm -f "$REPO/.claude/.proof-status"
 echo "pass|0|$(date +%s)" > "$REPO/.claude/.test-status"
@@ -281,6 +289,7 @@ rm -rf "$REPO"
 
 run_test "Check 9: block agent writing 'verified' to .proof-status via redirect"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # Command: echo "verified|ts" > .proof-status  — should be denied
 OUTPUT=$(run_guard "echo 'verified|12345' > $REPO/.claude/.proof-status" "$REPO")
 if echo "$OUTPUT" | grep -q "deny"; then
@@ -292,6 +301,7 @@ rm -rf "$REPO"
 
 run_test "Check 9: allow non-verification writes to .proof-status (pending writes allowed)"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # A non-approval write (like echo "pending|ts") should NOT match Check 9
 # Check 9 requires BOTH a redirect to proof-status AND approval keyword
 OUTPUT=$(run_guard "echo 'pending|12345' > $REPO/.claude/.proof-status" "$REPO")
@@ -308,6 +318,7 @@ rm -rf "$REPO"
 
 run_test "Check 10: block deletion of .proof-status when pending"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # Write to the scoped file — pre-bash.sh Check 10 reads .proof-status-{phash}
 # via resolve_proof_file() (DEC-PROOF-SINGLE-001). run_guard_with_file does NOT
 # touch .proof-status, so we must set it here before calling.
@@ -323,6 +334,7 @@ rm -rf "$REPO"
 
 run_test "Check 10: allow deletion of .proof-status when verified"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 _C10_PROOF=$(scoped_proof_path "$REPO")
 echo "verified|$(date +%s)" > "$_C10_PROOF"
 OUTPUT=$(run_guard_with_file "rm $REPO/.claude/.proof-status" "$REPO")
@@ -339,6 +351,7 @@ rm -rf "$REPO"
 
 run_test "post-write.sh: verified proof becomes pending after source file change"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 # Use scoped path — post-write.sh reads/writes .proof-status-{phash} via resolve_proof_file()
 _TRACK_PROOF=$(scoped_proof_path "$REPO")
 # Write "verified" status directly to the file, bypassing write_proof_status() lattice.
@@ -366,6 +379,7 @@ rm -rf "$REPO"
 
 run_test "post-write.sh: test files do NOT invalidate verified proof"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 _TRACK_PROOF=$(scoped_proof_path "$REPO")
 echo "verified|$(date +%s)" > "$_TRACK_PROOF"
 # .test.sh matches the spec exclusion pattern — should NOT invalidate
@@ -384,6 +398,7 @@ rm -rf "$REPO"
 
 run_test "post-write.sh: doc files (.md) do NOT invalidate verified proof"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 _TRACK_PROOF=$(scoped_proof_path "$REPO")
 echo "verified|$(date +%s)" > "$_TRACK_PROOF"
 # .md is not a source extension — should NOT invalidate
@@ -402,6 +417,7 @@ rm -rf "$REPO"
 
 run_test "post-write.sh: already-pending proof is not changed by source change"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 _TRACK_PROOF=$(scoped_proof_path "$REPO")
 echo "pending|11111" > "$_TRACK_PROOF"
 # Write a source file — status already pending, should remain pending (may update timestamp)
@@ -424,6 +440,7 @@ rm -rf "$REPO"
 
 run_test "Gate C: verified proof allows Guardian dispatch"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 OUTPUT=$(run_task_track "guardian" "$REPO" "verified|$(date +%s)")
 if echo "$OUTPUT" | grep -q "deny"; then
     fail_test "Guardian dispatch blocked with verified proof (should allow)"
@@ -434,6 +451,7 @@ rm -rf "$REPO"
 
 run_test "Gate C: pending proof blocks Guardian dispatch"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 OUTPUT=$(run_task_track "guardian" "$REPO" "pending|$(date +%s)")
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "proof"; then
     pass_test
@@ -444,6 +462,7 @@ rm -rf "$REPO"
 
 run_test "Gate C: missing .proof-status allows Guardian dispatch (bootstrap)"
 REPO=$(make_temp_repo)
+_CLEANUP_DIRS+=("${REPO}")
 OUTPUT=$(run_task_track "guardian" "$REPO")
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "proof"; then
     fail_test "Guardian dispatch blocked with no .proof-status (bootstrap should allow)"

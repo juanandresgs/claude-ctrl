@@ -28,6 +28,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 # Ensure tmp directory exists
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 # Track test results
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -107,6 +111,8 @@ MANIFEST
 run_test "Agent tool_name: guardian fallback writes diagnostic summary"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-guardian-$$"
 
 TRACE_ID=$(setup_trace_env "guardian" "$TEST_DIR" "$SESSION_ID")
@@ -139,6 +145,7 @@ rm -rf "$TEST_DIR"
 run_test "Agent tool_name: implementer fallback writes diagnostic summary"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-impl-$$"
 
 TRACE_ID=$(setup_trace_env "implementer" "$TEST_DIR" "$SESSION_ID")
@@ -170,6 +177,7 @@ rm -rf "$TEST_DIR"
 run_test "Agent tool_name: planner fallback writes diagnostic summary"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-plan-$$"
 
 TRACE_ID=$(setup_trace_env "planner" "$TEST_DIR" "$SESSION_ID")
@@ -201,6 +209,7 @@ rm -rf "$TEST_DIR"
 run_test "Task tool_name: guardian fallback writes diagnostic summary"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-task-g-$$"
 
 TRACE_ID=$(setup_trace_env "guardian" "$TEST_DIR" "$SESSION_ID")
@@ -232,6 +241,7 @@ rm -rf "$TEST_DIR"
 run_test "Existing summary.md (>10 bytes) is NOT overwritten"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-nooverwrite-$$"
 
 TRACE_ID=$(setup_trace_env "guardian" "$TEST_DIR" "$SESSION_ID")
@@ -263,6 +273,7 @@ rm -rf "$TEST_DIR"
 run_test "Empty subagent_type: auto-detects guardian from active marker"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-autodet-$$"
 
 TRACE_ID=$(setup_trace_env "guardian" "$TEST_DIR" "$SESSION_ID")
@@ -297,6 +308,7 @@ rm -rf "$TEST_DIR"
 run_test "Fallback emits additionalContext with summary for guardian"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-addlctx-$$"
 
 TRACE_ID=$(setup_trace_env "guardian" "$TEST_DIR" "$SESSION_ID")
@@ -327,6 +339,7 @@ rm -rf "$TEST_DIR"
 run_test "Non-Task/Agent tool_name does NOT trigger IS_SUBAGENT logic"
 
 TEST_DIR=$(mktemp -d "$PROJECT_ROOT/tmp/test-ptf-XXXXXX")
+_CLEANUP_DIRS+=("$TEST_DIR")
 SESSION_ID="test-sess-nosubagent-$$"
 
 TRACE_ID=$(setup_trace_env "guardian" "$TEST_DIR" "$SESSION_ID")

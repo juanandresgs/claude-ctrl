@@ -29,6 +29,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 
 mkdir -p "$PROJECT_ROOT/tmp"
 
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
+
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -109,6 +113,7 @@ fi
 run_test "Check5 Bug2: non-git CWD + git worktree remove does not crash"
 
 TARGET_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-target-XXXXXX")
+_CLEANUP_DIRS+=("$TARGET_REPO")
 git -C "$TARGET_REPO" init > /dev/null 2>&1
 
 WORKTREE_CWD="$TARGET_REPO/.worktrees/active-feature"
@@ -143,6 +148,7 @@ assert_deny "$OUTPUT" "path-with-spaces + non-git CWD"
 run_test "Check5 Regression: simple 'git worktree remove /path' still denied"
 
 SIMPLE_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-simple-XXXXXX")
+_CLEANUP_DIRS+=("$SIMPLE_REPO")
 git -C "$SIMPLE_REPO" init > /dev/null 2>&1
 
 WORKTREE_CWD3="$SIMPLE_REPO/.worktrees/some-wt"
@@ -159,6 +165,7 @@ assert_deny "$OUTPUT" "simple path"
 run_test "Check5 Regression: git -C /no-spaces worktree remove /wt is denied"
 
 NOSPACE_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-nospace-XXXXXX")
+_CLEANUP_DIRS+=("$NOSPACE_REPO")
 git -C "$NOSPACE_REPO" init > /dev/null 2>&1
 
 WORKTREE_CWD4="$NOSPACE_REPO/.worktrees/the-wt"
@@ -175,6 +182,7 @@ assert_deny "$OUTPUT" "no-spaces -C path from non-git CWD"
 run_test "Check5: deny reason contains 'cd' to main worktree"
 
 REWRITE_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-check5-rewrite-XXXXXX")
+_CLEANUP_DIRS+=("$REWRITE_REPO")
 git -C "$REWRITE_REPO" init > /dev/null 2>&1
 
 WORKTREE_CWD5="$REWRITE_REPO/.worktrees/a-wt"

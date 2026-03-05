@@ -36,6 +36,10 @@ HOOKS_DIR="$PROJECT_ROOT/hooks"
 REAL_TRACE_STORE="$HOME/.claude/traces"
 
 mkdir -p "$PROJECT_ROOT/tmp"
+
+# Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
+_CLEANUP_DIRS=()
+trap '[[ ${#_CLEANUP_DIRS[@]} -gt 0 ]] && rm -rf "${_CLEANUP_DIRS[@]}" 2>/dev/null; true' EXIT
 mkdir -p "$REAL_TRACE_STORE"
 
 TESTS_RUN=0
@@ -130,6 +134,7 @@ run_check_tester() {
 
     local TEMP_REPO
     TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-ct-XXXXXX")
+    _CLEANUP_DIRS+=("$TEMP_REPO")
     git -C "$TEMP_REPO" init > /dev/null 2>&1
     mkdir -p "$TEMP_REPO/.claude"
 
