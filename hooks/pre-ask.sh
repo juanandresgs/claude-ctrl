@@ -5,6 +5,7 @@
 # and denies anti-patterns that waste user attention.
 #
 # Gates enforced:
+#   0. dispatch-confirmation-deny — blocks "want me to dispatch Guardian?" from the orchestrator
 #   1. forward-motion-deny  — blocks "should we continue?" style questions from subagents
 #   2. duplicate-gate-deny  — blocks "should I commit/merge/push?" pre-asks from subagents
 #   3. obvious-answer-deny  — blocks questions where one option is already Recommended (≤2 options)
@@ -15,15 +16,19 @@
 #   - Tester env-var asks (environment variable not set)
 #
 # @decision DEC-ASK-GATE-001
-# @title Pre-ask merit gate with 4 classification gates
+# @title Pre-ask merit gate with 5 classification gates
 # @status accepted
 # @rationale AskUserQuestion is expensive — it interrupts the user and breaks flow.
+#   Gate 0 (dispatch-confirmation-deny) intercepts the orchestrator's tendency to ask
+#   "Want me to dispatch Guardian?" / "Should I dispatch tester?" before auto-dispatching.
+#   CLAUDE.md auto-dispatch rules prescribe the next action — asking is prohibited.
+#   This gate fires before the orchestrator bypass so it catches this specific anti-pattern
+#   while still allowing all other orchestrator questions through.
 #   Forward-motion questions ("should I continue?") violate auto-dispatch rules that
 #   prescribe the next step. Duplicate-gate questions ("should I commit?") duplicate
 #   Guardian's approval cycle. Obvious-answer questions ("which approach? (Recommended)")
 #   with ≤2 options add no value. The gate enforces these rules mechanically so agents
-#   don't accidentally waste user attention. Scoped to subagents only — the orchestrator
-#   must retain full AskUserQuestion access for legitimate disambiguation.
+#   don't accidentally waste user attention.
 
 set -euo pipefail
 
@@ -36,6 +41,7 @@ enable_fail_closed "pre-ask"
 
 # In scan mode: emit all gate declarations and exit cleanly.
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
+    declare_gate "dispatch-confirmation-deny" "Blocks dispatch-confirmation questions from the orchestrator" "deny"
     declare_gate "forward-motion-deny" "Blocks forward-motion questions from subagents (should we continue?)" "deny"
     declare_gate "duplicate-gate-deny" "Blocks commit/merge/push pre-asks from subagents" "deny"
     declare_gate "obvious-answer-deny" "Blocks questions with a Recommended option and ≤2 choices" "deny"
@@ -74,8 +80,21 @@ AGENT_TYPE=$(get_active_agent_type)
 # Concatenates all question strings from the questions array for pattern matching.
 QUESTION_TEXT=$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.questions[].question // empty' 2>/dev/null | tr '\n' ' ' || echo "")
 
-# --- Always-allow bypass: orchestrator context ---
-# The orchestrator must retain full AskUserQuestion access for legitimate disambiguation.
+# --- Gate 0: dispatch-confirmation-deny (orchestrator only) ---
+# Catches "Want me to dispatch Guardian?" / "Should I dispatch tester?" / "Ready for merge?"
+# CLAUDE.md prohibits these — auto-dispatch rules prescribe the next action.
+# Fires before the orchestrator bypass so it can intercept this specific anti-pattern.
+declare_gate "dispatch-confirmation-deny" "Blocks dispatch-confirmation questions from the orchestrator" "deny"
+if [[ "$AGENT_TYPE" == "orchestrator" ]]; then
+    if [[ "$QUESTION_TEXT" =~ (want[[:space:]]+me[[:space:]]+to|shall[[:space:]]+I|should[[:space:]]+I|ready[[:space:]]+for).*(dispatch|invoke|call|run|merge|commit|push|verify|test)[[:space:]]*(tester|guardian|implementer|planner|agent)? ]] || \
+       [[ "$QUESTION_TEXT" =~ (dispatch|invoke).*(tester|guardian|implementer|planner) ]]; then
+        emit_deny "Dispatch-confirmation blocked. Auto-dispatch rules (CLAUDE.md) require the orchestrator to dispatch agents without asking. If proof-status gates block Guardian, dispatch the tester first."
+    fi
+fi
+
+# --- Always-allow bypass: orchestrator context (post-Gate-0) ---
+# After dispatch-confirmation filtering, the orchestrator retains full AskUserQuestion
+# access for legitimate disambiguation (architecture, task interruption, requirements).
 if [[ "$AGENT_TYPE" == "orchestrator" ]]; then
     emit_flush
     exit 0

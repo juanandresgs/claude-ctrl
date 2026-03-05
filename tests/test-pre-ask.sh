@@ -6,7 +6,7 @@
 # @status accepted
 # @rationale Validates that pre-ask.sh correctly classifies questions and
 #   enforces the merit gate for subagent AskUserQuestion calls. Tests cover
-#   scan mode, all 4 gates, always-allow bypasses, and orchestrator passthrough.
+#   scan mode, all 5 gates, always-allow bypasses, and orchestrator passthrough.
 #   Uses .active-*-* marker files to simulate agent context — the same pattern
 #   used by trace-lib.sh's init_trace().
 
@@ -61,13 +61,13 @@ run_hook() {
         bash "$HOOK_DIR/pre-ask.sh" < "$fixture" 2>/dev/null
 }
 
-# --- T01: Scan mode emits 4 gates ---
+# --- T01: Scan mode emits 5 gates ---
 OUTPUT=$(HOOK_GATE_SCAN=1 bash "$HOOK_DIR/pre-ask.sh" < /dev/null 2>/dev/null)
 GATE_COUNT=$(echo "$OUTPUT" | grep -c '^GATE' || echo "0")
-if [[ "$GATE_COUNT" -eq 4 ]]; then
-    pass "T01: Scan mode emits exactly 4 gates"
+if [[ "$GATE_COUNT" -eq 5 ]]; then
+    pass "T01: Scan mode emits exactly 5 gates"
 else
-    fail "T01: Scan mode gate count" "expected 4, got $GATE_COUNT"
+    fail "T01: Scan mode gate count" "expected 5, got $GATE_COUNT"
 fi
 
 # Verify specific gate names are present
@@ -93,6 +93,12 @@ if echo "$OUTPUT" | grep -q "agent-context-advisory"; then
     pass "T01d: agent-context-advisory gate declared"
 else
     fail "T01d: agent-context-advisory gate declared" "gate not found in scan output"
+fi
+
+if echo "$OUTPUT" | grep -q "dispatch-confirmation-deny"; then
+    pass "T01e: dispatch-confirmation-deny gate declared"
+else
+    fail "T01e: dispatch-confirmation-deny gate declared" "gate not found in scan output"
 fi
 
 # --- T02: forward-motion deny (with implementer marker) ---
@@ -183,6 +189,35 @@ elif echo "$OUTPUT" | grep -q "Check the plan"; then
 else
     # Advisory might not fire if pattern doesn't match — verify it's at least allowed
     pass "T09: implementer check-in question allowed (no deny)"
+fi
+
+# --- T10: dispatch-confirmation deny (orchestrator, dispatch Guardian) ---
+OUTPUT=$(run_hook "$FIXTURE_DIR/ask-dispatch-confirm-dispatch.json")  # no agent marker = orchestrator
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
+    pass "T10: dispatch-confirmation 'dispatch Guardian' denied for orchestrator"
+else
+    fail "T10: dispatch-confirmation 'dispatch Guardian' denied for orchestrator" "expected deny, got: $OUTPUT"
+fi
+if echo "$OUTPUT" | grep -q "Auto-dispatch rules"; then
+    pass "T10a: dispatch-confirmation deny message mentions auto-dispatch rules"
+else
+    fail "T10a: dispatch-confirmation deny message mentions auto-dispatch rules" "message: $OUTPUT"
+fi
+
+# --- T11: dispatch-confirmation deny (orchestrator, dispatch tester) ---
+OUTPUT=$(run_hook "$FIXTURE_DIR/ask-dispatch-confirm-verify.json")  # no agent marker = orchestrator
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
+    pass "T11: dispatch-confirmation 'dispatch tester' denied for orchestrator"
+else
+    fail "T11: dispatch-confirmation 'dispatch tester' denied for orchestrator" "expected deny, got: $OUTPUT"
+fi
+
+# --- T12: orchestrator legitimate question passes Gate 0 ---
+OUTPUT=$(run_hook "$FIXTURE_DIR/ask-orchestrator-legit.json")  # no agent marker = orchestrator
+if [[ "$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "deny" ]]; then
+    fail "T12: orchestrator legitimate question should be ALLOWED" "got deny: $OUTPUT"
+else
+    pass "T12: orchestrator legitimate disambiguation passes Gate 0"
 fi
 
 # --- Summary ---

@@ -1,0 +1,16 @@
+{
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Should I dispatch the tester to verify the implementation?",
+        "header": "Verification step",
+        "options": [
+          {"label": "Yes", "description": "Run the tester now"},
+          {"label": "No", "description": "Skip verification"}
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}

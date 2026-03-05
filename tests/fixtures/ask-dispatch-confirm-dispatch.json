@@ -1,0 +1,16 @@
+{
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Want me to dispatch Guardian to commit these changes?",
+        "header": "Ready to commit",
+        "options": [
+          {"label": "Yes", "description": "Dispatch Guardian now"},
+          {"label": "No", "description": "Skip for now"}
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}

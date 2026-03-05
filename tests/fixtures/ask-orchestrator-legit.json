@@ -1,0 +1,17 @@
+{
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "The new feature requires a database. Should we use PostgreSQL or SQLite for this project?",
+        "header": "Database selection",
+        "options": [
+          {"label": "PostgreSQL", "description": "Production-grade, requires a server"},
+          {"label": "SQLite", "description": "Embedded, zero configuration"},
+          {"label": "Let me decide later", "description": "Defer this decision"}
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}
