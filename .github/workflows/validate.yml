@@ -42,6 +42,7 @@ jobs:
           # SC2064,SC2329 — trap quoting, unused helper functions in test suites
           # SC1090,SC2188,SC2320,SC2162,SC2045 — dynamic source, bare redirect, exit code
           # SC2001,SC2088,SC2015,SC2105,SC2012,SC2126,SC2295 — style/idiom warnings
+          # SC2164 — cd without || exit (test scripts use bare cd intentionally with set -e)
           failed=0
           for script in tests/*.sh tests/lib/*.sh scripts/*.sh; do
             [ -f "$script" ] || continue
@@ -49,7 +50,7 @@ jobs:
             if ! shellcheck \
               -e SC2034,SC1091,SC2155,SC2011,SC2016,SC2030,SC2031,SC2010,SC2005,SC1007 \
               -e SC2153,SC2064,SC2329,SC2086,SC1090,SC2129,SC2320,SC2188,SC2015,SC2162 \
-              -e SC2045,SC2001,SC2088,SC2012,SC2105,SC2126,SC2295,SC2002,SC2317 \
+              -e SC2045,SC2001,SC2088,SC2012,SC2105,SC2126,SC2295,SC2002,SC2317,SC2164 \
               "$script"; then
               failed=1
             fi
