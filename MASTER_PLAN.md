@@ -6,7 +6,7 @@
 **Languages:** Bash (85%), Markdown (10%), Python (3%), JSON (2%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-03-01
-**Last updated:** 2026-03-04 (production-reliability initiative added)
+**Last updated:** 2026-03-05 (RSM Phase 2 completed, production-reliability phases updated)
 
 The Claude Code configuration directory. It shapes how Claude Code operates across all projects via hooks, agents, skills, and instructions. Managed as a git repository (juanandresgs/claude-config-pro). The hook system enforces governance (git safety, documentation, proof gates, worktree discipline) while the agent system dispatches specialized roles (planner, implementer, tester, guardian) for all project work.
 
@@ -88,6 +88,7 @@ The Claude Code configuration directory. It shapes how Claude Code operates acro
 | 2026-03-04 | DEC-PROD-003 | production-reliability | Inline rotation in session-init.sh for state files | session-init already runs at start; tail -n 1000 rotation is O(1) additional work |
 | 2026-03-04 | DEC-PROD-004 | production-reliability | SESSION_ID-based TTL sentinel scoping | PID reuse causes false matches; SESSION_ID is unique per session |
 | 2026-03-04 | DEC-PROD-005 | production-reliability | Non-blocking macOS CI matrix job | macOS is primary dev platform but CI is Ubuntu-only; continue-on-error initially |
+| 2026-03-05 | DEC-RSM-BOOTSTRAP-001 | robust-state-mgmt | Bootstrap paradox: document self-hosting gate risk | When gate infrastructure itself is broken, the gate blocks the fix; manual override required (#105) |
 
 ---
 
@@ -326,179 +327,43 @@ All P0 requirements (001-007) satisfied. Write-tool loophole (#37) closed. Concu
   Rationale: JSON-over-AF_UNIX protocol provides CAS, leases with fencing tokens, and subscribe (SSE for hooks). Graceful degradation: all hooks fall back to file-based when socket unavailable. MCP bridge (~30-line FastMCP) extends to Claude Web agents. Per Kleppmann's analysis, fencing tokens prevent stale-lease hazards.
 
 #### Phase 0: Immediate Fixes -- flock + Write-tool Closure
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-02
+**Merge:** ca20027
 **Decision IDs:** DEC-RSM-FLOCK-001, DEC-RSM-LATTICE-001
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
-**Issues:** #75, #37
-**Definition of Done:**
-- REQ-P0-001 partially satisfied: Write/Edit to .proof-status denied (content inspection in pre-write.sh)
-- REQ-P0-002 satisfied: write_proof_status() uses flock, concurrent writes are safe
-- REQ-P0-003 satisfied: monotonic lattice enforced in write_proof_status()
-
-##### Planned Decisions
-- DEC-RSM-FLOCK-001: flock()-based locking for write_proof_status() — sub-ms overhead, crash-safe — Addresses: REQ-P0-002
-- DEC-RSM-LATTICE-001: Monotonic lattice enforcement — eliminates verified-to-pending regression — Addresses: REQ-P0-003
-
-##### Work Items
-
-**W0-0: Content inspection in pre-write.sh for .proof-status writes (closes #37)**
-- Add Gate 0 at the top of pre-write.sh, before all existing gates
-- Pattern match file_path against `*proof-status*` and `*.test-status*`
-- emit_deny with explanation pointing to prompt-submit.sh and post-task.sh as authorized paths
-- Extend to `.hook-timing.log` (append-only protection)
-- 3 test fixtures: Write-to-proof-status deny, Edit-to-proof-status deny, Write-to-test-status deny
-
-**W0-1: Wrap state_update() in flock to fix state.json concurrent jq race**
-- In state-lib.sh, acquire flock on state.json.lock before jq read-modify-write
-- Subshell-scoped: `(exec {lockfd}>"${file}.lock"; flock -w 5 $lockfd; ... )` pattern
-- Timeout 5 seconds, log warning on timeout, continue without update (fail-open for audit layer)
-
-**W0-2: Single flock around write_proof_status() 3-file write**
-- In log.sh, wrap all 3 proof-status writes (worktree, project-scoped, legacy) in a single flock
-- Lock file: `$CLAUDE_DIR/.proof-status.lock`
-- Crash between writes currently leaves inconsistent state; single lock + atomic write per file fixes this
-
-**W0-3: Extend guardian TTL 300s to 600s + add heartbeat renewal**
-- In task-track.sh, change TTL constant from 300 to 600
-- Add background heartbeat: `while kill -0 $PPID 2>/dev/null; do touch "$marker"; sleep 60; done &`
-- Marker touch resets mtime, extending effective TTL while process is alive
-
-**W0-4: Add monotonic lattice enforcement to write_proof_status()**
-- Define ordinal map: none=0, needs-verification=1, pending=2, verified=3, committed=4
-- Before write, read current state and compare ordinals
-- Reject downward transitions (return 1 with log_info warning)
-- Exception: epoch reset — if .proof-epoch differs, allow any transition (new work cycle)
-- Add .proof-epoch counter file, incremented by session-init.sh at clean start
-
-**W0-5: Add CAS wrapper to prompt-submit.sh**
-- Replace direct write_proof_status("verified") with cas_proof_status("pending", "verified")
-- cas_proof_status: acquire flock, read current, compare expected, write if match, fail if mismatch
-- On mismatch: log warning, do not write (another path already changed state)
-
-##### Dispatch Plan
-- Dispatch 1: W0-0, W0-1, W0-2 (protection + locking — pre-write.sh, state-lib.sh, log.sh)
-- Dispatch 2: W0-3, W0-4, W0-5 (TTL + lattice + CAS — task-track.sh, log.sh, prompt-submit.sh)
-
-##### Critical Files
-- `hooks/pre-write.sh` — Gate 0 for protected state files
-- `hooks/state-lib.sh` — flock wrapper for state_update()
-- `hooks/log.sh` — write_proof_status() flock + lattice enforcement
-- `hooks/task-track.sh` — guardian TTL extension + heartbeat
-- `hooks/prompt-submit.sh` — CAS wrapper for proof verification
+**Issues:** #75 (closed), #37 (closed)
+**Outcome:** Gate 0 write protection in pre-write.sh, flock-based locking for write_proof_status(), monotonic lattice enforcement, guardian TTL extended to 600s with heartbeat, CAS wrapper in prompt-submit.sh.
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-RSM-FLOCK-001: flock()-based locking — crash-safe subshell pattern — Addresses: REQ-P0-002 — **Implemented as planned**
+- DEC-RSM-LATTICE-001: Monotonic lattice enforcement — ordinal map with epoch reset — Addresses: REQ-P0-003 — **Implemented as planned**
 
 #### Phase 1: Coordination Protocol -- CAS + Protected Registry
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-03
+**Merge:** cbcf7d4
 **Decision IDs:** DEC-RSM-REGISTRY-001, DEC-RSM-FLOCK-001
 **Requirements:** REQ-P0-002, REQ-P0-007
-**Issues:** #76
-**Definition of Done:**
-- REQ-P0-007 satisfied: protected state file registry in core-lib.sh, extensible without gate changes
-- REQ-P0-002 fully satisfied: state_write_locked() wrapper with CAS semantics in state-lib.sh
-- Concurrency tests pass: parallel writes, lock contention, timeout handling
-
-##### Planned Decisions
-- DEC-RSM-REGISTRY-001: Protected state file registry array in core-lib.sh — centralized, extensible — Addresses: REQ-P0-007
-- DEC-RSM-FLOCK-001: state_write_locked() wrapper — atomic CAS for all state file operations — Addresses: REQ-P0-002
-
-##### Work Items
-
-**W1-0: Protected state file registry in core-lib.sh**
-- Define `_PROTECTED_STATE_FILES` array with glob patterns: `*proof-status*`, `*.test-status*`, `*.hook-timing.log`, `*state.json*`
-- Add `is_protected_state_file()` function: iterate patterns, return 0 if match
-- Pre-write.sh Gate 0 calls `is_protected_state_file "$FILE_PATH"` instead of inline pattern matching
-- Registry is append-only: new state files get one line added to the array
-
-**W1-1: state_write_locked() wrapper in state-lib.sh**
-- Generic locked write: `state_write_locked FILE_PATH CONTENT [EXPECTED_CONTENT]`
-- If EXPECTED_CONTENT provided: CAS semantics (read, compare, write-if-match)
-- If not provided: unconditional locked write
-- Uses subshell-scoped flock pattern from research
-- Timeout: 5s, configurable via STATE_LOCK_TIMEOUT env var
-
-**W1-2: .proof-epoch counter for clean lattice resets**
-- In session-init.sh, when starting a new work cycle (no active proof flow), increment .proof-epoch
-- write_proof_status() reads epoch before write; if epoch differs from file's recorded epoch, allow any transition
-- Prevents stale lattice state from previous work cycles blocking new ones
-- Epoch stored in proof-status file: `status|timestamp|epoch`
-
-**W1-3: Concurrency test suite**
-- 10 parallel write_proof_status() calls → assert final file is valid (not corrupt)
-- CAS contention: 5 parallel cas_proof_status("pending", "verified") → assert exactly 1 succeeds
-- Lock timeout: hold lock for 10s, attempt write with 1s timeout → assert timeout handled gracefully
-- Lattice enforcement: attempt downward transition → assert rejection
-- Epoch reset: change epoch, attempt downward transition → assert allowed
-
-##### Dispatch Plan
-- Dispatch 1: W1-0, W1-1, W1-2, W1-3 (tightly coupled — registry, CAS wrapper, epoch, tests)
-
-##### Critical Files
-- `hooks/core-lib.sh` — protected state file registry
-- `hooks/state-lib.sh` — state_write_locked() CAS wrapper
-- `hooks/session-init.sh` — proof-epoch management
-- `hooks/log.sh` — write_proof_status() epoch-aware transitions
-- `tests/run-hooks.sh` — concurrency test additions
+**Issues:** #76 (closed)
+**Outcome:** Protected state file registry in core-lib.sh (`_PROTECTED_STATE_FILES` array + `is_protected_state_file()`), `state_write_locked()` CAS wrapper in state-lib.sh, proof-epoch counter for clean lattice resets, 15 concurrency tests (parallel writes, CAS contention, lock timeout, lattice enforcement, epoch reset).
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-RSM-REGISTRY-001: Protected registry array — centralized, extensible, <1ms — Addresses: REQ-P0-007 — **Implemented as planned**
+- DEC-RSM-FLOCK-001: state_write_locked() with CAS semantics — Addresses: REQ-P0-002 — **Implemented as planned**
 
-#### Phase 2: SQLite State Store -- Replace state.json
-**Status:** planned
-**Decision IDs:** DEC-RSM-SQLITE-001
+#### Phase 2: State Management Consolidation -- Portable Locking, Atomic CAS, Lattice Routing
+**Status:** completed
+**Completed:** 2026-03-05
+**Merge:** 61cf489
+**Decision IDs:** DEC-RSM-SQLITE-001, DEC-RSM-BOOTSTRAP-001
 **Requirements:** REQ-P0-004
-**Issues:** #77
-**Definition of Done:**
-- REQ-P0-004 satisfied: state.json replaced by SQLite WAL at ~/.claude/state.db
-- All state_update/state_read callers migrated to SQLite-backed functions
-- Dual-write migration: SQLite primary, dotfiles as fallback
-- CAS operations use BEGIN IMMEDIATE instead of flock + jq
-
-##### Planned Decisions
-- DEC-RSM-SQLITE-001: SQLite WAL as state store — zero new dependencies, atomic CAS, concurrent-safe — Addresses: REQ-P0-004
-
-##### Work Items
-
-**W2-0: SQLite state store initialization**
-- Create `state_db_init()` in state-lib.sh: `sqlite3 "$STATE_DB" "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"`
-- Schema: `state(key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER, source TEXT)`
-- History table: `state_history(id INTEGER PRIMARY KEY, key TEXT, value TEXT, source TEXT, ts TEXT)` — capped at 100 per key
-- Migration: if state.json exists, import all keys into SQLite on first init
-
-**W2-1: Migrate state_update() to SQLite**
-- Replace jq read-modify-write with `INSERT OR REPLACE INTO state`
-- History append: `INSERT INTO state_history` with automatic cap
-- Remove flock from state_update() (SQLite WAL handles concurrency)
-- Fallback: if sqlite3 not available (should not happen on macOS), fall back to jq + flock
-
-**W2-2: Migrate state_read() to SQLite**
-- Replace jq query with `SELECT value FROM state WHERE key=?`
-- Backward compat: if state.db missing, try state.json
-- Performance: SQLite query should be <1ms (indexed key)
-
-**W2-3: Add CAS operation to state-lib.sh via SQLite**
-- `state_cas KEY EXPECTED NEW SOURCE`: BEGIN IMMEDIATE, SELECT, compare, UPDATE, COMMIT
-- Return "ok" on success, "conflict:$current" on mismatch
-- Used by prompt-submit.sh and any future CAS callers
-
-**W2-4: Per-project namespacing in SQLite**
-- Key format: `{project_hash}:{key_name}` (e.g., `a1b2c3d4:proof_status`)
-- Global keys (no project context): `global:{key_name}`
-- `state_update()` and `state_read()` auto-prefix based on `cache_project_context()`
-
-##### Dispatch Plan
-- Dispatch 1: W2-0, W2-1, W2-2 (core SQLite migration — init, write, read)
-- Dispatch 2: W2-3, W2-4 (CAS + namespacing)
-
-##### Critical Files
-- `hooks/state-lib.sh` — complete rewrite: SQLite-backed state_update/state_read/state_cas
-- `hooks/source-lib.sh` — require_state() may need adjustment for new deps
-- `hooks/session-init.sh` — state.json to SQLite migration on first run
-- `tests/run-hooks.sh` — SQLite-specific test additions
+**Issues:** #77 (closed)
+**Outcome:** Portable locking via `_lock_fd()` replacing platform-specific flock, atomic `cas_proof_status()` rewrite with true CAS semantics (fixes sentinel-reads-lockfile bug), lattice routing through `_route_lattice()`, registry adoption across all state writers, 15 concurrency tests. Discovered bootstrap paradox (#105): self-hosting gate blocks merge of gate fix when `cas_proof_status()` on main is broken. **Scope adjusted:** SQLite migration deferred; Phase 2 focused on portable locking, CAS correctness, and lattice routing as prerequisites.
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-RSM-SQLITE-001: Scope adjusted — portable locking and CAS correctness prioritized over SQLite migration — Addresses: REQ-P0-004 — **Partial: locking/CAS delivered, SQLite deferred to future phase**
+- DEC-RSM-BOOTSTRAP-001: Bootstrap paradox documented — self-hosting gate changes require manual override when gate itself is broken — Filed as #105 — **New discovery**
 
 #### Phase 3: Project-Tier State -- Unified state/ Directory
 **Status:** planned
@@ -1044,115 +909,28 @@ All P0 requirements (001-008) satisfied. CI auto-discovers test files. stderr is
   Rationale: macOS is the primary dev platform but CI has only run Ubuntu. Adding macOS as a matrix entry with `continue-on-error: true` initially surfaces compatibility issues without blocking merges. Once stable, remove the continue-on-error flag.
 
 #### Phase 1: Test Infrastructure Reliability
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-04
+**Merge:** b4c9586 (bundled with Phase 2)
 **Decision IDs:** DEC-PROD-001, DEC-PROD-002, DEC-PROD-003
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004
-**Issues:** (to be created)
-**Definition of Done:**
-- REQ-P0-001 satisfied: validate.yml uses glob-based auto-discovery for test-*.sh files
-- REQ-P0-002 satisfied: run_hook() and run_hook_ec() capture stderr to temp file
-- REQ-P0-003 satisfied: test-pre-ask.sh and test-ci-feedback.sh use jq instead of grep for JSON
-- REQ-P0-004 satisfied: all test files creating temp resources have cleanup traps
-
-##### Planned Decisions
-- DEC-PROD-001: Glob-based test auto-discovery in CI — prevents silent exclusion of new tests — Addresses: REQ-P0-001
-- DEC-PROD-002: stderr capture to temp file — surfaces real errors hidden by 2>/dev/null — Addresses: REQ-P0-002
-
-##### Work Items
-
-**W1-1: Replace hardcoded test list in validate.yml with glob auto-discovery**
-- Replace the `for test in tests/test-post-task-fallback.sh ...` block with `for test in tests/test-*.sh`
-- Add a count assertion: `test_count=$(ls tests/test-*.sh | wc -l); [ "$test_count" -ge 50 ]` as sanity check
-- Ensure run-hooks.sh still runs separately (it has its own 159-test suite)
-- File: `.github/workflows/validate.yml`
-
-**W1-2: Fix grep-based JSON parsing in test-pre-ask.sh and test-ci-feedback.sh**
-- In test-pre-ask.sh: replace grep-based JSON field extraction with jq queries
-- In test-ci-feedback.sh: replace grep-based JSON field extraction with jq queries
-- Pattern: `echo "$output" | grep 'field'` becomes `echo "$output" | jq -r '.field'`
-- Verify tests still pass after replacement
-- Files: `tests/test-pre-ask.sh`, `tests/test-ci-feedback.sh`
-
-**W1-3: Fix stderr suppression in test-helpers.sh run_hook() and run_hook_ec()**
-- Line 87: change `_stdout=$(echo "$input" | bash "$hook" 2>/dev/null)` to capture stderr to temp file
-- Line 99: change `bash "$hook" <<< "$input" > "$_tmp" 2>/dev/null` to capture stderr to temp file
-- Add `_stderr` variable available to callers for diagnostic output
-- Ensure existing tests still pass (some may implicitly depend on stderr suppression)
-- File: `tests/lib/test-helpers.sh`
-
-**W1-4: Add cleanup traps to ~39 test files missing them**
-- Identify all test files without `trap` on EXIT/ERR
-- Add standard cleanup trap: `cleanup() { rm -rf "$TEST_DIR" 2>/dev/null; }; trap cleanup EXIT`
-- Only add to files that create temporary directories or files
-- Pattern from existing files with traps (e.g., test-auto-verify.sh)
-- Files: ~39 files in `tests/test-*.sh`
-
-##### Dispatch Plan
-- Dispatch 1: W1-1, W1-2, W1-3 (CI + JSON + stderr — 3 files, tightly coupled infrastructure)
-- Dispatch 2: W1-4 (bulk trap addition — ~39 files, mechanical but large)
-
-##### Critical Files
-- `.github/workflows/validate.yml` — CI test discovery
-- `tests/lib/test-helpers.sh` — stderr capture (lines 87, 99)
-- `tests/test-pre-ask.sh` — grep-to-jq migration
-- `tests/test-ci-feedback.sh` — grep-to-jq migration
-- `tests/test-*.sh` — ~39 files for cleanup trap addition
+**Outcome:** CI auto-discovers all test-*.sh files via glob, stderr captured to temp file in test-helpers.sh, jq replaces grep-based JSON parsing in test-pre-ask.sh and test-ci-feedback.sh, cleanup traps added to test files.
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-PROD-001: Glob-based auto-discovery — Addresses: REQ-P0-001 — **Implemented as planned**
+- DEC-PROD-002: stderr capture to temp file — Addresses: REQ-P0-002 — **Implemented as planned**
 
 #### Phase 2: Operational Hygiene
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-04
+**Merge:** b4c9586 (bundled with Phase 1)
 **Decision IDs:** DEC-PROD-003, DEC-PROD-004
 **Requirements:** REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008
-**Issues:** (to be created)
-**Definition of Done:**
-- REQ-P0-005 satisfied: .session-events.jsonl rotated at 1000 lines during session-init
-- REQ-P0-006 satisfied: .hook-timing.log rotated during session-init
-- REQ-P0-007 satisfied: orphaned markers cleaned at session start
-- REQ-P0-008 satisfied: TTL sentinels use SESSION_ID not PID
-
-##### Planned Decisions
-- DEC-PROD-003: Inline rotation in session-init.sh — no daemon, no cron, bounded growth — Addresses: REQ-P0-005, REQ-P0-006
-- DEC-PROD-004: SESSION_ID-based sentinel scoping — eliminates PID-reuse false matches — Addresses: REQ-P0-007, REQ-P0-008
-
-##### Work Items
-
-**W2-1: Add .session-events.jsonl rotation in session-init.sh**
-- At session start, check line count: `wc -l < .session-events.jsonl`
-- If > 1000, rotate: `tail -n 1000 .session-events.jsonl > .session-events.jsonl.tmp && mv .session-events.jsonl.tmp .session-events.jsonl`
-- Log rotation event to the file itself
-- File: `hooks/session-init.sh`
-
-**W2-2: Add .hook-timing.log rotation in session-init.sh**
-- Same pattern as W2-1: check line count, rotate if > 1000
-- Preserve the most recent entries (tail, not head)
-- File: `hooks/session-init.sh`
-
-**W2-3: Orphan marker cleanup in session-init.sh**
-- At session start, scan for `.active-guardian-*`, `.active-autoverify-*`, `.active-implementer-*` markers
-- For each marker, check if the owning process (PID or SESSION_ID in marker) is still alive
-- Remove markers for dead processes
-- Kill zombie heartbeat processes (background `touch` loops from task-track.sh)
-- File: `hooks/session-init.sh`
-
-**W2-4: Migrate TTL sentinels from PID to SESSION_ID**
-- In task-track.sh, write SESSION_ID into guardian/autoverify markers instead of PID
-- In session-init.sh cleanup, match by SESSION_ID instead of `kill -0 $PID`
-- Backward compat: handle old PID-based markers during transition (check both)
-- Files: `hooks/task-track.sh`, `hooks/session-init.sh`
-
-##### Dispatch Plan
-- Dispatch 1: W2-1, W2-2, W2-3, W2-4 (all in session-init.sh + task-track.sh — tightly coupled)
-
-##### Critical Files
-- `hooks/session-init.sh` — rotation + orphan cleanup
-- `hooks/task-track.sh` — TTL sentinel format change
-- `.session-events.jsonl` — rotation target
-- `.hook-timing.log` — rotation target
+**Outcome:** State file rotation (session-events.jsonl and hook-timing.log at 1000 lines) in session-init.sh, orphan marker cleanup at session start, TTL sentinels migrated from PID to SESSION_ID.
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-PROD-003: Inline rotation in session-init.sh — Addresses: REQ-P0-005, REQ-P0-006 — **Implemented as planned**
+- DEC-PROD-004: SESSION_ID-based sentinel scoping — Addresses: REQ-P0-007, REQ-P0-008 — **Implemented as planned**
 
 #### Phase 3: Dead Code Cleanup (Verification Only)
 **Status:** planned
@@ -1193,81 +971,26 @@ All P0 requirements (001-008) satisfied. CI auto-discovers test files. stderr is
 <!-- Guardian appends here after phase completion -->
 
 #### Phase 4: Platform & CI Hardening
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-05
+**Merge:** 03fe50e (bundled with Phase 5)
 **Decision IDs:** DEC-PROD-005
 **Requirements:** REQ-P1-001, REQ-P1-002, REQ-P1-003
-**Issues:** (to be created)
-**Definition of Done:**
-- REQ-P1-001 satisfied: macOS matrix job runs in CI (continue-on-error initially)
-- REQ-P1-002 satisfied: explicit timeout-minutes in validate.yml
-- REQ-P1-003 satisfied: shellcheck runs on tests/ and scripts/ in addition to hooks/
-
-##### Planned Decisions
-- DEC-PROD-005: Non-blocking macOS CI — surfaces platform issues without blocking merges — Addresses: REQ-P1-001
-
-##### Work Items
-
-**W4-1: Add macOS to CI matrix**
-- Add `macos-latest` to the strategy matrix in validate.yml
-- Set `continue-on-error: true` for macOS initially
-- Ensure homebrew installs jq, shellcheck if needed on macOS runner
-- File: `.github/workflows/validate.yml`
-
-**W4-2: Add explicit timeout to CI jobs**
-- Add `timeout-minutes: 15` to the test job
-- Prevents hung jobs from consuming CI minutes
-- File: `.github/workflows/validate.yml`
-
-**W4-3: Extend shellcheck to tests/ and scripts/**
-- Current CI runs shellcheck only on hooks/
-- Add `tests/*.sh`, `tests/lib/*.sh`, `scripts/*.sh` to shellcheck targets
-- Use `shellcheck -x` to follow source directives
-- May need `.shellcheckrc` for test-specific exclusions (e.g., SC2034 unused variables in test fixtures)
-- File: `.github/workflows/validate.yml`
-
-##### Dispatch Plan
-- Dispatch 1: W4-1, W4-2, W4-3 (all validate.yml changes — single file, parallel-safe)
-
-##### Critical Files
-- `.github/workflows/validate.yml` — all CI changes
-- `.shellcheckrc` — may need test-specific exclusions (new file if needed)
+**Outcome:** macOS added to CI matrix (continue-on-error), explicit timeout-minutes in validate.yml, shellcheck extended to tests/ and scripts/. Portable SHA-256 detection (e50930a) fixed cross-platform CI compatibility.
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-PROD-005: Non-blocking macOS CI — Addresses: REQ-P1-001 — **Implemented as planned**
 
 #### Phase 5: Documentation Freshness
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-05
+**Merge:** 03fe50e (bundled with Phase 4)
 **Decision IDs:** (none — documentation update)
 **Requirements:** REQ-GOAL-005
-**Issues:** (to be created)
-**Definition of Done:**
-- README.md reflects current hook count, test count, directory structure, and script inventory
-- ARCHITECTURE.md reflects current system design, lazy-loading pattern, and state management architecture
-
-##### Work Items
-
-**W5-1: Update README.md**
-- Update test count (currently says 159 — verify actual count)
-- Update hook entry point count and domain library list
-- Update scripts/ section with new scripts (statusline.sh, worktree-roster.sh, clean-state.sh, etc.)
-- Update commands/ section with any new commands
-- Verify all directory descriptions are current
-
-**W5-2: Update ARCHITECTURE.md**
-- Verify lazy-loading architecture description is current
-- Update state management section with any new patterns
-- Verify hook lifecycle diagram is accurate
-- Update performance characteristics if changed
-
-##### Dispatch Plan
-- Dispatch 1: W5-1, W5-2 (documentation — independent files, parallel-safe)
-
-##### Critical Files
-- `README.md` — project overview and reference
-- `ARCHITECTURE.md` — system design documentation
+**Outcome:** README.md and ARCHITECTURE.md updated to reflect current hook count, test count, directory structure, lazy-loading pattern, and state management architecture.
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+- Documentation updated to reflect current repository state — **Implemented as planned**
 
 #### Production Reliability Worktree Strategy
 
