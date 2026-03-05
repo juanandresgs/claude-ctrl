@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-03-05
+
 ### Fixed
 - `feature/fix-bootstrap-paradox`: Bootstrap paradox mitigation — M1: CAS failure diagnostic counter in prompt-submit.sh warns orchestrator after 2+ consecutive cas_proof_status failures (detects broken gate infrastructure); M2: @plan-update/@no-source annotations bypass proof-status gate in task-track.sh for documentation-only merges; 8 new bootstrap mitigation tests (DEC-BOOTSTRAP-PARADOX-001, DEC-BOOTSTRAP-PARADOX-002, DEC-BOOTSTRAP-TEST-001) (#105)
 - `feature/fix-proof-status-accumulation`: Prevent .proof-status-* dotfile accumulation — _SHA256_CMD init guard in core-lib.sh (Bug A), trailing-slash normalization in get_claude_dir() (Bug B), 4h TTL sweep of stale proof files in session-end.sh (Bug C), post-read cleanup after outcome derivation (Bug D), legacy double-nested path removal (Bug E); 4 new proof-cleanup tests (DEC-SHA256-INIT-001, DEC-PROOF-SWEEP-001)
@@ -56,7 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/proof-lifecycle`: Proof lifecycle reliability — detect_project_root() reads .cwd from HOOK_INPUT, write_proof_status() pre-creates guardian marker + state.json dual-write, post-task.sh emits DISPATCH TESTER NOW after implementer, prompt-submit.sh emits DISPATCH GUARDIAN NOW on verification; new state-lib.sh coordination layer; 11 new tests
 
 ### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - `feature/project-isolation`: Cross-project state isolation via 8-char SHA-256 project hash — scopes .proof-status, .active-worktree-path, and trace markers per project root to prevent state contamination across concurrent Claude Code sessions; three-tier backward-compatible lookup; 20 new isolation tests
 
 ### Changed
@@ -68,7 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fix/stale-marker-blocking-tester`: Stale `.active-*` marker race condition blocking tester dispatch — reorder `finalize_trace` before timeout-heavy ops in check-implementer.sh and check-guardian.sh, add marker cleanup in `refinalize_trace()`, add completed-status fast path in task-track.sh Gate B
 
 ### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - `feature/plan-redesign-tests`: Phase 4 test suite for living plan format — 16 new tests across 2 suites (test-plan-lifecycle.sh, test-plan-injection.sh) validating initiative lifecycle edge cases and bounded session injection; bug fix for empty Active Initiatives section returning active instead of dormant (#142)
 
 ### Changed
@@ -78,7 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tester agent rewrite** — 8 targeted fixes for 37.5% failure rate: feature-match validation, test infrastructure discovery, early proof-status write, hook/script table split, worktree path safety, meta-infra exception, retry limits, mandatory trace protocol
 
 ### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - **Documentation audit** — 38 discrepancies resolved: hardcoded hook counts removed, 3 undocumented hooks documented, /approve eradicated, updatedInput contradiction corrected, tester max_turns fixed
 - **doc-freshness.sh** — PreToolUse:Bash hook enforcing documentation freshness at merge time; blocks merges to main when tracked docs are critically stale
 - **check-explore.sh** — SubagentStop:Explore hook for post-exploration validation of Explore agent output quality
@@ -218,5 +217,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hook input sanitization via `log.sh` shared library
 - Safe temporary directory handling (project `tmp/`, not `/tmp/`)
 
-[Unreleased]: https://github.com/juanandresgs/claude-ctrl/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/juanandresgs/claude-ctrl/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/juanandresgs/claude-ctrl/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/juanandresgs/claude-ctrl/releases/tag/v2.0.0
