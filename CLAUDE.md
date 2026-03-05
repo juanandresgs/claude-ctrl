@@ -209,13 +209,11 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 - `observatory` — Self-improving flywheel: analyze traces, surface signals, suggest improvements
 - `diagnose` — System health check: hook integrity, state file consistency, configuration validation
 - `rewind` — List and restore checkpoints created by checkpoint.sh
-- `uplevel` — Six-dimensional repository health audit
 
 **Skills — Research:**
 - `deep-research` — Multi-model synthesis (OpenAI + Perplexity + Gemini)
 - `last30days` — Recent community discussions with engagement metrics
 - `consume-content` — Structured content analysis and extraction
-- `generate-paper-snapshot` — Academic paper analysis and summarization
 
 **Skills — Workflow:**
 - `context-preservation` — Structured summaries for session continuity

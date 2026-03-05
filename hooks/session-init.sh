@@ -177,42 +177,6 @@ if [[ -n "$GIT_BRANCH" ]]; then
     fi
 fi
 
-# --- Run community check in background (non-blocking, 1-hour TTL) ---
-# The .community-status file will be ready by the time statusline renders.
-# Display moved to statusline.sh and todo.sh for better visibility.
-#
-# @decision DEC-COMMUNITY-003
-# @title Rate-limit community-check.sh to 1-hour TTL to prevent redundant API calls
-# @status accepted
-# @rationale community-check.sh makes GitHub API requests (gh issue list per repo)
-# that add 0.5-2s of startup latency during rapid session cycling (/clear, /compact,
-# terminal re-attach). A 1-hour TTL reuses the previous result within the window —
-# community contributions don't change on sub-minute timescales, so freshness is not
-# meaningfully compromised. The TTL is read from .community-status "checked_at" field,
-# which community-check.sh already writes. If the file is absent or malformed, the
-# check always runs. Users who need immediate refresh can delete .community-status.
-# NOTE: session-init.sh runs at top-level (not inside a function), so _COMM_ prefix
-# is used instead of `local` to avoid polluting the function-local namespace.
-COMMUNITY_SCRIPT="$HOME/.claude/scripts/community-check.sh"
-_COMM_STATUS_FILE="$HOME/.claude/.community-status"
-_COMM_TTL=3600  # 1 hour in seconds
-_COMM_SHOULD_RUN=true
-
-if [[ -x "$COMMUNITY_SCRIPT" ]]; then
-    if [[ -f "$_COMM_STATUS_FILE" ]]; then
-        _COMM_CHECKED_AT=$(jq -r '.checked_at // 0' "$_COMM_STATUS_FILE" 2>/dev/null || echo "0")
-        _COMM_NOW=$(date +%s)
-        _COMM_AGE=$(( _COMM_NOW - _COMM_CHECKED_AT ))
-        if [[ "$_COMM_AGE" -lt "$_COMM_TTL" ]]; then
-            _COMM_SHOULD_RUN=false
-        fi
-    fi
-    if [[ "$_COMM_SHOULD_RUN" == "true" ]]; then
-        "$COMMUNITY_SCRIPT" >/dev/null 2>/dev/null &
-        disown 2>/dev/null || true
-    fi
-fi
-
 # --- MASTER_PLAN.md tiered injection (DEC-PLAN-004) ---
 # Bounded extraction: Identity + Architecture + Active Initiatives (full) +
 # last 10 Decision Log entries + Completed Initiatives one-liner list.

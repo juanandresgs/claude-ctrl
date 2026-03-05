@@ -416,8 +416,8 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
             # Resolve $HOME and ~ to actual home
             _resolved="${cmd_path/\$HOME/$HOME}"
             _resolved="${_resolved/\~/$HOME}"
-            # Only check paths that contain /hooks/ (hook scripts)
-            [[ "$_resolved" != *"/hooks/"* ]] && continue
+            # Only check paths that contain /hooks/ or /scripts/ (hook and utility scripts)
+            [[ "$_resolved" != *"/hooks/"* && "$_resolved" != *"/scripts/"* ]] && continue
             # Extract the actual file path (first token — strip arguments)
             _file_path=$(echo "$_resolved" | awk '{print $1}')
             if [[ ! -f "$_file_path" ]]; then

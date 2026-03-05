@@ -69,7 +69,7 @@ _hook_log_timing() {
     # Old 4-field entries (without event_type) are still valid; hook-timing-report.sh handles both formats.
     printf '%s\t%s\t%s\t%d\t%d\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_HOOK_NAME" "${_HOOK_EVENT_TYPE:-}" "$elapsed_ms" "$_exit_code" >> "$timing_log" 2>/dev/null || true
     # Corpus capture: when HOOK_CORPUS_CAPTURE=1, dump raw input to timestamped file
-    # Used by scripts/extract-corpus.sh --capture mode to build a real-world input corpus.
+    # Captures real-world hook input for corpus analysis (consumer script not yet built).
     if [[ "${HOOK_CORPUS_CAPTURE:-}" == "1" && -n "${HOOK_INPUT:-}" ]]; then
         local corpus_dir="${claude_dir}/tests/corpus/${_HOOK_EVENT_TYPE:-unknown}"
         mkdir -p "$corpus_dir" 2>/dev/null || true
