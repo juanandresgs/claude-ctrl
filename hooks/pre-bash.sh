@@ -220,14 +220,38 @@ if echo "$_stripped_cmd" | grep -qE "$TMP_PATTERN"; then
 fi
 
 # --- Check 9: Block agents from writing verified to .proof-status ---
+# @decision DEC-STATE-REGISTRY-002
+# @title Checks 9+10 adopt is_protected_state_file() registry
+# @status accepted
+# @rationale Inline pattern matching (*proof-status*) would require updating both
+#   Check 9 and Check 10 whenever a new protected state file is added. Routing
+#   through is_protected_state_file() (registry in core-lib.sh) means adding a new
+#   file to _PROTECTED_STATE_FILES is sufficient. Fallback inline grep is retained
+#   for cases where the target cannot be extracted from the command string.
 declare_gate "proof-status-write" "Block agents writing verified to .proof-status" "deny"
-if echo "$_stripped_cmd" | grep -qE '(>|>>|tee)\s*\S*proof-status' && echo "$COMMAND" | grep -qiE 'verified|approved?|lgtm|looks.good|ship.it'; then
+_redir_target=$(echo "$_stripped_cmd" | grep -oE '(>|>>|tee)\s*\S+' | grep -oE '\S+$' || true)
+_c9_protected=false
+if [[ -n "$_redir_target" ]] && { is_protected_state_file "$_redir_target" 2>/dev/null || echo "$_stripped_cmd" | grep -qE '(>|>>|tee)\s*\S*proof-status'; }; then
+    # Registry hit (or fallback pattern match): redirect targets a protected file
+    _c9_protected=true
+elif [[ -z "$_redir_target" ]] && echo "$_stripped_cmd" | grep -qE '(>|>>|tee)\s*\S*proof-status'; then
+    # Could not extract target — fallback to original inline pattern
+    _c9_protected=true
+fi
+if [[ "$_c9_protected" == "true" ]] && echo "$COMMAND" | grep -qiE 'verified|approved?|lgtm|looks.good|ship.it'; then
     emit_deny "Cannot write approval status to .proof-status directly. Only the user can verify proof-of-work (via prompt-submit.sh). Present the verification report and let the user respond naturally."
 fi
 
 # --- Check 10: Block deletion of .proof-status when verification active ---
 declare_gate "proof-status-delete" "Block deletion of .proof-status when active" "deny"
-if echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
+_rm_target=$(echo "$_stripped_cmd" | grep -oE 'rm\s+(-[a-zA-Z]*\s+)*\S+' | grep -oE '\S+$' || true)
+_c10_matches=false
+if [[ -n "$_rm_target" ]] && { is_protected_state_file "$_rm_target" 2>/dev/null || echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; }; then
+    _c10_matches=true
+elif [[ -z "$_rm_target" ]] && echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
+    _c10_matches=true
+fi
+if [[ "$_c10_matches" == "true" ]]; then
     _ps_phash=$(project_hash "$(detect_project_root)")
     _ps_dir=$(get_claude_dir)
     _ps_file="${_ps_dir}/.proof-status-${_ps_phash}"

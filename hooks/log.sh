@@ -234,16 +234,9 @@ write_proof_status() {
 
     local _result=0
     (
-        # Use _portable_flock if available (sourced via source-lib.sh → core-lib.sh),
-        # fall back to bare flock, then proceed unlocked (tests source log.sh directly).
-        local _lock_ok=true
-        if type _portable_flock &>/dev/null; then
-            _portable_flock 5 9 || _lock_ok=false
-        elif command -v flock &>/dev/null; then
-            flock -w 5 9 || _lock_ok=false
-        fi
-        if [[ "$_lock_ok" == "false" ]]; then
-            log_info "write_proof_status" "lock timeout for '${proof_status}' — status transition rejected" 2>/dev/null || true; exit 1
+        if ! _lock_fd 5 9; then
+            log_info "write_proof_status" "lock timeout — status transition rejected" 2>/dev/null || true
+            exit 1
         fi
 
         local timestamp

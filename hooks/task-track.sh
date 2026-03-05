@@ -326,8 +326,7 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
     _PHASH=$(project_hash "$PROJECT_ROOT")
     PROOF_FILE="${CLAUDE_DIR}/.proof-status-${_PHASH}"
     if [[ ! -f "$PROOF_FILE" ]]; then
-        mkdir -p "$(dirname "$PROOF_FILE")"
-        echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
+        write_proof_status "needs-verification" "$PROJECT_ROOT"
     fi
 fi
 

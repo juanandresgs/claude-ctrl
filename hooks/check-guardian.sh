@@ -364,6 +364,7 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
                 PROOF_VAL=""  # corrupt — skip cleanup (leave for manual review)
             fi
             if [[ "$PROOF_VAL" == "verified" ]]; then
+                write_proof_status "committed" "$PROJECT_ROOT"
                 rm -f "$SCOPED_PROOF"
                 log_info "CHECK-GUARDIAN" "Cleaned proof-status after successful commit"
             fi
