@@ -279,23 +279,25 @@ Two paths converge here:
 
 **Both paths produce:** Decisions with documented options, trade-offs, chosen approach, and evidence — ready to become @decision annotations in code.
 
-### Phase 3: Issue Decomposition
-1. Break the plan into discrete, parallelizable units
-2. Each unit becomes a git issue
-3. Identify dependencies between units
-4. Suggest implementation order (phases)
-5. Estimate complexity (not time—we honor the work, not the clock)
-
-6. **Dispatch plan**: For each phase, specify how work items should be batched for implementer dispatch:
-   - ≤3 items or tightly coupled items → single dispatch
-   - 4+ items → group into dispatches of 2–3 related items
-   - Add a `##### Dispatch Plan` subsection to each phase:
-     ```
-     ##### Dispatch Plan
-     - Dispatch 1: W2-0, W2-1, W2-2 (trace-lib changes, ~3 files)
-     - Dispatch 2: W2-3, W2-4, W2-5 (new scripts + tests, ~3 files)
-     ```
-
+### Phase 3: Wave Decomposition
+1. Break the plan into discrete work items — each becomes a git issue
+2. Assign **Weight** (S/M/L/XL) to each item based on agent effort:
+   - **S** (<15 turns): single-file change, clear pattern to follow
+   - **M** (15-40 turns): multi-file, straightforward logic
+   - **L** (40-70 turns): complex logic, new patterns, multiple integration points
+   - **XL** (70+ turns): architectural change, unfamiliar domain, extensive testing
+3. Assign **Gate** (none/review/approve) to each item:
+   - **none**: standard work, auto-verified by tester
+   - **review**: user should see the result before dependent work proceeds
+   - **approve**: requires explicit user sign-off (security, breaking changes, external APIs)
+4. Declare **Deps** (dependency W-IDs) for each item — which items must complete before this one can start
+5. **Compute Waves** — group items by resolved dependencies:
+   - Wave 1: all items with no deps (or deps on prior initiatives only)
+   - Wave N: all items whose deps are satisfied by Waves 1..(N-1)
+   - Items within a wave are independent and dispatch in parallel
+6. Calculate initiative-level summary metrics:
+   - **Critical path**: longest chain of sequential deps — minimum number of waves
+   - **Max width**: largest number of concurrent items in any single wave
 7. **Integration specification**: For each work item, specify the `**Integration:**` field — which existing files must import/source/call the new code, and which registries (settings.json, SKILL.md, router, etc.) must be updated. This enables the implementer, tester, and guardian to verify integration independently.
 
 ### Phase 4: MASTER_PLAN.md Generation
@@ -308,8 +310,8 @@ Read `templates/master-plan.md` for the complete document structure. The permane
 - `##` for top-level document sections, `###` for initiatives, `####` for initiative sub-sections, `#####` for phase sub-sections
 - **Pre-assign Decision IDs**: Every significant decision gets a `DEC-COMPONENT-NNN` ID. Implementers use these exact IDs in `@decision` code annotations — this creates bidirectional mapping between plan and code.
 - **REQ-ID traceability**: DEC-IDs include `Addresses: REQ-xxx`. Phase DoD fields reference which REQ-IDs are satisfied.
-- **Status field is mandatory**: Every phase starts as `planned`. Guardian updates to `in-progress` and `completed`.
-- **Phase Decision Log is Guardian-maintained**: Phase `##### Decision Log` sections start empty.
+- **Status field is mandatory for waves**: Every wave starts as `planned`. Guardian updates to `in-progress` and `completed`.
+- **Wave Decision Log is Guardian-maintained**: Wave `##### Decision Log` sections start empty.
 - **Top-level `## Decision Log` is append-only**: Add new rows at the bottom, never edit existing rows.
 
 #### Workflow B — Amend (Add Initiative to Existing Plan)
@@ -328,9 +330,9 @@ Also append to `## Decision Log` table — one row per new decision:
 After MASTER_PLAN.md is written and approved, create GitHub issues to drive implementation:
 
 1. Create one GitHub issue per phase task using `gh issue create`
-2. Label issues with phase numbers (e.g., `phase-1`, `phase-2`)
+2. Label issues with wave numbers (e.g., `wave-1`, `wave-2`)
 3. Add dependency notes in issue descriptions (e.g., "Blocked by #1, #2")
-4. Reference issue numbers back in MASTER_PLAN.md under each phase's `**Issues:**` field
+4. Reference issue numbers back in MASTER_PLAN.md under each wave's work items
 5. **Conditional:** Only create issues if the project has a GitHub remote (`gh repo view` succeeds). Otherwise, list tasks inline in the plan.
 
 ## Initiative Lifecycle: compress_initiative()
@@ -387,6 +389,10 @@ Before presenting a plan, apply checks appropriate to the selected complexity ti
 - [ ] If Phase 2 involved 3+ architectural decisions with trade-offs, did you consider `/decide`?
 - [ ] Issues are parallelizable where possible
 - [ ] Critical files identified (3-5 per phase)
+- [ ] Every work item has Weight, Deps, and Gate assigned
+- [ ] Waves are computed from dependency graph (not manually ordered)
+- [ ] Critical path and max width are stated in initiative summary
+- [ ] No circular dependencies exist
 - [ ] Future Implementers will succeed based on this work
 
 **Tier 2 and Tier 3 only:**

@@ -46,32 +46,39 @@
   Addresses: REQ-P0-001.
   Rationale: [Why this approach was chosen over alternatives]
 
-#### Phase N: [Phase Name]
-**Status:** planned
-**Decision IDs:** DEC-COMPONENT-001
-**Requirements:** REQ-P0-001
-**Issues:** #N
-**Definition of Done:**
-- REQ-P0-001 satisfied: [criteria]
+#### Waves
 
-##### Planned Decisions
-- DEC-COMPONENT-001: [description] — [rationale] — Addresses: REQ-P0-001
+##### Initiative Summary
+- **Total items:** [N]
+- **Critical path:** [N] waves ([W-ID chain])
+- **Max width:** [N] (Wave [N])
+- **Gates:** [count] review, [count] approve
 
-##### Work Items
+##### Wave 1 (no dependencies)
+**Parallel dispatches:** [N]
 
-**WN-1: [Task title] (#issue)**
+**W1-1: [Task title] (#issue)** — Weight: [S/M/L/XL], Gate: [none/review/approve]
 - [Specific implementation details]
+- **Integration:** [...]
+
+##### Wave 2
+**Parallel dispatches:** [N]
+**Blocked by:** [W-IDs from prior waves]
+
+**W2-1: [Task title] (#issue)** — Weight: [S/M/L/XL], Gate: [none/review/approve], Deps: [W-IDs]
+- [Specific implementation details]
+- **Integration:** [...]
 
 ##### Critical Files
-- `path/to/key-file.ext` — [why this file is central to this phase]
+- `path/to/key-file.ext` — [why this file is central to this initiative]
 
 ##### Decision Log
-<!-- Guardian appends here after phase completion -->
+<!-- Guardian appends here after wave completion -->
 
 #### [Initiative Name] Worktree Strategy
 
-Main is sacred. Each phase works in its own worktree:
-- **Phase N:** `{project_root}/.worktrees/[worktree-name]` on branch `[branch-name]`
+Main is sacred. Each wave dispatches parallel worktrees:
+- **Wave N:** `{project_root}/.worktrees/[worktree-name]` on branch `[branch-name]`
 
 #### [Initiative Name] References
 
