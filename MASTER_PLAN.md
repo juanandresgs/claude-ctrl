@@ -563,8 +563,9 @@ Main is sacred. Each phase works in its own worktree:
 - Current state files: `.proof-status-{phash}`, `.test-status`, `.active-guardian-*`, `.active-autoverify-*`, `.active-worktree-path`, `state.json`
 
 ### Initiative: Backlog Auto-Capture & Gaps Reporting
-**Status:** active
+**Status:** completed
 **Started:** 2026-03-02
+**Completed:** 2026-03-02
 **Goal:** Ensure nothing falls through the cracks by auto-capturing deferred work as GitHub Issues, scanning codebases for untracked markers, and producing unified accountability gaps reports.
 
 > Claude Code sessions routinely defer work ("we'll do that later") and accumulate technical debt markers (TODOs, FIXMEs, HACKs) without systematic tracking. The existing deferral detection in prompt-submit.sh only suggests using /backlog — it doesn't create issues. The todo.sh script that hooks depend on is missing entirely, causing silent failures in session-init.sh and stop.sh. Meanwhile, @decision drift detection exists in stop.sh but has no counterpart for TODO/FIXME scanning, and there is no single view aggregating all accountability gaps. This initiative restores the missing foundation (todo.sh), upgrades deferral detection to auto-capture, adds codebase scanning for debt markers, and produces a unified gaps report.
@@ -639,7 +640,8 @@ All P0 requirements (001-004) satisfied. todo.sh hud/count/claim/create work wit
   Rationale: Batching deferrals to session end risks losing them on crash. Immediate creation with fire-and-forget is reliable and simple. The /backlog command already handles manual creation with interview workflow for intentional items. Auto-capture handles the conversational deferrals that would otherwise be lost. Deduplication is P1.
 
 #### Phase 1: Foundation -- todo.sh + Hook Integration
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-02
 **Decision IDs:** DEC-BL-TODO-001, DEC-BL-CAPTURE-001, DEC-BL-TRIGGER-001
 **Requirements:** REQ-P0-001, REQ-P0-002
 **Issues:** #81
@@ -696,7 +698,8 @@ All P0 requirements (001-004) satisfied. todo.sh hud/count/claim/create work wit
 <!-- Guardian appends here after phase completion -->
 
 #### Phase 2: Codebase Scanner -- scan-backlog.sh + /scan
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-02
 **Decision IDs:** DEC-BL-SCAN-001
 **Requirements:** REQ-P0-003
 **Issues:** #82
@@ -750,7 +753,8 @@ All P0 requirements (001-004) satisfied. todo.sh hud/count/claim/create work wit
 <!-- Guardian appends here after phase completion -->
 
 #### Phase 3: Gaps Report -- gaps-report.sh + /gaps
-**Status:** planned
+**Status:** completed
+**Completed:** 2026-03-02
 **Decision IDs:** DEC-BL-GAPS-001
 **Requirements:** REQ-P0-004
 **Issues:** #83

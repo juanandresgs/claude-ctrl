@@ -177,7 +177,7 @@ PROJECT_B="$_TEST_TMPDIR/project-beta"
 mkdir -p "$PROJECT_A" "$PROJECT_B" "$TRACE_STORE"
 
 # Source context-lib for init_trace and detect_active_trace
-source "$HOOKS_DIR/context-lib.sh" 2>/dev/null || true
+source "$HOOKS_DIR/source-lib.sh"; require_git; require_plan; require_trace; require_session
 
 export CLAUDE_SESSION_ID="session-test-isolation-001"
 export PROJECT_ROOT="$PROJECT_A"
@@ -248,7 +248,7 @@ setup_test_env
 PROJECT_A="$_TEST_TMPDIR/project-alpha"
 mkdir -p "$PROJECT_A" "$TRACE_STORE"
 
-source "$HOOKS_DIR/context-lib.sh" 2>/dev/null || true
+source "$HOOKS_DIR/source-lib.sh"; require_git; require_plan; require_trace; require_session
 
 export CLAUDE_SESSION_ID="session-old-format-001"
 
@@ -289,7 +289,7 @@ PROJECT_A="$_TEST_TMPDIR/project-alpha"
 PROJECT_B="$_TEST_TMPDIR/project-beta"
 mkdir -p "$PROJECT_A" "$PROJECT_B" "$TRACE_STORE"
 
-source "$HOOKS_DIR/context-lib.sh" 2>/dev/null || true
+source "$HOOKS_DIR/source-lib.sh"; require_git; require_plan; require_trace; require_session
 
 export CLAUDE_SESSION_ID="session-old-format-002"
 
@@ -360,7 +360,7 @@ setup_test_env
 PROJECT_A="$_TEST_TMPDIR/project-alpha"
 mkdir -p "$PROJECT_A" "$TRACE_STORE"
 
-source "$HOOKS_DIR/context-lib.sh" 2>/dev/null || true
+source "$HOOKS_DIR/source-lib.sh"; require_git; require_plan; require_trace; require_session
 
 export CLAUDE_SESSION_ID="session-finalize-001"
 export PROJECT_ROOT="$PROJECT_A"
@@ -402,7 +402,7 @@ PROJECT_A="$_TEST_TMPDIR/project-alpha"
 PROJECT_B="$_TEST_TMPDIR/project-beta"
 mkdir -p "$PROJECT_A" "$PROJECT_B" "$TRACE_STORE"
 
-source "$HOOKS_DIR/context-lib.sh" 2>/dev/null || true
+source "$HOOKS_DIR/source-lib.sh"; require_git; require_plan; require_trace; require_session
 
 # Create an implementer trace for Project A (most recent)
 TRACE_A="implementer-20250101-120000-aaa111"

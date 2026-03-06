@@ -45,15 +45,19 @@ if [[ ! -f "${HOOKS_DIR}/log.sh" ]]; then
     echo "[FAIL] Cannot source log.sh — not found at ${HOOKS_DIR}/log.sh"
     exit 1
 fi
-if [[ ! -f "${HOOKS_DIR}/context-lib.sh" ]]; then
-    echo "[FAIL] Cannot source context-lib.sh — not found at ${HOOKS_DIR}/context-lib.sh"
+if [[ ! -f "${HOOKS_DIR}/source-lib.sh" ]]; then
+    echo "[FAIL] Cannot source source-lib.sh — not found at ${HOOKS_DIR}/source-lib.sh"
     exit 1
 fi
 
 # shellcheck source=/dev/null
 source "${HOOKS_DIR}/log.sh"
 # shellcheck source=/dev/null
-source "${HOOKS_DIR}/context-lib.sh"
+source "${HOOKS_DIR}/source-lib.sh"
+require_git
+require_plan
+require_trace
+require_session
 
 # Counters
 PASS_COUNT=0

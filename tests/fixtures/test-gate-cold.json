@@ -1,1 +1,0 @@
-{"tool_name":"Write","tool_input":{"file_path":"/var/folders/mq/9n6m6sc138vf33h7rljjxzl00000gn/T/tmp.LvRwGyKQ9s/src/main.ts","content":"/** @file main.ts @description Test fixture. */\nconsole.log('test');\n"}}

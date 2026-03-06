@@ -58,7 +58,7 @@ exec 2>/dev/null
 # shellcheck source=/dev/null
 source "${HOOKS_DIR}/log.sh"
 # shellcheck source=/dev/null
-source "${HOOKS_DIR}/context-lib.sh"
+source "${HOOKS_DIR}/source-lib.sh"; require_git; require_plan; require_trace; require_session
 # shellcheck source=/dev/null
 source "${HOOKS_DIR}/source-lib.sh"
 

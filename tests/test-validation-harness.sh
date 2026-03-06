@@ -50,8 +50,7 @@ WORKTREE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FIXTURES_TRACES_DIR="$SCRIPT_DIR/fixtures/traces"
 BASELINE_FILE="$SCRIPT_DIR/fixtures/trace-baseline.json"
 
-LOG_LIB="${WORKTREE_ROOT}/hooks/log.sh"
-CONTEXT_LIB="${WORKTREE_ROOT}/hooks/context-lib.sh"
+HOOKS_DIR="${WORKTREE_ROOT}/hooks"
 
 UPDATE_BASELINE=false
 if [[ "${1:-}" == "--update-baseline" ]]; then
@@ -69,9 +68,8 @@ fail() { echo "FAIL [$1]: expected=$2 got=$3"; FAIL=$((FAIL + 1)); }
 exec 2>/dev/null
 
 # shellcheck source=/dev/null
-source "$LOG_LIB"
-# shellcheck source=/dev/null
-source "$CONTEXT_LIB"
+source "${HOOKS_DIR}/source-lib.sh"
+require_trace
 
 # Override TRACE_STORE with a temp dir AFTER sourcing
 TRACE_STORE=$(mktemp -d)

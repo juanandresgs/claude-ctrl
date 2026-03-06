@@ -18,7 +18,7 @@ set -euo pipefail
 # --- Syntax gate: validate shared libraries before sourcing ---
 # Catches corruption (merge conflicts, partial writes) before all hooks break.
 _HOOKS_DIR="$(dirname "$0")"
-for _lib in source-lib.sh log.sh context-lib.sh; do
+for _lib in source-lib.sh log.sh; do
     if ! bash -n "$_HOOKS_DIR/$_lib" 2>/dev/null; then
         # Pattern A: avoid bash -n | head -3 SIGPIPE; capture all stderr and truncate in bash
         _SYNTAX_ERR=$(bash -n "$_HOOKS_DIR/$_lib" 2>&1 || true)
@@ -907,11 +907,11 @@ if [[ -f "$TEST_STATUS" ]]; then
 fi
 
 # --- Smoke test: validate library sourcing ---
-# Verifies that log.sh and context-lib.sh can be sourced without error.
+# Verifies that source-lib.sh (and its dependencies: log.sh, core-lib.sh) can be sourced without error.
 # Catches corruption early (e.g., partial writes during git merge) before
-# all 29 hooks fail silently. Runs in a subshell so failures don't kill this hook.
+# all hooks fail silently. Runs in a subshell so failures don't kill this hook.
 if ! (source "$(dirname "$0")/source-lib.sh") 2>/dev/null; then
-    CONTEXT_PARTS+=("WARNING: Hook library smoke test FAILED. log.sh or context-lib.sh may be corrupted. Run: bash -n ~/.claude/hooks/log.sh && bash -n ~/.claude/hooks/context-lib.sh")
+    CONTEXT_PARTS+=("WARNING: Hook library smoke test FAILED. source-lib.sh or log.sh may be corrupted. Run: bash -n ~/.claude/hooks/source-lib.sh && bash -n ~/.claude/hooks/log.sh")
 fi
 
 # --- CI health check (two-tier: state-file → live query) ---

@@ -87,7 +87,7 @@ run_get_doc_freshness() {
     (
         # shellcheck disable=SC1091
         source "${HOOKS_DIR}/log.sh" 2>/dev/null || true
-        source "${HOOKS_DIR}/context-lib.sh"
+        source "${HOOKS_DIR}/source-lib.sh"; require_git; require_plan; require_trace; require_session
         get_doc_freshness "$repo"
         echo "STALE_COUNT=${DOC_STALE_COUNT:-0}"
         echo "STALE_WARN=${DOC_STALE_WARN:-}"
@@ -681,7 +681,7 @@ PLAIN15=$(mktemp -d "$TMP_BASE/plain.XXXXXX")
 CLEANUP_DIRS+=("$PLAIN15")
 RESULT15=$(
     source "${HOOKS_DIR}/log.sh" 2>/dev/null || true
-    source "${HOOKS_DIR}/context-lib.sh"
+    source "${HOOKS_DIR}/source-lib.sh"; require_git; require_plan; require_trace; require_session
     get_doc_freshness "$PLAIN15"
     echo "STALE_COUNT=${DOC_STALE_COUNT:-0}"
 )

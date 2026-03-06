@@ -159,11 +159,11 @@ echo "Iterations:   $ITERATIONS"
 echo ""
 echo "--- Library-Load Baseline ---"
 
-# Measure context-lib.sh source time
+# Measure source-lib.sh (bootstrapper) source time — formerly context-lib.sh baseline
 BASELINE_TIMES=""
 for i in $(seq 1 "$ITERATIONS"); do
     t_start=$(timing_get_ns)
-    bash -c "source '$HOOKS_DIR/context-lib.sh'" >/dev/null 2>/dev/null || true
+    bash -c "source '$HOOKS_DIR/source-lib.sh'" >/dev/null 2>/dev/null || true
     t_end=$(timing_get_ns)
     elapsed_ms=$(timing_ns_to_ms $(( t_end - t_start )))
     BASELINE_TIMES="${BASELINE_TIMES}${elapsed_ms}"$'\n'
@@ -173,7 +173,7 @@ BASELINE_SORTED=$(echo "$BASELINE_TIMES" | grep -v '^$' | sort -n)
 BASELINE_STATS=$(timing_compute_stats "$BASELINE_SORTED")
 read -r b_median b_mean b_min b_max b_p95 <<< "$BASELINE_STATS"
 printf "BENCH  %-40s  %-20s  median=%dms  mean=%dms  min=%dms  max=%dms  p95=%dms\n" \
-    "context-lib.sh (source)" "baseline" "$b_median" "$b_mean" "$b_min" "$b_max" "$b_p95"
+    "source-lib.sh (source)" "baseline" "$b_median" "$b_mean" "$b_min" "$b_max" "$b_p95"
 echo ""
 
 # ---------------------------------------------------------------------------

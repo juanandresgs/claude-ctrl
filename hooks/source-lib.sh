@@ -25,8 +25,8 @@
 #   into domain libraries (git-lib, plan-lib, trace-lib, session-lib, doc-lib)
 #   reduces parse overhead for hooks that only need 1-2 functions. require_*()
 #   functions provide idempotent lazy loading — calling require_git() twice is
-#   safe. Existing hooks continue to use context-lib.sh (compatibility shim)
-#   with zero changes required. New hooks can require only what they need.
+#   safe. All hooks and tests use require_*() for domain libraries directly.
+#   context-lib.sh compatibility shim has been removed (issue #65).
 #
 # @decision DEC-PERF-001
 # @title Hook timing instrumentation via EXIT trap
@@ -118,7 +118,7 @@ source "${_SRCLIB_DIR}/core-lib.sh"
 #   667 lines. Domain libraries are loaded on demand via require_*() functions.
 #   require_all() was removed (Phase 3 dead code audit) — no production hook called
 #   it; session-init.sh and similar hooks enumerate their requires explicitly.
-#   context-lib.sh still works as a compatibility shim for tests that source it.
+#   Tests now use source-lib.sh + require_*() directly (context-lib.sh removed).
 
 require_git() {
     [[ -n "${_GIT_LIB_LOADED:-}" ]] && return 0

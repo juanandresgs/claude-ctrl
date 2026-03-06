@@ -131,24 +131,14 @@ Source with: `source "$(dirname "$0")/log.sh"`
 | `log_info <stage> <msg>` | Human-readable stderr log |
 | `log_json <stage> <msg>` | Structured JSON stderr log |
 
-### context-lib.sh — Compatibility shim (formerly the monolith)
+### Domain Library Functions (formerly in context-lib.sh)
 
-> **Architecture note:** `context-lib.sh` was a 2,221-line monolith loaded by every hook.
-> It has been decomposed into focused domain libraries for lazy loading. This file now
-> acts as a **compatibility shim** — it sources all domain libraries so that existing callers
-> (test files, `diagnose.sh`) continue to work without modification.
->
-> **New hooks should use `require_*()` from `source-lib.sh`** — load only what they need.
-> `context-lib.sh` is safe to source directly (backward compatible), but it loads all
-> domain libraries unconditionally (no lazy loading benefit).
+> **Architecture note:** `context-lib.sh` was a 2,221-line monolith decomposed into focused
+> domain libraries (issue #65 removed the backward-compatibility shim entirely). All callers
+> now source `source-lib.sh` and call `require_*()` for the domain libraries they need.
+> Use `source "$(dirname "$0")/source-lib.sh"` as the entry point for all hooks and tests.
 
-Source with: `source "$(dirname "$0")/context-lib.sh"`
-
-When sourced, loads all domain libraries: `core-lib.sh`, `git-lib.sh`, `plan-lib.sh`,
-`trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, and `ci-lib.sh` (if present).
-
-The functions formerly documented here are now split across domain libraries. For the
-full function reference see `ARCHITECTURE.md § 12. Shared Libraries`. Key functions:
+Key functions across domain libraries (use `require_*()` to load the containing library):
 
 | Function | Domain Library | Populates |
 |----------|---------------|-----------|
@@ -303,7 +293,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **session-init.sh** | SessionStart | Calls update-check.sh inline (fixes race condition where parallel hooks caused one-session-late notifications), then injects git state, harness update status, MASTER_PLAN.md status, active worktrees, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). **Clears stale `.proof-status` (crash recovery)**: at session start, if no agent markers are active, any `.proof-status` is removed — a verified status from a crashed session would otherwise bypass the proof gate for unrelated future work. Resets prompt count for first-prompt fallback. **Plan injection (living-document format)**: extracts `## Identity` + active initiative sections + last 10 Decision Log entries, bounded to ~200 lines regardless of plan age — prevents injection growing unboundedly as initiatives accumulate. **Post-compaction resume**: when `.preserved-context` exists, extracts the `RESUME DIRECTIVE:` block (computed by `build_resume_directive()` in context-lib.sh) and injects it as the first context element so it takes priority over all other state. The session event log is preserved across compaction (not reset) so trajectory context survives. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
+| **session-init.sh** | SessionStart | Calls update-check.sh inline (fixes race condition where parallel hooks caused one-session-late notifications), then injects git state, harness update status, MASTER_PLAN.md status, active worktrees, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). **Clears stale `.proof-status` (crash recovery)**: at session start, if no agent markers are active, any `.proof-status` is removed — a verified status from a crashed session would otherwise bypass the proof gate for unrelated future work. Resets prompt count for first-prompt fallback. **Plan injection (living-document format)**: extracts `## Identity` + active initiative sections + last 10 Decision Log entries, bounded to ~200 lines regardless of plan age — prevents injection growing unboundedly as initiatives accumulate. **Post-compaction resume**: when `.preserved-context` exists, extracts the `RESUME DIRECTIVE:` block (computed by `build_resume_directive()` in session-lib.sh) and injects it as the first context element so it takes priority over all other state. The session event log is preserved across compaction (not reset) so trajectory context survives. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
 | **update-check.sh** | Called by session-init.sh | Fetches origin/main, compares versions. Auto-applies safe updates (same MAJOR). Notifies for breaking changes (different MAJOR). Aborts cleanly on conflict. Writes `.update-status` consumed by session-init.sh. Disabled by `.disable-auto-update` flag file |
 | **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. **User verification gate**: when user expresses approval (verified, approved, lgtm, looks good, ship it) and `.proof-status = pending`, writes `verified\|timestamp` — this is the ONLY path to verified status. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation. **Active agent detection**: when subagent tracker has ACTIVE entries and prompt is not an approval keyword, injects agent types and elapsed times as advisory context for the Task Interruption Protocol (DEC-INTERRUPT-001) |
 | **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` instructing the model to preserve the resume directive verbatim. Captures git state, plan status, session changes, @decision annotations, test status, agent findings, audit trail, and **session trajectory** (`get_session_summary_context`). Computes a **resume directive** via `build_resume_directive()` — a priority-ordered actionable instruction derived from session state (active agent > proof status > test failures > branch state > plan phase) — and appends it to both outputs so neither the `additionalContext` nor the persistent file omit the "what to do next" signal |
@@ -533,7 +523,7 @@ bash tests/run-hooks.sh --scope syntax       # Syntax validation + settings.json
 bash tests/run-hooks.sh --scope pre-bash     # guard.sh behavioral tests
 bash tests/run-hooks.sh --scope pre-write    # branch-guard, plan-check, doc-gate, test-gate
 bash tests/run-hooks.sh --scope post-write   # plan-validate, statusline, registry lint
-bash tests/run-hooks.sh --scope unit         # context-lib.sh unit tests
+bash tests/run-hooks.sh --scope unit         # core-lib/git-lib/plan-lib/session-lib unit tests
 bash tests/run-hooks.sh --scope session      # session-init, prompt-submit, compact-preserve
 bash tests/run-hooks.sh --scope integration  # settings.json sync, subagent tracking
 bash tests/run-hooks.sh --scope trace        # Trace protocol (init_trace, finalize_trace)

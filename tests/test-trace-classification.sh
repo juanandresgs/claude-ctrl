@@ -34,8 +34,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKTREE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOG_LIB="${WORKTREE_ROOT}/hooks/log.sh"
-CONTEXT_LIB="${WORKTREE_ROOT}/hooks/context-lib.sh"
+HOOKS_DIR="${WORKTREE_ROOT}/hooks"
 
 PASS=0
 FAIL=0
@@ -47,9 +46,8 @@ fail() { echo "FAIL: $1 — expected $2, got $3"; FAIL=$((FAIL + 1)); }
 exec 2>/dev/null
 
 # shellcheck source=/dev/null
-source "$LOG_LIB"
-# shellcheck source=/dev/null
-source "$CONTEXT_LIB"
+source "${HOOKS_DIR}/source-lib.sh"
+require_trace
 
 # Override TRACE_STORE and CLAUDE_DIR with temp dirs AFTER sourcing
 TRACE_STORE=$(mktemp -d)

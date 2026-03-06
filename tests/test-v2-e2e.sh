@@ -39,7 +39,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="$(dirname "$SCRIPT_DIR")/hooks"
 
-source "$HOOKS_DIR/context-lib.sh"
+source "$HOOKS_DIR/source-lib.sh"; require_git; require_plan; require_trace; require_session
 
 # Test framework
 GREEN='\033[0;32m'

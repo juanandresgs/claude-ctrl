@@ -13,6 +13,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `worktree-agent-af02ba8c`: Statusline term_w clamping — COLUMNS < 80 now clamps to 120 instead of aggressive responsive dropping; lets Claude Code UI handle final clipping (DEC-STATUSLINE-TERMWIDTH-002)
 - `feature/fix-guardian-double-ask`: Include AUTO-VERIFY-APPROVED in manual approval dispatch so Guardian skips its Interactive Approval Protocol when user has already approved via prompt-submit.sh gate; added "Manual Approval Fast Path" documentation to DISPATCH.md
 - `feature/fix-prompt-submit-104`: Fix prompt-submit.sh verification gate silent failure — fast path checks approval keywords immediately (<500ms) before library loading; deferred require_*() calls to point of first use; CAS lock timeout 5s to 2s with stale lock cleanup and signal trap; breadcrumb notification (.proof-gate-pending) warns on interrupted verification; fix _HOOK_NAME initialization clobbering in core-lib.sh; hook timeout 5s to 10s; pre-write.sh recognizes /.claude/worktrees/ paths; 4 new proof lifecycle tests T12-T15 (DEC-PROMPT-FAST-001, DEC-PROMPT-BREADCRUMB-001)
+- `feature/fix-statusline-bugs`: Statusline truncation, empty banner, and token path bugs — terminal width COLUMNS=0 fallback chain with [40,200] clamp (DEC-STATUSLINE-TERMWIDTH-001); planned-phase banner fallback renders dim `[planned]` label when no in-progress phase (DEC-PLANLIB-PLANNED-PHASE-001, DEC-STATUSLINE-PLANNED-PHASE-001); token persistence path aligned with get_claude_dir() to fix double-nesting for ~/.claude projects (DEC-STATUSLINE-TOKEN-PATH-001)
+- `feature/fix-zombie-code`: 5-layer zombie code prevention — tester Phase 2 entry-point-first verification (Layer 1), implementer Phase 3.25 integration wiring step (Layer 2), tester Phase 2.5 cross-component integration for phase-completing dispatches (Layer 3), post-task.sh auto-verify backstop blocks when no integration assessment found (DEC-AV-IWIRE-001) (Layer 4), extract dispatch protocol to docs/DISPATCH.md for token efficiency (DEC-DISPATCH-EXTRACT-001) (Layer 5)
+- `feature/fix-statusline-flicker`: Startup banner flicker — consolidated 13 separate jq subprocess calls into 1 batched read with unit-separator delimiter (DEC-TODO-SPLIT-002 update); always emit Line 3 newline regardless of initiative presence so status bar height is stable at 3 lines, eliminating resize-triggered flicker during cache population (DEC-STATUSLINE-005)
+- `feature/fix-wiring-gate-bugs`: Resolve 3 integration wiring gate bugs — broaden Check 7b path filter to cover `/scripts/` (#101), remove 36 lines of dead community-check.sh code and phantom source-lib.sh comment (#102), remove phantom skill entries (uplevel, generate-paper-snapshot) from CLAUDE.md and create missing observatory/SKILL.md (#103)
+- `feature/fix-fd-leak`: FD inheritance bug — background heartbeat in task-track.sh held inherited pipe FDs from `$()` command substitution, causing test-proof-gate.sh to hang ~5min; defensive `>/dev/null 2>&1` on all background spawns in 4 hooks; SECONDS timing regression test; CI timeout-minutes: 5 (DEC-GUARDIAN-HEARTBEAT-002)
+- `fix/test-health-audit`: Stale test cleanup and CI coverage — delete test-trace-orphan-fix.sh (tested removed function), fix JSON assertion regex in test-guard-commit-msg.sh, update hooks list 29->34 in test-source-lib.sh, add 9 standalone test suites to CI validate.yml
+- `fix/guardian-perf`: Guardian agent performance overhaul — Step 0 fail-fast precondition check (RC1: wasted turns on doomed dispatches), merge classification tiers Simple/Phase-Completing (RC2-RC5: unnecessary plan reads and drift analysis on simple merges), Gate A.0 duplicate guardian detection in task-track.sh (RC7: burst dispatch prevention), heartbeat ceiling 3->5 min (RC6: premature timeout with max_turns=35), CHANGELOG commit on feature branch before merge, auto-verify bypass scope reduction (DEC-GUARDIAN-HEARTBEAT-002)
+- `fix/native-lock`: OS-native file locking — replace `_portable_flock()` (homebrew Cellar glob discovery) with `_lock_fd()` using `uname -s` detection: `lockf` on macOS, `flock` on Linux; zero external dependencies; added `lockf` bare fallback in log.sh, prompt-submit.sh, state-lib.sh (DEC-LOCK-NATIVE-001)
+- `fix/remediation-silent-failures`: Phase 1 hook cleanup path silent failures — glob pattern for `.active-*` markers includes trailing `*` for phash suffix; `.proof-epoch` cleanup in session-end.sh and check-guardian.sh; marker cleanup in task-track.sh Gate B scoped to current project's phash; pre-bash.sh Check 10 uses `resolve_proof_file()` instead of inline fallback; 2 new regression tests
+- `fix/flock-macos`: Portable flock(1) for macOS — `_portable_flock()` helper in core-lib.sh discovers flock from PATH, homebrew ARM, homebrew Intel, or degrades gracefully; replaced `declare -A` with case-based helper in log.sh for bash 3.2 compatibility; fallback chains in prompt-submit.sh and state-lib.sh (DEC-FLOCK-COMPAT-001)
+- `feature/fix-silent-return`: Silent return bug — 73% of agent completions bypassed post-task.sh fallback because it gated on `tool_name=Task` while agents fire with `tool_name=Agent`; added IS_SUBAGENT normalization, _write_diagnostic_summary() for auto-reconstructing missing summary.md, extended subagent type detection to all 4 agent types, reduced stale marker threshold 7200s to 1800s; 14 new tests (#158)
+- PostToolUse matcher `Task` -> `Task|Agent` — auto-verify hook (post-task.sh) never fired because the dispatched tool is named "Agent", not "Task"; also bumped check-tester.sh timeout 5s -> 15s for 308+ trace dirs; added SP#8 auto-verify exception to CLAUDE.md
+- `feature/fix-bootstrap-amendment`: Bootstrap vs amendment flow — hooks now detect whether MASTER_PLAN.md is already tracked and only permit first-time creation on main; amendments route through worktrees
+- `feature/fix-comment-false-positive`: Strip bash comments from `_stripped_cmd` in pre-bash.sh — prevents false-positive guard denials when agent-generated comments mention git keywords like "git commit"; adds Tests 14-15 for regression coverage (DEC-GUARD-002)
+- `feature/autoverify-race-fix`: Auto-verify race condition — `.active-autoverify-*` markers protect the `proof-status = verified` window between auto-verify write and Guardian dispatch, preventing `post-write.sh` from invalidating the status (#56)
+- `feature/proof-lifecycle`: Proof lifecycle reliability — detect_project_root() reads .cwd from HOOK_INPUT, write_proof_status() pre-creates guardian marker + state.json dual-write, post-task.sh emits DISPATCH TESTER NOW after implementer, prompt-submit.sh emits DISPATCH GUARDIAN NOW on verification; new state-lib.sh coordination layer; 11 new tests
+- `fix/sigpipe-crashes`: SIGPIPE (exit 141) crashes in session-init.sh and context-lib.sh when MASTER_PLAN.md has large sections — replaced 20 pipe patterns with SIGPIPE-safe equivalents (awk inline limits, bash builtins, single-pass awk); added 14-test SIGPIPE resistance suite
+- `fix/stale-marker-blocking-tester`: Stale `.active-*` marker race condition blocking tester dispatch — reorder `finalize_trace` before timeout-heavy ops in check-implementer.sh and check-guardian.sh, add marker cleanup in `refinalize_trace()`, add completed-status fast path in task-track.sh Gate B
+- Observatory SUG-ID instability across runs (force state v1→v3 migration)
+- Observatory duration UTC timezone bug in finalize_trace
+- Guard long-form force-deletion variant detection in branch guard
+- Check 5 worktree-remove crash on paths with spaces
+- Proof-status path mismatch in git worktree scenarios
+- Verification gate: escape hatch, empty-prompt awareness, env whitelist
+- Tester AND logic for completeness gate + finalize_trace verification fallback
+- Post-compaction amnesia with computed resume directives
+- Meta-repo exemption for guard.sh proof-status deletion check
+- Subagent tracker scoped to per-session thread
+- Hook library race condition during git merge (session-scoped caching)
+- Cross-platform stat for Linux CI (4 trace contract test failures)
+- Shellcheck failures: tilde bug + expanded exclusions
+- README documentation for `update-check.sh` location (lives in `scripts/`, called by `session-init.sh`)
+- Observatory .test-status fallback to finalize_trace test result detection
 
 ### Added
 - `feature/dispatch-gate`: Gate 0 (dispatch-confirmation-deny) in pre-ask.sh — mechanically blocks orchestrator dispatch-confirmation questions ("Want me to dispatch Guardian?") enforcing CLAUDE.md auto-dispatch rules; fires before orchestrator bypass so it catches this specific anti-pattern while allowing legitimate questions through; 3 new test fixtures + 3 new test cases (DEC-ASK-GATE-001 updated)
@@ -29,56 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/subagent-token-tracking`: Universal SubagentStop hook parses agent transcript JSONL to accumulate token usage; statusline shows combined tokens as `tokens: 145k (Σ240k)` with sigma grand total; 10 new tests (cc-todos#37)
 - `feature/backlog-foundation`: todo.sh backlog backing layer (hud/count/claim/create) + fire-and-forget auto-capture of deferred-work language in prompt-submit.sh; 15 new tests (#81)
 - `feature/cache-audit`: @decision annotations for statusline dependency chain (DEC-STATUSLINE-DEPS-001) and prompt cache semantics (DEC-CACHE-RESEARCH-001); .gitignore entries for `.session-cost-history` and `.test-status` (#66, #70)
-
-### Fixed
-- `feature/fix-statusline-bugs`: Statusline truncation, empty banner, and token path bugs — terminal width COLUMNS=0 fallback chain with [40,200] clamp (DEC-STATUSLINE-TERMWIDTH-001); planned-phase banner fallback renders dim `[planned]` label when no in-progress phase (DEC-PLANLIB-PLANNED-PHASE-001, DEC-STATUSLINE-PLANNED-PHASE-001); token persistence path aligned with get_claude_dir() to fix double-nesting for ~/.claude projects (DEC-STATUSLINE-TOKEN-PATH-001)
-- `feature/fix-zombie-code`: 5-layer zombie code prevention — tester Phase 2 entry-point-first verification (Layer 1), implementer Phase 3.25 integration wiring step (Layer 2), tester Phase 2.5 cross-component integration for phase-completing dispatches (Layer 3), post-task.sh auto-verify backstop blocks when no integration assessment found (DEC-AV-IWIRE-001) (Layer 4), extract dispatch protocol to docs/DISPATCH.md for token efficiency (DEC-DISPATCH-EXTRACT-001) (Layer 5)
-- `feature/fix-statusline-flicker`: Startup banner flicker — consolidated 13 separate jq subprocess calls into 1 batched read with unit-separator delimiter (DEC-TODO-SPLIT-002 update); always emit Line 3 newline regardless of initiative presence so status bar height is stable at 3 lines, eliminating resize-triggered flicker during cache population (DEC-STATUSLINE-005)
-- `feature/fix-wiring-gate-bugs`: Resolve 3 integration wiring gate bugs — broaden Check 7b path filter to cover `/scripts/` (#101), remove 36 lines of dead community-check.sh code and phantom source-lib.sh comment (#102), remove phantom skill entries (uplevel, generate-paper-snapshot) from CLAUDE.md and create missing observatory/SKILL.md (#103)
-- `feature/fix-fd-leak`: FD inheritance bug — background heartbeat in task-track.sh held inherited pipe FDs from `$()` command substitution, causing test-proof-gate.sh to hang ~5min; defensive `>/dev/null 2>&1` on all background spawns in 4 hooks; SECONDS timing regression test; CI timeout-minutes: 5 (DEC-GUARDIAN-HEARTBEAT-002)
-- `fix/test-health-audit`: Stale test cleanup and CI coverage — delete test-trace-orphan-fix.sh (tested removed function), fix JSON assertion regex in test-guard-commit-msg.sh, update hooks list 29->34 in test-source-lib.sh, add 9 standalone test suites to CI validate.yml
-- `fix/guardian-perf`: Guardian agent performance overhaul — Step 0 fail-fast precondition check (RC1: wasted turns on doomed dispatches), merge classification tiers Simple/Phase-Completing (RC2-RC5: unnecessary plan reads and drift analysis on simple merges), Gate A.0 duplicate guardian detection in task-track.sh (RC7: burst dispatch prevention), heartbeat ceiling 3->5 min (RC6: premature timeout with max_turns=35), CHANGELOG commit on feature branch before merge, auto-verify bypass scope reduction (DEC-GUARDIAN-HEARTBEAT-002)
-- `fix/native-lock`: OS-native file locking — replace `_portable_flock()` (homebrew Cellar glob discovery) with `_lock_fd()` using `uname -s` detection: `lockf` on macOS, `flock` on Linux; zero external dependencies; added `lockf` bare fallback in log.sh, prompt-submit.sh, state-lib.sh (DEC-LOCK-NATIVE-001)
-- `fix/remediation-silent-failures`: Phase 1 hook cleanup path silent failures — glob pattern for `.active-*` markers includes trailing `*` for phash suffix; `.proof-epoch` cleanup in session-end.sh and check-guardian.sh; marker cleanup in task-track.sh Gate B scoped to current project's phash; pre-bash.sh Check 10 uses `resolve_proof_file()` instead of inline fallback; 2 new regression tests
-- `fix/flock-macos`: Portable flock(1) for macOS — `_portable_flock()` helper in core-lib.sh discovers flock from PATH, homebrew ARM, homebrew Intel, or degrades gracefully; replaced `declare -A` with case-based helper in log.sh for bash 3.2 compatibility; fallback chains in prompt-submit.sh and state-lib.sh (DEC-FLOCK-COMPAT-001)
-- `feature/fix-silent-return`: Silent return bug — 73% of agent completions bypassed post-task.sh fallback because it gated on `tool_name=Task` while agents fire with `tool_name=Agent`; added IS_SUBAGENT normalization, _write_diagnostic_summary() for auto-reconstructing missing summary.md, extended subagent type detection to all 4 agent types, reduced stale marker threshold 7200s to 1800s; 14 new tests (#158)
-- PostToolUse matcher `Task` -> `Task|Agent` — auto-verify hook (post-task.sh) never fired because the dispatched tool is named "Agent", not "Task"; also bumped check-tester.sh timeout 5s -> 15s for 308+ trace dirs; added SP#8 auto-verify exception to CLAUDE.md
-- `feature/fix-bootstrap-amendment`: Bootstrap vs amendment flow — hooks now detect whether MASTER_PLAN.md is already tracked and only permit first-time creation on main; amendments route through worktrees
-
-### Changed
-- `feature/statusline-data`: Phase 2 data pipeline — todo split display (`todos: 3p 7g` with project/global counts), session cost persistence to `.session-cost-history`, lifetime cost annotation (`Σ~$12.40`) next to session cost; +9 new tests (48 total dedicated) (#72)
-- `feature/statusline-rendering`: Statusline rendering overhaul — domain-clustered labels (`dirty:`, `wt:`, `agents:`, `todos:`), aggregate token segment with K/M notation, `~$` cost prefix; +12 new tests (39 total dedicated)
-- `feature/statusline-redesign`: Two-line status HUD — line 1 shows project context (model, workspace, dirty files, worktrees, agents, todos), line 2 shows session metrics (context window bar, cost, duration, lines changed, cache efficiency); removed plan phase, test status, community segment, version, and stale worktree detection from statusline; 26 new dedicated tests
-
-### Fixed
-- `feature/fix-comment-false-positive`: Strip bash comments from `_stripped_cmd` in pre-bash.sh — prevents false-positive guard denials when agent-generated comments mention git keywords like "git commit"; adds Tests 14-15 for regression coverage (DEC-GUARD-002)
-- `feature/autoverify-race-fix`: Auto-verify race condition — `.active-autoverify-*` markers protect the `proof-status = verified` window between auto-verify write and Guardian dispatch, preventing `post-write.sh` from invalidating the status (#56)
-- `feature/proof-lifecycle`: Proof lifecycle reliability — detect_project_root() reads .cwd from HOOK_INPUT, write_proof_status() pre-creates guardian marker + state.json dual-write, post-task.sh emits DISPATCH TESTER NOW after implementer, prompt-submit.sh emits DISPATCH GUARDIAN NOW on verification; new state-lib.sh coordination layer; 11 new tests
-
-### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - `feature/project-isolation`: Cross-project state isolation via 8-char SHA-256 project hash — scopes .proof-status, .active-worktree-path, and trace markers per project root to prevent state contamination across concurrent Claude Code sessions; three-tier backward-compatible lookup; 20 new isolation tests
-
-### Changed
-- `feature/dispatch-reliability`: Dispatch sizing rules, turn-budget discipline, and planner dispatch plans — orchestrator splits large phases into 2-3 item batches, implementer self-regulates with budget notes and early return at 15 turns, planner generates per-phase dispatch plans (#43)
-- `feature/observatory-stdout`: Observatory report.sh now prints a concise stdout summary (regressions, health, signals, batches) after writing the full report file, so callers get actionable output without reading the file
-
-### Fixed
-- `fix/sigpipe-crashes`: SIGPIPE (exit 141) crashes in session-init.sh and context-lib.sh when MASTER_PLAN.md has large sections — replaced 20 pipe patterns with SIGPIPE-safe equivalents (awk inline limits, bash builtins, single-pass awk); added 14-test SIGPIPE resistance suite
-- `fix/stale-marker-blocking-tester`: Stale `.active-*` marker race condition blocking tester dispatch — reorder `finalize_trace` before timeout-heavy ops in check-implementer.sh and check-guardian.sh, add marker cleanup in `refinalize_trace()`, add completed-status fast path in task-track.sh Gate B
-
-### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - `feature/plan-redesign-tests`: Phase 4 test suite for living plan format — 16 new tests across 2 suites (test-plan-lifecycle.sh, test-plan-injection.sh) validating initiative lifecycle edge cases and bounded session injection; bug fix for empty Active Initiatives section returning active instead of dormant (#142)
-
-### Changed
-- `feature/living-plan-hooks`: Living MASTER_PLAN format — initiative-level lifecycle with dormant/active states, get_plan_status() rewrite, plan-validate.sh structural validation, bounded session-init injection (796->81 lines), compress_initiative() for archival (#140)
-- `refactor/shared-library`: Phase 8 shared library consolidation — 13 hooks converted from raw jq to `get_field()`, `get_session_changes()` ported to context-lib.sh with glob fallback, SOURCE_EXTENSIONS unified, context-lib.sh chmod 755; plus DEC-PROOF-PATH-003 meta-repo proof-status double-nesting fix (#7, #137)
-- **Planner create-or-amend workflow** — `agents/planner.md` rewritten (391->629 lines) to support both creating new MASTER_PLAN.md and amending existing living documents with new initiatives; auto-detects plan format via `## Identity` marker (#139)
-- **Tester agent rewrite** — 8 targeted fixes for 37.5% failure rate: feature-match validation, test infrastructure discovery, early proof-status write, hook/script table split, worktree path safety, meta-infra exception, retry limits, mandatory trace protocol
-
-### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - **Documentation audit** — 38 discrepancies resolved: hardcoded hook counts removed, 3 undocumented hooks documented, /approve eradicated, updatedInput contradiction corrected, tester max_turns fixed
 - **doc-freshness.sh** — PreToolUse:Bash hook enforcing documentation freshness at merge time; blocks merges to main when tracked docs are critically stale
 - **check-explore.sh** — SubagentStop:Explore hook for post-exploration validation of Explore agent output quality
@@ -104,6 +89,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARCHITECTURE.md comprehensive technical reference (this release)
 
 ### Changed
+- `feature/statusline-data`: Phase 2 data pipeline — todo split display (`todos: 3p 7g` with project/global counts), session cost persistence to `.session-cost-history`, lifetime cost annotation (`Σ~$12.40`) next to session cost; +9 new tests (48 total dedicated) (#72)
+- `feature/statusline-rendering`: Statusline rendering overhaul — domain-clustered labels (`dirty:`, `wt:`, `agents:`, `todos:`), aggregate token segment with K/M notation, `~$` cost prefix; +12 new tests (39 total dedicated)
+- `feature/statusline-redesign`: Two-line status HUD — line 1 shows project context (model, workspace, dirty files, worktrees, agents, todos), line 2 shows session metrics (context window bar, cost, duration, lines changed, cache efficiency); removed plan phase, test status, community segment, version, and stale worktree detection from statusline; 26 new dedicated tests
+- `feature/dispatch-reliability`: Dispatch sizing rules, turn-budget discipline, and planner dispatch plans — orchestrator splits large phases into 2-3 item batches, implementer self-regulates with budget notes and early return at 15 turns, planner generates per-phase dispatch plans (#43)
+- `feature/observatory-stdout`: Observatory report.sh now prints a concise stdout summary (regressions, health, signals, batches) after writing the full report file, so callers get actionable output without reading the file
+- `feature/living-plan-hooks`: Living MASTER_PLAN format — initiative-level lifecycle with dormant/active states, get_plan_status() rewrite, plan-validate.sh structural validation, bounded session-init injection (796->81 lines), compress_initiative() for archival (#140)
+- `refactor/shared-library`: Phase 8 shared library consolidation — 13 hooks converted from raw jq to `get_field()`, `get_session_changes()` ported to context-lib.sh with glob fallback, SOURCE_EXTENSIONS unified, context-lib.sh chmod 755; plus DEC-PROOF-PATH-003 meta-repo proof-status double-nesting fix (#7, #137)
+- **Planner create-or-amend workflow** — `agents/planner.md` rewritten (391->629 lines) to support both creating new MASTER_PLAN.md and amending existing living documents with new initiatives; auto-detects plan format via `## Identity` marker (#139)
+- **Tester agent rewrite** — 8 targeted fixes for 37.5% failure rate: feature-match validation, test infrastructure discovery, early proof-status write, hook/script table split, worktree path safety, meta-infra exception, retry limits, mandatory trace protocol
 - **Auto-verify restructured** — Runs before heavy I/O for faster verification path
 - **Observatory assessment overhaul** — Comprehensive reports, comparison matrix, deferred lifecycle management
 - **Observatory signal catalog** — Extended from 5 to 12 signals across 4 categories
@@ -113,23 +107,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions now pin to commit SHAs for supply chain security
 - Guard rewrite calls converted to deny — `updatedInput` not supported in PreToolUse hooks
 
-### Fixed
-- Observatory SUG-ID instability across runs (force state v1→v3 migration)
-- Observatory duration UTC timezone bug in finalize_trace
-- Guard long-form force-deletion variant detection in branch guard
-- Check 5 worktree-remove crash on paths with spaces
-- Proof-status path mismatch in git worktree scenarios
-- Verification gate: escape hatch, empty-prompt awareness, env whitelist
-- Tester AND logic for completeness gate + finalize_trace verification fallback
-- Post-compaction amnesia with computed resume directives
-- Meta-repo exemption for guard.sh proof-status deletion check
-- Subagent tracker scoped to per-session thread
-- Hook library race condition during git merge (session-scoped caching)
-- Cross-platform stat for Linux CI (4 trace contract test failures)
-- Shellcheck failures: tilde bug + expanded exclusions
-- README documentation for `update-check.sh` location (lives in `scripts/`, called by `session-init.sh`)
-- Observatory .test-status fallback to finalize_trace test result detection
-
 ### Security
 - Cross-project git guard prevents accidental operations on wrong repositories
 - Credential exposure protection via `.env` read deny rules
@@ -137,7 +114,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2026-02-08
 
 ### Added
-- `feature/backlog-gaps`: Phase 3 unified gaps report — gaps-report.sh (575 lines) combines debt markers, missing @decision annotations, stale issues, unclosed worktrees, and hook coverage into a single accountability report; /gaps command wrapper; hook dead-code cleanup in log.sh, prompt-submit.sh, state-lib.sh, task-track.sh; 13 new gaps tests (78 total) (#83)
 - **Core System Architecture**
   - Three-agent system: Planner, Implementer, Guardian with role separation
   - 20+ deterministic hooks across 8 lifecycle events

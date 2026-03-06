@@ -77,7 +77,6 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── stop.sh               # Stop — decision audit + session summary + next steps (consolidates surface.sh, session-summary.sh, forward-motion.sh)
 │   ├── session-end.sh        # SessionEnd — cleanup
 │   ├── notify.sh             # Notification — permission/idle alerts
-│   ├── context-lib.sh        # Shared library — compatibility shim: sources all domain libs
 │   ├── core-lib.sh           # Shared library — deny/allow/advisory output, atomic writes
 │   ├── git-lib.sh            # Shared library — git state, branch guards, worktree safety
 │   ├── plan-lib.sh           # Shared library — plan lifecycle, staleness scoring
@@ -655,7 +654,7 @@ what agent is active, what needs attention.
 9. Stale session files from crashed sessions.
 10. Trace protocol: crashed trace detection, last completed trace for project.
 11. Pending agent findings from `.agent-findings`.
-12. Syntax gate: validates `source-lib.sh`, `log.sh`, `context-lib.sh` before sourcing.
+12. Syntax gate: validates `source-lib.sh`, `log.sh` before sourcing.
 
 **State files read:** `.update-status`, `.preserved-context`, `.session-changes*`,
 `.agent-findings`, traces index
@@ -861,7 +860,7 @@ requirements (REQ-P0-NNN), decisions (DEC-NNN), and GitHub Issues (one per phase
 4. Await user approval (one approval covers: stage → commit → close issue → push).
 5. Merge feature branch to main.
 6. Push to origin.
-7. Clean up worktree (`safe_cleanup` from context-lib.sh).
+7. Clean up worktree (`safe_cleanup` from core-lib.sh).
 
 **SubagentStop check (check-guardian.sh):**
 - Commit was created (git log shows new commit).
@@ -885,7 +884,7 @@ before it begins. Also initializes the trace directory for the new agent run.
 - Project architecture from MASTER_PLAN.md preamble.
 - Trace directory path as `TRACE_DIR` so agent knows where to write artifacts.
 
-**Trace initialization:** Calls `init_trace()` from context-lib.sh, which creates
+**Trace initialization:** Calls `init_trace()` from trace-lib.sh, which creates
 `traces/<agent_type>-<timestamp>-<hash>/manifest.json` and
 `traces/.active-<agent_type>-<session_id>` marker.
 
@@ -1259,12 +1258,12 @@ source-lib.sh (loaded by every hook)
     ├── require_doc()     → doc-lib.sh
     └── require_ci()      → ci-lib.sh
 
-context-lib.sh (compatibility shim — sources all domain libs, used by tests/diagnose.sh)
 ```
 
 Previously `source-lib.sh` sourced `context-lib.sh` which loaded all domain libraries
 (3,175 lines total). Now every hook pays only 667 lines on startup; domain libraries
 are loaded on demand. `require_all()` was removed in Phase 3 (dead code — no hook called it).
+`context-lib.sh` compatibility shim was removed in issue #65 — tests now use `require_*()` directly.
 
 ---
 
@@ -1309,18 +1308,11 @@ and returns the worktree path when active; falls back to CLAUDE_DIR otherwise.
 
 ---
 
-### context-lib.sh (compatibility shim)
+### Domain Library Functions (formerly in context-lib.sh)
 
-**What it does:** Sources all domain libraries (`core-lib.sh`, `git-lib.sh`, `plan-lib.sh`,
-`trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`) for backward compatibility.
-Used by 15+ test files and `diagnose.sh` that source it directly. Production hooks use
-`require_*()` from `source-lib.sh` instead.
+`context-lib.sh` (the backward-compatibility shim) was removed in issue #65. All callers
+now use `source-lib.sh` + `require_*()` directly. The functions it sourced are in:
 
-**Why it exists:** When the 2,221-line monolith was decomposed into domain libraries,
-this shim preserved backward compatibility for all existing callers with zero code changes.
-New code should not use `context-lib.sh` directly — use `require_*()` for lazy loading.
-
-The functions formerly in `context-lib.sh` are now in domain libraries:
 
 | Domain | Library | Key Functions |
 |--------|---------|---------------|
@@ -1376,12 +1368,12 @@ project root unless marked as `~/.claude/` (global).
 | `.proof-status` | `.claude/` | `status\|epoch` | task-track.sh (create), prompt-submit.sh (verify), check-tester.sh (auto-verify) | pre-bash.sh, task-track.sh, check-tester.sh | Verification gate — must be `verified` to commit |
 | `.session-changes-<ID>` | `.claude/` | One path per line | post-write.sh (track + checkpoint logic) | check-implementer.sh, stop.sh (surface logic), check-guardian.sh | Track modified files per session |
 | `.session-events.jsonl` | `.claude/` | JSONL (one event per line) | post-write.sh (track logic), skill-result.sh, session-init.sh | pre-write.sh (test-gate trajectory), session-end.sh | Session trajectory for diagnosis |
-| `.audit-log` | `.claude/` | `ISO8601\|event\|detail` per line | context-lib.sh `append_audit()` | (human review) | Persistent audit trail of all gate events |
+| `.audit-log` | `.claude/` | `ISO8601\|event\|detail` per line | core-lib.sh `append_audit()` | (human review) | Persistent audit trail of all gate events |
 | `.agent-findings` | `.claude/` | `agent\|issue;issue` per line | check-implementer.sh, check-planner.sh | session-init.sh, prompt-submit.sh | Surface validation issues to next prompt |
-| `.statusline-cache` | `.claude/` | JSON | context-lib.sh `write_statusline_cache()` | statusline.sh | Status bar enrichment without re-computation |
-| `.subagent-tracker-<ID>` | `.claude/` | `ACTIVE\|type\|epoch` / `DONE\|type\|start\|duration` per line | context-lib.sh track_subagent_*() | statusline.sh (via get_subagent_status) | Real-time agent activity display |
+| `.statusline-cache` | `.claude/` | JSON | session-lib.sh `write_statusline_cache()` | statusline.sh | Status bar enrichment without re-computation |
+| `.subagent-tracker-<ID>` | `.claude/` | `ACTIVE\|type\|epoch` / `DONE\|type\|start\|duration` per line | session-lib.sh track_subagent_*() | statusline.sh (via get_subagent_status) | Real-time agent activity display |
 | `.plan-drift` | `.claude/` | `key=value` per line | stop.sh (surface logic) | pre-write.sh (plan-check logic) | Decision drift data for staleness detection |
-| `.plan-churn-cache` | `.claude/` | `HEAD\|mod\|commits\|churn%\|changed\|total` | context-lib.sh get_plan_status() | context-lib.sh get_plan_status() | Cache git churn calculations (keyed on HEAD+plan_mod) |
+| `.plan-churn-cache` | `.claude/` | `HEAD\|mod\|commits\|churn%\|changed\|total` | plan-lib.sh get_plan_status() | plan-lib.sh get_plan_status() | Cache git churn calculations (keyed on HEAD+plan_mod) |
 | `.test-gate-strikes` | `.claude/` | `strike_count\|epoch` | pre-write.sh (test-gate logic) | pre-write.sh (test-gate logic) | Escalating test gate counter |
 | `.mock-gate-strikes` | `.claude/` | `strike_count\|epoch` | pre-write.sh (mock-gate logic) | pre-write.sh (mock-gate logic) | Escalating mock gate counter |
 | `.checkpoint-counter` | `.claude/` | Integer | pre-write.sh (checkpoint logic) | pre-write.sh (checkpoint logic) | Write counter for threshold-based checkpoints |
@@ -1392,7 +1384,7 @@ project root unless marked as `~/.claude/` (global).
 | `.update-status` | `~/.claude/` | `status\|local\|remote\|count\|epoch\|summary` | update-check.sh | session-init.sh | One-shot update notification (cleared after display) |
 | `.worktree-roster.tsv` | `~/.claude/` | TSV: `path\|branch\|issue\|session\|pid\|created_at` | worktree-roster.sh | session-init.sh, statusline.sh | Worktree lifecycle tracking |
 | `.cwd-recovery-needed` | `~/.claude/` | Deleted worktree path | pre-bash.sh (Check 5/5b), check-guardian.sh | pre-bash.sh (Check 0.5 Path B) | One-shot CWD recovery canary |
-| `traces/index.jsonl` | `~/.claude/` | JSONL (one entry per trace) | context-lib.sh `index_trace()` | session-init.sh | Global trace index for cross-project searching |
+| `traces/index.jsonl` | `~/.claude/` | JSONL (one entry per trace) | trace-lib.sh `index_trace()` | session-init.sh | Global trace index for cross-project searching |
 
 ---
 
@@ -1572,7 +1564,7 @@ Done. Feature merged to main.
 ### Adding State Files
 
 1. Choose format: pipe-delimited (`status|field2|epoch`), JSON, or line-based.
-2. Use `atomic_write()` from context-lib.sh for writes.
+2. Use `atomic_write()` from core-lib.sh for writes.
 3. Use `validate_state_file()` before reads.
 4. Add to `.gitignore`.
 5. Document in this file's State File Registry.
@@ -1625,17 +1617,17 @@ Done. Feature merged to main.
 | DEC-GUARD-CWD-003 | guard.sh | accepted | Deny cd-into-worktree with chained commands; suggest subshell resubmit |
 | DEC-GUARD-002 | guard.sh | accepted | Two-tier worktree CWD safety: git worktree remove + raw rm |
 | DEC-GUARD-CHECK5-001 | guard.sh | accepted | Use extract_git_target_dir + git -C for worktree removal rewrite |
-| DEC-INTEGRITY-001 | context-lib.sh | accepted | validate_state_file guards corrupt-file reads in guard.sh |
+| DEC-INTEGRITY-001 | core-lib.sh | accepted | validate_state_file guards corrupt-file reads in guard.sh |
 | DEC-INTEGRITY-002 | guard.sh | accepted | Deny-on-crash EXIT trap for fail-closed behavior |
-| DEC-INTEGRITY-004 | context-lib.sh | accepted | Atomic write via temp-file-then-mv for state file safety |
+| DEC-INTEGRITY-004 | core-lib.sh | accepted | Atomic write via temp-file-then-mv for state file safety |
 | DEC-AUTOREVIEW-001 | auto-review.sh | accepted | Three-tier command classification with recursive analysis |
 | DEC-MOCK-001 | mock-gate.sh | accepted | Escalating mock detection gate with external-boundary allowlist |
 | DEC-TEST-001 | test-runner.sh | accepted | Automatic background test execution after source changes |
-| DEC-CACHE-001 | context-lib.sh | accepted | Statusline cache for status bar enrichment without re-computation |
+| DEC-CACHE-001 | session-lib.sh | accepted | Statusline cache for status bar enrichment without re-computation |
 | DEC-CACHE-002 | statusline.sh | accepted | Status bar enrichment with cached hook data |
 | DEC-CACHE-003 | task-track.sh | accepted | PreToolUse:Task as SubagentStart replacement |
-| DEC-SUBAGENT-001 | context-lib.sh | accepted | Subagent lifecycle tracking via state file |
-| DEC-SUBAGENT-002 | context-lib.sh | accepted | Session-scoped subagent tracker files (prevents phantom counts) |
+| DEC-SUBAGENT-001 | session-lib.sh | accepted | Subagent lifecycle tracking via state file |
+| DEC-SUBAGENT-002 | session-lib.sh | accepted | Session-scoped subagent tracker files (prevents phantom counts) |
 | DEC-COMPACT-001 | prompt-submit.sh | accepted | First-prompt fallback for session-init bug (#10373) |
 | DEC-UPDATE-001 | update-check.sh | accepted | Git-based auto-update with breaking change detection |
 | DEC-UPDATE-BG-001 | session-init.sh | accepted | Background update-check with previous-session result display |
@@ -1645,19 +1637,19 @@ Done. Feature merged to main.
 | DEC-QUICKFIX-001 | log.sh | accepted | Fix double-nested paths when PROJECT_ROOT is ~/.claude |
 | DEC-SRCLIB-001 | source-lib.sh | accepted | Direct hook library sourcing (replaces session-scoped caching) |
 | DEC-TASK-GATE-001 | task-track.sh | accepted | Block implementer dispatch on main/master branch |
-| DEC-CHURN-CACHE-001 | context-lib.sh | accepted | Cache plan churn calculation keyed on HEAD+plan_mod |
+| DEC-CHURN-CACHE-001 | plan-lib.sh | accepted | Cache plan churn calculation keyed on HEAD+plan_mod |
 | DEC-TESTER-001 | check-tester.sh | accepted | Tester SubagentStop with auto-verify for clean e2e verifications |
 | DEC-IMPL-STOP-001 | check-implementer.sh | accepted | Implementer SubagentStop without proof-of-work check (moved to tester) |
 | DEC-V2-002 | checkpoint.sh | accepted | Git ref-based checkpoints via plumbing commands |
 | DEC-WORKTREE-001 | worktree-roster.sh | accepted | Worktree lifecycle tracking via TSV registry |
 | DEC-PROMPT-001 | prompt-submit.sh | accepted | User verification gate and dynamic context injection |
-| DEC-OBS-018 | context-lib.sh | accepted | Normalize agent_type in init_trace |
-| DEC-OBS-019 | context-lib.sh | accepted | Distinguish no-git from branch capture failures in traces |
-| DEC-OBS-020 | context-lib.sh | accepted | Age-based cleanup of orphaned .active-* markers |
-| DEC-OBS-DURATION-001 | context-lib.sh | accepted | Use date -u +%s for UTC-consistent duration calculation |
-| DEC-OBS-OUTCOME-001 | context-lib.sh | accepted | Expand outcome classification with timeout and skipped states |
-| DEC-OBS-SUG002 | context-lib.sh | accepted | Add .test-status fallback to finalize_trace |
-| DEC-OBS-SUG003 | context-lib.sh | accepted | Add git diff fallback to finalize_trace files_changed count |
+| DEC-OBS-018 | trace-lib.sh | accepted | Normalize agent_type in init_trace |
+| DEC-OBS-019 | trace-lib.sh | accepted | Distinguish no-git from branch capture failures in traces |
+| DEC-OBS-020 | trace-lib.sh | accepted | Age-based cleanup of orphaned .active-* markers |
+| DEC-OBS-DURATION-001 | trace-lib.sh | accepted | Use date -u +%s for UTC-consistent duration calculation |
+| DEC-OBS-OUTCOME-001 | trace-lib.sh | accepted | Expand outcome classification with timeout and skipped states |
+| DEC-OBS-SUG002 | trace-lib.sh | accepted | Add .test-status fallback to finalize_trace |
+| DEC-OBS-SUG003 | trace-lib.sh | accepted | Add git diff fallback to finalize_trace files_changed count |
 
 ---
 

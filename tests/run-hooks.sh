@@ -49,8 +49,13 @@ HOOKS_DIR="$(dirname "$SCRIPT_DIR")/hooks"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 SETTINGS="$(dirname "$HOOKS_DIR")/settings.json"
 
-# Source context-lib for safe_cleanup (prevents CWD bricking on rm -rf)
-source "$HOOKS_DIR/context-lib.sh"
+# Source library infrastructure: source-lib.sh provides safe_cleanup (via core-lib.sh)
+# and require_*() lazy loaders for domain libraries used throughout this test file.
+source "$HOOKS_DIR/source-lib.sh"
+require_git
+require_plan
+require_trace
+require_session
 
 # Ensure git identity is configured for tests that create temp repos with commits.
 # CI environments (GitHub Actions) don't have user.email/user.name set, causing
@@ -851,7 +856,7 @@ while IFS= read -r hook; do
     if ! echo "$REGISTERED_HOOKS" | grep -q "^$hook$"; then
         # Exempt utility libraries (not hooks) — domain libs added during metanoia consolidation
         case "$hook" in
-            log.sh|context-lib.sh|source-lib.sh|state-registry.sh|state-lib.sh|\
+            log.sh|source-lib.sh|state-registry.sh|state-lib.sh|\
             ci-lib.sh|core-lib.sh|doc-lib.sh|git-lib.sh|plan-lib.sh|session-lib.sh|trace-lib.sh)
                 ;;
             *)
@@ -1375,10 +1380,10 @@ cat > "$PL_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 **Status:** completed
 PLAN_EOF
 
-# Source context-lib and test lifecycle detection
+# Test lifecycle detection (functions available via parent scope require_plan export)
 # DEC-PLAN-003: old-format all-phases-done now returns "dormant" (replaces "completed")
 (
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     get_plan_status "$PL_TEST_DIR"
     if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
         echo "COMPLETED_OK"
@@ -1405,7 +1410,7 @@ cat > "$PL_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 PLAN_EOF
 
 (
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     get_plan_status "$PL_TEST_DIR"
     if [[ "$PLAN_LIFECYCLE" == "active" ]]; then
         echo "ACTIVE_OK"
@@ -1423,7 +1428,7 @@ done
 # Test no plan detection
 rm -f "$PL_TEST_DIR/MASTER_PLAN.md"
 (
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     get_plan_status "$PL_TEST_DIR"
     if [[ "$PLAN_LIFECYCLE" == "none" ]]; then
         echo "NONE_OK"
@@ -1456,7 +1461,7 @@ cat > "$PA_TEST_DIR/MASTER_PLAN.md" <<'PLAN_EOF'
 PLAN_EOF
 
 (
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     result=$(archive_plan "$PA_TEST_DIR")
     if [[ -n "$result" && ! -f "$PA_TEST_DIR/MASTER_PLAN.md" ]]; then
         echo "ARCHIVE_OK:$result"
@@ -1564,7 +1569,7 @@ git -C "$TR_TEST_DIR" commit --allow-empty -m "init" >/dev/null 2>&1
 
 # Run test in subshell and capture output
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     TRACE_STORE="$TR_TEST_DIR/traces"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
     if [[ -n "$TRACE_ID" && -d "$TRACE_STORE/$TRACE_ID/artifacts" && -f "$TRACE_STORE/$TRACE_ID/manifest.json" ]]; then
@@ -1581,7 +1586,7 @@ fi
 
 # Test 2: init_trace manifest has correct schema
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     TRACE_STORE="$TR_TEST_DIR/traces"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
     manifest="$TRACE_STORE/$TRACE_ID/manifest.json"
@@ -1611,7 +1616,7 @@ fi
 
 # Test 3: init_trace creates active marker (project-scoped since DEC-ISOLATION-002)
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     TRACE_STORE="$TR_TEST_DIR/traces"
     CLAUDE_SESSION_ID="test-session-123"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "test-agent")
@@ -1636,7 +1641,7 @@ fi
 
 # Test 4: detect_active_trace finds marker
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     TRACE_STORE="$TR_TEST_DIR/traces"
     CLAUDE_SESSION_ID="test-session-456"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "detect-agent")
@@ -1655,7 +1660,7 @@ fi
 
 # Test 5: finalize_trace updates manifest + creates index + cleans marker
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     TRACE_STORE="$TR_TEST_DIR/traces"
     CLAUDE_SESSION_ID="test-session-789"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "finalize-agent")
@@ -1732,7 +1737,7 @@ fi
 #   produces an empty artifacts dir, hence outcome="skipped" and status="crashed".
 #   The correct assertion is therefore status=crashed AND outcome=skipped.
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     TRACE_STORE="$TR_TEST_DIR/traces"
     CLAUDE_SESSION_ID="test-session-crash"
     TRACE_ID=$(init_trace "$TR_TEST_DIR" "crash-agent")
@@ -1798,7 +1803,7 @@ fi
 # Test 9: session-end marker cleanup glob matches phash-suffixed markers
 # Verifies fix for 1A: glob must have trailing * to match .active-TYPE-SESSION-PHASH
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     T9_DIR=$(mktemp -d)
     T9_TRACES="$T9_DIR/traces"
     mkdir -p "$T9_TRACES"
@@ -1840,7 +1845,7 @@ fi
 # Test 10: .proof-epoch is cleaned after commit (check-guardian cleanup)
 # Verifies fix for 1C: .proof-epoch must not persist across implementation cycles
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     T10_DIR=$(mktemp -d)
     T10_PHASH=$(project_hash "$T10_DIR")
     T10_CLAUDE_DIR="$T10_DIR"
@@ -1873,7 +1878,7 @@ fi
 # Test 11: cleanup_stale_traces removes old dirs and keeps recent ones
 # @decision DEC-TRACE-TTL-001 — verifies the 7-day retention function
 output=$(
-    source "$HOOKS_DIR/context-lib.sh"
+    # (functions available via parent scope exports)
     T11_DIR=$(mktemp -d)
     T11_TRACES="$T11_DIR/traces"
     mkdir -p "$T11_TRACES"

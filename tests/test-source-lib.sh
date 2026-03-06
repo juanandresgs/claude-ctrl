@@ -126,7 +126,7 @@ test_no_cache_directory_created() {
 }
 
 # ============================================================================
-# Test 5: log.sh and context-lib.sh syntax validity
+# Test 5: log.sh and source-lib.sh syntax validity
 # ============================================================================
 
 test_library_files_syntax() {
@@ -136,12 +136,12 @@ test_library_files_syntax() {
     if ! bash -n "${HOOKS_DIR}/log.sh" 2>/dev/null; then
         failed+=("log.sh")
     fi
-    if ! bash -n "${HOOKS_DIR}/context-lib.sh" 2>/dev/null; then
-        failed+=("context-lib.sh")
+    if ! bash -n "${HOOKS_DIR}/source-lib.sh" 2>/dev/null; then
+        failed+=("source-lib.sh")
     fi
 
     if [[ ${#failed[@]} -eq 0 ]]; then
-        pass_test "log.sh and context-lib.sh pass bash -n syntax check"
+        pass_test "log.sh and source-lib.sh pass bash -n syntax check"
     else
         fail_test "Library files have syntax errors" "${failed[*]}"
     fi
@@ -159,7 +159,7 @@ test_all_hooks_syntax() {
     local all_hooks=(
         "check-explore.sh" "check-general-purpose.sh" "check-guardian.sh" "check-implementer.sh"
         "check-planner.sh" "check-tester.sh" "ci-lib.sh" "compact-preserve.sh"
-        "context-lib.sh" "core-lib.sh" "doc-lib.sh" "git-lib.sh"
+        "core-lib.sh" "doc-lib.sh" "git-lib.sh"
         "log.sh" "notify.sh" "plan-lib.sh" "playwright-cleanup.sh"
         "post-task.sh" "post-write.sh" "pre-bash.sh" "pre-write.sh"
         "prompt-submit.sh" "session-end.sh" "session-init.sh" "session-lib.sh"

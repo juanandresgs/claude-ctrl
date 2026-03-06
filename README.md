@@ -277,7 +277,7 @@ Measured with `tests/bench-hooks.sh` (5 iterations per fixture, 63 fixtures tota
 | task-track.sh | 233–254ms | 253–262ms | Agent dispatch |
 | stop.sh | 1,091–1,150ms | 1,111–1,207ms | End of every response |
 
-Library-load baseline (sourcing `context-lib.sh` cold): **13ms**.
+Library-load baseline (sourcing `source-lib.sh` + `core-lib.sh` cold): **13ms**.
 
 ### Production Metrics
 
@@ -347,8 +347,7 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 - `source-lib.sh` — Bootstrap loader: sources `log.sh` + `core-lib.sh` (667 lines total). Provides `require_*()` lazy loaders for domain libraries. All hooks source this first.
 - `log.sh` — JSON I/O, stdin caching, path utilities (`detect_project_root`, `resolve_proof_file`)
 - `core-lib.sh` — deny/allow/advisory output helpers, atomic writes, shared predicates
-- `context-lib.sh` — **Compatibility shim**: sources all domain libraries for backward compatibility. Used by test files and `diagnose.sh`. New hooks use `require_*()` instead.
-- Domain libraries loaded on demand: `git-lib.sh`, `plan-lib.sh`, `trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`
+- Domain libraries loaded on demand via `require_*()`): `git-lib.sh`, `plan-lib.sh`, `trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`
 
 **PreToolUse Hooks** — fire before every tool call; can block or rewrite:
 
