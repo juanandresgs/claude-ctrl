@@ -19,9 +19,6 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 require_session
-require_git
-require_plan
-require_trace
 
 enable_fail_closed "task-track"
 
@@ -32,17 +29,8 @@ AGENT_TYPE="${AGENT_TYPE:-unknown}"
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
-# Load domain libraries needed below
-require_git
-require_plan
-require_trace
-require_session
-
-# Track spawn and refresh statusline cache
+# Track spawn (subagent-start.sh handles git/plan state and statusline cache)
 track_subagent_start "$PROJECT_ROOT" "$AGENT_TYPE"
-get_git_state "$PROJECT_ROOT"
-get_plan_status "$PROJECT_ROOT"
-write_statusline_cache "$PROJECT_ROOT"
 
 # In scan mode: emit all gate declarations and exit cleanly.
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
@@ -52,6 +40,21 @@ if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
     emit_flush
     exit 0
 fi
+
+# Early exit for non-gated agent types — avoid loading domain libraries
+# @decision DEC-LATENCY-001
+# @title Early exit for non-gated agent types in task-track.sh
+# @status accepted
+# @rationale Explore, Plan, Bash, and general-purpose agents have no gates in
+#   task-track.sh. Loading git-lib, plan-lib, and trace-lib (~3000 lines) for
+#   them is pure waste. Early exit saves ~70% of parse time for these types.
+case "$AGENT_TYPE" in
+    guardian|tester|implementer) ;;
+    *) emit_flush; exit 0 ;;
+esac
+
+# Load domain libraries needed by gates (deferred from top-level for non-gated early exit)
+require_trace
 
 # --- Gate A.0: Duplicate guardian detection ---
 # Prevents burst dispatch: if another Guardian is already active for this project,

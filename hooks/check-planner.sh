@@ -43,8 +43,9 @@ PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
-# Track subagent completion
+# Track subagent completion and tokens
 track_subagent_stop "$PROJECT_ROOT" "planner"
+track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"planner\"}" "$PROJECT_ROOT"
 
 # Extract response text early — needed for both finalization and checks

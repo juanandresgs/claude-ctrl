@@ -200,19 +200,21 @@ detect_active_trace() {
             fi
         fi
 
-        # Tertiary path: iterate all markers for this agent type.
+        # Tertiary path: iterate all markers for this agent type (capped at 5).
         # Validate both session_id AND project from manifest.
         local candidate
+        local _tertiary_count=0
         for candidate in "${TRACE_STORE}/.active-${agent_type}-"*; do
             [[ -f "$candidate" ]] || continue
+            (( _tertiary_count++ >= 5 )) && break
             local candidate_trace_id
             candidate_trace_id=$(cat "$candidate" 2>/dev/null) || continue
             [[ -n "$candidate_trace_id" ]] || continue
             local candidate_manifest="${TRACE_STORE}/${candidate_trace_id}/manifest.json"
             [[ -f "$candidate_manifest" ]] || continue
-            local manifest_session manifest_project
-            manifest_session=$(jq -r '.session_id // empty' "$candidate_manifest" 2>/dev/null)
-            manifest_project=$(jq -r '.project // empty' "$candidate_manifest" 2>/dev/null)
+            local manifest_session manifest_project _combined
+            _combined=$(jq -r '[.session_id, .project] | @tsv' "$candidate_manifest" 2>/dev/null) || continue
+            IFS=$'\t' read -r manifest_session manifest_project <<< "$_combined"
             if [[ "$manifest_session" == "$session_id" && "$manifest_project" == "$project_root" ]]; then
                 echo "$candidate_trace_id"
                 return 0
@@ -265,7 +267,7 @@ detect_active_trace() {
         done < <(for _m in "${_markers[@]}"; do
             _mt=$(stat -c "%Y" "$_m" 2>/dev/null || stat -f "%m" "$_m" 2>/dev/null || echo 0)
             printf '%s\t%s\n' "$_mt" "$_m"
-        done | sort -rn | cut -f2-)
+        done | sort -rn | cut -f2- | head -5)
     fi
 
     return 1

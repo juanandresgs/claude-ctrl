@@ -189,6 +189,7 @@ fi
 #   Issue #124.
 if [[ "$PROOF_STATUS" == "verified" ]]; then
     track_subagent_stop "$PROJECT_ROOT" "tester"
+    track_agent_tokens "$AGENT_RESPONSE"
     append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
     CONTEXT="Tester validation: proof-status=verified (already verified — skipping duplicate auto-verify)."
     DIRECTIVE="Already verified. Guardian dispatch is unblocked."
@@ -258,6 +259,7 @@ fi
 # Still do tracking + audit, but skip expensive git/trace/plan work.
 if [[ "$AUTO_VERIFIED" == "true" ]]; then
     track_subagent_stop "$PROJECT_ROOT" "tester"
+    track_agent_tokens "$AGENT_RESPONSE"
     append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
     if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then
         append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified (${WHITELISTED_COUNT} environmental 'Not tested' item(s) whitelisted)"
@@ -346,8 +348,9 @@ if [[ "$PROOF_STATUS" == "missing" && -n "$RESPONSE_TEXT" ]]; then
     PROOF_STATUS="pending"
 fi
 
-# Track subagent completion
+# Track subagent completion and tokens
 track_subagent_stop "$PROJECT_ROOT" "tester"
+track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 

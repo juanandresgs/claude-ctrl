@@ -36,8 +36,9 @@ fi
 
 PROJECT_ROOT=$(detect_project_root)
 
-# Track subagent completion
+# Track subagent completion and tokens
 track_subagent_stop "$PROJECT_ROOT" "general-purpose"
+track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"general-purpose\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: finalize active general-purpose trace ---

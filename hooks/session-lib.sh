@@ -676,6 +676,72 @@ sum_transcript_tokens() {
 }
 export -f sum_transcript_tokens
 
+# --- Subagent token tracking ---
+# Extracted from track-agent-tokens.sh for inlining into check-*.sh hooks.
+# Parses SubagentStop payload for agent_transcript_path, sums token usage,
+# appends to session-scoped state file, and updates statusline cache.
+#
+# @decision DEC-LATENCY-002
+# @title Inline track_agent_tokens into check-*.sh hooks via session-lib.sh
+# @status accepted
+# @rationale Eliminates the universal SubagentStop track-agent-tokens.sh hook
+#   (1 bash spawn + 667-line library parse per subagent completion). Each
+#   check-*.sh hook already loads session-lib.sh, so adding this function
+#   there is zero additional parse cost. The function is called after
+#   track_subagent_stop in each check-*.sh hook.
+track_agent_tokens() {
+    local hook_input="$1"
+    local transcript_path
+    transcript_path=$(echo "$hook_input" | jq -r '.agent_transcript_path // empty' 2>/dev/null || true)
+    [[ -z "$transcript_path" || ! -f "$transcript_path" ]] && return 0
+
+    local token_json
+    token_json=$(sum_transcript_tokens "$transcript_path" 2>/dev/null) || return 0
+
+    local input_tokens output_tokens cache_read cache_create total_tokens
+    input_tokens=$(echo "$token_json" | jq -r '.input // 0' 2>/dev/null || echo 0)
+    output_tokens=$(echo "$token_json" | jq -r '.output // 0' 2>/dev/null || echo 0)
+    cache_read=$(echo "$token_json" | jq -r '.cache_read // 0' 2>/dev/null || echo 0)
+    cache_create=$(echo "$token_json" | jq -r '.cache_create // 0' 2>/dev/null || echo 0)
+    total_tokens=$(( input_tokens + output_tokens + cache_read + cache_create ))
+
+    [[ "$total_tokens" -eq 0 ]] && return 0
+
+    local claude_dir
+    claude_dir=$(get_claude_dir)
+    local state_file="${claude_dir}/.subagent-tokens-${CLAUDE_SESSION_ID:-$$}"
+    local epoch
+    epoch=$(date +%s)
+
+    local agent_type
+    agent_type=$(echo "$hook_input" | jq -r '.agent_type // "unknown"' 2>/dev/null || echo "unknown")
+
+    printf '%d|%s|%d|%d|%d|%d|%d\n' \
+        "$epoch" "$agent_type" "$input_tokens" "$output_tokens" \
+        "$cache_read" "$cache_create" "$total_tokens" >> "$state_file"
+
+    # Update statusline cache with cumulative subagent_tokens
+    local cumulative_total=0
+    if [[ -f "$state_file" ]]; then
+        cumulative_total=$(awk -F'|' '{s += $7} END {print s+0}' "$state_file" 2>/dev/null || echo 0)
+    fi
+
+    local cache_file="${claude_dir}/.statusline-cache"
+    if [[ -f "$cache_file" ]]; then
+        local tmp_cache="${cache_file}.tmp.$$"
+        if jq --argjson st "$cumulative_total" --arg ts "$(date +%s)" \
+            '. + {subagent_tokens: $st, updated: ($ts | tonumber)}' "$cache_file" \
+            > "$tmp_cache" 2>/dev/null; then
+            mv "$tmp_cache" "$cache_file"
+        else
+            rm -f "$tmp_cache"
+        fi
+    fi
+
+    log_info "TOKENS" "tracked ${agent_type}: +$(( total_tokens / 1000 ))k (Σ$(( cumulative_total / 1000 ))k)"
+}
+export -f track_agent_tokens
+
 export -f write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status
 export -f append_session_event get_session_trajectory get_session_summary_context
 export -f get_prior_sessions build_resume_directive

@@ -32,8 +32,9 @@ CONTEXT_PARTS=()
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 
-# Track subagent spawn
+# Track subagent spawn and refresh statusline cache
 track_subagent_start "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}"
+write_statusline_cache "$PROJECT_ROOT"
 append_session_event "agent_start" \
   "{\"type\":\"${AGENT_TYPE:-unknown}\"}" "$PROJECT_ROOT"
 
@@ -228,7 +229,7 @@ case "$AGENT_TYPE" in
                 done < <(for _m in "${_impl_manifests[@]}"; do
                     _mt=$(stat -c "%Y" "$_m" 2>/dev/null || stat -f "%m" "$_m" 2>/dev/null || echo 0)
                     printf '%s\t%s\n' "$_mt" "$_m"
-                done | sort -rn | cut -f2-)
+                done | sort -rn | cut -f2- | head -10)
             fi
         fi
         if [[ -n "$IMPL_TRACE" ]]; then

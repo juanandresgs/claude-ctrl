@@ -58,8 +58,9 @@ fi
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
-# Track subagent completion
+# Track subagent completion and tokens
 track_subagent_stop "$PROJECT_ROOT" "implementer"
+track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"implementer\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 

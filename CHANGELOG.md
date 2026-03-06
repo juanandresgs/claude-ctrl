@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `feature/rsm-phase3`: Unified state directory with dual-write migration — `state_dir()` in state-lib.sh provides `state/{phash}/` per-project directories; proof-status, test-status, and session hooks migrated to state directories with backward-compatible fallback reads from legacy dotfile paths; breadcrumb system retired; 50+ new state directory migration tests (DEC-RSM-STATEDIR-001, DEC-RSM-STATEDIR-TEST-001)
+- `feature/fix-subagent-latency`: Subagent latency remediation — deduplicate dispatch work in task-track.sh (early exit for non-gated agents, remove duplicate require_* calls); cap trace scanning loops (10 manifest, 5 tertiary fallback, combined jq @tsv calls); merge token tracking into check-*.sh hooks (track_agent_tokens() in session-lib.sh, delete standalone track-agent-tokens.sh + SubagentStop hook entry)
 - `feature/wave-planning-metrics`: Replace serial phase-based planning with DAG-based wave decomposition — Phase 3 output format uses dependency graphs to compute waves of parallelizable work; new per-item metrics (Weight S/M/L/XL, Gate none/review/approve, Deps W-ID list); initiative-level summary metrics (critical path, max width); 4 new DAG validation checklist items; issue labels `phase-N` to `wave-N`; both templates (master-plan.md, initiative-block.md) updated consistently
 
 ### Fixed

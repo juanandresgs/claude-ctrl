@@ -74,7 +74,7 @@ append_audit "$(detect_project_root 2>/dev/null || echo /)" "post_task_fire" \
 if [[ "$IS_SUBAGENT" == "true" && -z "$SUBAGENT_TYPE" ]]; then
     _fb_root=$(detect_project_root 2>/dev/null || echo "")
     if [[ -n "$_fb_root" ]]; then
-        for _try_type in guardian implementer planner tester; do
+        for _try_type in tester guardian implementer planner; do
             _fb_trace=$(detect_active_trace "$_fb_root" "$_try_type" 2>/dev/null || echo "")
             if [[ -n "$_fb_trace" ]]; then
                 SUBAGENT_TYPE="$_try_type"
@@ -350,8 +350,8 @@ if [[ -z "$_AV_TRACE_ID" && -n "${CLAUDE_SESSION_ID:-}" ]]; then
     for _dir in $(ls -1d "${TRACE_STORE}/tester-"* 2>/dev/null | sort -r | head -5); do
         _mf="${_dir}/manifest.json"
         [[ -f "$_mf" ]] || continue
-        _ms=$(jq -r '.session_id // empty' "$_mf" 2>/dev/null)
-        _mp=$(jq -r '.project // empty' "$_mf" 2>/dev/null)
+        _combined=$(jq -r '[.session_id, .project] | @tsv' "$_mf" 2>/dev/null) || continue
+        IFS=$'\t' read -r _ms _mp <<< "$_combined"
         if [[ "$_ms" == "$CLAUDE_SESSION_ID" && "$_mp" == "$PROJECT_ROOT" ]]; then
             _AV_TRACE_ID=$(basename "$_dir")
             log_info "POST-TASK" "marker gone — found tester trace by session scan: $_AV_TRACE_ID"
@@ -410,9 +410,9 @@ if [[ -z "$SUMMARY_TEXT" ]]; then
         [[ "$_sz" -ge 50 ]] || continue  # 50-byte minimum: real summaries are much larger
         _mf="${_dir}/manifest.json"
         [[ -f "$_mf" ]] || continue
-        _mp=$(jq -r '.project // empty' "$_mf" 2>/dev/null)
         # Validate agent_type = tester to prevent false AUTOVERIFY matches from non-tester traces
-        _mat=$(jq -r '.agent_type // empty' "$_mf" 2>/dev/null)
+        _combined=$(jq -r '[.project, .agent_type] | @tsv' "$_mf" 2>/dev/null) || continue
+        IFS=$'\t' read -r _mp _mat <<< "$_combined"
         if [[ "$_mp" == "$PROJECT_ROOT" && "$_mat" == "tester" ]]; then
             SUMMARY_TEXT=$(cat "$_smf" 2>/dev/null || echo "")
             _AV_TRACE_ID=$(basename "$_dir")
@@ -621,7 +621,9 @@ fi
 #   auto-verify fails and falls back to manual approval.
 _AV_HAS_NEW_FILES=false
 if [[ -n "$_AV_TRACE_ID" ]]; then
-    _IMPL_TRACE=$(ls -1d "${TRACE_STORE}/implementer-"* 2>/dev/null | sort -r | head -1)
+    _impl_dirs=("${TRACE_STORE}"/implementer-*/)
+    _IMPL_TRACE=""
+    [[ -d "${_impl_dirs[-1]}" ]] && _IMPL_TRACE="${_impl_dirs[-1]%/}"
     if [[ -n "$_IMPL_TRACE" && -f "$_IMPL_TRACE/artifacts/files-changed.txt" ]]; then
         # Check if implementer created new files (not just modified)
         _IMPL_DIFF_DIR="${_IMPL_TRACE}/artifacts"
