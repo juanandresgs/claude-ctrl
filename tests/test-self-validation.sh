@@ -23,6 +23,9 @@
 
 set -euo pipefail
 
+# _file_mtime FILE — cross-platform mtime (Linux-first; mirrors core-lib.sh)
+_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOKS_DIR="$PROJECT_ROOT/hooks"
@@ -263,11 +266,7 @@ touch "$_T07_LIB_FILE"
 
 # Now simulate the staleness check logic from session-init.sh:
 # Get the mtime of the fake lib file
-if [[ "$(uname)" == "Darwin" ]]; then
-    _T07_LIB_MTIME=$(stat -f %m "$_T07_LIB_FILE" 2>/dev/null || echo "0")
-else
-    _T07_LIB_MTIME=$(stat -c %Y "$_T07_LIB_FILE" 2>/dev/null || echo "0")
-fi
+_T07_LIB_MTIME=$(_file_mtime "$_T07_LIB_FILE")
 
 _T07_GEN_TS=$(cat "$_T07_HOOKS_GEN")
 _T07_STALE=0

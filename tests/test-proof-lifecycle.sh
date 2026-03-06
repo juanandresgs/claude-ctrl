@@ -22,6 +22,10 @@
 #   own temp directory and cleanup.
 
 set -euo pipefail
+
+# _with_timeout SECS CMD [ARGS] — portable timeout (Perl fallback when GNU timeout absent)
+_with_timeout() { local s="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"; else perl -e 'alarm(shift @ARGV); exec @ARGV or exit 127' "$s" "$@"; fi; }
+
 # Portable SHA-256 (macOS: shasum, Ubuntu: sha256sum)
 if command -v shasum >/dev/null 2>&1; then
     _SHA256_CMD="shasum -a 256"
@@ -379,7 +383,7 @@ T12_START=$(date +%s)
 T12_OUT=$(
     export CLAUDE_PROJECT_DIR="$T12_REPO"
     export CLAUDE_SESSION_ID="test12-$$"
-    printf '%s' "$T12_INPUT" | timeout 5 bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
+    printf '%s' "$T12_INPUT" | _with_timeout 5 bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
 )
 T12_END=$(date +%s)
 T12_ELAPSED=$(( T12_END - T12_START ))
@@ -410,7 +414,7 @@ T13_OUT=$(
     # Create a stub gh that exits immediately to skip slow network calls from todo.sh hud
     T13_BIN=$(mktemp -d)
     printf '#!/bin/sh\nexit 1\n' > "$T13_BIN/gh" && chmod +x "$T13_BIN/gh"
-    printf '%s' "$T13_INPUT" | timeout 15 env PATH="$T13_BIN:$PATH" bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
+    printf '%s' "$T13_INPUT" | _with_timeout 15 env PATH="$T13_BIN:$PATH" bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
     rm -rf "$T13_BIN"
 )
 
@@ -441,7 +445,7 @@ T14_INPUT="{\"prompt\":\"approved\",\"cwd\":\"${T14_REPO}\"}"
 T14_OUT=$(
     export CLAUDE_PROJECT_DIR="$T14_REPO"
     export CLAUDE_SESSION_ID="test14-$$"
-    printf '%s' "$T14_INPUT" | timeout 10 bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
+    printf '%s' "$T14_INPUT" | _with_timeout 10 bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
 )
 
 if echo "$T14_OUT" | grep -q "DISPATCH GUARDIAN NOW"; then
@@ -571,7 +575,7 @@ T18_STDERR=$(
     export TRACE_STORE="$T18_TRACE"
     export CLAUDE_PROJECT_DIR="$T18_REPO"
     export CLAUDE_SESSION_ID="test18-$$"
-    printf '%s' "$T18_INPUT" | timeout 10 bash "${HOOKS_DIR}/post-task.sh" 2>&1 >/dev/null || true
+    printf '%s' "$T18_INPUT" | _with_timeout 10 bash "${HOOKS_DIR}/post-task.sh" 2>&1 >/dev/null || true
 )
 
 # The scan should log "not tester" rejection, not "found summary"
@@ -617,7 +621,7 @@ T19_STDERR=$(
     export TRACE_STORE="$T19_TRACE"
     export CLAUDE_PROJECT_DIR="$T19_REPO"
     export CLAUDE_SESSION_ID="test19-$$"
-    printf '%s' "$T19_INPUT" | timeout 10 bash "${HOOKS_DIR}/post-task.sh" 2>&1 >/dev/null || true
+    printf '%s' "$T19_INPUT" | _with_timeout 10 bash "${HOOKS_DIR}/post-task.sh" 2>&1 >/dev/null || true
 )
 
 if echo "$T19_STDERR" | grep -q "agent_type=tester validated"; then

@@ -334,15 +334,9 @@ write_proof_status() {
 
             local allow_reset=false
             if [[ -f "$epoch_file" && -f "$proof_file_for_cmp" ]]; then
-                # On macOS: stat -f %m; on Linux: stat -c %Y
                 local epoch_mtime proof_mtime
-                if [[ "$(uname)" == "Darwin" ]]; then
-                    epoch_mtime=$(stat -f %m "$epoch_file" 2>/dev/null || echo "0")
-                    proof_mtime=$(stat -f %m "$proof_file_for_cmp" 2>/dev/null || echo "1")
-                else
-                    epoch_mtime=$(stat -c %Y "$epoch_file" 2>/dev/null || echo "0")
-                    proof_mtime=$(stat -c %Y "$proof_file_for_cmp" 2>/dev/null || echo "1")
-                fi
+                epoch_mtime=$(_file_mtime "$epoch_file")
+                proof_mtime=$(_file_mtime "$proof_file_for_cmp")
                 if [[ "$epoch_mtime" -gt "$proof_mtime" ]]; then
                     allow_reset=true
                 fi

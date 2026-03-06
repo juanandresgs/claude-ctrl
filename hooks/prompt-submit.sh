@@ -67,7 +67,7 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
         if [[ -f "$lockfile" ]]; then
             local lock_age=0
             local lock_mtime now_epoch
-            lock_mtime=$(stat -f %m "$lockfile" 2>/dev/null || stat -c %Y "$lockfile" 2>/dev/null || echo "0")
+            lock_mtime=$(_file_mtime "$lockfile")
             now_epoch=$(date +%s)
             lock_age=$(( now_epoch - lock_mtime ))
             if [[ "$lock_age" -gt 10 ]]; then

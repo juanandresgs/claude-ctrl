@@ -65,7 +65,7 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
     _EXISTING_MARKER=$(find "$TRACE_STORE" -name ".active-guardian-*-${_PHASH_A0}" -newer "$TRACE_STORE" -mmin -10 2>/dev/null | head -1)
     if [[ -n "$_EXISTING_MARKER" ]]; then
         # Check if the marker is within TTL (600s)
-        _MARKER_AGE=$(( $(date +%s) - $(stat -f %m "$_EXISTING_MARKER" 2>/dev/null || stat -c %Y "$_EXISTING_MARKER" 2>/dev/null || echo "0") ))
+        _MARKER_AGE=$(( $(date +%s) - $(_file_mtime "$_EXISTING_MARKER") ))
         if [[ "$_MARKER_AGE" -lt 600 ]]; then
             emit_deny "Cannot dispatch Guardian: another Guardian is already active for this project (marker: $(basename "$_EXISTING_MARKER"), age: ${_MARKER_AGE}s). Wait for it to complete or clean stale markers."
         fi

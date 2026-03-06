@@ -390,9 +390,9 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bpush\b'; then
             _CI_START=$(date +%s 2>/dev/null || echo "0")
             if [[ "$_CI_SCRIPT" == *":ci-local" ]]; then
                 # Makefile target
-                _CI_OUTPUT=$(cd "$_CI_PROJECT_ROOT" && timeout 120 make ci-local 2>&1) && _CI_EXIT=0 || _CI_EXIT=$?
+                _CI_OUTPUT=$(cd "$_CI_PROJECT_ROOT" && _with_timeout 120 make ci-local 2>&1) && _CI_EXIT=0 || _CI_EXIT=$?
             else
-                _CI_OUTPUT=$(cd "$_CI_PROJECT_ROOT" && timeout 120 bash "$_CI_SCRIPT" 2>&1) && _CI_EXIT=0 || _CI_EXIT=$?
+                _CI_OUTPUT=$(cd "$_CI_PROJECT_ROOT" && _with_timeout 120 bash "$_CI_SCRIPT" 2>&1) && _CI_EXIT=0 || _CI_EXIT=$?
             fi
             _CI_END=$(date +%s 2>/dev/null || echo "0")
             _CI_ELAPSED=$(( _CI_END - _CI_START ))

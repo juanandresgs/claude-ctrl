@@ -109,7 +109,7 @@ init_trace() {
     for marker in "${TRACE_STORE}/.active-"*; do
         [[ -f "$marker" ]] || continue
         local marker_mtime
-        marker_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo "0")
+        marker_mtime=$(_file_mtime "$marker")
         if (( now_epoch - marker_mtime > stale_threshold )); then
             rm -f "$marker"
         fi

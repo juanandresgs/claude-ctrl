@@ -39,6 +39,10 @@
 
 set -euo pipefail
 
+# _file_mtime FILE — cross-platform mtime (Linux-first; mirrors core-lib.sh)
+# Defined locally because clean-state.sh is standalone (no source-lib.sh).
+_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 DRY_RUN=true
 
@@ -218,7 +222,7 @@ for sha_file in "$CLAUDE_DIR"/.guardian-start-sha*; do
     [[ -f "$sha_file" ]] || continue
     FOUND_GUARDIAN=$((FOUND_GUARDIAN + 1))
     sha_val=$(cat "$sha_file" 2>/dev/null | tr -d '[:space:]' | head -c 12)
-    mtime=$(stat -f %m "$sha_file" 2>/dev/null || stat -c %Y "$sha_file" 2>/dev/null || echo "0")
+    mtime=$(_file_mtime "$sha_file")
     now=$(date +%s)
     age_h=$(( (now - mtime) / 3600 ))
     age_d=$(( (now - mtime) / 86400 ))
@@ -243,7 +247,7 @@ for trace_file in "$CLAUDE_DIR"/.last-tester-trace*; do
     [[ -f "$trace_file" ]] || continue
     FOUND_TESTER=$((FOUND_TESTER + 1))
     trace_val=$(cat "$trace_file" 2>/dev/null | tr -d '[:space:]')
-    mtime=$(stat -f %m "$trace_file" 2>/dev/null || stat -c %Y "$trace_file" 2>/dev/null || echo "0")
+    mtime=$(_file_mtime "$trace_file")
     now=$(date +%s)
     age_d=$(( (now - mtime) / 86400 ))
     echo "  ${CYAN}[info]${NC} $(basename "$trace_file"): trace=${trace_val:-unknown}, age=${age_d}d"
@@ -259,7 +263,7 @@ done
 echo "${BOLD}5. Agent findings (.agent-findings)${NC}"
 AGENT_FINDINGS="$CLAUDE_DIR/.agent-findings"
 if [[ -f "$AGENT_FINDINGS" ]]; then
-    mtime=$(stat -f %m "$AGENT_FINDINGS" 2>/dev/null || stat -c %Y "$AGENT_FINDINGS" 2>/dev/null || echo "0")
+    mtime=$(_file_mtime "$AGENT_FINDINGS")
     now=$(date +%s)
     age=$((now - mtime))
     age_d=$((age / 86400))
@@ -283,7 +287,7 @@ echo "${BOLD}6. CWD recovery canary (.cwd-recovery-needed)${NC}"
 CWD_CANARY="$CLAUDE_DIR/.cwd-recovery-needed"
 if [[ -f "$CWD_CANARY" ]]; then
     canary_target=$(cat "$CWD_CANARY" 2>/dev/null | tr -d '[:space:]')
-    mtime=$(stat -f %m "$CWD_CANARY" 2>/dev/null || stat -c %Y "$CWD_CANARY" 2>/dev/null || echo "0")
+    mtime=$(_file_mtime "$CWD_CANARY")
     now=$(date +%s)
     age_h=$(( (now - mtime) / 3600 ))
     if [[ "$age_h" -gt 2 ]]; then

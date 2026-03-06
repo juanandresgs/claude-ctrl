@@ -68,6 +68,10 @@
 #
 set -euo pipefail
 
+# _file_mtime FILE — cross-platform mtime (Linux-first; mirrors core-lib.sh)
+# Defined locally because statusline.sh is standalone (no source-lib.sh).
+_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 TODO_CACHE="$HOME/.claude/.todo-count"
 
 # ---------------------------------------------------------------------------
@@ -492,12 +496,7 @@ if (( cache_agents > 0 )); then
   _progress_file="${workspace_dir:+$workspace_dir/.claude/.agent-progress}"
   [[ -z "$workspace_dir" ]] && _progress_file="$HOME/.claude/.agent-progress"
   if [[ -f "$_progress_file" ]]; then
-    _progress_mtime=0
-    if [[ "$(uname)" == "Darwin" ]]; then
-      _progress_mtime=$(stat -f %m "$_progress_file" 2>/dev/null || echo "0")
-    else
-      _progress_mtime=$(stat -c %Y "$_progress_file" 2>/dev/null || echo "0")
-    fi
+    _progress_mtime=$(_file_mtime "$_progress_file")
     _now=${_now:-$(date +%s)}
     if (( _now - _progress_mtime < 1800 )); then
       _current_file=$(basename "$(cat "$_progress_file" 2>/dev/null)" 2>/dev/null || echo "")

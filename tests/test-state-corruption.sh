@@ -17,6 +17,10 @@
 #   regressions in the guards that protect hook stability.
 
 set -euo pipefail
+
+# _with_timeout SECS CMD [ARGS] — portable timeout (Perl fallback when GNU timeout absent)
+_with_timeout() { local s="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"; else perl -e 'alarm(shift @ARGV); exec @ARGV or exit 127' "$s" "$@"; fi; }
+
 # Portable SHA-256 (macOS: shasum, Ubuntu: sha256sum)
 if command -v shasum >/dev/null 2>&1; then
     _SHA256_CMD="shasum -a 256"
@@ -150,7 +154,7 @@ python3 -c "print('a' * 10240 + '|12345')" > "$LONG_FILE" 2>/dev/null || \
 
 # Should complete without hanging and return valid (has pipe delimiter)
 VALIDATE_RESULT=""
-VALIDATE_RESULT=$(timeout 5 bash -c "
+VALIDATE_RESULT=$(_with_timeout 5 bash -c "
     source '$HOOKS_DIR/log.sh' 2>/dev/null
     source '$HOOKS_DIR/core-lib.sh' 2>/dev/null
     validate_state_file '$LONG_FILE' 2 && echo 'valid' || echo 'invalid'
@@ -267,7 +271,7 @@ printf '\x00\x00\x00\x00\x00' > "$NULL_FILE"
 # Must not crash (bash set -e should not fire) and must return "invalid"
 NULL_RESULT=""
 NULL_EXIT=0
-NULL_RESULT=$(timeout 5 bash -c "
+NULL_RESULT=$(_with_timeout 5 bash -c "
     set -euo pipefail
     source '$HOOKS_DIR/core-lib.sh' 2>/dev/null
     source '$HOOKS_DIR/log.sh' 2>/dev/null

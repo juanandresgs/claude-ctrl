@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `feature/xplatform-reliability`: Portable `_file_mtime()` and `_with_timeout()` wrappers in core-lib.sh — replace 25 inline `stat -f %m` patterns across 12 files with Linux-first stat order (DEC-XPLAT-001), replace 10 bare `timeout` commands across 5 files with GNU timeout + Perl alarm fallback (DEC-XPLAT-002)
+
 ### Added
 - `feature/dispatch-enforcement`: Gate 1.5 in pre-write.sh blocks orchestrator from writing source code directly — compares CLAUDE_SESSION_ID against .orchestrator-sid (written by session-init.sh) to detect orchestrator context; dispatch routing table restored to CLAUDE.md; .orchestrator-sid lifecycle managed by session-init/session-end (DEC-DISPATCH-001, DEC-DISPATCH-002, DEC-DISPATCH-003)
 - `feature/operational-mode-system`: Operational Mode System initiative added to MASTER_PLAN.md — 4-tier mode taxonomy (Observe/Amend/Patch/Build) with proportional governance, 5 waves of 15 work items, 9 architectural decisions (DEC-MODE-*), issues #114-#118

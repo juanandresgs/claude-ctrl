@@ -14,6 +14,10 @@
 #   Uses the same run_test/pass_test/fail_test pattern as test-proof-gate.sh.
 
 set -euo pipefail
+
+# _with_timeout SECS CMD [ARGS] — portable timeout (Perl fallback when GNU timeout absent)
+_with_timeout() { local s="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"; else perl -e 'alarm(shift @ARGV); exec @ARGV or exit 127' "$s" "$@"; fi; }
+
 # Portable SHA-256 (macOS: shasum, Ubuntu: sha256sum)
 if command -v shasum >/dev/null 2>&1; then
     _SHA256_CMD="shasum -a 256"
@@ -500,7 +504,7 @@ LOCK_FILE="${TEMP_CLAUDE_DIR}/.ci-watch-${PHASH}.lock"
 echo $$ > "$LOCK_FILE"
 
 # Run ci-watch.sh — it should exit immediately (no gh, but should exit before gh)
-RESULT=$(CLAUDE_DIR="$TEMP_CLAUDE_DIR" timeout 5 bash "$SCRIPTS_DIR/ci-watch.sh" "$TEMP_REPO" 2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+RESULT=$(CLAUDE_DIR="$TEMP_CLAUDE_DIR" _with_timeout 5 bash "$SCRIPTS_DIR/ci-watch.sh" "$TEMP_REPO" 2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 # Lock file should still contain OUR PID (not overwritten)
 if [[ -f "$LOCK_FILE" ]]; then

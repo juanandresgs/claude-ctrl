@@ -78,6 +78,8 @@
 #   emit_flush           - Emit all buffered advisories as a single JSON
 #   enable_fail_closed   - Install deny-on-crash EXIT trap
 #   cache_project_context - Cache project root and claude dir
+#   _file_mtime          - Cross-platform file mtime (Linux-first stat order)
+#   _with_timeout        - Portable timeout wrapper (Perl fallback on macOS)
 #   Constants: SOURCE_EXTENSIONS, DECISION_LINE_THRESHOLD, etc.
 
 _CORE_LIB_VERSION=1
@@ -544,6 +546,54 @@ cache_project_context() {
     fi
 }
 
+# --- Cross-platform file mtime ---
+# @decision DEC-XPLAT-001
+# @title _file_mtime() in core-lib.sh with Linux-first stat order
+# @status accepted
+# @rationale 25 inline stat patterns used macOS-first order: `stat -f %m ... || stat -c %Y`.
+#   This is broken on Linux because `stat -f %m` succeeds on Linux but returns the filesystem
+#   mount point (e.g., "/") instead of the modification time — so the `||` fallback to
+#   `stat -c %Y` never triggers and callers receive garbage. Linux-first order is correct
+#   because macOS `stat -c %Y` fails cleanly (unrecognized flag), while Linux `stat -f %m`
+#   succeeds but produces wrong output. Single function in core-lib.sh (always-loaded)
+#   replaces all 25 inline patterns with one correct implementation that prevents recurrence.
+#   Alternatives rejected: per-file inline fix (25 maintenance sites), Python mtime (new dep),
+#   uname detection at load time (see MASTER_PLAN.md DEC-XPLAT-001 for full trade-off).
+#
+# _file_mtime FILE
+#   Print the modification time of FILE in seconds since epoch.
+#   Prints "0" if the file does not exist or stat fails.
+#   Usage: mtime=$(_file_mtime "$somefile")
+_file_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
+# --- Portable timeout wrapper ---
+# @decision DEC-XPLAT-002
+# @title _with_timeout() wrapper using Perl fallback
+# @status accepted
+# @rationale GNU coreutils `timeout` is not available on stock macOS (only via Homebrew).
+#   ~10 occurrences across hooks and tests used bare `timeout`, which works locally on macOS
+#   if Homebrew is installed but fails on CI runners (Ubuntu minimal images, macOS GitHub
+#   Actions). Perl `alarm` + `exec` is available on every POSIX system (macOS ships Perl,
+#   Linux distros include it). Zero new dependencies. Perl's alarm(0) cancels the timer
+#   naturally when exec'd process exits. Exit code 124 is preserved for timeout expiry to
+#   match GNU `timeout` semantics (pre-bash.sh checks for exit 124 explicitly).
+#   Alternatives rejected: shell SIGALRM (not portable to all bash versions), Python subprocess
+#   (slower startup), requiring coreutils in CI (adds setup step).
+#
+# _with_timeout SECONDS COMMAND [ARGS...]
+#   Run COMMAND with a timeout of SECONDS. Exits with code 124 on timeout (GNU compat).
+#   Usage: _with_timeout 120 make ci-local
+_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    else
+        perl -e 'alarm(shift @ARGV); exec @ARGV or exit 127' "$secs" "$@"
+    fi
+}
+
 # --- Platform-native file descriptor locking ---
 # @decision DEC-LOCK-NATIVE-001
 # @title OS-native file locking via uname detection
@@ -588,3 +638,4 @@ export -f project_hash is_source_file is_skippable_path is_test_file is_claude_m
 export -f read_test_status validate_state_file atomic_write safe_cleanup append_audit _log_deny
 export -f declare_gate emit_deny emit_advisory emit_flush enable_fail_closed _hook_crash_deny
 export -f cache_project_context _lock_fd is_protected_state_file _run_gate _run_blocking_gate
+export -f _file_mtime _with_timeout

@@ -25,6 +25,9 @@
 
 set -euo pipefail
 
+# _file_mtime FILE — cross-platform mtime (Linux-first; mirrors core-lib.sh)
+_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 # Portable SHA-256 (macOS: shasum, Ubuntu: sha256sum)
 if command -v shasum >/dev/null 2>&1; then
     _SHA256_CMD="shasum -a 256"
@@ -471,11 +474,7 @@ else
         [[ -d "$_state_proj_dir" ]] || continue
         _s_proof="${_state_proj_dir}proof-status"
         [[ -f "$_s_proof" ]] || continue
-        if [[ "$(uname)" == "Darwin" ]]; then
-            _s_mtime=$(stat -f %m "$_s_proof" 2>/dev/null || echo "0")
-        else
-            _s_mtime=$(stat -c %Y "$_s_proof" 2>/dev/null || echo "0")
-        fi
+        _s_mtime=$(_file_mtime "$_s_proof")
         if (( _NOW_EPOCH - _s_mtime > 14400 )); then  # 4 hours
             rm -f "$_s_proof"
             rmdir "$_state_proj_dir" 2>/dev/null || true
@@ -487,7 +486,7 @@ else
         pass_test
     elif [[ "$_SWEPT" == "false" ]]; then
         # Check mtime: if touch -t didn't work, the mtime may be current
-        T10_ACTUAL_MTIME=$(stat -f %m "$T10_PROOF" 2>/dev/null || stat -c %Y "$T10_PROOF" 2>/dev/null || echo "0")
+        T10_ACTUAL_MTIME=$(_file_mtime "$T10_PROOF")
         T10_AGE=$(( _NOW_EPOCH - T10_ACTUAL_MTIME ))
         fail_test "Sweep did not find file as stale; mtime age=${T10_AGE}s (need >14400s). touch -t may have failed."
     else

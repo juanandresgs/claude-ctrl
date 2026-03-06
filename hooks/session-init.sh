@@ -120,11 +120,7 @@ if [[ -f "$_HOOKS_GEN" ]]; then
     _NEWEST_LIB=0
     for _lib in "${CLAUDE_DIR}/hooks/"*-lib.sh "${CLAUDE_DIR}/hooks/log.sh"; do
         if [[ -f "$_lib" ]]; then
-            if [[ "$(uname)" == "Darwin" ]]; then
-                _lib_mtime=$(stat -f %m "$_lib" 2>/dev/null || echo "0")
-            else
-                _lib_mtime=$(stat -c %Y "$_lib" 2>/dev/null || echo "0")
-            fi
+            _lib_mtime=$(_file_mtime "$_lib")
             [[ "$_lib_mtime" -gt "$_NEWEST_LIB" ]] && _NEWEST_LIB="$_lib_mtime"
         fi
     done
@@ -732,11 +728,7 @@ if [[ -d "$TRACE_STORE" ]]; then
             local_manifest="$TRACE_STORE/$local_trace_id/manifest.json"
             if [[ -f "$local_manifest" ]]; then
                 # Check if marker is stale (>2 hours)
-                if [[ "$(uname)" == "Darwin" ]]; then
-                    marker_age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || echo "0") ))
-                else
-                    marker_age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo "0") ))
-                fi
+                marker_age=$(( $(date +%s) - $(_file_mtime "$marker") ))
                 # @decision DEC-STALE-THRESHOLD-001
                 # @title Raise stale marker threshold from 15min to 60min
                 # @status accepted
@@ -955,11 +947,7 @@ for tracker_file in "${CLAUDE_DIR}/.subagent-tracker-"*; do
         # CLAUDE_SESSION_ID format — skip if it matches the current session
         if [[ "$tracker_id" != "${CLAUDE_SESSION_ID:-}" ]]; then
             # Age check: if older than 2 hours, safe to prune
-            if [[ "$(uname)" == "Darwin" ]]; then
-                tracker_age=$(( $(date +%s) - $(stat -f %m "$tracker_file" 2>/dev/null || echo "0") ))
-            else
-                tracker_age=$(( $(date +%s) - $(stat -c %Y "$tracker_file" 2>/dev/null || echo "0") ))
-            fi
+            tracker_age=$(( $(date +%s) - $(_file_mtime "$tracker_file") ))
             if [[ "$tracker_age" -gt 7200 ]]; then
                 rm -f "$tracker_file"
             fi

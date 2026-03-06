@@ -256,11 +256,7 @@ log_info "SESSION-END" "Persisted session tokens: main=${_MAIN_TOKENS} subagent=
 # older than 3 days (~3+ sessions), it likely contains stale noise.
 FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
 if [[ -f "$FINDINGS_FILE" ]]; then
-    if [[ "$(uname)" == "Darwin" ]]; then
-        FINDINGS_AGE=$(( $(date +%s) - $(stat -f %m "$FINDINGS_FILE" 2>/dev/null || echo "0") ))
-    else
-        FINDINGS_AGE=$(( $(date +%s) - $(stat -c %Y "$FINDINGS_FILE" 2>/dev/null || echo "0") ))
-    fi
+    FINDINGS_AGE=$(( $(date +%s) - $(_file_mtime "$FINDINGS_FILE") ))
     # Clear if older than 3 days (259200 seconds) — roughly 3+ sessions
     if [[ "$FINDINGS_AGE" -gt 259200 ]]; then
         rm -f "$FINDINGS_FILE"
@@ -343,11 +339,7 @@ for _stale_token_file in "${CLAUDE_DIR}/.subagent-tokens-"*; do
     [[ -f "$_stale_token_file" ]] || continue
     # Skip current session's file (already cleaned in session-scoped block below)
     [[ "$_stale_token_file" == *"-${CLAUDE_SESSION_ID:-$$}" ]] && continue
-    if [[ "$(uname)" == "Darwin" ]]; then
-        _token_mtime=$(stat -f %m "$_stale_token_file" 2>/dev/null || echo "0")
-    else
-        _token_mtime=$(stat -c %Y "$_stale_token_file" 2>/dev/null || echo "0")
-    fi
+    _token_mtime=$(_file_mtime "$_stale_token_file")
     if (( _NOW_EPOCH - _token_mtime > 14400 )); then  # 4 hours
         rm -f "$_stale_token_file"
     fi
@@ -370,11 +362,7 @@ rm -f "${CLAUDE_DIR}/state/locks/proof.lock" "${CLAUDE_DIR}/state/locks/state.lo
 # CI status files older than 24 hours
 for _ci_file in "${CLAUDE_DIR}/.ci-status-"*; do
     [[ -f "$_ci_file" ]] || continue
-    if [[ "$(uname)" == "Darwin" ]]; then
-        _ci_mtime=$(stat -f %m "$_ci_file" 2>/dev/null || echo "0")
-    else
-        _ci_mtime=$(stat -c %Y "$_ci_file" 2>/dev/null || echo "0")
-    fi
+    _ci_mtime=$(_file_mtime "$_ci_file")
     if (( _NOW_EPOCH - _ci_mtime > 86400 )); then  # 24 hours
         rm -f "$_ci_file"
     fi
@@ -423,11 +411,7 @@ for _state_proj_dir in "${CLAUDE_DIR}/state/"*/; do
     [[ -d "$_state_proj_dir" ]] || continue
     _s_proof="${_state_proj_dir}proof-status"
     [[ -f "$_s_proof" ]] || continue
-    if [[ "$(uname)" == "Darwin" ]]; then
-        _s_mtime=$(stat -f %m "$_s_proof" 2>/dev/null || echo "0")
-    else
-        _s_mtime=$(stat -c %Y "$_s_proof" 2>/dev/null || echo "0")
-    fi
+    _s_mtime=$(_file_mtime "$_s_proof")
     if (( _NOW_EPOCH - _s_mtime > 14400 )); then  # 4 hours
         rm -f "$_s_proof"
         rmdir "$_state_proj_dir" 2>/dev/null || true  # Clean empty state dirs
@@ -443,11 +427,7 @@ rm -f "${CLAUDE_DIR}/.statusline-cache-${CLAUDE_SESSION_ID:-$$}"
 for _stale_cache in "${CLAUDE_DIR}/.statusline-cache-"*; do
     [[ -f "$_stale_cache" ]] || continue
     [[ "$_stale_cache" == *.tmp.* ]] && continue
-    if [[ "$(uname)" == "Darwin" ]]; then
-        _cache_mtime=$(stat -f %m "$_stale_cache" 2>/dev/null || echo "0")
-    else
-        _cache_mtime=$(stat -c %Y "$_stale_cache" 2>/dev/null || echo "0")
-    fi
+    _cache_mtime=$(_file_mtime "$_stale_cache")
     if (( _NOW_EPOCH - _cache_mtime > 14400 )); then  # 4 hours
         rm -f "$_stale_cache"
     fi

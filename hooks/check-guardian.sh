@@ -230,11 +230,7 @@ fi
 if [[ -n "$IS_PHASE_COMPLETING" ]]; then
     if [[ -f "$PLAN" ]]; then
         # Get modification time in epoch seconds
-        if [[ "$(uname)" == "Darwin" ]]; then
-            MOD_TIME=$(stat -f %m "$PLAN" 2>/dev/null || echo "0")
-        else
-            MOD_TIME=$(stat -c %Y "$PLAN" 2>/dev/null || echo "0")
-        fi
+        MOD_TIME=$(_file_mtime "$PLAN")
         NOW=$(date +%s)
         AGE=$(( NOW - MOD_TIME ))
 

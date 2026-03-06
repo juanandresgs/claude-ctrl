@@ -50,6 +50,11 @@
 #   ghost        - In roster but directory doesn't exist — prune from registry
 
 set -euo pipefail
+
+# _file_mtime FILE — cross-platform mtime (Linux-first; mirrors core-lib.sh)
+# Defined locally because worktree-roster.sh is standalone (no source-lib.sh).
+_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 # Portable SHA-256 (macOS: shasum, Ubuntu: sha256sum)
 if command -v shasum >/dev/null 2>&1; then
     _SHA256_CMD="shasum -a 256"
@@ -150,7 +155,7 @@ get_worktree_status() {
     elif [[ -f "$path/.claude-active" ]]; then
         # Lockfile present — check freshness (24h = 86400s)
         local mtime now age
-        mtime=$(stat -f %m "$path/.claude-active" 2>/dev/null || stat -c %Y "$path/.claude-active" 2>/dev/null || echo 0)
+        mtime=$(_file_mtime "$path/.claude-active")
         now=$(date +%s)
         age=$((now - mtime))
         if [[ $age -lt 86400 ]]; then
@@ -402,7 +407,7 @@ cmd_cleanup() {
             # Skip lockfile-protected worktrees unless --force
             if [[ -f "$path/.claude-active" ]] && ! $force; then
                 local mtime now age
-                mtime=$(stat -f %m "$path/.claude-active" 2>/dev/null || stat -c %Y "$path/.claude-active" 2>/dev/null || echo 0)
+                mtime=$(_file_mtime "$path/.claude-active")
                 now=$(date +%s)
                 age=$((now - mtime))
                 echo "Skipping $path (lockfile present, age ${age}s — use --force to override)"

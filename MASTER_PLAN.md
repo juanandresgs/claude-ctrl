@@ -6,7 +6,7 @@
 **Languages:** Bash (85%), Markdown (10%), Python (3%), JSON (2%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-03-01
-**Last updated:** 2026-03-05 (Operational Mode System initiative added)
+**Last updated:** 2026-03-06 (Cross-Platform Reliability initiative added)
 
 The Claude Code configuration directory. It shapes how Claude Code operates across all projects via hooks, agents, skills, and instructions. Managed as a git repository (juanandresgs/claude-config-pro). The hook system enforces governance (git safety, documentation, proof gates, worktree discipline) while the agent system dispatches specialized roles (planner, implementer, tester, guardian) for all project work.
 
@@ -101,6 +101,9 @@ The Claude Code configuration directory. It shapes how Claude Code operates acro
 | 2026-03-06 | DEC-DISPATCH-001 | dispatch-enforcement | Restore compact routing table to CLAUDE.md | Full table was extracted (DEC-DISPATCH-EXTRACT-001); model no longer sees "must invoke implementer" every turn |
 | 2026-03-06 | DEC-DISPATCH-002 | dispatch-enforcement | SESSION_ID-based orchestrator detection in session-init.sh | SessionStart fires only for orchestrator; subagents get SubagentStart with different CLAUDE_SESSION_ID |
 | 2026-03-06 | DEC-DISPATCH-003 | dispatch-enforcement | Gate 1.5 in pre-write.sh blocks orchestrator source writes | Closes the enforcement gap: implementer dispatch was instruction-only while Guardian was mechanically enforced |
+| 2026-03-06 | DEC-XPLAT-001 | xplatform-reliability | _file_mtime() in core-lib.sh with OS detection at load time | 25 inline stat calls use macOS-first order; Linux stat -f %m returns mount point not mtime; single function with Linux-first detection prevents recurrence |
+| 2026-03-06 | DEC-XPLAT-002 | xplatform-reliability | _with_timeout() wrapper using Perl fallback | Stock macOS lacks timeout command; Perl alarm+exec available everywhere; zero new dependencies |
+| 2026-03-06 | DEC-XPLAT-003 | xplatform-reliability | Fix stale test references inline | Section names reference context-lib.sh (moved to core-lib.sh/source-lib.sh); CYCLE COMPLETE fixture for removed CYCLE_MODE; real fixes not suppression |
 
 ---
 
@@ -1421,6 +1424,169 @@ Note: Waves are strictly serial (W1 -> W2 -> W3 -> W4 -> W5). Within each wave, 
 #### Dispatch Enforcement Worktree Strategy
 
 - **Wave 1:** `~/.claude/.worktrees/dispatch-enforcement` on branch `feature/dispatch-enforcement`
+
+### Initiative: Cross-Platform Reliability
+**Status:** active
+**Started:** 2026-03-06
+**Goal:** Make CI green on Ubuntu by fixing the `stat` and `timeout` portability bugs, cleaning stale test references, and establishing cross-platform compatibility patterns that prevent recurrence.
+
+> CI fails on Ubuntu because 25 `stat -f %m` calls across 12 hook/script/test files use macOS-first argument order. On Linux, `stat -f %m` succeeds but returns the filesystem mount point (not mtime), causing silent data corruption in every staleness check. Secondary: 10 `timeout` command usages fail on stock macOS (requires coreutils). Tertiary: run-hooks.sh section names reference "context-lib.sh" for functions that moved to core-lib.sh/source-lib.sh, and test-proof-lifecycle.sh has a CYCLE COMPLETE fixture for removed CYCLE_MODE. This initiative fixes all portability issues and establishes canonical helpers to prevent recurrence.
+
+**Dominant Constraint:** reliability — cross-platform correctness must be silent and automatic; no platform-specific branches in calling code
+
+#### Goals
+- REQ-GOAL-001: All file mtime checks work correctly on both macOS and Linux
+- REQ-GOAL-002: All timeout-guarded operations work on both macOS (no coreutils) and Linux
+- REQ-GOAL-003: Test suite passes on Ubuntu CI with zero platform-related failures
+- REQ-GOAL-004: Canonical portability helpers prevent future platform-specific inline code
+
+#### Non-Goals
+- REQ-NOGO-001: Windows/WSL support — macOS + Linux covers the real user base; Windows is P2 at best
+- REQ-NOGO-002: Rewriting the test framework — fix specific portability defects only
+- REQ-NOGO-003: Changing stat output semantics beyond mtime — only mtime (epoch seconds) is needed
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-001: `_file_mtime()` function in core-lib.sh replaces all 25 inline `stat -f %m` patterns
+  Acceptance: Given a file on Linux, When `_file_mtime "$file"` is called, Then it returns epoch seconds (not mount point); Given a file on macOS, When called, Then it returns epoch seconds; Given a nonexistent file, When called, Then it returns "0"
+- REQ-P0-002: `_with_timeout()` function in core-lib.sh provides portable timeout with Perl fallback
+  Acceptance: Given a system without the `timeout` command (stock macOS), When `_with_timeout 5 command args` is called, Then it executes the command with a 5-second timeout using Perl alarm+exec; Given a system with `timeout`, When called, Then it uses the native `timeout` command
+- REQ-P0-003: Stale test section names in run-hooks.sh updated to reflect current library locations
+  Acceptance: Given run-hooks.sh section names, When inspected, Then they reference the correct current library (core-lib.sh or source-lib.sh), not the old context-lib.sh name
+- REQ-P0-004: CYCLE COMPLETE fixture in test-proof-lifecycle.sh removed or replaced
+  Acceptance: Given test-proof-lifecycle.sh, When run on Ubuntu CI, Then no assertion fails due to CYCLE_MODE references
+- REQ-P0-005: test-ci-feedback.sh and test-clean-state.sh assertion failures resolved
+  Acceptance: Given these test files, When run on Ubuntu CI, Then all assertions pass
+- REQ-P0-006: SC2116 shellcheck warnings in test files resolved
+  Acceptance: Given shellcheck runs on tests/, When SC2116 is checked, Then zero warnings
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: Inline documentation in core-lib.sh explaining the portability pattern for future contributors
+
+**Future Consideration (P2)**
+
+- REQ-P2-001: Portability lint rule in CI that flags new `stat -f` or bare `timeout` usage
+
+#### Definition of Done
+
+All P0 requirements (001-006) satisfied. All 25 `stat -f %m` calls replaced with `_file_mtime()`. All 10 `timeout` usages replaced with `_with_timeout()`. Stale test references updated. Full test suite passes on Ubuntu CI. No regressions on macOS.
+
+#### Architectural Decisions
+
+- DEC-XPLAT-001: `_file_mtime()` in core-lib.sh with OS detection at load time
+  Addresses: REQ-GOAL-001, REQ-GOAL-004, REQ-P0-001.
+  Rationale: OS detection (`uname -s`) runs once when core-lib.sh is sourced, setting a module-level variable. `_file_mtime()` uses the cached OS to select `stat -c %Y` (Linux) or `stat -f %m` (macOS). Linux-first because `stat -c %Y` is the GNU/POSIX-standard flag. Single function replaces 25 inline patterns, preventing recurrence. Alternatives rejected: per-file inline fix (25 maintenance sites), Python-based mtime (adds dependency).
+
+- DEC-XPLAT-002: `_with_timeout()` wrapper using Perl fallback when `timeout` command is missing
+  Addresses: REQ-GOAL-002, REQ-GOAL-004, REQ-P0-002.
+  Rationale: Stock macOS lacks the `timeout` command (GNU coreutils). Perl is available on all macOS and Linux systems. The wrapper checks for `timeout` in PATH first (faster, native on Linux), falls back to `perl -e 'alarm(shift); exec @ARGV' -- $seconds "$@"`. Zero new dependencies. Alternatives rejected: require brew install coreutils (install burden), background+sleep+kill (race-prone).
+
+- DEC-XPLAT-003: Fix stale test references inline (not suppress)
+  Addresses: REQ-P0-003, REQ-P0-004, REQ-P0-005.
+  Rationale: run-hooks.sh section names still say "context-lib.sh" but the functions (is_source_file, is_skippable_path, get_git_state, build_resume_directive) moved to core-lib.sh and source-lib.sh during metanoia consolidation. test-proof-lifecycle.sh has a CYCLE COMPLETE fixture for CYCLE_MODE which was removed in de3dc48. Real fixes prevent CI confusion and are consistent with DEC-HOOKS-001 (fix shellcheck violations inline, not suppress).
+
+#### Waves
+
+##### Initiative Summary
+- **Total items:** 3
+- **Critical path:** 2 waves (W1 -> W2)
+- **Max width:** 2 (Wave 1)
+- **Gates:** 0 review, 1 approve (W2)
+
+##### Wave 1 (no dependencies)
+**Parallel dispatches:** 2
+
+**W1-A: Portability functions and replacement (#119)** — Weight: M, Gate: none
+- Add `_file_mtime()` to `hooks/core-lib.sh`:
+  - Detect OS once at source time: `_CORE_OS=$(uname -s)`
+  - Function body: `case "$_CORE_OS" in Linux) stat -c %Y "$1" 2>/dev/null || echo "0" ;; *) stat -f %m "$1" 2>/dev/null || echo "0" ;; esac`
+  - Replace all 25 inline `stat -f %m` patterns across 12 files with `_file_mtime "$file"`
+- Add `_with_timeout()` to `hooks/core-lib.sh`:
+  - Check: `command -v timeout >/dev/null 2>&1`
+  - If available: `timeout "$@"`
+  - If not: `perl -e 'alarm(shift); exec @ARGV' -- "$@"`
+  - Replace all 10 `timeout N` usages across 5 files with `_with_timeout N`
+- Files to modify (12 for stat, 5 for timeout — some overlap):
+  - hooks/core-lib.sh (add functions)
+  - hooks/session-end.sh (5 stat)
+  - hooks/session-init.sh (3 stat)
+  - hooks/log.sh (3 stat)
+  - hooks/trace-lib.sh (1 stat)
+  - hooks/check-guardian.sh (1 stat)
+  - hooks/task-track.sh (1 stat)
+  - hooks/prompt-submit.sh (1 stat)
+  - hooks/pre-bash.sh (2 timeout)
+  - scripts/clean-state.sh (4 stat)
+  - scripts/worktree-roster.sh (2 stat)
+  - scripts/statusline.sh (1 stat)
+  - tests/test-state-directory.sh (2 stat)
+  - tests/test-self-validation.sh (1 stat)
+  - tests/test-proof-lifecycle.sh (5 timeout)
+  - tests/test-ci-feedback.sh (1 timeout)
+  - tests/test-state-corruption.sh (2 timeout)
+- **Integration:** core-lib.sh exports `_file_mtime()` and `_with_timeout()` — all files that source core-lib.sh (directly or via source-lib.sh require_core) get these functions automatically. Test files that don't source core-lib.sh need to source it or inline the function.
+
+**W1-B: Fix stale test references (#120)** — Weight: S, Gate: none
+- Update run-hooks.sh section names from "context-lib.sh: X" to the correct current library:
+  - `is_source_file()` -> core-lib.sh (where it currently lives)
+  - `is_skippable_path()` -> core-lib.sh
+  - `get_git_state()` -> core-lib.sh
+  - `build_resume_directive()` -> source-lib.sh (or wherever it currently lives)
+  - Update section header strings, echo statements, and `should_run_section` calls (~10 references)
+- Remove or update CYCLE COMPLETE fixture in test-proof-lifecycle.sh:564
+  - CYCLE_MODE was removed in de3dc48 — the test fixture references a feature that no longer exists
+  - Either remove the test that depends on it or update it to test current behavior
+- Fix test-ci-feedback.sh assertion failures (platform-specific issues)
+- Fix test-clean-state.sh assertion failures
+- Fix SC2116 shellcheck warnings in test files (useless echo)
+- Files to modify:
+  - tests/run-hooks.sh (section name updates)
+  - tests/test-proof-lifecycle.sh (CYCLE COMPLETE fixture)
+  - tests/test-ci-feedback.sh (assertion fixes)
+  - tests/test-clean-state.sh (assertion fixes)
+  - test files with SC2116 warnings
+- **Integration:** No new registrations needed — these are fixes to existing test infrastructure
+
+##### Wave 2 (depends on Wave 1)
+**Parallel dispatches:** 1
+**Blocked by:** W1-A, W1-B
+
+**W2: CI verification (#121)** — Weight: S, Gate: approve, Deps: W1-A, W1-B
+- After W1-A and W1-B are merged to main, push and verify CI passes on both Ubuntu and macOS matrix jobs
+- Confirm: all 159+ tests pass on Ubuntu (the primary CI target)
+- Confirm: macOS CI job passes (or continues with expected non-blocking failures unrelated to this initiative)
+- Confirm: shellcheck clean on hooks/, scripts/, tests/
+- If any failures remain, fix them in this wave before declaring the initiative complete
+- **Integration:** `.github/workflows/validate.yml` — no changes expected; this wave is verification only
+
+##### Critical Files
+- `hooks/core-lib.sh` — `_file_mtime()` and `_with_timeout()` additions (central to this initiative)
+- `hooks/session-end.sh` — highest stat occurrence count (5 replacements)
+- `hooks/session-init.sh` — 3 stat replacements in critical startup path
+- `tests/run-hooks.sh` — stale section name references (10 updates)
+- `tests/test-proof-lifecycle.sh` — CYCLE COMPLETE fixture + 5 timeout replacements
+
+##### Decision Log
+<!-- Guardian appends here after wave completion -->
+
+#### Cross-Platform Reliability Worktree Strategy
+
+Main is sacred. Each wave dispatches parallel worktrees:
+- **Wave 1 W1-A:** `~/.claude/.worktrees/xplat-portability` on branch `feature/xplat-portability`
+- **Wave 1 W1-B:** `~/.claude/.worktrees/xplat-test-fixes` on branch `feature/xplat-test-fixes`
+- **Wave 2:** Verification on main after merge (no separate worktree)
+
+#### Cross-Platform Reliability References
+
+- Diagnostic trace: `traces/planner-20260306-135544-97dcc0` (full diagnostic analysis)
+- CI workflow: `.github/workflows/validate.yml` (Ubuntu + macOS matrix)
+- Prior art: DEC-PROD-005 (non-blocking macOS CI from Production Reliability initiative)
+- Related: Portable SHA-256 detection (e50930a) — prior cross-platform fix pattern
+- `hooks/core-lib.sh` — target for portability functions
+- `man stat` — macOS: `-f %m` = mount point on Linux, `-c %Y` = mtime on Linux
 
 ---
 
