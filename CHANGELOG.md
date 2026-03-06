@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/rsm-phase4`: Self-validation infrastructure — version sentinels in all library files, `bash -n` syntax preflight in session-init.sh, `hooks-gen` integrity check via post-merge git hook, 292-line self-validation test suite (test-self-validation.sh), source-lib.sh `lib_files()` enumerator for consistent library discovery
 
 ### Fixed
+- `feature/xplat-w1b`: Update 10 stale context-lib.sh section names in run-hooks.sh to correct library names (core-lib.sh, git-lib.sh, session-lib.sh) after metanoia decomposition (#120)
 - `worktree-test-cleanup`: Test infrastructure cleanup — delete 23 dead test files (~10K lines) testing removed features, fix 12 failing standalone tests (proof-path, guard, state-lifecycle, orchestrator-governance), remove 4 duplicate inline delegations from run-hooks.sh, add `if: always()` to CI standalone step, update context-lib.sh refs to core-lib.sh
 - `feature/fix-ci-round2`: Fix remaining 4 Ubuntu CI failures — move `_PHASH` computation to top-level in session-init.sh (was inside TRACE_STORE conditional, causing `set -u` crash), add `mkdir -p "$TRACE_STORE"` in task-track.sh (find on non-existent dir triggers `set -eo pipefail` crash)
 - `feature/fix-ci`: Resolve 15+ CI failures — SC2168 fix in session-init.sh, mkdir -p before timing log (Ubuntu crash), canonical proof-status paths in tests, context-lib.sh to source-lib.sh migration, removed V2 duplicate test sections, updated diagnose lib health check list

@@ -9,8 +9,9 @@
 #   feeding JSON fixtures and checking exit codes + output structure. This
 #   avoids needing a running Claude Code session for CI validation. Statusline
 #   and subagent tests use temp directories for isolation. Expanded to include
-#   gate hook behavioral tests, context-lib unit tests, integration tests, and
-#   session lifecycle tests for comprehensive coverage (GitHub #63, #68, #70, #71).
+#   gate hook behavioral tests, core/source/git/session-lib unit tests,
+#   integration tests, and session lifecycle tests for comprehensive coverage
+#   (GitHub #63, #68, #70, #71).
 #
 # @decision DEC-PERF-002
 # @title Scoped test runs via --scope flag in run-hooks.sh
@@ -30,7 +31,7 @@
 #   - Deny responses have the correct structure
 #   - Allow/advisory responses have the correct structure
 #   - Gate hooks (branch-guard, doc-gate, test-gate, mock-gate) behavioral contracts
-#   - context-lib.sh unit tests (is_source_file, is_skippable_path, get_git_state)
+#   - core-lib.sh unit tests (is_source_file, is_skippable_path), git-lib.sh (get_git_state), session-lib.sh (build_resume_directive)
 #   - Integration tests (settings.json sync, hook pipeline)
 #   - Session lifecycle tests (session-init, prompt-submit)
 #
@@ -95,7 +96,7 @@ _print_scope_usage() {
     echo "  pre-bash    — guard.sh (pre-bash.sh) all variants"
     echo "  pre-write   — branch-guard, plan-check, plan lifecycle, plan archival, doc-gate, test-gate, mock-gate"
     echo "  post-write  — plan-validate, statusline, registry lint"
-    echo "  unit        — context-lib.sh unit tests (is_source_file, is_skippable_path, get_git_state, build_resume_directive)"
+    echo "  unit        — core-lib.sh (is_source_file, is_skippable_path), git-lib.sh (get_git_state), session-lib.sh (build_resume_directive)"
     echo "  session     — session-init, prompt-submit, compact-preserve"
     echo "  integration — settings.json sync, subagent tracking, update-check"
     echo "  trace       — Trace protocol (init_trace, finalize_trace, detect, subagent injection)"
@@ -144,7 +145,7 @@ _scope_pattern() {
         pre-bash)    echo "guard\.sh|nuclear commands|false positives|cross-project git|git-in-text|flag bypass|main is sacred" ;;
         pre-write)   echo "branch-guard\.sh behavioral|plan-check\.sh lifecycle|plan lifecycle|plan archival|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
         post-write)  echo "plan-validate\.sh|statusline\.sh|State Registry Lint" ;;
-        unit)        echo "context-lib\.sh: is_source_file|context-lib\.sh: is_skippable_path|context-lib\.sh: get_git_state|context-lib\.sh: build_resume_directive" ;;
+        unit)        echo "core-lib\.sh: is_source_file|core-lib\.sh: is_skippable_path|git-lib\.sh: get_git_state|session-lib\.sh: build_resume_directive" ;;
         session)     echo "session-init\.sh|prompt-submit\.sh|compact-preserve\.sh" ;;
         integration) echo "settings\.json|subagent tracking|update-check\.sh" ;;
         trace)       echo "trace protocol" ;;
@@ -579,12 +580,12 @@ fi # end: proof-status-write-guard behavioral tests
 # =============================================================================
 
 echo "=========================================="
-echo "CONTEXT-LIB UNIT TESTS"
+echo "UNIT TESTS (core-lib, git-lib, session-lib)"
 echo "=========================================="
 echo ""
 
-if should_run_section "context-lib.sh: is_source_file()"; then
-echo "--- context-lib.sh: is_source_file() ---"
+if should_run_section "core-lib.sh: is_source_file()"; then
+echo "--- core-lib.sh: is_source_file() ---"
 
 # Test source file detection
 test_is_source() {
@@ -610,10 +611,10 @@ test_is_source "script.sh" "true"
 test_is_source "noextension" "false"
 test_is_source "main.tsx" "true"
 echo ""
-fi # end: context-lib.sh: is_source_file()
+fi # end: core-lib.sh: is_source_file()
 
-if should_run_section "context-lib.sh: is_skippable_path()"; then
-echo "--- context-lib.sh: is_skippable_path() ---"
+if should_run_section "core-lib.sh: is_skippable_path()"; then
+echo "--- core-lib.sh: is_skippable_path() ---"
 
 # Test skippable path detection
 test_is_skippable() {
@@ -637,10 +638,10 @@ test_is_skippable "dist/bundle.min.js" "true"
 test_is_skippable "src/main.py" "false"
 test_is_skippable ".git/config" "true"
 echo ""
-fi # end: context-lib.sh: is_skippable_path()
+fi # end: core-lib.sh: is_skippable_path()
 
-if should_run_section "context-lib.sh: get_git_state()"; then
-echo "--- context-lib.sh: get_git_state() ---"
+if should_run_section "git-lib.sh: get_git_state()"; then
+echo "--- git-lib.sh: get_git_state() ---"
 
 GS_TEST_DIR=$(mktemp -d)
 git init "$GS_TEST_DIR" >/dev/null 2>&1
@@ -662,10 +663,10 @@ fi
 
 safe_cleanup "$GS_TEST_DIR" "$SCRIPT_DIR"
 echo ""
-fi # end: context-lib.sh: get_git_state()
+fi # end: git-lib.sh: get_git_state()
 
-if should_run_section "context-lib.sh: build_resume_directive()"; then
-echo "--- context-lib.sh: build_resume_directive() ---"
+if should_run_section "session-lib.sh: build_resume_directive()"; then
+echo "--- session-lib.sh: build_resume_directive() ---"
 
 # Test 1: needs-verification proof status triggers correct directive
 BRD_TEST_DIR=$(mktemp -d)
@@ -724,7 +725,7 @@ safe_cleanup "$BRD_TEST_DIR" "$SCRIPT_DIR"
 safe_cleanup "$BRD_CLEAN_DIR" "$SCRIPT_DIR"
 safe_cleanup "$BRD_DIRTY_DIR" "$SCRIPT_DIR"
 echo ""
-fi # end: context-lib.sh: build_resume_directive()
+fi # end: session-lib.sh: build_resume_directive()
 
 if should_run_section "session-init.sh: compaction resume directive injection"; then
 echo "--- session-init.sh: compaction resume directive injection ---"
@@ -1738,7 +1739,7 @@ fi
 #   - outcome="skipped": artifacts dir exists but is empty (agent crashed immediately)
 #   In both cases finalize_trace() sets status="crashed" (no summary.md) but
 #   deliberately does NOT override outcome="skipped" to "crashed" — the comment
-#   at context-lib.sh line ~1166 reads: "Do not override 'skipped' — skipped means
+#   at trace-lib.sh (formerly context-lib.sh) reads: "Do not override 'skipped' — skipped means
 #   no artifacts at all (never started), which is a distinct state from crashed
 #   (started but failed to produce summary.md)."
 #   Since init_trace() always creates the artifacts dir, a crash right after init
