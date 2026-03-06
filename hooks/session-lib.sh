@@ -728,7 +728,7 @@ track_agent_tokens() {
         cumulative_total=$(awk -F'|' '{s += $7} END {print s+0}' "$state_file" 2>/dev/null || echo 0)
     fi
 
-    local cache_file="${claude_dir}/.statusline-cache"
+    local cache_file="${claude_dir}/.statusline-cache-${CLAUDE_SESSION_ID:-$$}"
     if [[ -f "$cache_file" ]]; then
         local tmp_cache="${cache_file}.tmp.$$"
         if jq --argjson st "$cumulative_total" --arg ts "$(date +%s)" \

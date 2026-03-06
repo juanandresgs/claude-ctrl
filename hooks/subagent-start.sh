@@ -152,15 +152,16 @@ case "$AGENT_TYPE" in
         if [[ "$RESEARCH_EXISTS" == "true" ]]; then
             CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
         fi
-        # Surface CYCLE_MODE from dispatch prompt if present
+        # Surface TEST_SCOPE from dispatch prompt if present
         _IMPL_PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null || echo "")
-        if echo "$_IMPL_PROMPT" | grep -q 'CYCLE_MODE: auto-flow'; then
-            CONTEXT_PARTS+=("CYCLE_MODE: auto-flow — After tests pass, proceed to Phase 3.5: dispatch tester sub-agent, then guardian if AUTOVERIFY: CLEAN. Return 'CYCLE COMPLETE' to orchestrator. See agents/implementer.md Phase 3.5.")
-        elif echo "$_IMPL_PROMPT" | grep -q 'CYCLE_MODE: phase-boundary'; then
-            CONTEXT_PARTS+=("CYCLE_MODE: phase-boundary — After tests pass, return to orchestrator. The tester agent handles live verification — you do NOT demo or write .proof-status.")
+        if echo "$_IMPL_PROMPT" | grep -q 'TEST_SCOPE: none'; then
+            CONTEXT_PARTS+=("TEST_SCOPE: none — Skip writing new tests. Config/docs change only.")
+        elif echo "$_IMPL_PROMPT" | grep -q 'TEST_SCOPE: minimal'; then
+            CONTEXT_PARTS+=("TEST_SCOPE: minimal — Run existing tests to check for regressions. Do NOT write new tests.")
         else
-            CONTEXT_PARTS+=("After tests pass, return to orchestrator. The tester agent handles live verification — you do NOT demo or write .proof-status.")
+            CONTEXT_PARTS+=("TEST_SCOPE: full — Write tests first (Phase 3), then implement.")
         fi
+        CONTEXT_PARTS+=("After tests pass, return to orchestrator. The tester agent handles live verification — you do NOT demo or write .proof-status.")
         # Inject current proof status with contextual guidance (W7-2: #42 residual, #134)
         # Use resolve_proof_file() for worktree-aware resolution (replaces inline project_hash).
         _PROOF_FILE=$(resolve_proof_file)

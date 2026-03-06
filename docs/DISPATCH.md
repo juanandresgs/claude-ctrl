@@ -24,7 +24,7 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | Task | Agent | Orchestrator May? |
 |------|-------|--------------------|
 | Planning, architecture | **Planner** | No Write/Edit for source |
-| Implementation, tests | **Implementer** | No — must invoke implementer. Auto-flow mode: implementer dispatches tester + guardian internally when `CYCLE_MODE: auto-flow` is set. |
+| Implementation, tests | **Implementer** | No — must invoke implementer. Orchestrator controls the full cycle (implement → test → verify → commit). |
 | E2E verification, demos | **Tester** | No — must invoke tester |
 | Commits, merges, branches | **Guardian** | No git commit/merge/push/branch -d/-D |
 | Worktree creation (bootstrap) | Orchestrator | Yes — `git worktree add` before implementer dispatch |
@@ -56,11 +56,12 @@ Detection: `git ls-files --error-unmatch MASTER_PLAN.md` (exit 0 = tracked = ame
 The orchestrator owns worktree creation because it is infrastructure, not source code.
 Gate C.1 in task-track.sh requires at least one non-main worktree before implementer dispatch.
 
-## Auto-Flow vs Phase-Boundary Routing
+## TEST_SCOPE Signal
 
-- Routine work items (not completing a phase): dispatch implementer with `CYCLE_MODE: auto-flow` — it owns the full cycle (implement → test → verify → commit)
-- Phase-completing work items: dispatch implementer with `CYCLE_MODE: phase-boundary` — orchestrator handles tester + user review + guardian
-- When in doubt, use `phase-boundary` (conservative default)
+The orchestrator can include `TEST_SCOPE: full|minimal|none` in the dispatch prompt:
+- **full** (default): Test-first development — write failing tests, then implement
+- **minimal**: Run existing tests for regressions, don't write new ones
+- **none**: Skip tests entirely (config/docs/typo changes)
 
 ## Wave Dispatch (Parallel Implementers)
 
@@ -71,16 +72,10 @@ own worktree, with its own tester→guardian cycle.
 **Dispatch pattern:**
 1. Orchestrator creates one worktree per work item:
    `git worktree add .worktrees/<item-slug> -b feature/<item-slug>`
-2. Dispatch one implementer per worktree with `CYCLE_MODE: auto-flow`
-3. Each implementer runs its full cycle internally (implement→test→verify→commit)
-4. Use `run_in_background: true` for concurrent dispatch
-
-**Why auto-flow is mandatory for parallel dispatch:** Proof-status is scoped
-per-project (`project_hash`), not per-worktree. If parallel implementers
-used phase-boundary mode, their proof gates would collide — Implementer A's
-tester writing `verified` would let Implementer B's guardian merge untested
-code. Auto-flow avoids this because the proof lifecycle is self-contained
-within each implementer's sub-agent cycle.
+2. Dispatch one implementer per worktree
+3. Each implementer returns after tests pass
+4. Orchestrator dispatches tester + guardian per worktree (visible, sequential)
+5. Use `run_in_background: true` for concurrent implementer dispatch
 
 **Constraints:**
 - Bootstrap remains sequential (plan must exist before implementation)
@@ -121,8 +116,6 @@ AUTO-VERIFY-APPROVED`. This is functionally equivalent to the auto-verify path a
 3. Guardian skips its Interactive Approval Protocol and executes directly.
 4. Do NOT ask the user to approve again — that defeats the purpose of the gate.
 
-**After implementer returns with CYCLE COMPLETE:** Do NOT dispatch tester or guardian — the implementer already completed the full cycle. Present the implementer's summary to the user. post-task.sh emits the "CYCLE COMPLETE" directive automatically when it detects this condition in the implementer's trace summary.
-
 ## Pre-Dispatch Gates (Mechanically Enforced)
 
 - Tester dispatch: requires implementer to have returned with tests passing
@@ -151,8 +144,6 @@ Agents self-regulate via their instruction files.
 - Planner: 65 turns
 - Tester: 40 turns
 - Guardian: 35 turns
-
-Sub-agents dispatched from within an auto-flow implementer get their own budgets (tester: 40, guardian: 30). These do not consume the implementer's 85-turn budget.
 
 **Implementer dispatch sizing:**
 - Phases with 1–3 work items: dispatch all in one implementer call

@@ -82,6 +82,12 @@ The subshell pattern ensures CWD never persists inside a worktree.
 If guard.sh denies your command, follow the suggestion in the deny message.
 
 ### Phase 3: Test-First Implementation
+
+Your dispatch prompt may include `TEST_SCOPE: full|minimal|none`:
+- **full** (default): Write failing tests first, then implement
+- **minimal**: Run existing tests for regressions, don't write new ones
+- **none**: Skip tests entirely (config/docs changes)
+
 1. Write failing tests first (the proof of Done):
    - Unit tests for core logic
    - Integration tests for component interactions
@@ -100,64 +106,18 @@ If guard.sh denies your command, follow the suggestion in the deny message.
    - Refactor as patterns emerge
 3. All tests must pass before proceeding
 
-### Phase 3.25: Integration Wiring
-
-After tests pass and before declaring implementation complete:
-
-1. For each new file created, verify it is consumed (not just declared):
-   - Hook → confirm entry in settings.json with correct event/command
-   - Skill → confirm SKILL.md exists and skill is referenced in CLAUDE.md
-   - Library → confirm at least one production consumer calls its exports
-   - Component → confirm a route or parent imports and renders it
-   - API endpoint → confirm the router registers it
-
-2. If the planner specified an **Integration:** field for this work item,
-   execute each wiring instruction explicitly. Don't just check — write the
-   import, add the settings.json entry, register the route.
-
-3. If a new file has no consumer, wire it up now. If you can't determine
-   where it should be wired, stop and ask — unwired code is not done.
-
-**Declaration trap:** A `mod`, `import`, or `source` statement in a parent file is NOT sufficient wiring. Ensure at least one production consumer actually calls into the new code.
-
-After tests pass and wiring is confirmed:
-- If `CYCLE_MODE: auto-flow` is set: proceed to Phase 3.5 (full cycle)
-- Otherwise: return to the orchestrator. The **tester agent** handles live verification — you do not demo or write `.proof-status`.
-
-### Phase 3.5: Verification & Commit Cycle (CYCLE_MODE)
+After tests pass and wiring is confirmed, return to the orchestrator. The **tester agent** handles live verification — you do not demo or write `.proof-status`. Integration wiring is enforced by check-implementer.sh (Check 7/7b).
 
 <!--
-@decision DEC-CYCLE-MODE-001
-@title CYCLE_MODE protocol for implementer
+@decision DEC-CYCLE-REMOVE-001
+@title Remove CYCLE_MODE auto-flow — orchestrator always controls the cycle
 @status accepted
-@rationale Routine work items should not require orchestrator round-trips for the
-  implement→test→verify→commit cycle. When dispatched with CYCLE_MODE: auto-flow,
-  the implementer owns the full cycle by dispatching tester and guardian as
-  sub-agents. Phase-completing work items retain the conservative phase-boundary
-  mode so the orchestrator and user can review before commit. This enables
-  parallel progress on routine items while preserving oversight for phase gates.
+@rationale Auto-flow made implementers spawn invisible nested tester+guardian
+  sub-agents (85+40+30 turns in one envelope). This created 15-minute invisible
+  runs, triggered false crash detection (stale marker cleanup at 15min), and
+  provided zero visibility. The orchestrator now always controls the full
+  implement→test→verify→commit cycle with visible agent dispatches.
 -->
-
-When the orchestrator includes `CYCLE_MODE: auto-flow` in your dispatch prompt, you own the full cycle:
-
-1. After tests pass (Phase 3 complete), dispatch a **tester** sub-agent:
-   ```
-   Dispatch tester with max_turns=40. Include:
-   - Worktree path and branch
-   - What was implemented and what to verify
-   - Test results as evidence
-   ```
-2. Evaluate the tester's return:
-   - If the tester signals **AUTOVERIFY: CLEAN** with High confidence and full coverage:
-     - Dispatch a **guardian** sub-agent with `AUTO-VERIFY-APPROVED` in the prompt (max_turns=30)
-     - Wait for Guardian to complete
-     - Return to orchestrator with: "CYCLE COMPLETE: [summary of what was built, tested, verified, and committed]"
-   - If the tester returns with **caveats** (Medium confidence, gaps, no AUTOVERIFY signal):
-     - Do NOT dispatch guardian
-     - Return to orchestrator with the tester's findings — the orchestrator handles user review
-3. If `CYCLE_MODE: phase-boundary` (or not specified): return after tests pass (current behavior, Phase 3 → Phase 4).
-
-**Important:** Sub-agents dispatched from within the implementer get their own turn budgets (tester: 40, guardian: 30). They don't consume the implementer's 85-turn budget.
 
 #### Progress Checkpoints (Show Your Work)
 
@@ -214,35 +174,9 @@ For significant code (50+ lines), add @decision annotations using the IDs **pre-
 
 ## Session End Protocol
 
-Before completing your work, verify:
-- [ ] Do all tests pass?
-- [ ] Are @decision annotations present on 50+ line source files?
-- [ ] Is the worktree clean (no untracked debris)?
-- [ ] Are all new files reachable? (For each new file: at least one existing file imports/sources/calls it, OR it is registered in the appropriate registry — settings.json for hooks, SKILL.md for skills, commands/ for commands)
-  - **Declaration trap:** When wiring new modules: a `mod`/`import`/`source` declaration in a parent file is NOT sufficient wiring. Ensure at least one production consumer imports and uses the new code's exports.
-- [ ] Remove the lockfile so the worktree can be cleaned up later: `rm -f .worktrees/feature-<name>/.claude-active`
-- [ ] If the feature requires environment variables, did you write env-requirements.txt to TRACE_DIR/artifacts/?
-- [ ] If you asked for approval (commit, approach, next steps), did you receive and process it?
-- [ ] Did you execute the requested operation (or explain why not)?
-- [ ] Does the user know what was done and what comes next?
-- [ ] Did you write $TRACE_DIR/summary.md with clear next-step context for the orchestrator?
+Before completing, verify: tests pass, @decision annotations on 50+ line files, worktree clean, all new files wired (check-implementer.sh enforces this), lockfile removed (`rm -f .worktrees/feature-<name>/.claude-active`), and `$TRACE_DIR/summary.md` written.
 
-**Never end a conversation with just an approval question.** If you present work and ask "Should I commit this?" or "Does this look right?", wait for the user's response and then:
-- If approved → Execute the commit/next action
-- If changes requested → Make adjustments and re-present
-- If unclear → Ask clarifying questions
-
-Always close the loop: present → receive feedback → act on feedback → confirm outcome → suggest next steps.
-
-### DO NOT Ask
-
-These questions waste user attention — the system already handles them:
-- **Commit/push decisions** — Guardian owns the full approval cycle
-- **"Should I continue?"** — Auto-dispatch rules prescribe the next step; return your summary
-- **Approach selection** — The plan already decided this; execute it
-- **"Does this look correct?"** — Run tests instead; tests are truth
-
-Mechanically enforced by `pre-ask.sh` (PreToolUse:AskUserQuestion).
+Never end on an unanswered approval question — close the loop.
 
 ## Mandatory: Write Summary Before Completion
 

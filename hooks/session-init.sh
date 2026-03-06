@@ -722,15 +722,21 @@ if [[ -d "$TRACE_STORE" ]]; then
                     marker_age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo "0") ))
                 fi
                 # @decision DEC-STALE-THRESHOLD-001
-                # @title Reduce stale marker threshold from 2h to 15min
+                # @title Raise stale marker threshold from 15min to 60min
                 # @status accepted
-                # @rationale 2-hour threshold meant stale markers blocked proof cleanup
-                #   for far too long. 15 minutes is generous for any agent operation while
-                #   preventing multi-hour deadlocks. Only changed in session-init.sh
-                #   (defense-in-depth), not trace-lib.sh runtime cleanup.
-                if [[ "$marker_age" -gt 900 ]]; then
-                    # Mark as crashed and finalize
+                # @rationale 15-minute threshold caused false crash detection for
+                #   auto-flow implementers that legitimately run 85+40+30 turns
+                #   (implement+test+commit). 60 minutes accommodates the longest
+                #   realistic agent runs while still catching genuine stale markers.
+                #   Uses finalize_trace instead of raw jq so manifests get proper
+                #   duration, outcome, and test_result fields.
+                if [[ "$marker_age" -gt 3600 ]]; then
+                    # Mark as crashed first, then finalize for proper duration/outcome fields
                     (jq '.status = "crashed" | .outcome = "crashed"' "$local_manifest" > "${local_manifest}.tmp" 2>/dev/null && mv "${local_manifest}.tmp" "$local_manifest") || true
+                    local _ft_project _ft_agent
+                    _ft_project=$(jq -r '.project // empty' "$local_manifest" 2>/dev/null || echo "")
+                    _ft_agent=$(jq -r '.agent_type // empty' "$local_manifest" 2>/dev/null || echo "")
+                    finalize_trace "$local_trace_id" "$_ft_project" "$_ft_agent" 2>/dev/null || true
                     index_trace "$local_trace_id"
                     rm -f "$marker"
                     CONTEXT_PARTS+=("Crashed trace detected: $local_trace_id (stale ${marker_age}s). Read summary: ~/.claude/traces/$local_trace_id/summary.md")

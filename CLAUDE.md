@@ -41,14 +41,13 @@ When commands produce verbose output (build logs, test results, git diffs):
 
 ## Dispatch Rules
 
-The orchestrator dispatches to specialized agents — it does NOT write source code directly. See `docs/DISPATCH.md` for full dispatch protocol (routing, auto-flow, gates, interruption handling).
+The orchestrator dispatches to specialized agents — it does NOT write source code directly. See `docs/DISPATCH.md` for full dispatch protocol (routing, gates, interruption handling).
 
 Key rules (always loaded):
 - Turn budgets in dispatch prompt: "Budget: N turns." (Impl 85 | Plan 65 | Test 40 | Guard 35)
 - Use subagent_type=planner (not Plan) — Plan is a generic agent without MASTER_PLAN.md protocol
 - Do NOT use isolation: "worktree" for governance agents — create worktrees explicitly
-- Wave items dispatch in parallel (one implementer per worktree, each with auto-flow cycle)
-- Auto-flow for routine items, phase-boundary for phase-completing work
+- Wave items dispatch in parallel (one implementer per worktree, visible tester+guardian per worktree)
 - Auto-dispatch tester after implementer returns (no asking)
 - Auto-dispatch guardian when AUTO-VERIFIED appears
 - Main is sacred — feature work in worktrees only
@@ -94,7 +93,7 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 | `agents/implementer.md` | Implementing code in a worktree |
 | `agents/tester.md` | Verifying implementation works end-to-end |
 | `agents/guardian.md` | Committing, merging, branch management |
-| `docs/DISPATCH.md` | Full agent dispatch protocol (routing, auto-flow, gates, interruption) |
+| `docs/DISPATCH.md` | Full agent dispatch protocol (routing, gates, TEST_SCOPE, interruption) |
 | `hooks/HOOKS.md` | Understanding hook behavior, debugging hooks, @decision format |
 | `README.md` | Full system overview, directory map, all hooks/skills/commands |
 | `ARCHITECTURE.md` | System architecture, subsystem reference, design decisions |
