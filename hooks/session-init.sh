@@ -125,6 +125,35 @@ if [[ -n "$_LIB_WARNINGS" ]]; then
     CONTEXT_PARTS+=("$_LIB_WARNINGS")
 fi
 
+# --- Syntax preflight (W4-2: bash -n on critical files) ---
+# @decision DEC-RSM-PREFLIGHT-001
+# @title bash -n syntax validation at session start
+# @status accepted
+# @rationale Interrupted git pulls or partial file syncs can leave hook files
+#   with syntax errors. Validating 4 entry points + all gate files at session
+#   start catches these before any hook fails silently. ~175ms one-time cost.
+_PREFLIGHT_FAILS=()
+for _pf in \
+    "${CLAUDE_DIR}/hooks/session-init.sh" \
+    "${CLAUDE_DIR}/hooks/prompt-submit.sh" \
+    "${CLAUDE_DIR}/hooks/source-lib.sh" \
+    "${CLAUDE_DIR}/hooks/core-lib.sh" \
+    "${CLAUDE_DIR}/hooks/log.sh" \
+    "${CLAUDE_DIR}/hooks/pre-bash.sh" \
+    "${CLAUDE_DIR}/hooks/pre-write.sh" \
+    "${CLAUDE_DIR}/hooks/task-track.sh" \
+    "${CLAUDE_DIR}/hooks/check-guardian.sh" \
+    "${CLAUDE_DIR}/hooks/check-tester.sh" \
+    "${CLAUDE_DIR}/hooks/check-implementer.sh" \
+    "${CLAUDE_DIR}/hooks/stop.sh"; do
+    if [[ -f "$_pf" ]] && ! bash -n "$_pf" 2>/dev/null; then
+        _PREFLIGHT_FAILS+=("$(basename "$_pf")")
+    fi
+done
+if [[ ${#_PREFLIGHT_FAILS[@]} -gt 0 ]]; then
+    CONTEXT_PARTS+=("CRITICAL: Syntax errors in hook files: ${_PREFLIGHT_FAILS[*]}. Hooks may fail silently. Check for interrupted git pulls or merge conflicts.")
+fi
+
 # --- Git state ---
 get_git_state "$PROJECT_ROOT"
 

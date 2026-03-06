@@ -82,7 +82,7 @@ skipped=0
 #
 # Usage: bash tests/run-hooks.sh [--scope <name>] [--scope <name>] ...
 # Scopes: syntax, pre-bash, pre-write, post-write, unit, session, integration,
-#         trace, gate, state
+#         trace, gate, state, validation
 # =============================================================================
 
 REQUESTED_SCOPES=()
@@ -107,6 +107,7 @@ _print_scope_usage() {
     echo "  gaps        — gaps-report.sh accountability report unit tests"
     echo "  concurrency — Concurrency and state management tests (Phase 1 locking, CAS, lattice, registry)"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
+    echo "  validation  — Self-validation tests (version sentinels, consistency, bash -n preflight, hooks-gen)"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
 }
@@ -155,6 +156,7 @@ _scope_pattern() {
         gaps)        echo "gaps-report\.sh" ;;
         concurrency) echo "Concurrency and state management" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
+        validation)  echo "Self-Validation Tests" ;;
         *)           echo "" ;;
     esac
 }
@@ -2839,6 +2841,31 @@ fi
 
 echo ""
 fi # end: bash32-compat
+
+# =============================================================================
+# --- Test: Self-Validation tests (Phase 4) ---
+# Validates W4-0 through W4-2: version sentinels, verify_library_consistency(),
+# bash -n preflight loop, .hooks-gen file format, and staleness detection.
+# =============================================================================
+if should_run_section "Self-Validation Tests"; then
+echo ""
+echo "--- Self-Validation Tests (Phase 4) ---"
+SELF_VALID_TEST="$SCRIPT_DIR/test-self-validation.sh"
+
+if [[ -f "$SELF_VALID_TEST" ]]; then
+    if bash "$SELF_VALID_TEST" 2>/dev/null; then
+        pass "test-self-validation.sh — all 7 self-validation tests passed"
+    else
+        fail "test-self-validation.sh" "one or more self-validation tests failed (run directly for details)"
+        failed=$((failed + 1))
+    fi
+else
+    fail "test-self-validation.sh" "test file not found at $SELF_VALID_TEST"
+    failed=$((failed + 1))
+fi
+
+echo ""
+fi # end: self-validation
 
 # --- Summary ---
 echo "==========================="
