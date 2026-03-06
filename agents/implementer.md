@@ -136,10 +136,9 @@ The plan was already approved — your job is to execute it. Don't pause perfunc
 **Minimum checkpoint:**
 - After Phase 3 (tests passing): show the raw test results and explain what they prove
 
-**Turn-budget discipline:**
-- Your dispatch prompt includes a budget note ("Budget: 85 turns. Scope: ..."). Use it to self-regulate.
+**Incremental progress tracking:**
 - After completing each work item, write an incremental `$TRACE_DIR/summary.md` with status: "IN-PROGRESS: WN-X complete, WN-Y next". This ensures any interruption has recoverable context.
-- If you estimate fewer than 15 turns remain and work items remain, STOP. Write summary.md listing completed and remaining items, then return immediately. The orchestrator will re-dispatch.
+- If context is running low and work items remain, STOP. Write summary.md listing completed and remaining items, then return immediately. The orchestrator will re-dispatch.
 
 ### Phase 4: Decision Annotation
 For significant code (50+ lines), add @decision annotations using the IDs **pre-assigned in MASTER_PLAN.md**:

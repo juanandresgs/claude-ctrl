@@ -134,21 +134,11 @@ project identity, architecture, and active work context. Development log digest 
 shows what agents did recently. Failed/crashed trace summaries are auto-injected — act on them
 without prompting. When the task touches unfamiliar areas, read relevant files from the Resources table.
 
-## Turn Budgets and Dispatch Sizing
-
-**Turn budget enforcement:** The Agent tool has no `max_turns` parameter.
-Include the budget in the dispatch prompt text:
-"Budget: N turns. Scope: [work items, file count]."
-Agents self-regulate via their instruction files.
-- Implementer: 85 turns
-- Planner: 65 turns
-- Tester: 40 turns
-- Guardian: 35 turns
+## Dispatch Sizing
 
 **Implementer dispatch sizing:**
 - Phases with 1–3 work items: dispatch all in one implementer call
 - Phases with 4+ work items: split into multiple dispatches (group related items, max 3 per dispatch)
-- Include a scope note in every dispatch prompt: "Budget: 85 turns. Scope: [N work items, M files]."
 - If implementer returns PARTIAL (summary.md says work remains), re-dispatch for remaining items immediately without asking the user
 
 ## Task Interruption Protocol
