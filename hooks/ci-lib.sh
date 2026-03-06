@@ -50,6 +50,8 @@
 # Guard against double-sourcing
 [[ -n "${_CI_LIB_LOADED:-}" ]] && return 0
 
+_CI_LIB_VERSION=1
+
 # --- Local CI discovery ---
 # find_local_ci — Return path to local CI script or empty string.
 # Priority: .githooks/pre-push > .claude/pre-push.sh > Makefile ci-local target

@@ -80,6 +80,8 @@
 #   cache_project_context - Cache project root and claude dir
 #   Constants: SOURCE_EXTENSIONS, DECISION_LINE_THRESHOLD, etc.
 
+_CORE_LIB_VERSION=1
+
 # Portable SHA-256 command — initialize if not already set by log.sh.
 # Guard prevents double-initialization when both core-lib.sh and log.sh are sourced.
 # @decision DEC-SHA256-INIT-001

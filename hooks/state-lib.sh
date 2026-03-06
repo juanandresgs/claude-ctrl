@@ -24,6 +24,8 @@
 # Guard against double-sourcing
 [[ -n "${_STATE_LIB_LOADED:-}" ]] && return 0
 
+_STATE_LIB_VERSION=1
+
 # state_update KEY VALUE [SOURCE]
 #   KEY:    jq path (e.g., ".proof.status", ".agents.tester.status")
 #   VALUE:  string value to write

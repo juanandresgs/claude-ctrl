@@ -24,6 +24,8 @@
 # Guard against double-sourcing
 [[ -n "${_SESSION_LIB_LOADED:-}" ]] && return 0
 
+_SESSION_LIB_VERSION=1
+
 # --- Statusline cache writer ---
 # @decision DEC-CACHE-001
 # @title Statusline cache for status bar enrichment

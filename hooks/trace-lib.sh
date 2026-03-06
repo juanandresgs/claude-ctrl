@@ -18,6 +18,8 @@
 # Guard against double-sourcing
 [[ -n "${_TRACE_LIB_LOADED:-}" ]] && return 0
 
+_TRACE_LIB_VERSION=1
+
 # Universal trace store for cross-project agent trajectory tracking.
 # Each agent run gets a unique trace directory with manifest, summary, and artifacts.
 # Traces survive session crashes, compactions, and context overflows.

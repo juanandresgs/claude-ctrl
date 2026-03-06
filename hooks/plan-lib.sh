@@ -16,6 +16,8 @@
 # Guard against double-sourcing
 [[ -n "${_PLAN_LIB_LOADED:-}" ]] && return 0
 
+_PLAN_LIB_VERSION=1
+
 # --- MASTER_PLAN.md status ---
 # @decision DEC-PLAN-003
 # @title Initiative-level lifecycle replaces document-level

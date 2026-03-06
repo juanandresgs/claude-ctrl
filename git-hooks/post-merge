@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# post-merge — Update .hooks-gen timestamp after git merge/pull.
+#
+# Records the Unix timestamp of the last successful merge/pull into
+# ~/.claude/.hooks-gen. This file is read by session-init.sh on startup
+# to detect whether hook libraries may be newer than the last known-good
+# merge — a signal that a git pull was interrupted mid-way.
+#
+# Installation:
+#   ln -sf ../../git-hooks/post-merge ~/.claude/.git/hooks/post-merge
+#
+# Or run the setup once from the ~/.claude repo root:
+#   ln -sf "$(pwd)/git-hooks/post-merge" .git/hooks/post-merge
+#
+# @decision DEC-RSM-SELFCHECK-001 (see source-lib.sh for full rationale)
+
+set -euo pipefail
+
+CLAUDE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+date +%s > "${CLAUDE_DIR}/.hooks-gen"

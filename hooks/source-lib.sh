@@ -43,6 +43,8 @@
 #   other state files and easy to rotate or grep. Writing errors are suppressed
 #   (|| true) to prevent timing instrumentation from denying legitimate commands.
 
+_SOURCE_LIB_VERSION=1
+
 # --- Hook timing instrumentation — <5ms overhead ---
 # Records wall-clock time for each hook invocation to .hook-timing.log
 _HOOK_START_NS=$(date +%s%N 2>/dev/null || echo "$(date +%s)000000000")
@@ -213,3 +215,54 @@ require_state() {
 # state_update/state_read are used optionally via: type state_update &>/dev/null && ...
 # (in log.sh and session-lib.sh). Tests call require_state directly.
 # See test-proof-lifecycle.sh:T09 for the test coverage of this loader.
+
+# verify_library_consistency
+#   Checks that all loaded library versions match the expected version.
+#   Returns 0 if all consistent, 1 if mismatches found.
+#   Outputs warning messages for each mismatch.
+#
+# @decision DEC-RSM-SELFCHECK-001
+# @title Version sentinel system for detecting library skew
+# @status accepted
+# @rationale Interrupted git pulls or partial file syncs can leave libraries
+#   at different versions. Version sentinels enable runtime detection of such
+#   skew at session start, with clear diagnostics for the user.
+verify_library_consistency() {
+    local expected_version="${1:-1}"
+    local mismatches=0
+
+    # Check core-lib.sh and log.sh (always loaded)
+    if [[ -n "${_CORE_LIB_VERSION:-}" && "$_CORE_LIB_VERSION" != "$expected_version" ]]; then
+        echo "WARNING: core-lib.sh version mismatch (loaded=$_CORE_LIB_VERSION expected=$expected_version)"
+        mismatches=$((mismatches + 1))
+    fi
+    if [[ -n "${_LOG_LIB_VERSION:-}" && "$_LOG_LIB_VERSION" != "$expected_version" ]]; then
+        echo "WARNING: log.sh version mismatch (loaded=$_LOG_LIB_VERSION expected=$expected_version)"
+        mismatches=$((mismatches + 1))
+    fi
+
+    # Check optionally-loaded domain libraries (only if loaded)
+    local lib_vars=(
+        "_STATE_LIB_VERSION:state-lib.sh"
+        "_SESSION_LIB_VERSION:session-lib.sh"
+        "_TRACE_LIB_VERSION:trace-lib.sh"
+        "_PLAN_LIB_VERSION:plan-lib.sh"
+        "_GIT_LIB_VERSION:git-lib.sh"
+        "_DOC_LIB_VERSION:doc-lib.sh"
+        "_CI_LIB_VERSION:ci-lib.sh"
+    )
+
+    for entry in "${lib_vars[@]}"; do
+        local var="${entry%%:*}"
+        local lib="${entry#*:}"
+        local val="${!var:-}"
+        if [[ -n "$val" && "$val" != "$expected_version" ]]; then
+            echo "WARNING: $lib version mismatch (loaded=$val expected=$expected_version)"
+            mismatches=$((mismatches + 1))
+        fi
+    done
+
+    return $mismatches
+}
+
+export -f verify_library_consistency

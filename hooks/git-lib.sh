@@ -13,6 +13,8 @@
 # Guard against double-sourcing
 [[ -n "${_GIT_LIB_LOADED:-}" ]] && return 0
 
+_GIT_LIB_VERSION=1
+
 # --- Git state ---
 get_git_state() {
     local root="$1"

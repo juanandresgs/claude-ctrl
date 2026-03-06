@@ -13,6 +13,8 @@
 # Guard against double-sourcing
 [[ -n "${_DOC_LIB_LOADED:-}" ]] && return 0
 
+_DOC_LIB_VERSION=1
+
 # --- Documentation freshness detection ---
 # @decision DEC-DOCFRESH-001
 # @title get_doc_freshness uses structural churn (add/delete) not modification churn for block decisions

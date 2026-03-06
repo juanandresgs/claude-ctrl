@@ -41,6 +41,8 @@
 #   The canonical proof-status file is .proof-status-{phash} in CLAUDE_DIR.
 #   Cleanup removes the scoped file only (no legacy fallbacks remain).
 
+_LOG_LIB_VERSION=1
+
 # Portable SHA-256 command — macOS has shasum, Ubuntu/Linux has sha256sum
 # Both produce identical output format: "hash  filename" — cut works the same way.
 if command -v shasum >/dev/null 2>&1; then
