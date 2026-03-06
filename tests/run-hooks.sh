@@ -100,7 +100,7 @@ _print_scope_usage() {
     echo "  integration — settings.json sync, subagent tracking, update-check"
     echo "  trace       — Trace protocol (init_trace, finalize_trace, detect, subagent injection)"
     echo "  gate        — Gate hook behavioral tests (branch-guard, doc-gate, test-gate, mock-gate)"
-    echo "  state       — State Registry Lint + Multi-Context Pass + State Directory Migration tests"
+    echo "  state       — State Registry Lint"
     echo "  fixtures    — Expanded Fixture Coverage (30 new fixture tests)"
     echo "  todo        — todo.sh backlog script unit tests"
     echo "  scan        — scan-backlog.sh debt marker scanner unit tests"
@@ -149,14 +149,13 @@ _scope_pattern() {
         integration) echo "settings\.json|subagent tracking|update-check\.sh" ;;
         trace)       echo "trace protocol" ;;
         gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
-        state)       echo "State Registry Lint|Multi-Context Pass|State Directory Migration" ;;
+        state)       echo "State Registry Lint" ;;
         fixtures)    echo "Expanded Fixture Coverage" ;;
         todo)        echo "todo\.sh" ;;
         scan)        echo "scan-backlog\.sh" ;;
         gaps)        echo "gaps-report\.sh" ;;
         concurrency) echo "Concurrency and state management" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
-        validation)  echo "Self-Validation Tests" ;;
         *)           echo "" ;;
     esac
 }
@@ -749,7 +748,9 @@ PRESERVED
 
 SINIT_FIXTURE="$SINIT_TEST_DIR/fixture-$$.json"
 echo '{"session_id":"test-123"}' > "$SINIT_FIXTURE"
-output=$(CLAUDE_PROJECT_DIR="$SINIT_TEST_DIR" bash "$HOOKS_DIR/session-init.sh" < "$SINIT_FIXTURE" 2>/dev/null) || true
+# CLAUDE_DIR must point to the test .claude dir so session-init.sh reads the
+# preserved-context file from the test env rather than the real $HOME/.claude.
+output=$(CLAUDE_PROJECT_DIR="$SINIT_TEST_DIR" CLAUDE_DIR="$SINIT_TEST_DIR/.claude" bash "$HOOKS_DIR/session-init.sh" < "$SINIT_FIXTURE" 2>/dev/null) || true
 
 # Check: .preserved-context was consumed (deleted)
 if [[ ! -f "$SINIT_TEST_DIR/.claude/.preserved-context" ]]; then
@@ -1244,12 +1245,15 @@ if should_run_section "statusline.sh"; then
 echo "--- statusline.sh ---"
 SL_TEST_DIR=$(mktemp -d)
 mkdir -p "$SL_TEST_DIR/.claude"
-echo '{"dirty":5,"worktrees":1,"updated":1234567890,"agents_active":0,"agents_types":"","agents_total":0}' > "$SL_TEST_DIR/.claude/.statusline-cache"
+# statusline.sh reads .statusline-cache-${CLAUDE_SESSION_ID:-$$} — set a known session ID
+# and write to the matching filename so the cache is found.
+SL_SESSION_ID="test-statusline-$$"
+echo '{"dirty":5,"worktrees":1,"updated":1234567890,"agents_active":0,"agents_types":"","agents_total":0}' > "$SL_TEST_DIR/.claude/.statusline-cache-${SL_SESSION_ID}"
 SL_INPUT=$(jq -n --arg dir "$SL_TEST_DIR" \
     '{model:{display_name:"opus"},workspace:{current_dir:$dir},
       cost:{total_cost_usd:0.42,total_duration_ms:300000},
       context_window:{used_percentage:45}}')
-SL_OUTPUT=$(echo "$SL_INPUT" | bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
+SL_OUTPUT=$(echo "$SL_INPUT" | CLAUDE_SESSION_ID="$SL_SESSION_ID" bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
 if echo "$SL_OUTPUT" | grep -q "dirty"; then
     pass "statusline.sh — shows dirty count from cache"
 else
@@ -1293,11 +1297,13 @@ if should_run_section "subagent tracking"; then
 echo "--- subagent tracking ---"
 SA_TEST_DIR=$(mktemp -d)
 mkdir -p "$SA_TEST_DIR/.claude"
-# Cache format: no plan/test fields (removed in DEC-CACHE-002 redesign)
-echo '{"dirty":0,"worktrees":0,"updated":1234567890,"agents_active":2,"agents_types":"implementer,planner","agents_total":3}' > "$SA_TEST_DIR/.claude/.statusline-cache"
+# Cache format: no plan/test fields (removed in DEC-CACHE-002 redesign).
+# statusline.sh reads .statusline-cache-${CLAUDE_SESSION_ID:-$$} — use known session ID.
+SA_SESSION_ID="test-subagent-$$"
+echo '{"dirty":0,"worktrees":0,"updated":1234567890,"agents_active":2,"agents_types":"implementer,planner","agents_total":3}' > "$SA_TEST_DIR/.claude/.statusline-cache-${SA_SESSION_ID}"
 SA_INPUT=$(jq -n --arg dir "$SA_TEST_DIR" \
     '{model:{display_name:"opus"},workspace:{current_dir:$dir},cost:{},context_window:{}}')
-SA_OUTPUT=$(echo "$SA_INPUT" | bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
+SA_OUTPUT=$(echo "$SA_INPUT" | CLAUDE_SESSION_ID="$SA_SESSION_ID" bash "$SCRIPT_DIR/../scripts/statusline.sh" 2>/dev/null) || true
 if echo "$SA_OUTPUT" | grep -q "agents"; then
     pass "statusline.sh — shows active agent count from cache"
 else
@@ -1966,110 +1972,11 @@ safe_cleanup "$TR_TEST_DIR" "$SCRIPT_DIR"
 echo ""
 
 
-# ===== V2 Observability Tests =====
-echo ""
-echo "=== V2 Observability Tests ==="
-
-V2_TEST_FILES=(
-    "test-trajectory.sh"
-    "test-cross-session.sh"
-    "test-subagent-tracker-scope.sh"
-    "test-checkpoint.sh"
-    "test-session-context.sh"
-    "test-proof-gate.sh"
-    "test-auto-verify.sh"
-    "test-guard-cwd-recovery.sh"
-    "test-guard-check5-spaces.sh"
-    "test-guard-worktree-cd.sh"
-    "test-observatory-metrics.sh"
-    "test-observatory-convergence.sh"
-    "test-tester-gate-heal.sh"
-    "test-living-plan-hooks.sh"
-    "test-plan-lifecycle.sh"
-    "test-plan-injection.sh"
-    "test-trace-classification.sh"
-    "test-validation-harness.sh"
-    "test-proof-lifecycle.sh"
-)
-
-for test_file in "${V2_TEST_FILES[@]}"; do
-    test_path="$SCRIPT_DIR/$test_file"
-    if [[ -f "$test_path" ]]; then
-        echo ""
-        echo "--- Running $test_file ---"
-        if bash "$test_path"; then
-            echo "  $test_file: ALL PASSED"
-        else
-            echo "  $test_file: FAILURES DETECTED"
-            failed=$((failed + 1))
-        fi
-    else
-        echo "  SKIP: $test_file not found"
-        skipped=$((skipped + 1))
-    fi
-done
+# V2 Observability Tests removed — CI auto-discovers all test-*.sh files via
+# the standalone test suites step in validate.yml. Running them here caused
+# 19 test files to execute twice per CI run.
 fi # end: trace protocol
 
-if should_run_section "Multi-Context Pass"; then
-# ===== State Governance Tests =====
-# Multi-context second pass (re-runs state-writing tests from a temp CWD
-#   to catch CWD assumptions — e.g. T08's .git file-vs-directory issue where a hook
-#   assumes CWD contains a real .git directory rather than the gitdir pointer file
-#   written by git worktree add).
-#
-# @decision DEC-STATE-GOV-001
-# @title Multi-context second pass in run-hooks.sh for CWD assumption detection
-# @status accepted
-# @rationale Several hooks use detect_project_root() or get_claude_dir() which
-#   walk up from CWD to find .git. If CWD is a non-git temp directory, these
-#   functions fall back to HOME or produce different paths than expected. Running
-#   a subset of state-writing tests from a temp CWD catches this class of bugs
-#   without requiring a full second run of the entire suite (which is slow).
-#   The subset is: proof gate, project isolation, and state registry — exactly
-#   the tests that validate state file paths and scoping.
-echo ""
-echo "=== State Governance Tests ==="
-# --- Pass 2: Multi-context re-run from temp CWD ---
-# Create a temp directory that is NOT a git repo, set it as CWD for the subprocess,
-# and re-run the state-writing tests. This verifies hooks don't assume CWD=git root.
-echo ""
-echo "--- Multi-Context Pass (Pass 2: non-git temp CWD) ---"
-
-MULTI_CTX_TMPDIR=$(mktemp -d)
-
-# Tests to re-run in alien CWD (state-writing tests most sensitive to CWD assumptions)
-MULTI_CTX_TESTS=(
-    "test-proof-gate.sh"
-    "test-project-isolation.sh"
-    # test-state-registry.sh removed — hooks/state-registry.sh was pruned during metanoia consolidation
-)
-
-MULTI_CTX_PASS2_FAILED=0
-for mc_test in "${MULTI_CTX_TESTS[@]}"; do
-    mc_test_path="$SCRIPT_DIR/$mc_test"
-    if [[ -f "$mc_test_path" ]]; then
-        echo ""
-        echo "  [Pass 2] Running $mc_test from temp CWD: $MULTI_CTX_TMPDIR"
-        # Run in a subshell with CWD set to the temp dir (not a git repo)
-        if bash -c "cd '$MULTI_CTX_TMPDIR' && bash '$mc_test_path'" 2>&1 | sed 's/^/    /'; then
-            echo "  [Pass 2] $mc_test: ALL PASSED (alien CWD)"
-        else
-            echo "  [Pass 2] $mc_test: FAILURES DETECTED (alien CWD — possible CWD assumption bug)"
-            MULTI_CTX_PASS2_FAILED=$((MULTI_CTX_PASS2_FAILED + 1))
-            failed=$((failed + 1))
-        fi
-    else
-        echo "  [Pass 2] SKIP: $mc_test not found"
-    fi
-done
-
-safe_cleanup "$MULTI_CTX_TMPDIR" "$SCRIPT_DIR"
-
-if [[ "$MULTI_CTX_PASS2_FAILED" -eq 0 ]]; then
-    echo ""
-    echo "  Multi-context pass: all ${#MULTI_CTX_TESTS[@]} tests passed from non-git CWD"
-fi
-fi # end: Multi-Context Pass
 
 # --- Expanded Fixture Coverage ---
 # @decision DEC-TEST-FIXTURES-001

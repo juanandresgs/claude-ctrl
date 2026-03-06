@@ -28,7 +28,6 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="${SCRIPT_DIR}/../hooks"
-CONTEXT_LIB="${HOOKS_DIR}/context-lib.sh"
 
 # Colors
 if [[ -t 1 ]]; then
@@ -46,8 +45,9 @@ failed=0
 pass() { echo -e "${GREEN}PASS${NC} $1"; passed=$((passed + 1)); }
 fail() { echo -e "${RED}FAIL${NC} $1: $2"; failed=$((failed + 1)); }
 
-# Source context-lib for safe_cleanup in the MAIN shell only
-source "$CONTEXT_LIB"
+# Source source-lib.sh with required domain libraries (context-lib.sh was removed in Phase 3)
+source "$HOOKS_DIR/source-lib.sh"
+require_session; require_trace
 
 # Cleanup trap (DEC-PROD-002): collect temp dirs and remove on exit
 _CLEANUP_DIRS=()
@@ -99,7 +99,8 @@ setup_sessions_dir() {
 call_get_prior_sessions() {
     local home_dir="$1" project_dir="$2" out_file="$3"
     bash --norc --noprofile -s <<SCRIPT > "$out_file" 2>/dev/null
-source "$CONTEXT_LIB"
+source "$HOOKS_DIR/source-lib.sh"
+require_session
 HOME="$home_dir"
 get_prior_sessions "$project_dir"
 SCRIPT
@@ -318,7 +319,8 @@ echo "verified|$(date +%s)" > "$T6_DIR/.claude/.proof-status"
 
 # Build entry using same logic as session-end.sh, via subprocess
 bash --norc --noprofile -s > "$T6_OUT" 2>/dev/null <<SCRIPT
-source "$CONTEXT_LIB"
+source "$HOOKS_DIR/source-lib.sh"
+require_session
 PROJECT_ROOT="$T6_DIR"
 CLAUDE_DIR="$T6_DIR/.claude"
 SESSION_EVENT_FILE="$T6_DIR/.claude/.session-events.jsonl"

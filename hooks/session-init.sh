@@ -733,7 +733,6 @@ if [[ -d "$TRACE_STORE" ]]; then
                 if [[ "$marker_age" -gt 3600 ]]; then
                     # Mark as crashed first, then finalize for proper duration/outcome fields
                     (jq '.status = "crashed" | .outcome = "crashed"' "$local_manifest" > "${local_manifest}.tmp" 2>/dev/null && mv "${local_manifest}.tmp" "$local_manifest") || true
-                    local _ft_project _ft_agent
                     _ft_project=$(jq -r '.project // empty' "$local_manifest" 2>/dev/null || echo "")
                     _ft_agent=$(jq -r '.agent_type // empty' "$local_manifest" 2>/dev/null || echo "")
                     finalize_trace "$local_trace_id" "$_ft_project" "$_ft_agent" 2>/dev/null || true

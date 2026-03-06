@@ -367,6 +367,8 @@ SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
+# The resolved path may be state/{phash}/proof-status — ensure parent dir exists.
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
 # Build valid JSON input using jq so string content is properly escaped.
@@ -425,6 +427,7 @@ if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
 # Write needs-verification (what task-track.sh writes at implementer dispatch)
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "needs-verification|$(date +%s)" > "$REAL_PROOF_FILE"
 
 NV_RESP_TEXT="### Verification Assessment
@@ -572,6 +575,7 @@ if [[ -f "$AUDIT_LOG" ]]; then
 fi
 
 # Write "verified" to simulate that a previous SubagentStop already auto-verified
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "verified|$(date +%s)" > "$REAL_PROOF_FILE"
 
 # Build a clean AUTOVERIFY response (would trigger auto-verify if dedup guard absent)
@@ -620,6 +624,7 @@ if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
 
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "verified|$(date +%s)" > "$REAL_PROOF_FILE"
 
 MOCK_JSON=$(jq -n --arg r "any response" '{"last_assistant_message": $r}')
@@ -660,6 +665,7 @@ SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
 DIAG_RESP_TEXT="### Verification Assessment
@@ -698,6 +704,7 @@ SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
 DIAG_RESP_TEXT2="### Confidence Level
@@ -741,6 +748,7 @@ SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
 # Empty last_assistant_message — jq returns empty string for null/missing
@@ -774,6 +782,7 @@ SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
 # Create a fake active trace with summary.md containing AUTOVERIFY: CLEAN
@@ -882,6 +891,7 @@ SAVED_PROOF=""
 if [[ -f "$REAL_PROOF_FILE" ]]; then
     SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
 fi
+mkdir -p "$(dirname "$REAL_PROOF_FILE")" 2>/dev/null || true
 echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
 
 NO_FALLBACK_TEXT="### Confidence Level

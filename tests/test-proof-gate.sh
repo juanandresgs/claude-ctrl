@@ -72,8 +72,9 @@ fi
 # These tests validate the Guardian gate behavior in task-track.sh
 
 # Helper to run task-track.sh with mock input
-# Since DEC-ISOLATION-001, Gate A reads the project-scoped .proof-status-{phash} file.
-# This helper writes to the scoped filename so Gate A finds it correctly.
+# resolve_proof_file() uses CLAUDE_DIR to locate the proof-status file.
+# We set CLAUDE_DIR="$TEMP_REPO/.claude" so the hook reads from our isolated dir.
+# Proof-status is written to the new canonical path: state/{phash}/proof-status.
 run_task_track() {
     local agent_type="$1"
     local proof_file="$2"  # Proof-status content or "missing"
@@ -88,9 +89,11 @@ run_task_track() {
     local PHASH
     PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)
 
-    # Set up .proof-status-{phash} (scoped) if not missing
+    # Set up proof-status at new canonical path (state/{phash}/proof-status) if not missing.
+    # Also write to old path for migration-fallback coverage.
     if [[ "$proof_file" != "missing" ]]; then
-        echo "$proof_file" > "$TEMP_REPO/.claude/.proof-status-${PHASH}"
+        mkdir -p "$TEMP_REPO/.claude/state/${PHASH}"
+        echo "$proof_file" > "$TEMP_REPO/.claude/state/${PHASH}/proof-status"
     fi
 
     # Mock input JSON
@@ -106,13 +109,14 @@ run_task_track() {
 EOF
 )
 
-    # Run hook with mocked environment
+    # Run hook with mocked environment.
+    # CLAUDE_DIR is set to the isolated .claude dir so resolve_proof_file() finds
+    # the test's proof-status file rather than ~/.claude's real state.
     # CLAUDE_PROJECT_DIR must prefix the bash invocation (right side of pipe),
-    # not the echo (left side). Prefixing echo only sets the env for echo itself,
-    # not for the bash subprocess that reads stdin. See Issue #53.
+    # not the echo (left side). See Issue #53.
     local OUTPUT
     OUTPUT=$(cd "$TEMP_REPO" && \
-             echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" bash "$HOOKS_DIR/task-track.sh" 2>&1)
+             echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/task-track.sh" 2>&1)
     local EXIT_CODE=$?
 
     # Cleanup - ensure we're not in TEMP_REPO before deleting
@@ -161,7 +165,8 @@ else
 fi
 
 # --- Test 10: task-track.sh Gate C (Implementer activation) ---
-# Since DEC-ISOLATION-001, Gate C writes .proof-status-{phash} (scoped).
+# Gate C writes to state/{phash}/proof-status (new canonical path via write_proof_status()).
+# Set CLAUDE_DIR to isolated dir so writes go to test env, not real ~/.claude.
 run_test "Gate C: Implementer dispatch creates needs-verification"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-impl-XXXXXX")
 _CLEANUP_DIRS+=("$TEMP_REPO")
@@ -186,45 +191,56 @@ INPUT_JSON=$(cat <<'EOF'
 EOF
 )
 
-echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
+echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
 
-# Check scoped file (.proof-status-{phash}) written by Gate C.2
-if [[ -f "$TEMP_REPO/.claude/.proof-status-${IMPL_PHASH}" ]]; then
-    STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status-${IMPL_PHASH}")
+# Check new canonical path (state/{phash}/proof-status) written by Gate C.2
+_IMPL_NEW_PROOF="$TEMP_REPO/.claude/state/${IMPL_PHASH}/proof-status"
+_IMPL_OLD_PROOF="$TEMP_REPO/.claude/.proof-status-${IMPL_PHASH}"
+if [[ -f "$_IMPL_NEW_PROOF" ]]; then
+    STATUS=$(cut -d'|' -f1 "$_IMPL_NEW_PROOF")
+    if [[ "$STATUS" == "needs-verification" ]]; then
+        pass_test
+    else
+        fail_test "Created state/${IMPL_PHASH}/proof-status with wrong status: $STATUS"
+    fi
+elif [[ -f "$_IMPL_OLD_PROOF" ]]; then
+    STATUS=$(cut -d'|' -f1 "$_IMPL_OLD_PROOF")
     if [[ "$STATUS" == "needs-verification" ]]; then
         pass_test
     else
         fail_test "Created .proof-status-${IMPL_PHASH} with wrong status: $STATUS"
     fi
 else
-    fail_test "Implementer did not create .proof-status-${IMPL_PHASH} (scoped)"
+    fail_test "Implementer did not create proof-status file (checked new and old paths)"
 fi
 
 rm -rf "$TEMP_REPO"
 
 # --- Test 11: gate activation only when missing ---
-# Since DEC-ISOLATION-001, check uses scoped .proof-status-{phash}.
 run_test "Gate C: Implementer does not overwrite existing .proof-status"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-exist-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 EXIST_PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)
-echo "pending|99999" > "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}"
+# Write to new canonical path so resolve_proof_file() finds it
+mkdir -p "$TEMP_REPO/.claude/state/${EXIST_PHASH}"
+echo "pending|99999" > "$TEMP_REPO/.claude/state/${EXIST_PHASH}/proof-status"
 # Gate C.1 requires at least one linked worktree — add one so the hook reaches Gate C.2
 EXIST_WORKTREE="$TEMP_REPO/.worktrees/feature-exist"
 mkdir -p "$EXIST_WORKTREE"
 git -C "$TEMP_REPO" worktree add "$EXIST_WORKTREE" -b feature/exist > /dev/null 2>&1 || \
     git -C "$TEMP_REPO" worktree add --detach "$EXIST_WORKTREE" > /dev/null 2>&1 || true
 
-echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
+echo "$INPUT_JSON" | CLAUDE_PROJECT_DIR="$TEMP_REPO" CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/task-track.sh" > /dev/null 2>&1
 
-STATUS=$(cut -d'|' -f1 "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}")
-TIMESTAMP=$(cut -d'|' -f2 "$TEMP_REPO/.claude/.proof-status-${EXIST_PHASH}")
+_EXIST_PROOF="$TEMP_REPO/.claude/state/${EXIST_PHASH}/proof-status"
+STATUS=$(cut -d'|' -f1 "$_EXIST_PROOF" 2>/dev/null || echo "")
+TIMESTAMP=$(cut -d'|' -f2 "$_EXIST_PROOF" 2>/dev/null || echo "")
 
 if [[ "$STATUS" == "pending" && "$TIMESTAMP" == "99999" ]]; then
     pass_test
 else
-    fail_test "Implementer overwrote existing .proof-status-${EXIST_PHASH}"
+    fail_test "Implementer overwrote existing proof-status (status: $STATUS, timestamp: $TIMESTAMP)"
 fi
 
 rm -rf "$TEMP_REPO"
@@ -308,8 +324,8 @@ fi
 # --- Tests 16-17: guard.sh Check 8 (proof-status gate inversion) ---
 
 # Helper to run guard.sh with proof-status mock.
-# Since DEC-ISOLATION-001, guard.sh Check 8 reads the project-scoped
-# .proof-status-{phash} file first. Write to the scoped file so the check finds it.
+# resolve_proof_file() uses CLAUDE_DIR to locate the proof-status file.
+# We set CLAUDE_DIR="$TEMP_REPO/.claude" and write to state/{phash}/proof-status.
 run_guard_proof() {
     local command="$1"
     local proof_file="$2"  # Proof-status content or "missing"
@@ -323,8 +339,9 @@ run_guard_proof() {
     PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)
 
     if [[ "$proof_file" != "missing" ]]; then
-        # Write scoped file (primary) so guard.sh Check 8 finds it
-        echo "$proof_file" > "$TEMP_REPO/.claude/.proof-status-${PHASH}"
+        # Write to new canonical path (state/{phash}/proof-status)
+        mkdir -p "$TEMP_REPO/.claude/state/${PHASH}"
+        echo "$proof_file" > "$TEMP_REPO/.claude/state/${PHASH}/proof-status"
     fi
 
     local INPUT_JSON
@@ -338,10 +355,11 @@ run_guard_proof() {
 EOF
 )
 
-    # Run hook — cd into temp repo so detect_project_root finds it (not meta-repo)
+    # Run hook — cd into temp repo so detect_project_root finds it (not meta-repo).
+    # CLAUDE_DIR set to isolated .claude so resolve_proof_file() reads test file.
     local OUTPUT
     OUTPUT=$(cd "$TEMP_REPO" && \
-             echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1)
+             echo "$INPUT_JSON" | CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/pre-bash.sh" 2>&1)
     local EXIT_CODE=$?
 
     # Cleanup - ensure we're not in TEMP_REPO before deleting
@@ -370,15 +388,19 @@ fi
 
 # --- Tests 18-20: guard.sh Check 10 (block .proof-status deletion) ---
 
-# Check 10 tests: guard.sh reads the scoped .proof-status-{phash} file (DEC-ISOLATION-001).
-# The rm command targets the unscoped filename (pattern match in guard.sh detects it),
-# but the status check reads the scoped file. Write status to the scoped file.
+# Check 10 tests: pre-bash.sh Check 10 reads the OLD path via get_claude_dir().
+# Set CLAUDE_DIR to the isolated .claude dir AND write to the old path so Check 10 finds it.
+# Also write to new path for forward-compat.
 run_test "Check 10: Block rm .proof-status when needs-verification"
 TEMP_REPO=$(mktemp -d "$PROJECT_ROOT/tmp/test-pg-del-XXXXXX")
 git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 C10_PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)
+# Write to old path (what Check 10 reads via get_claude_dir()/.proof-status-{phash})
 echo "needs-verification|12345" > "$TEMP_REPO/.claude/.proof-status-${C10_PHASH}"
+# Also write to new path for completeness
+mkdir -p "$TEMP_REPO/.claude/state/${C10_PHASH}"
+echo "needs-verification|12345" > "$TEMP_REPO/.claude/state/${C10_PHASH}/proof-status"
 
 INPUT_JSON=$(cat <<EOF
 {
@@ -391,7 +413,7 @@ EOF
 )
 
 OUTPUT=$(cd "$TEMP_REPO" && \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
+         echo "$INPUT_JSON" | CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "verification is active"; then
     pass_test
@@ -408,6 +430,8 @@ git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 C10_PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)
 echo "pending|12345" > "$TEMP_REPO/.claude/.proof-status-${C10_PHASH}"
+mkdir -p "$TEMP_REPO/.claude/state/${C10_PHASH}"
+echo "pending|12345" > "$TEMP_REPO/.claude/state/${C10_PHASH}/proof-status"
 
 INPUT_JSON=$(cat <<EOF
 {
@@ -420,7 +444,7 @@ EOF
 )
 
 OUTPUT=$(cd "$TEMP_REPO" && \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
+         echo "$INPUT_JSON" | CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny" && echo "$OUTPUT" | grep -q "verification is active"; then
     pass_test
@@ -437,6 +461,8 @@ git -C "$TEMP_REPO" init > /dev/null 2>&1
 mkdir -p "$TEMP_REPO/.claude"
 C10_PHASH=$(echo "$TEMP_REPO" | $_SHA256_CMD | cut -c1-8)
 echo "verified|12345" > "$TEMP_REPO/.claude/.proof-status-${C10_PHASH}"
+mkdir -p "$TEMP_REPO/.claude/state/${C10_PHASH}"
+echo "verified|12345" > "$TEMP_REPO/.claude/state/${C10_PHASH}/proof-status"
 
 INPUT_JSON=$(cat <<EOF
 {
@@ -449,7 +475,7 @@ EOF
 )
 
 OUTPUT=$(cd "$TEMP_REPO" && \
-         echo "$INPUT_JSON" | bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
+         echo "$INPUT_JSON" | CLAUDE_DIR="$TEMP_REPO/.claude" bash "$HOOKS_DIR/pre-bash.sh" 2>&1) || true
 
 if echo "$OUTPUT" | grep -q "deny"; then
     fail_test "Deletion blocked when verified (should allow)"

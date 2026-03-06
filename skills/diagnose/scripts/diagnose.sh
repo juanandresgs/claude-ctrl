@@ -147,7 +147,8 @@ if [[ "$QUICK_MODE" != "true" ]]; then
     echo "--- 2. Shared Library Health ---"
 fi
 
-for lib in log.sh context-lib.sh; do
+for lib in log.sh core-lib.sh session-lib.sh plan-lib.sh doc-lib.sh \
+           source-lib.sh state-lib.sh trace-lib.sh git-lib.sh ci-lib.sh; do
     lib_path="${HOOKS_DIR}/${lib}"
     if [[ ! -f "$lib_path" ]]; then
         fail "${lib} not found at ${lib_path}"

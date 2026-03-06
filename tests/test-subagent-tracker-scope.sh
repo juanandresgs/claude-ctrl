@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONTEXT_LIB="${SCRIPT_DIR}/../hooks/context-lib.sh"
+HOOKS_DIR="${SCRIPT_DIR}/../hooks"
 
 # Colors
 RED='\033[0;31m'
@@ -63,25 +63,14 @@ cleanup_test_env() {
     rm -rf "$tmpdir"
 }
 
-# Source context-lib functions into current shell
-# We use a subshell technique: source the lib and call functions directly.
-# context-lib.sh has dependencies (log.sh), so we provide a stub.
+# Source source-lib.sh with session domain library (context-lib.sh removed in Phase 3)
 source_context_lib() {
-    # Provide minimal stubs for dependencies that context-lib sources
-    # context-lib.sh sources log.sh — we need log functions available
-    log_info() { :; }
-    log_warn() { :; }
-    log_error() { :; }
-    log_debug() { :; }
-    get_claude_dir() { echo "${HOME}/.claude"; }
-    detect_project_root() { echo "${HOME}"; }
-
-    # Source context-lib with stubs in place
     # shellcheck disable=SC1090
-    source "$CONTEXT_LIB" 2>/dev/null || {
-        echo "ERROR: Could not source $CONTEXT_LIB" >&2
+    source "$HOOKS_DIR/source-lib.sh" 2>/dev/null || {
+        echo "ERROR: Could not source $HOOKS_DIR/source-lib.sh" >&2
         exit 1
     }
+    require_session
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

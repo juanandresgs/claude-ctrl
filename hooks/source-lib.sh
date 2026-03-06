@@ -66,6 +66,7 @@ _hook_log_timing() {
     local elapsed_ms=$(( (end_ns - _HOOK_START_NS) / 1000000 ))
     local claude_dir="${CLAUDE_DIR:-$HOME/.claude}"
     local timing_log="$claude_dir/.hook-timing.log"
+    mkdir -p "$claude_dir" 2>/dev/null || true
     # Append: timestamp hook_name event_type elapsed_ms exit_code
     # _HOOK_EVENT_TYPE is set by consolidated hooks (pre-bash, pre-write, post-write, stop).
     # Old 4-field entries (without event_type) are still valid; hook-timing-report.sh handles both formats.
