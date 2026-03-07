@@ -176,9 +176,9 @@ fi
 
 printf "\n"
 if [[ "$FAILED" -eq 0 ]]; then
-    printf "${GREEN}${BOLD}All required dependencies present. Claude-Ctrl is ready to use.${RESET}\n\n"
+    printf '%s\n\n' "${GREEN}${BOLD}All required dependencies present. Claude-Ctrl is ready to use.${RESET}"
     exit 0
 else
-    printf "${RED}${BOLD}One or more required dependencies missing. See above for install instructions.${RESET}\n\n"
+    printf '%s\n\n' "${RED}${BOLD}One or more required dependencies missing. See above for install instructions.${RESET}"
     exit 1
 fi

@@ -275,7 +275,7 @@ if [[ "$_T07_LIB_MTIME" -gt "$_T07_GEN_TS" ]]; then
 fi
 
 if [[ "$_T07_STALE" == "1" ]]; then
-    pass_test "Staleness detected: lib mtime ($( echo "$_T07_LIB_MTIME")) > .hooks-gen timestamp ($( echo "$_T07_GEN_TS"))"
+    pass_test "Staleness detected: lib mtime ($_T07_LIB_MTIME) > .hooks-gen timestamp ($_T07_GEN_TS)"
 else
     fail_test "Staleness NOT detected: lib mtime=$_T07_LIB_MTIME, .hooks-gen ts=$_T07_GEN_TS (expected stale)"
 fi

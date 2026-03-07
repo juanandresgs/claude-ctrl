@@ -304,6 +304,37 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
+# Check 6b: Shellcheck advisory on .sh files modified in the merge
+# Run shellcheck on all .sh files changed in the last commit. Advisory only
+# (never blocks). Surfaces lint issues for the next implementation cycle.
+if [[ -n "$RESPONSE_TEXT" ]] && command -v shellcheck >/dev/null 2>&1; then
+    HAS_COMMIT_6B=$(echo "$RESPONSE_TEXT" | grep -iE 'committed|pushed|merge.*complete' || echo "")
+    if [[ -n "$HAS_COMMIT_6B" ]]; then
+        # Get .sh files changed in the last commit
+        _SC_FILES=$(git -C "$PROJECT_ROOT" diff --name-only HEAD~1..HEAD 2>/dev/null \
+            | grep '\.sh$' | head -10 || echo "")
+        if [[ -n "$_SC_FILES" ]]; then
+            _SC_ISSUES=""
+            while IFS= read -r _sc_file; do
+                _sc_abs="${PROJECT_ROOT}/${_sc_file}"
+                [[ -f "$_sc_abs" ]] || continue
+                # Use hooks exclusion set for hooks/, scripts exclusion set otherwise
+                if [[ "$_sc_file" == hooks/* ]]; then
+                    _sc_excl="SC2034,SC1091,SC2002,SC2012,SC2015,SC2126,SC2317,SC2329"
+                else
+                    _sc_excl="SC2034,SC1091,SC2155,SC2011,SC2016,SC2030,SC2031,SC2010,SC2005,SC1007,SC2153,SC2064,SC2329,SC2086,SC1090,SC2129,SC2320,SC2188,SC2015,SC2162,SC2045,SC2001,SC2088,SC2012,SC2105,SC2126,SC2295,SC2002,SC2317,SC2164"
+                fi
+                _sc_out=$(shellcheck -e "$_sc_excl" "$_sc_abs" 2>&1) || {
+                    _SC_ISSUES="${_SC_ISSUES}  ${_sc_file}: $(_SC_FIRST=$(echo "$_sc_out" | head -3 | tr '\n' ' '); echo "$_SC_FIRST")\n"
+                }
+            done <<< "$_SC_FILES"
+            if [[ -n "$_SC_ISSUES" ]]; then
+                ISSUES+=("Advisory: shellcheck found issues in committed .sh files:\n${_SC_ISSUES}Fix before next cycle.")
+            fi
+        fi
+    fi
+fi
+
 # Check 7: CWD staleness advisory + canary write after worktree cleanup
 # When Guardian removes a worktree, the orchestrator's Bash CWD may now point to
 # a deleted directory. guard.sh Check 0.5 auto-recovers on the next command.

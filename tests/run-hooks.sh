@@ -83,7 +83,7 @@ skipped=0
 #
 # Usage: bash tests/run-hooks.sh [--scope <name>] [--scope <name>] ...
 # Scopes: syntax, pre-bash, pre-write, post-write, unit, session, integration,
-#         trace, gate, state, validation
+#         trace, gate, state, validation, lint
 # =============================================================================
 
 REQUESTED_SCOPES=()
@@ -109,6 +109,7 @@ _print_scope_usage() {
     echo "  concurrency — Concurrency and state management tests (Phase 1 locking, CAS, lattice, registry)"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
     echo "  validation  — Self-validation tests (version sentinels, consistency, bash -n preflight, hooks-gen)"
+    echo "  lint        — Shellcheck lint scope: lint.sh behavior + shellcheck on all hooks/*.sh"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
 }
@@ -157,6 +158,7 @@ _scope_pattern() {
         gaps)        echo "gaps-report\.sh" ;;
         concurrency) echo "Concurrency and state management" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
+        lint)        echo "lint\.sh|shellcheck.*hooks" ;;
         *)           echo "" ;;
     esac
 }
@@ -2689,6 +2691,88 @@ fi # end: bash32-compat
 
 # (Self-validation tests removed from inline delegation — they run as
 # standalone test files in CI step 2.)
+
+# --- Lint scope: lint.sh behavior + shellcheck on all hooks/*.sh ---
+if should_run_section "lint.sh"; then
+echo ""
+echo "--- lint.sh behavior tests ---"
+
+# Test 1: lint.sh exits 0 silently for unsupported extension
+_LINT_HOOK="$HOOKS_DIR/lint.sh"
+_LINT_UNSUPPORTED_INPUT='{"tool_name":"Write","tool_input":{"file_path":"/nonexistent/test.md","content":"# hello"}}'
+_LINT_OUT=$(echo "$_LINT_UNSUPPORTED_INPUT" | bash "$_LINT_HOOK" 2>/dev/null; echo "exit:$?")
+if echo "$_LINT_OUT" | grep -q "exit:0"; then
+    pass "lint.sh — exits 0 for unsupported extension (.md)"
+else
+    fail "lint.sh" "expected exit 0 for unsupported extension, got: $_LINT_OUT"
+fi
+
+# Test 2: lint.sh exits 0 for missing file_path
+_LINT_NOPATH_INPUT='{"tool_name":"Write","tool_input":{}}'
+_LINT_OUT2=$(echo "$_LINT_NOPATH_INPUT" | bash "$_LINT_HOOK" 2>/dev/null; echo "exit:$?")
+if echo "$_LINT_OUT2" | grep -q "exit:0"; then
+    pass "lint.sh — exits 0 when file_path is absent"
+else
+    fail "lint.sh" "expected exit 0 for absent file_path, got: $_LINT_OUT2"
+fi
+
+# Test 3: lint.sh skips skippable paths (node_modules)
+_LINT_SKIP_INPUT='{"tool_name":"Write","tool_input":{"file_path":"/project/node_modules/foo/bar.sh","content":"#!/bin/bash"}}'
+_LINT_OUT3=$(echo "$_LINT_SKIP_INPUT" | bash "$_LINT_HOOK" 2>/dev/null; echo "exit:$?")
+if echo "$_LINT_OUT3" | grep -q "exit:0"; then
+    pass "lint.sh — exits 0 for skippable path (node_modules)"
+else
+    fail "lint.sh" "expected exit 0 for node_modules path, got: $_LINT_OUT3"
+fi
+
+# Test 4: lint.sh exits 0 (no issues) for a clean .sh file via stdin
+# Write a clean temp shell file (use project tmp/ per Sacred Practice #3)
+_LINT_TMP_DIR="$(dirname "$SCRIPT_DIR")/tmp"
+mkdir -p "$_LINT_TMP_DIR"
+_LINT_CLEAN_SH="${_LINT_TMP_DIR}/test_lint_clean_$$.sh"
+printf '#!/bin/bash\n# Clean script\necho "hello"\n' > "$_LINT_CLEAN_SH"
+_LINT_CLEAN_INPUT="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"${_LINT_CLEAN_SH}\",\"content\":\"clean\"}}"
+_LINT_OUT4=$(echo "$_LINT_CLEAN_INPUT" | bash "$_LINT_HOOK" 2>/dev/null; echo "exit:$?")
+rm -f "$_LINT_CLEAN_SH"
+if echo "$_LINT_OUT4" | grep -q "exit:0"; then
+    pass "lint.sh — exits 0 for clean shell file (no violations)"
+else
+    # shellcheck might not be installed in CI — skip rather than fail
+    if ! command -v shellcheck >/dev/null 2>&1; then
+        skip "lint.sh clean shell file" "shellcheck not installed"
+    else
+        fail "lint.sh" "expected exit 0 for clean file, got: $_LINT_OUT4"
+    fi
+fi
+
+# Test 5: shellcheck on all hooks/*.sh with CI exclusion set
+echo ""
+echo "--- shellcheck: all hooks/*.sh (CI exclusion set) ---"
+_SC_FAILED=0
+_SC_FILES_CHECKED=0
+for _sc_h in "$HOOKS_DIR"/*.sh; do
+    [[ -f "$_sc_h" ]] || continue
+    _sc_name=$(basename "$_sc_h")
+    _SC_FILES_CHECKED=$((_SC_FILES_CHECKED + 1))
+    if command -v shellcheck >/dev/null 2>&1; then
+        _sc_out=$(shellcheck \
+            -e SC2034,SC1091,SC2002,SC2012,SC2015,SC2126,SC2317,SC2329 \
+            "$_sc_h" 2>&1) || {
+            fail "shellcheck: $_sc_name" "$(echo "$_sc_out" | head -3 | tr '\n' ' ')"
+            _SC_FAILED=$((_SC_FAILED + 1))
+            continue
+        }
+        pass "shellcheck: $_sc_name — clean"
+    else
+        skip "shellcheck: $_sc_name" "shellcheck not installed"
+    fi
+done
+if [[ "$_SC_FAILED" -eq 0 ]] && command -v shellcheck >/dev/null 2>&1; then
+    echo "  (${_SC_FILES_CHECKED} hooks checked, all clean)"
+fi
+
+echo ""
+fi # end: lint scope
 
 # --- Summary ---
 echo "==========================="

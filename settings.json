@@ -166,6 +166,11 @@
             "command": "$HOME/.claude/hooks/test-runner.sh",
             "timeout": 60,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/lint.sh",
+            "timeout": 10
           }
         ]
       },
