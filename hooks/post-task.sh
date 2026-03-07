@@ -294,6 +294,35 @@ fi
 SUMMARY_TEXT=""
 _AV_TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
 
+# Ghost trace detection: if detected trace has no summary.md, status=active,
+# and was created >60s ago, it's likely a ghost — skip it for fallback scans.
+#
+# @decision DEC-AV-GHOST-001
+# @title Clear ghost traces so time-ordered fallback scans can find the real trace
+# @status accepted
+# @rationale detect_active_trace() can return a "ghost" trace — one that was
+#   created (status=active) but never completed (no summary.md written). This
+#   happens when an agent crashes or is interrupted before writing its summary.
+#   If a ghost trace is detected and not cleared, all three fallback tiers
+#   (session-based, breadcrumb, project-scoped) return early after finding the
+#   primary trace ID, then fail to load any summary. The 60-second threshold
+#   ensures we don't accidentally skip a trace that's still being written.
+if [[ -n "$_AV_TRACE_ID" ]]; then
+    _ghost_manifest="${TRACE_STORE}/${_AV_TRACE_ID}/manifest.json"
+    _ghost_summary="${TRACE_STORE}/${_AV_TRACE_ID}/summary.md"
+    if [[ ! -s "$_ghost_summary" && -f "$_ghost_manifest" ]]; then
+        _ghost_status=$(jq -r '.status // empty' "$_ghost_manifest" 2>/dev/null)
+        if [[ "$_ghost_status" == "active" ]]; then
+            _ghost_created=$(jq -r '.created_at // empty' "$_ghost_manifest" 2>/dev/null)
+            _now=$(date +%s)
+            if [[ -n "$_ghost_created" && $(( _now - _ghost_created )) -gt 60 ]]; then
+                log_info "POST-TASK" "ghost trace detected: $_AV_TRACE_ID (active, no summary, age=$(( _now - _ghost_created ))s) — skipping for fallback"
+                _AV_TRACE_ID=""
+            fi
+        fi
+    fi
+fi
+
 # Tier 0: breadcrumb from check-tester.sh (SubagentStop writes trace_id here)
 # This bypasses the marker race entirely — check-tester.sh writes the breadcrumb
 # AFTER finalize_trace deletes the marker, so it's always available.
@@ -326,7 +355,7 @@ fi
 #   Scanning the 5 most recent tester manifests for session_id+project match is safe
 #   (session scoping prevents cross-contamination) and fast (5 jq calls max).
 if [[ -z "$_AV_TRACE_ID" && -n "${CLAUDE_SESSION_ID:-}" ]]; then
-    for _dir in $(ls -1d "${TRACE_STORE}/tester-"* 2>/dev/null | sort -r | head -5); do
+    for _dir in $(ls -1dt "${TRACE_STORE}/tester-"* 2>/dev/null | head -5); do
         _mf="${_dir}/manifest.json"
         [[ -f "$_mf" ]] || continue
         _combined=$(jq -r '[.session_id, .project] | @tsv' "$_mf" 2>/dev/null) || continue
@@ -382,7 +411,7 @@ fi
 #   auto-flow scenario where an implementer's summary mentions AUTOVERIFY context.
 #   Fixes M2 (#4): AUTOVERIFY not detected in nested returns.
 if [[ -z "$SUMMARY_TEXT" ]]; then
-    for _dir in $(ls -1d "${TRACE_STORE}/tester-"* 2>/dev/null | sort -r | head -5); do
+    for _dir in $(ls -1dt "${TRACE_STORE}/tester-"* 2>/dev/null | head -5); do
         _smf="${_dir}/summary.md"
         [[ -s "$_smf" ]] || continue
         _sz=$(wc -c < "$_smf" 2>/dev/null || echo 0)
