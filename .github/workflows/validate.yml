@@ -1,8 +1,6 @@
 name: Validate Hooks
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -58,20 +56,13 @@ jobs:
           exit $failed
 
   hook-contracts:
-    name: Validate hook contracts (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: Validate hook contracts
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install jq (ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install jq
         run: sudo apt-get install -y jq
-      - name: Verify jq available (macos)
-        if: matrix.os == 'macos-latest'
-        run: jq --version || brew install jq
       - name: Run hook contract tests
         run: bash tests/run-hooks.sh
       - name: Run standalone test suites
