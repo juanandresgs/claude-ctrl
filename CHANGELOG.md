@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `feature/signal-map`: Governance signal map — comprehensive reference documenting all 24 hook registrations with signal routing, context injection volumes, gate types, firing frequency, overlap analysis, and noise assessment (#145)
 - `feature/sqlite-w1`: SQLite WAL-based state store (Wave 1) — rewrite hooks/state-lib.sh with sqlite3 backend (state_update, state_read, state_cas, state_delete, workflow_id), WAL mode with busy_timeout=5000ms, per-workflow isolation via workflow_id column, SQL injection prevention, lattice-enforced CAS, legacy jq functions preserved as _legacy_* for Wave 2 migration; 20-test suite in test-sqlite-state.sh covering schema, CRUD, CAS, lattice, concurrency, and injection; `--scope sqlite` in run-hooks.sh (DEC-SQLITE-001 through DEC-SQLITE-010, closes #128, #129)
 - `feature/sqlite-state-store`: SQLite Unified State Store initiative added to MASTER_PLAN.md — 4-wave implementation plan replacing scattered flat-file state with single SQLite WAL database, 8 architectural decisions (DEC-SQLITE-001 through 008), 9 P0 requirements, issues #128-#134
 
