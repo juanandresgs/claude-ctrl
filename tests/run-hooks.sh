@@ -2737,7 +2737,7 @@ rm -f "$_LINT_CLEAN_SH"
 if echo "$_LINT_OUT4" | grep -q "exit:0"; then
     pass "lint.sh — exits 0 for clean shell file (no violations)"
 else
-    # shellcheck might not be installed in CI — skip rather than fail
+    # Lint tool might not be installed in CI — skip rather than fail
     if ! command -v shellcheck >/dev/null 2>&1; then
         skip "lint.sh clean shell file" "shellcheck not installed"
     else
