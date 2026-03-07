@@ -361,9 +361,9 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; th
         STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
         if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
             # Allow ONLY for bootstrap — MASTER_PLAN.md not yet committed.
-            # Use ls-tree HEAD (not ls-files) because git add has already staged the file
-            # at this point, making ls-files report it as "tracked" even on first commit.
-            if git -C "$TARGET_DIR" ls-tree HEAD -- MASTER_PLAN.md &>/dev/null; then
+            # Use ls-tree HEAD output content (not exit code) because git ls-tree
+            # returns exit 0 even for absent paths — only the output differs.
+            if [[ -n "$(git -C "$TARGET_DIR" ls-tree HEAD -- MASTER_PLAN.md 2>/dev/null)" ]]; then
                 emit_deny "MASTER_PLAN.md is already tracked. Amend it in a worktree, not on main. Create a worktree: git worktree add .worktrees/feature-name -b feature/name"
             fi
             # else: not tracked yet = bootstrap, allow through

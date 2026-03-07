@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/sqlite-state-store`: SQLite Unified State Store initiative added to MASTER_PLAN.md — 4-wave implementation plan replacing scattered flat-file state with single SQLite WAL database, 8 architectural decisions (DEC-SQLITE-001 through 008), 9 P0 requirements, issues #128-#134
 
 ### Fixed
+- `worktree-agent-ab54ee08`: Fix pre-bash.sh Check 2 bootstrap exception — `git ls-tree` exit code check replaced with output-content check since ls-tree returns exit 0 even for absent paths; new 219-line test suite validates bootstrap allow/deny behavior (#150)
 - `fix/ci-sqlite-tests`: Update 4 failing CI tests for SQLite WAL state backend — verify_library_consistency() updated for per-library version pinning, T02 comment updated, T01/T05 check state.db and SQLite WAL concurrency, T10 checks state.db + sqlite3 presence
 - `fix/lint-full-coverage`: Extend `--scope lint` from 34 hooks to 97 files (hooks + tests + scripts) matching CI's full shellcheck coverage — define `_SC_HOOKS_EXCLUDE` and `_SC_TESTS_EXCLUDE` as single source of truth matching validate.yml exclusion sets; 101 total lint tests (#127)
 - `fix/125-autoverify-sort`: Fix auto-verify trace discovery — replace `sort -r` (alphabetical) with `ls -t` (mtime-ordered) in Tier 2 and Tier 3 fallback scans so current-session traces are found first; add ghost trace detection to skip stale active traces with no summary after 60s (DEC-AV-GHOST-001)
