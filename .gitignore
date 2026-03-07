@@ -60,6 +60,9 @@ stats-cache.json
 # Plan files (session-specific)
 plans/
 
+# PRD files (internal working documents, not distributed)
+prds/
+
 # Archive (recoverable deletions, not tracked)
 .archive/
 _archive/

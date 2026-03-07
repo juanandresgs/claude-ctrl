@@ -20,7 +20,7 @@ We take security issues seriously. If you discover a security vulnerability in t
 2. Click "Report a vulnerability"
 3. Fill out the form with details
 
-**Alternative:** Email security issues to the repository maintainer at `juanandresgs@gmail.com` with subject line: `[SECURITY] Claude System Vulnerability`
+**Alternative:** Email security issues to the repository maintainer at `jags@epicturla.com` with subject line: `[SECURITY] Claude System Vulnerability`
 
 ### What Counts as a Security Issue
 
