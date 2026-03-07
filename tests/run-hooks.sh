@@ -107,6 +107,7 @@ _print_scope_usage() {
     echo "  scan        — scan-backlog.sh debt marker scanner unit tests"
     echo "  gaps        — gaps-report.sh accountability report unit tests"
     echo "  concurrency — Concurrency and state management tests (Phase 1 locking, CAS, lattice, registry)"
+    echo "  sqlite      — SQLite state operations (schema, CRUD, CAS, lattice, concurrency, injection)"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
     echo "  validation  — Self-validation tests (version sentinels, consistency, bash -n preflight, hooks-gen)"
     echo "  lint        — Shellcheck lint scope: lint.sh behavior + shellcheck on hooks/*.sh, tests/*.sh, tests/lib/*.sh, scripts/*.sh (matches CI exactly)"
@@ -157,6 +158,7 @@ _scope_pattern() {
         scan)        echo "scan-backlog\.sh" ;;
         gaps)        echo "gaps-report\.sh" ;;
         concurrency) echo "Concurrency and state management" ;;
+        sqlite)      echo "SQLite state operations" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
         lint)        echo "lint\.sh|shellcheck.*(hooks|tests|scripts)" ;;
         *)           echo "" ;;
@@ -2836,6 +2838,46 @@ fi
 fi # end: shellcheck scripts subsection
 
 echo ""
+
+# --- SQLite state operations ---
+if should_run_section "SQLite state operations"; then
+echo ""
+echo "--- SQLite state operations (test-sqlite-state.sh) ---"
+
+_SQLITE_TEST="$SCRIPT_DIR/test-sqlite-state.sh"
+if [[ ! -f "$_SQLITE_TEST" ]]; then
+    skip "SQLite state tests" "test-sqlite-state.sh not found at $_SQLITE_TEST"
+elif ! command -v sqlite3 >/dev/null 2>&1; then
+    skip "SQLite state tests" "sqlite3 not installed"
+else
+    _SQLITE_OUTPUT=$(bash "$_SQLITE_TEST" 2>/dev/null) || true
+    _SQLITE_EXIT=$?
+    # Parse results from the test output — strip whitespace for arithmetic safety
+    _SQLITE_PASSED=$(echo "$_SQLITE_OUTPUT" | grep -c "^  PASS$" 2>/dev/null || true)
+    _SQLITE_FAILED=$(echo "$_SQLITE_OUTPUT" | grep -c "^  FAIL:" 2>/dev/null || true)
+    _SQLITE_TOTAL=$(echo "$_SQLITE_OUTPUT" | grep -E "^Results:" | grep -oE "[0-9]+ total" | grep -oE "[0-9]+" || true)
+    # Strip whitespace/newlines (grep -c can output "N\n")
+    _SQLITE_PASSED="${_SQLITE_PASSED//[[:space:]]/}"
+    _SQLITE_FAILED="${_SQLITE_FAILED//[[:space:]]/}"
+    _SQLITE_TOTAL="${_SQLITE_TOTAL//[[:space:]]/}"
+    # Default to 0 if empty
+    _SQLITE_PASSED="${_SQLITE_PASSED:-0}"
+    _SQLITE_FAILED="${_SQLITE_FAILED:-0}"
+    _SQLITE_TOTAL="${_SQLITE_TOTAL:-0}"
+
+    if [[ "$_SQLITE_FAILED" -eq 0 && "$_SQLITE_EXIT" -eq 0 ]]; then
+        pass "SQLite state operations — ${_SQLITE_PASSED}/${_SQLITE_TOTAL} tests passed"
+    else
+        # Show which tests failed
+        _SQLITE_FAIL_DETAILS=$(echo "$_SQLITE_OUTPUT" | grep "^  FAIL:" | head -5 | tr '\n' '; ')
+        fail "SQLite state operations" "${_SQLITE_FAILED} failed (${_SQLITE_PASSED}/${_SQLITE_TOTAL} passed): ${_SQLITE_FAIL_DETAILS}"
+        # Print full output for debugging
+        echo "$_SQLITE_OUTPUT"
+    fi
+fi
+
+echo ""
+fi # end: sqlite
 
 # --- Summary ---
 echo "==========================="
