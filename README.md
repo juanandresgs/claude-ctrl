@@ -39,37 +39,6 @@ I've never been much of a gambler myself.
 
 ---
 
-### The Headline
-
-17 individual hook scripts consolidated into **4 entry points** backed by **10 lazy-loaded domain libraries**.
-
-The result: **74% less hook overhead** per session. Zero governance loss.
-
-### Before and After
-
-```
-v2.0                                    v3.0 (Metanoia)
-────────────────────────────────────    ────────────────────────────────────
-17 hooks firing independently           4 consolidated entry points
-~26s hook overhead/session              ~6.7s hook overhead/session
-54 tests                                160+ tests
-macOS only                              macOS + Ubuntu CI
-Flat-file state                         Per-worktree isolated state store
-3 agents                                4 agents (+ Tester with auto-verify)
-Manual worktree management              Auto-sweep, roster, CWD recovery
-```
-
-### New Capabilities
-
-- **Lint-on-write** — shellcheck/ruff/cargo clippy runs synchronously on every Write/Edit
-- **Dispatch enforcement** — hooks mechanically block the orchestrator from writing source code directly
-- **Cross-project isolation** — SHA-256 project hashing prevents state contamination across concurrent sessions
-- **Proof-before-commit chain** — Implement → Test → Verify → Commit, each gate enforced by hooks
-- **Self-validation** — version sentinels, `bash -n` preflight, hooks-gen integrity check at startup
-- **Observatory** — self-improving flywheel that analyzes agent traces and surfaces improvement signals
-
-See the full [CHANGELOG](CHANGELOG.md) for the complete list.
-
 ### Performance (v2.1 → v3.0)
 
 **BLUF: v3.0 delivers 75% more successes at the same cost per success.** The governance overhead pays for itself.
