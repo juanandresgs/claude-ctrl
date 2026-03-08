@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `docs/readme-mermaid-and-polish`: Replace ASCII pipeline diagram in README.md with Mermaid flowchart; move DEC-ARCH-001 @decision in ARCHITECTURE.md to HTML comment (still grepable, invisible when rendered)
 - `feature/slim-agents`: Slim all 4 agent prompts — remove shared-protocol boilerplate (CWD safety, trace protocol, return message, session-end checklist) now injected at dispatch time via subagent-start.sh; strengthen purpose language at top of each prompt; Guardian gains Merge Presentation section and AUTO-VERIFY-APPROVED bypass; 1,481 to 1,320 lines total (#146)
 - `feature/claude-md-restore`: Restore CLAUDE.md purpose-sandwich structure (v2.3) -- full Cornerstone Belief, "What Matters" quality-of-thought section with agent initiative language, dispatch table relocated to DISPATCH.md reference (#144)
 

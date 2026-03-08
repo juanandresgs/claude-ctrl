@@ -1,12 +1,13 @@
 # Architecture: Claude Code Configuration System
 
-**@decision DEC-ARCH-001**
-**@title Architectural overview document for system structure and data flow**
-**@status accepted**
-**@rationale** Provides the definitive technical reference for understanding system
+<!-- @decision DEC-ARCH-001
+@title Architectural overview document for system structure and data flow
+@status accepted
+@rationale Provides the definitive technical reference for understanding system
 components, hook execution model, and key design decisions. Complements README.md
 (user guide) and HOOKS.md (protocol reference) by explaining HOW the pieces fit
 together and WHY they're structured this way.
+-->
 
 ---
 
