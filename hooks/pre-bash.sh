@@ -91,6 +91,7 @@ if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
     declare_gate "proof-status-delete" "Block deletion of .proof-status when active" "deny"
     declare_gate "worktree-rf-cwd" "rm -rf .worktrees/ CWD safety deny" "deny"
     declare_gate "sqlite3-state-db" "Block direct sqlite3 access to state.db" "deny"
+    declare_gate "db-safety-check" "Database safety check (destructive command + environment tier)" "deny"
     declare_gate "git-early-exit" "Skip git-specific checks for non-git commands" "side-effect"
     declare_gate "main-sacred-commit" "No commits on main/master" "deny"
     declare_gate "force-push-safety" "Force push handling" "deny"
@@ -339,6 +340,80 @@ if echo "$_stripped_cmd" | grep -qE '\bsqlite3\b'; then
         grep -oE '[^[:space:]]+$' || true)
     if echo "$_sqlite3_target" | grep -qE '(state/state\.db|state\.db)$'; then
         emit_deny "Direct sqlite3 access to state.db is blocked. Use state_read()/state_update() API in hooks, or state-diag.sh for diagnostics."
+    fi
+fi
+
+# --- Database Safety Checks ---
+# @modality database
+# @decision DEC-DBSAFE-001
+# @title Modular database check architecture with zero-overhead early exit
+# @status accepted
+# @rationale See hooks/db-safety-lib.sh for full rationale. This dispatch point
+#   provides the entry gate: _db_detect_cli() returns "none" for non-DB commands,
+#   and the entire section is skipped with a single string comparison. When a DB
+#   CLI is detected, require_db_safety() loads the library once (idempotent), then
+#   the environment and risk are classified. The response is tiered by environment
+#   severity (DEC-DBSAFE-002): production=deny all high-risk, staging=deny destructive,
+#   dev/local=advisory only. This section is placed before the git-early-exit gate
+#   so that database commands are checked even when they contain no git invocation.
+#
+# Each database CLI has its own check function in db-safety-lib.sh:
+#   _db_check_psql, _db_check_mysql, _db_check_sqlite3, _db_check_redis, _db_check_mongo
+# These stubs delegate to _db_classify_risk now; Wave 2 will add per-CLI validation.
+#
+# @decision DEC-DBSAFE-002
+# @title Environment-tiered response: production=deny all, staging=deny destructive,
+#        dev/local=advisory only
+# @status accepted
+# @rationale See hooks/db-safety-lib.sh for full rationale.
+declare_gate "db-safety-check" "Database safety check (destructive command + environment tier)" "deny"
+
+# Quick exit if no database CLI detected (zero overhead for non-DB commands).
+# Uses an inline pattern match here — the full _db_detect_cli() is only loaded
+# after this gate confirms a database CLI is present. This avoids sourcing
+# db-safety-lib.sh for the common case (non-database commands).
+# Pattern matches: psql, mysql, sqlite3, mongosh, redis-cli, cockroach
+if echo "$_stripped_cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(psql|mysql|sqlite3|mongosh|redis-cli|cockroach)([[:space:]]|$|;|&&|\|)'; then
+    require_db_safety
+
+    _DB_CLI=$(_db_detect_cli "$COMMAND")
+    if [[ "$_DB_CLI" != "none" ]]; then
+        _DB_ENV=$(_db_detect_environment)
+        _DB_RISK_RESULT=$(_db_classify_risk "$COMMAND" "$_DB_CLI")
+        _DB_RISK_LEVEL="${_DB_RISK_RESULT%%:*}"
+        _DB_RISK_REASON="${_DB_RISK_RESULT#*:}"
+
+        # Environment-tiered response matrix (DEC-DBSAFE-002):
+        #   production/unknown + deny     → hard deny
+        #   production/unknown + advisory → hard deny (explain risk)
+        #   staging + deny                → hard deny
+        #   staging + advisory            → log warning, allow
+        #   development/local + deny      → log warning, allow (advisory mode)
+        #   development/local + advisory  → allow silently
+        case "$_DB_ENV" in
+            production|unknown)
+                if [[ "$_DB_RISK_LEVEL" == "deny" ]]; then
+                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON" "Connect to a development database to run destructive operations. If this is intentional, run the command directly in a database client outside Claude Code.")"
+                elif [[ "$_DB_RISK_LEVEL" == "advisory" ]]; then
+                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON (environment: $_DB_ENV — treating as production)" "Verify the target environment. Run with an explicit WHERE clause or on a development database.")"
+                fi
+                ;;
+            staging)
+                if [[ "$_DB_RISK_LEVEL" == "deny" ]]; then
+                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON" "Connect to a development database to run destructive operations.")"
+                elif [[ "$_DB_RISK_LEVEL" == "advisory" ]]; then
+                    log_warn "DB-SAFETY" "$(_db_format_advisory "$_DB_RISK_REASON (environment: staging)")"
+                    # Allow — staging advisory is a warning only
+                fi
+                ;;
+            development|local)
+                if [[ "$_DB_RISK_LEVEL" == "deny" ]]; then
+                    log_warn "DB-SAFETY" "$(_db_format_advisory "$_DB_RISK_REASON (environment: $_DB_ENV — allowing with warning)")"
+                    # Allow — destructive ops on dev/local are the developer's prerogative
+                fi
+                # advisory + dev/local = allow silently
+                ;;
+        esac
     fi
 fi
 

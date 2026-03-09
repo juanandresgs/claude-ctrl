@@ -110,6 +110,7 @@ _print_scope_usage() {
     echo "  sqlite      — SQLite state operations (schema, CRUD, CAS, lattice, concurrency, injection)"
     echo "  dbsafe-w1a  — DB safety Wave 1a: sqlite3 block, state-diag.sh, backup, integrity check"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
+    echo "  dbsafe-w1b  — Database safety library unit tests (Wave 1b: modular architecture)"
     echo "  validation  — Self-validation tests (version sentinels, consistency, bash -n preflight, hooks-gen)"
     echo "  lint        — Shellcheck lint scope: lint.sh behavior + shellcheck on hooks/*.sh, tests/*.sh, tests/lib/*.sh, scripts/*.sh (matches CI exactly)"
     echo ""
@@ -162,6 +163,7 @@ _scope_pattern() {
         sqlite)      echo "SQLite state operations" ;;
         dbsafe-w1a)  echo "DB safety Wave 1a" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
+        dbsafe-w1b)  echo "db-safety-lib\.sh unit tests" ;;
         lint)        echo "lint\.sh|shellcheck.*(hooks|tests|scripts)" ;;
         *)           echo "" ;;
     esac
@@ -2915,6 +2917,33 @@ fi
 
 echo ""
 fi # end: sqlite
+
+# --- Database safety library unit tests (Wave 1b) ---
+if should_run_section "db-safety-lib.sh unit tests"; then
+echo ""
+echo "--- db-safety-lib.sh unit tests (Wave 1b) ---"
+
+_DBSAFE_TEST="$SCRIPT_DIR/test-db-safety-w1b.sh"
+if [[ ! -f "$_DBSAFE_TEST" ]]; then
+    skip "db-safety-w1b tests" "test-db-safety-w1b.sh not found at $_DBSAFE_TEST"
+else
+    _DBSAFE_OUTPUT=$(bash "$_DBSAFE_TEST" 2>/dev/null) || true
+    _DBSAFE_EXIT=$?
+    # Parse results from the test output
+    _DBSAFE_PASSED=$(echo "$_DBSAFE_OUTPUT" | grep -c "^  PASS:" 2>/dev/null || true)
+    _DBSAFE_FAILED=$(echo "$_DBSAFE_OUTPUT" | grep -c "^  FAIL:" 2>/dev/null || true)
+    _DBSAFE_TOTAL=$(echo "$_DBSAFE_OUTPUT" | grep -E "^Results:" | grep -oE "[0-9]+ total" | grep -oE "[0-9]+" || true)
+    if [[ "$_DBSAFE_FAILED" -eq 0 && -n "$_DBSAFE_TOTAL" ]]; then
+        pass "db-safety-w1b: all ${_DBSAFE_TOTAL} tests passed (${_DBSAFE_PASSED} assertions)"
+    else
+        _DBSAFE_FAIL_DETAILS=$(echo "$_DBSAFE_OUTPUT" | grep "^  FAIL:" | head -5 | tr '\n' '; ')
+        fail "db-safety-w1b" "${_DBSAFE_FAILED} failed (${_DBSAFE_PASSED}/${_DBSAFE_TOTAL:-?} passed): ${_DBSAFE_FAIL_DETAILS}"
+        echo "$_DBSAFE_OUTPUT"
+    fi
+fi
+
+echo ""
+fi # end: dbsafe-w1b
 
 # --- Summary ---
 echo "==========================="
