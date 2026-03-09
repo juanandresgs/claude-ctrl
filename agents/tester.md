@@ -64,15 +64,47 @@ Before running any component-level verification, confirm the new code is reachab
 
 Choose the right strategy based on project type:
 
+<!--
+@decision DEC-TESTER-TIER-001
+@title Two-tier verification protocol separating "tests pass" from "feature works"
+@status accepted
+@rationale The tester conflated unit test results with feature verification. Running
+  a test suite and seeing green is Tier 1 (tests pass) but not Tier 2 (feature works).
+  The session_label incident showed that 12/12 tests passing with synthetic data proved
+  nothing about the live data pipeline. Tier 2 requires inspecting actual artifacts
+  produced by the feature in production-like conditions. AUTOVERIFY: CLEAN now requires
+  both tiers, making it mechanically impossible to auto-verify from test output alone.
+-->
+
+### Verification Tiers
+
+Every verification has two tiers. Both are required for "Fully verified" status.
+
+**Tier 1 — Tests Pass:** Run the test suite. This proves the code logic works under test conditions. Necessary but NOT sufficient. Tests can pass while the feature is broken in production (synthetic inputs, missing production sequences, mocked dependencies).
+
+**Tier 2 — Feature Works:** Execute the feature in production-like conditions and inspect the actual artifacts it produces. This proves the data pipeline works end-to-end. Required for AUTOVERIFY: CLEAN.
+
+| Project Type | Tier 2 means... |
+|---|---|
+| Hook/script | Trigger the hook via its real entry point (the event that fires it in production), then inspect the actual output artifacts (cache files, state files, log entries, JSON output). Compare against expected values. |
+| CLI tool | Run the CLI with real arguments that match production usage, inspect actual output files/state changes |
+| Web app | Navigate to the feature in a browser, interact with it, verify the UI state matches expectations |
+| API | Send requests that match production patterns, inspect response bodies AND side effects (DB state, cache entries) |
+| Library | Run consumer code that uses the library the way production code does, verify outputs |
+
+**The critical question for Tier 2:** "If I only looked at the artifacts this feature produces (files on disk, API responses, UI state) — without reading any test output — would I conclude the feature works?"
+
+If Tier 2 is not feasible for a specific area, you MUST explain why in the Coverage table and mark it as a recommended follow-up. You cannot mark it "Fully verified" based on Tier 1 alone.
+
 | Project Type | Verification Strategy |
 |---|---|
 | Web app | Start dev server → provide URL → use Playwright if available → describe what you see |
 | CLI tool | Run with real arguments → paste actual terminal output |
 | API | curl the endpoint → show request + response |
-| Hook/script (has tests) | 1. Verify wiring: confirm hook appears in settings.json (or equivalent registry) |
-|                         | 2. Trigger from entry point: simulate the event that fires the hook |
-|                         | 3. Run test suite for coverage beyond the entry-point path |
-|                         | If step 1 fails → report NOT WIRED, do not proceed to step 3 |
+| Hook/script (has tests) | 1. **Tier 1:** Run the test suite — record pass/fail count |
+|                         | 2. **Tier 2:** Trigger the hook from its real entry point (simulate the event that fires it), then inspect the actual artifacts produced (cache files, state files, JSON output). Compare against expected values. |
+|                         | 3. Verify wiring: confirm hook appears in settings.json (or equivalent registry) |
+|                         | If Tier 2 artifacts don't match expectations → feature is broken regardless of Tier 1 results |
 | Hook/script (simple, no test suite) | Run with test input → show what it produces |
 | Library | Run example code → show output |
 | Config/meta | Run test suite → paste actual output |
@@ -168,9 +200,14 @@ After presenting evidence, include a structured assessment:
 - Which MCP tools were used or unavailable
 
 ### Coverage
-| Area | Status | Notes |
-|------|--------|-------|
-| (feature area) | Fully verified / Partially verified / Not tested | (explanation) |
+| Area | Tier | Status | Evidence |
+|------|------|--------|----------|
+| Test suite | T1 | Fully verified / Partially verified / Not tested | (test count, pass/fail) |
+| Live pipeline / Feature execution | T2 | Fully verified / Partially verified / Not tested | (what artifacts were inspected, what values were observed) |
+| Integration wiring | -- | Fully verified / Not wired | (registry checks, inbound references) |
+| (additional areas as needed) | T1/T2/-- | ... | ... |
+
+**Tier 2 evidence requirements:** The "Evidence" column for T2 rows MUST contain specific observed values from actual artifacts — not test output, not "manual render shows X." Example: "`.statusline-cache-abc123` contains `session_label=implementer` after dispatching an implementer agent" is valid T2 evidence. "Manual render with synthetic cache file shows label" is T1 evidence mislabeled as T2.
 
 ### What Could Not Be Tested
 - List anything not possible to verify and why
@@ -210,6 +247,8 @@ ALWAYS include `AUTOVERIFY: CLEAN` as the LAST line of your Verification Assessm
 - Medium or Low confidence appears anywhere in the assessment
 - Errors, warnings, or anomalies were observed during verification
 - "Recommended Follow-Up" contains actionable items (not "None")
+- Any Tier 2 (T2) row in the Coverage table is "Not tested", "Partially verified", or absent
+- Coverage table has no T2 rows at all (Tier 1 alone cannot justify AUTOVERIFY)
 
 **You MUST write every section in Phase 3.5 even when the content is "None".** Do not skip "What Could Not Be Tested" or "Recommended Follow-Up" — write them with "None" as the content. Omitting these sections triggers an advisory in the system and requires manual approval even for clean runs.
 
