@@ -238,13 +238,16 @@ get_subagent_status() {
     # Total = active + done
     SUBAGENT_TOTAL_COUNT=$(wc -l < "$tracker" 2>/dev/null | tr -d ' ')
 
-    # Session label: take the 4th field from the LAST active entry (most recently dispatched).
+    # Session label: take the last NON-EMPTY 4th field from any active entry.
     # 4-field format: ACTIVE|<type>|<epoch>|<label>
-    # 3-field format: ACTIVE|<type>|<epoch>  — field 4 is absent → label stays empty.
-    # Prefer the last active entry so concurrent sessions show the most recent dispatch.
-    # Backward compatible: old 3-field records produce empty label → statusline falls back to initiative.
+    # 3-field format: ACTIVE|<type>|<epoch>  — field 4 is absent → skipped.
+    # Bug fix: the original `tail -1 | cut -d'|' -f4` always returned empty when the
+    # most recent dispatch had no label (e.g., Explore agents, or dispatches without
+    # .worktrees/ in the prompt). Now we scan all active entries and take the last
+    # non-empty label — so earlier labeled dispatches aren't overwritten by unlabeled ones.
     local _last_active_label
-    _last_active_label=$(grep '^ACTIVE|' "$tracker" 2>/dev/null | tail -1 | cut -d'|' -f4 || echo "")
+    _last_active_label=$(grep '^ACTIVE|' "$tracker" 2>/dev/null \
+        | awk -F'|' '$4 != "" {label=$4} END {print label}' || echo "")
     SUBAGENT_ACTIVE_LABEL="${_last_active_label:-}"
 }
 

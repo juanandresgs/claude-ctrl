@@ -219,6 +219,39 @@ test_get_subagent_status_last_label() {
 test_get_subagent_status_last_label
 
 # -------------------------------------------------------------------
+# Test 5b: labeled entry followed by unlabeled entry (the actual bug)
+# -------------------------------------------------------------------
+run_test
+test_get_subagent_status_labeled_then_unlabeled() {
+    local tmpdir
+    tmpdir=$(setup_test_env)
+    local sid="sess-label-t5b-$$"
+
+    # Bug scenario: implementer dispatched with worktree label, then Explore
+    # dispatched without one. The original tail -1 | cut returned empty.
+    {
+        printf 'ACTIVE|implementer|1700000001|my-worktree\n'
+        printf 'ACTIVE|Explore|1700000002\n'
+    } > "${tmpdir}/.claude/.subagent-tracker-${sid}"
+
+    local label
+    label=$(
+        source_session_lib
+        CLAUDE_SESSION_ID="$sid" get_subagent_status "$tmpdir"
+        echo "${SUBAGENT_ACTIVE_LABEL:-}"
+    )
+
+    if [[ "$label" == "my-worktree" ]]; then
+        pass_test "get_subagent_status preserves label when later entry has none"
+    else
+        fail_test "get_subagent_status: labeled+unlabeled should return 'my-worktree'" "Got: '${label}'"
+    fi
+
+    cleanup_test_env "$tmpdir"
+}
+test_get_subagent_status_labeled_then_unlabeled
+
+# -------------------------------------------------------------------
 # Test 6: write_statusline_cache includes session_label field in JSON
 # -------------------------------------------------------------------
 run_test
