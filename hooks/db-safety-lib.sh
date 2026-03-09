@@ -309,50 +309,424 @@ _db_format_advisory() {
     printf 'DB-SAFETY ADVISORY — %s' "$reason"
 }
 
-# ---------------------------------------------------------------------------
-# Per-CLI handler stubs
-# These will be populated in Wave 2 with full validation logic.
-# For now they delegate to _db_classify_risk for basic classification.
-# ---------------------------------------------------------------------------
+# =============================================================================
+# WAVE 2A — Per-CLI handler full implementations (B1)
+#
+# @decision DEC-DBSAFE-004
+# @title Per-CLI handlers add RCE/code-execution patterns on top of classify_risk
+# @status accepted
+# @rationale _db_classify_risk handles universal SQL risk patterns (DROP, TRUNCATE,
+#   DELETE without WHERE). Per-CLI handlers add CLI-specific patterns that are not
+#   SQL commands: psql shell escapes, mysql file I/O, sqlite3 dot-commands, redis
+#   Lua scripting, and mongosh cluster management. The call order is:
+#     1. _db_classify_risk (common SQL patterns) — return early if deny/advisory found
+#     2. CLI-specific RCE/code-execution patterns
+#   This ensures common patterns are never missed and CLI-specific logic only fires
+#   when the common check returns safe.
+#
+# @decision DEC-DBSAFE-005
+# @title CLI-specific patterns focus on code execution / RCE vectors
+# @status accepted
+# @rationale The most dangerous CLI-specific risks are not data destruction (already
+#   covered by classify_risk) but arbitrary code execution: psql \! runs shell commands,
+#   mysql SOURCE executes SQL files, redis EVAL runs Lua, sqlite3 .shell is a full
+#   shell escape. These patterns bypass all SQL-level safety guards and can exfiltrate
+#   data, install malware, or pivot to other systems. All receive "deny" classification.
+# =============================================================================
 
+# ---------------------------------------------------------------------------
 # _db_check_psql COMMAND ENV
-# PostgreSQL-specific handler stub
+#
+# PostgreSQL-specific risk handler. Checks:
+#   1. Common SQL patterns via _db_classify_risk (DROP, TRUNCATE, etc.)
+#   2. \! shell escape — executes arbitrary shell commands
+#   3. COPY ... TO PROGRAM — RCE via shell pipeline
+#   4. CREATE EXTENSION — loads arbitrary C code into the server process
+#
+# Returns: "<risk_level>:<reason>" (same format as _db_classify_risk)
+# ---------------------------------------------------------------------------
 _db_check_psql() {
     local cmd="$1"
     local env="${2:-unknown}"
-    _db_classify_risk "$cmd" "psql"
+
+    # Step 1: Common SQL patterns (DROP, TRUNCATE, DELETE without WHERE, etc.)
+    local _common_risk
+    _common_risk=$(_db_classify_risk "$cmd" "psql")
+    local _common_level="${_common_risk%%:*}"
+    if [[ "$_common_level" == "deny" || "$_common_level" == "advisory" ]]; then
+        printf '%s' "$_common_risk"
+        return 0
+    fi
+
+    # Step 2: psql-specific RCE vectors
+
+    # \! executes arbitrary shell commands from within psql interactive mode
+    # Also matches quoted forms like "\!" and psql -c "\! cmd"
+    if printf '%s' "$cmd" | grep -qE '\\\\!|\\!'; then
+        printf 'deny:psql \\! shell escape executes arbitrary shell commands — this is an RCE vector'
+        return 0
+    fi
+
+    # COPY ... TO PROGRAM executes a shell command to receive query output
+    # Matches: COPY table TO PROGRAM 'cmd' and variants
+    local cmd_upper
+    cmd_upper=$(printf '%s' "$cmd" | tr '[:lower:]' '[:upper:]')
+    if printf '%s' "$cmd_upper" | grep -qE '\bCOPY\b.*\bTO\b[[:space:]]+PROGRAM\b'; then
+        printf 'deny:psql COPY ... TO PROGRAM executes a shell command — this is an RCE vector that can exfiltrate data or run arbitrary code'
+        return 0
+    fi
+
+    # CREATE EXTENSION loads a shared library (.so) into the PostgreSQL server process
+    # This can execute arbitrary C code with server privileges
+    if printf '%s' "$cmd_upper" | grep -qE '\bCREATE[[:space:]]+EXTENSION\b'; then
+        printf 'deny:psql CREATE EXTENSION loads a shared library into the server process — can execute arbitrary C code with server privileges'
+        return 0
+    fi
+
+    printf 'safe:'
+    return 0
 }
 
+# ---------------------------------------------------------------------------
 # _db_check_mysql COMMAND ENV
-# MySQL/MariaDB-specific handler stub
+#
+# MySQL/MariaDB-specific risk handler. Checks:
+#   1. Common SQL patterns via _db_classify_risk
+#   2. LOAD DATA INFILE — reads arbitrary files from the server filesystem
+#   3. INTO OUTFILE / INTO DUMPFILE — writes arbitrary files on the server
+#   4. SOURCE — executes an SQL file, allowing arbitrary SQL file execution
+#
+# Returns: "<risk_level>:<reason>" (same format as _db_classify_risk)
+# ---------------------------------------------------------------------------
 _db_check_mysql() {
     local cmd="$1"
     local env="${2:-unknown}"
-    _db_classify_risk "$cmd" "mysql"
+
+    # Step 1: Common SQL patterns
+    local _common_risk
+    _common_risk=$(_db_classify_risk "$cmd" "mysql")
+    local _common_level="${_common_risk%%:*}"
+    if [[ "$_common_level" == "deny" || "$_common_level" == "advisory" ]]; then
+        printf '%s' "$_common_risk"
+        return 0
+    fi
+
+    # Step 2: MySQL-specific file I/O and execution vectors
+
+    local cmd_upper
+    cmd_upper=$(printf '%s' "$cmd" | tr '[:lower:]' '[:upper:]')
+
+    # LOAD DATA INFILE reads arbitrary server-side files into a table
+    # LOAD DATA LOCAL INFILE reads client-side files (still dangerous)
+    if printf '%s' "$cmd_upper" | grep -qE '\bLOAD[[:space:]]+DATA\b.*\bINFILE\b'; then
+        printf 'deny:mysql LOAD DATA INFILE reads arbitrary files from the server filesystem — data exfiltration vector'
+        return 0
+    fi
+
+    # SELECT ... INTO OUTFILE / INTO DUMPFILE writes arbitrary server-side files
+    if printf '%s' "$cmd_upper" | grep -qE '\bINTO[[:space:]]+(OUTFILE|DUMPFILE)\b'; then
+        printf 'deny:mysql INTO OUTFILE/DUMPFILE writes arbitrary files on the server filesystem — can overwrite system files or create web shells'
+        return 0
+    fi
+
+    # SOURCE executes an external SQL file — arbitrary SQL file execution
+    # Matches: SOURCE /path/to/file.sql or \. /path/to/file.sql
+    if printf '%s' "$cmd_upper" | grep -qE '\bSOURCE\b[[:space:]]+\S'; then
+        printf 'deny:mysql SOURCE executes an external SQL file — arbitrary SQL file execution vector'
+        return 0
+    fi
+
+    printf 'safe:'
+    return 0
 }
 
+# ---------------------------------------------------------------------------
 # _db_check_sqlite3 COMMAND ENV
-# SQLite-specific handler stub
+#
+# SQLite-specific risk handler. Checks:
+#   1. Common SQL patterns via _db_classify_risk
+#   2. .shell / .system — execute arbitrary shell commands
+#   3. .import with pipe (| prefix) — executes a command as import source
+#   4. .restore — overwrites the current database from a backup file
+#
+# Returns: "<risk_level>:<reason>" (same format as _db_classify_risk)
+# ---------------------------------------------------------------------------
 _db_check_sqlite3() {
     local cmd="$1"
     local env="${2:-unknown}"
-    _db_classify_risk "$cmd" "sqlite3"
+
+    # Step 1: Common SQL patterns
+    local _common_risk
+    _common_risk=$(_db_classify_risk "$cmd" "sqlite3")
+    local _common_level="${_common_risk%%:*}"
+    if [[ "$_common_level" == "deny" || "$_common_level" == "advisory" ]]; then
+        printf '%s' "$_common_risk"
+        return 0
+    fi
+
+    # Step 2: SQLite dot-command shell escapes
+
+    # .shell and .system both execute arbitrary shell commands
+    if printf '%s' "$cmd" | grep -qE '\.(shell|system)[[:space:]]'; then
+        printf 'deny:sqlite3 .shell/.system dot-commands execute arbitrary shell commands — full shell escape from SQLite context'
+        return 0
+    fi
+
+    # .import with | prefix executes a command and imports its stdout as data
+    # Format: .import '| command args' tablename
+    if printf '%s' "$cmd" | grep -qE '\.import[[:space:]].*\|'; then
+        printf 'deny:sqlite3 .import with pipe executes a shell command to produce import data — code execution vector'
+        return 0
+    fi
+
+    # .restore overwrites the current database file from a backup
+    # Can be used to replace a known-good DB with a malicious one
+    if printf '%s' "$cmd" | grep -qE '\.restore\b'; then
+        printf 'deny:sqlite3 .restore overwrites the current database from a backup file — can replace DB contents irreversibly'
+        return 0
+    fi
+
+    printf 'safe:'
+    return 0
 }
 
+# ---------------------------------------------------------------------------
 # _db_check_redis COMMAND ENV
-# Redis-specific handler stub
+#
+# Redis-specific risk handler. Checks:
+#   1. Common Redis patterns via _db_classify_risk (FLUSHALL, FLUSHDB, etc.)
+#   2. EVAL / EVALSHA — execute arbitrary Lua scripts in the Redis runtime
+#   3. MODULE LOAD — loads a shared library with arbitrary C code
+#   4. DEBUG commands — debug sleep/reload/crash can harm server availability
+#
+# Returns: "<risk_level>:<reason>" (same format as _db_classify_risk)
+# ---------------------------------------------------------------------------
 _db_check_redis() {
     local cmd="$1"
     local env="${2:-unknown}"
-    _db_classify_risk "$cmd" "redis-cli"
+
+    # Step 1: Common Redis patterns (FLUSHALL, FLUSHDB, CONFIG SET, SHUTDOWN, DEL)
+    local _common_risk
+    _common_risk=$(_db_classify_risk "$cmd" "redis-cli")
+    local _common_level="${_common_risk%%:*}"
+    if [[ "$_common_level" == "deny" || "$_common_level" == "advisory" ]]; then
+        printf '%s' "$_common_risk"
+        return 0
+    fi
+
+    # Step 2: Redis-specific code execution vectors
+
+    local cmd_upper
+    cmd_upper=$(printf '%s' "$cmd" | tr '[:lower:]' '[:upper:]')
+
+    # EVAL executes arbitrary Lua scripts within the Redis runtime
+    # EVALSHA executes a cached Lua script by SHA hash
+    if printf '%s' "$cmd_upper" | grep -qE '\b(EVAL|EVALSHA)\b'; then
+        printf 'deny:redis EVAL/EVALSHA executes arbitrary Lua scripts in the Redis runtime — code execution vector with access to all Redis data'
+        return 0
+    fi
+
+    # MODULE LOAD loads a shared library (.so) into the Redis process
+    # Redis modules run with full server privileges and can execute arbitrary C code
+    if printf '%s' "$cmd_upper" | grep -qE '\bMODULE[[:space:]]+LOAD\b'; then
+        printf 'deny:redis MODULE LOAD loads a shared library into the Redis process — executes arbitrary C code with server privileges'
+        return 0
+    fi
+
+    # DEBUG commands can harm server availability (sleep, reload, crash, etc.)
+    if printf '%s' "$cmd_upper" | grep -qE '\bDEBUG\b'; then
+        printf 'deny:redis DEBUG command can cause server downtime (DEBUG sleep/reload/crash) or expose sensitive internals'
+        return 0
+    fi
+
+    printf 'safe:'
+    return 0
 }
 
+# ---------------------------------------------------------------------------
 # _db_check_mongo COMMAND ENV
-# MongoDB-specific handler stub
+#
+# MongoDB-specific risk handler. Checks:
+#   1. Common MongoDB patterns via _db_classify_risk (dropDatabase, drop, deleteMany)
+#   2. rs.reconfig() — reconfigures a replica set (can cause data loss / split-brain)
+#   3. sh.shardCollection() — shards a collection (irreversible schema operation)
+#
+# Returns: "<risk_level>:<reason>" (same format as _db_classify_risk)
+# ---------------------------------------------------------------------------
 _db_check_mongo() {
     local cmd="$1"
     local env="${2:-unknown}"
-    _db_classify_risk "$cmd" "mongosh"
+
+    # Step 1: Common MongoDB patterns (dropDatabase, drop, deleteMany, deleteOne)
+    local _common_risk
+    _common_risk=$(_db_classify_risk "$cmd" "mongosh")
+    local _common_level="${_common_risk%%:*}"
+    if [[ "$_common_level" == "deny" || "$_common_level" == "advisory" ]]; then
+        printf '%s' "$_common_risk"
+        return 0
+    fi
+
+    # Step 2: MongoDB cluster administration (destructive / irreversible operations)
+
+    # rs.reconfig() changes replica set membership — can cause data loss, split-brain,
+    # or make the replica set non-functional if done incorrectly
+    if printf '%s' "$cmd" | grep -qE 'rs\.reconfig\s*\('; then
+        printf 'deny:mongosh rs.reconfig() reconfigures the replica set — can cause data loss, split-brain, or replica set failure'
+        return 0
+    fi
+
+    # sh.shardCollection() shards a collection — irreversible and requires careful planning
+    if printf '%s' "$cmd" | grep -qE 'sh\.shardCollection\s*\('; then
+        printf 'deny:mongosh sh.shardCollection() shards a collection — irreversible operation requiring careful shard key planning'
+        return 0
+    fi
+
+    printf 'safe:'
+    return 0
+}
+
+# =============================================================================
+# WAVE 2A — Non-interactive TTY fail-safe (B3)
+#
+# @decision DEC-DBSAFE-006
+# @title TTY fail-safe: auto-deny destructive DB ops in non-interactive mode
+# @status accepted
+# @rationale AI agents execute commands non-interactively — stdin is a pipe, not a
+#   TTY. Human operators at a terminal get interactive confirmation prompts before
+#   destructive operations; agents bypass those prompts entirely. The ! -t 0 check
+#   identifies this case. When an agent pipes a destructive database command without
+#   a TTY, we auto-deny and route through Database Guardian (which requires explicit
+#   human approval). Advisory-level risks are not auto-denied in non-interactive mode
+#   because they are potentially recoverable and blocking them would be too disruptive
+#   for normal agent workflows (SELECTs, INSERTs, monitored DELETEs with WHERE, etc.).
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# _db_is_non_interactive
+#
+# Returns 0 (true) if stdin is NOT a TTY (non-interactive execution).
+# AI agents typically pipe commands, so ! -t 0 is true in agent contexts.
+# Human operators at a terminal have a TTY attached (! -t 0 is false).
+#
+# Usage: _db_is_non_interactive && echo "non-interactive"
+# ---------------------------------------------------------------------------
+_db_is_non_interactive() {
+    [[ ! -t 0 ]]
+}
+
+# ---------------------------------------------------------------------------
+# _db_check_tty RISK_LEVEL RISK_RESULT
+#
+# Checks if the current execution is non-interactive AND the risk level is deny.
+# If so, returns a deny string for the caller to act on.
+# Returns empty string if no TTY-based denial is warranted.
+#
+# Args:
+#   RISK_LEVEL  — "deny", "advisory", or "safe"
+#   RISK_RESULT — full "<level>:<reason>" string from classify_risk or per-CLI handler
+#
+# Returns: "deny:<reason>" if non-interactive + deny, else empty string.
+#
+# @decision DEC-DBSAFE-006 (see above)
+# ---------------------------------------------------------------------------
+_db_check_tty() {
+    local risk_level="$1"
+    local risk_result="$2"
+
+    # Only auto-deny for "deny" risk in non-interactive mode
+    # Advisory risks are allowed through with normal environment tiering
+    if [[ "$risk_level" == "deny" ]] && _db_is_non_interactive; then
+        local reason="${risk_result#*:}"
+        printf 'deny:Non-interactive execution detected. Destructive database operation blocked: %s. Run interactively or route through Database Guardian.' "$reason"
+        return 0
+    fi
+
+    # Safe or advisory, or interactive TTY — no TTY-based denial
+    printf ''
+    return 0
+}
+
+# =============================================================================
+# WAVE 2A — Forced safety flags (B4)
+#
+# @decision DEC-DBSAFE-007
+# @title Deny-with-correction pattern for missing CLI safety flags
+# @status accepted
+# @rationale psql's ON_ERROR_STOP=1 prevents partial execution when a multi-statement
+#   script encounters an error — without it, psql continues executing after an error,
+#   leaving the database in a partially-modified state. mysql's --safe-updates
+#   prevents unbounded UPDATE/DELETE (those without a WHERE clause or LIMIT) —
+#   without it, a typo can wipe an entire table. Both flags are standard operational
+#   best practices. The deny-with-correction pattern (same as Check 1 /tmp/ redirect
+#   and Check 3 --force-with-lease) provides the corrected command so the agent can
+#   immediately retry with the right flags instead of requiring manual intervention.
+#   NOTE: updatedInput is NOT supported in PreToolUse hooks (see DEC-GUARD-REWRITE-001),
+#   so the corrected command appears in the deny reason text, not as an auto-correction.
+#   One-liner commands (-c / -e flags) are exempt — ON_ERROR_STOP is less useful for
+#   single-statement executions and --safe-updates is session-scoped anyway.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# _db_inject_safety_flags COMMAND
+#
+# Checks if CLI-specific safety flags are present. If missing, returns
+# "deny:<corrected_command>" with the flag added to the command.
+# Returns empty string if flags are already present or CLI is exempt.
+#
+# Supported CLIs:
+#   psql  — requires -v ON_ERROR_STOP=1 (unless using -c one-liner)
+#   mysql — requires --safe-updates (unless using -e one-liner)
+#
+# Returns: "deny:<message_with_corrected_command>" or empty string
+# ---------------------------------------------------------------------------
+_db_inject_safety_flags() {
+    local cmd="$1"
+
+    # Only applies to psql and mysql
+    if printf '%s' "$cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(psql)([[:space:]]|$|;|&&|\|)'; then
+        # psql one-liner check: if -c flag is present, skip (single statement, less relevant)
+        if printf '%s' "$cmd" | grep -qE '\bpsql\b.*[[:space:]]-c[[:space:]]'; then
+            printf ''
+            return 0
+        fi
+
+        # Check if ON_ERROR_STOP is already present (flag or env var)
+        if printf '%s' "$cmd" | grep -qE 'ON_ERROR_STOP'; then
+            printf ''
+            return 0
+        fi
+
+        # Missing ON_ERROR_STOP — deny with corrected command
+        # Insert -v ON_ERROR_STOP=1 immediately after 'psql'
+        local corrected
+        corrected=$(printf '%s' "$cmd" | sed -E 's/(^|[[:space:]])(psql)([[:space:]]|$)/\1\2 -v ON_ERROR_STOP=1\3/')
+        printf 'deny:psql is missing -v ON_ERROR_STOP=1 (stops execution on first error, preventing partial script execution). Run instead: %s' "$corrected"
+        return 0
+    fi
+
+    if printf '%s' "$cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(mysql)([[:space:]]|$|;|&&|\|)'; then
+        # mysql one-liner check: if -e flag is present, skip (single statement)
+        if printf '%s' "$cmd" | grep -qE '\bmysql\b.*[[:space:]]-e[[:space:]]'; then
+            printf ''
+            return 0
+        fi
+
+        # Check if --safe-updates or its alias --i-am-a-dummy or --no-safe-updates is present
+        if printf '%s' "$cmd" | grep -qE '(--safe-updates|--i-am-a-dummy|--no-safe-updates)'; then
+            printf ''
+            return 0
+        fi
+
+        # Missing --safe-updates — deny with corrected command
+        local corrected
+        corrected=$(printf '%s' "$cmd" | sed -E 's/(^|[[:space:]])(mysql)([[:space:]]|$)/\1\2 --safe-updates\3/')
+        printf 'deny:mysql is missing --safe-updates (prevents unbounded UPDATE/DELETE without WHERE clause). Run instead: %s' "$corrected"
+        return 0
+    fi
+
+    # Not psql or mysql — no flag injection
+    printf ''
+    return 0
 }
 
 # =============================================================================

@@ -420,9 +420,13 @@ fi
 #   dev/local=advisory only. This section is placed before the git-early-exit gate
 #   so that database commands are checked even when they contain no git invocation.
 #
-# Each database CLI has its own check function in db-safety-lib.sh:
-#   _db_check_psql, _db_check_mysql, _db_check_sqlite3, _db_check_redis, _db_check_mongo
-# These stubs delegate to _db_classify_risk now; Wave 2 will add per-CLI validation.
+# Wave 2a additions (DEC-DBSAFE-004 through DEC-DBSAFE-007):
+#   - Per-CLI dispatch: psql→_db_check_psql, mysql→_db_check_mysql, etc.
+#     (each adds CLI-specific RCE/code-execution patterns on top of common patterns)
+#   - B3 TTY fail-safe: non-interactive + deny → hard deny regardless of env tier
+#     (agents pipe commands; _db_check_tty() catches agent-driven destructive ops)
+#   - B4 Safety flags: psql requires ON_ERROR_STOP=1, mysql requires --safe-updates
+#     (deny-with-correction pattern; applied after environment tiering for passthrough commands)
 #
 # @decision DEC-DBSAFE-002
 # @title Environment-tiered response: production=deny all, staging=deny destructive,
@@ -442,9 +446,28 @@ if echo "$_stripped_cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(psql|mysql|sq
     _DB_CLI=$(_db_detect_cli "$COMMAND")
     if [[ "$_DB_CLI" != "none" ]]; then
         _DB_ENV=$(_db_detect_environment)
-        _DB_RISK_RESULT=$(_db_classify_risk "$COMMAND" "$_DB_CLI")
+
+        # Wave 2a: dispatch to per-CLI handler instead of generic _db_classify_risk.
+        # Each handler calls _db_classify_risk first (common patterns), then adds
+        # CLI-specific RCE/code-execution checks (DEC-DBSAFE-004).
+        case "$_DB_CLI" in
+            psql)      _DB_RISK_RESULT=$(_db_check_psql "$COMMAND" "$_DB_ENV") ;;
+            mysql)     _DB_RISK_RESULT=$(_db_check_mysql "$COMMAND" "$_DB_ENV") ;;
+            sqlite3)   _DB_RISK_RESULT=$(_db_check_sqlite3 "$COMMAND" "$_DB_ENV") ;;
+            redis-cli) _DB_RISK_RESULT=$(_db_check_redis "$COMMAND" "$_DB_ENV") ;;
+            mongosh)   _DB_RISK_RESULT=$(_db_check_mongo "$COMMAND" "$_DB_ENV") ;;
+            *)         _DB_RISK_RESULT=$(_db_classify_risk "$COMMAND" "$_DB_CLI") ;;
+        esac
         _DB_RISK_LEVEL="${_DB_RISK_RESULT%%:*}"
         _DB_RISK_REASON="${_DB_RISK_RESULT#*:}"
+
+        # Wave 2a B3: TTY fail-safe — non-interactive + deny → hard deny regardless of env tier.
+        # AI agents pipe commands non-interactively, bypassing human confirmation prompts.
+        # This catch fires BEFORE environment tiering (DEC-DBSAFE-006).
+        _DB_TTY_DENY=$(_db_check_tty "$_DB_RISK_LEVEL" "$_DB_RISK_RESULT")
+        if [[ -n "$_DB_TTY_DENY" ]]; then
+            emit_deny "$(_db_format_deny "${_DB_TTY_DENY#deny:}" "Route through Database Guardian for human approval, or run interactively at a terminal.")"
+        fi
 
         # Environment-tiered response matrix (DEC-DBSAFE-002):
         #   production/unknown + deny     → hard deny
@@ -477,6 +500,18 @@ if echo "$_stripped_cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(psql|mysql|sq
                 # advisory + dev/local = allow silently
                 ;;
         esac
+
+        # Wave 2a B4: forced safety flags — applied for commands that passed environment tiering.
+        # Only fires for dev/local environments (production/staging are already denied above for
+        # risky commands; safe commands pass through and should still get flags enforced).
+        # For production/unknown commands that are safe-classified, also enforce flags.
+        # The deny-with-correction pattern routes the agent to add the required flags (DEC-DBSAFE-007).
+        if [[ "$_DB_RISK_LEVEL" == "safe" ]]; then
+            _DB_FLAG_DENY=$(_db_inject_safety_flags "$COMMAND")
+            if [[ -n "$_DB_FLAG_DENY" ]]; then
+                emit_deny "${_DB_FLAG_DENY#deny:}"
+            fi
+        fi
     fi
 fi
 
