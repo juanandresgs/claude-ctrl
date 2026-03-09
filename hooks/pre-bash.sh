@@ -90,6 +90,7 @@ if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
     declare_gate "proof-status-write" "Block agents writing verified to .proof-status" "deny"
     declare_gate "proof-status-delete" "Block deletion of .proof-status when active" "deny"
     declare_gate "worktree-rf-cwd" "rm -rf .worktrees/ CWD safety deny" "deny"
+    declare_gate "sqlite3-state-db" "Block direct sqlite3 access to state.db" "deny"
     declare_gate "git-early-exit" "Skip git-specific checks for non-git commands" "side-effect"
     declare_gate "main-sacred-commit" "No commits on main/master" "deny"
     declare_gate "force-push-safety" "Force push handling" "deny"
@@ -315,6 +316,29 @@ if echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+){1,2}.*\.w
             MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
             emit_deny "CWD safety: removing worktree directory requires safe CWD first. Run: cd \"$MAIN_WT\" && $COMMAND"
         fi
+    fi
+fi
+
+# --- Check DB-SAFE-A1: Block direct sqlite3 access to state.db ---
+# @decision DEC-DBSAFE-003
+# @title Block sqlite3 direct access to state.db via pre-bash.sh
+# @status accepted
+# @rationale Direct sqlite3 access to state.db bypasses all state management
+#   invariants (WAL checkpointing, schema migration guards, concurrent access
+#   safety, workflow isolation). The state_read()/state_update() API in
+#   state-lib.sh provides safe access. state-diag.sh provides sanctioned
+#   read-only diagnostic access. This gate fires before the git-early-exit so
+#   it catches sqlite3 commands that do not touch git at all.
+#   Pattern matches both "sqlite3 state/state.db" and "sqlite3 state.db"
+#   (bare filename) while leaving other database files unblocked.
+declare_gate "sqlite3-state-db" "Block direct sqlite3 access to state.db" "deny"
+if echo "$_stripped_cmd" | grep -qE '\bsqlite3\b'; then
+    # Extract the database path argument (first non-option arg after sqlite3)
+    _sqlite3_target=$(echo "$_stripped_cmd" | \
+        grep -oE '\bsqlite3\b[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[[:space:]]*[^[:space:]-][^[:space:]]*' | \
+        grep -oE '[^[:space:]]+$' || true)
+    if echo "$_sqlite3_target" | grep -qE '(state/state\.db|state\.db)$'; then
+        emit_deny "Direct sqlite3 access to state.db is blocked. Use state_read()/state_update() API in hooks, or state-diag.sh for diagnostics."
     fi
 fi
 

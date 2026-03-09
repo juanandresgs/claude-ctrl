@@ -47,12 +47,14 @@ source "$(dirname "$0")/source-lib.sh"
 #   require_session: write_statusline_cache (line 217), append_session_event (line 831)
 #   require_doc:     get_doc_freshness (line 394), DOC_STALE_COUNT, DOC_FRESHNESS_SUMMARY
 #   require_ci:      read_ci_status (line 758), format_ci_summary, has_github_actions
+#   require_state:   state_integrity_check (A4: DB integrity check after session backup)
 require_git
 require_plan
 require_trace
 require_session
 require_doc
 require_ci
+require_state
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
@@ -72,6 +74,30 @@ CONTEXT_PARTS=()
 if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
     _ORCH_SID_FILE="${CLAUDE_DIR}/.orchestrator-sid"
     printf '%s\n' "$CLAUDE_SESSION_ID" > "${_ORCH_SID_FILE}.tmp" && mv "${_ORCH_SID_FILE}.tmp" "$_ORCH_SID_FILE"
+fi
+
+# --- A3: state.db backup at session start ---
+# @decision DEC-DBSAFE-006
+# @title Create state.db backup at every session start before any hook reads state
+# @status accepted
+# @rationale The session-start backup provides a recovery window for corruption
+#   detected by state_integrity_check() (A4). By checkpointing WAL before copy,
+#   we ensure the backup is a consistent, fully-flushed snapshot. Overwriting the
+#   previous backup is intentional: only the most recent session's DB state is
+#   needed for recovery, and keeping multiple generations would grow storage
+#   unboundedly. The backup runs BEFORE any state reads so that integrity_check()
+#   can use a known-good baseline. Only runs if state.db exists and is non-empty.
+_STATE_DB_PATH="${CLAUDE_DIR}/state/state.db"
+_STATE_BAK_PATH="${_STATE_DB_PATH}.bak"
+if [[ -f "$_STATE_DB_PATH" && -s "$_STATE_DB_PATH" ]]; then
+    # Flush WAL to main DB file before copy to ensure consistent snapshot
+    sqlite3 "$_STATE_DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>/dev/null || true
+    cp "$_STATE_DB_PATH" "$_STATE_BAK_PATH" 2>/dev/null || true
+    # Run integrity check after backup; surface warnings if corrupted
+    _INTEGRITY_MSG=$(state_integrity_check 2>/dev/null || true)
+    if [[ -n "$_INTEGRITY_MSG" ]]; then
+        CONTEXT_PARTS+=("WARNING: state.db integrity issue: $_INTEGRITY_MSG")
+    fi
 fi
 
 # --- Fix 1: Read update status from previous session's check (one-shot display) ---

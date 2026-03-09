@@ -555,9 +555,84 @@ _legacy_state_read() {
     return 1
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Integrity Check and Recovery
+# ─────────────────────────────────────────────────────────────────────────────
+
+# state_integrity_check
+#   Run PRAGMA integrity_check against state.db.
+#   If the check fails, log the corruption and attempt to rebuild from .bak.
+#   Called from session-init.sh after the backup step (A3).
+#
+#   Recovery strategy:
+#   1. Run PRAGMA integrity_check
+#   2. If "ok" — return 0 silently
+#   3. If corrupted — log a warning
+#   4. If .bak exists — copy it over the corrupted db and re-verify
+#   5. Return 0 on success (recovered), 1 if unrecoverable
+#
+# @decision DEC-DBSAFE-005
+# @title state_integrity_check() with .bak recovery in state-lib.sh
+# @status accepted
+# @rationale SQLite databases can be silently corrupted by interrupted writes,
+#   OS crashes, or partial disk flushes. Detecting corruption at session start
+#   (after backup is created) provides a recovery window before any hooks read
+#   stale or corrupted state. The .bak file (written by session-init.sh before
+#   the first hook runs) is the recovery source — it represents the last known
+#   good state. If recovery fails (no .bak, or .bak also corrupted), the
+#   function returns 1 and logs — the caller (session-init.sh) surfaces this
+#   to the user as a CONTEXT warning.
+state_integrity_check() {
+    local db
+    db=$(_state_db_path)
+
+    # If DB doesn't exist yet, nothing to check
+    if [[ ! -f "$db" ]]; then
+        return 0
+    fi
+
+    local result
+    result=$(printf '.timeout 5000\nPRAGMA integrity_check;\n' | sqlite3 "$db" 2>/dev/null || echo "error")
+
+    if [[ "$result" == "ok" ]]; then
+        return 0
+    fi
+
+    # Corruption detected
+    log_info "STATE-INTEGRITY" "state.db integrity check failed: $result — attempting recovery from .bak"
+
+    local bak="${db}.bak"
+    if [[ ! -f "$bak" ]]; then
+        log_info "STATE-INTEGRITY" "No .bak file available for recovery — state.db is corrupted and unrecoverable"
+        echo "CORRUPT: state.db integrity check failed (no backup available). Manual intervention required."
+        return 1
+    fi
+
+    # Attempt recovery: copy .bak over the corrupted db
+    if cp "$bak" "$db" 2>/dev/null; then
+        # Re-verify the recovered DB
+        local recovered_result
+        recovered_result=$(printf '.timeout 5000\nPRAGMA integrity_check;\n' | sqlite3 "$db" 2>/dev/null || echo "error")
+        if [[ "$recovered_result" == "ok" ]]; then
+            log_info "STATE-INTEGRITY" "Recovery succeeded — state.db restored from .bak"
+            echo "RECOVERED: state.db was corrupted, successfully restored from backup."
+            return 0
+        else
+            log_info "STATE-INTEGRITY" "Recovery failed — .bak is also corrupted: $recovered_result"
+            echo "CORRUPT: state.db integrity check failed and .bak recovery failed. Manual intervention required."
+            return 1
+        fi
+    else
+        log_info "STATE-INTEGRITY" "Recovery failed — could not copy .bak to state.db"
+        echo "CORRUPT: state.db integrity check failed and backup copy failed. Manual intervention required."
+        return 1
+    fi
+}
+
 export -f workflow_id _state_sql _state_ensure_schema _state_db_path
 export -f state_update state_read state_cas state_delete
 export -f state_dir state_locks_dir
+export -f state_integrity_check
 export -f _legacy_state_update _legacy_state_read
 export -f _sql_escape _proof_ordinal
 

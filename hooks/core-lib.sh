@@ -135,6 +135,8 @@ _PROTECTED_STATE_FILES=(
     "proof.lock"         # state/locks/proof.lock
     "state.lock"         # state/locks/state.lock (no dot prefix)
     ".orchestrator-sid"  # Dispatch enforcement: orchestrator session marker
+    "state.db"           # SQLite state database — use state_read()/state_update() API
+    "state.db.bak"       # SQLite state backup — managed by session-init.sh
 )
 
 # is_protected_state_file FILEPATH

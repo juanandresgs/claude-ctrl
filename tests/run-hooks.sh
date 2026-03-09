@@ -108,6 +108,7 @@ _print_scope_usage() {
     echo "  gaps        — gaps-report.sh accountability report unit tests"
     echo "  concurrency — Concurrency and state management tests (Phase 1 locking, CAS, lattice, registry)"
     echo "  sqlite      — SQLite state operations (schema, CRUD, CAS, lattice, concurrency, injection)"
+    echo "  dbsafe-w1a  — DB safety Wave 1a: sqlite3 block, state-diag.sh, backup, integrity check"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
     echo "  validation  — Self-validation tests (version sentinels, consistency, bash -n preflight, hooks-gen)"
     echo "  lint        — Shellcheck lint scope: lint.sh behavior + shellcheck on hooks/*.sh, tests/*.sh, tests/lib/*.sh, scripts/*.sh (matches CI exactly)"
@@ -159,6 +160,7 @@ _scope_pattern() {
         gaps)        echo "gaps-report\.sh" ;;
         concurrency) echo "Concurrency and state management" ;;
         sqlite)      echo "SQLite state operations" ;;
+        dbsafe-w1a)  echo "DB safety Wave 1a" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
         lint)        echo "lint\.sh|shellcheck.*(hooks|tests|scripts)" ;;
         *)           echo "" ;;
@@ -2838,6 +2840,41 @@ fi
 fi # end: shellcheck scripts subsection
 
 echo ""
+
+# --- DB safety Wave 1a ---
+if should_run_section "DB safety Wave 1a"; then
+echo ""
+echo "--- DB safety Wave 1a (test-db-safety-w1a.sh) ---"
+
+_DBSAFE_TEST="$SCRIPT_DIR/test-db-safety-w1a.sh"
+if [[ ! -f "$_DBSAFE_TEST" ]]; then
+    skip "DB safety Wave 1a tests" "test-db-safety-w1a.sh not found at $_DBSAFE_TEST"
+elif ! command -v sqlite3 >/dev/null 2>&1; then
+    skip "DB safety Wave 1a tests" "sqlite3 not installed"
+else
+    _DBSAFE_OUTPUT=$(bash "$_DBSAFE_TEST" 2>/dev/null) || true
+    _DBSAFE_EXIT=$?
+    _DBSAFE_PASSED=$(echo "$_DBSAFE_OUTPUT" | grep -c "^  PASS$" 2>/dev/null || true)
+    _DBSAFE_FAILED=$(echo "$_DBSAFE_OUTPUT" | grep -c "^  FAIL:" 2>/dev/null || true)
+    _DBSAFE_TOTAL=$(echo "$_DBSAFE_OUTPUT" | grep -E "^Results:" | grep -oE "[0-9]+ total" | grep -oE "[0-9]+" || true)
+    _DBSAFE_PASSED="${_DBSAFE_PASSED//[[:space:]]/}"
+    _DBSAFE_FAILED="${_DBSAFE_FAILED//[[:space:]]/}"
+    _DBSAFE_TOTAL="${_DBSAFE_TOTAL//[[:space:]]/}"
+    _DBSAFE_PASSED="${_DBSAFE_PASSED:-0}"
+    _DBSAFE_FAILED="${_DBSAFE_FAILED:-0}"
+    _DBSAFE_TOTAL="${_DBSAFE_TOTAL:-0}"
+
+    if [[ "$_DBSAFE_FAILED" -eq 0 && "$_DBSAFE_EXIT" -eq 0 ]]; then
+        pass "DB safety Wave 1a — ${_DBSAFE_PASSED}/${_DBSAFE_TOTAL} tests passed"
+    else
+        _DBSAFE_FAIL_DETAILS=$(echo "$_DBSAFE_OUTPUT" | grep "^  FAIL:" | head -5 | tr '\n' '; ')
+        fail "DB safety Wave 1a" "${_DBSAFE_FAILED} failed (${_DBSAFE_PASSED}/${_DBSAFE_TOTAL} passed): ${_DBSAFE_FAIL_DETAILS}"
+        echo "$_DBSAFE_OUTPUT"
+    fi
+fi
+
+echo ""
+fi # end: dbsafe-w1a
 
 # --- SQLite state operations ---
 if should_run_section "SQLite state operations"; then
