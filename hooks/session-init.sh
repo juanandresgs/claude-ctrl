@@ -943,6 +943,10 @@ if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
                 tail -1 || true)
     if [[ -n "$_GOV_LAST" ]]; then
         _GOV_DATE=$(echo "$_GOV_LAST" | jq -r '.started_at // ""' 2>/dev/null | cut -c1-10)
+        # Null guard: jq -r emits the string "null" when the field is JSON null,
+        # and cut produces an empty string when input is empty. Normalise both
+        # to an empty string so downstream checks are consistent.
+        [[ -z "$_GOV_DATE" || "$_GOV_DATE" == "null" ]] && _GOV_DATE=""
         _GOV_VERDICT=$(echo "$_GOV_LAST" | jq -r '.outcome // "unknown"' 2>/dev/null)
         _GOV_TRACE_ID=$(echo "$_GOV_LAST" | jq -r '.trace_id // ""' 2>/dev/null)
         # Calculate days since last pulse
@@ -955,13 +959,20 @@ if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
                 _GOV_DAYS_AGO=$(( (_NOW_EPOCH - _GOV_EPOCH) / 86400 ))
             fi
         fi
-        _GOV_LINE="Last governor pulse: ${_GOV_DATE}"
+        if [[ -n "$_GOV_DATE" ]]; then
+            _GOV_LINE="Last governor pulse: ${_GOV_DATE}"
+        else
+            _GOV_LINE="Last governor pulse: date unknown"
+        fi
         [[ -n "$_GOV_DAYS_AGO" ]] && _GOV_LINE="${_GOV_LINE} (${_GOV_DAYS_AGO}d ago)"
         _GOV_LINE="${_GOV_LINE}, verdict=${_GOV_VERDICT}"
         CONTEXT_PARTS+=("$_GOV_LINE")
-        # Recommend pulse if >7 days for meta-infrastructure
+        # Recommend pulse if >7 days or date unknown for meta-infrastructure.
+        # An unknown date means we cannot confirm recency, so we recommend one.
         if [[ "$PROJECT_ROOT" == "$HOME/.claude" || "$PROJECT_ROOT" == "${HOME}/.claude" ]]; then
-            if [[ -n "$_GOV_DAYS_AGO" && "$_GOV_DAYS_AGO" -gt 7 ]]; then
+            if [[ -z "$_GOV_DATE" ]]; then
+                CONTEXT_PARTS+=("Governor pulse recommended: last pulse date unknown (meta-infrastructure, target: weekly).")
+            elif [[ -n "$_GOV_DAYS_AGO" && "$_GOV_DAYS_AGO" -gt 7 ]]; then
                 CONTEXT_PARTS+=("Governor pulse recommended: last pulse was ${_GOV_DAYS_AGO} days ago (meta-infrastructure, target: weekly).")
             fi
         fi
