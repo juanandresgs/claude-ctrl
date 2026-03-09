@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `feature/governor-wiring`: Wire mechanical governor triggers — check-planner.sh emits GOVERNOR ADVISORY when planner returns multi-wave initiatives, session-init.sh surfaces last governor pulse timestamp and verdict at session start with staleness warnings for meta-infrastructure, reckoning SKILL.md Phase 2e dispatches governor in reckoning-input mode for structured health assessment (DEC-GOV-WIRE-002, DEC-GOV-WIRE-003), 42 tests
 - `initiative/governance-efficiency`: Governance Efficiency initiative added to MASTER_PLAN.md — targeted signal noise reduction, caching, and deduplication to address 60-310% governance token overhead on easy tasks; 2-wave plan (W1: advisory demotions + caching, W2: cross-hook deduplication), 7 P0 requirements with safety invariants, 5 architectural decisions (DEC-EFF-001 through DEC-EFF-005), issues #208 and #209
 
 ### Fixed
