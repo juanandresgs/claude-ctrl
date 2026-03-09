@@ -149,6 +149,7 @@ cache_initiative=""
 cache_phase=""
 cache_active_inits=0
 cache_total_phases=0
+cache_session_label=""
 
 # @decision DEC-TODO-SPLIT-002
 # @title Read todo_project/todo_global from cache with -1 sentinel for absent fields
@@ -175,13 +176,14 @@ if [[ -f "$CACHE_FILE" ]]; then
     (.initiative // ""),
     (.phase // ""),
     (.active_initiatives // 0 | tostring),
-    (.total_phases // 0 | tostring)
+    (.total_phases // 0 | tostring),
+    (.session_label // "")
   ] | join("\u001f")' "$CACHE_FILE" 2>/dev/null \
-    || printf '0\x1f0\x1f0\x1f\x1f-1\x1f-1\x1f0\x1f0\x1f0\x1f\x1f\x1f0\x1f0')
+    || printf '0\x1f0\x1f0\x1f\x1f-1\x1f-1\x1f0\x1f0\x1f0\x1f\x1f\x1f0\x1f0\x1f')
   IFS=$'\x1f' read -r cache_dirty cache_wt cache_agents cache_agents_types \
     cache_todo_project cache_todo_global cache_lifetime_cost cache_lifetime_tokens \
     cache_subagent_tokens cache_initiative cache_phase \
-    cache_active_inits cache_total_phases <<< "$cache_vars"
+    cache_active_inits cache_total_phases cache_session_label <<< "$cache_vars"
 fi
 
 # ---------------------------------------------------------------------------
@@ -485,7 +487,13 @@ if (( total_input > 0 && cache_read > 0 )); then
 fi
 
 # ---------------------------------------------------------------------------
-# LINE 3 (bottom): Initiative highlight bar (conditional — only when active initiative exists)
+# LINE 3 (bottom): Session label (when agent active) OR initiative banner
+#
+# Priority:
+#   1. cache_session_label non-empty → show worktree/description for THIS session
+#   2. cache_initiative non-empty    → show initiative + phase (current behavior)
+#   3. Both empty                    → Line 3 omitted (2-line fallback)
+#
 # @decision DEC-STATUSLINE-003
 # @title Full initiative banner as bottom highlight bar (Line 3)
 # @status accepted
@@ -501,9 +509,24 @@ fi
 # Line 3 is omitted and output stays 2 lines (backward compatible).
 # When multiple initiatives are active, "(+N more)" suffix is appended.
 # Color: bold cyan — visually prominent but not alarming.
+#
+# @decision DEC-SESSION-LABEL-003
+# @title Prefer session_label over initiative on Line 3 when agent is dispatched
+# @status accepted
+# @rationale When multiple Claude Code sessions run concurrently on the same project,
+# all sessions show the same MASTER_PLAN.md initiative on Line 3. The session_label
+# (worktree name or agent description) is session-specific — written into the per-session
+# cache file by write_statusline_cache() via get_subagent_status(). Showing the label
+# instead of the initiative lets the user identify which session is doing what at a glance.
+# Fallback to initiative preserves backward compatibility when no agent is dispatched.
+# Color is identical (bold cyan) — no new visual language introduced.
 # ---------------------------------------------------------------------------
 line0=""
-if [[ -n "$cache_initiative" ]]; then
+if [[ -n "$cache_session_label" ]]; then
+  # Session-specific label: worktree name or agent description for this dispatch.
+  # Displayed as bold cyan — same visual weight as initiative, distinct content.
+  line0=$(printf '\033[1;36m%s\033[0m' "$cache_session_label")
+elif [[ -n "$cache_initiative" ]]; then
   _banner="$cache_initiative"
 
   # Extract phase number and title from "#### Phase N: Title -- Subtitle"

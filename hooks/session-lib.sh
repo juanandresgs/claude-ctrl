@@ -72,6 +72,16 @@ write_statusline_cache() {
     # session costs from .session-cost-history (REQ-P1-001). lifetime_tokens is the
     # running sum of all session tokens from .session-token-history (DEC-LIFETIME-TOKENS-003).
     # All fields default to 0 when not set so the cache is always valid JSON.
+    #
+    # @decision DEC-SESSION-LABEL-002
+    # @title Add session_label field to statusline cache for per-session Line 3 display
+    # @status accepted
+    # @rationale Concurrent sessions all read the same MASTER_PLAN.md initiative, so
+    # Line 3 is identical for all sessions. The session_label field carries the per-session
+    # context (worktree name or agent description) from get_subagent_status() into the
+    # per-session cache file. statusline.sh prefers session_label over initiative when
+    # present, giving each session a unique Line 3. Empty string when no agents active
+    # — statusline falls back to initiative display (backward compatible).
     local tmp_cache="${cache_file}.tmp.$$"
     jq -n \
         --arg dirty "${GIT_DIRTY_COUNT:-0}" \
@@ -88,7 +98,8 @@ write_statusline_cache() {
         --arg phase "${PLAN_IN_PROGRESS_PHASE:-}" \
         --arg active_initiatives "${PLAN_ACTIVE_INITIATIVES:-0}" \
         --arg total_phases "${PLAN_TOTAL_PHASES:-0}" \
-        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber),todo_project:($todo_project|tonumber),todo_global:($todo_global|tonumber),lifetime_cost:($lifetime_cost|tonumber),lifetime_tokens:($lifetime_tokens|tonumber),initiative:$initiative,phase:$phase,active_initiatives:($active_initiatives|tonumber),total_phases:($total_phases|tonumber)}' \
+        --arg session_label "${SUBAGENT_ACTIVE_LABEL:-}" \
+        '{dirty:($dirty|tonumber),worktrees:($wt|tonumber),updated:($ts|tonumber),agents_active:($sa_count|tonumber),agents_types:$sa_types,agents_total:($sa_total|tonumber),todo_project:($todo_project|tonumber),todo_global:($todo_global|tonumber),lifetime_cost:($lifetime_cost|tonumber),lifetime_tokens:($lifetime_tokens|tonumber),initiative:$initiative,phase:$phase,active_initiatives:($active_initiatives|tonumber),total_phases:($total_phases|tonumber),session_label:$session_label}' \
         > "$tmp_cache" && mv "$tmp_cache" "$cache_file"
 }
 
@@ -113,12 +124,28 @@ write_statusline_cache() {
 # $$ (current PID) is the fallback for environments without it.
 
 track_subagent_start() {
-    local root="$1" agent_type="$2"
+    local root="$1" agent_type="$2" session_label="${3:-}"
     local tracker="$root/.claude/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
     mkdir -p "$root/.claude"
 
-    # Append start record (line-based for simplicity and atomicity)
-    echo "ACTIVE|${agent_type}|$(date +%s)" >> "$tracker"
+    # Append start record: 4-field format when label provided, 3-field otherwise (backward compat).
+    # Format: ACTIVE|<type>|<epoch>|<label>  or  ACTIVE|<type>|<epoch>
+    #
+    # @decision DEC-SESSION-LABEL-001
+    # @title Extend tracker record to 4-field format with optional session label
+    # @status accepted
+    # @rationale When multiple Claude Code sessions run concurrently on the same project,
+    #   Line 3 of the statusline shows the same initiative for all sessions. Adding a
+    #   session-specific label (worktree name or agent description) to the tracker lets
+    #   write_statusline_cache() propagate it into the cache, which statusline.sh then
+    #   prefers over the initiative. This gives each session a unique, meaningful Line 3.
+    #   3-field records (no label) continue to work — get_subagent_status() treats the
+    #   missing field as an empty label and falls back to initiative display.
+    if [[ -n "$session_label" ]]; then
+        echo "ACTIVE|${agent_type}|$(date +%s)|${session_label}" >> "$tracker"
+    else
+        echo "ACTIVE|${agent_type}|$(date +%s)" >> "$tracker"
+    fi
     type state_update &>/dev/null && state_update ".agents.${agent_type}.status" "active" "track_subagent_start" || true
 }
 
@@ -133,8 +160,11 @@ track_subagent_stop() {
     local found=false
     while IFS= read -r line; do
         if [[ "$found" == "false" && "$line" == "ACTIVE|${agent_type}|"* ]]; then
-            # Convert to DONE record
-            local start_epoch="${line##*|}"
+            # Convert to DONE record.
+            # Extract epoch from field 3 (not last field — 4-field records have a label as field 4).
+            # Format: ACTIVE|<type>|<epoch>  or  ACTIVE|<type>|<epoch>|<label>
+            local start_epoch
+            start_epoch=$(echo "$line" | cut -d'|' -f3)
             local now_epoch
             now_epoch=$(date +%s)
             local duration=$((now_epoch - start_epoch))
@@ -162,6 +192,7 @@ get_subagent_status() {
     SUBAGENT_ACTIVE_COUNT=0
     SUBAGENT_ACTIVE_TYPES=""
     SUBAGENT_TOTAL_COUNT=0
+    SUBAGENT_ACTIVE_LABEL=""
 
     [[ ! -f "$tracker" ]] && return
 
@@ -180,6 +211,15 @@ get_subagent_status() {
 
     # Total = active + done
     SUBAGENT_TOTAL_COUNT=$(wc -l < "$tracker" 2>/dev/null | tr -d ' ')
+
+    # Session label: take the 4th field from the LAST active entry (most recently dispatched).
+    # 4-field format: ACTIVE|<type>|<epoch>|<label>
+    # 3-field format: ACTIVE|<type>|<epoch>  — field 4 is absent → label stays empty.
+    # Prefer the last active entry so concurrent sessions show the most recent dispatch.
+    # Backward compatible: old 3-field records produce empty label → statusline falls back to initiative.
+    local _last_active_label
+    _last_active_label=$(grep '^ACTIVE|' "$tracker" 2>/dev/null | tail -1 | cut -d'|' -f4 || echo "")
+    SUBAGENT_ACTIVE_LABEL="${_last_active_label:-}"
 }
 
 # --- Session event log ---

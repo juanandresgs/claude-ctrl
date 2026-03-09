@@ -29,8 +29,30 @@ AGENT_TYPE="${AGENT_TYPE:-unknown}"
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
-# Track spawn (subagent-start.sh handles git/plan state and statusline cache)
-track_subagent_start "$PROJECT_ROOT" "$AGENT_TYPE"
+# Extract session label: worktree name from prompt (preferred) or agent description.
+# This gives each concurrent session a unique Line 3 in the statusline.
+#
+# @decision DEC-SESSION-LABEL-004
+# @title Extract session label at dispatch time in task-track.sh
+# @status accepted
+# @rationale task-track.sh fires PreToolUse:Task|Agent, giving it full access to the
+# dispatch payload (tool_input.description, tool_input.prompt). The worktree name is
+# the most useful identifier — it's unique per-feature and human-readable. The
+# description is the fallback for dispatches without an explicit worktree. Extracted
+# once at dispatch time and stored in the tracker; every subsequent cache refresh
+# preserves it until the agent stops.
+_AGENT_DESC=$(get_field '.tool_input.description' 2>/dev/null || echo "")
+_AGENT_PROMPT=$(get_field '.tool_input.prompt' 2>/dev/null || echo "")
+_SESSION_LABEL=""
+# Extract worktree name from prompt: matches .worktrees/NAME or .worktrees/NAME/
+if [[ "$_AGENT_PROMPT" =~ \.worktrees/([^/[:space:]]+) ]]; then
+    _SESSION_LABEL="${BASH_REMATCH[1]}"
+fi
+# Fall back to agent description when no worktree found in prompt
+_SESSION_LABEL="${_SESSION_LABEL:-$_AGENT_DESC}"
+
+# Track spawn — pass session label so statusline can show per-session context on Line 3
+track_subagent_start "$PROJECT_ROOT" "$AGENT_TYPE" "$_SESSION_LABEL"
 
 # In scan mode: emit all gate declarations and exit cleanly.
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
