@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `housekeeping/plan-maintenance`: MASTER_PLAN.md housekeeping batch — close Prompt Purpose Restoration and Governance Signal Audit initiatives (moved to Completed with narratives), add RSM completed summary, fix Created date and architecture counts, add 15 Decision Log entries (DEC-RECK-010 through DEC-RECK-016 and others)
+- `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - `feature/dual-color-bar`: Dual-color context pressure bar — statusline now renders three visual regions (system overhead in dim, conversation usage in severity-colored, empty space), with fingerprint-based baseline capture and invalidation on compaction or config drift (DEC-DUALBAR-001, DEC-DUALBAR-002)
 - `docs/readme-mermaid-and-polish`: Replace ASCII pipeline diagram in README.md with Mermaid flowchart; move DEC-ARCH-001 @decision in ARCHITECTURE.md to HTML comment (still grepable, invisible when rendered)
 - `feature/slim-agents`: Slim all 4 agent prompts — remove shared-protocol boilerplate (CWD safety, trace protocol, return message, session-end checklist) now injected at dispatch time via subagent-start.sh; strengthen purpose language at top of each prompt; Guardian gains Merge Presentation section and AUTO-VERIFY-APPROVED bypass; 1,481 to 1,320 lines total (#146)
@@ -49,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/fix-dispatch-integrity`: Restore dispatch protocol integrity after Task-to-Agent rename — migrate all test fixtures/scripts from Task to Agent tool name, remove non-existent max_turns parameter, add Gate D (plan vs planner advisory) and Gate E (worktree isolation advisory) to task-track.sh, add tool-name canary to session-init.sh for future rename detection, add Wave Dispatch section to DISPATCH.md, update turn budget docs to prompt-based
 
 ### Changed
+- `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - `feature/impl-perf-fixes`: Remove CYCLE_MODE auto-flow entirely (orchestrator controls cycle with visible dispatches); slim implementer.md 289->223 lines by removing hook-enforced redundancies; fix subagent token cache path to session-scoped; raise stale marker threshold 15min->60min; add TEST_SCOPE signal for proportional testing
 - `feature/rsm-phase3`: Unified state directory with dual-write migration — `state_dir()` in state-lib.sh provides `state/{phash}/` per-project directories; proof-status, test-status, and session hooks migrated to state directories with backward-compatible fallback reads from legacy dotfile paths; breadcrumb system retired; 50+ new state directory migration tests (DEC-RSM-STATEDIR-001, DEC-RSM-STATEDIR-TEST-001)
 - `feature/fix-subagent-latency`: Subagent latency remediation — deduplicate dispatch work in task-track.sh (early exit for non-gated agents, remove duplicate require_* calls); cap trace scanning loops (10 manifest, 5 tertiary fallback, combined jq @tsv calls); merge token tracking into check-*.sh hooks (track_agent_tokens() in session-lib.sh, delete standalone track-agent-tokens.sh + SubagentStop hook entry)
@@ -145,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARCHITECTURE.md comprehensive technical reference (this release)
 
 ### Changed
+- `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - `feature/statusline-data`: Phase 2 data pipeline — todo split display (`todos: 3p 7g` with project/global counts), session cost persistence to `.session-cost-history`, lifetime cost annotation (`Σ~$12.40`) next to session cost; +9 new tests (48 total dedicated) (#72)
 - `feature/statusline-rendering`: Statusline rendering overhaul — domain-clustered labels (`dirty:`, `wt:`, `agents:`, `todos:`), aggregate token segment with K/M notation, `~$` cost prefix; +12 new tests (39 total dedicated)
 - `feature/statusline-redesign`: Two-line status HUD — line 1 shows project context (model, workspace, dirty files, worktrees, agents, todos), line 2 shows session metrics (context window bar, cost, duration, lines changed, cache efficiency); removed plan phase, test status, community segment, version, and stale worktree detection from statusline; 26 new dedicated tests
@@ -227,6 +231,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Test harness auto-update system
 
 ### Changed
+- `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - Promoted 16 safe utilities to global allow list in `settings.json`
 - Removed LLM review hook (external command review discontinued)
 - Removed version system in favor of git tags

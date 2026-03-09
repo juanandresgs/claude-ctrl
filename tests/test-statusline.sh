@@ -59,7 +59,7 @@ run_statusline() {
         home_dir="$tmpdir"
     fi
     local result
-    result=$(printf '%s' "$json" | HOME="$home_dir" bash "$STATUSLINE" 2>/dev/null)
+    result=$(printf '%s' "$json" | HOME="$home_dir" COLUMNS=200 bash "$STATUSLINE" 2>/dev/null)
     [[ -n "$tmpdir" ]] && rm -rf "$tmpdir"
     printf '%s' "$result"
 }
@@ -1277,9 +1277,9 @@ test_responsive_line1_narrow_drops_todos() {
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
     if [[ "$line1" != *"todos:"* ]]; then
-        pass_test "Responsive: COLUMNS=55 drops todos (term_w=60 floor, workspace+other segs exceed 60)"
+        pass_test "Responsive: COLUMNS=55 drops todos (term_w=60 after TERMWIDTH-003 floor)"
     else
-        fail_test "Responsive: todos still visible at COLUMNS=55 (should be dropped at term_w=60)" "line1=$line1"
+        fail_test "Responsive: todos should be dropped at COLUMNS=55 (term_w=60)" "line1=$line1"
     fi
 }
 
@@ -1308,9 +1308,9 @@ test_responsive_line2_narrow_drops_lines_changed() {
     local line2
     line2=$(extract_line "$output" 2 | strip_ansi)
     if [[ "$line2" != *"+42"* ]]; then
-        pass_test "Responsive: COLUMNS=75 drops +N/-N lines (term_w=60 floor, priority-8 segment dropped)"
+        pass_test "Responsive: COLUMNS=75 drops +N/-N lines (term_w=10 after TERMWIDTH-003 subtraction)"
     else
-        fail_test "Responsive: +42 still visible at COLUMNS=75 (should be dropped at term_w=60)" "line2=$line2"
+        fail_test "Responsive: +42 should be dropped at COLUMNS=75 (term_w=10)" "line2=$line2"
     fi
 }
 
@@ -1545,7 +1545,7 @@ run_sl_raw_line2() {
 
 test_dual_color_bar_shows_both_block_types() {
     # baseline=20 (2 system blocks), total=60 (7 filled total -> 5 conversation blocks)
-    # bar should contain HEAVY SHADE (U+2593) AND FULL BLOCK (U+2588)
+    # Both system and conversation now use FULL BLOCK (U+2588); distinguished by color only.
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
@@ -1555,21 +1555,23 @@ test_dual_color_bar_shows_both_block_types() {
 
     local json
     json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":60}}' "$tmpdir")
-    local raw_line2
+    local raw_line2 raw_line2_ansi
     raw_line2=$(run_sl_raw_line2 "$json" "$tmpdir" | sed 's/\x1b\[[0-9;]*m//g')
+    raw_line2_ansi=$(run_sl_raw_line2 "$json" "$tmpdir")
 
-    # 20% baseline -> floor(20*12/100)=2 system blocks (heavy shade char)
-    # 60% total -> floor(60*12/100)=7 filled; conversation=7-2=5 blocks (full block char)
-    if [[ "$raw_line2" == *$'\xe2\x96\x93'* ]] && [[ "$raw_line2" == *$'\xe2\x96\x88'* ]]; then
-        pass_test "Dual-color bar: baseline=20 total=60 shows both system (heavy shade) and conversation (full block) blocks"
+    # 20% baseline -> floor(20*12/100)=2 system blocks (full block, dim)
+    # 60% total -> floor(60*12/100)=7 filled; conversation=7-2=5 blocks (full block, severity color)
+    # Verify: bar contains full block chars AND dim ANSI code (ESC[2m) for system region
+    if [[ "$raw_line2" == *$'\xe2\x96\x88'* ]] && printf '%s' "$raw_line2_ansi" | grep -qF $'\033[2m'; then
+        pass_test "Dual-color bar: baseline=20 total=60 shows full-block chars with dim code for system region"
     else
-        fail_test "Dual-color bar: expected both heavy-shade and full-block chars in bar" "raw_line2=$raw_line2"
+        fail_test "Dual-color bar: expected full-block chars and dim ANSI code in bar" "raw_line2=$raw_line2"
     fi
 }
 
 test_dual_color_bar_system_uses_dim_color() {
-    # System blocks should be preceded by a cyan ANSI code (ESC[36m).
-    # The bar renders: bold-cyan bracket, cyan system blocks, severity conv blocks, dim empty blocks.
+    # System blocks should be preceded by a dim ANSI code (ESC[2m).
+    # The bar renders: dim bracket+system blocks, severity conversation blocks, dim empty+bracket.
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
@@ -1582,12 +1584,12 @@ test_dual_color_bar_system_uses_dim_color() {
     local raw_line2
     raw_line2=$(run_sl_raw_line2 "$json" "$tmpdir")
 
-    # The dual-color bar renders cyan code (ESC[36m) for system (heavy-shade) blocks.
-    # Check that ESC[36m appears in the bar output.
-    if printf '%s' "$raw_line2" | grep -qF $'\033[36m'; then
-        pass_test "Dual-color bar: cyan color code (ESC[36m) present in bar output for system blocks"
+    # The dual-color bar renders dim code (ESC[2m) for system (full-block) region.
+    # Check that ESC[2m appears in the bar output.
+    if printf '%s' "$raw_line2" | grep -qF $'\033[2m'; then
+        pass_test "Dual-color bar: dim color code (ESC[2m) present in bar output for system blocks"
     else
-        fail_test "Dual-color bar: no cyan ANSI code (ESC[36m) found in bar output" \
+        fail_test "Dual-color bar: no dim ANSI code (ESC[2m) found in bar output" \
             "visible: $(printf '%s' "$raw_line2" | sed 's/\x1b\[[0-9;]*m//g')"
     fi
 }

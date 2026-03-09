@@ -15,17 +15,17 @@
 **Type:** meta-infrastructure
 **Languages:** Bash (85%), Markdown (10%), JSON/Python (5%)
 **Root:** `/Users/turla/.claude`
-**Created:** 2026-03-07
-**Last updated:** 2026-03-07
+**Created:** 2026-02-06
+**Last updated:** 2026-03-09
 
 The Claude Code configuration directory that shapes how Claude Code operates across all projects. It enforces development practices via hooks (deterministic shell scripts intercepting every tool call), four specialized agents (Planner, Implementer, Tester, Guardian), skills, and session instructions. Instructions guide; hooks enforce.
 
 ## Architecture
 
 ```
-hooks/              — 24 hook scripts + 9 shared libraries; deterministic enforcement layer
-agents/             — 4 agent prompt definitions (planner, implementer, tester, guardian)
-skills/             — 7 skill directories (deep-research, decide, consume-content, etc.)
+hooks/              — 26 hook scripts + 9 shared libraries; deterministic enforcement layer
+agents/             — 5 agent prompt definitions (planner, implementer, tester, guardian, governor)
+skills/             — 13 skill directories (deep-research, decide, reckoning, consume-content, etc.)
 commands/           — Slash commands (/compact, /backlog); lightweight, no context fork
 scripts/            — Utility scripts (statusline, worktree-roster, batch-fetch, etc.)
 templates/          — MASTER_PLAN.md and initiative-block templates for Planner
@@ -143,293 +143,25 @@ project's institutional memory.
 | 2026-03-09 | DEC-GOV-003 | governor-subagent | Orchestrator instruction-based dispatch via DISPATCH.md | Follows existing auto-dispatch pattern; hook-based auto-dispatch is P2 upgrade path |
 | 2026-03-09 | DEC-GOV-004 | governor-subagent | Bidirectional reckoning relationship — governor consumes AND provides | Governor reads recent reckoning verdict/trajectory; writes structured assessments for reckoning Phase 2 |
 | 2026-03-09 | DEC-GOV-005 | governor-subagent | Read-only tools (Read, Grep, Glob) plus trace artifact writes | Enforces governor role — evaluates and reports, never acts; prevents scope creep |
+| 2026-03-08 | DEC-LIFETIME-PERSIST-001 | statusline-ia | Read existing cache lifetime fields as fallback defaults in write_statusline_cache | write_statusline_cache() called from 7 hooks but only session-init.sh computes lifetime values; other callers were zeroing them out |
+| 2026-03-08 | DEC-PROJECT-TOKEN-HISTORY-001 | statusline-ia | Add project_hash and project_name as columns 6+7 of .session-token-history | All sessions accumulated into one history; per-project columns enable project-scoped lifetime cost |
+| 2026-03-08 | DEC-NO-TRIM-001 | statusline-ia | Remove 100-line trim from session history files | Each entry ~80 bytes; 10,000 entries (3 years) is under 1MB; trim caused data loss |
+| 2026-03-09 | DEC-DUALBAR-001 | statusline-ia | Dual-color context bar: system overhead (dim) + conversation (severity-colored) | Single-color bar conflates system overhead with conversation usage; dual-color separates them |
+| 2026-03-09 | DEC-DUALBAR-002 | statusline-ia | Baseline fingerprint: hash of config mtimes + model for invalidation | System overhead percentage needs recalculation when config changes; fingerprint detects drift |
+| 2026-03-09 | DEC-DISPATCH-004 | dispatch-enforcement | Simple Task Fast Path for ≤2-file fixes | Orchestrator can handle trivial fixes (≤2 files, no new tests) directly without implementer dispatch; reduces overhead on easy tasks |
+| 2026-03-09 | DEC-DISPATCH-005 | dispatch-enforcement | Interface Contracts and consumer-first pattern for multi-file features | Implementer defines interfaces in consumer code first, then implements providers; prevents integration surprises |
+| 2026-03-09 | DEC-PROMPT-004 | prompt-restoration | Close initiative: 30-40% reduction target structurally unrealistic | shared-protocols supplements, doesn't replace; value delivered: Cornerstone Belief, What Matters, purpose-sandwich |
+| 2026-03-09 | DEC-RECK-010 | reckoning-ops | Batch housekeeping: fix all 5 plan maintenance items | Breaks selectivity bias; one commit clears 5 persistent reckoning findings |
+| 2026-03-09 | DEC-RECK-011 | reckoning-ops | Governance self-bypass: record and prevent | Simple Task Fast Path + Interface Contracts committed to main without worktrees; record and strengthen hooks |
+| 2026-03-09 | DEC-RECK-012 | reckoning-ops | Structured issue triage session | 105 open issues; dedicate one session to close/park/refine |
+| 2026-03-09 | DEC-RECK-013 | governance-audit | Close initiative — W1 delivered the value | Signal map + 7 proposals are the deliverable; W2 is busywork |
+| 2026-03-09 | DEC-RECK-014 | reckoning-ops | Next strategic: Governance Efficiency | Directly addresses 60-310% overhead benchmark finding; 7 signal map proposals are starting point |
+| 2026-03-09 | DEC-RECK-015 | reckoning-ops | Reckoning cadence: per-initiative boundaries | Natural checkpoint; enough time for findings to be acted on; typically every 1-2 weeks |
+| 2026-03-09 | DEC-RECK-016 | reckoning-ops | Cap recursive evaluation at 3 layers, measure convergence | No new evaluative infrastructure until observatory+reckoning+governor prove value |
 
 ---
 
 ## Active Initiatives
-
-### Initiative: Prompt Purpose Restoration
-**Status:** active
-**Started:** 2026-03-07
-**Goal:** Restore the purpose-to-enforcement ratio in prompts so the model produces deep, purposeful work instead of perfunctory compliance.
-
-> The configuration harness drifted from a 1:1 purpose-to-enforcement ratio (v21, 255-line CLAUDE.md with rich conviction language) to a 5.7:1 enforcement-heavy state (v30, 149 procedurally-dense lines). Agent prompts grew 7.3x (269 to 1,472 lines) with defensive boilerplate repeated across all four agents. Easy-task success dropped from 100% to 67%. This initiative restores the soul: purpose-sandwich CLAUDE.md, shared defensive protocols injected at dispatch time, and slimmed agent prompts that lead with purpose.
-
-**Dominant Constraint:** simplicity
-
-#### Goals
-- REQ-GOAL-001: Restore purpose-to-enforcement ratio in CLAUDE.md to approximately 1:1 (from 5.7:1)
-- REQ-GOAL-002: Reduce agent prompt total line count by ~40% by extracting shared defensive boilerplate into injected shared protocols
-- REQ-GOAL-003: Improve easy-task success rate back toward 100% without regressing medium-task success
-
-#### Non-Goals
-- REQ-NOGO-001: Reducing hook count — hooks enforce deterministically and that works well; the goal is reducing cognitive noise in prompts, not removing enforcement
-- REQ-NOGO-002: Rewriting hook implementations — this is about what the model reads (prompts, injected context), not what hooks do internally
-- REQ-NOGO-003: Adding new features or capabilities — this is restoration and optimization, not expansion
-
-#### Requirements
-
-**Must-Have (P0)**
-
-- REQ-P0-001: CLAUDE.md restored to purpose-sandwich structure (identity/purpose lead, procedural docs referenced, quality standards close)
-  Acceptance: Given the current 149-line CLAUDE.md, When restoration is complete, Then:
-  - [ ] Purpose/values language is at least 40% of the document
-  - [ ] Full pre-metanoia Cornerstone Belief (8 sentences) is restored
-  - [ ] Dispatch table lives in DISPATCH.md (referenced, not inlined)
-  - [ ] New "What Matters" section explicitly describes quality-of-thought expectations
-  - [ ] Document follows purpose-sandwich: identity → purpose → quality expectations → references → procedures
-
-- REQ-P0-002: Shared defensive boilerplate extracted and injected at dispatch time
-  Acceptance: Given 4 agent prompts totaling 1,472 lines with repeated CWD safety, trace protocol, mandatory return message, and session-end checklist, When extraction is complete, Then:
-  - [ ] `agents/shared-protocols.md` contains all shared defensive content
-  - [ ] `subagent-start.sh` injects shared-protocols.md content into additionalContext for all non-lightweight agents
-  - [ ] Each agent prompt retains its unique purpose/workflow content without the shared boilerplate
-  - [ ] Total agent prompt line count reduced by 30-40%
-
-- REQ-P0-003: "What Matters" section in CLAUDE.md
-  Acceptance: Given the current CLAUDE.md lacks quality-of-thought guidance, When the section is added, Then it explicitly addresses:
-  - [ ] Deep analysis over surface compliance
-  - [ ] Understanding WHY, not just WHAT
-  - [ ] Hard numbers and evidence over vague claims
-  - [ ] Acting with judgment, not perfunctory rule-following
-  - [ ] Making meaningful connections between requirements and implementation
-
-**Nice-to-Have (P1)**
-
-- REQ-P1-001: Agent prompts strengthened with purpose language — each prompt's opening sections emphasize the agent's unique value proposition, not just its procedures
-- REQ-P1-004: Guardian merge presentation — after every merge, the Guardian leads with "What should you expect to see?" — putting the value of what was built front and center before git mechanics. The user should understand what changed for them before seeing commit hashes.
-
-**Future Consideration (P2)**
-
-- REQ-P2-001: A/B testing framework for prompt changes — compare quality metrics pre/post to validate improvements
-
-#### Definition of Done
-
-All P0 requirements pass their acceptance criteria. CLAUDE.md follows purpose-sandwich structure with restored Cornerstone Belief and "What Matters" section. Agent prompts are slimmed by 30-40% with shared content injected via subagent-start.sh. Easy-task qualitative output improves (assessed via validation session in W3-1). Satisfies: REQ-GOAL-001, REQ-GOAL-002, REQ-GOAL-003.
-
-#### Architectural Decisions
-
-- DEC-PROMPT-001: Hybrid approach for CLAUDE.md — use pre-metanoia voice/structure but keep current procedural references as pointers
-  Addresses: REQ-P0-001.
-  Rationale: Pre-metanoia Cornerstone Belief (8 sentences of conviction) and purpose language produced better output. Current procedural references (dispatch table pointer, hook list, resource table) are useful but should follow purpose, not lead. Starting from pre-metanoia voice and selectively adding back what hooks don't enforce.
-
-- DEC-PROMPT-002: Shared protocols injected via subagent-start.sh at dispatch time
-  Addresses: REQ-P0-002.
-  Rationale: User adjustment — reference-based reading (agent remembers to read a file) is non-deterministic. Hook injection via subagent-start.sh is deterministic — agents see shared protocols without needing to remember. The hook already fires on every agent dispatch and injects additionalContext. New injection point: after trace init, before agent-type-specific context. Content: CWD safety rules, trace protocol, mandatory return message format, session-end checklist.
-
-- DEC-PROMPT-003: "What Matters" section codifies quality-of-thought expectations
-  Addresses: REQ-P0-003.
-  Rationale: The model lacks explicit guidance on what deep work looks like. Current prompts tell the model WHAT to do (procedures) but not HOW to think (quality expectations). Placing this in purpose position (early in CLAUDE.md) produces better reasoning by setting the frame before procedures.
-
-#### Waves
-
-##### Initiative Summary
-- **Total items:** 4
-- **Critical path:** 3 waves (W1-1 → W2-1 → W3-1)
-- **Max width:** 2 (Wave 1)
-- **Gates:** 3 review, 1 approve
-
-##### Wave 1 (no dependencies)
-**Parallel dispatches:** 2
-
-**W1-1: Create shared-protocols.md and wire injection in subagent-start.sh (#143)** — Weight: M, Gate: review
-- Create `agents/shared-protocols.md` containing:
-  - CWD safety rules (never bare `cd` into worktrees, subshell pattern, safe_cleanup)
-  - Trace protocol (TRACE_DIR usage, artifacts list per agent type, summary.md requirements)
-  - Mandatory return message format (structure, 1500 token limit, never end on bare tool call)
-  - Session-end checklist (verify tests pass, annotations present, worktree clean, summary written)
-- Extract these sections from all 4 agent prompts — identify the common content by comparing `implementer.md`, `guardian.md`, `tester.md`, `planner.md`
-- Modify `hooks/subagent-start.sh`:
-  - After line 54 (trace init block), before line 56 (CTX_LINE), add a new block
-  - Read `agents/shared-protocols.md` content
-  - For non-lightweight agents (skip Bash, Explore), inject content into CONTEXT_PARTS
-  - Use `head -c 3000` or similar to cap injection size — the content should be ~2KB
-- **Integration:** `hooks/subagent-start.sh` must source the shared-protocols content; `agents/shared-protocols.md` must be a new file in the agents/ directory
-
-**W1-2: Restore CLAUDE.md purpose-sandwich structure (#144)** — Weight: M, Gate: review
-- Restructure CLAUDE.md following DEC-PROMPT-001 (hybrid approach):
-  - **Lead:** Full Identity section + restored Cornerstone Belief (all 8 sentences from pre-metanoia commit 2eb16a9)
-  - **Purpose:** New "What Matters" section (DEC-PROMPT-003) — deep analysis, WHY not just WHAT, hard numbers, judgment over compliance, meaningful connections
-  - **Quality:** Interaction Style, Output Intelligence, Sacred Practices — these stay but move after purpose
-  - **References:** Resource table, Commands & Skills — compact reference section
-  - **Procedures:** Dispatch Rules (compact — full table stays in DISPATCH.md), Notes
-- The document should be approximately 200-250 lines (up from 149, but with purpose language comprising ~40%)
-- Pre-metanoia source: `git show 2eb16a9:CLAUDE.md` for the Cornerstone Belief text and purpose language
-- Do NOT modify hooks, agents, or settings.json in this item
-- **Integration:** CLAUDE.md is loaded every session by Claude Code runtime — no explicit import needed. The dispatch table reference should point to `docs/DISPATCH.md`.
-
-##### Wave 2
-**Parallel dispatches:** 1
-**Blocked by:** W1-1, W1-2
-
-**W2-1: Slim all 4 agent prompts (#146)** — Weight: L, Gate: approve, Deps: W1-1, W1-2
-- For each of `agents/planner.md`, `agents/implementer.md`, `agents/tester.md`, `agents/guardian.md`:
-  1. Remove sections now covered by shared-protocols.md injection (CWD safety, trace protocol, mandatory return message, session-end checklist)
-  2. Keep all unique purpose, workflow, and phase content
-  3. Strengthen opening sections with purpose language — each agent should lead with its unique value, not procedures
-  4. **Guardian-specific (REQ-P1-004):** Add a "Merge Presentation" section requiring the Guardian to lead post-merge output with "What should you expect to see from this work?" — value delivered, what changed for the user, what they can now do — before git mechanics (commit hash, branch, files). Purpose-first output.
-  5. Target: 30-40% line count reduction across all 4 prompts (from 1,472 total to ~900-1,000)
-- Specific removals per agent:
-  - **implementer.md** (222 lines): Remove "CWD safety" block (~10 lines), "Trace Protocol" section (~15 lines), "Mandatory Return Message" (~15 lines), "Session End Protocol" (~5 lines). Target: ~175 lines
-  - **guardian.md** (502 lines): Remove CWD safety in worktree cleanup (~8 lines), trace references (~5 lines), remove session context format that overlaps with shared protocol. Target: ~420 lines
-  - **tester.md** (286 lines): Remove "Worktree path safety" block (~5 lines), trace protocol section (~10 lines). Target: ~265 lines
-  - **planner.md** (462 lines): Remove trace protocol section (~10 lines), mandatory return message (~10 lines), session end protocol checklist items that overlap. Target: ~440 lines
-- Verify no content is lost — every defensive rule must exist in EITHER the agent prompt OR shared-protocols.md (never neither, okay in both for truly agent-specific variants)
-- **Integration:** Agent prompts are loaded by Claude Code runtime from agents/ directory. No explicit import changes needed — subagent-start.sh injection ensures shared content reaches agents.
-
-##### Wave 3
-**Parallel dispatches:** 1
-**Blocked by:** W2-1
-
-**W3-1: Validation session (#147)** — Weight: S, Gate: review, Deps: W2-1
-- Run a test session with the restored prompts to qualitatively assess output
-- Compare against pre-restoration output quality:
-  - Does the implementer produce deeper analysis?
-  - Does the orchestrator exercise more judgment (fewer unnecessary permission asks)?
-  - Do agent returns include more meaningful summaries?
-- Document findings in trace artifacts
-- If quality regression is observed, identify which changes caused it and propose adjustments
-- **Integration:** No code changes — this is a verification-only item
-
-##### Critical Files
-- `CLAUDE.md` — session instructions; the primary prompt surface that shapes all agent behavior
-- `agents/shared-protocols.md` — NEW; shared defensive boilerplate injected at dispatch time
-- `hooks/subagent-start.sh` — dispatch-time context injection; modified to inject shared protocols
-- `agents/implementer.md` — largest delta (222→~175 lines)
-- `agents/guardian.md` — most complex agent prompt (502 lines)
-
-##### Decision Log
-<!-- Guardian appends here after wave completion -->
-
-#### Prompt Restoration Worktree Strategy
-
-Main is sacred. Each wave dispatches parallel worktrees:
-- **Wave 1:** `.worktrees/shared-protocols` on branch `feature/shared-protocols` (W1-1), `.worktrees/claude-md-restore` on branch `feature/claude-md-restore` (W1-2)
-- **Wave 2:** `.worktrees/slim-agents` on branch `feature/slim-agents` (W2-1)
-- **Wave 3:** `.worktrees/validation` on branch `feature/prompt-validation` (W3-1)
-
-#### Prompt Restoration References
-
-- Pre-metanoia CLAUDE.md: `git show 2eb16a9:CLAUDE.md`
-- Pre-metanoia implementer: `git show 2eb16a9:agents/implementer.md`
-- Current hook registrations: `settings.json` (10 events, 24 hooks)
-- Subagent injection mechanism: `hooks/subagent-start.sh` lines 42-311
-- DISPATCH.md: `docs/DISPATCH.md` — full dispatch protocol
-
----
-
-### Initiative: Governance Signal Audit
-**Status:** active
-**Started:** 2026-03-07
-**Goal:** Produce a comprehensive governance signal map documenting all hooks, their context injection, and overlap to enable informed optimization.
-
-> The hook system grew from 8 to 24 registrations across 10 lifecycle events. Each hook may inject context (additionalContext, systemMessage), deny actions, or produce side effects. No single document maps the total signal volume a model receives per session or per action. Without this map, optimization is guesswork. This initiative produces the map, then proposes smarter signal routing.
-
-**Dominant Constraint:** maintainability
-
-#### Goals
-- REQ-GOAL-004: Produce a structured governance signal map documenting all 24 hook registrations, their context injection volume, timing, and overlap
-- REQ-GOAL-005: Identify duplicate enforcement (hooks enforcing what prompts already repeat) with specific reduction proposals
-
-#### Non-Goals
-- REQ-NOGO-004: Implementing any signal routing changes in this initiative — this is research and proposal only
-- REQ-NOGO-005: Changing hook implementations — the audit documents what exists, it does not modify it
-
-#### Requirements
-
-**Must-Have (P0)**
-
-- REQ-P0-004: Governance signal map produced
-  Acceptance: Given 24 hook registrations across 10 events, When the audit is complete, Then:
-  - [ ] Each hook is documented with: event, matcher, purpose (1 line), output type (deny/allow/advisory/context), injection content summary, estimated byte count, frequency (per-session/per-action/per-agent)
-  - [ ] Total signal volume per lifecycle event is calculated
-  - [ ] Overlap between hooks is identified (hooks that enforce the same constraint as a prompt)
-  - [ ] Document is in `docs/governance-signal-map.md`
-
-**Nice-to-Have (P1)**
-
-- REQ-P1-002: Optimization proposals — specific recommendations for reducing signal noise while maintaining enforcement coverage
-
-**Future Consideration (P2)**
-
-- REQ-P2-002: Implement the optimization proposals in a follow-up initiative
-
-#### Definition of Done
-
-Signal map document exists in `docs/governance-signal-map.md` with all 24 hooks documented. Total signal volume calculated per event. Overlap with prompt content identified. Satisfies: REQ-GOAL-004, REQ-GOAL-005.
-
-#### Architectural Decisions
-
-- DEC-AUDIT-002: Governance signal map as markdown in docs/governance-signal-map.md
-  Addresses: REQ-P0-004.
-  Rationale: One-time research artifact to inform optimization decisions. Markdown is human-readable and sufficient for this purpose. JSON would add complexity without value.
-
-#### Waves
-
-##### Initiative Summary
-- **Total items:** 2
-- **Critical path:** 2 waves (W1-3 → W2-2)
-- **Max width:** 1
-- **Gates:** 1 review, 1 approve
-
-##### Wave 1 (no dependencies)
-**Parallel dispatches:** 1
-
-**W1-3: Produce governance signal map (#145)** — Weight: L, Gate: review
-- Audit all hooks registered in `settings.json`:
-  - For each hook: read the source, identify what it outputs (deny/allow/advisory/context injection)
-  - Measure: approximate byte count of injected context per invocation
-  - Document: frequency (how often it fires — per-session, per-tool-call, per-agent-dispatch)
-- Map total signal volume per lifecycle event:
-  - SessionStart: what the model sees at session start (session-init.sh injection)
-  - UserPromptSubmit: what fires on every user message (prompt-submit.sh)
-  - PreToolUse: what fires before each tool call (pre-bash.sh, pre-write.sh, task-track.sh, pre-ask.sh)
-  - PostToolUse: what fires after each tool call (post-write.sh, lint.sh, etc.)
-  - SubagentStart: what agents see at dispatch (subagent-start.sh)
-  - SubagentStop: what fires when agents return (check-*.sh hooks)
-  - Stop: what fires at session end (stop.sh)
-- Identify overlap: places where hooks enforce rules that prompts also state
-- Write output to `docs/governance-signal-map.md`
-- **Integration:** New file in docs/ directory. No code changes. Referenced by future optimization work.
-
-##### Wave 2
-**Parallel dispatches:** 1
-**Blocked by:** W1-3
-
-**W2-2: Propose optimization plan (#148)** — Weight: M, Gate: approve, Deps: W1-3
-- Based on signal map findings, propose:
-  - Which signals can be removed from prompts because hooks enforce them deterministically
-  - Which hook injections can be made conditional (only fire when relevant, not on every invocation)
-  - Which context injections can be compressed (shorter messages, same information)
-  - Priority-ranked list of changes with estimated token savings per session
-- Write proposals as an addendum to `docs/governance-signal-map.md` or a separate `docs/signal-optimization-proposals.md`
-- Do NOT implement any changes — this is proposal only, to be approved before a follow-up initiative
-- **Integration:** Markdown document in docs/. No code changes.
-
-##### Critical Files
-- `settings.json` — hook registrations (source of truth for what hooks exist)
-- `hooks/session-init.sh` — largest context injection (SessionStart)
-- `hooks/subagent-start.sh` — per-agent context injection (SubagentStart)
-- `hooks/prompt-submit.sh` — fires on every user message
-- `hooks/pre-bash.sh` — fires before every Bash command
-
-##### Decision Log
-<!-- Guardian appends here after wave completion -->
-
-#### Governance Audit Worktree Strategy
-
-Main is sacred. Each wave dispatches parallel worktrees:
-- **Wave 1:** `.worktrees/signal-map` on branch `feature/signal-map` (W1-3)
-- **Wave 2:** `.worktrees/signal-optimization` on branch `feature/signal-optimization` (W2-2)
-
-#### Governance Audit References
-
-- Hook registrations: `settings.json`
-- Hook source code: `hooks/*.sh`
-- Hook documentation: `hooks/HOOKS.md`
-- Architecture reference: `ARCHITECTURE.md` sections 2-5 (hook engine, gate hooks, feedback hooks, session lifecycle)
-
----
 
 ### Initiative: Governor Subagent
 **Status:** active
@@ -658,6 +390,9 @@ Main is sacred. Each wave dispatches parallel worktrees:
 | State Management Reliability | 2026-03-01 to 2026-03-02 | 5 | DEC-STATE-007, DEC-STATE-008 + 8 test decisions | No |
 | Hook Consolidation Testing & Streamlining | 2026-03-02 | 4 | DEC-AUDIT-001, DEC-TIMING-001, DEC-DEDUP-001 | No |
 | Statusline Information Architecture | 2026-03-02 | 2 | DEC-SL-LAYOUT-001, DEC-SL-TOKENS-001, DEC-SL-TODOCACHE-001, DEC-SL-COSTPERSIST-001 | No |
+| Robust State Management | 2026-03-02 to 2026-03-05 | 2 (of 7 planned) | DEC-RSM-REGISTRY-001 through DEC-RSM-SELFCHECK-001 (6 decisions) | No |
+| Prompt Purpose Restoration | 2026-03-07 to 2026-03-09 | 3 (W1-1, W1-2, W2-1) | DEC-PROMPT-001, DEC-PROMPT-002, DEC-PROMPT-003, DEC-PROMPT-004 | No |
+| Governance Signal Audit | 2026-03-07 to 2026-03-09 | 1 (W1-3) | DEC-AUDIT-002, DEC-RECK-013 | No |
 
 ### Production Remediation (Metanoia Suite) — Summary
 
@@ -702,6 +437,33 @@ Redesigned the statusline HUD from raw unlabeled numbers to a domain-clustered, 
 2. **Phase 2 — Data Pipeline** (feature/statusline-data, 86c6f59): Todo split display (`todos: 3p 7g` with project/global counts via `gh issue list`), session cost persistence to `.session-cost-history` (pipe-delimited, 100-entry cap), lifetime cost annotation (`Σ~$N.NN`). +9 tests (48 total). Issues: #72, #68, #69.
 
 All 5 P0 requirements satisfied (REQ-P0-001 through REQ-P0-005). P1 cost persistence (REQ-P1-001) also delivered. 4 architectural decisions recorded (DEC-SL-LAYOUT-001, DEC-SL-TOKENS-001, DEC-SL-TODOCACHE-001, DEC-SL-COSTPERSIST-001) plus 8 implementation decisions. Issues closed: #67, #68, #69, #71, #72.
+
+### Robust State Management — Summary
+
+Hardened the state management infrastructure with protected file registry, POSIX advisory locks, and monotonic lattice enforcement. 2 of 7 planned phases delivered:
+
+1. **Phase 1 — Registry + Locks** (feature/rsm-phase1): Protected state file registry in core-lib.sh, POSIX advisory locks via flock(), pre-write.sh Gate 0 registry check. #37
+2. **Phase 2 — Lattice + Self-check** (feature/rsm-phase2): Monotonic lattice enforcement on proof-status transitions, triple self-validation at session startup. #38
+
+Phases 3-5 (SQLite WAL, unified state directory, state daemon) superseded by the dedicated SQLite Unified State Store initiative (parked). 6 architectural decisions (DEC-RSM-REGISTRY-001 through DEC-RSM-SELFCHECK-001).
+
+### Prompt Purpose Restoration — Summary
+
+Restored purpose-to-enforcement ratio in CLAUDE.md and agent prompts after benchmark findings showed easy-task success dropped from 100% to 67%. Three waves:
+
+1. **W1-1: Shared Protocols** (feature/shared-protocols): Created `agents/shared-protocols.md` (87 lines) with CWD safety, trace protocol, mandatory return message, session-end checklist. Wired injection in `hooks/subagent-start.sh` for all non-lightweight agents. #143
+2. **W1-2: CLAUDE.md Restore** (feature/claude-md-restore): Rebuilt CLAUDE.md with purpose-sandwich structure — restored full Cornerstone Belief (8 sentences), added "What Matters" section, identity→purpose→quality→references→procedures flow. #144
+3. **W2-1: Slim Agent Prompts** (#146): Targeted 30-40% reduction by removing shared boilerplate from 4 agent prompts. Actual reduction ~4.4% — shared-protocols injection supplements rather than replaces content (DEC-PROMPT-004). Purpose language strengthened in agent openings. Guardian merge presentation added (REQ-P1-004).
+
+W3-1 (validation session) not executed — benchmark improvements validated through ongoing usage. 3 architectural decisions (DEC-PROMPT-001 through 003) plus closure decision (DEC-PROMPT-004). Issues closed: #143, #144, #146.
+
+### Governance Signal Audit — Summary
+
+Produced a comprehensive governance signal map documenting all 24 hook registrations, their context injection volume, timing, frequency, and overlap. One wave delivered:
+
+1. **W1-3: Signal Map** (feature/signal-map): Created `docs/governance-signal-map.md` mapping all hooks by lifecycle event with byte counts, frequencies, and 7 optimization proposals. Total governance signal: ~15KB per session start, ~2KB per tool call. #145
+
+W2-2 (formalize optimization proposals) deemed unnecessary (DEC-RECK-013) — the 7 proposals in the signal map are already actionable. 1 architectural decision (DEC-AUDIT-002) plus closure decision (DEC-RECK-013). Issue closed: #145.
 
 ---
 

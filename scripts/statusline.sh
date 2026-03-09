@@ -104,6 +104,38 @@ CACHE_FILE="${workspace_dir:+$workspace_dir/.claude/.statusline-cache-${CLAUDE_S
 # Fallback to home .claude if workspace_dir is empty
 [[ -z "$workspace_dir" ]] && CACHE_FILE="$HOME/.claude/.statusline-cache-${CLAUDE_SESSION_ID:-$$}"
 
+# @decision DEC-DUALBAR-004
+# @title Cache file discovery fallback for missing CLAUDE_SESSION_ID
+# @status accepted
+# @rationale CLAUDE_SESSION_ID is not exported to the statusline subprocess (same issue
+# as DEC-DUALBAR-003). Hooks write the cache using the real session ID; the statusline
+# constructs a path using $$ (PID). Discovery fallback: find the most recent
+# .statusline-cache-* file in the workspace .claude/ dir. This works because:
+# (1) typically one active session per workspace, (2) even with multiple sessions,
+# the most recent cache is most relevant.
+if [[ ! -f "$CACHE_FILE" ]]; then
+  _cache_dir="${CACHE_FILE%/*}"
+  if [[ -d "$_cache_dir" ]]; then
+    # ls may return exit 1 when no files match glob; || true prevents set -e from triggering.
+    _latest_cache=$(ls -t "$_cache_dir"/.statusline-cache-* 2>/dev/null | head -1 || true)
+    [[ -n "$_latest_cache" && -f "$_latest_cache" ]] && CACHE_FILE="$_latest_cache"
+  fi
+  unset _cache_dir _latest_cache
+fi
+
+# Prune stale cache files when count exceeds threshold (one-time cleanup for $$ bug).
+# Only triggers when >10 files exist to avoid per-render overhead during normal operation.
+_cache_dir="${CACHE_FILE%/*}"
+if [[ -d "$_cache_dir" ]]; then
+  # ls may return exit 1 when no files match glob; || true prevents set -e from triggering.
+  _cache_count=$(ls "$_cache_dir"/.statusline-cache-* 2>/dev/null | wc -l | tr -d ' ' || true)
+  if (( ${_cache_count:-0} > 10 )); then
+    ls -t "$_cache_dir"/.statusline-cache-* 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null || true
+  fi
+  unset _cache_count
+fi
+unset _cache_dir
+
 cache_dirty=0
 cache_wt=0
 cache_agents=0
@@ -314,12 +346,14 @@ build_context_bar() {
 
     # Build three regions
     local bar_sys="" bar_conv="" bar_empty="" i
-    for (( i=0; i<sys_blocks;   i++ )); do bar_sys+="▓"; done
+    for (( i=0; i<sys_blocks;   i++ )); do bar_sys+="█"; done
     for (( i=0; i<conv_blocks;  i++ )); do bar_conv+="█"; done
     for (( i=0; i<empty;        i++ )); do bar_empty+="░"; done
 
-    # Render: [cyan_sys severity_conv dim_empty] pct%
-    printf '\033[1;36m[\033[0m\033[36m%s\033[0m\033[%sm%s\033[2m%s\033[0m\033[1;36m]\033[0m \033[%sm%d%%\033[0m' \
+    # Render: [dim_sys severity_conv dim_empty] pct%
+    # System: dim full blocks (filled but muted). Conversation: severity-colored full blocks.
+    # Empty: dim light shade. All filled regions use █ — color alone distinguishes them.
+    printf '\033[2m[%s\033[0m\033[%sm%s\033[2m%s]\033[0m \033[%sm%d%%\033[0m' \
       "$bar_sys" "$color" "$bar_conv" "$bar_empty" "$color" "$pct_int"
   else
     # Single-color fallback (no baseline)

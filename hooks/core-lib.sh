@@ -140,14 +140,23 @@ _PROTECTED_STATE_FILES=(
 # is_protected_state_file FILEPATH
 #   Returns 0 if the file basename matches any protected state file pattern,
 #   or if the filepath is under a state/ directory.
-#   Uses prefix matching (e.g., ".proof-status.lock" matches ".proof-status").
+#   Dot-prefixed patterns use prefix-glob (catches .proof-status.lock,
+#   .proof-status-<hash>, etc.). Non-dot patterns use exact match only —
+#   they live in state/{phash}/ dirs and must not match files like
+#   test-statusline.sh (false-positive from "test-status" prefix glob).
 #   Usage: is_protected_state_file "/some/path/.proof-status" && emit_deny "..."
 is_protected_state_file() {
     local filepath="$1"
     local basename="${filepath##*/}"
-    # Direct basename match against registry
+    # Match against registry
     for pattern in "${_PROTECTED_STATE_FILES[@]}"; do
-        [[ "$basename" == $pattern* ]] && return 0
+        if [[ "$pattern" == .* ]]; then
+            # Dot-prefixed: prefix-glob to catch .proof-status.lock, .proof-status-<hash>
+            [[ "$basename" == $pattern* ]] && return 0
+        else
+            # No dot prefix: exact match only to avoid false positives
+            [[ "$basename" == "$pattern" ]] && return 0
+        fi
     done
     # Path-based match: anything under state/ directory is protected
     [[ "$filepath" == */state/* ]] && return 0
