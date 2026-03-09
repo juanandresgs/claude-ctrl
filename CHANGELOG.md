@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/claude-md-restore`: Restore CLAUDE.md purpose-sandwich structure (v2.3) -- full Cornerstone Belief, "What Matters" quality-of-thought section with agent initiative language, dispatch table relocated to DISPATCH.md reference (#144)
 
 ### Added
+- `initiative/governor-subagent`: Governor Subagent — 5th agent with two-tier evaluation model (health pulse ~3-5K tokens + full eval ~15-20K tokens), SubagentStop validation hook (check-governor.sh, advisory), dispatch wiring in settings.json/subagent-start.sh/DISPATCH.md/CLAUDE.md, 416-line wiring test suite (DEC-GOV-001 through DEC-GOV-006, #169, #182-#185)
 - `feature/evaluator-agent`: Governor Subagent initiative added to MASTER_PLAN.md — 5th agent (mechanical feedback mechanism) with 4+4 dimension scoring rubric, 3 trigger contexts, 4-wave implementation plan, 5 architectural decisions (DEC-GOV-001 through DEC-GOV-005), dispatch/hook integration specs
 - `feature/shared-protocols`: Shared defensive protocols — extract duplicated session-end checklist, CWD safety, and output rules from 4 agent prompts into `agents/shared-protocols.md`; inject via `subagent-start.sh` so all agents inherit standardized boilerplate (DEC-PROMPT-002, closes #143)
 - `feature/signal-map`: Governance signal map — comprehensive reference documenting all 24 hook registrations with signal routing, context injection volumes, gate types, firing frequency, overlap analysis, and noise assessment (#145)
