@@ -263,6 +263,144 @@ fi
 
 echo ""
 
+# --- Test 8: governor.md has 4 trigger contexts including Health Pulse ---
+echo "--- Test 8: governor.md has Health Pulse trigger context ---"
+
+GOVERNOR_MD="$PROJECT_ROOT/agents/governor.md"
+
+if [[ -f "$GOVERNOR_MD" ]]; then
+    pass "agents/governor.md exists"
+else
+    fail "agents/governor.md exists" "file not found"
+fi
+
+# Health Pulse trigger context
+if grep -q "Health Pulse" "$GOVERNOR_MD"; then
+    pass "agents/governor.md has Health Pulse trigger context"
+else
+    fail "agents/governor.md has Health Pulse trigger context" "no 'Health Pulse' found"
+fi
+
+# Health Pulse has explicit budget constraint
+if grep -qE "<15 tool calls|<5K tokens" "$GOVERNOR_MD"; then
+    pass "agents/governor.md Health Pulse has explicit budget constraint"
+else
+    fail "agents/governor.md Health Pulse has explicit budget constraint" "no '<15 tool calls' or '<5K tokens' found"
+fi
+
+# Health Pulse verdict values
+if grep -qE "healthy\|drifting\|stale" "$GOVERNOR_MD"; then
+    pass "agents/governor.md Health Pulse has healthy|drifting|stale verdict values"
+else
+    fail "agents/governor.md Health Pulse has healthy|drifting|stale verdict values" "not found"
+fi
+
+# Health Pulse trigger field in output JSON
+if grep -q '"trigger: "health-pulse"' "$GOVERNOR_MD" || grep -q 'trigger.*health-pulse' "$GOVERNOR_MD"; then
+    pass "agents/governor.md Health Pulse output has trigger: health-pulse"
+else
+    fail "agents/governor.md Health Pulse output has trigger: health-pulse" "not found"
+fi
+
+echo ""
+
+# --- Test 9: governor.md Pre-Implementation defaults to pulse ---
+echo "--- Test 9: governor.md Pre-Implementation defaults to pulse with escalation criteria ---"
+
+# Pre-Implementation should mention pulse as default
+if grep -qiE "pulse check by default|Pulse check by default|defaults to pulse" "$GOVERNOR_MD"; then
+    pass "agents/governor.md Pre-Implementation defaults to pulse"
+else
+    fail "agents/governor.md Pre-Implementation defaults to pulse" "no 'pulse check by default' or 'defaults to pulse' found"
+fi
+
+# Escalation criteria for full eval
+if grep -qiE "Full evaluation when|full eval when" "$GOVERNOR_MD"; then
+    pass "agents/governor.md Pre-Implementation has escalation criteria for full eval"
+else
+    fail "agents/governor.md Pre-Implementation has escalation criteria for full eval" "no escalation criteria found"
+fi
+
+echo ""
+
+# --- Test 10: governor.md has Dispatch Frequency Guidance section ---
+echo "--- Test 10: governor.md has Dispatch Frequency Guidance section ---"
+
+if grep -q "Dispatch Frequency Guidance" "$GOVERNOR_MD"; then
+    pass "agents/governor.md has Dispatch Frequency Guidance section"
+else
+    fail "agents/governor.md has Dispatch Frequency Guidance section" "not found"
+fi
+
+# Meta-infrastructure (~/.claude) specific guidance
+if grep -qE "Meta-infrastructure|~/.claude" "$GOVERNOR_MD"; then
+    pass "agents/governor.md Dispatch Frequency Guidance mentions meta-infrastructure"
+else
+    fail "agents/governor.md Dispatch Frequency Guidance mentions meta-infrastructure" "no meta-infrastructure mention"
+fi
+
+# Orchestrator decides (no mechanical threshold)
+if grep -qE "orchestrator decides|The orchestrator decides" "$GOVERNOR_MD"; then
+    pass "agents/governor.md notes orchestrator decides frequency (no mechanical threshold)"
+else
+    fail "agents/governor.md notes orchestrator decides frequency (no mechanical threshold)" "not found"
+fi
+
+echo ""
+
+# --- Test 11: governor.md has DEC-GOV-006 annotation ---
+echo "--- Test 11: governor.md has DEC-GOV-006 annotation ---"
+
+if grep -q "DEC-GOV-006" "$GOVERNOR_MD"; then
+    pass "agents/governor.md has DEC-GOV-006 annotation"
+else
+    fail "agents/governor.md has DEC-GOV-006 annotation" "not found"
+fi
+
+echo ""
+
+# --- Test 12: docs/DISPATCH.md updated with pulse mode in governor section ---
+echo "--- Test 12: docs/DISPATCH.md mentions pulse mode in governor dispatch ---"
+
+# Two-tier model reference
+if grep -qiE "pulse.*mode|health pulse|two.tier" "$DISPATCH_MD"; then
+    pass "docs/DISPATCH.md mentions pulse mode for governor"
+else
+    fail "docs/DISPATCH.md mentions pulse mode for governor" "no pulse mode reference found"
+fi
+
+# Pre-implementation dispatches pulse by default
+if grep -qiE "pulse.*mode.*pre-implementation|pre-implementation.*pulse|dispatch.*pulse" "$DISPATCH_MD"; then
+    pass "docs/DISPATCH.md pre-implementation governor dispatch in pulse mode"
+else
+    fail "docs/DISPATCH.md pre-implementation governor dispatch in pulse mode" "no pulse dispatch rule found"
+fi
+
+echo ""
+
+# --- Test 13: check-governor.sh handles pulse verdict values ---
+echo "--- Test 13: check-governor.sh handles pulse verdict values (healthy/drifting/stale) ---"
+
+# The hook extracts `verdict` from evaluation.json generically (not hardcoded)
+# Verify it does NOT have hardcoded conditional checks on verdict values that would break pulse
+# Check for if/case conditionals that branch on specific verdict strings
+BREAKING_CONDITIONS=$(grep -E "if.*==.*proceed|if.*==.*block|case.*proceed|case.*block" "$CHECK_GOVERNOR" 2>/dev/null || true)
+
+if [[ -z "$BREAKING_CONDITIONS" ]]; then
+    pass "check-governor.sh does not have breaking verdict conditions (pulse-compatible)"
+else
+    fail "check-governor.sh does not hardcode verdict values" "found breaking conditions: $BREAKING_CONDITIONS"
+fi
+
+# Verify verdict extraction is generic (python3 get .get('verdict'))
+if grep -q "get.*verdict" "$CHECK_GOVERNOR" || grep -q "'verdict'" "$CHECK_GOVERNOR"; then
+    pass "check-governor.sh extracts verdict field generically from JSON"
+else
+    fail "check-governor.sh extracts verdict field generically from JSON" "no generic verdict extraction found"
+fi
+
+echo ""
+
 # --- Summary ---
 echo "==========================="
 echo "Governor Wiring Tests: $PASS passed, $FAIL failed"

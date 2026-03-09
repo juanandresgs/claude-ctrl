@@ -122,12 +122,21 @@ own worktree, with its own tester→guardian cycle.
 
 **Auto-dispatch to Tester:** After the implementer returns successfully (tests pass, no blocking issues), dispatch the tester automatically with the implementer's trace context. Do NOT ask "should I verify?" — just dispatch the tester.
 
-**Auto-dispatch to Governor:** After the planner returns with a 2+ wave initiative, dispatch the governor automatically with the initiative block and MASTER_PLAN.md context. Do NOT ask "should I evaluate?" — just dispatch. Governor results are advisory:
-- **proceed** = continue to implementation normally
-- **caution** = present concerns to user before dispatching implementer
-- **block** = present to user and wait for guidance before proceeding
+**Auto-dispatch to Governor:** The governor operates in two modes — health pulse (fast, ~3-5K tokens) and full evaluation (~15-20K tokens). Dispatch rules:
 
-After initiative completion (all phases merged, before `compress_initiative()`), dispatch the governor for post-completion assessment.
+- **Pre-implementation (planner returns 2+ waves):** Dispatch governor in **pulse mode** by default. If pulse returns "drifting" or "stale" with flags, escalate to full evaluation before dispatching implementer.
+- **Post-completion (all phases merged):** Full evaluation (rare, high-leverage — always worth the cost).
+- **Reckoning-input (Phase 2 of /reckoning):** Full evaluation.
+- **Health pulse (orchestrator judgment):** Dispatch when session-init signals stale docs/plan, after change bursts or ad-hoc commits outside the plan, or periodically in meta-infrastructure projects (~/.claude). The orchestrator decides — no mechanical threshold.
+
+Governor results are always advisory:
+- **Pulse: healthy** = continue normally
+- **Pulse: drifting/stale** = review flags, consider full evaluation before proceeding
+- **Full: proceed** = continue to implementation normally
+- **Full: caution** = present concerns to user before dispatching implementer
+- **Full: block** = present to user and wait for guidance before proceeding
+
+After initiative completion (all phases merged, before `compress_initiative()`), dispatch the governor for post-completion full evaluation.
 
 **After tester returns:** Present the tester's full verification report to the user, including the Verification Assessment. Do NOT summarize it into a keyword demand. Engage in Q&A about the evidence. When the user expresses approval, prompt-submit.sh handles the gate transition automatically.
 
