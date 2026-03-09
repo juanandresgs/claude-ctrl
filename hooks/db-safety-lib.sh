@@ -70,12 +70,13 @@ _db_detect_cli() {
     #   - word boundary at start/after spaces/after path separator
     #   - preceding: start of string, whitespace, &&, ||, ;, (, |
     #   - optional path prefix: /path/to/cli or ./cli
-    local cli_pattern='(^|[[:space:]]|&&|\|\|?|;|\(|/)(%s)([[:space:]]|$|;|&&|\|)'
+    local cli_pattern_prefix='(^|[[:space:]]|&&|\|\|?|;|\(|/)('
+    local cli_pattern_suffix=')([[:space:]]|$|;|&&|\|)'
 
     # Check each CLI in priority order (most specific first)
     local cli
     for cli in psql mysql sqlite3 mongosh redis-cli cockroach; do
-        if printf '%s' "$stripped" | grep -qE "$(printf "$cli_pattern" "$cli")"; then
+        if printf '%s' "$stripped" | grep -qE "${cli_pattern_prefix}${cli}${cli_pattern_suffix}"; then
             printf '%s' "$cli"
             return 0
         fi

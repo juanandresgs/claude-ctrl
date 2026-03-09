@@ -871,7 +871,8 @@ while IFS= read -r hook; do
         # Exempt utility libraries (not hooks) — domain libs added during metanoia consolidation
         case "$hook" in
             log.sh|source-lib.sh|state-registry.sh|state-lib.sh|\
-            ci-lib.sh|core-lib.sh|doc-lib.sh|git-lib.sh|plan-lib.sh|session-lib.sh|trace-lib.sh)
+            ci-lib.sh|core-lib.sh|doc-lib.sh|git-lib.sh|plan-lib.sh|session-lib.sh|trace-lib.sh|\
+            db-safety-lib.sh)
                 ;;
             *)
                 UNREGISTERED_HOOKS+="$hook "
