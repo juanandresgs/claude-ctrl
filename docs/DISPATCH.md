@@ -27,6 +27,7 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | Implementation, tests | **Implementer** | No — must invoke implementer. Orchestrator controls the full cycle (implement → test → verify → commit). |
 | E2E verification, demos | **Tester** | No — must invoke tester |
 | Commits, merges, branches | **Guardian** | No git commit/merge/push/branch -d/-D |
+| Plan/initiative evaluation | **Governor** | No — dispatch after planner (2+ waves), after initiative completion, before reckoning |
 | Worktree creation (bootstrap) | Orchestrator | Yes — `git worktree add` before implementer dispatch |
 | Research, reading code | Orchestrator / Explore | Read/Grep/Glob only |
 | Post-guardian health check | Orchestrator | Invoke `/diagnose` when check-guardian.sh suggests it |
@@ -121,6 +122,13 @@ own worktree, with its own tester→guardian cycle.
 
 **Auto-dispatch to Tester:** After the implementer returns successfully (tests pass, no blocking issues), dispatch the tester automatically with the implementer's trace context. Do NOT ask "should I verify?" — just dispatch the tester.
 
+**Auto-dispatch to Governor:** After the planner returns with a 2+ wave initiative, dispatch the governor automatically with the initiative block and MASTER_PLAN.md context. Do NOT ask "should I evaluate?" — just dispatch. Governor results are advisory:
+- **proceed** = continue to implementation normally
+- **caution** = present concerns to user before dispatching implementer
+- **block** = present to user and wait for guidance before proceeding
+
+After initiative completion (all phases merged, before `compress_initiative()`), dispatch the governor for post-completion assessment.
+
 **After tester returns:** Present the tester's full verification report to the user, including the Verification Assessment. Do NOT summarize it into a keyword demand. Engage in Q&A about the evidence. When the user expresses approval, prompt-submit.sh handles the gate transition automatically.
 
 ## Auto-Verify Fast Path
@@ -153,6 +161,7 @@ AUTO-VERIFY-APPROVED`. This is functionally equivalent to the auto-verify path a
 - Tester dispatch: requires implementer to have returned with tests passing
 - Guardian dispatch: requires `.proof-status = verified` when file exists (PreToolUse:Task|Agent gate in task-track.sh). Missing file = no gate (bootstrap path — implementer dispatch activates the gate by writing `needs-verification`)
 - The user's approval (verified, approved, lgtm, looks good, ship it) triggers `.proof-status = verified` via prompt-submit.sh — no agent can write it
+- Governor dispatch: no proof-status gate, no worktree gate. Governor is read-only and advisory.
 
 ## Trace and Recovery Protocols
 
