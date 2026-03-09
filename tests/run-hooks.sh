@@ -116,6 +116,7 @@ _print_scope_usage() {
     echo "  lint        — Shellcheck lint scope: lint.sh behavior + shellcheck on hooks/*.sh, tests/*.sh, tests/lib/*.sh, scripts/*.sh (matches CI exactly)"
     echo "  dbsafe-fixtures — db-safety fixture infrastructure (mock CLIs, setup-test-env, sample-commands, env-profiles)"
     echo "  dbsafe-w2b  — DB safety Wave 2b: migration allowlist, IaC/container/ORM interception (B5/B6/B7/B8)"
+    echo "  dbsafe-w3a  — DB Guardian Wave 3a: agent definition + JSON handoff protocol (D1/D2)"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
 }
@@ -171,6 +172,7 @@ _scope_pattern() {
         lint)              echo "lint\.sh|shellcheck.*(hooks|tests|scripts)" ;;
         dbsafe-fixtures)   echo "db-safety fixture infrastructure" ;;
         dbsafe-w2b)        echo "db-safety-lib\.sh unit tests.*Wave 2b" ;;
+        dbsafe-w3a)        echo "db-guardian-lib\.sh unit tests.*Wave 3a" ;;
         *)                 echo "" ;;
     esac
 }
@@ -3067,6 +3069,39 @@ fi
 
 echo ""
 fi # end: dbsafe-w2b
+
+# =============================================================================
+# --- DB Guardian Wave 3a unit tests ---
+# Delegates to test-db-guardian-w3a.sh and aggregates results.
+# Registered as --scope dbsafe-w3a.
+# Tests: D1 agent definition (validate/format/parse), D2 JSON handoff protocol,
+#        DB-GUARDIAN-REQUIRED signal emission, op_type detection. Minimum 25 tests.
+# =============================================================================
+if should_run_section "db-guardian-lib.sh unit tests.*Wave 3a"; then
+echo ""
+echo "--- db-guardian-lib.sh unit tests (Wave 3a: Database Guardian agent + JSON handoff) ---"
+
+_DBSAFE_W3A_TEST="$SCRIPT_DIR/test-db-guardian-w3a.sh"
+if [[ ! -f "$_DBSAFE_W3A_TEST" ]]; then
+    skip "db-guardian-w3a tests" "test-db-guardian-w3a.sh not found at $_DBSAFE_W3A_TEST"
+else
+    _DBSAFE_W3A_OUTPUT=$(bash "$_DBSAFE_W3A_TEST" 2>/dev/null) || true
+    _DBSAFE_W3A_EXIT=$?
+    # Parse results from the test output
+    _DBSAFE_W3A_PASSED=$(echo "$_DBSAFE_W3A_OUTPUT" | grep -c "^  PASS:" 2>/dev/null || true)
+    _DBSAFE_W3A_FAILED=$(echo "$_DBSAFE_W3A_OUTPUT" | grep -c "^  FAIL:" 2>/dev/null || true)
+    _DBSAFE_W3A_TOTAL=$(echo "$_DBSAFE_W3A_OUTPUT" | grep -E "^Results:" | grep -oE "[0-9]+ total" | grep -oE "[0-9]+" || true)
+    if [[ "$_DBSAFE_W3A_FAILED" -eq 0 && -n "$_DBSAFE_W3A_TOTAL" ]]; then
+        pass "db-guardian-w3a: all ${_DBSAFE_W3A_TOTAL} tests passed (${_DBSAFE_W3A_PASSED} assertions)"
+    else
+        _DBSAFE_W3A_FAIL_DETAILS=$(echo "$_DBSAFE_W3A_OUTPUT" | grep "^  FAIL:" | head -5 | tr '\n' '; ')
+        fail "db-guardian-w3a" "${_DBSAFE_W3A_FAILED} failed (${_DBSAFE_W3A_PASSED}/${_DBSAFE_W3A_TOTAL:-?} passed): ${_DBSAFE_W3A_FAIL_DETAILS}"
+        echo "$_DBSAFE_W3A_OUTPUT"
+    fi
+fi
+
+echo ""
+fi # end: dbsafe-w3a
 
 # --- Summary ---
 echo "==========================="

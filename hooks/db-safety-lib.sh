@@ -1115,3 +1115,43 @@ _db_detect_orm() {
     printf 'allow'
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _db_op_type_from_cli CLI_NAME COMMAND
+#
+# Maps a database CLI + command text to a Database Guardian operation_type.
+# Used by pre-bash.sh to populate the DB-GUARDIAN-REQUIRED signal so the
+# orchestrator can construct a typed handoff request for the Guardian agent.
+#
+# Returns one of: schema_alter | query | data_mutation | migration
+# ---------------------------------------------------------------------------
+_db_op_type_from_cli() {
+    local cli_name="${1:-}"
+    local cmd="${2:-}"
+
+    # Detect schema-altering operations (DDL)
+    if printf '%s' "$cmd" | grep -qiE '\b(ALTER[[:space:]]+TABLE|CREATE[[:space:]]+(TABLE|INDEX|VIEW|SCHEMA)|DROP[[:space:]]+(TABLE|VIEW|INDEX|SCHEMA)|RENAME[[:space:]]+TABLE|ADD[[:space:]]+COLUMN|DROP[[:space:]]+COLUMN|MODIFY[[:space:]]+COLUMN)\b'; then
+        printf 'schema_alter'
+        return 0
+    fi
+
+    # Detect data mutations (DML write ops)
+    # Note: UPDATE uses [[:alnum:]] without trailing \b — \w+\b would require a word
+    # boundary after a single character match, which always fails mid-word. The other
+    # patterns naturally end at word boundaries via the mandatory keyword suffix.
+    if printf '%s' "$cmd" | grep -qiE '\b(INSERT[[:space:]]+INTO|DELETE[[:space:]]+FROM|TRUNCATE[[:space:]]+TABLE|REPLACE[[:space:]]+INTO|UPSERT[[:space:]]+INTO)\b' || \
+       printf '%s' "$cmd" | grep -qiE '\bUPDATE[[:space:]]+[[:alnum:]_]'; then
+        printf 'data_mutation'
+        return 0
+    fi
+
+    # Detect migration-like invocations (CLI flag patterns)
+    if printf '%s' "$cmd" | grep -qiE '(--migrate|migrate|migration|schema[_-]update|upgrade|downgrade)'; then
+        printf 'migration'
+        return 0
+    fi
+
+    # Default: read query
+    printf 'query'
+    return 0
+}

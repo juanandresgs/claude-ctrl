@@ -277,6 +277,15 @@ require_db_safety() {
 # require_db_safety is called from the Database Safety Checks section of pre-bash.sh.
 # It is loaded lazily — non-database commands never pay the parse cost.
 # See hooks/db-safety-lib.sh for DEC-DBSAFE-001 (modular architecture rationale).
+
+require_db_guardian() {
+    [[ -n "${_DB_GUARDIAN_LIB_LOADED:-}" ]] && return 0
+    source "${_SRCLIB_DIR}/db-guardian-lib.sh"
+}
+# require_db_guardian is called from the Database Safety Checks section of pre-bash.sh
+# when a destructive DB command is denied and the DB-GUARDIAN-REQUIRED signal needs to
+# be emitted. It is loaded lazily — only fired when an actual deny triggers handoff.
+# See hooks/db-guardian-lib.sh for DEC-DBGUARD-002 (JSON marshalling rationale).
 # state_update/state_read are used optionally via: type state_update &>/dev/null && ...
 # (in log.sh and session-lib.sh). Tests call require_state directly.
 # See test-proof-lifecycle.sh:T09 for the test coverage of this loader.

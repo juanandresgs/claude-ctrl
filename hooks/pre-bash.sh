@@ -464,9 +464,27 @@ if echo "$_stripped_cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(psql|mysql|sq
         # Wave 2a B3: TTY fail-safe — non-interactive + deny → hard deny regardless of env tier.
         # AI agents pipe commands non-interactively, bypassing human confirmation prompts.
         # This catch fires BEFORE environment tiering (DEC-DBSAFE-006).
+        #
+        # @decision DEC-DBGUARD-004
+        # @title DB-GUARDIAN-REQUIRED signal appended to all DB safety denies
+        # @status accepted
+        # @rationale Wave 3a introduces the Database Guardian agent as the privileged path
+        #   for executing blocked database operations. When pre-bash.sh denies a command,
+        #   the orchestrator needs a machine-readable trigger to know it should dispatch the
+        #   Guardian rather than just showing a plain error. The signal is appended to the
+        #   human-readable deny message as a structured JSON block. This is backward-compatible
+        #   (existing code ignores the appended text; only the orchestrator's signal parser
+        #   acts on it). require_db_guardian() is called lazily here — only when an actual
+        #   deny is about to fire, so non-destructive DB commands pay zero cost.
         _DB_TTY_DENY=$(_db_check_tty "$_DB_RISK_LEVEL" "$_DB_RISK_RESULT")
         if [[ -n "$_DB_TTY_DENY" ]]; then
-            emit_deny "$(_db_format_deny "${_DB_TTY_DENY#deny:}" "Route through Database Guardian for human approval, or run interactively at a terminal.")"
+            require_db_guardian
+            _DBG_SIGNAL=$(_dbg_emit_guardian_required \
+                "$(_db_op_type_from_cli "$_DB_CLI" "$COMMAND")" \
+                "$COMMAND" \
+                "${_DB_TTY_DENY#deny:}" \
+                "$_DB_ENV")
+            emit_deny "$(_db_format_deny "${_DB_TTY_DENY#deny:}" "Route through Database Guardian for human approval, or run interactively at a terminal.")${_DBG_SIGNAL}"
         fi
 
         # Environment-tiered response matrix (DEC-DBSAFE-002):
@@ -479,14 +497,32 @@ if echo "$_stripped_cmd" | grep -qE '(^|[[:space:]]|&&|\|\|?|;|\()(psql|mysql|sq
         case "$_DB_ENV" in
             production|unknown)
                 if [[ "$_DB_RISK_LEVEL" == "deny" ]]; then
-                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON" "Connect to a development database to run destructive operations. If this is intentional, run the command directly in a database client outside Claude Code.")"
+                    require_db_guardian
+                    _DBG_SIGNAL=$(_dbg_emit_guardian_required \
+                        "$(_db_op_type_from_cli "$_DB_CLI" "$COMMAND")" \
+                        "$COMMAND" \
+                        "$_DB_RISK_REASON" \
+                        "$_DB_ENV")
+                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON" "Connect to a development database to run destructive operations. If this is intentional, route through Database Guardian for human approval.")${_DBG_SIGNAL}"
                 elif [[ "$_DB_RISK_LEVEL" == "advisory" ]]; then
-                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON (environment: $_DB_ENV — treating as production)" "Verify the target environment. Run with an explicit WHERE clause or on a development database.")"
+                    require_db_guardian
+                    _DBG_SIGNAL=$(_dbg_emit_guardian_required \
+                        "$(_db_op_type_from_cli "$_DB_CLI" "$COMMAND")" \
+                        "$COMMAND" \
+                        "$_DB_RISK_REASON (environment: $_DB_ENV — treating as production)" \
+                        "$_DB_ENV")
+                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON (environment: $_DB_ENV — treating as production)" "Verify the target environment. Run with an explicit WHERE clause or on a development database.")${_DBG_SIGNAL}"
                 fi
                 ;;
             staging)
                 if [[ "$_DB_RISK_LEVEL" == "deny" ]]; then
-                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON" "Connect to a development database to run destructive operations.")"
+                    require_db_guardian
+                    _DBG_SIGNAL=$(_dbg_emit_guardian_required \
+                        "$(_db_op_type_from_cli "$_DB_CLI" "$COMMAND")" \
+                        "$COMMAND" \
+                        "$_DB_RISK_REASON" \
+                        "$_DB_ENV")
+                    emit_deny "$(_db_format_deny "$_DB_RISK_REASON" "Connect to a development database to run destructive operations.")${_DBG_SIGNAL}"
                 elif [[ "$_DB_RISK_LEVEL" == "advisory" ]]; then
                     log_warn "DB-SAFETY" "$(_db_format_advisory "$_DB_RISK_REASON (environment: staging)")"
                     # Allow — staging advisory is a warning only
