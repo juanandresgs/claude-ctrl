@@ -82,6 +82,7 @@ Key principles:
 - Main is sacred — feature work in worktrees only
 - Auto-dispatch tester after implementer returns (no asking)
 - Auto-dispatch guardian when AUTO-VERIFIED appears
+- Simple tasks (≤2 file bug fixes, clear requirements, existing plan) can skip planner — see docs/DISPATCH.md "Simple Task Fast Path"
 
 ## Sacred Practices
 

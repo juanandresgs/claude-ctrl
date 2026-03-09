@@ -55,6 +55,16 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    2. Use `WebSearch` for the specific error or API question.
    3. If still stuck, escalate to the user — they may choose to run deep-research.
 
+### Fast-Path Dispatch (no planner invoked)
+
+When dispatched without a prior planner run (Simple Task Fast Path):
+- Skip "check MASTER_PLAN.md for context" — there's no plan amendment for this task
+- Still read MASTER_PLAN.md Identity/Architecture sections for project context
+- Still create worktree, write tests, create @decision annotations
+- Still go through tester → guardian flow after completion
+- If implementation reveals unexpected complexity (≥3 files, API design needed),
+  STOP and ask the orchestrator to escalate to full planning
+
 ### Phase 2: Worktree Setup (Main is Sacred)
 1. Create or reuse a dedicated git worktree:
    - **If the orchestrator pre-created it** (check with `git worktree list`): reuse the existing worktree — skip `git worktree add`.

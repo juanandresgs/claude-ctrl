@@ -56,6 +56,38 @@ Detection: `git ls-files --error-unmatch MASTER_PLAN.md` (exit 0 = tracked = ame
 The orchestrator owns worktree creation because it is infrastructure, not source code.
 Gate C.1 in task-track.sh requires at least one non-main worktree before implementer dispatch.
 
+### Simple Task Fast Path
+
+<!--
+@decision DEC-DISPATCH-002
+@title Simple Task Fast Path — skip planner for clearly-simple tasks
+@status accepted
+@rationale Benchmark data shows 60-310% token overhead on easy tasks from governance
+  ceremony that doesn't scale with complexity. Allowing the orchestrator to skip planning
+  for clearly-simple tasks reduces overhead while maintaining safety through worktrees,
+  tests, and @decision annotations.
+-->
+
+Not every task needs full ceremony. The orchestrator MAY skip the planner and dispatch
+the implementer directly when ALL of these hold:
+
+- Task scope is ≤2 files (clear from the request)
+- No architectural decisions needed (no new patterns, no API design)
+- An active MASTER_PLAN.md already exists (amendment context available)
+- The task is a bug fix, typo correction, or small enhancement to existing code
+
+When using the fast path:
+- The implementer still works in a worktree (Sacred Practice #2)
+- The implementer still runs tests (Sacred Practice #4)
+- The implementer still creates @decision annotations for non-obvious choices
+- But NO planner dispatch, NO MASTER_PLAN.md amendment, NO issue creation
+
+**Escalation signals** (abandon fast path, invoke planner):
+- Task touches ≥3 files or creates new modules
+- Task requires new interfaces or API design
+- Task has ambiguous requirements or multiple valid approaches
+- Implementation reveals unexpected complexity
+
 ## TEST_SCOPE Signal
 
 The orchestrator can include `TEST_SCOPE: full|minimal|none` in the dispatch prompt:
