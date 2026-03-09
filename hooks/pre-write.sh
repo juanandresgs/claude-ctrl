@@ -269,7 +269,14 @@ if [[ "$_IN_WORKTREE" == "false" ]]; then
             if [[ "$TOOL_NAME" == "Write" ]]; then
                 CONTENT_LINES=$(echo "$_CACHED_WRITE_CONTENT" | wc -l | tr -d ' ')
                 if [[ "$CONTENT_LINES" -lt 20 ]]; then
-                    emit_advisory "Fast-mode bypass: small file write ($CONTENT_LINES lines) skipped plan check. Surface audit will track this."
+                    # @decision DEC-EFF-006
+                    # @title Demote fast-mode bypass advisory to debug log
+                    # @status accepted
+                    # @rationale Fast mode is a Claude Code feature, not model-controlled.
+                    #   Advisory added no behavioral value — model cannot change its mode.
+                    #   Event logged to .session-events.jsonl for observatory/forensic use.
+                    #   Safety invariant: No mechanism needed — model has no control over fast mode.
+                    echo "{\"ts\":$(date +%s),\"type\":\"advisory-demoted\",\"gate\":\"fast-mode-bypass\",\"detail\":\"small file write (${CONTENT_LINES} lines) skipped plan check\"}" >> "${_CACHED_CLAUDE_DIR}/.session-events.jsonl" 2>/dev/null || true
                     # Continue to next gates — don't exit
                 else
                     # Large write — check for plan
@@ -285,7 +292,35 @@ if [[ "$_IN_WORKTREE" == "false" ]]; then
                         fi
 
                         # Plan staleness check (composite: churn % + drift IDs)
+                        # @decision DEC-EFF-008
+                        # @title Cache plan churn detection with 300s TTL
+                        # @status accepted
+                        # @rationale Churn detection runs git diff + grep on every source write (~50ms).
+                        #   Churn changes slowly — 300s cache is safe. <5% churn is genuinely trivial
+                        #   and skips the full drift audit. ≥5% still triggers full audit + advisory/deny.
+                        #   Safety invariant: Churn ≥5% fires all gates as before. Only <5% (trivial) skips.
+                        _CHURN_CACHE="${_CACHED_CLAUDE_DIR}/.churn-cache-${CLAUDE_SESSION_ID:-$$}"
+                        _CHURN_CACHE_TTL=300
+                        _CHURN_CACHE_HIT=false
+                        _CACHED_CHURN_PCT=0
+                        if [[ -f "$_CHURN_CACHE" ]]; then
+                            _CACHE_TS=$(cut -d'|' -f1 "$_CHURN_CACHE" 2>/dev/null || echo "0")
+                            _CACHE_PCT=$(cut -d'|' -f2 "$_CHURN_CACHE" 2>/dev/null || echo "")
+                            _NOW_CHURN=$(date +%s)
+                            if [[ "$_CACHE_TS" =~ ^[0-9]+$ && "$_CACHE_PCT" =~ ^[0-9]+$ ]]; then
+                                if (( _NOW_CHURN - _CACHE_TS < _CHURN_CACHE_TTL )); then
+                                    _CHURN_CACHE_HIT=true
+                                    _CACHED_CHURN_PCT="$_CACHE_PCT"
+                                fi
+                            fi
+                        fi
+
                         get_drift_data "$_CACHED_PROJECT_ROOT"
+
+                        # Write/refresh the churn cache after computing fresh data
+                        if [[ "$_CHURN_CACHE_HIT" == "false" ]]; then
+                            echo "$(date +%s)|${PLAN_SOURCE_CHURN_PCT}" > "$_CHURN_CACHE" 2>/dev/null || true
+                        fi
 
                         CHURN_WARN_PCT="${PLAN_CHURN_WARN:-15}"
                         CHURN_DENY_PCT="${PLAN_CHURN_DENY:-35}"
@@ -294,15 +329,24 @@ if [[ "$_IN_WORKTREE" == "false" ]]; then
                         [[ "$PLAN_SOURCE_CHURN_PCT" -ge "$CHURN_DENY_PCT" ]] && CHURN_TIER="deny"
                         [[ "$CHURN_TIER" == "ok" && "$PLAN_SOURCE_CHURN_PCT" -ge "$CHURN_WARN_PCT" ]] && CHURN_TIER="warn"
 
+                        # Cache optimization: if churn < 5% and cache is valid, skip full drift audit
+                        # ≥5% always runs full audit regardless of cache
+                        _SKIP_DRIFT_AUDIT=false
+                        if [[ "$_CHURN_CACHE_HIT" == "true" && "$_CACHED_CHURN_PCT" -lt 5 && "$PLAN_SOURCE_CHURN_PCT" -lt 5 ]]; then
+                            _SKIP_DRIFT_AUDIT=true
+                        fi
+
                         DRIFT_TIER="ok"
                         TOTAL_DRIFT=0
-                        if [[ "$DRIFT_LAST_AUDIT_EPOCH" -gt 0 ]]; then
-                            TOTAL_DRIFT=$((DRIFT_UNPLANNED_COUNT + DRIFT_UNIMPLEMENTED_COUNT))
-                            [[ "$TOTAL_DRIFT" -ge 5 ]] && DRIFT_TIER="deny"
-                            [[ "$DRIFT_TIER" == "ok" && "$TOTAL_DRIFT" -ge 2 ]] && DRIFT_TIER="warn"
-                        else
-                            [[ "$PLAN_COMMITS_SINCE" -ge 100 ]] && DRIFT_TIER="deny"
-                            [[ "$DRIFT_TIER" == "ok" && "$PLAN_COMMITS_SINCE" -ge 40 ]] && DRIFT_TIER="warn"
+                        if [[ "$_SKIP_DRIFT_AUDIT" == "false" ]]; then
+                            if [[ "$DRIFT_LAST_AUDIT_EPOCH" -gt 0 ]]; then
+                                TOTAL_DRIFT=$((DRIFT_UNPLANNED_COUNT + DRIFT_UNIMPLEMENTED_COUNT))
+                                [[ "$TOTAL_DRIFT" -ge 5 ]] && DRIFT_TIER="deny"
+                                [[ "$DRIFT_TIER" == "ok" && "$TOTAL_DRIFT" -ge 2 ]] && DRIFT_TIER="warn"
+                            else
+                                [[ "$PLAN_COMMITS_SINCE" -ge 100 ]] && DRIFT_TIER="deny"
+                                [[ "$DRIFT_TIER" == "ok" && "$PLAN_COMMITS_SINCE" -ge 40 ]] && DRIFT_TIER="warn"
+                            fi
                         fi
 
                         STALENESS="ok"
@@ -356,7 +400,14 @@ if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH" && ! is_test_
             if [[ ! -f "$COLD_FLAG" ]]; then
                 mkdir -p "${_CACHED_PROJECT_ROOT}/.claude"
                 touch "$COLD_FLAG"
-                emit_advisory "No test results yet but test framework detected. Tests will run automatically after this write."
+                # @decision DEC-EFF-007
+                # @title Demote cold test-gate advisory to debug log
+                # @status accepted
+                # @rationale Cold-start advisory fires before any tests could possibly exist.
+                #   The deny gate (strike 2+) catches real test failures with enforcement.
+                #   Advisory was pure noise on project bootstrapping.
+                #   Safety invariant: Deny gate (strike 2+) is the real enforcement — unchanged.
+                echo "{\"ts\":$(date +%s),\"type\":\"advisory-demoted\",\"gate\":\"cold-test-gate\",\"detail\":\"no test results yet but test framework detected\"}" >> "${_CACHED_CLAUDE_DIR}/.session-events.jsonl" 2>/dev/null || true
             fi
         fi
     else

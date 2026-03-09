@@ -720,42 +720,80 @@ if $_RUN_SUMMARY; then
     SESS_SUMMARY+="\nNext: $NEXT_ACTION"
 
     # Trajectory narrative
+    # @decision DEC-EFF-011
+    # @title Cache trajectory narrative with git-state fingerprint
+    # @status accepted
+    # @rationale Trajectory narrative regenerates every turn (~300-400ms).
+    #   When nothing changed (same branch, same HEAD, same dirty count),
+    #   the narrative is identical. Serving from cache saves ~300ms/turn.
+    #   Safety invariant: Cache invalidated on any git/plan mutation.
+    #   If state changed, full regeneration runs — model sees accurate state.
     EVENTS_FILE="${CLAUDE_DIR}/.session-events.jsonl"
     if [[ -f "$EVENTS_FILE" ]]; then
-        set +e
-        get_session_trajectory "$PROJECT_ROOT"
-        detect_approach_pivots "$PROJECT_ROOT"
-        set -e
+        # Build trajectory cache key: branch|HEAD|dirty_count|plan_mtime
+        _TRAJ_CACHE="${CLAUDE_DIR}/.stop-trajectory-cache-${_SESSION_KEY}"
+        _TRAJ_BRANCH="${GIT_BRANCH:-unknown}"
+        _TRAJ_HEAD=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        _TRAJ_DIRTY="${GIT_DIRTY_COUNT:-0}"
+        _TRAJ_PLAN_MTIME=0
+        [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]] && _TRAJ_PLAN_MTIME=$(stat -c '%Y' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || stat -f '%m' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+        _TRAJ_FP="${_TRAJ_BRANCH}|${_TRAJ_HEAD}|${_TRAJ_DIRTY}|${_TRAJ_PLAN_MTIME}"
 
-        TRAJ_LINE=""
-        if [[ "${TRAJ_TOOL_CALLS:-0}" -gt 0 ]]; then
-            TRAJ_LINE="Trajectory: ${TRAJ_TOOL_CALLS} write(s) across ${TRAJ_FILES_MODIFIED} file(s)."
-        fi
-        if [[ "${TRAJ_TEST_FAILURES:-0}" -gt 0 ]]; then
-            TRAJ_LINE="$TRAJ_LINE ${TRAJ_TEST_FAILURES} test failure(s)."
-            TOP_ASSERTION=$(grep '"event":"test_run"' "$EVENTS_FILE" 2>/dev/null \
-                | grep '"result":"fail"' \
-                | jq -r '.assertion // empty' 2>/dev/null \
-                | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
-            if [[ -n "$TOP_ASSERTION" && "$TOP_ASSERTION" != "null" && "$TOP_ASSERTION" != "unknown" ]]; then
-                TRAJ_LINE="$TRAJ_LINE Most-failed: \`${TOP_ASSERTION}\`."
+        _TRAJ_CACHED_LINE=""
+        _TRAJ_CACHE_HIT=false
+        if [[ -f "$_TRAJ_CACHE" ]]; then
+            _TRAJ_STORED_FP=$(head -1 "$_TRAJ_CACHE" 2>/dev/null || echo "")
+            if [[ "$_TRAJ_STORED_FP" == "$_TRAJ_FP" ]]; then
+                _TRAJ_CACHED_LINE=$(tail -n +2 "$_TRAJ_CACHE" 2>/dev/null || echo "")
+                _TRAJ_CACHE_HIT=true
             fi
         fi
-        if [[ "${PIVOT_COUNT:-0}" -gt 0 ]]; then
-            TRAJ_LINE="$TRAJ_LINE ${PIVOT_COUNT} approach pivot(s) detected (edit->fail loop)."
-            if [[ -n "${PIVOT_FILES:-}" ]]; then
-                PIVOT_BASE=$(echo "$PIVOT_FILES" | tr ' ' '\n' | xargs -I{} basename {} 2>/dev/null | paste -sd ', ' - || echo "$PIVOT_FILES")
-                TRAJ_LINE="$TRAJ_LINE Looping files: ${PIVOT_BASE}."
+
+        if [[ "$_TRAJ_CACHE_HIT" == "true" ]]; then
+            # Serve from cache — git state unchanged, trajectory is identical
+            [[ -n "$_TRAJ_CACHED_LINE" ]] && SESS_SUMMARY+="\n${_TRAJ_CACHED_LINE}"
+        else
+            set +e
+            get_session_trajectory "$PROJECT_ROOT"
+            detect_approach_pivots "$PROJECT_ROOT"
+            set -e
+
+            TRAJ_LINE=""
+            if [[ "${TRAJ_TOOL_CALLS:-0}" -gt 0 ]]; then
+                TRAJ_LINE="Trajectory: ${TRAJ_TOOL_CALLS} write(s) across ${TRAJ_FILES_MODIFIED} file(s)."
             fi
-        fi
-        if [[ "${TRAJ_GATE_BLOCKS:-0}" -gt 0 ]]; then
-            TRAJ_LINE="$TRAJ_LINE ${TRAJ_GATE_BLOCKS} gate block(s)."
-        fi
-        if [[ -n "${TRAJ_AGENTS:-}" ]]; then
-            TRAJ_LINE="$TRAJ_LINE Agents: ${TRAJ_AGENTS}."
-        fi
-        if [[ -n "$TRAJ_LINE" ]]; then
-            SESS_SUMMARY+="\n$TRAJ_LINE"
+            if [[ "${TRAJ_TEST_FAILURES:-0}" -gt 0 ]]; then
+                TRAJ_LINE="$TRAJ_LINE ${TRAJ_TEST_FAILURES} test failure(s)."
+                TOP_ASSERTION=$(grep '"event":"test_run"' "$EVENTS_FILE" 2>/dev/null \
+                    | grep '"result":"fail"' \
+                    | jq -r '.assertion // empty' 2>/dev/null \
+                    | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+                if [[ -n "$TOP_ASSERTION" && "$TOP_ASSERTION" != "null" && "$TOP_ASSERTION" != "unknown" ]]; then
+                    TRAJ_LINE="$TRAJ_LINE Most-failed: \`${TOP_ASSERTION}\`."
+                fi
+            fi
+            if [[ "${PIVOT_COUNT:-0}" -gt 0 ]]; then
+                TRAJ_LINE="$TRAJ_LINE ${PIVOT_COUNT} approach pivot(s) detected (edit->fail loop)."
+                if [[ -n "${PIVOT_FILES:-}" ]]; then
+                    PIVOT_BASE=$(echo "$PIVOT_FILES" | tr ' ' '\n' | xargs -I{} basename {} 2>/dev/null | paste -sd ', ' - || echo "$PIVOT_FILES")
+                    TRAJ_LINE="$TRAJ_LINE Looping files: ${PIVOT_BASE}."
+                fi
+            fi
+            if [[ "${TRAJ_GATE_BLOCKS:-0}" -gt 0 ]]; then
+                TRAJ_LINE="$TRAJ_LINE ${TRAJ_GATE_BLOCKS} gate block(s)."
+            fi
+            if [[ -n "${TRAJ_AGENTS:-}" ]]; then
+                TRAJ_LINE="$TRAJ_LINE Agents: ${TRAJ_AGENTS}."
+            fi
+            if [[ -n "$TRAJ_LINE" ]]; then
+                SESS_SUMMARY+="\n$TRAJ_LINE"
+            fi
+
+            # Write trajectory cache: fingerprint on line 1, narrative on line 2
+            {
+                echo "$_TRAJ_FP"
+                echo "${TRAJ_LINE:-}"
+            } > "$_TRAJ_CACHE" 2>/dev/null || true
         fi
 
         # Write structured retrospective to sessions dir

@@ -754,17 +754,30 @@ WARN_DOCS="${WARN_DOCS## }"
 WARN_DOCS="${WARN_DOCS%% }"
 
 if [[ -n "$WARN_DOCS" ]]; then
-    DIAG=""
-    for doc in $WARN_DOCS; do
-        DIAG="${DIAG}
+    # @decision DEC-EFF-009
+    # @title Fire-once-per-session doc-freshness advisory
+    # @status accepted
+    # @rationale Doc-freshness advisory fires on every commit/merge attempt.
+    #   First occurrence is useful (model learns docs are stale). Subsequent
+    #   occurrences are noise — model already knows and either acted or chose not to.
+    #   Deny gates for stale docs on merge-to-main remain fully active.
+    #   Safety invariant: Deny gate is the real enforcement — fires every time.
+    #   Advisory fires once per session — sufficient for model awareness.
+    _DF_FIRED_SENTINEL="${_DF_CLAUDE_DIR}/.doc-freshness-fired-${CLAUDE_SESSION_ID:-$$}"
+    if [[ ! -f "$_DF_FIRED_SENTINEL" ]]; then
+        touch "$_DF_FIRED_SENTINEL" 2>/dev/null || true
+        DIAG=""
+        for doc in $WARN_DOCS; do
+            DIAG="${DIAG}
   - $(_doc_diag "$doc")"
-    done
-    _docfresh_advisory "DOC-STALE ADVISORY: Documentation may need updating.
+        done
+        _docfresh_advisory "DOC-STALE ADVISORY: Documentation may need updating.
 
 Docs with stale indicators:${DIAG}
 
 Branch commits are advisory-only. This becomes a block on merge to main.
 Add @no-doc to bypass. $DOC_FRESHNESS_SUMMARY"
+    fi
 fi
 
 if [[ -n "$DOC_MOD_ADVISORY" ]]; then

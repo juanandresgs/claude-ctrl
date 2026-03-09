@@ -472,72 +472,126 @@ if echo "$PROMPT" | grep -qiE '\blater\b|\bdefer\b|\bbacklog\b|\beventually\b|\b
     CONTEXT_PARTS+=("Deferred-work language detected. Auto-captured as backlog issue. Use /backlog to review or refine.")
 fi
 
-# --- Mid-session CI status injection ---
-# When the user's prompt mentions CI-related keywords, inject cached CI status.
-# Reads state file only — no network call. Fast path for CI awareness mid-session.
-if echo "$PROMPT" | grep -qiE '\bci\b|\bpipeline\b|\bactions?\b|\bbuild\b.*\bfail|\bdeploy\b'; then
-    require_ci
-    if read_ci_status "$PROJECT_ROOT"; then
-        CONTEXT_PARTS+=("Current CI status: $(format_ci_summary)")
+# @decision DEC-EFF-010
+# @title Cache keyword match results with state-based invalidation
+# @status accepted
+# @rationale Keyword detection runs grep -qiE regex on every user prompt (~50-100ms).
+#   Results only change when git or plan state changes. Caching across
+#   consecutive identical-context prompts eliminates redundant regex evaluation.
+#   Safety invariant: Same signals produced, just served from cache.
+#   Cache invalidated on git HEAD change, branch change, or plan mtime change.
+#   CRITICAL: The PROOF-STATUS CAS section (fast path, lines above) is NOT cached.
+#   Only the contextual keyword injections below are cached.
+_KW_CACHE="${CLAUDE_DIR}/.keyword-cache-${CLAUDE_SESSION_ID:-$$}"
+
+# Build cache fingerprint: branch|HEAD|plan_mtime|dirty_count
+_KW_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+_KW_HEAD=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+_KW_PLAN_MTIME=0
+[[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]] && _KW_PLAN_MTIME=$(stat -c '%Y' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || stat -f '%m' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+_KW_DIRTY=$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+_KW_FINGERPRINT="${_KW_BRANCH}|${_KW_HEAD}|${_KW_PLAN_MTIME}|${_KW_DIRTY}"
+
+_KW_CACHE_HIT=false
+_KW_CACHED_CONTEXT=""
+if [[ -f "$_KW_CACHE" ]]; then
+    _KW_STORED_FP=$(head -1 "$_KW_CACHE" 2>/dev/null || echo "")
+    if [[ "$_KW_STORED_FP" == "$_KW_FINGERPRINT" ]]; then
+        _KW_CACHED_CONTEXT=$(tail -n +2 "$_KW_CACHE" 2>/dev/null || echo "")
+        _KW_CACHE_HIT=true
     fi
 fi
 
-# --- Check for plan/implement/status keywords ---
-if echo "$PROMPT" | grep -qiE '\bplan\b|\bimplement\b|\bphase\b|\bmaster.plan\b|\bstatus\b|\bprogress\b|\bdemo\b'; then
-    require_plan
-    get_plan_status "$PROJECT_ROOT"
+if [[ "$_KW_CACHE_HIT" == "true" && -n "$_KW_CACHED_CONTEXT" ]]; then
+    # Serve from cache — same git/plan state, no need to recompute
+    while IFS= read -r _kw_line; do
+        [[ -n "$_kw_line" ]] && CONTEXT_PARTS+=("$_kw_line")
+    done <<< "$_KW_CACHED_CONTEXT"
+else
+    # Cache miss — compute keyword injections and cache results
+    _KW_FRESH_PARTS=()
 
-    if [[ "$PLAN_EXISTS" == "true" ]]; then
-        if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
-            # @decision DEC-PLAN-003: "dormant" replaces "completed" for living plans
-            CONTEXT_PARTS+=("WARNING: MASTER_PLAN.md is dormant — all initiatives completed. Source writes are BLOCKED. Add a new initiative before writing code.")
-        elif [[ "$PLAN_ACTIVE_INITIATIVES" -gt 0 ]]; then
-            # New living-plan format: show initiative count and names
-            PLAN_LINE="Plan: ${PLAN_ACTIVE_INITIATIVES} active initiative(s)"
-            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | ${PLAN_COMPLETED_PHASES}/${PLAN_TOTAL_PHASES} phases done"
-            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
-            require_session
-            get_session_changes "$PROJECT_ROOT"
-            [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
-            CONTEXT_PARTS+=("$PLAN_LINE")
+    # --- Mid-session CI status injection ---
+    # When the user's prompt mentions CI-related keywords, inject cached CI status.
+    # Reads state file only — no network call. Fast path for CI awareness mid-session.
+    if echo "$PROMPT" | grep -qiE '\bci\b|\bpipeline\b|\bactions?\b|\bbuild\b.*\bfail|\bdeploy\b'; then
+        require_ci
+        if read_ci_status "$PROJECT_ROOT"; then
+            _KW_FRESH_PARTS+=("Current CI status: $(format_ci_summary)")
+        fi
+    fi
+
+    # --- Check for plan/implement/status keywords ---
+    if echo "$PROMPT" | grep -qiE '\bplan\b|\bimplement\b|\bphase\b|\bmaster.plan\b|\bstatus\b|\bprogress\b|\bdemo\b'; then
+        require_plan
+        get_plan_status "$PROJECT_ROOT"
+
+        if [[ "$PLAN_EXISTS" == "true" ]]; then
+            if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+                # @decision DEC-PLAN-003: "dormant" replaces "completed" for living plans
+                _KW_FRESH_PARTS+=("WARNING: MASTER_PLAN.md is dormant — all initiatives completed. Source writes are BLOCKED. Add a new initiative before writing code.")
+            elif [[ "$PLAN_ACTIVE_INITIATIVES" -gt 0 ]]; then
+                # New living-plan format: show initiative count and names
+                PLAN_LINE="Plan: ${PLAN_ACTIVE_INITIATIVES} active initiative(s)"
+                [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | ${PLAN_COMPLETED_PHASES}/${PLAN_TOTAL_PHASES} phases done"
+                [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+                require_session
+                get_session_changes "$PROJECT_ROOT"
+                [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
+                _KW_FRESH_PARTS+=("$PLAN_LINE")
+            else
+                # Old format: phase-level progress
+                PLAN_LINE="Plan:"
+                [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done"
+                [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+                [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+                require_session
+                get_session_changes "$PROJECT_ROOT"
+                [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
+                _KW_FRESH_PARTS+=("$PLAN_LINE")
+            fi
         else
-            # Old format: phase-level progress
-            PLAN_LINE="Plan:"
-            [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done"
-            [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
-            [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
-            require_session
-            get_session_changes "$PROJECT_ROOT"
-            [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
-            CONTEXT_PARTS+=("$PLAN_LINE")
-        fi
-    else
-        CONTEXT_PARTS+=("No MASTER_PLAN.md found — Core Dogma requires planning before implementation.")
-    fi
-fi
-
-# --- Check for merge/commit keywords ---
-if echo "$PROMPT" | grep -qiE '\bmerge\b|\bcommit\b|\bpush\b|\bPR\b|\bpull.request\b'; then
-    require_git
-    get_git_state "$PROJECT_ROOT"
-
-    if [[ -n "$GIT_BRANCH" ]]; then
-        CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted changes")
-
-        if [[ "$GIT_BRANCH" == "main" || "$GIT_BRANCH" == "master" ]]; then
-            CONTEXT_PARTS+=("WARNING: Currently on $GIT_BRANCH. Sacred Practice #2: Main is sacred.")
+            _KW_FRESH_PARTS+=("No MASTER_PLAN.md found — Core Dogma requires planning before implementation.")
         fi
     fi
-fi
 
-# --- Research-worthy prompt detection ---
-if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|community|reddit)\b|\brecent\b|\btrending\b|\bdeep dive\b|\bwhich is better\b|\bpros and cons\b'; then
-    require_session
-    get_research_status "$PROJECT_ROOT"
-    if [[ "$RESEARCH_EXISTS" == "true" ]]; then
-        CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before invoking /deep-research or /last30days.")
+    # --- Check for merge/commit keywords ---
+    if echo "$PROMPT" | grep -qiE '\bmerge\b|\bcommit\b|\bpush\b|\bPR\b|\bpull.request\b'; then
+        require_git
+        get_git_state "$PROJECT_ROOT"
+
+        if [[ -n "$GIT_BRANCH" ]]; then
+            _KW_FRESH_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted changes")
+
+            if [[ "$GIT_BRANCH" == "main" || "$GIT_BRANCH" == "master" ]]; then
+                _KW_FRESH_PARTS+=("WARNING: Currently on $GIT_BRANCH. Sacred Practice #2: Main is sacred.")
+            fi
+        fi
+    fi
+
+    # --- Research-worthy prompt detection ---
+    if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|community|reddit)\b|\brecent\b|\btrending\b|\bdeep dive\b|\bwhich is better\b|\bpros and cons\b'; then
+        require_session
+        get_research_status "$PROJECT_ROOT"
+        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+            _KW_FRESH_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before invoking /deep-research or /last30days.")
+        else
+            _KW_FRESH_PARTS+=("No prior research. /deep-research for deep analysis, /last30days for recent community discussions.")
+        fi
+    fi
+
+    # Write cache: fingerprint on line 1, results on subsequent lines
+    if [[ ${#_KW_FRESH_PARTS[@]} -gt 0 ]]; then
+        {
+            echo "$_KW_FINGERPRINT"
+            printf '%s\n' "${_KW_FRESH_PARTS[@]}"
+        } > "$_KW_CACHE" 2>/dev/null || true
+        for _kw_part in "${_KW_FRESH_PARTS[@]}"; do
+            CONTEXT_PARTS+=("$_kw_part")
+        done
     else
-        CONTEXT_PARTS+=("No prior research. /deep-research for deep analysis, /last30days for recent community discussions.")
+        # Still write fingerprint so next call can confirm cache hit with empty results
+        echo "$_KW_FINGERPRINT" > "$_KW_CACHE" 2>/dev/null || true
     fi
 fi
 

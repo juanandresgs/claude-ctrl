@@ -477,6 +477,11 @@ rm -f "${CLAUDE_DIR}/.stop-todo-ttl"
 # DEC-PERF-004: warm-path caches — session-scoped, delete on exit
 rm -f "${CLAUDE_DIR}/.stop-git-cache-"*
 rm -f "${CLAUDE_DIR}/.stop-plan-cache-"*
+# DEC-EFF-008/009/010/011: governance efficiency caches — session-scoped, delete on exit
+rm -f "${CLAUDE_DIR}/.churn-cache-"*
+rm -f "${CLAUDE_DIR}/.doc-freshness-fired-"*
+rm -f "${CLAUDE_DIR}/.keyword-cache-"*
+rm -f "${CLAUDE_DIR}/.stop-trajectory-cache-"*
 # Migration cleanup: remove double-nested and tmp proof files (Bug E legacy paths)
 rm -f "${CLAUDE_DIR}/.claude/.proof-status" 2>/dev/null
 rm -f "${CLAUDE_DIR}/tmp/.proof-status" 2>/dev/null
