@@ -1422,6 +1422,216 @@ test_new_lifetime_format_tks_suffix() {
 }
 
 # ============================================================================
+# Test group 16: Dual-color context pressure bar (baseline capture + rendering)
+# @decision DEC-TEST-STATUSLINE-016
+# @title Tests for dual-color context bar: baseline capture, invalidation, rendering
+# @status accepted
+# @rationale The dual-color bar feature requires: (a) a separate system-overhead baseline
+# stored in .statusline-baseline-SESSION_ID, (b) baseline invalidation on compaction or
+# fingerprint drift, (c) rendering that shows ▓ blocks for system overhead in dim color
+# and █ blocks for conversation in the severity color. Tests exercise all three concerns
+# via controlled temp workspaces and explicit baseline files.
+# ============================================================================
+
+# Helper: make a baseline file in workspace_dir/.claude/
+# The default fingerprint "db979ea7417729bbbf00e51764320bac" is md5("0:0:Claude:0"):
+# the fingerprint statusline.sh computes when HOME is a tmpdir with no config files
+# (CLAUDE.md mtime=0, settings.json mtime=0, model="Claude", hooks mtime=0).
+# Tests that need the baseline to be "valid" (matching) use this default fingerprint.
+# Tests that need the baseline to be "stale" (triggering invalidation) pass a different one.
+_EMPTY_HOME_FP="db979ea7417729bbbf00e51764320bac"
+make_baseline_file() {
+    local dir="$1" fingerprint="${2:-$_EMPTY_HOME_FP}" pct="$3"
+    mkdir -p "$dir/.claude"
+    printf '%s|%s' "$fingerprint" "$pct" > "$dir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+}
+
+# Helper: run statusline and capture the raw (with ANSI) metrics line (line 2)
+run_sl_raw_line2() {
+    local json="$1" home_dir="$2"
+    local output
+    output=$(printf '%s' "$json" | HOME="$home_dir" bash "$STATUSLINE" 2>/dev/null)
+    extract_line "$output" 2
+}
+
+test_dual_color_bar_shows_both_block_types() {
+    # baseline=20 (2 system blocks), total=60 (7 filled total -> 5 conversation blocks)
+    # bar should contain HEAVY SHADE (U+2593) AND FULL BLOCK (U+2588)
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    mkdir -p "$tmpdir/.claude"
+    make_baseline_file "$tmpdir" "$_EMPTY_HOME_FP" "20"
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":60}}' "$tmpdir")
+    local raw_line2
+    raw_line2=$(run_sl_raw_line2 "$json" "$tmpdir" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # 20% baseline -> floor(20*12/100)=2 system blocks (heavy shade char)
+    # 60% total -> floor(60*12/100)=7 filled; conversation=7-2=5 blocks (full block char)
+    if [[ "$raw_line2" == *$'\xe2\x96\x93'* ]] && [[ "$raw_line2" == *$'\xe2\x96\x88'* ]]; then
+        pass_test "Dual-color bar: baseline=20 total=60 shows both system (heavy shade) and conversation (full block) blocks"
+    else
+        fail_test "Dual-color bar: expected both heavy-shade and full-block chars in bar" "raw_line2=$raw_line2"
+    fi
+}
+
+test_dual_color_bar_system_uses_dim_color() {
+    # System blocks should be preceded by a dim ANSI code (ESC[2m or ESC[34m).
+    # The bar opens with ESC[2m[ so dim color precedes the system (heavy-shade) blocks.
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    mkdir -p "$tmpdir/.claude"
+    make_baseline_file "$tmpdir" "$_EMPTY_HOME_FP" "20"
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":60}}' "$tmpdir")
+    local raw_line2
+    raw_line2=$(run_sl_raw_line2 "$json" "$tmpdir")
+
+    # The dual-color bar renders dim code (ESC[2m) before the heavy-shade blocks.
+    # Check that ESC[2m appears in the bar output.
+    if printf '%s' "$raw_line2" | grep -qF $'\033[2m'; then
+        pass_test "Dual-color bar: dim color code (ESC[2m) present in bar output for system blocks"
+    else
+        fail_test "Dual-color bar: no dim ANSI code (ESC[2m) found in bar output" \
+            "visible: $(printf '%s' "$raw_line2" | sed 's/\x1b\[[0-9;]*m//g')"
+    fi
+}
+
+test_dual_color_bar_no_baseline_falls_back_single_color() {
+    # When workspace dir does not exist (write fails), baseline cannot be captured ->
+    # single-color fallback. We use a non-existent workspace path so the baseline
+    # file write fails and baseline_pct stays 0.
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    # Use a workspace that exists but whose .claude/ subdir does NOT exist
+    # so the baseline write fails and we fall back to single-color.
+    local fake_ws="$tmpdir/nonexistent-workspace"
+    # Do NOT create fake_ws/.claude/ — the baseline write will fail
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":60}}' "$fake_ws")
+    local raw_line2
+    raw_line2=$(printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null | head -2 | tail -1 | sed 's/\x1b\[[0-9;]*m//g')
+
+    if [[ "$raw_line2" != *$'\xe2\x96\x93'* ]]; then
+        pass_test "Dual-color bar: write fails (no .claude/ dir) -> single-color fallback (no heavy-shade blocks)"
+    else
+        fail_test "Dual-color bar: heavy-shade blocks shown when baseline write fails" "raw_line2=$raw_line2"
+    fi
+}
+
+test_baseline_captured_on_first_valid_reading() {
+    # First run with ctx_pct=35, no baseline -> statusline should create baseline file
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    mkdir -p "$tmpdir/.claude"
+    # No baseline file initially
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":35}}' "$tmpdir")
+    # Run statusline (it should capture baseline)
+    printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
+
+    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    if [[ -f "$baseline_file" ]]; then
+        local content
+        content=$(cat "$baseline_file")
+        # Should be fingerprint|35
+        if [[ "$content" == *"|35"* ]]; then
+            pass_test "Baseline captured on first valid reading: file created with pct=35"
+        else
+            fail_test "Baseline file exists but content wrong" "content=$content"
+        fi
+    else
+        fail_test "Baseline file not created on first valid reading" \
+            "expected: $baseline_file"
+    fi
+}
+
+test_baseline_invalidated_on_pct_drop() {
+    # If saved baseline=40 but current ctx_pct=25 (compaction happened), baseline reset
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    mkdir -p "$tmpdir/.claude"
+    # Pre-set baseline at 40%
+    make_baseline_file "$tmpdir" "$_EMPTY_HOME_FP" "40"
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":25}}' "$tmpdir")
+    printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
+
+    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    local content
+    content=$(cat "$baseline_file" 2>/dev/null || echo "")
+    # After compaction (pct dropped), baseline should be recaptured at new lower value (25)
+    if [[ "$content" == *"|25"* ]]; then
+        pass_test "Baseline invalidated on pct drop (compaction): re-captured at 25"
+    else
+        fail_test "Baseline not reset after pct drop" "content=$content"
+    fi
+}
+
+test_baseline_invalidated_on_fingerprint_change() {
+    # Saved fingerprint="oldhash" but current fingerprint differs -> baseline recaptured
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    mkdir -p "$tmpdir/.claude"
+    # Pre-set baseline with a stale fingerprint that cannot match any real hash
+    make_baseline_file "$tmpdir" "oldhash_that_wont_match_current_zzzzzz" "30"
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":45}}' "$tmpdir")
+    printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
+
+    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    local content
+    content=$(cat "$baseline_file" 2>/dev/null || echo "")
+    # After fingerprint drift, baseline should be recaptured at current pct (45)
+    if [[ "$content" == *"|45"* ]]; then
+        pass_test "Baseline invalidated on fingerprint change: re-captured at 45"
+    else
+        fail_test "Baseline not reset after fingerprint change" "content=$content"
+    fi
+}
+
+test_baseline_not_captured_when_pct_invalid() {
+    # ctx_pct=-1 (before first API call) -> do NOT capture baseline
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _CLEANUP_DIRS+=("$tmpdir")
+    mkdir -p "$tmpdir/.claude"
+    # No baseline file
+
+    local json
+    json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{}}' "$tmpdir")
+    printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
+
+    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    if [[ ! -f "$baseline_file" ]]; then
+        pass_test "Baseline NOT captured when ctx_pct=-1 (before first API call)"
+    else
+        local content
+        content=$(cat "$baseline_file")
+        fail_test "Baseline incorrectly captured when pct invalid" "content=$content"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -1541,6 +1751,16 @@ test_responsive_line1_very_narrow_keeps_workspace
 test_responsive_line2_narrow_drops_lines_changed
 test_responsive_line2_very_narrow_keeps_context_bar
 test_responsive_no_truncation_at_wide
+
+echo ""
+echo "--- Dual-color context bar (baseline) ---"
+test_dual_color_bar_shows_both_block_types
+test_dual_color_bar_system_uses_dim_color
+test_dual_color_bar_no_baseline_falls_back_single_color
+test_baseline_captured_on_first_valid_reading
+test_baseline_invalidated_on_pct_drop
+test_baseline_invalidated_on_fingerprint_change
+test_baseline_not_captured_when_pct_invalid
 echo "========================================="
 echo "Test Results:"
 echo "  Total:  $TESTS_RUN"
@@ -1559,3 +1779,4 @@ else
     echo -e "${RED}Some tests failed.${NC}"
     exit 1
 fi
+

@@ -165,14 +165,94 @@ if [[ -f "$TODO_CACHE" ]]; then
   [[ "$todo_count" =~ ^[0-9]+$ ]] || todo_count=0
 fi
 
+
+# ---------------------------------------------------------------------------
+# Baseline capture: system overhead percentage for dual-color context bar.
+#
+# @decision DEC-DUALBAR-002
+# @title Baseline fingerprint: hash of config mtimes + model for invalidation
+# @status accepted
+# @rationale The system overhead percentage (baseline_pct) represents CLAUDE.md,
+# settings.json, hooks dir, and model baked into each new conversation. It is stable
+# within a session but drifts when config files change or model switches. A fingerprint
+# hash (md5 of mtimes + model) detects this drift. Two additional invalidation triggers:
+#   - Compaction: ctx_pct drops below saved baseline (conversation was cleared).
+#   - Missing file: new session, capture fresh.
+# Storage: .statusline-baseline-SESSION_ID (same dir as CACHE_FILE).
+# Format: fingerprint|baseline_pct (single line, pipe-delimited).
+# Fingerprint computation: fast stat calls + md5, < 5ms.
+# ---------------------------------------------------------------------------
+BASELINE_FILE="${workspace_dir:+$workspace_dir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID:-$$}}"
+[[ -z "$workspace_dir" ]] && BASELINE_FILE="$HOME/.claude/.statusline-baseline-${CLAUDE_SESSION_ID:-$$}"
+
+baseline_pct=0
+
+# Compute current fingerprint (mtime of key config files + model name)
+_claude_md_mtime=$(_file_mtime "$HOME/.claude/CLAUDE.md")
+_settings_mtime=$(_file_mtime "$HOME/.claude/settings.json")
+_hooks_mtime=$(_file_mtime "$HOME/.claude/hooks")
+_current_fp=$(printf '%s' "${_claude_md_mtime}:${_settings_mtime}:${model}:${_hooks_mtime}" \
+  | md5 -q 2>/dev/null || \
+  printf '%s' "${_claude_md_mtime}:${_settings_mtime}:${model}:${_hooks_mtime}" \
+  | md5sum 2>/dev/null | cut -d' ' -f1 || \
+  echo "nohash")
+
+# Read saved baseline (fingerprint|pct)
+_saved_fp="" _saved_pct=0
+if [[ -f "$BASELINE_FILE" ]]; then
+  _baseline_raw=$(cat "$BASELINE_FILE" 2>/dev/null || echo "")
+  _saved_fp="${_baseline_raw%%|*}"
+  _saved_pct="${_baseline_raw##*|}"
+  [[ "$_saved_pct" =~ ^[0-9]+$ ]] || _saved_pct=0
+fi
+
+# Determine if baseline needs recapture:
+#   a) No saved baseline yet (file missing or empty)
+#   b) Fingerprint changed (config drift / model switch)
+#   c) ctx_pct < saved baseline (compaction happened — context was cleared)
+_ctx_pct_int="${ctx_pct%.*}"
+[[ "$_ctx_pct_int" =~ ^[0-9]+$ ]] || _ctx_pct_int=0
+
+_baseline_valid=false
+if [[ -n "$_saved_fp" && "$_saved_fp" == "$_current_fp" && "$_saved_pct" -le "$_ctx_pct_int" ]]; then
+  _baseline_valid=true
+  baseline_pct="$_saved_pct"
+fi
+
+# Recapture if invalid and ctx_pct is a real reading (not -1).
+# Only set baseline_pct if the write succeeds — if the workspace dir does not
+# exist (e.g. test harness using /tmp/p), the write fails and we stay single-color.
+if [[ "$_baseline_valid" == "false" && "$ctx_pct" != "-1" && "$ctx_pct" != "" && "$_ctx_pct_int" -gt 0 ]]; then
+  if printf '%s|%s' "$_current_fp" "$_ctx_pct_int" > "$BASELINE_FILE" 2>/dev/null; then
+    baseline_pct="$_ctx_pct_int"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 sep='\033[2m│\033[0m'
 
-# build_context_bar pct — render 12-char progress bar with color
+# build_context_bar pct [baseline_pct] — render 12-char progress bar with color.
+# When baseline_pct is provided and > 0, renders THREE visual regions:
+#   [▓▓▓█████████░] 79%
+#    ^^^               <- dim/muted color: system overhead baseline
+#       ^^^^^^^^       <- severity color: conversation content
+#                ^^    <- empty: remaining capacity
+# When baseline_pct is 0 or absent, falls back to single-color behavior (backward compat).
+#
+# @decision DEC-DUALBAR-001
+# @title Dual-color context bar: system overhead (▓ dim) + conversation (█ severity)
+# @status accepted
+# @rationale The single-color context bar conflates system overhead (CLAUDE.md, tools,
+# hooks) with actual conversation content. Users can't tell how much real capacity they
+# have left. Splitting into dim system blocks (▓) and bright conversation blocks (█)
+# makes the overhead visible without making it alarming. The baseline is captured on
+# first valid reading and invalidated on compaction (pct drop) or config drift (fingerprint).
+# Bar remains backward compatible: no baseline → single-color.
 build_context_bar() {
   local pct=$1
+  local baseline_pct="${2:-0}"
 
   if [[ "$pct" == "-1" || "$pct" == "" ]]; then
     # Before first API call: all-empty bar, dim
@@ -189,10 +269,6 @@ build_context_bar() {
   local filled=$(( pct_int * 12 / 100 ))
   local empty=$(( 12 - filled ))
 
-  local bar_fill="" bar_empty="" i
-  for (( i=0; i<filled; i++ )); do bar_fill+="█"; done
-  for (( i=0; i<empty;  i++ )); do bar_empty+="░"; done
-
   local color
   if   (( pct_int >= 90 )); then color="1;31"
   elif (( pct_int >= 75 )); then color="31"
@@ -200,7 +276,36 @@ build_context_bar() {
   else                           color="32"
   fi
 
-  printf '\033[%sm[%s%s] %d%%\033[0m' "$color" "$bar_fill" "$bar_empty" "$pct_int"
+  # Dual-color mode: when baseline_pct is provided and valid
+  local baseline_int=0
+  if [[ -n "$baseline_pct" && "$baseline_pct" != "0" ]]; then
+    baseline_int="${baseline_pct%.*}"
+    (( baseline_int < 0 )) && baseline_int=0
+    (( baseline_int > 100 )) && baseline_int=100
+  fi
+
+  if (( baseline_int > 0 )); then
+    # Map baseline to blocks, clamp so it never exceeds filled
+    local sys_blocks=$(( baseline_int * 12 / 100 ))
+    (( sys_blocks > filled )) && sys_blocks=$filled
+    local conv_blocks=$(( filled - sys_blocks ))
+
+    # Build three regions
+    local bar_sys="" bar_conv="" bar_empty="" i
+    for (( i=0; i<sys_blocks;   i++ )); do bar_sys+="▓"; done
+    for (( i=0; i<conv_blocks;  i++ )); do bar_conv+="█"; done
+    for (( i=0; i<empty;        i++ )); do bar_empty+="░"; done
+
+    # Render: [dim_sys_blocks severity_conv_blocks empty_blocks] pct%
+    printf '\033[2m[%s\033[0m\033[%sm%s\033[2m%s\033[0m] %d%%' \
+      "$bar_sys" "$color" "$bar_conv" "$bar_empty" "$pct_int"
+  else
+    # Single-color fallback (no baseline)
+    local bar_fill="" bar_empty="" i
+    for (( i=0; i<filled; i++ )); do bar_fill+="█"; done
+    for (( i=0; i<empty;  i++ )); do bar_empty+="░"; done
+    printf '\033[%sm[%s%s] %d%%\033[0m' "$color" "$bar_fill" "$bar_empty" "$pct_int"
+  fi
 }
 
 # format_duration ms — convert milliseconds to human-readable string
@@ -708,7 +813,7 @@ duration_display=$(printf '\033[2m%s\033[0m' "$(format_duration "$duration_ms")"
 
 # Build metrics line segments (priorities 1-8)
 # P2.0: context bar (priority 1)
-_m0=$(build_context_bar "$ctx_pct")
+_m0=$(build_context_bar "$ctx_pct" "$baseline_pct")
 ansi_visible_width "$_m0"; _mw0=$_AVW; _mp0=1
 
 # P2.1: model name (priority 5)
