@@ -59,7 +59,8 @@ if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
 
     # Summary.md fallback: 10-byte minimum threshold (catches trivial 1-byte newlines)
-    _sum_size=$(wc -c < "$TRACE_DIR/summary.md" 2>/dev/null || echo 0)
+    _sum_size=0
+    [[ -f "$TRACE_DIR/summary.md" ]] && _sum_size=$(wc -c < "$TRACE_DIR/summary.md" 2>/dev/null || echo 0)
     if [[ ! -f "$TRACE_DIR/summary.md" ]] || [[ "$_sum_size" -lt 10 ]]; then
         if [[ -z "${RESPONSE_TEXT// /}" ]]; then
             {
