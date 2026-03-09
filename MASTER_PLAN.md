@@ -24,7 +24,7 @@ The Claude Code configuration directory that shapes how Claude Code operates acr
 
 ```
 hooks/              — 26 hook scripts + 9 shared libraries; deterministic enforcement layer
-agents/             — 5 agent prompt definitions (planner, implementer, tester, guardian, governor)
+agents/             — 5 agent prompt definitions (planner, implementer, tester, guardian, governor) + shared protocols
 skills/             — 13 skill directories (deep-research, decide, reckoning, consume-content, etc.)
 commands/           — Slash commands (/compact, /backlog); lightweight, no context fork
 scripts/            — Utility scripts (statusline, worktree-roster, batch-fetch, etc.)
@@ -163,229 +163,14 @@ project's institutional memory.
 | 2026-03-09 | DEC-EFF-003 | governance-efficiency | File-mtime-based cache invalidation (DEC-PERF-004 pattern) | Existing stop.sh pattern proves the approach; no new cache mechanisms needed |
 | 2026-03-09 | DEC-EFF-004 | governance-efficiency | Preserve all deny gates unconditionally | Deny gates are safety guarantees; advisory noise reduction yes, safety weakening never |
 | 2026-03-09 | DEC-EFF-005 | governance-efficiency | Two-wave delivery: noise reduction then deduplication | Wave 1 low-risk advisory/caching; Wave 2 cross-hook changes need approve gate |
+| 2026-03-09 | DEC-GOV-006 | governor-subagent | Two-tier evaluation model: health pulse + full evaluation | Full 8-dim eval at every trigger is expensive; health pulse provides quick deviation detection at ~3-5K tokens; orchestrator-judged frequency, no mechanical threshold |
+| 2026-03-09 | DEC-GOV-HOOK-001 | governor-subagent | Layer A silent return recovery for governor hook | Empty governor response gets trace summary injected into additionalContext; mirrors check-implementer.sh pattern without blocking |
+| 2026-03-09 | DEC-GOV-WIRE-002 | governor-subagent | check-planner.sh emits governor advisory for multi-wave plans | Mechanical trigger ensures governor dispatch isn't forgotten; instruction-compliance alone is insufficient for ephemeral orchestrators |
+| 2026-03-09 | DEC-GOV-WIRE-003 | governor-subagent | session-init.sh surfaces last governor pulse timestamp and verdict | Orchestrator sees staleness at session start; meta-infrastructure recommends pulse if >7 days stale |
 
 ---
 
 ## Active Initiatives
-
-### Initiative: Governor Subagent
-**Status:** active
-**Started:** 2026-03-09
-**Goal:** Add a 5th agent — the governor — that serves as the system's mechanical feedback mechanism, evaluating initiatives against the project's core intent and trajectory at critical junctures, and meta-evaluating the health of the evaluative infrastructure itself.
-
-> The system has a well-defined Act pipeline (Planner -> Implementer -> Tester -> Guardian) and a deterministic Enforce layer (24 hooks), but evaluation of whether work serves the project's trajectory is manual and periodic (/reckoning on demand, /observatory on traces). No agent fires automatically at initiative boundaries to check whether planned work honors the Original Intent, whether completed work actually served the trajectory, or whether the evaluative infrastructure (observatory, reckoning, traces, plan) is itself healthy. The governor closes this loop. Like a centrifugal governor on a steam engine, it does not DO the work — it measures whether the work is staying within bounds and feeds that signal back to the controller. It fires at exactly three moments: before multi-wave implementation begins, when an initiative completes, and as structured input to reckoning. It is meta-evaluative: it evaluates both the work AND the systems that evaluate the work — the SESAP concept applied recursively to the system's own governance infrastructure.
-
-**Dominant Constraint:** simplicity
-
-#### Goals
-- REQ-GOAL-006: Enable automatic trajectory evaluation at multi-wave initiative boundaries (before implementation, after completion)
-- REQ-GOAL-007: Provide structured input to `/reckoning` pipeline and consume reckoning output (bidirectional) to ground assessments in the project's evolved trajectory state
-- REQ-GOAL-008: Keep evaluation lean — under 50 tool calls and under 20K tokens per dispatch
-
-#### Non-Goals
-- REQ-NOGO-006: Replacing `/reckoning` — the governor evaluates per-initiative; reckoning evaluates the project; they are complementary, not redundant
-- REQ-NOGO-007: Firing on every planner session — lightweight plans (Tier 1, single-wave) do not need evaluation; the governor only triggers for 2+ wave initiatives
-- REQ-NOGO-008: Evaluating phase boundaries — that is the Guardian's domain; the governor operates at initiative level
-- REQ-NOGO-009: Deep research, test execution, code analysis, or acting on findings — the governor reads and judges; it never writes to the project, runs commands, or invokes other agents
-
-#### Requirements
-
-**Must-Have (P0)**
-
-- REQ-P0-005: Agent prompt definition at `agents/governor.md`
-  Acceptance: Given the existing 4-agent system, When the governor prompt is created, Then:
-  - [ ] Prompt leads with purpose (mechanical governor role, intent fidelity, meta-evaluation) not procedures
-  - [ ] Defines exactly 3 trigger contexts: pre-implementation, post-completion, reckoning-input
-  - [ ] Includes a scoring rubric with 4 initiative-evaluation dimensions (intent-alignment, priority-coherence, principle-adherence, scope-discipline) each scored 1-5
-  - [ ] Includes 4 meta-evaluation dimensions (observatory-health, reckoning-health, trace-quality, plan-currency) each scored 1-5
-  - [ ] Specifies output format: structured JSON (`evaluation.json`) + human-readable summary (`evaluation-summary.md`)
-  - [ ] Specifies allowed tools: Read, Grep, Glob only (no Write, no Bash, no Agent)
-  - [ ] Specifies full input set: MASTER_PLAN.md, most recent reckoning, traces, specific initiative being evaluated
-  - [ ] Prompt is under 200 lines
-
-- REQ-P0-006: Integration with dispatch system
-  Acceptance: Given the dispatch infrastructure (DISPATCH.md, subagent-start.sh, task-track.sh), When the governor is wired in, Then:
-  - [ ] DISPATCH.md routing table has a governor row with trigger conditions (after planner returns with 2+ waves, after initiative completion, before reckoning)
-  - [ ] `subagent-start.sh` has a `governor` case injecting: MASTER_PLAN.md identity/principles/original-intent, active initiative being evaluated, most recent reckoning verdict and what-to-confront (if reckoning exists)
-  - [ ] `task-track.sh` recognizes `governor` as a valid agent type (no proof-status gate — governor does not write code)
-  - [ ] Governor is exempt from worktree gate (Gate C.1) — it evaluates, it does not implement
-
-- REQ-P0-007: SubagentStop validation hook `hooks/check-governor.sh`
-  Acceptance: Given the check-*.sh pattern for all existing agents, When the governor returns, Then:
-  - [ ] Hook validates that the governor produced a scored assessment (not empty return)
-  - [ ] Hook captures assessment to trace artifacts (`evaluation.json`, `evaluation-summary.md`)
-  - [ ] Hook is registered in `settings.json` SubagentStop with matcher `governor`
-  - [ ] Hook emits assessment verdict in additionalContext so orchestrator sees the result
-  - [ ] Hook is under 80 lines (lean, like check-explore.sh, not heavy like check-tester.sh)
-
-- REQ-P0-008: Governor output format and storage
-  Acceptance: Given a governor dispatch, When the assessment is complete, Then:
-  - [ ] Assessment written to `{TRACE_DIR}/artifacts/evaluation.json` with structure: `{ "dimensions": { "intent_alignment": {"score": N, "evidence": "..."}, ... }, "meta_dimensions": { "observatory_health": {"score": N, "evidence": "..."}, ... }, "verdict": "proceed|caution|block", "flags": [...], "narrative": "..." }`
-  - [ ] Assessment also written as `{TRACE_DIR}/artifacts/evaluation-summary.md` (human-readable)
-  - [ ] Assessment references specific DEC-IDs, REQ-IDs, and Principle numbers from MASTER_PLAN.md
-  - [ ] Verdict logic: proceed (all initiative dimensions >= 3), caution (any 2, none 1), block (any 1)
-
-**Nice-to-Have (P1)**
-
-- REQ-P1-003: Reckoning integration — `/reckoning` reads the most recent governor assessments from traces when performing Phase 2 cross-reference, incorporating initiative-level and meta-evaluations into the Seven-Dimensional Analysis
-- REQ-P1-005: Scoring rubric calibration test — a test that validates the governor's output JSON schema against a synthetic initiative block
-
-**Future Consideration (P2)**
-
-- REQ-P2-003: Auto-dispatch via hook — a PostToolUse:Task|Agent hook that detects planner completion with 2+ waves and auto-dispatches the governor
-- REQ-P2-004: Historical trend tracking — store governor scores in a persistent file so reckoning can show intent-alignment trends over time
-
-#### Definition of Done
-
-All P0 requirements pass their acceptance criteria. `agents/governor.md` defines the 5th agent with purpose-led prompt, 4+4 dimension rubric, 3 trigger contexts, and read-only tool constraints. Dispatch infrastructure recognizes the governor type and injects appropriate context. `hooks/check-governor.sh` validates output and emits verdict. Governor can be dispatched against an existing initiative and produces valid `evaluation.json` + `evaluation-summary.md`. Satisfies: REQ-GOAL-006, REQ-GOAL-007, REQ-GOAL-008.
-
-#### Architectural Decisions
-
-- DEC-GOV-001: Use Opus for the governor agent
-  Addresses: REQ-GOAL-008.
-  Rationale: The governor's entire value is judgment quality — scoring intent alignment, detecting scope drift, assessing principle adherence, meta-evaluating infrastructure health. At ~2 dispatches per initiative, the cost delta between Opus (~$0.15/dispatch) and Sonnet (~$0.02/dispatch) is negligible. Sonnet is appropriate for high-volume agents (implementer, tester); Opus is appropriate for low-volume judgment agents (planner, guardian, governor).
-
-- DEC-GOV-002: 4+4 dimension scoring rubric with narrative and verdict
-  Addresses: REQ-P0-005, REQ-P0-008.
-  Rationale: 4 initiative-evaluation dimensions (intent-alignment, priority-coherence, principle-adherence, scope-discipline) assess the work. 4 meta-evaluation dimensions (observatory-health, reckoning-health, trace-quality, plan-currency) assess the evaluative infrastructure itself — the SESAP concept applied recursively. Each scored 1-5 with evidence. Verdict: proceed (all initiative dims >= 3), caution (any 2, none 1), block (any 1). 7-dimension overlap with reckoning rejected; 3-tier-only too coarse for trend tracking.
-
-- DEC-GOV-003: Orchestrator instruction-based dispatch via DISPATCH.md rules
-  Addresses: REQ-P0-006, REQ-NOGO-007.
-  Rationale: The system already successfully uses instruction-based auto-dispatch for tester (after implementer) and guardian (on verification). Adding a rule "dispatch governor after planner returns with 2+ waves" follows the same proven pattern. Hook-based auto-dispatch (P2) is the upgrade path if instruction compliance proves unreliable. Simpler now, no hook changes needed for trigger logic.
-
-- DEC-GOV-004: Bidirectional reckoning relationship — governor consumes AND provides
-  Addresses: REQ-P1-003, REQ-P0-005.
-  Rationale: The governor reads the most recent reckoning (verdict, trajectory, what-to-confront) to ground its assessment in the project's evolved trajectory state — not just static plan text. The governor writes structured assessment JSON to trace artifacts that reckoning reads in Phase 2. One-directional (provide-only) would miss the insight that a recent reckoning reveals about where the project actually is vs. where the plan says it is. Governor's full input set: MASTER_PLAN.md, most recent reckoning, traces, and the specific initiative being evaluated.
-
-- DEC-GOV-005: Read-only tools (Read, Grep, Glob) plus trace artifact writes
-  Addresses: REQ-NOGO-009, REQ-GOAL-008.
-  Rationale: The governor is a judgment agent, not an implementation agent. Giving it Write or Bash would invite scope creep (governor starts "fixing" things it finds). Read-only plus trace artifact writes (via standard trace protocol) enforces the governor role — it evaluates and reports, never acts. This is a hard constraint, not a suggestion.
-
-#### Waves
-
-##### Initiative Summary
-- **Total items:** 4
-- **Critical path:** 3 waves (W1-1 -> W2-1 -> W3-1)
-- **Max width:** 2 (Wave 1)
-- **Gates:** 2 review, 1 approve, 1 none
-
-##### Wave 1 (no dependencies)
-**Parallel dispatches:** 2
-
-**W1-1: Create `agents/governor.md` agent prompt (#182)** — Weight: M, Gate: review
-- Create `agents/governor.md` with purpose-led structure:
-  - **Opening:** Governor identity — mechanical governor metaphor, feedback mechanism for a self-modifying system, evaluates both work and the systems that evaluate work
-  - **Section 1: Trigger Contexts** — Define the 3 dispatch contexts:
-    1. **Pre-implementation:** Planner completed a 2+ wave initiative. Governor reads initiative block, MASTER_PLAN.md principles/intent, most recent reckoning. Assesses: does this work serve the original intent? Are priorities ordered by trajectory? Does scope stay within declared bounds?
-    2. **Post-completion:** All phases of an initiative merged. Governor reads completed initiative summary, decision log entries, traces. Assesses: did the work honor the intent? Did scope drift occur? What did the meta-evaluation dimensions reveal?
-    3. **Reckoning-input:** Dispatched by reckoning skill during Phase 2. Governor produces a focused assessment of active initiatives for reckoning to consume.
-  - **Section 2: Initiative Evaluation Rubric** — 4 dimensions scored 1-5:
-    - `intent_alignment`: Does this initiative serve the Original Intent and active Principles?
-    - `priority_coherence`: Are priorities ordered by trajectory awareness, not just urgency?
-    - `principle_adherence`: Does the work reference and honor stated Principles by number?
-    - `scope_discipline`: Does the work stay within declared goals/non-goals?
-  - **Section 3: Meta-Evaluation Rubric** — 4 dimensions scored 1-5:
-    - `observatory_health`: Is the observatory being run? Are suggestions acted on? Is the trace-to-improvement pipeline functional?
-    - `reckoning_health`: Are reckonings produced at appropriate cadence? Are findings acted on? Is the reckoning-to-action pipeline functional?
-    - `trace_quality`: Are agents producing traces? Are summaries substantive? Is the archive growing healthily?
-    - `plan_currency`: Is MASTER_PLAN.md up to date? Are completed initiatives compressed? Are decision log entries appended? Are parked issues reviewed?
-  - **Section 4: Output Format** — Specifies `evaluation.json` schema and `evaluation-summary.md` format
-  - **Section 5: Verdict Logic** — proceed (all initiative dims >= 3), caution (any 2, none 1), block (any 1)
-  - **Section 6: Behavioral Constraints** — Read-only tools, no acting on findings, no invoking other agents/skills, under 50 tool calls, return message under 1500 tokens
-- Target: under 200 lines
-- **Integration:** `agents/governor.md` is loaded by Claude Code runtime from agents/ directory. Referenced in DISPATCH.md routing table and CLAUDE.md Resources table.
-
-**W1-2: Create `hooks/check-governor.sh` SubagentStop hook (#183)** — Weight: S, Gate: none
-- Create `hooks/check-governor.sh` following the check-explore.sh pattern (lean, ~60-80 lines):
-  - Source `source-lib.sh`, require session + trace
-  - Read agent response from stdin
-  - Track subagent stop + tokens + session event
-  - Validate assessment output:
-    - Check `TRACE_DIR/artifacts/evaluation.json` exists and is valid JSON
-    - Check `TRACE_DIR/artifacts/evaluation-summary.md` exists and is non-empty
-    - Extract verdict from evaluation.json
-  - Finalize trace
-  - Emit verdict in additionalContext: "Governor assessment: verdict=[proceed|caution|block]. [1-line summary]. Full assessment: {TRACE_DIR}/artifacts/evaluation-summary.md"
-  - Handle silent return: if no evaluation artifacts, inject trace summary (Layer A pattern from check-implementer.sh)
-  - Exit 0 (governor results are advisory, never blocking)
-- **Integration:** Register in `settings.json` under SubagentStop with matcher `governor`. File at `hooks/check-governor.sh`.
-
-##### Wave 2
-**Parallel dispatches:** 1
-**Blocked by:** W1-1, W1-2
-
-**W2-1: Wire governor into dispatch infrastructure (#184)** — Weight: M, Gate: approve, Deps: W1-1, W1-2
-- **DISPATCH.md** updates:
-  - Add routing table row: `| Plan/initiative evaluation | **Governor** | No — dispatched automatically after planner (2+ waves), after initiative completion, before reckoning |`
-  - Add "Auto-dispatch to Governor" section after "Auto-dispatch to Tester": "After the planner returns with a 2+ wave initiative, dispatch the governor automatically with the initiative block. Do NOT ask 'should I evaluate?' — dispatch. Governor results are advisory: proceed = continue normally, caution = present concerns to user before implementing, block = present to user and wait for guidance. After initiative completion (all phases merged, before compress_initiative), dispatch governor for post-completion assessment."
-  - Add governor to Pre-Dispatch Gates note: "Governor dispatch: no proof-status gate, no worktree gate. Governor is read-only."
-- **subagent-start.sh** updates:
-  - Add `governor` case in the agent-type-specific context block (after `planner|Plan` case, before `implementer` case):
-    ```
-    governor)
-        CONTEXT_PARTS+=("Role: Governor — mechanical feedback mechanism. Evaluate the initiative against project intent, principles, and trajectory. Produce scored assessment (evaluation.json + evaluation-summary.md). Read-only: do NOT write to the project, run commands, or invoke other agents.")
-        # Inject MASTER_PLAN.md identity, principles, original intent (compact)
-        # Inject most recent reckoning verdict + what-to-confront (if exists)
-        # Inject TRACE_DIR
-    ```
-  - Read most recent reckoning from `{PROJECT_ROOT}/reckonings/` (most recent by filename date), extract verdict and "What to Confront" section, inject as context (cap at 2000 bytes)
-  - Inject MASTER_PLAN.md `## Original Intent` and `## Principles` sections (compact, ~500 bytes)
-- **task-track.sh** updates:
-  - Add `governor` to the recognized agent types (alongside implementer, planner, guardian, tester)
-  - Skip proof-status gate for governor (same pattern as planner — governor does not write code)
-  - Skip worktree gate (Gate C.1) for governor — it evaluates, it does not need a worktree
-- **settings.json** updates:
-  - Add SubagentStop entry: `{ "matcher": "governor", "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/check-governor.sh", "timeout": 5 }] }`
-- **CLAUDE.md** updates:
-  - Add governor to Resources table: `| agents/governor.md | Evaluating initiatives against project trajectory |`
-- **Integration:** This is the wiring wave — it connects the governor prompt (W1-1) and hook (W1-2) to the dispatch infrastructure. All modified files are existing infrastructure files.
-
-##### Wave 3
-**Parallel dispatches:** 1
-**Blocked by:** W2-1
-
-**W3-1: Validation — dispatch governor against existing initiative (#185)** — Weight: S, Gate: review, Deps: W2-1
-- Dispatch the governor against the "Prompt Purpose Restoration" initiative (active, multi-wave, well-documented)
-- Verify output:
-  - `evaluation.json` is valid JSON with correct schema (4 initiative dimensions + 4 meta dimensions + verdict + flags + narrative)
-  - `evaluation-summary.md` is non-empty and human-readable
-  - Verdict is one of: proceed, caution, block
-  - Each dimension has a score 1-5 and evidence referencing specific DEC-IDs, REQ-IDs, or Principle numbers
-  - Meta-evaluation dimensions produce meaningful assessments of observatory, reckoning, trace, and plan health
-- Document findings in trace artifacts
-- If output quality is insufficient, identify which prompt sections need adjustment and propose changes
-- **Integration:** No code changes — this is a verification-only item
-
-##### Critical Files
-- `agents/governor.md` — NEW; the 5th agent prompt defining the governor's identity, rubric, and behavioral constraints
-- `hooks/check-governor.sh` — NEW; SubagentStop validation for governor returns
-- `docs/DISPATCH.md` — routing table and auto-dispatch rules; governor row and dispatch instructions added
-- `hooks/subagent-start.sh` — governor case with reckoning/plan context injection
-- `hooks/task-track.sh` — governor type recognition and gate exemptions
-
-##### Decision Log
-<!-- Guardian appends here after wave completion -->
-
-#### Governor Subagent Worktree Strategy
-
-Main is sacred. Each wave dispatches parallel worktrees:
-- **Wave 1:** `.worktrees/governor-prompt` on branch `feature/governor-prompt` (W1-1), `.worktrees/governor-hook` on branch `feature/governor-hook` (W1-2)
-- **Wave 2:** `.worktrees/governor-wiring` on branch `feature/governor-wiring` (W2-1)
-- **Wave 3:** `.worktrees/governor-validation` on branch `feature/governor-validation` (W3-1)
-
-#### Governor Subagent References
-
-- Existing agent prompts: `agents/implementer.md` (168 lines), `agents/tester.md` (236 lines), `agents/guardian.md` (481 lines), `agents/planner.md` (435 lines)
-- Shared protocols (injected at spawn): `agents/shared-protocols.md` (87 lines)
-- Dispatch infrastructure: `docs/DISPATCH.md`, `hooks/subagent-start.sh`, `hooks/task-track.sh`
-- SubagentStop hook pattern (lean): `hooks/check-explore.sh`
-- SubagentStop hook pattern (full): `hooks/check-tester.sh`, `hooks/check-implementer.sh`
-- Hook registration: `settings.json` SubagentStop section
-- Reckoning skill: `skills/reckoning/SKILL.md` — governor consumes reckoning output and provides structured input
-- Observatory: `observatory/` — governor meta-evaluates observatory health
-- Issue: #169
-
----
 
 ### Initiative: Governance Efficiency
 **Status:** active
@@ -627,6 +412,17 @@ Restored purpose-to-enforcement ratio in CLAUDE.md and agent prompts after bench
 3. **W2-1: Slim Agent Prompts** (#146): Targeted 30-40% reduction by removing shared boilerplate from 4 agent prompts. Actual reduction ~4.4% — shared-protocols injection supplements rather than replaces content (DEC-PROMPT-004). Purpose language strengthened in agent openings. Guardian merge presentation added (REQ-P1-004).
 
 W3-1 (validation session) not executed — benchmark improvements validated through ongoing usage. 3 architectural decisions (DEC-PROMPT-001 through 003) plus closure decision (DEC-PROMPT-004). Issues closed: #143, #144, #146.
+
+### Governor Subagent — Summary
+
+Added the 5th agent — the governor — a mechanical feedback mechanism that evaluates initiatives against core intent and trajectory, and meta-evaluates the evaluative infrastructure itself (SESAP applied recursively). Two-tier model: health pulse (~3-5K tokens, quick deviation detection) and full 8-dimension evaluation (~15-20K tokens, initiative boundaries).
+
+1. **W1-1: Agent prompt** (feature/governor-prompt): Created `agents/governor.md` — purpose-led prompt with 4 trigger contexts (health pulse, pre-implementation, post-completion, reckoning-input), 4+4 dimension rubric, read-only constraints. #182
+2. **W1-2: SubagentStop hook** (feature/governor-hook): Created `hooks/check-governor.sh` — validates evaluation.json + summary, extracts verdict, Layer A silent return recovery. Advisory only (exit 0 always). #183
+3. **W2-1: Dispatch wiring** (feature/governor-wiring): Wired into settings.json, subagent-start.sh (context injection), DISPATCH.md (routing + auto-dispatch), CLAUDE.md (Resources table), task-track.sh (gate exemption). #184
+4. **W3-1: Trigger refinement + validation** (feature/governor-validation): Added two-tier evaluation model (DEC-GOV-006), health pulse mode, dispatch frequency guidance, pre-implementation defaults to pulse. Wired mechanical triggers: check-planner.sh advisory for multi-wave plans, session-init.sh pulse staleness surfacing, reckoning SKILL.md Phase 2e governor dispatch. 42 tests. #185
+
+8 decisions (DEC-GOV-001 through DEC-GOV-006, DEC-GOV-HOOK-001, DEC-GOV-WIRE-002/003). Issues closed: #169, #182, #183, #184, #185. Live health pulse validated: verdict=drifting, 3 actionable flags (guardian failure rate, decision bifurcation, trace duplicates).
 
 ### Governance Signal Audit — Summary
 
