@@ -23,8 +23,8 @@ PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
 
-# --- Git state (via shared library) ---
-get_git_state "$PROJECT_ROOT"
+# --- Git state (cached: eliminates duplicate git subprocesses in same event) ---
+_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
 
 if [[ -n "$GIT_BRANCH" ]]; then
     GIT_LINE="Git: $GIT_BRANCH | $GIT_DIRTY_COUNT uncommitted"
@@ -77,8 +77,8 @@ Active initiatives: ${ACTIVE_INIT_NAMES}"
     fi
 fi
 
-# --- MASTER_PLAN.md (via shared library) ---
-get_plan_status "$PROJECT_ROOT"
+# --- MASTER_PLAN.md (cached: full PLAN_* variable set restored on hit) ---
+_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
     PLAN_LINE="Plan: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done"

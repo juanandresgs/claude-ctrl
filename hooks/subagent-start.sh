@@ -28,9 +28,9 @@ PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 CONTEXT_PARTS=()
 
-# --- Git + Plan state (one line) ---
-get_git_state "$PROJECT_ROOT"
-get_plan_status "$PROJECT_ROOT"
+# --- Git + Plan state (one line, cached: benefits from session-init warm-up) ---
+_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
 
 # Track subagent spawn and refresh statusline cache
 track_subagent_start "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}"

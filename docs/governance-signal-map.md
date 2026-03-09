@@ -703,6 +703,23 @@ Warm-path cached: plan (300s TTL), git (60s TTL).
 | "Add @decision to 50+ line files" | agents/implementer.md | pre-write.sh Gate 5 |
 | "Tests before merge" | CLAUDE.md Sacred Practice #4 | pre-bash.sh Checks 6–7 |
 
+<!--
+@decision DEC-EFF-014
+@title Prompt-vs-hook overlap analysis: keep both layers
+@status accepted
+@rationale 6 policies are stated in prompts AND enforced by hooks. Analysis:
+  Removing from prompts would save ~200 bytes/session but risks behavioral
+  regression — prompts shape the model's INTENT (wanting to follow the rule),
+  hooks enforce COMPLIANCE (blocking violations). Both layers serve different
+  purposes. The "belt and suspenders" pattern is intentional for critical safety
+  policies. Recommendation: keep both layers. The 200 bytes/session saved is
+  not worth the risk of degraded model intent.
+  Safety invariant: No prompt content removed. Analysis documented for future reference.
+  Implemented as part of Governance Efficiency W2 (#209, DEC-RECK-014).
+-->
+
+**Analysis (DEC-EFF-014): Keep both layers.** Prompts shape model *intent*; hooks enforce *compliance*. Removing prompt content saves ~200 bytes/session but risks behavioral regression on the most critical safety policies. The dual-layer pattern is a deliberate "belt and suspenders" architecture — not redundancy to eliminate.
+
 ---
 
 ## Noise Assessment

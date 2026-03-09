@@ -565,6 +565,13 @@ if $_RUN_SUMMARY; then
 
     # Git + plan state
     # OPT-2: Cache get_git_state() in .stop-git-cache-{SESSION_ID} (TTL=60s)
+    # NOTE: stop.sh intentionally uses its own longer-TTL caches (DEC-PERF-004)
+    # rather than _cached_git_state (5s TTL) / _cached_plan_state (10s TTL).
+    # Reason: stop.sh fires on every agent turn; the 60s/300s TTLs are designed
+    # for that frequency. The 5s/10s cross-hook caches are for single-event
+    # deduplication (multiple hooks firing within the same event cycle), which
+    # is a different problem. Using the shorter TTL here would cause unnecessary
+    # git recomputation on every stop.sh call beyond 5s. Both cache layers coexist.
     # Git state can change from implementer writes, so TTL is kept short.
     # Note: _ttl_expired/_ttl_touch use a SEPARATE sentinel file from the data
     # cache, because _ttl_touch overwrites the file with just the epoch.

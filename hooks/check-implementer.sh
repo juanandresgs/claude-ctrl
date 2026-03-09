@@ -244,8 +244,8 @@ COMPLIANCE_EOF
 fi
 
 # --- Advisory checks (run after finalize to avoid timeout races) ---
-get_git_state "$PROJECT_ROOT"
-get_plan_status "$PROJECT_ROOT"
+_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
 write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
