@@ -380,7 +380,7 @@ format_duration() {
 
 # format_tokens count — convert raw token count to K/M notation
 # < 1000: raw (e.g. 500)
-# 1000-999999: Nk (e.g. 145k)
+# 1000-999999: NK (e.g. 145K)
 # >= 1000000: N.NM (e.g. 1.5M)
 format_tokens() {
   local count=$1
@@ -395,7 +395,7 @@ format_tokens() {
     local frac=$(( tenths % 10 ))
     printf '%d.%dM' "$whole" "$frac"
   elif (( count >= 1000 )); then
-    printf '%dk' "$(( count / 1000 ))"
+    printf '%dK' "$(( count / 1000 ))"
   else
     printf '%d' "$count"
   fi
@@ -762,9 +762,9 @@ _append_p1_seg() {
 #
 # Priority table (lower number = higher priority, dropped last):
 #   1 = [context bar] N%                      (drives user behavior)
-#   2 = Nktks(+subsStks)                      (token consumption)
+#   2 = NK tks(+subs S tks)                   (token consumption)
 #   3 = ~$cost (Σ~$total)                     (cost with lifetime)
-#   4 = Project Lifetime: ∑Nktks              (cumulative across sessions)
+#   4 = Project Lifetime: ∑NK tks             (cumulative across sessions)
 #   5 = model name                            (usually known, nice-to-have)
 #   6 = cache N%                              (efficiency metric)
 #   7 = duration                              (session time)
@@ -773,7 +773,7 @@ _append_p1_seg() {
 
 # Token count segment with subagent breakdown and project lifetime
 # @decision DEC-LIFETIME-TOKENS-001
-# @title Display token usage as: Nktks(+subsStks) │ Project Lifetime: ∑Tk
+# @title Display token usage as: NK tks(+subs SK tks) │ Project Lifetime: ∑TK tks
 # @status accepted
 # @rationale Updated format (issue #160) makes each part self-labelling: "tks" directly
 # follows the count (no colon-separated label), "subs" prefix on the subagent count
@@ -811,24 +811,24 @@ if [[ -n "${workspace_dir:-}" ]]; then
   printf '%d' "$total_tokens_int" > "${_token_dir}/.session-main-tokens" 2>/dev/null || true
 fi
 
-# Build token display: Nktks  or  Nktks(+subsStks)
-# Format: <N>tks(+subs<S>tks) — "tks" suffix on both main and subagent counts,
-# "subs" prefix on subagent to clarify source. Example: 145ktks(+subs32ktks)
+# Build token display: NK tks  or  NK tks(+subs S tks)
+# Format: <N> tks(+subs<S> tks) — "tks" suffix on both main and subagent counts,
+# "subs" prefix on subagent to clarify source. Example: 145K tks(+subs 32K tks)
 if (( cache_subagent_tokens_int > 0 )); then
   subagent_str=$(format_tokens "$cache_subagent_tokens_int")
-  tokens_display=$(printf '\033[%sm%stks\033[2m(+subs%stks)\033[0m' "$tokens_color" "$tokens_str" "$subagent_str")
+  tokens_display=$(printf '\033[%sm%s tks\033[2m(+subs %s tks)\033[0m' "$tokens_color" "$tokens_str" "$subagent_str")
 else
-  tokens_display=$(printf '\033[%sm%stks\033[0m' "$tokens_color" "$tokens_str")
+  tokens_display=$(printf '\033[%sm%s tks\033[0m' "$tokens_color" "$tokens_str")
 fi
 
 # Compute lifetime token grand total segment
-# Format: "Project Lifetime: ∑<N>tks" — prefix clarifies this is a project-wide sum.
+# Format: "Project Lifetime: ∑<N> tks" — prefix clarifies this is a project-wide sum.
 # ∑ is U+2211 (mathematical summation), distinct from Σ (U+03A3 Greek capital letter).
 _token_grand_total=$(( cache_lifetime_tokens_int + total_tokens_int + cache_subagent_tokens_int ))
 grand_total_display=""
 if (( _token_grand_total > total_tokens_int + cache_subagent_tokens_int && _token_grand_total > 0 )); then
   grand_total_str=$(format_tokens "$_token_grand_total")
-  grand_total_display=$(printf '\033[2mProject Lifetime: ∑%stks\033[0m' "$grand_total_str")
+  grand_total_display=$(printf '\033[2mProject Lifetime: ∑%s tks\033[0m' "$grand_total_str")
 fi
 
 # Build cost display

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `feature/fix-token-format`: Token formatting consistency — capitalize K in K-notation (145K not 145k) and add space before `tks` suffix in all three display locations (session, subagent, lifetime)
+
 ### Changed
 - `feature/autoverify-reliability`: AUTOVERIFY reliability Wave 1 — rewrite tester Auto-Verify Signal section with positive-default framing (emit CLEAN unless blockers apply), fix check-tester.sh Phase 2 audit from misleading `auto_verify_rejected` to accurate `auto_verify_advisory`, add post-task.sh inference check for missed AUTOVERIFY signals on clean assessments (DEC-TESTER-AUTOVERIFY-001, DEC-AV-MISS-001, #194, #195)
 - `housekeeping/plan-maintenance`: MASTER_PLAN.md housekeeping batch — close Prompt Purpose Restoration and Governance Signal Audit initiatives (moved to Completed with narratives), add RSM completed summary, fix Created date and architecture counts, add 15 Decision Log entries (DEC-RECK-010 through DEC-RECK-016 and others)
