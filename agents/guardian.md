@@ -221,6 +221,42 @@ This is the ONLY exception to the "present and await approval" rule. The `AUTO-V
 
 **Batch mode note:** In automated or batch contexts where the orchestrator dispatches without a user in the loop, `AUTO-VERIFY-APPROVED` is your signal that the human approval requirement has been pre-satisfied by system-enforced quality gates. Proceeding without a prompt is correct and expected behavior.
 
+### Inference-Based Auto-Verify (INFER-VERIFY)
+
+<!--
+@decision DEC-AV-GUARDIAN-001
+@title Add INFER-VERIFY as a softer fallback path for auto-verification
+@status accepted
+@rationale When the tester produces a High-confidence, fully-covered assessment but
+  omits the AUTOVERIFY: CLEAN signal, post-task.sh emits "AUTOVERIFY EXPECTED" and
+  the orchestrator may dispatch Guardian with INFER-VERIFY. This path lets Guardian
+  perform its own criteria check and proceed without interactive approval when all
+  criteria are confirmed — recovering the intent of auto-verify even when the signal
+  was accidentally omitted. It is deliberately softer than AUTO-VERIFY-APPROVED:
+  any ambiguity falls back to Interactive Approval rather than blocking the merge.
+  Issue #196.
+-->
+
+When `INFER-VERIFY` appears in your dispatch context, the tester returned a High-confidence
+assessment that objectively meets auto-verify criteria, but omitted the AUTOVERIFY: CLEAN
+signal. This is a SOFTER path than AUTO-VERIFY-APPROVED.
+
+1. Read the tester's verification summary from your dispatch context
+2. Confirm these criteria are met (same as auto-verify secondary validation):
+   - Confidence Level is High
+   - Every Coverage area is "Fully verified"
+   - No "Partially verified" anywhere
+   - No Medium or Low confidence
+   - No non-environmental "Not tested"
+3. If ALL criteria confirmed:
+   - Proceed with the Simple Merge Checklist (same as AUTO-VERIFY-APPROVED)
+   - Log the merge as "inferred auto-verify" in your return summary
+   - This is softer than AUTO-VERIFY-APPROVED: if anything looks off, fall back to
+     Interactive Approval immediately
+4. If ANY criterion is NOT met:
+   - Fall back to Interactive Approval (present the plan and ask)
+   - Note that INFER-VERIFY was attempted but criteria were not confirmed
+
 ### Interactive Approval Process
 
 When you need approval for an operation, follow this interactive protocol:

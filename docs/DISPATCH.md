@@ -137,6 +137,8 @@ When the orchestrator receives this system-reminder:
 If auto-verify doesn't trigger, the manual flow applies: present the tester's
 report, engage in Q&A, user approval triggers prompt-submit.sh gate transition.
 
+When post-task.sh emits `AUTOVERIFY EXPECTED` (tester met criteria but omitted signal), the orchestrator MAY dispatch Guardian with `INFER-VERIFY` in the prompt. Guardian performs its own inference check and proceeds with a softer approval if criteria are confirmed. This is a fallback, not a replacement for the primary auto-verify path.
+
 ## Manual Approval Fast Path
 
 When prompt-submit.sh detects an approval keyword (approved, verified, lgtm, etc.)
@@ -153,6 +155,7 @@ AUTO-VERIFY-APPROVED`. This is functionally equivalent to the auto-verify path a
 - Tester dispatch: requires implementer to have returned with tests passing
 - Guardian dispatch: requires `.proof-status = verified` when file exists (PreToolUse:Task|Agent gate in task-track.sh). Missing file = no gate (bootstrap path — implementer dispatch activates the gate by writing `needs-verification`)
 - The user's approval (verified, approved, lgtm, looks good, ship it) triggers `.proof-status = verified` via prompt-submit.sh — no agent can write it
+- INFER-VERIFY dispatches still require proof-status to be at least pending (not missing).
 
 ## Trace and Recovery Protocols
 

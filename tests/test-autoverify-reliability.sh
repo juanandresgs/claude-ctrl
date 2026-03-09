@@ -508,6 +508,87 @@ fi
 rm -rf "$TEST_DIR"
 
 # ---------------------------------------------------------------------------
+# Wave 2 Tests: Guardian inference fallback + DISPATCH.md documentation
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 9: guardian.md contains INFER-VERIFY section
+# ---------------------------------------------------------------------------
+run_test "guardian.md: contains INFER-VERIFY section"
+
+GUARDIAN_MD="$PROJECT_ROOT/agents/guardian.md"
+if grep -q 'INFER-VERIFY' "$GUARDIAN_MD"; then
+    pass_test
+else
+    fail_test "agents/guardian.md does not contain 'INFER-VERIFY'"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 10: guardian.md INFER-VERIFY section lists all 5 validation criteria
+# ---------------------------------------------------------------------------
+run_test "guardian.md: INFER-VERIFY section lists all 5 validation criteria"
+
+CRITERIA_PASS=true
+CRITERIA_MISSING=()
+
+if ! grep -q 'Confidence Level is High' "$GUARDIAN_MD"; then
+    CRITERIA_PASS=false
+    CRITERIA_MISSING+=("Confidence Level is High")
+fi
+if ! grep -q 'Every Coverage area is "Fully verified"' "$GUARDIAN_MD"; then
+    CRITERIA_PASS=false
+    CRITERIA_MISSING+=("Every Coverage area is Fully verified")
+fi
+if ! grep -q 'No "Partially verified"' "$GUARDIAN_MD"; then
+    CRITERIA_PASS=false
+    CRITERIA_MISSING+=("No Partially verified")
+fi
+if ! grep -q 'No Medium or Low confidence' "$GUARDIAN_MD"; then
+    CRITERIA_PASS=false
+    CRITERIA_MISSING+=("No Medium or Low confidence")
+fi
+if ! grep -q 'No non-environmental "Not tested"' "$GUARDIAN_MD"; then
+    CRITERIA_PASS=false
+    CRITERIA_MISSING+=("No non-environmental Not tested")
+fi
+
+if $CRITERIA_PASS; then
+    pass_test
+else
+    fail_test "Missing criteria in guardian.md INFER-VERIFY section: ${CRITERIA_MISSING[*]}"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 11: DISPATCH.md mentions INFER-VERIFY as a fallback path
+# ---------------------------------------------------------------------------
+run_test "DISPATCH.md: mentions INFER-VERIFY as a fallback path"
+
+DISPATCH_MD="$PROJECT_ROOT/docs/DISPATCH.md"
+if grep -q 'INFER-VERIFY' "$DISPATCH_MD"; then
+    # Also confirm it's described as a fallback
+    if grep -q 'fallback' "$DISPATCH_MD"; then
+        pass_test
+    else
+        fail_test "DISPATCH.md contains INFER-VERIFY but does not describe it as a fallback"
+    fi
+else
+    fail_test "docs/DISPATCH.md does not mention 'INFER-VERIFY'"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 12: DISPATCH.md Pre-Dispatch Gates mentions INFER-VERIFY
+# ---------------------------------------------------------------------------
+run_test "DISPATCH.md: Pre-Dispatch Gates mentions INFER-VERIFY"
+
+# Extract the Pre-Dispatch Gates section (up to the next ## header) and check
+# for INFER-VERIFY. Using awk with a non-self-matching stop condition.
+if awk '/^## Pre-Dispatch Gates/{found=1} found && /^## / && !/^## Pre-Dispatch Gates/{exit} found{print}' "$DISPATCH_MD" | grep -q 'INFER-VERIFY'; then
+    pass_test
+else
+    fail_test "docs/DISPATCH.md Pre-Dispatch Gates section does not mention INFER-VERIFY"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
