@@ -152,6 +152,27 @@ Decision Log:
 itself a finding ("this project has no @decision annotations in code despite
 15 decisions in the plan — traceability is broken").
 
+### 2e. Governor Assessment (if available)
+
+If a governor agent is available (check for `agents/governor.md` in the project),
+dispatch the governor in `reckoning-input` mode to produce a structured assessment
+of initiative health and infrastructure health:
+
+```bash
+# Check if governor is available
+ls agents/governor.md 2>/dev/null && echo "governor available" || echo "governor not available"
+```
+
+If available, dispatch the governor before proceeding to Phase 3. The governor's
+`evaluation.json` (written to its trace artifacts directory) contains:
+- Initiative health verdict: healthy | drifting | stale
+- Infrastructure health assessment
+- Drift indicators relative to MASTER_PLAN.md Original Intent and Principles
+
+Include the governor's `evaluation.json` as a data input for Phase 3 (Seven-Dimensional
+Analysis), particularly for Dimension 3 (Intent Alignment) and Dimension 6 (Project Health).
+If the governor is not available or its dispatch fails, note the gap and continue without it.
+
 ---
 
 ## Phase 3: Seven-Dimensional Analysis

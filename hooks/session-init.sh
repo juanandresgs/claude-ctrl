@@ -925,6 +925,55 @@ if [[ -d "$TRACE_STORE" ]]; then
     fi
 fi
 
+# --- Governor pulse status (last governor trace for this project) ---
+# @decision DEC-GOV-WIRE-003
+# @title Surface last governor pulse timestamp and verdict at session start
+# @status accepted
+# @rationale Governor traces are the canonical record of health evaluations.
+#   Surfacing the most recent pulse at session start gives the orchestrator
+#   immediate awareness of when the governor last ran and what it found,
+#   without requiring the orchestrator to remember to check. Fast path:
+#   grep index.jsonl for governor entries — no heavy trace directory parsing.
+#   For meta-infrastructure (~/.claude), recommend a pulse if last one was
+#   >7 days ago or if no governor trace exists at all.
+if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
+    _GOV_PROJECT_NAME=$(basename "$PROJECT_ROOT")
+    _GOV_LAST=$(grep "\"agent_type\":\"governor\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | \
+                grep "\"project_name\":\"${_GOV_PROJECT_NAME}\"" 2>/dev/null | \
+                tail -1 || true)
+    if [[ -n "$_GOV_LAST" ]]; then
+        _GOV_DATE=$(echo "$_GOV_LAST" | jq -r '.started_at // ""' 2>/dev/null | cut -c1-10)
+        _GOV_VERDICT=$(echo "$_GOV_LAST" | jq -r '.outcome // "unknown"' 2>/dev/null)
+        _GOV_TRACE_ID=$(echo "$_GOV_LAST" | jq -r '.trace_id // ""' 2>/dev/null)
+        # Calculate days since last pulse
+        _GOV_DAYS_AGO=""
+        if [[ -n "$_GOV_DATE" ]]; then
+            _GOV_EPOCH=$(date -j -f "%Y-%m-%d" "$_GOV_DATE" "+%s" 2>/dev/null || \
+                         date -d "$_GOV_DATE" "+%s" 2>/dev/null || echo "0")
+            _NOW_EPOCH=$(date +%s)
+            if [[ "$_GOV_EPOCH" -gt 0 ]]; then
+                _GOV_DAYS_AGO=$(( (_NOW_EPOCH - _GOV_EPOCH) / 86400 ))
+            fi
+        fi
+        _GOV_LINE="Last governor pulse: ${_GOV_DATE}"
+        [[ -n "$_GOV_DAYS_AGO" ]] && _GOV_LINE="${_GOV_LINE} (${_GOV_DAYS_AGO}d ago)"
+        _GOV_LINE="${_GOV_LINE}, verdict=${_GOV_VERDICT}"
+        CONTEXT_PARTS+=("$_GOV_LINE")
+        # Recommend pulse if >7 days for meta-infrastructure
+        if [[ "$PROJECT_ROOT" == "$HOME/.claude" || "$PROJECT_ROOT" == "${HOME}/.claude" ]]; then
+            if [[ -n "$_GOV_DAYS_AGO" && "$_GOV_DAYS_AGO" -gt 7 ]]; then
+                CONTEXT_PARTS+=("Governor pulse recommended: last pulse was ${_GOV_DAYS_AGO} days ago (meta-infrastructure, target: weekly).")
+            fi
+        fi
+    else
+        CONTEXT_PARTS+=("No governor activity recorded for ${_GOV_PROJECT_NAME}")
+        # For meta-infrastructure, always recommend a pulse when none exists
+        if [[ "$PROJECT_ROOT" == "$HOME/.claude" || "$PROJECT_ROOT" == "${HOME}/.claude" ]]; then
+            CONTEXT_PARTS+=("Governor pulse recommended: no prior pulse on record for this meta-infrastructure project.")
+        fi
+    fi
+fi
+
 # --- Todo HUD (inline from already-computed counts — no extra gh calls) ---
 # Replaces the former todo.sh hud call which re-queried the same GitHub API
 # endpoints, adding ~24s of serial latency (DEC-STARTUP-PERF-001).

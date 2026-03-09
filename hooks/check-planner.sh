@@ -289,6 +289,31 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
+# --- Governor advisory: detect multi-wave initiatives ---
+# @decision DEC-GOV-WIRE-002
+# @title Emit governor advisory from check-planner.sh when multi-wave plan detected
+# @status accepted
+# @rationale The governor only fires if the orchestrator remembers to dispatch it.
+#   Since orchestrators are ephemeral with no memory, a nudge at the natural
+#   trigger point (after planner returns a multi-wave plan) ensures the governor
+#   recommendation is surfaced reliably. Advisory only — never blocks.
+#   Detection: grep RESPONSE_TEXT + PLAN for ##### Wave 2-9, Wave [2-9], or multi-wave patterns.
+#   Also checks the PLAN file itself since planner may have updated it.
+_GOV_MULTI_WAVE=false
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    if echo "$RESPONSE_TEXT" | grep -qE '[Ww]ave [2-9]|#{4,5}\s+[Ww]ave|multi.?wave'; then
+        _GOV_MULTI_WAVE=true
+    fi
+fi
+if [[ "$_GOV_MULTI_WAVE" == "false" && -f "$PLAN" ]]; then
+    if grep -qE '[Ww]ave [2-9]|#{4,5}\s+[Ww]ave|multi.?wave' "$PLAN" 2>/dev/null; then
+        _GOV_MULTI_WAVE=true
+    fi
+fi
+if [[ "$_GOV_MULTI_WAVE" == "true" ]]; then
+    ISSUES+=("GOVERNOR ADVISORY: Planner returned a multi-wave initiative. Dispatch governor in health-pulse mode before implementation per DISPATCH.md.")
+fi
+
 # Build context message
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
     CONTEXT="Planner validation: ${#ISSUES[@]} issue(s) found."
