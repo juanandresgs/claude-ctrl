@@ -719,7 +719,11 @@ _AV_HAS_NEW_FILES=false
 if [[ -n "$_AV_TRACE_ID" ]]; then
     _impl_dirs=("${TRACE_STORE}"/implementer-*/)
     _IMPL_TRACE=""
-    [[ -d "${_impl_dirs[-1]}" ]] && _IMPL_TRACE="${_impl_dirs[-1]%/}"
+    # Bash 3.2 (macOS) does not support negative array subscripts (arr[-1]).
+    # Use portable ${#arr[@]}-1 index instead. If the glob produced no matches,
+    # the array contains the literal glob pattern which is not a real directory.
+    _impl_last_idx=$(( ${#_impl_dirs[@]} - 1 ))
+    [[ -d "${_impl_dirs[$_impl_last_idx]}" ]] && _IMPL_TRACE="${_impl_dirs[$_impl_last_idx]%/}"
     if [[ -n "$_IMPL_TRACE" && -f "$_IMPL_TRACE/artifacts/files-changed.txt" ]]; then
         # Check if implementer created new files (not just modified)
         _IMPL_DIFF_DIR="${_IMPL_TRACE}/artifacts"
@@ -734,6 +738,42 @@ if [[ "$_AV_HAS_NEW_FILES" == "true" ]]; then
         log_info "POST-TASK" "secondary validation FAIL: new files created but no integration assessment in tester summary"
         AV_FAIL=true
     fi
+fi
+
+# Tier 2 evidence backstop: require at least one T2 row marked "Fully verified"
+# when a Coverage table (| Area | or | T1 | rows) is present in VALIDATION_TEXT.
+# If no Coverage table exists, this check is a no-op — don't double-block.
+#
+# @decision DEC-AV-TIER2-001
+# @title Pattern-based Tier 2 evidence detection in auto-verify secondary validation
+# @status accepted
+# @rationale The tester's Two-Tier Verification Protocol (DEC-TESTER-TIER-001) requires
+#   T2 (feature works) evidence for AUTOVERIFY: CLEAN. But prompt-level blockers depend
+#   on the tester following instructions. This hook-level backstop mechanically verifies
+#   that the Coverage table contains at least one T2 row marked "Fully verified." If
+#   absent, auto-verify fails and falls through to manual approval — the user can still
+#   approve if they judge the evidence sufficient. Pattern matching uses the Coverage
+#   table format defined in tester.md (DEC-TESTER-TIER-001).
+_AV_T2_FAIL=false
+_AV_HAS_COVERAGE_TABLE=false
+
+# Detect Coverage table presence: any markdown table row with | T1 | or | Area | header
+if echo "$VALIDATION_TEXT" | grep -qE '(\|\s*Area\s*\||\|\s*T1\s*\||\|\s*T2\s*\|)'; then
+    _AV_HAS_COVERAGE_TABLE=true
+fi
+
+if [[ "$_AV_HAS_COVERAGE_TABLE" == "true" ]]; then
+    # Look for at least one T2 row with "Fully verified" status
+    _AV_T2_VERIFIED=$(echo "$VALIDATION_TEXT" | grep -iE '^\|\s.*\|\s*T2\s*\|\s*Fully verified\s*\|' || true)
+    if [[ -z "$_AV_T2_VERIFIED" ]]; then
+        _AV_T2_FAIL=true
+        log_info "POST-TASK" "auto-verify blocked: no Tier 2 (live pipeline) verification evidence in Coverage table"
+        AV_FAIL=true
+    else
+        log_info "POST-TASK" "Tier 2 backstop: T2 Fully verified row found — check passes"
+    fi
+else
+    log_info "POST-TASK" "Tier 2 backstop: no Coverage table detected — check is no-op"
 fi
 
 # --- Apply result ---
@@ -752,6 +792,7 @@ if [[ "$AV_FAIL" == "true" ]]; then
     [[ -n "${NON_ENV_LINES:-}" ]] && _AV_REASONS="${_AV_REASONS}non-environmental Not tested; "
     [[ "$_AV_HAS_NEW_FILES" == "true" ]] && ! echo "$SUMMARY_TEXT" | grep -qiE '(Integration wiring|integration.*verified|NOT WIRED|entry.point.*reachable)' \
         && _AV_REASONS="${_AV_REASONS}new files without integration assessment; "
+    [[ "$_AV_T2_FAIL" == "true" ]] && _AV_REASONS="${_AV_REASONS}no Tier 2 (live pipeline) verification evidence; "
     ESCAPED=$(printf 'Auto-verify blocked: %s Manual approval required.' \
         "${_AV_REASONS:-unknown reason}" | jq -Rs .)
 
