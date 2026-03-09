@@ -41,15 +41,28 @@ done
 source "$(dirname "$0")/source-lib.sh"
 
 # Read and cache hook stdin JSON — must be called before detect_project_root()
-# so that .cwd is available, and before any session-scoped file operations so
-# that CLAUDE_SESSION_ID is extracted from the JSON (DEC-SESSION-ID-001 in
-# log.sh). session-init.sh was the only hook missing this call — all others
-# call HOOK_INPUT=$(read_input) immediately after sourcing source-lib.sh.
-# Without this, CLAUDE_SESSION_ID falls back to $$ (PID per process), causing
-# every hook process in the same session to use a different cache file, so
-# write_statusline_cache() always reads a non-existent file → lifetime_tokens=0.
+# so that .cwd is available for root resolution.
 # shellcheck disable=SC2034  # HOOK_INPUT is used as a shared global by get_field() in log.sh
 HOOK_INPUT=$(read_input)
+
+# @decision DEC-SID-PARENT-SHELL-001
+# @title Explicit CLAUDE_SESSION_ID extraction in parent shell after read_input()
+# @status accepted
+# @rationale read_input() (log.sh DEC-SESSION-ID-001) extracts session_id via
+#   `export CLAUDE_SESSION_ID`, but read_input() is called via command substitution
+#   $(read_input), which spawns a subshell. Exports in subshells do NOT propagate
+#   back to the parent — so CLAUDE_SESSION_ID remains unset after the call.
+#   Every hook using ${CLAUDE_SESSION_ID:-$$} falls back to $$ (PID), creating
+#   a new cache file per process. The DEC-LIFETIME-PERSIST-001 fallback reads
+#   from the PID-keyed file — which doesn't exist for each new process — so
+#   write_statusline_cache() always defaults lifetime_tokens=0.
+#   Fix: extract CLAUDE_SESSION_ID explicitly from HOOK_INPUT in the parent
+#   shell immediately after read_input() returns. Only sets it when not already
+#   set (env var from Claude Code takes priority if ever added natively).
+if [[ -z "${CLAUDE_SESSION_ID:-}" && -n "$HOOK_INPUT" ]]; then
+    CLAUDE_SESSION_ID=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+    export CLAUDE_SESSION_ID
+fi
 
 # Load all domain libraries — session-init.sh uses every domain:
 #   require_git:     get_git_state (line 84), get_session_changes

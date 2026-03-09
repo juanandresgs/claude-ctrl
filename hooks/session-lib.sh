@@ -59,6 +59,32 @@ write_statusline_cache() {
         _prev_lifetime_tokens=$(jq -r '.lifetime_tokens // 0' "$cache_file" 2>/dev/null || echo 0)
         _prev_lifetime_cost=$(jq -r '.lifetime_cost // 0' "$cache_file" 2>/dev/null || echo 0)
     fi
+    # @decision DEC-SIBLING-CACHE-001
+    # @title Cross-PID sibling cache fallback for lifetime token/cost inheritance
+    # @status accepted
+    # @rationale CLAUDE_SESSION_ID propagation from read_input() fails due to
+    #   bash command-substitution subshell scoping (DEC-SID-PARENT-SHELL-001).
+    #   Even with Part 1 fix in session-init.sh, other hooks (prompt-submit.sh,
+    #   check-*.sh, stop.sh) still fall back to $$ for CLAUDE_SESSION_ID, creating
+    #   a new PID-keyed cache file each invocation. When the own cache file doesn't
+    #   exist (or has zero lifetime values), inherit from the most recent sibling
+    #   .statusline-cache-* file. This makes lifetime persistence robust regardless
+    #   of which PID a hook runs under. Explicit LIFETIME_TOKENS/LIFETIME_COST from
+    #   the caller always wins; sibling only fills in when both are zero/unset.
+    if (( _prev_lifetime_tokens == 0 )) && (( $(echo "${_prev_lifetime_cost:-0} == 0" | bc -l 2>/dev/null || echo 1) )); then
+        local _any_cache
+        _any_cache=$(ls -t "${root}/.claude/.statusline-cache-"* 2>/dev/null | head -1 || true)
+        if [[ -n "$_any_cache" && -f "$_any_cache" && "$_any_cache" != "$cache_file" ]]; then
+            local _sib_tokens _sib_cost
+            _sib_tokens=$(jq -r '.lifetime_tokens // 0' "$_any_cache" 2>/dev/null || echo 0)
+            _sib_cost=$(jq -r '.lifetime_cost // 0' "$_any_cache" 2>/dev/null || echo 0)
+            # Only inherit when the sibling actually has values (don't adopt another zero)
+            if (( _sib_tokens > 0 )) || (( $(echo "${_sib_cost:-0} > 0" | bc -l 2>/dev/null || echo 0) )); then
+                _prev_lifetime_tokens="$_sib_tokens"
+                _prev_lifetime_cost="$_sib_cost"
+            fi
+        fi
+    fi
     local _final_lifetime_tokens="${LIFETIME_TOKENS:-$_prev_lifetime_tokens}"
     local _final_lifetime_cost="${LIFETIME_COST:-$_prev_lifetime_cost}"
 
