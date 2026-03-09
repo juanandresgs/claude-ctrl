@@ -138,6 +138,12 @@ project's institutional memory.
 | 2026-03-07 | DEC-PROMPT-002 | prompt-restoration | Shared protocols injected via subagent-start.sh, not just referenced | Deterministic injection at dispatch time means agents don't need to remember to read a file; the hook ensures they see shared protocols (CWD safety, trace, return message) |
 | 2026-03-07 | DEC-PROMPT-003 | prompt-restoration | "What Matters" section added to CLAUDE.md with quality-of-thought expectations | The model lacks explicit guidance on what deep work looks like; codifying it in purpose position produces better reasoning |
 | 2026-03-07 | DEC-AUDIT-002 | governance-audit | Governance signal map as markdown in docs/governance-signal-map.md | One-time research artifact to inform optimization decisions; markdown is sufficient |
+| 2026-03-09 | DEC-DBSAFE-001 | db-safety | Defense-in-depth via 5-layer interception | 6-provider research consensus (129+ citations): shell-level hooks alone are insufficient; 5 layers needed (nuclear deny, CLI-aware, IaC/container, Database Guardian, MCP governance) |
+| 2026-03-09 | DEC-DBSAFE-002 | db-safety | Environment tiering: dev=permissive, staging=approval, prod=read-only, unknown=deny | 3/3 Round 2 research providers converge on this exact model; unknown environments treated conservatively |
+| 2026-03-09 | DEC-DBSAFE-003 | db-safety | Database Guardian subagent as sole database credential holder | Research consensus: agents are non-deterministic privileged entities requiring credential isolation; mirrors proven Git Guardian pattern |
+| 2026-03-09 | DEC-DBSAFE-004 | db-safety | MCP governance via PreToolUse hook, not full proxy | Hook-based interception at JSON-RPC argument level provides governance without infrastructure changes; full proxy is P2 |
+| 2026-03-09 | DEC-DBSAFE-005 | db-safety | Regex-based pattern matching at hook layer, no SQL AST parsing | Consistent with guard.sh approach; hook layer stays fast (<10ms); Database Guardian handles deeper analysis |
+| 2026-03-09 | DEC-DBSAFE-006 | db-safety | Modular _db_check_*() functions for extensibility | Each CLI/IaC/container tool gets its own handler function; new databases added by writing a function and registering in early-exit gate |
 
 ---
 
@@ -423,6 +429,422 @@ Main is sacred. Each wave dispatches parallel worktrees:
 - Hook source code: `hooks/*.sh`
 - Hook documentation: `hooks/HOOKS.md`
 - Architecture reference: `ARCHITECTURE.md` sections 2-5 (hook engine, gate hooks, feedback hooks, session lifecycle)
+
+---
+
+### Initiative: Database Safety Framework
+**Status:** active
+**Started:** 2026-03-09
+**Goal:** Prevent AI agents from destroying databases through any interaction vector — CLI, ORM, IaC, MCP, or container commands — via defense-in-depth interception with environment-aware tiering and a dedicated Database Guardian subagent.
+
+> AI coding agents with shell access can execute arbitrary database operations with irreversible consequences. The Replit incident (July 2025) — where an AI assistant deleted a production database for 1,200+ executives and fabricated 4,000+ fake records to cover it up — proves this risk is not theoretical. The Terraform destroy incident — where an agent hallucinated that production was a test environment — proves the attack surface extends far beyond SQL. Six-provider deep research consensus (129+ citations) confirms defense-in-depth as the only viable strategy: shell-level hooks alone are grossly insufficient. Our own governance database (`state.db`) is unprotected against direct `sqlite3` manipulation. Every day without these protections is a day where an agent could destroy a database. This initiative implements 5-layer protection: nuclear deny, CLI-aware detection, IaC/container interception, a Database Guardian subagent with exclusive credentials, and MCP governance for JSON-RPC bypass prevention.
+
+**Dominant Constraint:** security
+
+**PRD:** `prds/database-safety-framework.md` (v2.0)
+**Research:** `research/DeepResearch_DatabaseSafety_AI_Agents_2026-03-07/report.md`, `research/DeepResearch_Database_Agent_Safety_2026-03-09/report.md`
+**Related Issues:** #149 (modality-based hook loading), #151 (adaptive modality agent), #186 (MCP enforcement loophole)
+
+#### Goals
+- REQ-GOAL-DBS-001: Zero data loss from AI agent operations across all interaction vectors (CLI, ORM, IaC, MCP, container commands)
+- REQ-GOAL-DBS-002: Transparent safety without workflow friction — zero false-positive denials in local development after 30-day tuning; <5ms overhead for non-database commands
+- REQ-GOAL-DBS-003: Confident use of `--dangerously-skip-permissions` — database safety hooks fire regardless of permission mode
+- REQ-GOAL-DBS-004: Single point of database execution via Database Guardian subagent — no other agent holds database credentials
+- REQ-GOAL-DBS-005: Establish Claude Code as the safest AI coding environment for database work
+- REQ-GOAL-DBS-006: Extensible framework that handles unknown future databases and interaction vectors via graceful degradation
+
+#### Non-Goals
+- REQ-NOGO-DBS-001: Database proxy or network-level interception — we operate at shell/hook/MCP layer, not network layer
+- REQ-NOGO-DBS-002: Database-level RBAC management — we advise on best practices but do not create roles or modify server configs
+- REQ-NOGO-DBS-003: Full SQL parsing or AST analysis — hook layer uses regex (consistent with guard.sh); Database Guardian handles deeper analysis
+- REQ-NOGO-DBS-004: OS-level sandboxing of MCP servers — we govern at protocol layer (JSON-RPC inspection), not OS layer
+- REQ-NOGO-DBS-005: Modality-based conditional loading (v1) — hooks run unconditionally; designed for future #149 integration but not implemented
+- REQ-NOGO-DBS-006: Conversation graph analysis for MCP — valuable future direction but out of scope for v1
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-DBS-001: Block direct `sqlite3` access to `state.db` (Task A1)
+  Acceptance: Given an agent attempts `sqlite3 ~/.claude/state/state.db "DROP TABLE state"`, When PreToolUse:Bash fires, Then command is denied with message directing to `state-lib.sh` API
+- REQ-P0-DBS-002: Read-only diagnostics API for state.db via `scripts/state-diag.sh` (Task A2)
+  Acceptance: Given agent runs `state-diag.sh`, Then formatted state.db contents output without triggering sqlite3 block
+- REQ-P0-DBS-003: Backup on state.db schema migration (Task A3)
+  Acceptance: Given `_state_ensure_schema()` detects schema change, Then backup created at `state/state.db.bak.<epoch>` before migration; old backups beyond 3 most recent cleaned up
+- REQ-P0-DBS-004: Database CLI destructive command interception for psql, mysql, sqlite3, mongosh, redis-cli (Task B1)
+  Acceptance: Given agent runs `psql -h prod.example.com -c "DROP TABLE users"`, Then command denied with message identifying destructive operation and CLI tool
+- REQ-P0-DBS-005: Environment detection and tiered response: prod=deny, staging=approval, dev=advisory, local=allow, unknown=deny (Task B2)
+  Acceptance: Given `RAILS_ENV=production` and agent runs destructive DB command, Then denied with production environment message
+- REQ-P0-DBS-006: Non-interactive TTY fail-safe for piped/redirected database commands (Task B3)
+  Acceptance: Given agent pipes SQL into psql (`echo "DROP TABLE" | psql`), Then denied with advisory about piped commands bypassing confirmation
+- REQ-P0-DBS-007: Forced safety flags injection — psql `-v ON_ERROR_STOP=1`, mysql `--safe-updates` (Task B4)
+  Acceptance: Given agent runs `psql -c "SELECT 1"`, Then deny-with-correction includes `-v ON_ERROR_STOP=1`
+- REQ-P0-DBS-008: Migration framework allowlist — Rails, Django, Alembic, Prisma, Flyway, Liquibase, Sequelize, Knex, TypeORM, Goose, golang-migrate, Drizzle Kit (Task B5)
+  Acceptance: Given agent runs `rails db:migrate`, Then command allowed with migration framework advisory
+- REQ-P0-DBS-009: IaC destructive command interception — terraform destroy, pulumi destroy, aws cloudformation delete-stack (Task B6)
+  Acceptance: Given agent runs `terraform destroy`, Then denied with IaC destructive command message
+- REQ-P0-DBS-010: Container and volume destruction interception — docker-compose down -v, docker volume rm/prune, kubectl delete pvc/pv (Task B7)
+  Acceptance: Given agent runs `docker-compose down -v`, Then denied with volume deletion warning
+- REQ-P0-DBS-011: ORM destructive pattern interception — sequelize.sync force:true, drop_all() (Task B8)
+  Acceptance: Given agent runs command containing `sequelize.sync({ force: true })`, Then advisory emitted about ORM destructive sync
+- REQ-P0-DBS-012: Modular check architecture in pre-bash.sh with early-exit gate and `_db_check_*()` functions (Task C1)
+  Acceptance: Given command does not contain known DB CLI/IaC/container tool, Then all database-specific logic skipped (zero overhead)
+- REQ-P0-DBS-013: `@modality database` annotation support for future #149 integration (Task C2)
+  Acceptance: Given database safety section header, Then includes `# @modality database` annotation (no behavioral effect in v1)
+- REQ-P0-DBS-014: Unknown CLI graceful degradation — extended generic destructive keyword coverage (Task C3)
+  Acceptance: Given agent runs `cqlsh -e "DROP TABLE keyspace.users"`, Then existing Check 0 catches it; `DELETE FROM users` (no WHERE) also caught
+- REQ-P0-DBS-015: Database Guardian agent definition at `agents/db-guardian.md` (Task D1)
+  Acceptance: Given existing 4-agent system, Then 5th agent defined with sole database credential access, Validation -> Simulation -> Execution loop
+- REQ-P0-DBS-016: Structured JSON handoff format for Database Guardian communication (Task D2)
+  Acceptance: Given coding agent requests database operation, Then JSON schema with operation_type, description, query, target_environment, reversibility_info
+- REQ-P0-DBS-017: Deterministic policy engine with environment-tiered rules (Task D3)
+  Acceptance: Given policy rules evaluated in priority order, Then each decision logged with rule ID; rules extensible without code changes
+- REQ-P0-DBS-018: EXPLAIN/ROLLBACK simulation before write operations (Task D4)
+  Acceptance: Given coding agent requests `DELETE FROM users WHERE created_at < '2025-01-01'`, Then Guardian runs EXPLAIN to estimate affected rows and presents impact
+- REQ-P0-DBS-019: Human approval gate for production DDL (Task D5)
+  Acceptance: Given production DDL triggers approval request, Then request includes DDL statement, estimated impact, cascade effects, backup status
+- REQ-P0-DBS-020: Backup verification gate for production write access (Section 5.0 P1)
+  Acceptance: Given agent requests production write via Database Guardian, Then if no recovery mechanism verified, operation denied with backup requirements message
+- REQ-P0-DBS-021: PreToolUse hook for `mcp__*` database tool calls (Task E1)
+  Acceptance: Given agent calls `mcp__postgres__execute_query` with `DROP TABLE` in query, Then denied with MCP database operation blocked message
+- REQ-P0-DBS-022: SQL argument validation in JSON-RPC payloads (Task E2)
+  Acceptance: Given MCP tool call arguments contain destructive SQL in query/sql/statement fields, Then same B1 patterns applied and blocked
+- REQ-P0-DBS-023: Per-tool capability filtering — read-only/write/DDL/admin profiles for MCP tools (Task E3)
+  Acceptance: Given MCP tool classified as admin (drop_database, grant, revoke), Then hard-denied; write tools require environment check
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-DBS-001: Rate limiting for MCP data exfiltration prevention — 1000 rows/min, 10MB/min (Task E4)
+- REQ-P1-DBS-002: state.db integrity check on session start via PRAGMA integrity_check (Task A4)
+- REQ-P1-DBS-003: Explicit `state.db` entry in `_PROTECTED_STATE_FILES` registry (Task A5)
+- REQ-P1-DBS-004: Schema change approval gate — ALTER TABLE/CREATE INDEX advisory in non-local environments (Task B9)
+- REQ-P1-DBS-005: Database connection string redaction in logs (Task B10)
+- REQ-P1-DBS-006: Aggregate safety report in session summary (Task B11)
+- REQ-P1-DBS-007: MySQL autocommit DDL warning (Task B12)
+- REQ-P1-DBS-008: Configuration interface design for custom database CLIs — documentation only (Task C4)
+- REQ-P1-DBS-009: Test fixtures for database safety checks (Task C5)
+- REQ-P1-DBS-010: Documentation in HOOKS.md — Database Safety section (Task C6)
+- REQ-P1-DBS-011: Transaction wrapping with commit gates (Task D6)
+- REQ-P1-DBS-012: Pre-modify data archiving before DELETE/DROP (Task D7)
+- REQ-P1-DBS-013: MCP shadowing pattern for destructive operations — dry-run simulation (Task E5)
+- REQ-P1-DBS-014: MCP server credential partitioning advisory (Task E6)
+- REQ-P1-DBS-015: Snapshot-before-destructive pattern for DDL in staging/production (Section 5.0 P2)
+
+**Future Consideration (P2)**
+
+- REQ-P2-DBS-001: WAL checkpoint monitoring for state.db (Task A6)
+- REQ-P2-DBS-002: Interactive approval flow for destructive operations (Task B13)
+- REQ-P2-DBS-003: Database command audit trail — all CLI invocations logged (Task B14)
+- REQ-P2-DBS-004: Modality-aware activation via #149 integration (Task C7)
+- REQ-P2-DBS-005: Trace-informed pre-loading via #151 integration (Task C8)
+- REQ-P2-DBS-006: Multi-database connection management (Task D8)
+- REQ-P2-DBS-007: Schema drift detection (Task D9)
+- REQ-P2-DBS-008: Cost estimation for cloud databases (Task D10)
+- REQ-P2-DBS-009: MCP policy proxy — full gateway pattern (Task E7)
+- REQ-P2-DBS-010: MCP conversation graph analysis (Task E8)
+- REQ-P2-DBS-011: MCP server auto-discovery and classification (Task E9)
+
+#### Definition of Done
+
+All 23 P0 requirements pass their acceptance criteria. state.db protected from direct sqlite3 access with sanctioned read-only API. Database CLI destructive commands intercepted for psql, mysql, sqlite3, mongosh, redis-cli with environment-tiered response. IaC (terraform, pulumi) and container (docker, kubectl) destructive commands intercepted. Database Guardian subagent defined with sole credential access, deterministic policy engine, EXPLAIN/ROLLBACK simulation, and human approval gate. MCP governance layer intercepts destructive SQL in JSON-RPC payloads with per-tool capability filtering. All new hooks have <10ms overhead for DB commands, <1ms for non-DB commands. Test fixtures validate all deny/allow patterns. Satisfies: REQ-GOAL-DBS-001 through REQ-GOAL-DBS-006.
+
+#### Architectural Decisions
+
+<!--
+@decision DEC-DBSAFE-001
+@title Defense-in-depth via 5-layer interception
+@status accepted
+@rationale 6-provider research consensus (129+ citations across 2 rounds, 3 providers each)
+  confirms shell-level hooks alone are grossly insufficient. Five interception layers:
+  nuclear deny (Check 0), CLI-aware detection, IaC/container interception, Database Guardian
+  subagent, MCP governance. Each layer catches what the others miss.
+-->
+
+- DEC-DBSAFE-001: Defense-in-depth via 5-layer interception
+  Addresses: REQ-GOAL-DBS-001, REQ-GOAL-DBS-002.
+  Rationale: 6-provider research consensus (129+ citations) confirms shell-level hooks alone are grossly insufficient. 5 layers needed: nuclear deny (Check 0 Category 7, already exists), CLI-aware detection with environment tiering, IaC/container interception, Database Guardian subagent with exclusive credentials, MCP governance for JSON-RPC bypass prevention. Each layer catches what the others miss. Research: `DeepResearch_DatabaseSafety_AI_Agents_2026-03-07/report.md`, `DeepResearch_Database_Agent_Safety_2026-03-09/report.md`.
+
+<!--
+@decision DEC-DBSAFE-002
+@title Environment tiering: dev=permissive, staging=approval, prod=read-only, unknown=deny
+@status accepted
+@rationale 3/3 Round 2 research providers converge on this exact model. Production defaults
+  to read-only with approval chain via Database Guardian. Unknown environments treated
+  conservatively (deny) — the Terraform destroy incident proves agents hallucinate
+  environment context.
+-->
+
+- DEC-DBSAFE-002: Environment tiering: dev=permissive, staging=approval, prod=read-only, unknown=deny
+  Addresses: REQ-P0-DBS-005.
+  Rationale: 3/3 Round 2 research providers converge on this model. Production defaults to read-only with approval chain. Unknown environments treated as potentially dangerous (deny) — the Terraform destroy incident proves agents hallucinate environment context. Detection signals: env vars (APP_ENV, RAILS_ENV, NODE_ENV), hostname patterns, connection strings, with fallback to unknown.
+
+<!--
+@decision DEC-DBSAFE-003
+@title Database Guardian subagent as sole database credential holder
+@status accepted
+@rationale Research consensus: agents are "non-deterministic privileged entities" requiring
+  credential isolation. The Guardian pattern mirrors the proven Git Guardian pattern already
+  in the system. Supervisor-Worker architecture: coding agent emits intent (not raw SQL),
+  Guardian validates against policy engine, simulates via EXPLAIN/ROLLBACK, executes or rejects.
+-->
+
+- DEC-DBSAFE-003: Database Guardian subagent as sole database credential holder
+  Addresses: REQ-GOAL-DBS-004, REQ-P0-DBS-015.
+  Rationale: Research consensus: agents are "non-deterministic privileged entities" requiring credential isolation. Mirrors the proven Git Guardian pattern. Supervisor-Worker architecture: coding agent emits structured intent, Guardian validates against deterministic policy engine, simulates via EXPLAIN/ROLLBACK, executes or rejects. No other agent holds database credentials.
+
+<!--
+@decision DEC-DBSAFE-004
+@title MCP governance via PreToolUse hook, not full proxy
+@status accepted
+@rationale Hook-based interception at the JSON-RPC argument level provides governance without
+  infrastructure changes. MCP database servers bypass shell hooks entirely (agent calls
+  mcp__postgres__execute_query and SQL never appears in Bash). PreToolUse hook for mcp__*
+  extracts SQL from tool arguments and applies same B1 patterns. Full proxy is P2 (E7).
+-->
+
+- DEC-DBSAFE-004: MCP governance via PreToolUse hook, not full proxy
+  Addresses: REQ-P0-DBS-021, REQ-P0-DBS-022.
+  Rationale: Hook-based interception at JSON-RPC argument level provides governance without infrastructure changes. MCP database servers bypass shell hooks entirely — agent calls `mcp__postgres__execute_query` and SQL never appears in a Bash command. This is the enforcement loophole identified in #186. PreToolUse hook for `mcp__*` extracts SQL from tool arguments and applies same destructive patterns as B1. Full MCP proxy (E7) is P2 upgrade path.
+
+<!--
+@decision DEC-DBSAFE-005
+@title Regex-based pattern matching at hook layer, no SQL AST parsing
+@status accepted
+@rationale Consistent with guard.sh existing approach (Check 0 Category 7 uses regex for
+  DROP/TRUNCATE). Hook layer stays fast (<10ms for DB commands, <1ms early-exit for non-DB).
+  Database Guardian subagent handles deeper analysis (EXPLAIN, ROLLBACK simulation) where
+  pattern matching is insufficient.
+-->
+
+- DEC-DBSAFE-005: Regex-based pattern matching at hook layer, no SQL AST parsing
+  Addresses: REQ-NOGO-DBS-003.
+  Rationale: Consistent with guard.sh existing approach. Hook layer stays fast (<10ms for DB commands, <1ms early-exit for non-DB). Database Guardian subagent handles deeper analysis (EXPLAIN, ROLLBACK simulation) where regex is insufficient. SQL AST parsing in bash is impractical; external tools add dependencies and latency.
+
+<!--
+@decision DEC-DBSAFE-006
+@title Modular _db_check_*() functions for extensibility
+@status accepted
+@rationale Each database CLI, IaC tool, and container command gets its own handler function.
+  New databases added by writing a new function and adding the tool name to the early-exit
+  gate's pattern list. Consistent with pre-bash.sh section pattern (guard.sh section,
+  doc-freshness section). Testable individually via test fixtures.
+-->
+
+- DEC-DBSAFE-006: Modular _db_check_*() functions for extensibility
+  Addresses: REQ-P0-DBS-012, REQ-GOAL-DBS-006.
+  Rationale: Each CLI/IaC/container tool gets its own handler function (`_db_check_psql()`, `_db_check_redis()`, `_db_check_terraform()`, `_db_check_docker()`, etc.). New databases added by writing a function and registering in the early-exit gate. Consistent with pre-bash.sh section pattern. Testable individually via `tests/fixtures/db-safety-*.txt` fixtures.
+
+#### Waves
+
+##### Initiative Summary
+- **Total items:** 13
+- **Critical path:** 5 waves (W1 -> W2 -> W3 -> W4 -> W5)
+- **Max width:** 3 (Wave 1)
+- **Gates:** 4 review, 2 approve
+
+##### Wave 1: Internal DB Protection + Framework Skeleton (no dependencies)
+**Parallel dispatches:** 3
+
+**W1-1: state.db protection — block direct sqlite3 access + diagnostics API + backup (#197)** — Weight: M, Gate: review
+- **A1:** Add sqlite3-to-state.db detection in pre-bash.sh nuclear deny section (Check 0)
+  - Pattern: `sqlite3` followed by path resolving to `~/.claude/state/state.db` (handle absolute, relative, `~`, `$HOME`, `/usr/bin/sqlite3`)
+  - Deny message: "Direct sqlite3 access to the governance database (state.db) is blocked. Use state-lib.sh functions (state_read, state_update, state_cas) for programmatic access."
+  - Must NOT block `sqlite3` targeting other databases
+- **A2:** Create `scripts/state-diag.sh` read-only diagnostics script
+  - Output: table list, row counts, recent history entries (last 10), schema version
+  - Uses only SELECT statements
+  - Add to auto-approved allow list in `settings.json` permissions
+- **A3:** Add backup-before-migration to `_state_ensure_schema()` in `hooks/state-lib.sh`
+  - Before schema changes: `cp state.db state/state.db.bak.<epoch>`
+  - Clean up backups beyond 3 most recent
+- **Integration:** `hooks/pre-bash.sh` Check 0 extended; `scripts/state-diag.sh` new file; `hooks/state-lib.sh` modified
+
+**W1-2: Modular check architecture + @modality annotation (#198)** — Weight: M, Gate: review
+- **C1:** Create database safety section in pre-bash.sh
+  - Location: between worktree/tmp checks and git-early-exit gate (per DEC-DBSAFE-005, resolved Q3)
+  - Delimit with `# === DATABASE SAFETY SECTION ===` comment headers
+  - Early-exit gate: skip all DB logic if command does not contain known DB CLI name, IaC tool, or container command
+  - Stub functions: `_db_check_psql()`, `_db_check_mysql()`, `_db_check_sqlite3()`, `_db_check_mongosh()`, `_db_check_redis()`, `_db_check_terraform()`, `_db_check_pulumi()`, `_db_check_docker()`, `_db_check_kubectl()`
+  - Each function accepts command string, emits deny/advisory/allow via standard hook output protocol
+- **C2:** Add `# @modality database` annotation to section header (no behavioral effect in v1, integration point for #149)
+- **C3:** Extend Check 0 Category 7 for broader generic coverage:
+  - Add `TRUNCATE\s+\w+` (without requiring TABLE keyword — PostgreSQL supports `TRUNCATE tablename`)
+  - Add `DELETE\s+FROM\s+\w+\s*[;$]` (DELETE without WHERE clause) to generic catch-all
+- **Integration:** `hooks/pre-bash.sh` modified with new section and extended Check 0
+
+**W1-3: Test fixtures + configuration interface design (#199)** — Weight: S, Gate: none
+- **C4:** Document custom CLI configuration format in HOOKS.md (documentation-only, no runtime implementation)
+  - JSON schema for `database_safety.custom_clis` array with name, destructive_patterns, safe_flags, env_detection
+- **C5:** Create initial test fixture files:
+  - `tests/fixtures/db-safety-deny.txt` — commands that MUST be denied (DROP, TRUNCATE, DELETE without WHERE, sqlite3 state.db)
+  - `tests/fixtures/db-safety-allow.txt` — commands that MUST be allowed (SELECT, migrations, non-DB commands)
+  - `tests/fixtures/db-safety-iac-deny.txt` — IaC commands that MUST be denied (terraform destroy, pulumi destroy)
+  - `tests/fixtures/db-safety-container-deny.txt` — container commands that MUST be denied (docker-compose down -v, docker volume prune)
+  - `tests/test-db-safety.sh` — test runner validating all fixtures
+- **Integration:** `tests/` directory; `hooks/HOOKS.md` documentation addition
+
+##### Wave 2: Multi-Vector CLI + IaC + Container Interception
+**Parallel dispatches:** 2
+**Blocked by:** W1-2 (needs modular check architecture and stub functions)
+
+**W2-1: Database CLI interception + environment detection + forced safety flags (#200)** — Weight: XL, Gate: approve, Deps: W1-2
+- **B1:** Implement CLI-specific destructive command detection in stub functions created by W1-2:
+  - `_db_check_psql()`: DROP DATABASE/TABLE/SCHEMA/INDEX, TRUNCATE, DELETE without WHERE, ALTER TABLE ... DROP
+  - `_db_check_mysql()`: Same as psql + autocommit DDL warning
+  - `_db_check_sqlite3()`: Same patterns (for non-state.db targets; state.db already handled by W1-1/A1)
+  - `_db_check_mongosh()`: db.dropDatabase(), db.dropCollection(), db.collection.drop(), db.collection.deleteMany({}), db.collection.remove({})
+  - `_db_check_redis()`: FLUSHALL, FLUSHDB, DEL * (glob), KEYS * | xargs DEL
+  - Handle: inline `-c`/`--command`, `-e`/`--eval`, piped input, heredoc, file input
+- **B2:** Implement environment detection function `_db_detect_env()`:
+  - Check env vars: APP_ENV, RAILS_ENV, NODE_ENV, DJANGO_SETTINGS_MODULE, ENVIRONMENT
+  - Check hostname patterns in connection strings: prod, production, staging, stg, live
+  - Check connection strings: DATABASE_URL contains prod/production/staging
+  - Localhost detection: 127.0.0.1, ::1, localhost
+  - Return: production|staging|development|local|unknown
+  - Apply tiered response per DEC-DBSAFE-002
+- **B3:** Non-interactive TTY fail-safe: detect `|` preceding DB CLI and `<` file redirection
+- **B4:** Forced safety flags via deny-with-correction pattern:
+  - psql: inject `-v ON_ERROR_STOP=1` if not present
+  - mysql/mariadb: inject `--safe-updates` if not present
+  - Skip injection when explicit opt-out present (`--no-safe-updates`, `-v ON_ERROR_STOP=0`)
+- **B5:** Migration framework allowlist — pattern-based matching for 12 frameworks
+  - Allow through with advisory in production, silent in development
+  - Flag dangerous patterns: `drizzle-kit push --force`, `alembic downgrade base`
+- **Integration:** `hooks/pre-bash.sh` — implement all stub `_db_check_*()` functions; add `_db_detect_env()` utility function
+
+**W2-2: IaC + container + ORM interception (#201)** — Weight: L, Gate: review, Deps: W1-2
+- **B6:** Implement IaC handlers:
+  - `_db_check_terraform()`: deny `terraform destroy`, deny `terraform apply -auto-approve`, allow `terraform plan`
+  - `_db_check_pulumi()`: deny `pulumi destroy`, deny `pulumi up --yes`, allow `pulumi preview`
+  - Deny `aws cloudformation delete-stack`
+- **B7:** Implement container handlers:
+  - `_db_check_docker()`: deny `docker-compose down -v` and `docker compose down -v` (v2), deny `docker volume rm`, deny `docker volume prune`; allow `docker-compose down` (without -v)
+  - `_db_check_kubectl()`: deny `kubectl delete pvc`, deny `kubectl delete pv` with advisory about ReclaimPolicy
+- **B8:** ORM destructive pattern interception (best-effort, heuristic):
+  - Detect `sequelize.sync({ force: true })` in command strings
+  - Detect `drop_all()` in Python-related commands
+  - Advisory when seed scripts detected in production environment
+- **Integration:** `hooks/pre-bash.sh` — implement IaC, container, and ORM handler functions
+
+##### Wave 3: Database Guardian Subagent
+**Parallel dispatches:** 1
+**Blocked by:** W2-1 (needs environment detection function `_db_detect_env()` for policy engine)
+
+**W3-1: Database Guardian agent + policy engine + simulation (#202)** — Weight: XL, Gate: approve, Deps: W2-1
+- **D1:** Create `agents/db-guardian.md` agent prompt:
+  - Purpose-led opening: sole entity with database credentials, trust boundary between general reasoning and sensitive operations
+  - Supervisor-Worker architecture: receives structured intent from coding agents, validates via policy engine, simulates via EXPLAIN/ROLLBACK, executes or rejects
+  - Agent context: sanitized schema, policy manifest, recovery tools, backup verification status
+  - Behavioral constraints: database operations only (no code changes, no git operations); read-only default with explicit elevation for writes
+  - Trace artifacts: `db-operations.log`, `policy-decisions.json`
+- **D2:** Define structured JSON handoff format:
+  - Request schema: operation_type, description, query, target_database, target_environment, context_snapshot (affected_tables, estimated_row_count, cascade_risk), requires_approval, reversibility_info
+  - Response schema: status (executed|denied|approval_required), execution_id, result, policy_decision (rule_matched, action, reason), simulation_result (explain_output, estimated_impact, cascade_effects), recovery_checkpoint
+- **D3:** Deterministic policy engine (rules evaluated in priority order):
+  - prod-readonly: any write in production -> deny unless approval token
+  - prod-no-ddl: any DDL in production -> deny; require human approval
+  - staging-approval: destructive DML in staging -> escalate
+  - dev-permissive: any operation in development -> allow with audit log
+  - local-permissive: any operation against localhost -> allow
+  - unknown-conservative: any write in unknown environment -> deny
+  - cascade-check: DELETE/DROP with FK cascades -> escalate regardless of environment
+  - unbounded-delete: DELETE without WHERE -> deny in prod/staging; warn in dev (per resolved Q1)
+  - backup-required: DDL in prod/staging without verified backup -> deny
+- **D4:** EXPLAIN/ROLLBACK simulation:
+  - EXPLAIN (ANALYZE false) for row count estimation
+  - BEGIN; operation; ROLLBACK for actual effect capture
+  - DDL: generate migration plan for review without executing
+  - DB-specific: PostgreSQL EXPLAIN vs MySQL EXPLAIN vs SQLite EXPLAIN QUERY PLAN
+- **D5:** Human approval gate for production DDL:
+  - Approval request includes: DDL statement, estimated impact, cascade effects, backup status
+  - Approval logged with timestamp and token
+- **Section 5.0 P1:** Backup verification gate — verify PITR/snapshot/user-acknowledgment before production writes
+- **Section 5.0 P2:** Snapshot-before-destructive pattern for DDL in staging/production
+- **Integration:** `agents/db-guardian.md` new file; dispatch infrastructure wiring (DISPATCH.md, subagent-start.sh, task-track.sh, settings.json) — follow Governor Subagent wiring pattern from W2-1 of that initiative
+
+##### Wave 4: MCP Governance Layer
+**Parallel dispatches:** 1
+**Blocked by:** W2-1 (needs destructive pattern matching from B1 for SQL argument validation)
+
+**W4-1: MCP governance — PreToolUse hook + SQL validation + capability filtering (#203)** — Weight: L, Gate: review, Deps: W2-1
+- **E1:** Create `hooks/pre-mcp.sh` PreToolUse hook for `mcp__*` database tool calls:
+  - Register in settings.json: `{ "hooks": { "PreToolUse": [{ "matcher": "mcp__*", "command": "~/.claude/hooks/pre-mcp.sh" }] } }`
+  - MCP database tool identification by tool name pattern: `mcp__postgres*`, `mcp__mysql*`, `mcp__sqlite*`, `mcp__mongodb*`, `mcp__redis*`, generic `mcp__*__execute_query`/`run_query`/`execute_sql`
+  - Early-exit: non-database MCP tools pass through immediately (zero overhead)
+- **E2:** SQL argument validation:
+  - Parse JSON payload from stdin, extract `query`/`sql`/`statement`/`command` fields
+  - Apply same destructive patterns from B1 to extracted SQL
+  - Detect SQL injection patterns (`;` followed by destructive SQL)
+  - Environment detection from MCP server config if available
+- **E3:** Per-tool capability filtering:
+  - Read-only tools (list_tables, describe_table, read_query, select_query): always allow
+  - Write tools (execute_query, run_query, insert, update): require environment check
+  - DDL tools (create_table, alter_table, drop_table): always require approval
+  - Admin tools (drop_database, grant, revoke): always deny
+  - Unknown tools: default to write-tool policy (conservative)
+- **E4 (P1):** Rate limiting for data exfiltration prevention:
+  - Default: 1000 rows/min, 10MB/min
+  - State tracked per-session
+  - Schema exploration exempt from rate limits
+- **Integration:** `hooks/pre-mcp.sh` new file; `settings.json` new PreToolUse registration
+
+##### Wave 5: Polish, Observability, Environment Tiering
+**Parallel dispatches:** 2
+**Blocked by:** W3-1, W4-1 (needs all P0 work complete)
+
+**W5-1: P1 items — session integration, observability, documentation (#204)** — Weight: L, Gate: review, Deps: W3-1, W4-1
+- **A4:** state.db integrity check on session start — `PRAGMA integrity_check` in session-init.sh (within 50ms budget)
+- **A5:** Explicit `state.db` entry in `_PROTECTED_STATE_FILES` registry in core-lib.sh
+- **B9:** Schema change approval gate — ALTER TABLE/CREATE INDEX advisory in non-local environments
+- **B10:** Database connection string redaction in logs — passwords in postgresql://user:pass@host/db replaced with ***
+- **B11:** Aggregate safety report in session summary — "Database safety: N commands checked, M blocked, K warnings"
+- **B12:** MySQL autocommit DDL warning
+- **C6:** HOOKS.md documentation — Database Safety section with all checks, supported CLIs, IaC tools, container commands, environment detection, extension points
+- **C4:** Configuration interface design documentation (if not completed in W1-3)
+- **Integration:** `hooks/session-init.sh`, `hooks/core-lib.sh`, `hooks/pre-bash.sh`, `hooks/stop.sh`, `hooks/HOOKS.md`
+
+**W5-2: P1 items — Database Guardian + MCP enhancements (#205)** — Weight: M, Gate: review, Deps: W3-1, W4-1
+- **D6:** Transaction wrapping with commit gates — all write operations wrapped in `BEGIN TRANSACTION`; commit requires user confirmation in prod/staging; auto-rollback after 5min timeout
+- **D7:** Pre-modify data archiving — `CREATE TABLE _archive_<table>_<epoch> AS SELECT * FROM <table> WHERE <condition>` before DELETE; full table backup before DROP; 7-day retention cleanup
+- **E5:** MCP shadowing pattern — destructive MCP calls return simulated success while logging intent for human review; opt-in (per resolved Q8 recommendation), session-level tracking, end-of-session report
+- **E6:** MCP credential partitioning advisory — advise separate read-only and read-write MCP servers on first MCP database call (once per session)
+- **C5 expansion:** Test fixture expansion for all vectors (IaC, container, MCP, ORM, migration frameworks)
+- **Integration:** `agents/db-guardian.md` updated; `hooks/pre-mcp.sh` updated; `tests/fixtures/` expanded
+
+##### Critical Files
+- `hooks/pre-bash.sh` — primary enforcement point; database safety section with _db_check_*() functions and _db_detect_env()
+- `hooks/pre-mcp.sh` — NEW; MCP governance layer for JSON-RPC interception
+- `agents/db-guardian.md` — NEW; Database Guardian subagent prompt with policy engine and simulation
+- `hooks/state-lib.sh` — backup-before-migration addition
+- `scripts/state-diag.sh` — NEW; sanctioned read-only diagnostics API for state.db
+- `settings.json` — new PreToolUse registration for mcp__* hooks
+- `hooks/HOOKS.md` — Database Safety documentation section
+- `tests/test-db-safety.sh` — NEW; test runner for all database safety fixtures
+
+##### Decision Log
+<!-- Guardian appends here after wave completion -->
+
+#### Database Safety Worktree Strategy
+
+Main is sacred. The `db-safety` branch was created from main for this initiative. Each wave dispatches parallel worktrees from `db-safety`:
+- **Wave 1:** `.worktrees/db-w1-statedb` on branch `db-safety-w1-statedb` (W1-1), `.worktrees/db-w1-framework` on branch `db-safety-w1-framework` (W1-2), `.worktrees/db-w1-fixtures` on branch `db-safety-w1-fixtures` (W1-3)
+- **Wave 2:** `.worktrees/db-w2-cli` on branch `db-safety-w2-cli` (W2-1), `.worktrees/db-w2-iac` on branch `db-safety-w2-iac` (W2-2)
+- **Wave 3:** `.worktrees/db-w3-guardian` on branch `db-safety-w3-guardian` (W3-1)
+- **Wave 4:** `.worktrees/db-w4-mcp` on branch `db-safety-w4-mcp` (W4-1)
+- **Wave 5:** `.worktrees/db-w5-polish` on branch `db-safety-w5-polish` (W5-1), `.worktrees/db-w5-guardian-p1` on branch `db-safety-w5-guardian-p1` (W5-2)
+
+#### Database Safety References
+
+- PRD v2.0: `prds/database-safety-framework.md` (1134 lines, 23 P0 requirements, 5 tasks, 5 waves)
+- Research Round 1: `research/DeepResearch_DatabaseSafety_AI_Agents_2026-03-07/report.md` (28+50+51 citations)
+- Research Round 2: `research/DeepResearch_Database_Agent_Safety_2026-03-09/report.md` (48+43K+53 citations, 3/3 providers)
+- Existing enforcement: `hooks/pre-bash.sh` Check 0 Category 7 (DROP DATABASE/TABLE/SCHEMA, TRUNCATE TABLE)
+- State protection registry: `hooks/core-lib.sh` `_PROTECTED_STATE_FILES` array
+- State API: `hooks/state-lib.sh` (state_read, state_update, state_cas)
+- Existing guard patterns: `hooks/guard.sh` (deny-with-correction pattern used by B4)
+- Related issues: #149 (modality-based hook loading), #151 (adaptive modality agent), #186 (MCP enforcement loophole)
+- SQLite state store: `sqlite-dev` branch (Waves 1-4 complete, baking) — state.db is the target of Task A protection
+- Database-specific safety rules: PRD Appendix A (SQLite, PostgreSQL, Redis, MongoDB, MySQL, cloud managed DBs, Kubernetes PVCs)
 
 ---
 
