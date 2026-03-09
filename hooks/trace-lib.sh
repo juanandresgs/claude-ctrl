@@ -507,6 +507,42 @@ finalize_trace() {
         fi
     fi
 
+    # Backfill project_name/project if the manifest has null values.
+    # This fixes traces where the tester was blocked at the gate before init_trace
+    # had a chance to record the project. finalize_trace is the last chance to
+    # capture project identity before the trace is sealed.
+    #
+    # @decision DEC-BACKFILL-003
+    # @title finalize_trace backfills null project fields from detect_project_root
+    # @status accepted
+    # @rationale Failed tester dispatches (blocked by task-track.sh at gate) produce
+    #   traces with null project_name because the tester agent never runs init_trace
+    #   with a valid project path. SubagentStop fires finalize_trace with project_root=""
+    #   or null. These 0-1s "skipped" traces pollute observatory analysis.
+    #   Fix: if manifest.project_name is null/empty AND project_root is valid, backfill
+    #   from project_root. If project_root is also null/empty, try detect_project_root().
+    #   Only applies when the manifest field is genuinely missing — never overwrites
+    #   an existing non-null project_name. Issue #173.
+    local _manifest_project_name
+    _manifest_project_name=$(jq -r '.project_name // ""' "$manifest" 2>/dev/null)
+    local _backfill_project_name=""
+    local _backfill_project_root=""
+    if [[ -z "$_manifest_project_name" || "$_manifest_project_name" == "null" ]]; then
+        # Try the passed-in project_root first
+        if [[ -n "$project_root" && "$project_root" != "null" ]]; then
+            _backfill_project_root="$project_root"
+            _backfill_project_name=$(basename "$project_root")
+        else
+            # Fall back to detect_project_root() (defined in core-lib.sh)
+            local _detected_root
+            _detected_root=$(detect_project_root 2>/dev/null || echo "")
+            if [[ -n "$_detected_root" ]]; then
+                _backfill_project_root="$_detected_root"
+                _backfill_project_name=$(basename "$_detected_root")
+            fi
+        fi
+    fi
+
     # Update manifest with jq (merge new fields)
     # @decision DEC-OBS-OVERHAUL-003
     # @title jq error propagation in manifest writes
@@ -527,6 +563,8 @@ finalize_trace() {
        --arg proof_status "$proof_status" \
        --argjson files_changed "$files_changed" \
        --arg end_commit "$end_commit" \
+       --arg backfill_project_name "$_backfill_project_name" \
+       --arg backfill_project_root "$_backfill_project_root" \
        '. + {
          finished_at: $finished_at,
          duration_seconds: $duration,
@@ -536,7 +574,13 @@ finalize_trace() {
          proof_status: $proof_status,
          files_changed: $files_changed,
          end_commit: $end_commit
-       }' "$manifest" > "$tmp_manifest" 2>"$jq_err_file" || {
+       }
+       | if ($backfill_project_name != "") then
+           . + {project_name: $backfill_project_name}
+         else . end
+       | if ($backfill_project_root != "") then
+           . + {project: $backfill_project_root}
+         else . end' "$manifest" > "$tmp_manifest" 2>"$jq_err_file" || {
         local jq_err_msg
         jq_err_msg=$(cat "$jq_err_file" 2>/dev/null)
         echo "ERROR: finalize_trace: jq failed to update manifest for trace $trace_id: $jq_err_msg" >&2
