@@ -95,6 +95,30 @@ log_info() {
     echo "[$stage] $message" >&2
 }
 
+# @decision DEC-WORKTREE-RESOLVE-001
+# @title Resolve worktree git root to main repo root
+# @status accepted
+# @rationale When CWD is inside a git worktree, git rev-parse --show-toplevel
+#   returns the worktree path, not the main repo root. This causes project_hash()
+#   to compute a different hash, breaking lifetime token sums, cache file paths,
+#   and proof-status lookups. Fix: use git-common-dir (always points to main .git)
+#   to derive the main working tree root. If the common dir lives inside the
+#   resolved root (same repo), strip the /.git suffix to get the main root.
+#   Returns input unchanged when git fails or when input is already the main root.
+_resolve_to_main_worktree() {
+    local _root="${1:?}"
+    local _common_dir
+    _common_dir=$(git -C "$_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
+    if [[ -n "$_common_dir" ]]; then
+        local _main_root="${_common_dir%/.git}"
+        if [[ -d "$_main_root" && "$_main_root" != "$_root" ]]; then
+            echo "$_main_root"
+            return
+        fi
+    fi
+    echo "$_root"
+}
+
 detect_project_root() {
     # Check if CWD still exists — recover if deleted (Fix #34)
     if [[ ! -d "$PWD" ]]; then
@@ -119,6 +143,7 @@ detect_project_root() {
             local _hook_root
             _hook_root=$(git -C "$_hook_cwd" rev-parse --show-toplevel 2>/dev/null || echo "")
             if [[ -n "$_hook_root" && -d "$_hook_root" ]]; then
+                _hook_root=$(_resolve_to_main_worktree "$_hook_root")
                 export CLAUDE_PROJECT_DIR="$_hook_root"
                 echo "$_hook_root"
                 return
@@ -134,6 +159,7 @@ detect_project_root() {
         local root
         root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
         if [[ -n "$root" && -d "$root" ]]; then
+            root=$(_resolve_to_main_worktree "$root")
             echo "$root"
             return
         fi
@@ -453,4 +479,4 @@ write_proof_status() {
 }
 
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file resolve_proof_file_for_path write_proof_status
+export -f log_json log_info read_input get_field _resolve_to_main_worktree detect_project_root get_claude_dir project_hash resolve_proof_file resolve_proof_file_for_path write_proof_status

@@ -1517,7 +1517,7 @@ test_new_lifetime_format_tks_suffix() {
 # @status accepted
 # @rationale The dual-color bar feature requires: (a) a separate system-overhead baseline
 # stored in .statusline-baseline (single workspace-scoped file, no session suffix), (b) baseline invalidation on compaction or
-# fingerprint drift, (c) rendering that shows ▓ blocks for system overhead in dim color
+# fingerprint drift, (c) rendering that shows █ blocks for system overhead in dark grey (ESC[90m)
 # and █ blocks for conversation in the severity color. Tests exercise all three concerns
 # via controlled temp workspaces and explicit baseline files.
 # ============================================================================
@@ -1559,19 +1559,20 @@ test_dual_color_bar_shows_both_block_types() {
     raw_line2=$(run_sl_raw_line2 "$json" "$tmpdir" | sed 's/\x1b\[[0-9;]*m//g')
     raw_line2_ansi=$(run_sl_raw_line2 "$json" "$tmpdir")
 
-    # 20% baseline -> floor(20*12/100)=2 system blocks (full block, dim)
+    # 20% baseline -> floor(20*12/100)=2 system blocks (full block, dark grey ESC[90m)
     # 60% total -> floor(60*12/100)=7 filled; conversation=7-2=5 blocks (full block, severity color)
-    # Verify: bar contains full block chars AND dim ANSI code (ESC[2m) for system region
+    # Verify: bar contains full block chars AND dim ANSI code (ESC[2m) for empty blocks region
     if [[ "$raw_line2" == *$'\xe2\x96\x88'* ]] && printf '%s' "$raw_line2_ansi" | grep -qF $'\033[2m'; then
-        pass_test "Dual-color bar: baseline=20 total=60 shows full-block chars with dim code for system region"
+        pass_test "Dual-color bar: baseline=20 total=60 shows full-block chars with dim code for empty blocks region"
     else
-        fail_test "Dual-color bar: expected full-block chars and dim ANSI code in bar" "raw_line2=$raw_line2"
+        fail_test "Dual-color bar: expected full-block chars and dim ANSI code (for empty blocks) in bar" "raw_line2=$raw_line2"
     fi
 }
 
-test_dual_color_bar_system_uses_dim_color() {
-    # System blocks should be preceded by a dim ANSI code (ESC[2m).
-    # The bar renders: dim bracket+system blocks, severity conversation blocks, dim empty+bracket.
+test_dual_color_bar_system_uses_dark_grey_color() {
+    # System blocks should be preceded by a dark grey ANSI code (ESC[90m, bright black).
+    # ESC[2m (dim) was invisible on dark terminals; ESC[90m renders as visible dark grey.
+    # The bar renders: dark-grey bracket+system blocks, severity conversation blocks, dim empty, dark-grey bracket.
     run_test
     local tmpdir
     tmpdir=$(mktemp -d)
@@ -1584,12 +1585,12 @@ test_dual_color_bar_system_uses_dim_color() {
     local raw_line2
     raw_line2=$(run_sl_raw_line2 "$json" "$tmpdir")
 
-    # The dual-color bar renders dim code (ESC[2m) for system (full-block) region.
-    # Check that ESC[2m appears in the bar output.
-    if printf '%s' "$raw_line2" | grep -qF $'\033[2m'; then
-        pass_test "Dual-color bar: dim color code (ESC[2m) present in bar output for system blocks"
+    # The dual-color bar renders dark grey (ESC[90m) for system region (bracket + system blocks).
+    # Check that ESC[90m appears in the bar output.
+    if printf '%s' "$raw_line2" | grep -qF $'\033[90m'; then
+        pass_test "Dual-color bar: dark grey code (ESC[90m) present in bar output for system blocks"
     else
-        fail_test "Dual-color bar: no dim ANSI code (ESC[2m) found in bar output" \
+        fail_test "Dual-color bar: no dark grey ANSI code (ESC[90m) found in bar output" \
             "visible: $(printf '%s' "$raw_line2" | sed 's/\x1b\[[0-9;]*m//g')"
     fi
 }
@@ -1851,7 +1852,7 @@ test_termwidth_cols_0_floor_kicks_in
 echo ""
 echo "--- Dual-color context bar (baseline) ---"
 test_dual_color_bar_shows_both_block_types
-test_dual_color_bar_system_uses_dim_color
+test_dual_color_bar_system_uses_dark_grey_color
 test_dual_color_bar_no_baseline_falls_back_single_color
 test_baseline_captured_on_first_valid_reading
 test_baseline_invalidated_on_pct_drop

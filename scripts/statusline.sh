@@ -296,14 +296,16 @@ sep='\033[2m│\033[0m'
 # When baseline_pct is 0 or absent, falls back to single-color behavior (backward compat).
 #
 # @decision DEC-DUALBAR-001
-# @title Dual-color context bar: system overhead (▓ dim) + conversation (█ severity)
+# @title Dual-color context bar: system overhead (dark grey ESC[90m) + conversation (█ severity)
 # @status accepted
 # @rationale The single-color context bar conflates system overhead (CLAUDE.md, tools,
 # hooks) with actual conversation content. Users can't tell how much real capacity they
-# have left. Splitting into dim system blocks (▓) and bright conversation blocks (█)
-# makes the overhead visible without making it alarming. The baseline is captured on
-# first valid reading and invalidated on compaction (pct drop) or config drift (fingerprint).
-# Bar remains backward compatible: no baseline → single-color.
+# have left. Splitting into dark grey system blocks (█ ESC[90m) and bright conversation
+# blocks (█ severity color) makes the overhead visible without making it alarming.
+# ESC[2m (dim) was invisible on dark terminals — ESC[90m (bright black / dark grey) is
+# clearly visible as "filled" while remaining subordinate to the severity colors.
+# The baseline is captured on first valid reading and invalidated on compaction (pct drop)
+# or config drift (fingerprint). Bar remains backward compatible: no baseline → single-color.
 build_context_bar() {
   local pct=$1
   local baseline_pct="${2:-0}"
@@ -350,10 +352,11 @@ build_context_bar() {
     for (( i=0; i<conv_blocks;  i++ )); do bar_conv+="█"; done
     for (( i=0; i<empty;        i++ )); do bar_empty+="░"; done
 
-    # Render: [dim_sys severity_conv dim_empty] pct%
-    # System: dim full blocks (filled but muted). Conversation: severity-colored full blocks.
-    # Empty: dim light shade. All filled regions use █ — color alone distinguishes them.
-    printf '\033[2m[%s\033[0m\033[%sm%s\033[2m%s]\033[0m \033[%sm%d%%\033[0m' \
+    # Render: [dark-grey_sys severity_conv dim_empty] pct%
+    # System: dark grey (ESC[90m) full blocks — visible but subordinate to severity color.
+    # Conversation: severity-colored full blocks. Empty: dim light shade (ESC[2m, recede).
+    # All filled regions use █ — color alone distinguishes them.
+    printf '\033[90m[%s\033[0m\033[%sm%s\033[2m%s\033[90m]\033[0m \033[%sm%d%%\033[0m' \
       "$bar_sys" "$color" "$bar_conv" "$bar_empty" "$color" "$pct_int"
   else
     # Single-color fallback (no baseline)
