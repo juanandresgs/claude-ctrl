@@ -178,12 +178,24 @@ fi
 # hash (md5 of mtimes + model) detects this drift. Two additional invalidation triggers:
 #   - Compaction: ctx_pct drops below saved baseline (conversation was cleared).
 #   - Missing file: new session, capture fresh.
-# Storage: .statusline-baseline-SESSION_ID (same dir as CACHE_FILE).
+# Storage: .statusline-baseline (one per workspace — no session suffix).
 # Format: fingerprint|baseline_pct (single line, pipe-delimited).
 # Fingerprint computation: fast stat calls + md5, < 5ms.
+#
+# @decision DEC-DUALBAR-003
+# @title Remove session-scoped baseline filename — use single workspace-scoped file
+# @status accepted
+# @rationale The previous filename included ${CLAUDE_SESSION_ID:-$$}. CLAUDE_SESSION_ID
+# is NOT exported to the statusline subprocess, so $$ (the bash PID) was used instead —
+# unique per invocation. Every render created a new baseline file and captured the current
+# percentage, meaning baseline == current pct always, producing 0 conversation blocks
+# (the entire bar rendered as system color). Fix: use a single .statusline-baseline file
+# per workspace. The fingerprint already handles invalidation on config drift or model
+# switch; compaction detection (ctx_pct < baseline) handles session boundaries.
+# Session-scoped naming added no value and actively broke the dual-color bar.
 # ---------------------------------------------------------------------------
-BASELINE_FILE="${workspace_dir:+$workspace_dir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID:-$$}}"
-[[ -z "$workspace_dir" ]] && BASELINE_FILE="$HOME/.claude/.statusline-baseline-${CLAUDE_SESSION_ID:-$$}"
+BASELINE_FILE="${workspace_dir:+$workspace_dir/.claude/.statusline-baseline}"
+[[ -z "$workspace_dir" ]] && BASELINE_FILE="$HOME/.claude/.statusline-baseline"
 
 baseline_pct=0
 
@@ -225,6 +237,16 @@ fi
 if [[ "$_baseline_valid" == "false" && "$ctx_pct" != "-1" && "$ctx_pct" != "" && "$_ctx_pct_int" -gt 0 ]]; then
   if printf '%s|%s' "$_current_fp" "$_ctx_pct_int" > "$BASELINE_FILE" 2>/dev/null; then
     baseline_pct="$_ctx_pct_int"
+    # One-time cleanup: remove proliferated per-session/per-PID baseline files from the
+    # old naming scheme (.statusline-baseline-SESSION_ID or .statusline-baseline-PID).
+    # These were created by the $$ bug (DEC-DUALBAR-003): every render spawned a fresh
+    # PID, so each render wrote a new file. Cleaning on first successful baseline write
+    # removes the clutter without a separate migration pass.
+    _baseline_dir="${BASELINE_FILE%/*}"
+    for _old_bl in "$_baseline_dir"/.statusline-baseline-*; do
+      [[ -f "$_old_bl" ]] && rm -f "$_old_bl" 2>/dev/null || true
+    done
+    unset _baseline_dir _old_bl
   fi
 fi
 

@@ -1427,7 +1427,7 @@ test_new_lifetime_format_tks_suffix() {
 # @title Tests for dual-color context bar: baseline capture, invalidation, rendering
 # @status accepted
 # @rationale The dual-color bar feature requires: (a) a separate system-overhead baseline
-# stored in .statusline-baseline-SESSION_ID, (b) baseline invalidation on compaction or
+# stored in .statusline-baseline (single workspace-scoped file, no session suffix), (b) baseline invalidation on compaction or
 # fingerprint drift, (c) rendering that shows ▓ blocks for system overhead in dim color
 # and █ blocks for conversation in the severity color. Tests exercise all three concerns
 # via controlled temp workspaces and explicit baseline files.
@@ -1443,7 +1443,7 @@ _EMPTY_HOME_FP="db979ea7417729bbbf00e51764320bac"
 make_baseline_file() {
     local dir="$1" fingerprint="${2:-$_EMPTY_HOME_FP}" pct="$3"
     mkdir -p "$dir/.claude"
-    printf '%s|%s' "$fingerprint" "$pct" > "$dir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    printf '%s|%s' "$fingerprint" "$pct" > "$dir/.claude/.statusline-baseline"
 }
 
 # Helper: run statusline and capture the raw (with ANSI) metrics line (line 2)
@@ -1542,7 +1542,7 @@ test_baseline_captured_on_first_valid_reading() {
     # Run statusline (it should capture baseline)
     printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
 
-    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    local baseline_file="$tmpdir/.claude/.statusline-baseline"
     if [[ -f "$baseline_file" ]]; then
         local content
         content=$(cat "$baseline_file")
@@ -1572,7 +1572,7 @@ test_baseline_invalidated_on_pct_drop() {
     json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":25}}' "$tmpdir")
     printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
 
-    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    local baseline_file="$tmpdir/.claude/.statusline-baseline"
     local content
     content=$(cat "$baseline_file" 2>/dev/null || echo "")
     # After compaction (pct dropped), baseline should be recaptured at new lower value (25)
@@ -1597,7 +1597,7 @@ test_baseline_invalidated_on_fingerprint_change() {
     json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{"used_percentage":45}}' "$tmpdir")
     printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
 
-    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    local baseline_file="$tmpdir/.claude/.statusline-baseline"
     local content
     content=$(cat "$baseline_file" 2>/dev/null || echo "")
     # After fingerprint drift, baseline should be recaptured at current pct (45)
@@ -1621,7 +1621,7 @@ test_baseline_not_captured_when_pct_invalid() {
     json=$(printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"%s"},"cost":{},"context_window":{}}' "$tmpdir")
     printf '%s' "$json" | HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null > /dev/null
 
-    local baseline_file="$tmpdir/.claude/.statusline-baseline-${CLAUDE_SESSION_ID}"
+    local baseline_file="$tmpdir/.claude/.statusline-baseline"
     if [[ ! -f "$baseline_file" ]]; then
         pass_test "Baseline NOT captured when ctx_pct=-1 (before first API call)"
     else
