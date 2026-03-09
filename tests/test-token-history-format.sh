@@ -22,8 +22,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="${SCRIPT_DIR}/../hooks"
 SCRIPTS_DIR="${SCRIPT_DIR}/../scripts"
-SESSION_END="${HOOKS_DIR}/session-end.sh"
-SESSION_LIB="${HOOKS_DIR}/session-lib.sh"
 SOURCE_LIB="${HOOKS_DIR}/source-lib.sh"
 BACKFILL="${SCRIPTS_DIR}/backfill-token-history.sh"
 
@@ -71,12 +69,17 @@ run_write_token_history() {
 
 
 # Helper: sum lifetime tokens for a given project using the new filter logic
+# shellcheck disable=SC2329  # function IS invoked (indirectly via test scaffolding)
 sum_lifetime_tokens() {
     local claude_dir="$1" project_root="$2"
+    # Pre-compute phash in the outer shell so the inner bash -c never needs to
+    # reference it as a variable (avoids SC2154: compute_phash referenced but not assigned).
+    local _outer_phash
+    _outer_phash=$(echo "$project_root" | shasum -a 256 | cut -c1-8)
     bash -c "
         source '${SOURCE_LIB}' 2>/dev/null || true
         _TOKEN_HISTORY='${claude_dir}/.session-token-history'
-        _PHASH=\$(project_hash '${project_root}' 2>/dev/null || echo '${compute_phash "$project_root"}')
+        _PHASH=\$(project_hash '${project_root}' 2>/dev/null || echo '${_outer_phash}')
         if [[ -f \"\$_TOKEN_HISTORY\" ]]; then
             awk -F'|' -v ph=\"\$_PHASH\" '(NF < 6) || (\$6 == ph) {sum += \$2} END {print sum+0}' \"\$_TOKEN_HISTORY\" 2>/dev/null || echo 0
         else

@@ -57,6 +57,78 @@ esac
 require_trace
 mkdir -p "$TRACE_STORE" 2>/dev/null || true
 
+# --- Helper: Write a gate-denied trace record ---
+# Called before any emit_deny() that represents a gate blocking an agent dispatch.
+# Creates a minimal completed trace with outcome="gate-denied" so the observatory
+# can count and filter blocked dispatches separately from real crashes.
+#
+# Unlike init_trace(), this does NOT create an .active-* marker — the agent never
+# started, so no marker lifecycle management is needed. The trace is written
+# directly as completed (status=completed, duration=0) so finalize_trace() in
+# post-task.sh skips it (nothing to finalize).
+#
+# @decision DEC-GATE-DENIED-001
+# @title Write gate-denied trace records to prevent observatory metric skew
+# @status accepted
+# @rationale When task-track.sh denies an agent dispatch, no trace is created.
+#   post-task.sh's universal fallback (DEC-POST-TASK-FALLBACK-001) fires after every
+#   Task/Agent tool completion, including denied ones. It calls finalize_trace on
+#   whatever active trace it finds, producing 0-duration crashed/unknown traces that
+#   inflate skipped/crashed counts and skew outcome distributions in the observatory.
+#   Fix: write a minimal gate-denied trace at deny time with outcome="gate-denied".
+#   post-task.sh finds this trace (via marker scan) and skips finalization because
+#   status=completed. The observatory can filter gate-denied traces separately.
+#   Issue #174.
+_write_gate_denied_trace() {
+    local agent_type="$1"
+    local gate_name="$2"
+    local deny_reason="$3"
+    local session_id="${CLAUDE_SESSION_ID:-$(date +%s)}"
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local hash
+    hash=$(echo "${session_id}" | ${_SHA256_CMD:-shasum -a 256} 2>/dev/null | cut -c1-6)
+    local trace_id="${agent_type}-${timestamp}-${hash}"
+    local trace_dir="${TRACE_STORE}/${trace_id}"
+
+    mkdir -p "${trace_dir}/artifacts" 2>/dev/null || return 0
+
+    local project_name
+    project_name=$(basename "$PROJECT_ROOT")
+    local branch
+    branch=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Write completed manifest directly — no active marker, no lifecycle hooks.
+    # status=completed prevents post-task.sh from calling finalize_trace on it.
+    cat > "${trace_dir}/manifest.json" <<MANIFEST 2>/dev/null || return 0
+{
+  "version": "1",
+  "trace_id": "${trace_id}",
+  "agent_type": "${agent_type}",
+  "session_id": "${session_id}",
+  "project": "${PROJECT_ROOT}",
+  "project_name": "${project_name}",
+  "branch": "${branch}",
+  "started_at": "${now_iso}",
+  "finished_at": "${now_iso}",
+  "status": "completed",
+  "outcome": "gate-denied",
+  "duration_seconds": 0,
+  "gate": "${gate_name}",
+  "deny_reason": "${deny_reason}"
+}
+MANIFEST
+
+    # Write a minimal summary so the trace isn't classified as "crashed" by other checks
+    echo "# Gate Denied: ${gate_name}" > "${trace_dir}/summary.md" 2>/dev/null || true
+    echo "Agent dispatch blocked at ${gate_name}: ${deny_reason}" >> "${trace_dir}/summary.md" 2>/dev/null || true
+
+    # Index the trace for observatory querying
+    index_trace "$trace_id" 2>/dev/null || true
+}
+
 # --- Gate A.0: Duplicate guardian detection ---
 # Prevents burst dispatch: if another Guardian is already active for this project,
 # deny the new dispatch. Fixes RC7 — 5 guardians spawned in 38 seconds.
@@ -105,6 +177,7 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
                     rm -f "${TRACE_STORE}/.active-guardian-"*"-${_PHASH_A0}" 2>/dev/null || true
                     # Fall through — no deny
                 else
+                    _write_gate_denied_trace "guardian" "gate-a0-duplicate" "Guardian dispatch in progress (marker age: ${_MARKER_AGE}s, dispatch age: ${_PD_AGE}s)" 2>/dev/null || true
                     emit_deny "Cannot dispatch Guardian: a Guardian dispatch is in progress for this project (marker age: ${_MARKER_AGE}s, dispatch age: ${_PD_AGE}s). Wait for agent startup to complete or for the 120s window to expire."
                 fi
             elif [[ "$_MARKER_CONTENT" != *"|"* && -n "$_MARKER_CONTENT" ]]; then
@@ -117,6 +190,7 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
                     rm -f "${TRACE_STORE}/.active-guardian-"*"-${_PHASH_A0}" 2>/dev/null || true
                     # Fall through — no deny
                 elif [[ "$_A0_STATUS" == "active" ]]; then
+                    _write_gate_denied_trace "guardian" "gate-a0-duplicate" "Another Guardian already active (trace: ${_MARKER_CONTENT}, age: ${_MARKER_AGE}s)" 2>/dev/null || true
                     emit_deny "Cannot dispatch Guardian: another Guardian is already active for this project (trace: ${_MARKER_CONTENT}, age: ${_MARKER_AGE}s). Wait for it to complete or clean stale markers."
                 else
                     # Unknown/missing manifest — treat as stale, clean and allow.
@@ -186,6 +260,7 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         if [[ -n "$_NON_PLAN_FILES" ]]; then
             # Non-plan files staged — refuse the bypass, require proper verification
             log_info "guardian-proof-gate" "@plan-update bypass DENIED: non-plan files staged: $_NON_PLAN_FILES" 2>/dev/null || true
+            _write_gate_denied_trace "guardian" "gate-a-plan-bypass" "@plan-update bypass denied: non-plan files staged" 2>/dev/null || true
             emit_deny "Cannot bypass proof gate with @plan-update: non-plan files are staged ($_NON_PLAN_FILES). @plan-update is only valid when ALL staged files are plan-related (MASTER_PLAN.md, CHANGELOG.md, decision-config*.json). Remove staged non-plan files or complete verification before dispatching Guardian."
         else
             _PROOF_BYPASS=true
@@ -201,6 +276,7 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
             PROOF_STATUS="corrupt"
         fi
         if [[ "$PROOF_STATUS" != "verified" ]]; then
+            _write_gate_denied_trace "guardian" "gate-a-proof" "Proof status is '${PROOF_STATUS}' (requires 'verified')" 2>/dev/null || true
             emit_deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
         fi
     fi
@@ -354,6 +430,7 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
             fi
 
             if [[ "$IMPL_STATUS" == "active" ]]; then
+                _write_gate_denied_trace "tester" "gate-b-impl-active" "Implementer trace '${IMPL_TRACE}' is still active" 2>/dev/null || true
                 emit_deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
             fi
         fi
@@ -421,6 +498,7 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
     #   dispatched from the main worktree requires at least one linked worktree to exist.
     # Guard: git commands require a git repo. Non-git projects can't have worktrees.
     if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree &>/dev/null; then
+        _write_gate_denied_trace "implementer" "gate-c1-no-git" "Not a git repository: ${PROJECT_ROOT}" 2>/dev/null || true
         emit_deny "Cannot dispatch implementer: '$PROJECT_ROOT' is not a git repository. Initialize with: git init"
     fi
     MAIN_WT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
@@ -435,6 +513,7 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
             | grep -c '^worktree ' || echo "0")
         if [[ "$WORKTREE_COUNT" -le 1 ]]; then
+            _write_gate_denied_trace "implementer" "gate-c1-no-worktree" "No linked worktree found (branch: ${CURRENT_BRANCH})" 2>/dev/null || true
             emit_deny "Cannot dispatch implementer from main worktree (branch: '$CURRENT_BRANCH'). Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
         fi
     fi
