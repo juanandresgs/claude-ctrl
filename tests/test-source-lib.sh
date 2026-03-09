@@ -209,6 +209,75 @@ test_idempotent_sourcing() {
 }
 
 # ============================================================================
+# Test 8: Fallback when sourced from a non-hooks directory (worktree bug #207)
+#
+# Simulates the bug: a test in a worktree calls `source path/to/source-lib.sh`
+# where BASH_SOURCE[0] resolves outside the hooks/ directory. Before the fix,
+# this left _SRCLIB_DIR pointing at a dir with no log.sh, causing a fatal error.
+# After the fix, _SRCLIB_DIR falls back to $HOME/.claude/hooks.
+#
+# @decision DEC-SRCLIB-FALLBACK-001
+# @title Test for worktree path fallback in source-lib.sh
+# @status accepted
+# @rationale Regression test for issue #207. Copies source-lib.sh to a temp
+#   directory (simulating a worktree path without the hooks/ siblings) and
+#   verifies that log_info and detect_project_root are still available after
+#   sourcing, proving the fallback path activates and resolves correctly.
+# ============================================================================
+
+test_fallback_when_sourced_from_non_hooks_dir() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    # Copy only source-lib.sh to the tmp dir — no log.sh or core-lib.sh siblings.
+    # This simulates sourcing from a worktree path where BASH_SOURCE[0] resolves
+    # to a directory that doesn't contain the hook libraries.
+    cp "$SOURCE_LIB" "$tmpdir/source-lib.sh"
+
+    local result
+    result=$(
+        bash -c "
+            source '${tmpdir}/source-lib.sh' 2>/dev/null
+            type log_info > /dev/null 2>&1 || { echo MISSING_LOG; exit 0; }
+            type detect_project_root > /dev/null 2>&1 || { echo MISSING_CTX; exit 0; }
+            echo OK
+        " 2>/dev/null
+    )
+
+    if [[ "$result" == "OK" ]]; then
+        pass_test "Fallback: log_info and detect_project_root available when sourced from non-hooks dir"
+    else
+        fail_test "Fallback failed: functions missing when sourced from non-hooks dir" "result=$result"
+    fi
+}
+
+test_fallback_srclib_dir_value() {
+    run_test
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    cp "$SOURCE_LIB" "$tmpdir/source-lib.sh"
+
+    local result
+    result=$(
+        bash -c "
+            source '${tmpdir}/source-lib.sh' 2>/dev/null
+            echo \"\$_SRCLIB_DIR\"
+        " 2>/dev/null
+    )
+
+    local expected_dir="$HOME/.claude/hooks"
+    if [[ "$result" == "$expected_dir" ]]; then
+        pass_test "Fallback: _SRCLIB_DIR resolves to canonical hooks dir ($expected_dir)"
+    else
+        fail_test "_SRCLIB_DIR not set to canonical hooks dir" "expected=$expected_dir actual=$result"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -222,6 +291,8 @@ test_no_cache_directory_created
 test_library_files_syntax
 test_all_hooks_syntax
 test_idempotent_sourcing
+test_fallback_when_sourced_from_non_hooks_dir
+test_fallback_srclib_dir_value
 
 echo ""
 echo "========================================="

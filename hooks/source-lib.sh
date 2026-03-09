@@ -101,6 +101,19 @@ fi
 
 _SRCLIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# @decision DEC-SRCLIB-FALLBACK-001
+# @title Validate _SRCLIB_DIR contains expected sibling files; fallback to canonical hooks dir
+# @status accepted
+# @rationale When tests in worktrees source source-lib.sh with a path that doesn't
+#   include the hooks/ directory segment (e.g., via a symlink or relative path that
+#   resolves differently), BASH_SOURCE[0] resolves to a directory that doesn't contain
+#   log.sh or core-lib.sh. The fallback to $HOME/.claude/hooks/ is always the canonical
+#   location — this is defensive: it preserves the happy path (direct sourcing from the
+#   hooks/ dir works unchanged) and only activates when the resolved directory is wrong.
+if [[ ! -f "${_SRCLIB_DIR}/log.sh" ]]; then
+    _SRCLIB_DIR="$HOME/.claude/hooks"
+fi
+
 source "${_SRCLIB_DIR}/log.sh"
 source "${_SRCLIB_DIR}/core-lib.sh"
 
