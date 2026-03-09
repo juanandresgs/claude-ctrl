@@ -158,6 +158,11 @@ project's institutional memory.
 | 2026-03-09 | DEC-RECK-014 | reckoning-ops | Next strategic: Governance Efficiency | Directly addresses 60-310% overhead benchmark finding; 7 signal map proposals are starting point |
 | 2026-03-09 | DEC-RECK-015 | reckoning-ops | Reckoning cadence: per-initiative boundaries | Natural checkpoint; enough time for findings to be acted on; typically every 1-2 weeks |
 | 2026-03-09 | DEC-RECK-016 | reckoning-ops | Cap recursive evaluation at 3 layers, measure convergence | No new evaluative infrastructure until observatory+reckoning+governor prove value |
+| 2026-03-09 | DEC-EFF-001 | governance-efficiency | Optimize-first, measure-after | Signal map proposals are thoroughly analyzed; measurement infrastructure would delay tangible improvement |
+| 2026-03-09 | DEC-EFF-002 | governance-efficiency | Debug logging via .session-events.jsonl for demoted advisories | Preserves trace data for observatory/reckoning; model stops seeing noise but event log retains everything |
+| 2026-03-09 | DEC-EFF-003 | governance-efficiency | File-mtime-based cache invalidation (DEC-PERF-004 pattern) | Existing stop.sh pattern proves the approach; no new cache mechanisms needed |
+| 2026-03-09 | DEC-EFF-004 | governance-efficiency | Preserve all deny gates unconditionally | Deny gates are safety guarantees; advisory noise reduction yes, safety weakening never |
+| 2026-03-09 | DEC-EFF-005 | governance-efficiency | Two-wave delivery: noise reduction then deduplication | Wave 1 low-risk advisory/caching; Wave 2 cross-hook changes need approve gate |
 
 ---
 
@@ -379,6 +384,172 @@ Main is sacred. Each wave dispatches parallel worktrees:
 - Reckoning skill: `skills/reckoning/SKILL.md` — governor consumes reckoning output and provides structured input
 - Observatory: `observatory/` — governor meta-evaluates observatory health
 - Issue: #169
+
+---
+
+### Initiative: Governance Efficiency
+**Status:** active
+**Started:** 2026-03-09
+**Goal:** Reduce governance overhead (60-310% token excess on easy tasks) through targeted signal noise reduction, caching, and deduplication — without weakening any safety gates.
+
+> Benchmark data (36 trials, 6 tasks, claude-ctrl-performance harness) revealed that v30 of the governance system spends 60-310% more tokens than v21 on easy tasks. The Governance Signal Audit (completed) produced `docs/governance-signal-map.md` with 7 concrete optimization proposals and a full redundancy analysis. This initiative implements those proposals: demoting low-value advisories to debug logs, caching redundant computations, and deduplicating cross-hook signal injection. Every optimization preserves all deny gates unconditionally. The system becomes leaner without becoming less safe.
+
+**Dominant Constraint:** safety
+
+#### Goals
+- REQ-GOAL-009: Reduce per-prompt governance context injection from ~600 bytes to <400 bytes typical (33% reduction)
+- REQ-GOAL-010: Eliminate advisory signals that proceed without blocking (pure noise removal)
+- REQ-GOAL-011: Introduce caching for computationally redundant hook operations (keyword matching, trajectory narrative, plan churn)
+
+#### Non-Goals
+- REQ-NOGO-010: Removing or weakening any deny gates — safety enforcement is the entire point of governance
+- REQ-NOGO-011: Building the Operational Mode System (#109, parked) — that's a 4-tier taxonomy; this is targeted optimization
+- REQ-NOGO-012: Adding new infrastructure — this is about making existing infrastructure leaner
+- REQ-NOGO-013: Building a local token measurement harness — external benchmarks exist (claude-ctrl-performance)
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-009: Demote fast-mode bypass advisory in pre-write.sh to debug log (.session-events.jsonl)
+  Acceptance: Given the fast-mode bypass advisory fires on every write in fast mode, When demoted, Then:
+  - [ ] Advisory no longer injected into additionalContext
+  - [ ] Event logged to .session-events.jsonl with {type: "advisory-demoted", gate: "fast-mode-bypass"}
+  - [ ] Safety invariant documented: fast mode is a Claude Code feature, not model-controlled; no behavioral intent lost
+
+- REQ-P0-010: Demote cold test-gate advisory in pre-write.sh to debug log
+  Acceptance: Given the cold test-gate advisory fires on first write when no test data exists, When demoted, Then:
+  - [ ] Advisory no longer injected into additionalContext
+  - [ ] Event logged to .session-events.jsonl
+  - [ ] Safety invariant documented: deny gate (strike 2+) still catches real test failures; cold-start advisory added no blocking value
+
+- REQ-P0-011: Suppress bare doc-freshness advisory in pre-bash.sh (fire-once-per-session)
+  Acceptance: Given doc-freshness advisory fires on every commit/merge, When modified to fire-once, Then:
+  - [ ] Advisory fires on FIRST commit/merge attempt in a session, then suppressed for subsequent attempts
+  - [ ] Deny gates for stale docs on merge-to-main remain fully active
+  - [ ] Safety invariant documented: model sees the warning once (enough to act on it); deny gate is the real enforcement
+
+- REQ-P0-012: Skip plan churn drift audit in pre-write.sh Gate 2 when churn <5%
+  Acceptance: Given churn detection runs nested git/grep on every source write, When <5% churn, Then:
+  - [ ] Churn computation cached with 300s TTL (follows DEC-PERF-004 pattern)
+  - [ ] Churn ≥5% still triggers the full drift audit and advisory/deny
+  - [ ] Safety invariant documented: <5% churn is genuinely trivial; the gate still fires when drift is meaningful
+
+- REQ-P0-013: Cache keyword match results in prompt-submit.sh
+  Acceptance: Given keyword detection (grep -qiE) runs on every user prompt, When cached, Then:
+  - [ ] Results cached with invalidation on git state change or plan state change
+  - [ ] Same signals produced, just served from cache on consecutive identical-context prompts
+  - [ ] Safety invariant documented: technical optimization only; no signals lost, same behavioral intent
+
+- REQ-P0-014: Cache trajectory narrative in stop.sh when no state changes between stops
+  Acceptance: Given trajectory narrative regenerates every turn (~300-400ms), When cached, Then:
+  - [ ] Cache keyed on git-state fingerprint (branch + HEAD + dirty count)
+  - [ ] Stale cache invalidated on any git/plan mutation
+  - [ ] Safety invariant documented: if nothing changed, same narrative is correct; model sees accurate state
+
+- REQ-P0-015: Safety invariant requirement for all optimizations
+  Acceptance: For EVERY optimization in this initiative, Then:
+  - [ ] Implementer documents: (a) what behavior the signal encouraged, (b) what mechanism still preserves that behavior after optimization, (c) if no mechanism preserves it, the optimization is invalid and must be reverted
+  - [ ] No deny gate is modified, weakened, or made conditional
+  - [ ] Demoted advisories are redirected to .session-events.jsonl (DEC-EFF-002), not deleted
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-006: Cross-hook git state deduplication — consolidate 5-hook git state injection into shared per-event-cycle cache
+- REQ-P1-007: Cross-hook plan status deduplication — consolidate 5-hook plan status injection into shared cache
+- REQ-P1-008: Evaluate prompt-vs-hook enforcement overlap — identify which prompt-stated rules can be removed from prompts because hooks enforce them deterministically (from signal map redundancy analysis, lines 696-704)
+
+**Future Consideration (P2)**
+
+- REQ-P2-005: Rerun external benchmarks (claude-ctrl-performance) to measure pre/post improvement quantitatively
+- REQ-P2-006: Context-sensitive governance — scale overhead with task complexity (lighter for easy tasks, full for complex) — may inform future Operational Mode System reactivation
+
+#### Definition of Done
+
+All P0 requirements pass their acceptance criteria. Every optimization has a documented safety invariant proving no behavioral intent is lost. All deny gates remain untouched. Per-prompt context injection measurably reduced (target: ~600 → <400 bytes typical). Demoted advisories appear in .session-events.jsonl for forensic/analytical use. Satisfies: REQ-GOAL-009, REQ-GOAL-010, REQ-GOAL-011.
+
+#### Architectural Decisions
+
+- DEC-EFF-001: Optimize-first, measure-after
+  Addresses: REQ-GOAL-009, REQ-GOAL-010, REQ-GOAL-011.
+  Rationale: The signal map proposals are thoroughly analyzed with specific hooks, assessments, and implementation paths. They are low-risk (advisory demotions, caching). Building measurement infrastructure first would delay tangible improvement by an entire wave. Verification comes from rerunning external benchmarks post-implementation.
+
+- DEC-EFF-002: Debug logging via .session-events.jsonl for demoted advisories
+  Addresses: REQ-P0-009, REQ-P0-010, REQ-P0-015.
+  Rationale: Demoted advisories are redirected to the event log, not deleted. The observatory and reckoning read event logs, not model context — their analytical inputs are unaffected. Trace data is preserved for forensic use.
+
+- DEC-EFF-003: File-mtime-based cache invalidation (follows DEC-PERF-004 pattern)
+  Addresses: REQ-P0-012, REQ-P0-013, REQ-P0-014.
+  Rationale: The existing stop.sh caching pattern (DEC-PERF-004) uses mtime + TTL for cache invalidation. Extending this pattern to churn detection, keyword matching, and trajectory narrative avoids inventing new cache mechanisms.
+
+- DEC-EFF-004: Preserve all deny gates unconditionally
+  Addresses: REQ-NOGO-010.
+  Rationale: Deny gates are the system's safety guarantees — they prevent destructive actions, enforce branch isolation, and gate the proof-of-work cycle. Advisory noise can be reduced; safety gates cannot be weakened. This is a hard constraint, not a trade-off.
+
+- DEC-EFF-005: Two-wave delivery — noise reduction then deduplication
+  Addresses: REQ-GOAL-009, REQ-P1-006, REQ-P1-007.
+  Rationale: Wave 1 (P0 requirements) is low-risk advisory/caching work. Wave 2 (P1 requirements) modifies signal flow across multiple hooks — higher risk, needs the approve gate. Separating them allows Wave 1 to ship independently.
+
+#### Waves
+
+##### Initiative Summary
+- **Total items:** 2
+- **Critical path:** 2 waves (W1-1 → W2-1)
+- **Max width:** 1
+- **Gates:** 1 review, 1 approve
+
+##### Wave 1 (no dependencies)
+**Parallel dispatches:** 1
+
+**W1-1: Implement signal map optimization proposals (#208)** — Weight: L, Gate: review
+- Implement 6 P0 optimizations across 4 hooks:
+  1. **pre-write.sh** (REQ-P0-009): Demote fast-mode bypass advisory — replace additionalContext injection with .session-events.jsonl log entry
+  2. **pre-write.sh** (REQ-P0-010): Demote cold test-gate advisory — same pattern
+  3. **pre-write.sh Gate 2** (REQ-P0-012): Add churn cache — compute churn %, write to `.churn-cache` with timestamp, skip full drift audit when <5% and cache age <300s
+  4. **pre-bash.sh** (REQ-P0-011): Modify doc-freshness advisory to fire-once-per-session — use `.doc-freshness-fired-{SID}` sentinel file; deny gates remain unconditional
+  5. **prompt-submit.sh** (REQ-P0-013): Cache keyword match results — store matches in `.keyword-cache-{SID}` keyed on git+plan state fingerprint; invalidate on state change
+  6. **stop.sh** (REQ-P0-014): Cache trajectory narrative — keyed on git-state fingerprint (branch+HEAD+dirty); serve from cache when fingerprint unchanged
+- For EACH optimization: document safety invariant inline as `@decision` annotation (REQ-P0-015)
+- Run existing test suites to verify no regressions
+- **Integration:** All changes are to existing hook files. No new files except cache sentinels (session-scoped, cleaned by session-end.sh). No settings.json changes.
+
+##### Wave 2
+**Parallel dispatches:** 1
+**Blocked by:** W1-1
+
+**W2-1: Cross-hook signal deduplication (#209)** — Weight: M, Gate: approve, Deps: W1-1
+- Address signal map redundancy findings (lines 683-704):
+  1. Git state (branch, dirty count, worktree count) injected by 5 hooks — create `_cached_git_state()` in git-lib.sh that writes to a per-event-cycle cache file; all hooks read from cache instead of re-computing
+  2. Plan status (existence, active phase, initiative count) injected by 5 hooks — same `_cached_plan_state()` pattern in plan-lib.sh
+  3. Evaluate prompt-vs-hook enforcement overlap — for each of the 6 overlaps identified in signal map (lines 696-704), determine if the prompt statement can be removed because the hook enforces it deterministically
+- Verify: Run benchmark suite (external, claude-ctrl-performance) before and after to measure improvement
+- **Integration:** Touches git-lib.sh, plan-lib.sh (new cache functions), session-init.sh, prompt-submit.sh, subagent-start.sh, compact-preserve.sh, stop.sh (cache reads replacing direct computation). Cache files cleaned by session-end.sh.
+
+##### Critical Files
+- `hooks/pre-write.sh` — Gates 2-4 advisory changes, churn cache
+- `hooks/pre-bash.sh` — Doc-freshness fire-once modification
+- `hooks/prompt-submit.sh` — Keyword match caching
+- `hooks/stop.sh` — Trajectory narrative caching
+- `hooks/git-lib.sh` — Shared git state cache (Wave 2)
+- `hooks/plan-lib.sh` — Shared plan state cache (Wave 2)
+- `docs/governance-signal-map.md` — Source of optimization proposals
+
+##### Decision Log
+<!-- Guardian appends here after wave completion -->
+
+#### Governance Efficiency Worktree Strategy
+
+Main is sacred. Each wave dispatches parallel worktrees:
+- **Wave 1:** `.worktrees/eff-noise-reduction` on branch `feature/governance-efficiency-w1`
+- **Wave 2:** `.worktrees/eff-deduplication` on branch `feature/governance-efficiency-w2`
+
+#### Governance Efficiency References
+
+- Signal map: `docs/governance-signal-map.md` (complete hook audit, context budget, redundancy analysis, 7 optimization proposals)
+- Benchmark data: claude-ctrl-performance harness (external, 36 trials, 6 tasks)
+- DEC-PERF-004 caching pattern: `hooks/stop.sh` lines 566-568 (TTL-based cache with mtime invalidation)
+- Reckoning operationalization: DEC-RECK-014 (user chose governance efficiency as next strategic initiative)
+- Safety invariant: DEC-EFF-004 (all deny gates preserved unconditionally)
 
 ---
 
