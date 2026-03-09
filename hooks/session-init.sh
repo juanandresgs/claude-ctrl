@@ -40,6 +40,17 @@ done
 
 source "$(dirname "$0")/source-lib.sh"
 
+# Read and cache hook stdin JSON — must be called before detect_project_root()
+# so that .cwd is available, and before any session-scoped file operations so
+# that CLAUDE_SESSION_ID is extracted from the JSON (DEC-SESSION-ID-001 in
+# log.sh). session-init.sh was the only hook missing this call — all others
+# call HOOK_INPUT=$(read_input) immediately after sourcing source-lib.sh.
+# Without this, CLAUDE_SESSION_ID falls back to $$ (PID per process), causing
+# every hook process in the same session to use a different cache file, so
+# write_statusline_cache() always reads a non-existent file → lifetime_tokens=0.
+# shellcheck disable=SC2034  # HOOK_INPUT is used as a shared global by get_field() in log.sh
+HOOK_INPUT=$(read_input)
+
 # Load all domain libraries — session-init.sh uses every domain:
 #   require_git:     get_git_state (line 84), get_session_changes
 #   require_plan:    get_plan_status (line 216), get_research_status (line 402)
