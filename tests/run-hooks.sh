@@ -111,6 +111,7 @@ _print_scope_usage() {
     echo "  dbsafe-w1a  — DB safety Wave 1a: sqlite3 block, state-diag.sh, backup, integrity check"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
     echo "  dbsafe-w1b  — Database safety library unit tests (Wave 1b: modular architecture)"
+    echo "  dbsafe-w2a  — DB safety Wave 2a: CLI hardening, TTY fail-safe, forced safety flags (B1/B3/B4)"
     echo "  validation  — Self-validation tests (version sentinels, consistency, bash -n preflight, hooks-gen)"
     echo "  lint        — Shellcheck lint scope: lint.sh behavior + shellcheck on hooks/*.sh, tests/*.sh, tests/lib/*.sh, scripts/*.sh (matches CI exactly)"
     echo "  dbsafe-fixtures — db-safety fixture infrastructure (mock CLIs, setup-test-env, sample-commands, env-profiles)"
@@ -165,6 +166,7 @@ _scope_pattern() {
         dbsafe-w1a)  echo "DB safety Wave 1a" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
         dbsafe-w1b)  echo "db-safety-lib\.sh unit tests" ;;
+        dbsafe-w2a)  echo "DB safety Wave 2a" ;;
         lint)              echo "lint\.sh|shellcheck.*(hooks|tests|scripts)" ;;
         dbsafe-fixtures)   echo "db-safety fixture infrastructure" ;;
         *)                 echo "" ;;
@@ -2947,6 +2949,45 @@ fi
 
 echo ""
 fi # end: dbsafe-w1b
+
+# =============================================================================
+# --- DB safety Wave 2a: CLI hardening, TTY fail-safe, forced safety flags ---
+# Delegates to test-db-safety-w2a.sh and aggregates results.
+# Registered as --scope dbsafe-w2a.
+# =============================================================================
+if should_run_section "DB safety Wave 2a"; then
+echo ""
+echo "--- DB safety Wave 2a: CLI hardening, TTY fail-safe, forced safety flags ---"
+
+_DBSAFE_W2A_TEST="$SCRIPT_DIR/test-db-safety-w2a.sh"
+if [[ ! -f "$_DBSAFE_W2A_TEST" ]]; then
+    skip "db-safety-w2a tests" "test-db-safety-w2a.sh not found at $_DBSAFE_W2A_TEST"
+else
+    _DBSAFE_W2A_OUTPUT=$(bash "$_DBSAFE_W2A_TEST" 2>/dev/null) || true
+    _DBSAFE_W2A_EXIT=$?
+    # Parse results from the test output
+    _DBSAFE_W2A_PASSED=$(echo "$_DBSAFE_W2A_OUTPUT" | grep -c "^  PASS:" 2>/dev/null || true)
+    _DBSAFE_W2A_FAILED=$(echo "$_DBSAFE_W2A_OUTPUT" | grep -c "^  FAIL:" 2>/dev/null || true)
+    _DBSAFE_W2A_TOTAL=$(echo "$_DBSAFE_W2A_OUTPUT" | grep -E "^Results:" | grep -oE "[0-9]+ total" | grep -oE "[0-9]+" || true)
+    # Strip whitespace/newlines (grep -c can output "N\n")
+    _DBSAFE_W2A_PASSED="${_DBSAFE_W2A_PASSED//[[:space:]]/}"
+    _DBSAFE_W2A_FAILED="${_DBSAFE_W2A_FAILED//[[:space:]]/}"
+    _DBSAFE_W2A_TOTAL="${_DBSAFE_W2A_TOTAL//[[:space:]]/}"
+    _DBSAFE_W2A_PASSED="${_DBSAFE_W2A_PASSED:-0}"
+    _DBSAFE_W2A_FAILED="${_DBSAFE_W2A_FAILED:-0}"
+    _DBSAFE_W2A_TOTAL="${_DBSAFE_W2A_TOTAL:-0}"
+
+    if [[ "$_DBSAFE_W2A_FAILED" -eq 0 && "$_DBSAFE_W2A_EXIT" -eq 0 ]]; then
+        pass "DB safety Wave 2a — ${_DBSAFE_W2A_PASSED}/${_DBSAFE_W2A_TOTAL} tests passed"
+    else
+        _DBSAFE_W2A_FAIL_DETAILS=$(echo "$_DBSAFE_W2A_OUTPUT" | grep "^  FAIL:" | head -5 | tr '\n' '; ')
+        fail "DB safety Wave 2a" "${_DBSAFE_W2A_FAILED} failed (${_DBSAFE_W2A_PASSED}/${_DBSAFE_W2A_TOTAL} passed): ${_DBSAFE_W2A_FAIL_DETAILS}"
+        echo "$_DBSAFE_W2A_OUTPUT"
+    fi
+fi
+
+echo ""
+fi # end: dbsafe-w2a
 
 # =============================================================================
 # --- db-safety fixture infrastructure tests ---
