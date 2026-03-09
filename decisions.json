@@ -1,0 +1,59 @@
+{
+  "decisions": {
+    "original-intent": {
+      "selected": "restore-verbatim",
+      "title": "Restore founding vision verbatim",
+      "decId": "DEC-RECK-001",
+      "rationale": "Recoverable from git show c2e0121:MASTER_PLAN.md"
+    },
+    "decision-log": {
+      "selected": "full-restore",
+      "title": "Full restoration (all 73 entries)",
+      "decId": "DEC-RECK-002",
+      "rationale": "Recoverable from git show c2e0121:MASTER_PLAN.md"
+    },
+    "completed-initiatives": {
+      "selected": "full-restore-ci",
+      "title": "Full restoration from git",
+      "decId": "DEC-RECK-003",
+      "rationale": "Recover all completed initiative summaries from prior plan versions"
+    },
+    "sqlite-disposition": {
+      "selected": "park-sqlite",
+      "title": "Park with rationale",
+      "decId": "DEC-RECK-004",
+      "rationale": "Add to Parked Issues with clear explanation: complete after prompt restoration"
+    },
+    "opmode-disposition": {
+      "selected": "park-opmode",
+      "title": "Park with rationale",
+      "decId": "DEC-RECK-005",
+      "rationale": "Acknowledge the planning work \u2014 don't silently drop it"
+    },
+    "backlog-auto-disposition": {
+      "selected": "cancel-backlog",
+      "title": "Cancel \u2014 manual /backlog is sufficient",
+      "decId": "DEC-RECK-006",
+      "rationale": "Manual /backlog command works and is actively used"
+    },
+    "dec-collision": {
+      "selected": "renumber-current",
+      "title": "Renumber current \u2192 DEC-AUDIT-002",
+      "decId": "DEC-RECK-007",
+      "rationale": "Current decision is newer \u2014 easier to renumber (only in plan + 1 code reference)"
+    },
+    "issue-triage": {
+      "selected": "individual-triage",
+      "title": "Individual triage \u2014 review each issue",
+      "decId": "DEC-RECK-008",
+      "rationale": "Most thorough \u2014 each issue gets a proper disposition"
+    },
+    "trajectory": {
+      "selected": "strategic-reset",
+      "title": "Strategic reset \u2014 fix the foundation first",
+      "decId": "DEC-RECK-009",
+      "rationale": "Address all reckoning findings: restore history, triage issues, fix collisions"
+    }
+  },
+  "timestamp": "2026-03-08T00:44:06.101Z"
+}

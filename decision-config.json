@@ -1,0 +1,528 @@
+{
+  "meta": {
+    "title": "Reckoning Operationalization",
+    "subtitle": "9 decisions from the project reckoning — institutional memory, orphaned initiatives, and trajectory",
+    "type": "technical"
+  },
+  "steps": [
+    {
+      "id": "original-intent",
+      "title": "Decision 1 of 9: Original Intent Restoration",
+      "subtitle": "The founding vision was replaced with a problem diagnosis",
+      "decId": "DEC-RECK-001",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> The Original Intent — \"Build a configuration layer for Claude Code that enforces engineering discipline\" — was replaced with a diagnosis about enforcement-to-purpose ratio. The Original Intent section is described in the plan template as \"the sacred text; the vision as first stated.\" The current text belongs in the Prompt Restoration initiative description, not in the project's north star.",
+        "variant": "critical"
+      },
+      "options": [
+        {
+          "id": "restore-verbatim",
+          "title": "Restore founding vision verbatim",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Recoverable from git show c2e0121:MASTER_PLAN.md", "type": "highlight" },
+            { "text": "Original Intent is sacred — it's the north star for all future work", "type": "highlight" },
+            { "text": "Current diagnosis text moves to Prompt Restoration initiative preamble", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "Reversible", "ok": true },
+            { "text": "Preserves history", "ok": true }
+          ]
+        },
+        {
+          "id": "new-vision",
+          "title": "Write a new evolved vision",
+          "badge": { "text": "ALTERNATIVE", "color": "blue" },
+          "specs": [
+            { "text": "Captures how the project has grown beyond original scope", "type": "highlight" },
+            { "text": "Acknowledges the religious/devotional framing that emerged", "type": "neutral" },
+            { "text": "Loses the founding moment — Original Intent becomes a living document", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Intentional evolution", "ok": true },
+            { "text": "Loses founding text", "ok": false }
+          ]
+        },
+        {
+          "id": "keep-diagnosis",
+          "title": "Keep current diagnosis",
+          "badge": { "text": "STATUS QUO", "color": "gray" },
+          "specs": [
+            { "text": "Accurately describes the current challenge being addressed", "type": "neutral" },
+            { "text": "Future planners will think this project was created to fix an enforcement ratio", "type": "warning" },
+            { "text": "Loses the founding vision that generated all prior work", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "No action needed", "ok": true },
+            { "text": "Misleading to future agents", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "decision-log",
+      "title": "Decision 2 of 9: Decision Log Recovery",
+      "subtitle": "72-73 decisions erased from an append-only log",
+      "decId": "DEC-RECK-002",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> The Decision Log was reset from 77 entries to 4. Code contains 387 @decision annotations across 123 files, many referencing DEC-IDs absent from the plan. The log's own header says \"Append-only record\" — it was replaced, not appended. Traceability between plan and code is broken for 73 decisions.",
+        "variant": "critical"
+      },
+      "options": [
+        {
+          "id": "full-restore",
+          "title": "Full restoration (all 73 entries)",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Recoverable from git show c2e0121:MASTER_PLAN.md", "type": "highlight" },
+            { "text": "Restores plan-to-code traceability for all 387 annotations", "type": "highlight" },
+            { "text": "Adds ~80 lines to the plan — manageable", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "Full traceability", "ok": true },
+            { "text": "Append-only honored", "ok": true }
+          ]
+        },
+        {
+          "id": "selective-restore",
+          "title": "Selective (only live code references)",
+          "badge": { "text": "PRAGMATIC", "color": "amber" },
+          "specs": [
+            { "text": "Restore ~25 DEC-IDs that have matching @decision annotations in code", "type": "highlight" },
+            { "text": "Smaller footprint — only what's actively referenced", "type": "neutral" },
+            { "text": "Historical decisions without code references are still lost", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Partial traceability", "ok": true },
+            { "text": "Loses context", "ok": false }
+          ]
+        },
+        {
+          "id": "accept-reset",
+          "title": "Accept the reset, start fresh",
+          "badge": { "text": "CLEAN BREAK", "color": "gray" },
+          "specs": [
+            { "text": "Simple — no recovery work needed", "type": "neutral" },
+            { "text": "387 code annotations point to nonexistent DEC-IDs", "type": "warning" },
+            { "text": "Principle 4 (Persistent Knowledge) remains violated", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "No work", "ok": true },
+            { "text": "Broken references", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "completed-initiatives",
+      "title": "Decision 3 of 9: Completed Initiatives Table",
+      "subtitle": "12+ completed initiative summaries erased from the plan",
+      "decId": "DEC-RECK-003",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> The Completed Initiatives table is empty. The plan's own template says \"completed initiatives compress to ~5 lines and move to the Completed section — the plan is never discarded.\" At least 12 completed initiatives (Production Remediation, State Management, Hook Consolidation, Statusline IA, etc.) have no record in the current plan.",
+        "variant": "warning"
+      },
+      "options": [
+        {
+          "id": "full-restore-ci",
+          "title": "Full restoration from git",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Recover all completed initiative summaries from prior plan versions", "type": "highlight" },
+            { "text": "5-line compressed summaries per plan template — minimal footprint", "type": "highlight" },
+            { "text": "Future planners see the full project history at a glance", "type": "highlight" }
+          ],
+          "tags": [
+            { "text": "Full history", "ok": true },
+            { "text": "Template-compliant", "ok": true }
+          ]
+        },
+        {
+          "id": "compressed-restore",
+          "title": "1-line summaries only",
+          "badge": { "text": "MINIMAL", "color": "amber" },
+          "specs": [
+            { "text": "One row per initiative: name, period, key decisions — table only", "type": "neutral" },
+            { "text": "Faster to produce, smaller footprint", "type": "neutral" },
+            { "text": "Loses the narrative summaries that explain what was built", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Lightweight", "ok": true },
+            { "text": "Loses narrative", "ok": false }
+          ]
+        },
+        {
+          "id": "accept-empty",
+          "title": "Accept empty table",
+          "badge": { "text": "STATUS QUO", "color": "gray" },
+          "specs": [
+            { "text": "No work required", "type": "neutral" },
+            { "text": "Future planners have no context about what the project accomplished", "type": "warning" },
+            { "text": "Violates plan template contract", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "No work", "ok": true },
+            { "text": "History lost", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sqlite-disposition",
+      "title": "Decision 4 of 9: SQLite Unified State Store",
+      "subtitle": "Wave 1 merged with code, Waves 2-4 orphaned with open issues",
+      "decId": "DEC-RECK-004",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> The SQLite initiative had 8 planning decisions (DEC-SQLITE-001 through 008). Wave 1 was completed — core API and unit tests are merged into main. Waves 2-4 have open GitHub issues #128-134. The initiative was silently removed from the plan. Merged code exists that the plan doesn't acknowledge.",
+        "variant": "warning"
+      },
+      "options": [
+        {
+          "id": "reactivate-sqlite",
+          "title": "Reactivate — complete Waves 2-4",
+          "badge": { "text": "COMPLETE THE WORK", "color": "blue" },
+          "specs": [
+            { "text": "Wave 1 code already merged — foundation exists", "type": "highlight" },
+            { "text": "SQLite WAL replaces fragile flat-file state with atomic CAS", "type": "highlight" },
+            { "text": "3 more waves of work — significant commitment", "type": "warning" },
+            { "text": "Competes for attention with prompt restoration", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Code exists", "ok": true },
+            { "text": "Large scope", "ok": false }
+          ]
+        },
+        {
+          "id": "park-sqlite",
+          "title": "Park with rationale",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Add to Parked Issues with clear explanation: complete after prompt restoration", "type": "highlight" },
+            { "text": "Wave 1 code stays — it's stable and tested", "type": "highlight" },
+            { "text": "Issues #128-134 stay open, tagged as parked", "type": "neutral" },
+            { "text": "Formally acknowledges the deferral instead of silent removal", "type": "highlight" }
+          ],
+          "tags": [
+            { "text": "Transparent", "ok": true },
+            { "text": "Preserves option", "ok": true }
+          ]
+        },
+        {
+          "id": "cancel-sqlite",
+          "title": "Cancel — close issues, revert Wave 1",
+          "badge": { "text": "DESTRUCTIVE", "color": "red" },
+          "specs": [
+            { "text": "Clean break — no orphaned code or issues", "type": "neutral" },
+            { "text": "Discards 8 planning decisions and completed Wave 1 work", "type": "warning" },
+            { "text": "Flat-file state remains with its known race conditions", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Clean", "ok": true },
+            { "text": "Wastes work", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "opmode-disposition",
+      "title": "Decision 5 of 9: Operational Mode System",
+      "subtitle": "9 decisions, 5 waves, deep-research validated — never implemented",
+      "decId": "DEC-RECK-005",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> A 4-tier mode taxonomy (Observe/Amend/Patch/Build) with escalation engine, hook integration, and anti-gaming measures. 9 planning decisions, 5 waves of issues (#114-118), validated by deep-research. Never implemented; silently removed from plan. Potentially over-engineered for the problem space.",
+        "variant": "default"
+      },
+      "options": [
+        {
+          "id": "reactivate-opmode",
+          "title": "Reactivate as active initiative",
+          "badge": { "text": "AMBITIOUS", "color": "purple" },
+          "specs": [
+            { "text": "Deep-research validated the concept", "type": "highlight" },
+            { "text": "5 waves — largest initiative ever planned for this project", "type": "warning" },
+            { "text": "May be solving a problem that doesn't exist at current scale", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Validated", "ok": true },
+            { "text": "Over-engineered risk", "ok": false }
+          ]
+        },
+        {
+          "id": "park-opmode",
+          "title": "Park with rationale",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Acknowledge the planning work — don't silently drop it", "type": "highlight" },
+            { "text": "Revisit when the project has enough users to need mode control", "type": "neutral" },
+            { "text": "Issues #114-118 stay open, tagged as parked", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "Transparent", "ok": true },
+            { "text": "Preserves option", "ok": true }
+          ]
+        },
+        {
+          "id": "cancel-opmode",
+          "title": "Cancel — close issues",
+          "badge": { "text": "PRUNE", "color": "amber" },
+          "specs": [
+            { "text": "Cleanly removes scope that may never be needed", "type": "neutral" },
+            { "text": "9 planning decisions become historical only", "type": "neutral" },
+            { "text": "If mode control is needed later, planning starts fresh", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Clean", "ok": true },
+            { "text": "Loses planning work", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "backlog-auto-disposition",
+      "title": "Decision 6 of 9: Backlog Auto-Capture",
+      "subtitle": "5 decisions, never implemented — manual /backlog may suffice",
+      "decId": "DEC-RECK-006",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> Automatic issue creation from conversation keywords. 5 planning decisions, never implemented. The manual <code>/backlog</code> command workflow exists and functions. Silent removal from plan without formal disposition.",
+        "variant": "default"
+      },
+      "options": [
+        {
+          "id": "reactivate-backlog",
+          "title": "Reactivate",
+          "badge": { "text": "EXPAND", "color": "blue" },
+          "specs": [
+            { "text": "Auto-capture would reduce manual issue creation", "type": "highlight" },
+            { "text": "prompt-submit.sh already detects deferred-work language", "type": "highlight" },
+            { "text": "Additional complexity for a workflow that works manually", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Automation", "ok": true },
+            { "text": "Complexity", "ok": false }
+          ]
+        },
+        {
+          "id": "park-backlog",
+          "title": "Park",
+          "badge": { "text": "DEFER", "color": "amber" },
+          "specs": [
+            { "text": "Keep the option open for later", "type": "neutral" },
+            { "text": "Manual workflow handles current volume", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "Low urgency", "ok": true }
+          ]
+        },
+        {
+          "id": "cancel-backlog",
+          "title": "Cancel — manual /backlog is sufficient",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Manual /backlog command works and is actively used", "type": "highlight" },
+            { "text": "prompt-submit.sh already auto-captures deferred-work language", "type": "highlight" },
+            { "text": "Closes scope that adds complexity without proportional value", "type": "highlight" }
+          ],
+          "tags": [
+            { "text": "Simple", "ok": true },
+            { "text": "Existing solution", "ok": true }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dec-collision",
+      "title": "Decision 7 of 9: DEC-AUDIT-001 Collision",
+      "subtitle": "Same DEC-ID reused for a different decision",
+      "decId": "DEC-RECK-007",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> The current plan has DEC-AUDIT-001 = \"Governance signal map as markdown.\" The prior plan had DEC-AUDIT-001 = a different Hook Consolidation audit decision. Code annotations referencing the old DEC-AUDIT-001 now point to the wrong decision. This is a traceability collision.",
+        "variant": "warning"
+      },
+      "options": [
+        {
+          "id": "renumber-current",
+          "title": "Renumber current → DEC-AUDIT-002",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Current decision is newer — easier to renumber (only in plan + 1 code reference)", "type": "highlight" },
+            { "text": "Historical DEC-AUDIT-001 stays consistent with existing code annotations", "type": "highlight" },
+            { "text": "Simple find-and-replace in current plan and governance-signal-map.md", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "Minimal changes", "ok": true },
+            { "text": "Preserves history", "ok": true }
+          ]
+        },
+        {
+          "id": "renumber-historical",
+          "title": "Renumber historical → DEC-AUDIT-LEGACY-001",
+          "badge": { "text": "ALTERNATIVE", "color": "amber" },
+          "specs": [
+            { "text": "Current decision keeps its ID", "type": "neutral" },
+            { "text": "Requires updating code annotations that reference the old ID", "type": "warning" },
+            { "text": "More code changes needed", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Current stays clean", "ok": true },
+            { "text": "More work", "ok": false }
+          ]
+        },
+        {
+          "id": "namespace-both",
+          "title": "Namespace both with initiative prefix",
+          "badge": { "text": "SYSTEMATIC", "color": "blue" },
+          "specs": [
+            { "text": "Old → DEC-HOOKCON-AUDIT-001, New → DEC-GOVAUDIT-001", "type": "neutral" },
+            { "text": "Prevents future collisions with initiative-namespaced IDs", "type": "highlight" },
+            { "text": "Breaks all existing references to both — largest change", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Future-proof", "ok": true },
+            { "text": "Most churn", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "issue-triage",
+      "title": "Decision 8 of 9: Orphaned GitHub Issues",
+      "subtitle": "75 open issues not tracked in any plan initiative",
+      "decId": "DEC-RECK-008",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> 81 open GitHub issues exist. Only 6 are tracked in the current plan. 75 are orphaned — including SQLite Waves 2-4 (#128-134), Operational Mode System (#114-118), CI failures (#110-112), and numerous bug reports. Sacred Practice #9 says \"Track in Issues, Not Files\" but the issues aren't tracked in the plan either.",
+        "variant": "warning"
+      },
+      "options": [
+        {
+          "id": "individual-triage",
+          "title": "Individual triage — review each issue",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Most thorough — each issue gets a proper disposition", "type": "highlight" },
+            { "text": "Reconnects issues to plan initiatives or parks/closes them", "type": "highlight" },
+            { "text": "Time-intensive — 75 issues to review", "type": "warning" },
+            { "text": "Can be done incrementally across sessions", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "Thorough", "ok": true },
+            { "text": "Time-intensive", "ok": false }
+          ]
+        },
+        {
+          "id": "batch-close",
+          "title": "Batch close stale, park remainder",
+          "badge": { "text": "PRAGMATIC", "color": "amber" },
+          "specs": [
+            { "text": "Close issues older than 14 days with no activity", "type": "neutral" },
+            { "text": "Park remaining under 'pending-triage' label", "type": "neutral" },
+            { "text": "May close issues that represent real work (SQLite, OpMode)", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Fast", "ok": true },
+            { "text": "Lossy", "ok": false }
+          ]
+        },
+        {
+          "id": "bulk-park",
+          "title": "Bulk park with triage label",
+          "badge": { "text": "DEFER", "color": "gray" },
+          "specs": [
+            { "text": "Label all orphaned issues 'reckoning-triage', add to Parked Issues", "type": "neutral" },
+            { "text": "Nothing is lost — but nothing is resolved either", "type": "warning" },
+            { "text": "Backlog continues growing", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Nothing lost", "ok": true },
+            { "text": "Nothing resolved", "ok": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "trajectory",
+      "title": "Decision 9 of 9: Project Trajectory",
+      "subtitle": "Where should the project focus next?",
+      "decId": "DEC-RECK-009",
+      "infoBox": {
+        "html": "<strong>Finding:</strong> The project is bifurcated: the plan says \"optimize prompts and audit governance\" while the codebase says \"we're also mid-migration to SQLite and have a planned mode system.\" The reckoning verdict is \"drifting constructively\" — genuine value but growing coherence gap. This decision sets the direction for the next 3-6 months.",
+        "variant": "critical"
+      },
+      "options": [
+        {
+          "id": "complete-capability",
+          "title": "Complete capability — finish what was started",
+          "badge": { "text": "BUILD", "color": "purple" },
+          "specs": [
+            { "text": "Finish SQLite migration (W2-4), build observatory learning loop", "type": "highlight" },
+            { "text": "Fulfills Original Intent: \"the observatory learns from traces to improve\"", "type": "highlight" },
+            { "text": "Prompt restoration pauses — current state is already improved", "type": "warning" },
+            { "text": "Risk: adding more before stabilizing what exists", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Vision-complete", "ok": true },
+            { "text": "More complexity", "ok": false }
+          ]
+        },
+        {
+          "id": "optimize-existing",
+          "title": "Optimize existing — polish and stabilize",
+          "badge": { "text": "REFINE", "color": "blue" },
+          "specs": [
+            { "text": "Finish prompt restoration (W2-W3), complete governance audit", "type": "highlight" },
+            { "text": "Reduce context injection noise, improve model output quality", "type": "highlight" },
+            { "text": "SQLite and mode system stay parked", "type": "neutral" },
+            { "text": "Risk: the plan-code gap continues growing silently", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Quality focus", "ok": true },
+            { "text": "Unfinished infra", "ok": false }
+          ]
+        },
+        {
+          "id": "strategic-reset",
+          "title": "Strategic reset — fix the foundation first",
+          "badge": { "text": "RECOMMENDED", "color": "green" },
+          "recommended": true,
+          "specs": [
+            { "text": "Address all reckoning findings: restore history, triage issues, fix collisions", "type": "highlight" },
+            { "text": "Rebuild institutional memory so the plan reflects reality", "type": "highlight" },
+            { "text": "THEN choose direction from accurate maps, not amnesia", "type": "highlight" },
+            { "text": "Short pause on feature work — 1-2 sessions of cleanup", "type": "neutral" },
+            { "text": "Risk: cleanup is less exciting than building, may lose momentum", "type": "warning" }
+          ],
+          "tags": [
+            { "text": "Honest foundation", "ok": true },
+            { "text": "Deferred gratification", "ok": false }
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "title": "Reckoning Operationalization — Your Decisions",
+    "gridItems": [
+      { "label": "Original Intent", "template": "{original-intent.title}", "highlight": false },
+      { "label": "Decision Log", "template": "{decision-log.title}", "highlight": false },
+      { "label": "Completed Initiatives", "template": "{completed-initiatives.title}", "highlight": false },
+      { "label": "SQLite", "template": "{sqlite-disposition.title}", "highlight": false },
+      { "label": "Operational Mode", "template": "{opmode-disposition.title}", "highlight": false },
+      { "label": "Backlog Auto-Capture", "template": "{backlog-auto-disposition.title}", "highlight": false },
+      { "label": "DEC Collision", "template": "{dec-collision.title}", "highlight": false },
+      { "label": "Issue Triage", "template": "{issue-triage.title}", "highlight": false },
+      { "label": "Trajectory", "template": "{trajectory.title}", "highlight": true }
+    ],
+    "export": {
+      "enabled": true,
+      "filename": "reckoning-decisions.json",
+      "includeDecIds": true
+    }
+  }
+}
