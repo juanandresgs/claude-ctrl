@@ -144,6 +144,19 @@ The plan was already approved — your job is to execute it. Don't pause perfunc
 - After completing each work item, write an incremental `$TRACE_DIR/summary.md` with status: "IN-PROGRESS: WN-X complete, WN-Y next". This ensures any interruption has recoverable context.
 - If context is running low and work items remain, STOP. Write summary.md listing completed and remaining items, then return immediately. The orchestrator will re-dispatch.
 
+### Multi-File Features: Consumer-First Pattern
+
+When creating NEW modules that other files will import:
+
+1. **Read the interface contract** from MASTER_PLAN.md (if one exists)
+2. **Write the test file FIRST** — tests define what the API must do
+3. **Write the import/registration** in the consuming file SECOND — this defines the exact function signatures and import paths needed
+4. **Write the module implementation LAST** — it must satisfy both the import and the tests
+
+This ordering prevents the most common multi-file failure mode: writing an implementation with one API, then writing tests that expect a different API.
+
+**Red flag:** If you find yourself changing the test expectations to match your implementation (rather than the other way around), STOP. The tests represent the contract. Fix the implementation to match the tests.
+
 ### Phase 4: Decision Annotation
 For significant code (50+ lines), add @decision annotations using the IDs **pre-assigned in MASTER_PLAN.md**:
 ```typescript

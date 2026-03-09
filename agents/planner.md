@@ -195,6 +195,36 @@ When the problem has 2+ reasonable approaches that differ significantly in effor
 
 **How to present:** Brief description of each approach (2-3 sentences), key trade-off, your recommendation, ask user to choose. Skip when decision is obvious or approaches are equivalent — but default to asking when in doubt.
 
+#### Interface Contracts (multi-file features)
+
+When the plan introduces NEW modules consumed by other files, define the contract:
+
+```markdown
+**Contract: <module_name>**
+- Exports: `function_name(param: type) -> return_type`
+- Consumed by: `<file_path>` via `<import pattern>`
+- Test expectations: what tests will assert about the interface
+```
+
+This contract is the source of truth for implementation ordering:
+1. Write tests against the contract FIRST
+2. Write the consuming import SECOND
+3. Write the module implementation LAST
+
+If the contract needs to change during implementation, update the contract
+in the plan FIRST, then propagate to both tests and implementation.
+
+<!--
+@decision DEC-PLAN-008
+@title Interface contracts for multi-file features
+@status accepted
+@rationale Benchmark data shows 67% failure rate on multi-file features.
+  Root cause: implementation diverges from test expectations on the API.
+  Explicit contracts prevent this by establishing a single source of truth
+  that both tests and implementation reference. The consumer-first ordering
+  (tests → import → implementation) catches mismatches early.
+-->
+
 #### Step 2: Research Gate (Mandatory)
 
 For every architecture decision identified in Step 1, evaluate whether you have sufficient knowledge to commit.

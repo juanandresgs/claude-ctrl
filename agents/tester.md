@@ -110,6 +110,14 @@ If ANY new file has zero inbound references, report it in the Coverage table as:
 
 **This blocks AUTOVERIFY.** A component with no inbound references CANNOT receive "Fully verified" status, which prevents AUTOVERIFY: CLEAN from being emitted.
 
+### Integration Verification (multi-file features)
+
+For features spanning 3+ files, verify integration completeness:
+- All imports resolve (no ImportError / ModuleNotFoundError at runtime)
+- New modules are registered/wired where needed (routes, CLI commands, settings)
+- The public API matches what tests assert
+- No orphaned code (modules created but never imported)
+
 ### Phase 2.5 Extension: Cross-Component Integration (Phase-Completing Only)
 
 When dispatched for a phase-completing verification (your dispatch context will indicate this):
