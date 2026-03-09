@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/sqlite-state-store`: SQLite Unified State Store initiative added to MASTER_PLAN.md — 4-wave implementation plan replacing scattered flat-file state with single SQLite WAL database, 8 architectural decisions (DEC-SQLITE-001 through 008), 9 P0 requirements, issues #128-#134
 
 ### Fixed
+- `fix/statusline-column-collapse`: Reserve 65 chars for Claude Code right-panel in statusline width calculation — prevents metrics line from collapsing when Claude Code's right-aligned info occupies ~60-70 visible characters; floor clamped to 60 to avoid negative/tiny widths (DEC-STATUSLINE-TERMWIDTH-003)
 - `fix/statusline-baseline-pid`: Fix PID-scoped baseline filename — `$$` produced unique file per render, making baseline == current always (0 conversation blocks, entire bar system color); now uses single `.statusline-baseline` per workspace with one-time cleanup of proliferated old files (DEC-DUALBAR-003)
 - `fix/trace-null-projects`: Fix null project_name in trace index — finalize_trace() now backfills null project fields from detect_project_root() at trace seal time (DEC-BACKFILL-003); new backfill scripts (backfill-trace-projects.sh/.py) rebuilt index clean (564 entries, 0 nulls); 10+11 test suite (#173)
 - `fix/dual-color-bar-colors`: Change system blocks in dual-color context bar from dim (`\033[2m`) to cyan (`\033[36m`), brackets bold cyan, percentage inherits severity color — fixes indistinguishable system/empty blocks on dark terminals

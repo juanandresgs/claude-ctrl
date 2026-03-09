@@ -514,16 +514,20 @@ if [[ -n "$cache_initiative" ]]; then
 fi
 
 # Terminal width — must be resolved before the responsive layout sections below.
-# @decision DEC-STATUSLINE-TERMWIDTH-002
-# @title Clamp small COLUMNS to 120 — let Claude Code UI handle final clipping
+# @decision DEC-STATUSLINE-TERMWIDTH-003
+# @title Reserve 65 chars for Claude Code right-panel, clamp floor to 60
 # @status accepted
-# @rationale Claude Code provides COLUMNS for the statusline display area, but small
-# values (including 0 from subprocess context) cause aggressive responsive dropping that
-# removes useful segments. At term_w=120 the full metrics line (~94 chars) fits with zero
-# drops. Display order already puts most-important segments first (context bar → tks →
-# cost), so natural UI clipping shows the best content when the area is narrow.
+# @rationale Claude Code renders right-aligned info on the same lines as the custom
+# statusline ("Context left until auto-compact: N% · /model ..."), consuming ~60-70
+# visible characters. Without reserving this space, the responsive drop system uses
+# full COLUMNS, produces segments that overflow into the right panel, and Claude Code's
+# UI clips them — causing the metrics line to collapse to just the context bar.
+# Subtracting 65 chars from COLUMNS gives the responsive system the true available
+# width. Floor of 60 prevents negative/tiny widths from dropping everything.
+# Supersedes DEC-STATUSLINE-TERMWIDTH-002.
 term_w="${COLUMNS:-0}"
-(( term_w < 80 )) && term_w=120
+(( term_w > 65 )) && term_w=$(( term_w - 65 )) || term_w=60
+(( term_w < 60 )) && term_w=60
 (( term_w > 200 )) && term_w=200
 
 # ---------------------------------------------------------------------------

@@ -596,6 +596,8 @@ test_domain_clustering_order() {
     run_test
     # Line 1 should have: workspace BEFORE dirty: BEFORE agents: BEFORE todos:
     # (Model is on line 2, not line 1)
+    # Use COLUMNS=300 (term_w=235 after 65-char right-panel reservation) so all
+    # five segments fit and the ordering can be verified without responsive drops.
     local tmpdir
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
@@ -606,16 +608,16 @@ test_domain_clustering_order() {
     local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
     local line1
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    output=$(run_sl_columns "$json" 300 "$tmpdir")
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
 
     # Extract positions of domain clusters on line 1
     # workspace (tmpdir basename) comes first, then dirty:, agents:, todos:
     local pos_dirty pos_agents pos_todos
-    pos_dirty=$(printf '%s' "$line1" | grep -bo 'dirty:' | { head -1; cat > /dev/null; } | cut -d: -f1)
-    pos_agents=$(printf '%s' "$line1" | grep -bo 'agents:' | { head -1; cat > /dev/null; } | cut -d: -f1)
-    pos_todos=$(printf '%s' "$line1" | grep -bo 'todos:' | { head -1; cat > /dev/null; } | cut -d: -f1)
+    pos_dirty=$(printf '%s' "$line1" | grep -bo 'dirty:' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
+    pos_agents=$(printf '%s' "$line1" | grep -bo 'agents:' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
+    pos_todos=$(printf '%s' "$line1" | grep -bo 'todos:' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
 
     if [[ -n "$pos_dirty" && -n "$pos_agents" && -n "$pos_todos" ]] \
         && (( pos_dirty < pos_agents )) \
@@ -1130,7 +1132,8 @@ test_lifetime_tokens_shown_with_past_sessions() {
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    # COLUMNS=250: term_w=185 ensures Project Lifetime segment (priority 4) is not dropped
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2=$(printf '%s' "$output" | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
@@ -1175,7 +1178,8 @@ test_lifetime_tokens_grand_total_all_sources() {
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    # COLUMNS=250: term_w=185 ensures Project Lifetime segment (priority 4) is not dropped
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2=$(printf '%s' "$output" | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
@@ -1211,7 +1215,8 @@ test_lifetime_tokens_dim_rendering() {
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2_raw
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    # COLUMNS=250: term_w=185 ensures Project Lifetime segment (priority 4) is not dropped
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2_raw=$(printf '%s' "$output" | tail -1)
     rm -rf "$tmpdir"
 
@@ -1256,6 +1261,10 @@ test_responsive_all_segments_wide() {
 
 test_responsive_line1_narrow_drops_todos() {
     run_test
+    # COLUMNS=55: term_w=60 (floor, since 55-65=-10).
+    # With workspace~14 chars + dirty + wt + agents + todos: total ~67 > 60.
+    # todos (priority 5) drops. Verifies the 65-char right-panel reservation causes
+    # earlier responsive drops — correct behavior for Claude Code UI compatibility.
     local tmpdir
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
@@ -1267,10 +1276,10 @@ test_responsive_line1_narrow_drops_todos() {
     local line1
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
-    if [[ "$line1" == *"todos:"* ]]; then
-        pass_test "Responsive: COLUMNS=55 shows todos (term_w clamped to 120)"
+    if [[ "$line1" != *"todos:"* ]]; then
+        pass_test "Responsive: COLUMNS=55 drops todos (term_w=60 floor, workspace+other segs exceed 60)"
     else
-        fail_test "Responsive: todos absent at COLUMNS=55 (term_w should be 120)" "line1=$line1"
+        fail_test "Responsive: todos still visible at COLUMNS=55 (should be dropped at term_w=60)" "line1=$line1"
     fi
 }
 
@@ -1290,15 +1299,18 @@ test_responsive_line1_very_narrow_keeps_workspace() {
 
 test_responsive_line2_narrow_drops_lines_changed() {
     run_test
+    # COLUMNS=75: term_w=10 (75-65), floor kicks in -> term_w=60.
+    # At term_w=60, +N/-N lines (priority 8, drops first) are dropped.
+    # Verifies that narrow effective width causes correct responsive drop behavior.
     local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"/Users/turla/proj"},"cost":{"total_cost_usd":0.53,"total_duration_ms":60000,"total_lines_added":42,"total_lines_removed":7},"context_window":{"used_percentage":35,"current_usage":{"cache_read_input_tokens":50000,"input_tokens":10000,"cache_creation_input_tokens":5000},"total_input_tokens":150000,"total_output_tokens":50000}}'
     local output
     output=$(run_sl_columns "$json" 75)
     local line2
     line2=$(extract_line "$output" 2 | strip_ansi)
-    if [[ "$line2" == *"+42"* ]]; then
-        pass_test "Responsive: COLUMNS=75 shows +N/-N lines (term_w clamped to 120)"
+    if [[ "$line2" != *"+42"* ]]; then
+        pass_test "Responsive: COLUMNS=75 drops +N/-N lines (term_w=60 floor, priority-8 segment dropped)"
     else
-        fail_test "Responsive: +42 absent at COLUMNS=75 (term_w should be 120)" "line2=$line2"
+        fail_test "Responsive: +42 still visible at COLUMNS=75 (should be dropped at term_w=60)" "line2=$line2"
     fi
 }
 
@@ -1327,6 +1339,81 @@ test_responsive_no_truncation_at_wide() {
         pass_test "Responsive: COLUMNS=200 produces no '...' truncation"
     else
         fail_test "Responsive: unexpected '...' at COLUMNS=200" "stripped=$stripped"
+    fi
+}
+
+# ----------------------------------------------------------------------------
+# DEC-STATUSLINE-TERMWIDTH-003 tests: effective width = COLUMNS - 65, floor 60
+# @decision DEC-STATUSLINE-TERMWIDTH-003
+# @title Tests for right-panel reservation: term_w = COLUMNS - 65 (floor 60)
+# @status accepted
+# @rationale Verifies three key invariants of the Claude Code right-panel reservation:
+#   1. COLUMNS=180 -> effective width 115 (65-char reservation active, no floor)
+#   2. COLUMNS=60  -> floor kicks in (60-65=-5 -> clamped to 60, not negative)
+#   3. COLUMNS=0   -> floor kicks in (0-65=-65 -> clamped to 60)
+# Test 1 uses a 71-char workspace basename to force line1 total ~131 chars.
+# At term_w=115 agents+todos drop; at term_w=180 nothing drops.
+# Asserting agents IS dropped at COLUMNS=180 proves effective width=115.
+# ----------------------------------------------------------------------------
+
+test_termwidth_cols_180_effective_115() {
+    run_test
+    # 73-char workspace basename: line1 total ~131 chars (workspace+dirty+wt+agents+todos).
+    # New code (COLUMNS=180, term_w=115=180-65): todos(p5)+agents(p4) both dropped.
+    # Old code (COLUMNS=180, term_w=180): line1=131<180, nothing drops, agents visible.
+    # Asserting agents ABSENT at COLUMNS=180 proves the 65-char right-panel reservation.
+    local long_name
+    long_name=$(printf '%073d' 0 | tr '0' 'a')   # 73 'a' chars
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    # Place cache in workspace_dir/.claude/ so statusline.sh finds it
+    local workspace_dir="$tmpdir/$long_name"
+    mkdir -p "$workspace_dir/.claude"
+    printf '{"dirty":5,"worktrees":2,"agents_active":3,"agents_types":"impl,test","todo_project":4,"todo_global":7,"lifetime_cost":0}' \
+        > "$workspace_dir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
+    local json
+    json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$workspace_dir"'"},"cost":{},"context_window":{}}'
+    local output
+    output=$(printf '%s' "$json" | COLUMNS=180 HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null)
+    local line1
+    line1=$(extract_line "$output" 1 | strip_ansi)
+    rm -rf "$tmpdir"
+    if [[ "$line1" != *"agents:"* ]]; then
+        pass_test "termwidth: COLUMNS=180 effective width 115 — agents dropped (proves 65-char reservation)"
+    else
+        fail_test "termwidth: COLUMNS=180 should reserve 65 chars (effective=115), but agents still visible" "line1=$line1"
+    fi
+}
+
+test_termwidth_cols_60_floor_kicks_in() {
+    run_test
+    # COLUMNS=60: 60-65=-5 -> floor clamps to 60.
+    # At term_w=60 the context bar (priority 1, always kept) must appear.
+    local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"/Users/turla/proj"},"cost":{"total_cost_usd":0.10,"total_duration_ms":5000},"context_window":{"used_percentage":50,"total_input_tokens":50000,"total_output_tokens":10000}}'
+    local output
+    output=$(run_sl_columns "$json" 60)
+    local line2
+    line2=$(extract_line "$output" 2 | strip_ansi)
+    if [[ "$line2" == *"50%"* ]] || [[ "$line2" == *$'\xe2\x96\x88'* ]] || [[ "$line2" == *$'\xe2\x96\x91'* ]]; then
+        pass_test "termwidth: COLUMNS=60 floor kicks in — context bar preserved (no negative width)"
+    else
+        fail_test "termwidth: COLUMNS=60 floor failed — context bar missing or script errored" "line2=$line2"
+    fi
+}
+
+test_termwidth_cols_0_floor_kicks_in() {
+    run_test
+    # COLUMNS=0 (unset terminal): 0-65=-65 -> floor clamps to 60.
+    # At term_w=60 the context bar must appear.
+    local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"/Users/turla/proj"},"cost":{"total_cost_usd":0.10,"total_duration_ms":5000},"context_window":{"used_percentage":42,"total_input_tokens":50000,"total_output_tokens":10000}}'
+    local output
+    output=$(run_sl_columns "$json" 0)
+    local line2
+    line2=$(extract_line "$output" 2 | strip_ansi)
+    if [[ "$line2" == *"42%"* ]] || [[ "$line2" == *$'\xe2\x96\x88'* ]] || [[ "$line2" == *$'\xe2\x96\x91'* ]]; then
+        pass_test "termwidth: COLUMNS=0 floor kicks in — context bar preserved (no negative width)"
+    else
+        fail_test "termwidth: COLUMNS=0 floor failed — context bar missing or script errored" "line2=$line2"
     fi
 }
 
@@ -1388,7 +1475,8 @@ test_new_lifetime_format_with_prefix() {
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    # COLUMNS=250: term_w=185 ensures Project Lifetime segment (priority 4) is not dropped
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2=$(printf '%s' "$output" | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
@@ -1409,7 +1497,8 @@ test_new_lifetime_format_tks_suffix() {
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    # COLUMNS=250: term_w=185 ensures Project Lifetime segment (priority 4) is not dropped
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2=$(printf '%s' "$output" | tail -1 | strip_ansi)
     rm -rf "$tmpdir"
 
@@ -1751,6 +1840,11 @@ test_responsive_line1_very_narrow_keeps_workspace
 test_responsive_line2_narrow_drops_lines_changed
 test_responsive_line2_very_narrow_keeps_context_bar
 test_responsive_no_truncation_at_wide
+echo ""
+echo "--- Terminal width (DEC-STATUSLINE-TERMWIDTH-003) ---"
+test_termwidth_cols_180_effective_115
+test_termwidth_cols_60_floor_kicks_in
+test_termwidth_cols_0_floor_kicks_in
 
 echo ""
 echo "--- Dual-color context bar (baseline) ---"
