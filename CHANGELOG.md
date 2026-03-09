@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `housekeeping/plan-maintenance`: MASTER_PLAN.md housekeeping batch — close Prompt Purpose Restoration and Governance Signal Audit initiatives (moved to Completed with narratives), add RSM completed summary, fix Created date and architecture counts, add 15 Decision Log entries (DEC-RECK-010 through DEC-RECK-016 and others)
 - `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - `feature/dual-color-bar`: Dual-color context pressure bar — statusline now renders three visual regions (system overhead in dim, conversation usage in severity-colored, empty space), with fingerprint-based baseline capture and invalidation on compaction or config drift (DEC-DUALBAR-001, DEC-DUALBAR-002)
 - `docs/readme-mermaid-and-polish`: Replace ASCII pipeline diagram in README.md with Mermaid flowchart; move DEC-ARCH-001 @decision in ARCHITECTURE.md to HTML comment (still grepable, invisible when rendered)
