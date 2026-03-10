@@ -94,12 +94,12 @@ if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
     fi
 fi
 
-# --- Inject shared agent protocols (DEC-PROMPT-002) ---
-# Injects CWD safety rules, trace protocol, mandatory return message, and
-# session end checklist from agents/shared-protocols.md into every
-# non-lightweight agent's context. Lightweight agents (Bash, Explore) are
-# skipped — they don't have trace directories or worktree concerns.
-# Cap at 3000 bytes to prevent context bloat on large protocol files.
+# --- Inject shared agent protocols ---
+# Section-aware extraction from agents/shared-protocols.md.
+# Governor (read-only) skips CWD Safety. All sections are included for
+# worktree-touching agents (implementer, tester, guardian, planner).
+# HTML comments are stripped to prevent @decision annotations from
+# consuming agent context tokens.
 #
 # @decision DEC-PROMPT-002
 # @title Extract shared defensive protocols into shared-protocols.md
@@ -107,13 +107,41 @@ fi
 # @rationale CWD safety, trace protocol, and return message rules were
 #   duplicated verbatim across implementer.md, tester.md, guardian.md, and
 #   planner.md. A single edit to shared-protocols.md now propagates to all
-#   agents at spawn time. The 3000-byte cap prevents context bloat while
-#   covering the ~100-line file comfortably.
+#   agents at spawn time. Section-aware extraction skips CWD Safety for
+#   governor (read-only agent that never touches worktrees), reducing its
+#   injection by ~350 bytes. HTML comment stripping ensures @decision
+#   annotations don't consume agent context tokens.
 _SHARED_PROTO="$(dirname "$0")/../agents/shared-protocols.md"
 if [[ -f "$_SHARED_PROTO" ]] && [[ "$AGENT_TYPE" != "Bash" ]] && [[ "$AGENT_TYPE" != "Explore" ]]; then
-    _PROTO_CONTENT=$(head -c 3500 "$_SHARED_PROTO")
-    CONTEXT_PARTS+=("--- Shared Agent Protocols ---")
-    CONTEXT_PARTS+=("$_PROTO_CONTENT")
+    # Extract a named ## section's body from shared-protocols.md
+    _extract_proto_section() {
+        awk -v header="## $1" '
+            $0 == header { f=1; next }
+            f && /^## / { exit }
+            f { print }
+        ' "$_SHARED_PROTO"
+    }
+
+    _PROTO_PARTS=""
+
+    # CWD Safety — skip for governor (read-only agent, never touches worktrees)
+    if [[ "$AGENT_TYPE" != "governor" ]]; then
+        _sec=$(_extract_proto_section "CWD Safety")
+        [[ -n "$_sec" ]] && _PROTO_PARTS+="CWD Safety: $_sec"$'\n'
+    fi
+
+    # Always: Trace Recovery, Return Protocol, Session End
+    for _name in "Trace Recovery" "Return Protocol" "Session End"; do
+        _sec=$(_extract_proto_section "$_name")
+        [[ -n "$_sec" ]] && _PROTO_PARTS+="$_sec"$'\n'
+    done
+
+    # Belt-and-suspenders: strip any HTML comments that slip into the file
+    _PROTO_PARTS=$(printf '%s' "$_PROTO_PARTS" | sed '/^<!--/,/-->$/d')
+
+    if [[ -n "${_PROTO_PARTS// /}" ]]; then
+        CONTEXT_PARTS+=("$_PROTO_PARTS")
+    fi
 fi
 
 # --- Agent-type-specific context ---
@@ -184,6 +212,7 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("TEST_SCOPE: full — Write tests first (Phase 3), then implement.")
         fi
         CONTEXT_PARTS+=("After tests pass, return to orchestrator. The tester agent handles live verification — you do NOT demo or write .proof-status.")
+        CONTEXT_PARTS+=("Before returning: verify no uncommitted changes in worktree, remove lockfile: rm -f .worktrees/<name>/.claude-active")
         # Inject current proof status with contextual guidance (W7-2: #42 residual, #134)
         # Use resolve_proof_file() for worktree-aware resolution (replaces inline project_hash).
         _PROOF_FILE=$(resolve_proof_file)
