@@ -282,10 +282,10 @@ fi
 # --- Safety net: if proof-status missing, create needs-verification ---
 # If somehow there is no proof-status file at all, create a needs-verification
 # entry so the approval flow can still proceed (mirrors check-tester.sh DEC-TESTER-003).
+# DEC-PROOF-DUALWRITE-001 (see check-tester.sh): use write_proof_status for dual-write
 if [[ "$PROOF_STATUS" == "missing" ]]; then
     log_info "POST-TASK" "proof-status missing — writing needs-verification (safety net)"
-    mkdir -p "$(dirname "$PROOF_FILE")"
-    echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
+    write_proof_status "needs-verification" "$PROJECT_ROOT"
     PROOF_STATUS="needs-verification"
 fi
 

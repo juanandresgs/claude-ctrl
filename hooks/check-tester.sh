@@ -343,9 +343,16 @@ fi
 # Safety net (DEC-TESTER-003): if proof-status is missing and RESPONSE_TEXT is
 # non-empty, auto-write "pending" so the manual approval flow can proceed.
 # This handles testers that forgot to write .proof-status.
+# @decision DEC-PROOF-DUALWRITE-001
+# @title Replace direct proof-status writes with write_proof_status() calls
+# @status accepted
+# @rationale Direct writes to $PROOF_FILE only update one path (whichever
+#   resolve_proof_file() returned). write_proof_status() dual-writes to both
+#   state/{phash}/proof-status (new) and .proof-status-{phash} (legacy),
+#   keeping them in sync. Fixes bug #81: proof gate stuck on needs-verification
+#   because tester wrote verified to legacy path while gate read from new path.
 if [[ "$PROOF_STATUS" == "missing" && -n "$RESPONSE_TEXT" ]]; then
-    mkdir -p "$(dirname "$PROOF_FILE")"
-    echo "pending|$(date +%s)" > "$PROOF_FILE"
+    write_proof_status "pending" "$PROJECT_ROOT"
     PROOF_STATUS="pending"
 fi
 
