@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `worktree-agent-a72614e7`: Agent context injection optimization — shared-protocols.md reduced 37% (2568->1626 bytes), subagent-start.sh now uses section-aware extraction with per-agent-type conditional injection (governor skips CWD Safety, implementer gets lockfile reminder), HTML comment stripping prevents @decision annotations from entering agent context (DEC-PROMPT-002)
 
+### Fixed
+- `worktree-agent-a526b1e3`: Proof gate deadlock when post-task.sh summary.md detection fails — 5-component interlock: loud advisory + signal file (C1), tester dispatch breadcrumb in task-track.sh (C2), AUTOVERIFY relay detection in prompt-submit.sh (C3), .last-tester-trace at SubagentStart (C4), emergency Check 9 override with 300s TTL (C5); 17 dedicated tests (DEC-AV-LOUD-FAIL-001, DEC-AV-BREADCRUMB-001/002, DEC-AV-RELAY-001, DEC-AV-OVERRIDE-001)
+
 ### Reverted
 - `revert/governance-eff-w1`: Revert 5 commits from Governance Efficiency W1/W2, T2 backstop, and governor wiring — these collectively degraded agent performance by overloading context with governance metadata, blocking auto-verify with an impossible regex, and injecting governor signals unconditionally; reverts e50480f, 90f6a5e, 56ebe16, a94b562, eed29d1; removes 4 test files (2524 lines net reduction across 21 files)
 

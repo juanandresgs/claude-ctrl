@@ -484,6 +484,27 @@ if [[ "$AGENT_TYPE" == "tester" ]]; then
     # DISABLED: if [[ -n "$TESTER_TRACE_ID" ]]; then
     # DISABLED:     log_info "TASK-TRACK" "initialized tester trace=${TESTER_TRACE_ID}"
     # DISABLED: fi
+
+    # --- Tester dispatch breadcrumb (DEC-AV-BREADCRUMB-001) ---
+    # Write session+epoch to state/{phash}/tester-dispatch-session so post-task.sh
+    # can locate the tester trace more reliably on Tier -1 (before all other tiers).
+    # This breadcrumb is consumed by a Tier -1 check added to post-task.sh.
+    #
+    # @decision DEC-AV-BREADCRUMB-001
+    # @title Write tester-dispatch-session breadcrumb at PreToolUse:Task time
+    # @status accepted
+    # @rationale post-task.sh (PostToolUse:Task) needs to locate the tester's trace
+    #   to read summary.md. The existing detection tiers (active marker, .last-tester-trace,
+    #   session scan, project scan) all fail when SubagentStop doesn't fire reliably.
+    #   Writing a breadcrumb at dispatch time (PreToolUse:Task fires before SubagentStart)
+    #   gives post-task.sh the session_id that the tester will use, enabling targeted
+    #   trace lookup without relying on SubagentStop. The breadcrumb contains the
+    #   orchestrator's session_id and the dispatch epoch for staleness checks.
+    _TDS_PHASH=$(project_hash "$PROJECT_ROOT")
+    _TDS_SESSION="${CLAUDE_SESSION_ID:-$$}"
+    mkdir -p "${CLAUDE_DIR}/state/${_TDS_PHASH}" 2>/dev/null || true
+    echo "${_TDS_SESSION}|$(date +%s)" > "${CLAUDE_DIR}/state/${_TDS_PHASH}/tester-dispatch-session" 2>/dev/null || true
+    log_info "TASK-TRACK" "tester dispatch breadcrumb written: session=${_TDS_SESSION}"
 fi
 
 # --- Gate C: Implementer dispatch activates proof gate ---

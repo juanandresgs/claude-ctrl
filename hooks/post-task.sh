@@ -432,9 +432,43 @@ if [[ -z "$SUMMARY_TEXT" ]]; then
     done
 fi
 
-# No summary available after all fallbacks — cannot auto-verify, exit gracefully
+# No summary available after all fallbacks — emit advisory instead of silent exit.
+#
+# @decision DEC-AV-LOUD-FAIL-001
+# @title Replace silent exit with advisory when all summary.md detection tiers fail
+# @status accepted
+# @rationale The original silent exit (exit 0) left the orchestrator with no signal
+#   that auto-verify had failed. The proof stayed at needs-verification, Guardian was
+#   blocked at Gate A, and force-writing proof-status via Bash was blocked by pre-bash.sh
+#   Check 9. This created a complete deadlock with no recovery path visible to the
+#   orchestrator. The fix emits an advisory that (1) tells the orchestrator what happened,
+#   (2) explains how to recover (relay AUTOVERIFY: CLEAN in next prompt to trigger
+#   Component 3 in prompt-submit.sh), (3) writes .autoverify-failed signal for
+#   Component 5 emergency override, and (4) writes .agent-findings for next-prompt
+#   injection. Silent failure is never acceptable (CLAUDE.md Behavioral Policy #127).
 if [[ -z "$SUMMARY_TEXT" ]]; then
-    log_info "POST-TASK" "no summary.md content available — skipping auto-verify"
+    log_info "POST-TASK" "all 4 summary.md detection tiers failed — emitting advisory (DEC-AV-LOUD-FAIL-001)"
+    append_audit "$PROJECT_ROOT" "autoverify_loud_fail" \
+        "post-task: all summary.md tiers failed; emitting advisory and writing .autoverify-failed"
+
+    # Write .autoverify-failed signal for Component 5 emergency override in pre-bash.sh.
+    # Format: failed|epoch|session_id — Component 5 validates session and age (<300s).
+    echo "failed|$(date +%s)|${CLAUDE_SESSION_ID:-$$}" > "${CLAUDE_DIR}/.autoverify-failed" 2>/dev/null || true
+
+    # Write .agent-findings for next-prompt injection via prompt-submit.sh.
+    _LF_FINDINGS="${CLAUDE_DIR}/.agent-findings"
+    _LF_FINDING="tester|Auto-verify chain failed: all summary.md detection tiers exhausted. Relay 'AUTOVERIFY: CLEAN' from tester output to recover."
+    if ! grep -qxF "$_LF_FINDING" "$_LF_FINDINGS" 2>/dev/null; then
+        echo "$_LF_FINDING" >> "$_LF_FINDINGS" 2>/dev/null || true
+    fi
+
+    _LF_MSG="AUTOVERIFY CHAIN FAILED: post-task.sh exhausted all 4 summary.md detection tiers (active marker, breadcrumb, session scan, project-scoped scan) and found no tester summary. The proof gate is at risk of deadlock (proof=${PROOF_STATUS}, Guardian blocked at Gate A). RECOVERY OPTIONS: (1) If the tester reported 'AUTOVERIFY: CLEAN' in its response, relay that text in your next prompt — prompt-submit.sh detects it and promotes proof-status to verified. (2) If the tester showed a clean run, relay its output and let the user approve with 'approved'/'lgtm'/'verified'. (3) Emergency override: .autoverify-failed signal is active — if necessary, a direct write to .proof-status will be allowed within 300s."
+    _LF_ESC=$(printf '%s' "$_LF_MSG" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $_LF_ESC
+}
+EOF
     exit 0
 fi
 

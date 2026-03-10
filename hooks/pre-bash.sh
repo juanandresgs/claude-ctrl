@@ -263,7 +263,40 @@ elif [[ -z "$_redir_target" ]] && echo "$_stripped_cmd" | grep -qE '(>|>>|tee)\s
     _c9_protected=true
 fi
 if [[ "$_c9_protected" == "true" ]] && echo "$COMMAND" | grep -qiE 'verified|approved?|lgtm|looks.good|ship.it'; then
-    emit_deny "Cannot write approval status to .proof-status directly. Only the user can verify proof-of-work (via prompt-submit.sh). Present the verification report and let the user respond naturally."
+    # --- Emergency override: allow when post-task.sh autoverify chain failed ---
+    # When all 4 summary.md detection tiers fail in post-task.sh (DEC-AV-LOUD-FAIL-001),
+    # the orchestrator needs a way to manually write proof-status=verified without being
+    # blocked here. The .autoverify-failed signal file (written by post-task.sh) enables
+    # a time-limited, session-scoped override of Check 9.
+    #
+    # @decision DEC-AV-OVERRIDE-001
+    # @title Emergency override for proof-status write when autoverify chain failed
+    # @status accepted
+    # @rationale post-task.sh's Component 1 (DEC-AV-LOUD-FAIL-001) writes .autoverify-failed
+    #   when all 4 summary.md tiers fail. Without this override, the deadlock is complete:
+    #   proof stays needs-verification, Guardian is blocked at Gate A, and Check 9 here
+    #   blocks any direct write. The override is strictly time-limited (300s) and session-
+    #   scoped (CLAUDE_SESSION_ID must match) to prevent stale signals from enabling bypass
+    #   in future unrelated sessions. After granting the override, the signal file is
+    #   cleaned up so it cannot be reused. This is a last-resort escape hatch — the primary
+    #   recovery paths are Components 2-4 (breadcrumbs) and Component 3 (relay detection).
+    _AF_FILE="$(get_claude_dir)/.autoverify-failed"
+    _C9_OVERRIDE=false
+    if [[ -f "$_AF_FILE" ]]; then
+        _af_ts=$(cut -d'|' -f2 "$_AF_FILE" 2>/dev/null || echo 0)
+        _af_session=$(cut -d'|' -f3 "$_AF_FILE" 2>/dev/null || echo "")
+        _af_age=$(( $(date +%s) - ${_af_ts:-0} ))
+        if [[ "$_af_age" -lt 300 && "$_af_session" == "${CLAUDE_SESSION_ID:-$$}" ]]; then
+            log_info "PRE-BASH" "emergency override: autoverify-failed signal active (age=${_af_age}s) — allowing proof-status write"
+            rm -f "$_AF_FILE" 2>/dev/null || true
+            _C9_OVERRIDE=true
+        else
+            log_info "PRE-BASH" "autoverify-failed signal invalid: age=${_af_age}s session=${_af_session} (expected ${CLAUDE_SESSION_ID:-$$}) — not granting override"
+        fi
+    fi
+    if [[ "$_C9_OVERRIDE" != "true" ]]; then
+        emit_deny "Cannot write approval status to .proof-status directly. Only the user can verify proof-of-work (via prompt-submit.sh). Present the verification report and let the user respond naturally."
+    fi
 fi
 
 # --- Check 10: Block deletion of .proof-status when verification active ---

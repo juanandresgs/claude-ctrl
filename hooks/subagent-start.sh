@@ -50,6 +50,26 @@ case "$AGENT_TYPE" in
         if [[ -n "$TRACE_ID" ]]; then
             TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
         fi
+        # Write .last-tester-trace breadcrumb at trace creation time for tester agents.
+        #
+        # @decision DEC-AV-BREADCRUMB-002
+        # @title Write .last-tester-trace at SubagentStart init_trace time (not SubagentStop)
+        # @status accepted
+        # @rationale The breadcrumb was previously only written by check-tester.sh (SubagentStop),
+        #   which does not fire reliably. post-task.sh Tier 0 reads .last-tester-trace to find the
+        #   active tester trace without needing SubagentStop. Writing the breadcrumb HERE, at trace
+        #   creation time (SubagentStart fires reliably for testers), guarantees the breadcrumb
+        #   exists before PostToolUse:Task fires. This eliminates the race where Tier 0 fails because
+        #   check-tester.sh never ran (SubagentStop skipped). Both project-scoped and legacy paths
+        #   are written for backward compatibility with the dual-path check in post-task.sh Tier 0.
+        if [[ "$AGENT_TYPE" == "tester" && -n "$TRACE_ID" ]]; then
+            _BCRUMB_PHASH=$(project_hash "$PROJECT_ROOT")
+            _BCRUMB_STATE_DIR="${CLAUDE_DIR}/state/${_BCRUMB_PHASH}"
+            mkdir -p "$_BCRUMB_STATE_DIR" 2>/dev/null || true
+            echo "$TRACE_ID" > "${_BCRUMB_STATE_DIR}/last-tester-trace" 2>/dev/null || true
+            echo "$TRACE_ID" > "${CLAUDE_DIR}/.last-tester-trace" 2>/dev/null || true
+            log_info "SUBAGENT-START" "tester trace breadcrumb written: ${TRACE_ID}"
+        fi
         ;;
 esac
 
