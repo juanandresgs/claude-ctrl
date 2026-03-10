@@ -340,10 +340,10 @@ verify_library_consistency() {
 
     # Check optionally-loaded domain libraries (only if loaded).
     # Format: VAR:LIBNAME:EXPECTED (EXPECTED defaults to expected_version if omitted).
-    # Per-library expected versions allow state-lib.sh to be at v2 while
-    # other libraries remain at v1 (DEC-SQLITE-001 Wave 1 rewrite).
+    # Per-library expected versions allow state-lib.sh to be at v3 while
+    # other libraries remain at v1 (DEC-SQLITE-001 Wave 1 rewrite bumped to v3).
     local lib_vars=(
-        "_STATE_LIB_VERSION:state-lib.sh:2"
+        "_STATE_LIB_VERSION:state-lib.sh:3"
         "_SESSION_LIB_VERSION:session-lib.sh"
         "_TRACE_LIB_VERSION:trace-lib.sh"
         "_PLAN_LIB_VERSION:plan-lib.sh"
