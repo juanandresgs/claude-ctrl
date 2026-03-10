@@ -22,6 +22,11 @@
 #   marker_query        - Query markers with PID liveness check (self-healing)
 #   marker_update       - Update marker status (lifecycle transitions)
 #   marker_cleanup      - Remove stale markers; mark dead-PID markers as crashed
+#   state_emit          - Append an event to the events ledger; returns sequence number
+#   state_events_since  - Read events newer than a consumer's last checkpoint
+#   state_checkpoint    - Update a consumer's position in the event ledger
+#   state_events_count  - Count events newer than a consumer's last checkpoint
+#   state_gc_events     - Garbage-collect events all consumers have processed
 #
 # The SQLite database ($CLAUDE_DIR/state/state.db) is the authoritative state
 # store. Old jq-based functions are preserved as _legacy_* for Wave 2 dual-write.
@@ -66,6 +71,23 @@
 #   multiple active worktrees. _migrations table: version (PK), name, checksum,
 #   applied_at. Runner is idempotent — re-running completed migrations is a no-op.
 #   See MASTER_PLAN.md DEC-STATE-UNIFY-002.
+#
+# @decision DEC-STATE-UNIFY-005
+# @title Append-only event ledger with consumer checkpoints for workflow coordination
+# @status accepted
+# @rationale The generic state table is a key-value store with last-write-wins
+#   semantics — unsuitable for event streaming where order and completeness matter.
+#   A dedicated events table with AUTOINCREMENT seq provides a durable, ordered
+#   log: producers call state_emit() to append, consumers call state_events_since()
+#   to read their slice without racing other consumers. Consumer checkpoints
+#   (event_checkpoints table) track each consumer's position independently —
+#   allowing multiple agents (tester, guardian, observer) to consume the same
+#   event stream at different rates without coordination. GC is safe only when
+#   all consumers have advanced past an event (min-checkpoint deletion).
+#   payload is TEXT — callers pass JSON strings; state-lib.sh stores/retrieves
+#   as-is and never parses payload content. BEGIN IMMEDIATE on writes prevents
+#   the WAL RESERVED-lock deadlock described in DEC-STATE-UNIFY-001.
+#   See MASTER_PLAN.md DEC-STATE-UNIFY-005.
 
 # Guard against double-sourcing
 [[ -n "${_STATE_LIB_LOADED:-}" ]] && return 0
@@ -223,6 +245,27 @@ CREATE TABLE IF NOT EXISTS agent_markers (
 
 CREATE INDEX IF NOT EXISTS idx_markers_type_wf
     ON agent_markers(agent_type, workflow_id, status);
+
+CREATE TABLE IF NOT EXISTS events (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    session_id  TEXT,
+    payload     TEXT,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_type_wf
+    ON events(type, workflow_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_events_seq
+    ON events(seq);
+
+CREATE TABLE IF NOT EXISTS event_checkpoints (
+    consumer    TEXT PRIMARY KEY,
+    last_seq    INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL
+);
 " | sqlite3 "$db" 2>/dev/null || true
 
     _STATE_SCHEMA_INITIALIZED=1
@@ -1140,6 +1183,246 @@ COMMIT;
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Event Ledger API (DEC-STATE-UNIFY-005)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# state_emit TYPE PAYLOAD [WORKFLOW_ID]
+#   Append an event to the events ledger.
+#   Returns the sequence number (INTEGER) of the new event on stdout.
+#   TYPE is a dot-namespaced string (e.g. "workflow.step", "task.completed").
+#   PAYLOAD is an opaque TEXT value — callers pass JSON strings; this function
+#   stores/retrieves as-is without parsing.
+#   WORKFLOW_ID defaults to workflow_id() for the current context.
+#   Uses BEGIN IMMEDIATE for write safety (DEC-STATE-UNIFY-001).
+#
+# @decision DEC-STATE-UNIFY-005
+# @title state_emit uses BEGIN IMMEDIATE + last_insert_rowid() for seq return
+# @status accepted
+# @rationale AUTOINCREMENT on events.seq guarantees strictly-monotone IDs.
+#   Returning last_insert_rowid() in the same transaction (before COMMIT) is
+#   safe because the rowid is connection-local and cannot be stolen by a
+#   concurrent writer. The consumer receives the seq as plain text on stdout
+#   so callers can capture it via command substitution.
+state_emit() {
+    local type="${1:?state_emit requires a type}"
+    local payload="${2:-}"
+    local wf_id="${3:-}"
+    if [[ -z "$wf_id" ]]; then
+        wf_id=$(workflow_id)
+    fi
+    local session_id="${CLAUDE_SESSION_ID:-}"
+    local ts
+    ts=$(date +%s)
+
+    local type_e payload_e wf_id_e session_id_e
+    type_e=$(_sql_escape "$type")
+    payload_e=$(_sql_escape "$payload")
+    wf_id_e=$(_sql_escape "$wf_id")
+
+    local session_val
+    if [[ -n "$session_id" ]]; then
+        session_id_e=$(_sql_escape "$session_id")
+        session_val="'${session_id_e}'"
+    else
+        session_val="NULL"
+    fi
+
+    local payload_val
+    if [[ -n "$payload" ]]; then
+        payload_val="'${payload_e}'"
+    else
+        payload_val="NULL"
+    fi
+
+    _state_sql "
+BEGIN IMMEDIATE;
+INSERT INTO events (type, workflow_id, session_id, payload, created_at)
+VALUES ('${type_e}', '${wf_id_e}', ${session_val}, ${payload_val}, ${ts});
+SELECT last_insert_rowid();
+COMMIT;
+"
+}
+
+# state_events_since CONSUMER [TYPE] [WORKFLOW_ID] [LIMIT]
+#   Return events newer than the consumer's last checkpoint.
+#   Output: one pipe-delimited line per event: seq|type|workflow_id|session_id|payload|created_at
+#   CONSUMER identifies the caller (e.g. "tester", "guardian", "observer").
+#   TYPE — if non-empty, filters to that event type only.
+#   WORKFLOW_ID — if non-empty, filters to that workflow only.
+#   LIMIT — maximum number of events to return (default: 100).
+#   If the consumer has no checkpoint, all events from seq > 0 are returned.
+#   Events are ordered by seq ASC (oldest first).
+state_events_since() {
+    local consumer="${1:?state_events_since requires a consumer}"
+    local type="${2:-}"
+    local wf_id="${3:-}"
+    local limit="${4:-100}"
+
+    local consumer_e type_e wf_id_e
+    consumer_e=$(_sql_escape "$consumer")
+
+    # Get consumer's last_seq (0 if no checkpoint exists)
+    local last_seq
+    last_seq=$(_state_sql "
+SELECT COALESCE(
+    (SELECT last_seq FROM event_checkpoints WHERE consumer='${consumer_e}'),
+    0
+);
+") || true
+    last_seq="${last_seq//[[:space:]]/}"
+    last_seq="${last_seq:-0}"
+
+    # Build WHERE clause
+    local where_clause="WHERE seq > ${last_seq}"
+    if [[ -n "$type" ]]; then
+        type_e=$(_sql_escape "$type")
+        where_clause="${where_clause} AND type='${type_e}'"
+    fi
+    if [[ -n "$wf_id" ]]; then
+        wf_id_e=$(_sql_escape "$wf_id")
+        where_clause="${where_clause} AND workflow_id='${wf_id_e}'"
+    fi
+
+    _state_sql "
+.separator '|'
+SELECT seq, type, workflow_id, COALESCE(session_id,''), COALESCE(payload,''), created_at
+FROM events
+${where_clause}
+ORDER BY seq ASC
+LIMIT ${limit};
+"
+}
+
+# state_checkpoint CONSUMER SEQ
+#   Update the consumer's position in the event ledger to SEQ.
+#   Uses INSERT OR REPLACE for idempotency — re-setting to the same SEQ is a no-op.
+#   Consumers SHOULD call this after processing each batch from state_events_since()
+#   to advance their checkpoint and enable GC.
+state_checkpoint() {
+    local consumer="${1:?state_checkpoint requires a consumer}"
+    local seq="${2:?state_checkpoint requires a sequence number}"
+    local ts
+    ts=$(date +%s)
+
+    local consumer_e
+    consumer_e=$(_sql_escape "$consumer")
+
+    _state_sql "
+BEGIN IMMEDIATE;
+INSERT OR REPLACE INTO event_checkpoints (consumer, last_seq, updated_at)
+VALUES ('${consumer_e}', ${seq}, ${ts});
+COMMIT;
+" >/dev/null && return 0 || return 1
+}
+
+# state_events_count CONSUMER [TYPE] [WORKFLOW_ID]
+#   Return the count of events newer than the consumer's last checkpoint.
+#   Lightweight threshold check (e.g. "are there >= 3 assessments pending?").
+#   TYPE — if non-empty, filters to that event type only.
+#   WORKFLOW_ID — if non-empty, filters to that workflow only.
+#   Returns an integer (0 if none or no checkpoint exists).
+state_events_count() {
+    local consumer="${1:?state_events_count requires a consumer}"
+    local type="${2:-}"
+    local wf_id="${3:-}"
+
+    local consumer_e type_e wf_id_e
+    consumer_e=$(_sql_escape "$consumer")
+
+    # Get consumer's last_seq (0 if no checkpoint exists)
+    local last_seq
+    last_seq=$(_state_sql "
+SELECT COALESCE(
+    (SELECT last_seq FROM event_checkpoints WHERE consumer='${consumer_e}'),
+    0
+);
+") || true
+    last_seq="${last_seq//[[:space:]]/}"
+    last_seq="${last_seq:-0}"
+
+    # Build WHERE clause
+    local where_clause="WHERE seq > ${last_seq}"
+    if [[ -n "$type" ]]; then
+        type_e=$(_sql_escape "$type")
+        where_clause="${where_clause} AND type='${type_e}'"
+    fi
+    if [[ -n "$wf_id" ]]; then
+        wf_id_e=$(_sql_escape "$wf_id")
+        where_clause="${where_clause} AND workflow_id='${wf_id_e}'"
+    fi
+
+    local count
+    count=$(_state_sql "SELECT COUNT(*) FROM events ${where_clause};") || true
+    count="${count//[[:space:]]/}"
+    echo "${count:-0}"
+}
+
+# state_gc_events [MAX_AGE_SECONDS]
+#   Garbage-collect events that ALL registered consumers have processed.
+#   Deletes events where seq <= MIN(all consumer checkpoints).
+#   MAX_AGE_SECONDS — if provided, also deletes events older than that timestamp
+#   regardless of checkpoint state (safety net for abandoned consumers / long-idle
+#   streams). Only applied when at least one consumer exists.
+#   Returns the count of deleted events on stdout.
+#
+# @decision DEC-STATE-UNIFY-005
+# @title GC only when all consumers have advanced past an event
+# @status accepted
+# @rationale Deleting events that a consumer has not yet processed would cause
+#   that consumer to silently miss events — violating the delivery guarantee.
+#   The min-checkpoint approach is safe: if any consumer is behind, we only
+#   delete up to where that slowest consumer is. MAX_AGE_SECONDS provides a
+#   bounded fallback for the case where a consumer is abandoned (crashed,
+#   deleted, or never advanced) — without it, the events table would grow
+#   forever if any consumer stops advancing. The fallback only fires when
+#   MAX_AGE_SECONDS is provided explicitly; callers choose this trade-off.
+state_gc_events() {
+    local max_age="${1:-}"
+    local ts
+    ts=$(date +%s)
+
+    # Get minimum checkpoint across all consumers.
+    # If no consumers exist, min_checkpoint is NULL — skip GC.
+    local min_checkpoint
+    min_checkpoint=$(_state_sql "
+SELECT MIN(last_seq) FROM event_checkpoints;
+") || true
+    min_checkpoint="${min_checkpoint//[[:space:]]/}"
+
+    local deleted=0
+
+    if [[ -n "$min_checkpoint" ]] && [[ "$min_checkpoint" != "NULL" ]] && [[ "$min_checkpoint" =~ ^[0-9]+$ ]]; then
+        # Delete events all consumers have seen
+        local del_result
+        del_result=$(_state_sql "
+BEGIN IMMEDIATE;
+DELETE FROM events WHERE seq <= ${min_checkpoint};
+SELECT changes();
+COMMIT;
+") || true
+        del_result="${del_result//[[:space:]]/}"
+        deleted="${del_result:-0}"
+    fi
+
+    # MAX_AGE_SECONDS fallback: delete events older than cutoff regardless of checkpoint.
+    # Only runs when max_age is specified — this handles abandoned consumers.
+    if [[ -n "$max_age" ]] && [[ "$max_age" =~ ^[0-9]+$ ]]; then
+        local cutoff=$(( ts - max_age ))
+        local age_del_result
+        age_del_result=$(_state_sql "
+BEGIN IMMEDIATE;
+DELETE FROM events WHERE created_at < ${cutoff};
+SELECT changes();
+COMMIT;
+") || true
+        age_del_result="${age_del_result//[[:space:]]/}"
+        deleted=$(( deleted + ${age_del_result:-0} ))
+    fi
+
+    echo "$deleted"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Legacy functions (preserved for Wave 2 dual-write migration)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1299,6 +1582,7 @@ export -f state_migrate _state_run_migrations _state_checksum_fn
 export -f _migration_001_initial_schema
 export -f proof_state_get proof_state_set proof_epoch_reset
 export -f marker_create marker_query marker_update marker_cleanup
+export -f state_emit state_events_since state_checkpoint state_events_count state_gc_events
 export -f _legacy_state_update _legacy_state_read
 export -f _sql_escape _proof_ordinal
 
