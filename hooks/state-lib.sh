@@ -18,6 +18,10 @@
 #   proof_state_get     - Read proof state as pipe-delimited string (with flat-file fallback)
 #   proof_state_set     - Transition proof state with monotonic lattice enforcement
 #   proof_epoch_reset   - Bump epoch to allow proof state regression
+#   marker_create       - Create an agent marker in agent_markers table
+#   marker_query        - Query markers with PID liveness check (self-healing)
+#   marker_update       - Update marker status (lifecycle transitions)
+#   marker_cleanup      - Remove stale markers; mark dead-PID markers as crashed
 #
 # The SQLite database ($CLAUDE_DIR/state/state.db) is the authoritative state
 # store. Old jq-based functions are preserved as _legacy_* for Wave 2 dual-write.
@@ -201,6 +205,24 @@ CREATE TABLE IF NOT EXISTS proof_state (
     session_id  TEXT,
     pid         INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS agent_markers (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_type  TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active','pre-dispatch','completed','crashed')),
+    pid         INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    trace_id    TEXT,
+    metadata    TEXT,
+    UNIQUE(agent_type, session_id, workflow_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_markers_type_wf
+    ON agent_markers(agent_type, workflow_id, status);
 " | sqlite3 "$db" 2>/dev/null || true
 
     _STATE_SCHEMA_INITIALIZED=1
@@ -865,6 +887,259 @@ COMMIT;
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# agent_markers typed table API
+# ─────────────────────────────────────────────────────────────────────────────
+
+# @decision DEC-STATE-UNIFY-003
+# @title agent_markers typed table replaces dotfile-based agent tracking
+# @status accepted
+# @rationale Agent markers (.active-guardian-{session}-{phash}, etc.) were
+#   dotfiles in the trace store directory, created with touch/echo, detected
+#   with globs, and cleaned up with rm. This caused: (1) stale markers blocking
+#   gates due to no TTL-aware cleanup; (2) glob-based false positives when
+#   workflow IDs shared prefixes; (3) no structured query capability (no filter
+#   by status, type, or session without parsing filenames). The typed table
+#   provides: CHECK constraint on status values, PID liveness column for
+#   self-healing cleanup, UNIQUE constraint on (agent_type, session_id,
+#   workflow_id) to prevent duplicates, and indexed queries via
+#   idx_markers_type_wf. The metadata column (JSON TEXT) is reserved for
+#   future use — not populated in Wave 3-1. See MASTER_PLAN.md W3-1.
+
+# marker_create TYPE SESSION_ID WORKFLOW_ID PID [TRACE_ID] [STATUS]
+#   Creates an agent marker in the agent_markers table.
+#   Default status is 'active'. Uses INSERT OR REPLACE to handle re-creation
+#   (idempotent on the UNIQUE(agent_type, session_id, workflow_id) constraint).
+#   Returns 0 on success, 1 on failure.
+#
+#   STATUS values: active | pre-dispatch | completed | crashed
+#   (enforced by SQLite CHECK constraint)
+marker_create() {
+    local agent_type="${1:?marker_create requires agent_type}"
+    local session_id="${2:?marker_create requires session_id}"
+    local wf_id="${3:?marker_create requires workflow_id}"
+    local pid="${4:?marker_create requires pid}"
+    local trace_id="${5:-}"
+    local status="${6:-active}"
+    local ts
+    ts=$(date +%s)
+
+    local agent_type_e session_id_e wf_id_e status_e trace_val
+    agent_type_e=$(_sql_escape "$agent_type")
+    session_id_e=$(_sql_escape "$session_id")
+    wf_id_e=$(_sql_escape "$wf_id")
+    status_e=$(_sql_escape "$status")
+
+    if [[ -n "$trace_id" ]]; then
+        local trace_id_e
+        trace_id_e=$(_sql_escape "$trace_id")
+        trace_val="'${trace_id_e}'"
+    else
+        trace_val="NULL"
+    fi
+
+    _state_sql "
+BEGIN IMMEDIATE;
+INSERT OR REPLACE INTO agent_markers
+    (agent_type, session_id, workflow_id, status, pid, created_at, updated_at, trace_id, metadata)
+VALUES
+    ('${agent_type_e}', '${session_id_e}', '${wf_id_e}', '${status_e}',
+     ${pid}, ${ts}, ${ts}, ${trace_val}, NULL);
+COMMIT;
+" >/dev/null && return 0 || return 1
+}
+
+# marker_query TYPE [WORKFLOW_ID]
+#   Returns matching markers as pipe-delimited lines:
+#     agent_type|session_id|workflow_id|status|pid|created_at|trace_id
+#   Filters to status='active' only by default (dead PIDs auto-marked as crashed).
+#   For each active marker, checks PID liveness via kill -0. If the PID is dead,
+#   updates the marker status to 'crashed' immediately (self-healing) and excludes
+#   it from results.
+#   If WORKFLOW_ID is provided, returns only markers matching that workflow.
+#   If WORKFLOW_ID is omitted, returns all markers of TYPE.
+#
+# @decision DEC-STATE-UNIFY-003
+# @title marker_query does PID liveness check for self-healing (replaces TTL-only)
+# @status accepted
+# @rationale TTL-only staleness detection (e.g., markers older than N seconds)
+#   cannot distinguish a long-running legitimate agent from a crashed one. PID
+#   liveness check via kill -0 provides exact detection: if the PID is dead,
+#   the agent crashed or completed without cleanup. This is the same pattern
+#   used by systemd, flock-based lock files, and other Unix process management
+#   tools. The self-healing update (status→crashed) is a write side-effect of
+#   a read query, which is unusual but necessary to keep the DB consistent
+#   without requiring a separate cleanup daemon. The write uses BEGIN IMMEDIATE
+#   for concurrent write safety.
+marker_query() {
+    local agent_type="${1:?marker_query requires agent_type}"
+    local wf_id="${2:-}"
+
+    local agent_type_e
+    agent_type_e=$(_sql_escape "$agent_type")
+
+    local where_clause
+    if [[ -n "$wf_id" ]]; then
+        local wf_id_e
+        wf_id_e=$(_sql_escape "$wf_id")
+        where_clause="WHERE agent_type='${agent_type_e}' AND workflow_id='${wf_id_e}' AND status='active'"
+    else
+        where_clause="WHERE agent_type='${agent_type_e}' AND status='active'"
+    fi
+
+    # Fetch all candidate active markers
+    local rows
+    rows=$(_state_sql "
+.separator '|'
+SELECT agent_type, session_id, workflow_id, status, pid, created_at, COALESCE(trace_id,'')
+FROM agent_markers
+${where_clause}
+ORDER BY created_at ASC;
+") || true
+
+    [[ -z "$rows" ]] && return 0
+
+    local ts
+    ts=$(date +%s)
+
+    # For each row, check PID liveness; emit alive rows, mark dead ones as crashed
+    local line marker_pid
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        # Extract PID (field 5)
+        marker_pid=$(echo "$line" | cut -d'|' -f5)
+        if [[ -n "$marker_pid" ]] && kill -0 "$marker_pid" 2>/dev/null; then
+            # PID is alive — include in output
+            echo "$line"
+        else
+            # PID is dead — self-heal: mark as crashed
+            local dead_agent_type dead_session_id dead_wf_id
+            dead_agent_type=$(echo "$line" | cut -d'|' -f1)
+            dead_session_id=$(echo "$line" | cut -d'|' -f2)
+            dead_wf_id=$(echo "$line" | cut -d'|' -f3)
+            local dead_agent_type_e dead_session_id_e dead_wf_id_e
+            dead_agent_type_e=$(_sql_escape "$dead_agent_type")
+            dead_session_id_e=$(_sql_escape "$dead_session_id")
+            dead_wf_id_e=$(_sql_escape "$dead_wf_id")
+            _state_sql "
+BEGIN IMMEDIATE;
+UPDATE agent_markers
+SET status='crashed', updated_at=${ts}
+WHERE agent_type='${dead_agent_type_e}'
+  AND session_id='${dead_session_id_e}'
+  AND workflow_id='${dead_wf_id_e}';
+COMMIT;
+" >/dev/null 2>/dev/null || true
+        fi
+    done <<< "$rows"
+
+    return 0
+}
+
+# marker_update TYPE SESSION_ID WORKFLOW_ID STATUS [TRACE_ID]
+#   Updates an existing marker's status. Used for lifecycle transitions
+#   (e.g., active→completed, active→crashed).
+#   Returns 0 on success (even if no row matched — idempotent).
+marker_update() {
+    local agent_type="${1:?marker_update requires agent_type}"
+    local session_id="${2:?marker_update requires session_id}"
+    local wf_id="${3:?marker_update requires workflow_id}"
+    local new_status="${4:?marker_update requires new_status}"
+    local trace_id="${5:-}"
+    local ts
+    ts=$(date +%s)
+
+    local agent_type_e session_id_e wf_id_e new_status_e trace_clause
+    agent_type_e=$(_sql_escape "$agent_type")
+    session_id_e=$(_sql_escape "$session_id")
+    wf_id_e=$(_sql_escape "$wf_id")
+    new_status_e=$(_sql_escape "$new_status")
+
+    if [[ -n "$trace_id" ]]; then
+        local trace_id_e
+        trace_id_e=$(_sql_escape "$trace_id")
+        trace_clause=", trace_id='${trace_id_e}'"
+    else
+        trace_clause=""
+    fi
+
+    _state_sql "
+BEGIN IMMEDIATE;
+UPDATE agent_markers
+SET status='${new_status_e}', updated_at=${ts}${trace_clause}
+WHERE agent_type='${agent_type_e}'
+  AND session_id='${session_id_e}'
+  AND workflow_id='${wf_id_e}';
+COMMIT;
+" >/dev/null && return 0 || return 1
+}
+
+# marker_cleanup [STALE_SECONDS]
+#   Two-phase cleanup of agent_markers:
+#     Phase 1: Find active markers with dead PIDs → mark as 'crashed' (self-healing)
+#     Phase 2: DELETE markers where:
+#       - status IN ('completed','crashed') AND updated_at < cutoff
+#       - OR status = 'active' AND created_at < cutoff (catch truly stale actives)
+#   Default stale threshold: 3600 seconds (1 hour).
+#   Returns the count of deleted rows via echo.
+marker_cleanup() {
+    local stale_seconds="${1:-3600}"
+    local ts
+    ts=$(date +%s)
+    local cutoff=$(( ts - stale_seconds ))
+
+    # Phase 1: Find all active markers and check PID liveness
+    local active_rows
+    active_rows=$(_state_sql "
+.separator '|'
+SELECT agent_type, session_id, workflow_id, pid
+FROM agent_markers
+WHERE status='active';
+") || true
+
+    if [[ -n "$active_rows" ]]; then
+        local line marker_pid
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            marker_pid=$(echo "$line" | cut -d'|' -f4)
+            if [[ -n "$marker_pid" ]] && ! kill -0 "$marker_pid" 2>/dev/null; then
+                # Dead PID — mark as crashed
+                local dead_at dead_sess dead_wf
+                dead_at=$(echo "$line" | cut -d'|' -f1)
+                dead_sess=$(echo "$line" | cut -d'|' -f2)
+                dead_wf=$(echo "$line" | cut -d'|' -f3)
+                local dead_at_e dead_sess_e dead_wf_e
+                dead_at_e=$(_sql_escape "$dead_at")
+                dead_sess_e=$(_sql_escape "$dead_sess")
+                dead_wf_e=$(_sql_escape "$dead_wf")
+                _state_sql "
+BEGIN IMMEDIATE;
+UPDATE agent_markers
+SET status='crashed', updated_at=${ts}
+WHERE agent_type='${dead_at_e}'
+  AND session_id='${dead_sess_e}'
+  AND workflow_id='${dead_wf_e}';
+COMMIT;
+" >/dev/null 2>/dev/null || true
+            fi
+        done <<< "$active_rows"
+    fi
+
+    # Phase 2: Delete stale markers (completed/crashed past cutoff, or truly stale actives)
+    local deleted
+    deleted=$(_state_sql "
+BEGIN IMMEDIATE;
+DELETE FROM agent_markers
+WHERE (status IN ('completed','crashed') AND updated_at < ${cutoff})
+   OR (status = 'active' AND created_at < ${cutoff});
+SELECT changes();
+COMMIT;
+") || true
+    deleted="${deleted//[[:space:]]/}"
+    echo "${deleted:-0}"
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Legacy functions (preserved for Wave 2 dual-write migration)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1023,6 +1298,7 @@ export -f state_integrity_check
 export -f state_migrate _state_run_migrations _state_checksum_fn
 export -f _migration_001_initial_schema
 export -f proof_state_get proof_state_set proof_epoch_reset
+export -f marker_create marker_query marker_update marker_cleanup
 export -f _legacy_state_update _legacy_state_read
 export -f _sql_escape _proof_ordinal
 
