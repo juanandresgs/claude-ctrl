@@ -593,18 +593,32 @@ cmd_sweep() {
     fi
 
     # --- Report ---
-    echo "Sweep report (mode: $mode):"
-    echo ""
-
+    # In --auto mode, suppress empty-category lines to avoid noise in additionalContext.
+    # dry-run and --confirm always show the full report (human-readable diagnostic output).
+    #
+    # @decision DEC-SWEEP-DEDUP-001
+    # @title Suppress empty sweep categories in --auto mode
+    # @status accepted
+    # @rationale check-guardian.sh calls sweep --auto once per merge and injects
+    #   output into ISSUES/additionalContext. When nothing needs doing, the old code
+    #   emitted "Husks: none\nOrphans: none\nUnregistered: none\nGhosts: none" — 6+
+    #   lines of noise per call (previously called N times, producing N reports).
+    #   In --auto mode, only emit lines for categories that have actionable items.
+    #   An empty report means SWEEP_OUTPUT is empty, so no ISSUES entry is added.
     local husk_count="${#husks[@]}"
     local orphan_count_r="${#orphans[@]}"
     local unreg_count="${#unregistered[@]}"
     local ghost_count_r="${#ghosts[@]}"
 
+    if [[ "$mode" == "dry-run" ]]; then
+        echo "Sweep report (mode: $mode):"
+        echo ""
+    fi
+
     if [[ "$husk_count" -gt 0 ]]; then
         echo "Husks (empty dirs, not in git — safe to remove):"
         for p in "${husks[@]+"${husks[@]}"}"; do echo "  $p"; done
-    else
+    elif [[ "$mode" != "auto" ]]; then
         echo "Husks: none"
     fi
 
@@ -615,21 +629,21 @@ cmd_sweep() {
             fc=$(find "$p" -not -name '.git' -not -path '*/.git/*' -type f 2>/dev/null | wc -l | tr -d ' ')
             echo "  $p ($fc file(s))"
         done
-    else
+    elif [[ "$mode" != "auto" ]]; then
         echo "Orphans: none"
     fi
 
     if [[ "$unreg_count" -gt 0 ]]; then
         echo "Unregistered (in git, not in roster — will auto-register):"
         for p in "${unregistered[@]+"${unregistered[@]}"}"; do echo "  $p"; done
-    else
+    elif [[ "$mode" != "auto" ]]; then
         echo "Unregistered: none"
     fi
 
     if [[ "$ghost_count_r" -gt 0 ]]; then
         echo "Ghosts (in roster, dir gone — will prune):"
         for p in "${ghosts[@]+"${ghosts[@]}"}"; do echo "  $p"; done
-    else
+    elif [[ "$mode" != "auto" ]]; then
         echo "Ghosts: none"
     fi
 

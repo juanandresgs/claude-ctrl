@@ -357,8 +357,11 @@ test_check_guardian_7b_fires_on_merge() {
     output=$(REGISTRY="$TEST_REGISTRY" WORKTREE_DIR="$sweep_dir" \
         "$ROSTER_SCRIPT" sweep --auto 2>&1 || true)
 
-    # The dir exists and is a real git repo (not a husk) — sweep should report it
-    assert_contains "$output" "Sweep report" "sweep should produce a report"
+    # The dir exists and is a real git repo with content (not a husk) — sweep should
+    # classify it as an orphan and warn. In --auto mode, the "Sweep report" header is
+    # suppressed (DEC-SWEEP-DEDUP-001 — empty-category noise reduction), but the orphan
+    # warning is still emitted when there is something to report.
+    assert_contains "$output" "Orphans" "sweep should report orphan classification"
 
     echo "PASS: check-guardian Check 7b fires on merge"
 }

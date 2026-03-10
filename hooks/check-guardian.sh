@@ -420,6 +420,17 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
         # If linked worktrees exist after merge, check for uncommitted changes and
         # attempt cleanup via worktree-roster sweep. Uses git worktree list directly
         # (no breadcrumb needed — breadcrumb system removed by DEC-PROOF-BREADCRUMB-001).
+        #
+        # @decision DEC-SWEEP-DEDUP-001
+        # @title Run worktree sweep once per merge, not once per worktree
+        # @status accepted
+        # @rationale Check 7b previously looped over all non-main worktrees, calling
+        #   sweep --auto for each. sweep already scans all worktrees internally, so
+        #   calling it N times produced N identical reports. With 6 worktrees, this was
+        #   65+ lines of noise in additionalContext per merge.
+        #   Fix: dirty-worktree detection still loops (each path must be individually
+        #   checked), but sweep is called once after the loop using the standard
+        #   WORKTREE_DIR (.worktrees/ parent). Empty sweep output is suppressed.
         GIT_WT_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
             | grep -c '^worktree ' || echo "0")
         if [[ "$GIT_WT_COUNT" -gt 1 ]]; then
@@ -430,18 +441,21 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
                     WT_DIRTY=$(git -C "$_wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
                     if [[ "$WT_DIRTY" -gt 0 ]]; then
                         ISSUES+=("WARN: Worktree $_wt_path still exists with $WT_DIRTY uncommitted change(s) — manual cleanup needed")
-                    else
-                        ROSTER_SCRIPT="$HOME/.claude/scripts/worktree-roster.sh"
-                        if [[ -x "$ROSTER_SCRIPT" ]]; then
-                            SWEEP_OUTPUT=$(WORKTREE_DIR="$(dirname "$_wt_path")" "$ROSTER_SCRIPT" sweep --auto 2>&1 || true)
-                            if [[ -n "$SWEEP_OUTPUT" ]]; then
-                                ISSUES+=("Post-merge cleanup: $SWEEP_OUTPUT")
-                            fi
-                        fi
                     fi
                 fi
             done < <(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
                 | awk -v main="$MAIN_WT" '/^worktree /{path=$2} path && path != main {print path}')
+
+            # Run sweep ONCE (not per-worktree) — sweep already scans all worktrees.
+            # --auto mode suppresses empty categories (Husks: none, Orphans: none, etc.)
+            # so SWEEP_OUTPUT is non-empty only when there is something actionable.
+            ROSTER_SCRIPT="$HOME/.claude/scripts/worktree-roster.sh"
+            if [[ -x "$ROSTER_SCRIPT" ]]; then
+                SWEEP_OUTPUT=$("$ROSTER_SCRIPT" sweep --auto 2>&1 || true)
+                if [[ -n "$SWEEP_OUTPUT" ]]; then
+                    ISSUES+=("Post-merge cleanup: Sweep report (mode: auto): $SWEEP_OUTPUT")
+                fi
+            fi
         fi
     fi
 fi
