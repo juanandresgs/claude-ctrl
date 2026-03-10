@@ -477,11 +477,6 @@ rm -f "${CLAUDE_DIR}/.stop-todo-ttl"
 # DEC-PERF-004: warm-path caches — session-scoped, delete on exit
 rm -f "${CLAUDE_DIR}/.stop-git-cache-"*
 rm -f "${CLAUDE_DIR}/.stop-plan-cache-"*
-# DEC-EFF-012/013: cross-hook signal deduplication caches — shared (no SID), clean on exit
-# These are NOT session-scoped (shared across hooks within a session) so we clean by exact name.
-# Cleaning on session end prevents stale cached git/plan state from leaking into new sessions.
-rm -f "${CLAUDE_DIR}/.git-state-cache"
-rm -f "${CLAUDE_DIR}/.plan-state-cache"
 # Migration cleanup: remove double-nested and tmp proof files (Bug E legacy paths)
 rm -f "${CLAUDE_DIR}/.claude/.proof-status" 2>/dev/null
 rm -f "${CLAUDE_DIR}/tmp/.proof-status" 2>/dev/null

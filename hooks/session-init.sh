@@ -199,7 +199,7 @@ if [[ ${#_PREFLIGHT_FAILS[@]} -gt 0 ]]; then
 fi
 
 # --- Git state (cached: populates shared cache for subsequent hooks in this cycle) ---
-_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+get_git_state "$PROJECT_ROOT"
 
 if [[ -n "$GIT_BRANCH" ]]; then
     GIT_LINE="Git: branch=$GIT_BRANCH"
@@ -336,7 +336,7 @@ fi
 #   full work detail (bounded by active work), recent Decision Log entries give context
 #   (~10 lines), Completed Initiatives are one-liners from the table (~1 line each).
 #   Old format falls back to the previous preamble + phase-count pattern.
-_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+get_plan_status "$PROJECT_ROOT"
 
 # --- Compute todo split for statusline cache (REQ-P0-005) ---
 # @decision DEC-TODO-SPLIT-001

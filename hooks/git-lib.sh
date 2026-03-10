@@ -8,86 +8,12 @@
 #
 # Provides:
 #   get_git_state        - Populate GIT_BRANCH, GIT_DIRTY_COUNT, GIT_WORKTREES, GIT_WT_COUNT
-#   _cached_git_state    - Cache-aware wrapper for get_git_state (5s TTL, DEC-EFF-012)
 #   get_session_changes  - Populate SESSION_CHANGED_COUNT, SESSION_FILE
 
 # Guard against double-sourcing
 [[ -n "${_GIT_LIB_LOADED:-}" ]] && return 0
 
 _GIT_LIB_VERSION=1
-
-# --- Git state cache ---
-# @decision DEC-EFF-012
-# @title Shared git state cache across hooks (5s TTL)
-# @status accepted
-# @rationale Git state is computed by 5 hooks per event cycle. Within a
-#   single event (e.g., PreToolUse), git state doesn't change between hooks.
-#   5-second TTL ensures freshness across event boundaries while eliminating
-#   redundant git commands within the same cycle. ~250ms saved per multi-hook event.
-#   Safety invariant: 5s TTL means stale data is at most 5 seconds old;
-#   deny gates that check branch use the cached value which is correct
-#   within the event cycle.
-#   Cache file: CLAUDE_DIR/.git-state-cache (key=value format, no SID suffix —
-#   shared across hooks within a single session; cleaned by session-end.sh).
-#   Fallback: if cache read fails for any reason, falls back to fresh computation.
-#
-# _cached_git_state ROOT [CLAUDE_DIR]
-#   Populates GIT_BRANCH, GIT_DIRTY_COUNT, GIT_WORKTREES, GIT_WT_COUNT.
-#   CLAUDE_DIR defaults to ROOT/.claude when not provided.
-_cached_git_state() {
-    local root="$1"
-    local claude_dir="${2:-${CLAUDE_DIR:-$root/.claude}}"
-    local cache_file="$claude_dir/.git-state-cache"
-    local cache_ttl=5  # seconds — within a single event cycle
-
-    # Initialize defaults (safe if cache or computation fails)
-    GIT_BRANCH=""
-    GIT_DIRTY_COUNT=0
-    GIT_WORKTREES=""
-    GIT_WT_COUNT=0
-
-    # --- Cache hit check ---
-    if [[ -f "$cache_file" ]]; then
-        local cache_mtime now_epoch cache_age
-        cache_mtime=$(_file_mtime "$cache_file")
-        now_epoch=$(date +%s)
-        cache_age=$(( now_epoch - cache_mtime ))
-
-        if [[ "$cache_age" -le "$cache_ttl" ]]; then
-            # Cache hit — read values
-            local _branch _dirty _wt_count
-            _branch=$(grep '^GIT_BRANCH=' "$cache_file" 2>/dev/null | cut -d= -f2- || echo "")
-            _dirty=$(grep '^GIT_DIRTY_COUNT=' "$cache_file" 2>/dev/null | cut -d= -f2 || echo "0")
-            _wt_count=$(grep '^GIT_WT_COUNT=' "$cache_file" 2>/dev/null | cut -d= -f2 || echo "0")
-
-            # Validate: if branch is non-empty, the cache is usable
-            if [[ -n "$_branch" ]]; then
-                GIT_BRANCH="$_branch"
-                GIT_DIRTY_COUNT="${_dirty:-0}"
-                GIT_WT_COUNT="${_wt_count:-0}"
-                # GIT_WORKTREES not cached (too large); callers that need it use get_git_state directly
-                return 0
-            fi
-            # Empty branch in cache → fall through to fresh computation
-        fi
-    fi
-
-    # --- Cache miss: compute fresh state ---
-    get_git_state "$root"
-
-    # Write cache (atomic: write to tmp then move)
-    if [[ -n "$GIT_BRANCH" ]]; then
-        mkdir -p "$claude_dir" 2>/dev/null || true
-        local tmp_cache
-        tmp_cache="${cache_file}.tmp.$$"
-        {
-            printf 'GIT_BRANCH=%s\n' "$GIT_BRANCH"
-            printf 'GIT_DIRTY_COUNT=%s\n' "${GIT_DIRTY_COUNT:-0}"
-            printf 'GIT_WT_COUNT=%s\n' "${GIT_WT_COUNT:-0}"
-        } > "$tmp_cache" 2>/dev/null && mv "$tmp_cache" "$cache_file" 2>/dev/null || \
-            rm -f "$tmp_cache" 2>/dev/null || true
-    fi
-}
 
 # --- Git state ---
 get_git_state() {
@@ -149,6 +75,6 @@ get_session_changes() {
     fi
 }
 
-export -f get_git_state _cached_git_state get_session_changes
+export -f get_git_state get_session_changes
 
 _GIT_LIB_LOADED=1

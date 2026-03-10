@@ -375,8 +375,8 @@ else
     append_audit "$PROJECT_ROOT" "trace_skip" "detect_active_trace returned empty for tester — no trace to finalize"
 fi
 
-_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
-_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+get_git_state "$PROJECT_ROOT"
+get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()

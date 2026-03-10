@@ -140,8 +140,8 @@ COMPLIANCE_PLANNER_EOF
 fi
 
 # --- Advisory checks (run after finalize to avoid timeout races) ---
-_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
-_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+get_git_state "$PROJECT_ROOT"
+get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
@@ -217,8 +217,8 @@ else
         fi
 
         # Check 5: Has at least one active initiative with requirements
-        # PLAN_ACTIVE_INITIATIVES already set by _cached_plan_state above; use directly.
-        ACTIVE_COUNT="${PLAN_ACTIVE_INITIATIVES:-0}"
+        ACTIVE_COUNT=$(get_plan_status "$PROJECT_ROOT" 2>/dev/null; echo "${PLAN_ACTIVE_INITIATIVES:-0}")
+        # Re-run get_plan_status (already called above) — use the exported variable
         if [[ "${PLAN_ACTIVE_INITIATIVES:-0}" -gt 0 ]]; then
             # Validate that active initiative has Goals section
             ACTIVE_SECTION=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives|^## Parked/{exit} f{print}' "$PLAN" 2>/dev/null || echo "")

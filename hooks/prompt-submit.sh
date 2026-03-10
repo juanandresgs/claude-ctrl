@@ -312,8 +312,8 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     echo "1" > "$PROMPT_COUNT_FILE"
     date +%s > "${CLAUDE_DIR}/.session-start-epoch"
     # Inject full session context (same as session-init.sh)
-    _cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
-    _cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+    get_git_state "$PROJECT_ROOT"
+    get_plan_status "$PROJECT_ROOT"
     write_statusline_cache "$PROJECT_ROOT"
     [[ -n "$GIT_BRANCH" ]] && CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted")
     if [[ "$PLAN_EXISTS" == "true" ]]; then
@@ -485,7 +485,7 @@ fi
 # --- Check for plan/implement/status keywords ---
 if echo "$PROMPT" | grep -qiE '\bplan\b|\bimplement\b|\bphase\b|\bmaster.plan\b|\bstatus\b|\bprogress\b|\bdemo\b'; then
     require_plan
-    _cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+    get_plan_status "$PROJECT_ROOT"
 
     if [[ "$PLAN_EXISTS" == "true" ]]; then
         if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
@@ -519,7 +519,7 @@ fi
 # --- Check for merge/commit keywords ---
 if echo "$PROMPT" | grep -qiE '\bmerge\b|\bcommit\b|\bpush\b|\bPR\b|\bpull.request\b'; then
     require_git
-    _cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+    get_git_state "$PROJECT_ROOT"
 
     if [[ -n "$GIT_BRANCH" ]]; then
         CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted changes")

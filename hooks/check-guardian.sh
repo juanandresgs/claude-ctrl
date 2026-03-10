@@ -160,8 +160,8 @@ COMPLIANCE_GUARDIAN_INIT_EOF
     finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "guardian" || true
 fi
 
-_cached_git_state "$PROJECT_ROOT" "$CLAUDE_DIR"
-_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+get_git_state "$PROJECT_ROOT"
+get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
@@ -190,9 +190,7 @@ if [[ ${#RESPONSE_TEXT} -lt 50 ]]; then
 fi
 
 # Detect plan completion state from actual plan content (not fragile response text matching)
-# _cached_plan_state returns cached value from the call above (within 10s window) — correct
-# since the plan file hasn't changed in this brief inter-check window. Cache hit is safe here.
-_cached_plan_state "$PROJECT_ROOT" "$CLAUDE_DIR"
+get_plan_status "$PROJECT_ROOT"
 
 # Detect if this was a phase-completing merge by looking for phase-completion language
 IS_PHASE_COMPLETING=""
