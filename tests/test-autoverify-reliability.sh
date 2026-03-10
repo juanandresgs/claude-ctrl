@@ -65,6 +65,22 @@ make_tester_input() {
 
 # Helper: set up a tester trace with a given summary text
 # Returns the trace_id via stdout
+#
+# @decision DEC-TEST-PHASH-MISMATCH-001
+# @title Resolve worktree path to main repo root before computing phash
+# @status accepted
+# @rationale post-task.sh calls detect_project_root() which applies
+#   _resolve_to_main_worktree() — mapping any worktree path (e.g.
+#   /Users/turla/.claude/.worktrees/tester-integrity-w2) to the main
+#   repo root (/Users/turla/.claude) before computing project_hash().
+#   When setup_tester_trace() ran from a worktree directory, it computed
+#   project_hash(worktree_path), producing a different hash than what
+#   post-task.sh expected (hash of main repo root). The .active-tester-*
+#   marker was never found, so the INFER-VERIFY advisory path never fired.
+#   Fix: resolve PROJECT_ROOT to the main repo root using the same git
+#   --git-common-dir technique as _resolve_to_main_worktree(), then use
+#   the resolved path for BOTH the phash computation AND the manifest
+#   project field (so the session-based fallback scan also matches).
 setup_tester_trace() {
     local summary_text="$1"
     local test_dir="$2"
@@ -75,6 +91,20 @@ setup_tester_trace() {
 
     mkdir -p "$TRACE_STORE"
 
+    # Resolve PROJECT_ROOT to main repo root — mirrors _resolve_to_main_worktree()
+    # in log.sh. post-task.sh calls detect_project_root() which always resolves
+    # worktree paths to the main checkout before computing project_hash().
+    # We must use the same resolved path so our marker filename matches.
+    local _resolved_root="$PROJECT_ROOT"
+    local _common_dir
+    _common_dir=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
+    if [[ -n "$_common_dir" ]]; then
+        local _main_root="${_common_dir%/.git}"
+        if [[ -d "$_main_root" && "$_main_root" != "$PROJECT_ROOT" ]]; then
+            _resolved_root="$_main_root"
+        fi
+    fi
+
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local trace_id="tester-${timestamp}-test$$"
@@ -84,14 +114,15 @@ setup_tester_trace() {
     # Write summary.md (the key file post-task.sh reads)
     echo "$summary_text" > "${trace_dir}/summary.md"
 
-    # Write manifest.json
+    # Write manifest.json — project field uses resolved root so session-based
+    # fallback scan (which matches manifest.project == PROJECT_ROOT) also works.
     cat > "${trace_dir}/manifest.json" <<MANIFEST
 {
   "version": "1",
   "trace_id": "${trace_id}",
   "agent_type": "tester",
   "session_id": "${session_id}",
-  "project": "${PROJECT_ROOT}",
+  "project": "${_resolved_root}",
   "project_name": ".claude",
   "branch": "feature/autoverify-reliability",
   "start_commit": "",
@@ -100,9 +131,10 @@ setup_tester_trace() {
 }
 MANIFEST
 
-    # Write active marker (project-scoped format — matches what post-task.sh reads)
+    # Write active marker (project-scoped format — matches what post-task.sh reads).
+    # Use _resolved_root (main repo root) for phash — same as post-task.sh's path.
     local phash
-    phash=$(bash -c "source '$HOOKS_DIR/source-lib.sh' && project_hash '$PROJECT_ROOT'" 2>/dev/null || echo "testhash")
+    phash=$(bash -c "source '$HOOKS_DIR/source-lib.sh' && project_hash '$_resolved_root'" 2>/dev/null || echo "testhash")
     echo "${trace_id}" > "${TRACE_STORE}/.active-tester-${session_id}-${phash}"
 
     echo "$trace_id"
