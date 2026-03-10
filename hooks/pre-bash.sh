@@ -276,11 +276,23 @@ elif [[ -z "$_rm_target" ]] && echo "$_stripped_cmd" | grep -qE 'rm\s+(-[a-zA-Z]
     _c10_matches=true
 fi
 if [[ "$_c10_matches" == "true" ]]; then
+    # --- W2-1: Read proof status via proof_state_get() (DEC-STATE-UNIFY-004) ---
+    # _ps_phash is always computed for use in the active-agent marker check below.
     _ps_phash=$(project_hash "$(detect_project_root)")
-    _ps_dir=$(get_claude_dir)
-    _ps_file="${_ps_dir}/.proof-status-${_ps_phash}"
-    if [[ -f "$_ps_file" ]]; then
-        _ps_val=$(cut -d'|' -f1 "$_ps_file")
+    _ps_val=""
+    if declare -f proof_state_get >/dev/null 2>&1; then
+        _c10_pg=$(proof_state_get 2>/dev/null || echo "")
+        [[ -n "$_c10_pg" ]] && _ps_val=$(echo "$_c10_pg" | cut -d'|' -f1)
+    fi
+    # Flat-file fallback when proof_state_get not available or returned empty
+    if [[ -z "$_ps_val" ]]; then
+        _ps_dir=$(get_claude_dir)
+        _ps_file="${_ps_dir}/.proof-status-${_ps_phash}"
+        if [[ -f "$_ps_file" ]]; then
+            _ps_val=$(cut -d'|' -f1 "$_ps_file")
+        fi
+    fi
+    if [[ -n "$_ps_val" ]]; then
         if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
             # @decision DEC-PROOF-DELETE-SOFTEN-001
             # @title Allow .proof-status deletion when no current-session agents active
@@ -301,8 +313,8 @@ if [[ "$_c10_matches" == "true" ]]; then
                 emit_deny "Cannot delete .proof-status while verification is active (status: $_ps_val). Complete the verification flow first."
             fi
         fi
-    fi
-fi
+    fi  # end: if -n _ps_val
+fi  # end: if _c10_matches
 
 # --- Check 5b: rm -rf .worktrees/ CWD safety deny ---
 # @decision DEC-GUARD-002 (carried forward from guard.sh)
@@ -832,18 +844,33 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
         PROOF_DIR=$(detect_project_root)
     fi
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1; then
-        PROOF_FILE=$(PROJECT_ROOT="$PROOF_DIR" resolve_proof_file)
-        [[ ! -f "$PROOF_FILE" ]] && PROOF_FILE=""
-        if [[ -f "$PROOF_FILE" ]]; then
-            if validate_state_file "$PROOF_FILE" 1; then
-                PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
-            else
-                PROOF_STATUS="corrupt"
+        # --- W2-1: Read proof status via proof_state_get() (with flat-file fallback) ---
+        # proof_state_get() returns "status|epoch|updated_at|updated_by" or empty.
+        # The flat-file fallback in proof_state_get() ensures backward compatibility.
+        # Gate logic (deny/allow) is unchanged — only the read path has changed.
+        # DEC-STATE-UNIFY-004
+        PROOF_STATUS=""
+        if declare -f proof_state_get >/dev/null 2>&1; then
+            _pg_result=$(PROJECT_ROOT="$PROOF_DIR" proof_state_get 2>/dev/null || echo "")
+            if [[ -n "$_pg_result" ]]; then
+                PROOF_STATUS=$(echo "$_pg_result" | cut -d'|' -f1)
             fi
-            if [[ "$PROOF_STATUS" != "verified" ]]; then
-                append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"not verified\"}" "$PROOF_DIR"
-                emit_deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
+        fi
+        # Flat-file fallback when proof_state_get not available or returned empty
+        if [[ -z "$PROOF_STATUS" ]]; then
+            PROOF_FILE=$(PROJECT_ROOT="$PROOF_DIR" resolve_proof_file)
+            [[ ! -f "$PROOF_FILE" ]] && PROOF_FILE=""
+            if [[ -f "$PROOF_FILE" ]]; then
+                if validate_state_file "$PROOF_FILE" 1; then
+                    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+                else
+                    PROOF_STATUS="corrupt"
+                fi
             fi
+        fi
+        if [[ -n "$PROOF_STATUS" && "$PROOF_STATUS" != "verified" ]]; then
+            append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"not verified\"}" "$PROOF_DIR"
+            emit_deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
         fi
     fi
 fi

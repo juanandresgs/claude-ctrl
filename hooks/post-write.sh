@@ -213,6 +213,10 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                         fi
                         # Only downgrade: verified→pending (not committed→pending, etc.)
                         if [[ "$_wf_current" == "verified" || "$_wf_current" == "needs-verification" || -z "$_wf_current" ]]; then
+                            # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
+                            declare -f proof_state_set >/dev/null 2>&1 && \
+                                PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "post-write-wf" 2>/dev/null || true
+                            # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
                             printf 'pending|%s\n' "$(date +%s)" > "${_wf_proof_file}.tmp" && \
                                 mv "${_wf_proof_file}.tmp" "$_wf_proof_file" || true
                         fi
@@ -221,6 +225,10 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                         # || true: write_proof_status returns 1 if the monotonic lattice
                         # (DEC-PROOF-LATTICE-001) rejects verified→pending without an epoch reset.
                         # Non-fatal: if the epoch reset isn't set up, proof stays verified.
+                        # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
+                        declare -f proof_state_set >/dev/null 2>&1 && \
+                            PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "post-write-main" 2>/dev/null || true
+                        # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
                         write_proof_status "pending" "$PROJECT_ROOT" || true
                     fi
                 fi

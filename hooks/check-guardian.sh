@@ -407,8 +407,12 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
                 PROOF_VAL=""  # corrupt — skip cleanup (leave for manual review)
             fi
             if [[ "$PROOF_VAL" == "verified" ]]; then
+                # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
+                declare -f proof_state_set >/dev/null 2>&1 && \
+                    PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "committed" "check-guardian" 2>/dev/null || true
+                # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
                 write_proof_status "committed" "$PROJECT_ROOT"
-                # Clean both locations
+                # Clean both flat-file locations (W5-2: rm these lines when dual-write removed)
                 rm -f "$_NEW_PROOF" "$_OLD_PROOF"
                 log_info "CHECK-GUARDIAN" "Cleaned proof-status after successful commit"
             fi

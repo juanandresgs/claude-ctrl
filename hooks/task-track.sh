@@ -563,8 +563,17 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         _IMPL_WORKFLOW=$(echo "$_IMPL_PROMPT" | grep -oE '\.worktrees/[^/ ]+' | head -1 | sed 's|\.worktrees/||')
     fi
 
+    # Load state-lib for proof_state_set (W2-1 migration).
+    # require_state is safe to call multiple times (idempotent guard in state-lib.sh).
+    require_state 2>/dev/null || true
+
     if [[ "$_IMPL_WORKFLOW" != "main" && -n "$_IMPL_WORKFLOW" ]]; then
         # Workflow-scoped proof activation
+        # --- W2-1: PRIMARY write via proof_state_set (DEC-STATE-UNIFY-004) ---
+        # proof_state_set uses workflow_id() which auto-detects the worktree context.
+        # The workflow-specific path is handled by workflow_id() in state-lib.sh.
+        proof_state_set "needs-verification" "task-track" 2>/dev/null || true
+        # DUAL-WRITE: flat file (W5-2 remove when all readers migrated)
         _WF_PROOF_DIR="${CLAUDE_DIR}/state/${_PHASH}/worktrees/${_IMPL_WORKFLOW}"
         _WF_PROOF="${_WF_PROOF_DIR}/proof-status"
         mkdir -p "$_WF_PROOF_DIR" 2>/dev/null || true
@@ -575,10 +584,18 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         fi
     else
         # Project-wide proof activation (backward compatible: no worktree in prompt)
+        # --- W2-1: PRIMARY write via proof_state_set (DEC-STATE-UNIFY-004) ---
         _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"
         _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
         if [[ ! -f "$_NEW_PROOF" && ! -f "$_OLD_PROOF" ]]; then
+            # proof_state_set is PRIMARY; write_proof_status adds flat-file dual-write
             write_proof_status "needs-verification" "$PROJECT_ROOT"
+        else
+            # File exists — only update SQLite if not already needs-verification
+            _tc_current=$(proof_state_get 2>/dev/null | cut -d'|' -f1 || echo "")
+            if [[ "$_tc_current" != "needs-verification" ]]; then
+                proof_state_set "needs-verification" "task-track" 2>/dev/null || true
+            fi
         fi
     fi
 fi

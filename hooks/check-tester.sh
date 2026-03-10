@@ -250,6 +250,10 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
         _AV_PHASH_CT=$(project_hash "$PROJECT_ROOT")
         mkdir -p "$TRACE_STORE" 2>/dev/null || true
         echo "auto-verify|$(date +%s)" > "${TRACE_STORE}/.active-autoverify-${_AV_SESSION_CT}-${_AV_PHASH_CT}"
+        # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
+        declare -f proof_state_set >/dev/null 2>&1 && \
+            PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "verified" "check-tester-autoverify" 2>/dev/null || true
+        # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
         write_proof_status "verified" "$PROJECT_ROOT"
         AUTO_VERIFIED=true
     fi
@@ -352,6 +356,10 @@ fi
 #   keeping them in sync. Fixes bug #81: proof gate stuck on needs-verification
 #   because tester wrote verified to legacy path while gate read from new path.
 if [[ "$PROOF_STATUS" == "missing" && -n "$RESPONSE_TEXT" ]]; then
+    # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
+    declare -f proof_state_set >/dev/null 2>&1 && \
+        PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "check-tester-safetynet" 2>/dev/null || true
+    # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
     write_proof_status "pending" "$PROJECT_ROOT"
     PROOF_STATUS="pending"
 fi

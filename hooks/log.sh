@@ -347,12 +347,12 @@ resolve_proof_file_for_path() {
 #
 # Usage: write_proof_status <status> [project_root]
 #
-# Writes "status|timestamp" to:
-#   1. Canonical: CLAUDE_DIR/.proof-status-{phash}  (only path — project-isolated)
+# Since W2-1: PRIMARY write goes to SQLite proof_state table via proof_state_set().
+# DUAL-WRITE (W5-2 remove): also writes flat file for backward compatibility.
+# Flat-file writes are kept for hooks not yet migrated to proof_state_get().
 #
-# Enforces a monotonic status lattice: none → needs-verification → pending → verified → committed.
-# Rejects regressions (e.g., verified → pending) unless .proof-epoch exists and is newer
-# than the current .proof-status (epoch reset). Write is serialized under flock.
+# Enforces a monotonic status lattice via proof_state_set() (SQLite enforces lattice
+# with epoch reset support). The bash-side lattice check is kept as defense-in-depth.
 #
 # @decision DEC-LOG-002
 # @title write_proof_status: atomic single-path proof status writer
@@ -363,6 +363,7 @@ resolve_proof_file_for_path() {
 #   file prevents partial reads under concurrent hook execution.
 #   Previously wrote to 3 paths (scoped, legacy, worktree) — simplified by
 #   DEC-PROOF-SINGLE-001 and DEC-PROOF-BREADCRUMB-001.
+#   Since W2-1: proof_state_set() is the PRIMARY write path; flat files are dual-write.
 #
 # @decision DEC-PROOF-LOCK-001
 # @title Single flock around the canonical write in write_proof_status()
@@ -389,6 +390,20 @@ resolve_proof_file_for_path() {
 #   the current .proof-status, the lattice is bypassed and any status is accepted.
 #   This allows deliberate resets (e.g., starting a new verification cycle) while
 #   preventing accidental regressions from race conditions.
+#   Since W2-1: lattice is enforced in proof_state_set() (SQLite); bash-side kept
+#   as defense-in-depth for the flat-file dual-write path.
+#
+# @decision DEC-STATE-UNIFY-004
+# @title Dual-write: proof_state_set (SQLite PRIMARY) + flat file (W5-2 remove)
+# @status accepted
+# @rationale During the transition period (W2-1 through W5-1), both the SQLite
+#   proof_state table and the flat proof-status files are written on every status
+#   change. This ensures backward compatibility: hooks not yet migrated to
+#   proof_state_get() continue to read flat files without interruption. The flat-file
+#   write in write_proof_status() is marked "W5-2 remove" — it will be deleted when
+#   all readers have been migrated to proof_state_get(). The SQLite write is first
+#   (primary) because it enforces the lattice atomically with BEGIN IMMEDIATE.
+#   See MASTER_PLAN.md DEC-STATE-UNIFY-004.
 write_proof_status() {
     local proof_status="${1:?write_proof_status requires a status argument}"
     local project_root="${2:-${PROJECT_ROOT:-$(detect_project_root)}}"
@@ -402,6 +417,16 @@ write_proof_status() {
     local lockfile="${locks_dir}/proof.lock"
 
     mkdir -p "$claude_dir" 2>/dev/null || return 1
+
+    # --- PRIMARY: Write to SQLite via proof_state_set() ---
+    # proof_state_set() enforces the monotonic lattice atomically via BEGIN IMMEDIATE.
+    # Requires state-lib.sh to be loaded (via require_state in the calling hook).
+    # If proof_state_set is not available (state-lib not loaded), falls through to
+    # flat-file only (backward compatible). DEC-STATE-UNIFY-004.
+    if declare -f proof_state_set >/dev/null 2>&1; then
+        PROJECT_ROOT="$project_root" CLAUDE_DIR="$claude_dir" \
+            proof_state_set "$proof_status" "write_proof_status" 2>/dev/null || true
+    fi
 
     local _result=0
     (
@@ -478,11 +503,12 @@ write_proof_status() {
             log_info "write_proof_status" "epoch reset allowed: ${current} → ${proof_status}" 2>/dev/null || true
         fi
 
-        # --- Write to BOTH paths (dual-write migration) ---
+        # --- DUAL-WRITE: flat files (W5-2 remove when all readers use proof_state_get) ---
+        # These writes maintain backward compatibility during the W2→W5 migration window.
         # Primary: state/{phash}/proof-status
         mkdir -p "$state_dir_path"
         printf '%s\n' "$content" > "${new_proof}.tmp" && mv "${new_proof}.tmp" "$new_proof"
-        # Secondary: legacy .proof-status-{phash} (removed after migration completes)
+        # Secondary: legacy .proof-status-{phash} (W5-2 remove)
         printf '%s\n' "$content" > "${old_proof}.tmp" && mv "${old_proof}.tmp" "$old_proof"
 
         # Pre-create guardian marker to close proof-invalidation window.

@@ -101,10 +101,16 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
                 log_info "cas_proof_status" "CAS failed under lock: expected=${expected} actual=${locked_current}" 2>/dev/null || true
                 exit 1
             fi
-            # Write directly — we hold the lock that write_proof_status would acquire
+            # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
+            # proof_state_set enforces the lattice atomically via BEGIN IMMEDIATE.
+            # Called before flat-file write so SQLite is authoritative.
+            # require_state is called at line 36 (fast-path setup); proof_state_set available.
+            type proof_state_set >/dev/null 2>&1 && proof_state_set "$new_val" "cas_proof_status" 2>/dev/null || true
+            # Write directly to flat file — we hold the lock that write_proof_status would acquire
+            # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
             local timestamp; timestamp=$(date +%s)
             printf '%s\n' "${new_val}|${timestamp}" > "${proof_file}.tmp" && mv "${proof_file}.tmp" "$proof_file"
-            # Dual-write to other location (migration period)
+            # Dual-write to other flat-file location (W5-2 remove)
             local phash; phash=$(project_hash "$PROJECT_ROOT")
             local _state_proof="${CLAUDE_DIR}/state/${phash}/proof-status"
             local _old_proof="${CLAUDE_DIR}/.proof-status-${phash}"
