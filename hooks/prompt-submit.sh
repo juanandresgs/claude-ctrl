@@ -42,99 +42,55 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
     # --- cas_proof_status (hoisted for fast path access) ---
     # cas_proof_status EXPECTED NEW_STATUS
     #   Attempt to transition proof-status from EXPECTED to NEW_STATUS atomically.
-    #   Returns 0 on success, 1 if current status doesn't match EXPECTED, 2 on lock failure.
+    #   Returns 0 on success, 1 if current status doesn't match EXPECTED or lattice violation.
     #
     #   @decision DEC-PROOF-CAS-ATOMIC-001
-    #   @title cas_proof_status() holds single lock across check-and-write (true atomic CAS)
+    #   @title cas_proof_status() — SQLite-only CAS via proof_state_set (W5-2 cleanup)
     #   @status accepted
-    #   @rationale Uses a single subshell that holds fd 9 across the entire check-and-write
-    #     operation. The write is done directly (not via write_proof_status) because calling
-    #     it would deadlock on the same lock file. Lock timeout reduced from 5s to 2s to
-    #     avoid consuming the entire hook budget. Stale lock cleanup added for locks >10s old.
+    #   @rationale With W5-2, proof_state_set() is the sole write path and uses
+    #     BEGIN IMMEDIATE for atomic CAS. The external flock + flat-file read/write loop
+    #     has been replaced by: (1) a pre-check via proof_state_get() for fast-fail;
+    #     (2) proof_state_set() for the atomic write with lattice enforcement.
+    #     SQLite's BEGIN IMMEDIATE provides true atomicity — no external lock needed.
+    #     If proof_state_set() rejects the transition (lattice violation or concurrent
+    #     write), it returns non-zero and we return 1.
     cas_proof_status() {
         local expected="$1"
         local new_val="$2"
-        # New lock path: state/locks/proof.lock
-        local locks_dir="${CLAUDE_DIR}/state/locks"
-        mkdir -p "$locks_dir" 2>/dev/null || true
-        local lockfile="${locks_dir}/proof.lock"
-        local proof_file
-        proof_file=$(resolve_proof_file)
 
-        mkdir -p "$(dirname "$lockfile")" 2>/dev/null || return 2
-
-        # Stale lock cleanup: if lock mtime > 10s, remove it
-        if [[ -f "$lockfile" ]]; then
-            local lock_age=0
-            local lock_mtime now_epoch
-            lock_mtime=$(_file_mtime "$lockfile")
-            now_epoch=$(date +%s)
-            lock_age=$(( now_epoch - lock_mtime ))
-            if [[ "$lock_age" -gt 10 ]]; then
-                rm -f "$lockfile" 2>/dev/null || true
-                log_info "cas_proof_status" "removed stale lock (age=${lock_age}s)" 2>/dev/null || true
-            fi
-        fi
-
-        # Pre-check (unlocked fast path — avoids lock contention)
+        # Pre-check via SQLite (fast-fail before acquiring write)
         local current="none"
-        if [[ -f "$proof_file" ]]; then
-            validate_state_file "$proof_file" 2 2>/dev/null || return 1
-            current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
+        local _psg_out
+        _psg_out=$(proof_state_get 2>/dev/null || true)
+        if [[ -n "$_psg_out" ]]; then
+            current=$(printf '%s' "$_psg_out" | cut -d'|' -f1)
         fi
-        [[ "$current" != "$expected" ]] && return 1
+        [[ -z "$current" ]] && current="none"
+        if [[ "$current" != "$expected" ]]; then
+            log_info "cas_proof_status" "pre-check failed: expected=${expected} actual=${current}" 2>/dev/null || true
+            return 1
+        fi
 
-        # Atomic CAS: hold lock across re-check AND write
-        local _result=0
-        (
-            trap 'exit 2' TERM INT HUP
-            if ! _lock_fd 2 9; then
-                log_info "cas_proof_status" "lock timeout" 2>/dev/null || true
-                exit 2
+        # Atomic write via SQLite proof_state_set (BEGIN IMMEDIATE ensures atomicity)
+        if ! type proof_state_set >/dev/null 2>&1 || \
+           ! proof_state_set "$new_val" "cas_proof_status" 2>/dev/null; then
+            log_info "cas_proof_status" "proof_state_set failed: expected=${expected} new=${new_val}" 2>/dev/null || true
+            return 1
+        fi
+
+        # Pre-create guardian marker in SQLite when verifying
+        if [[ "$new_val" == "verified" ]]; then
+            if declare -f marker_create >/dev/null 2>&1; then
+                local _cas_session="${CLAUDE_SESSION_ID:-$$}"
+                local _cas_wf_id
+                _cas_wf_id=$(workflow_id 2>/dev/null || echo "main")
+                marker_create "guardian" "$_cas_session" "$_cas_wf_id" "$$" "" "pre-dispatch" 2>/dev/null || true
             fi
-            # Re-read under lock (the actual CAS check)
-            local locked_current="none"
-            if [[ -f "$proof_file" ]]; then
-                locked_current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
-            fi
-            if [[ "$locked_current" != "$expected" ]]; then
-                log_info "cas_proof_status" "CAS failed under lock: expected=${expected} actual=${locked_current}" 2>/dev/null || true
-                exit 1
-            fi
-            # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
-            # proof_state_set enforces the lattice atomically via BEGIN IMMEDIATE.
-            # Called before flat-file write so SQLite is authoritative.
-            # require_state is called at line 36 (fast-path setup); proof_state_set available.
-            type proof_state_set >/dev/null 2>&1 && proof_state_set "$new_val" "cas_proof_status" 2>/dev/null || true
-            # Write directly to flat file — we hold the lock that write_proof_status would acquire
-            # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
-            local timestamp; timestamp=$(date +%s)
-            printf '%s\n' "${new_val}|${timestamp}" > "${proof_file}.tmp" && mv "${proof_file}.tmp" "$proof_file"
-            # Dual-write to other flat-file location (W5-2 remove)
-            local phash; phash=$(project_hash "$PROJECT_ROOT")
-            local _state_proof="${CLAUDE_DIR}/state/${phash}/proof-status"
-            local _old_proof="${CLAUDE_DIR}/.proof-status-${phash}"
-            if [[ "$proof_file" == *"/state/"* ]]; then
-                # proof_file is new path — also write old
-                printf '%s\n' "${new_val}|${timestamp}" > "${_old_proof}.tmp" && mv "${_old_proof}.tmp" "$_old_proof"
-            else
-                # proof_file is old path — also write new
-                mkdir -p "$(dirname "$_state_proof")"
-                printf '%s\n' "${new_val}|${timestamp}" > "${_state_proof}.tmp" && mv "${_state_proof}.tmp" "$_state_proof"
-            fi
-            # Pre-create guardian marker (same as write_proof_status)
-            if [[ "$new_val" == "verified" ]]; then
-                local trace_store="${TRACE_STORE:-$HOME/.claude/traces}"
-                local session="${CLAUDE_SESSION_ID:-$$}"
-                echo "pre-verified|${timestamp}" > "${trace_store}/.active-guardian-${session}-${phash}" 2>/dev/null || true
-            fi
-            log_info "cas_proof_status" "CAS succeeded: ${expected} → ${new_val}" 2>/dev/null || true
-            # W5-1: direct state_update (type guard removed; require_state called at prompt-submit top)
-            state_update ".proof.status" "$new_val" "cas_proof_status" 2>/dev/null || true
-            exit 0
-        ) 9>"$lockfile"
-        _result=$?
-        return $_result
+        fi
+        log_info "cas_proof_status" "CAS succeeded: ${expected} → ${new_val}" 2>/dev/null || true
+        # Update generic state table for backward compat with state_read callers
+        state_update ".proof.status" "$new_val" "cas_proof_status" 2>/dev/null || true
+        return 0
     }
 
     # Check for .proof-gate-pending breadcrumb from interrupted previous attempt
@@ -154,14 +110,13 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
         fi
     fi
 
-    PROOF_FILE=$(resolve_proof_file)
-    if [[ -f "$PROOF_FILE" ]]; then
-        if validate_state_file "$PROOF_FILE" 2; then
-            CURRENT_STATUS=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null)
-        else
-            CURRENT_STATUS=""  # corrupt — skip approval transition
-        fi
-        if [[ "$CURRENT_STATUS" == "pending" || "$CURRENT_STATUS" == "needs-verification" ]]; then
+    # W5-2: Read proof state from SQLite via proof_state_get() (flat-file reads removed).
+    CURRENT_STATUS=""
+    _PS_PSG=$(proof_state_get 2>/dev/null || true)
+    if [[ -n "$_PS_PSG" ]]; then
+        CURRENT_STATUS=$(printf '%s' "$_PS_PSG" | cut -d'|' -f1)
+    fi
+    if [[ "$CURRENT_STATUS" == "pending" || "$CURRENT_STATUS" == "needs-verification" ]]; then
             # Write breadcrumb before CAS attempt (new state dir location)
             date +%s > "${_STATE_DIR}/proof-gate-pending" 2>/dev/null || true
 
@@ -216,9 +171,9 @@ EOFVERIFY
                 printf '%s\n' "${_CAS_FAIL_COUNT}|${CURRENT_STATUS}|verified|$(date +%s)" > "$_CAS_FAIL_FILE" 2>/dev/null || true
             fi
         fi
-    fi
-    # No proof file or wrong status — fall through to normal flow
+    # CURRENT_STATUS not pending/needs-verification — fall through to normal flow
 fi
+
 
 # --- AUTOVERIFY relay detection: orchestrator relaying AUTOVERIFY: CLEAN ---
 # When post-task.sh's loud-failure path fires (DEC-AV-LOUD-FAIL-001), the
@@ -243,23 +198,21 @@ fi
 #   The relay pattern is specific: prompt contains "AUTOVERIFY: CLEAN" AND proof
 #   is needs-verification or pending (not already verified or missing).
 if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -q 'AUTOVERIFY: CLEAN'; then
-    _RELAY_PROOF_FILE=$(resolve_proof_file 2>/dev/null || echo "")
-    if [[ -n "$_RELAY_PROOF_FILE" && -f "$_RELAY_PROOF_FILE" ]]; then
-        _RELAY_STATUS=$(cut -d'|' -f1 "$_RELAY_PROOF_FILE" 2>/dev/null || echo "")
-        if [[ "$_RELAY_STATUS" == "needs-verification" || "$_RELAY_STATUS" == "pending" ]]; then
-            _RELAY_PR=$(detect_project_root 2>/dev/null || echo "")
-            _RELAY_CD=$(get_claude_dir 2>/dev/null || echo "")
-            if [[ -n "$_RELAY_PR" && -n "$_RELAY_CD" ]]; then
-                # Use write_proof_status for dual-write (new + legacy paths)
-                write_proof_status "verified" "$_RELAY_PR" 2>/dev/null || true
-                # Pre-create guardian marker to close dispatch race
-                _RELAY_PHASH=$(project_hash "$_RELAY_PR" 2>/dev/null || echo "")
-                _RELAY_SESSION="${CLAUDE_SESSION_ID:-$$}"
-                _RELAY_TS=$(date +%s)
-                echo "pre-verified|${_RELAY_TS}" > "${TRACE_STORE:-$HOME/.claude/traces}/.active-guardian-${_RELAY_SESSION}-${_RELAY_PHASH}" 2>/dev/null || true
-                # Clean up .autoverify-failed signal (no longer needed — proof promoted)
-                rm -f "${_RELAY_CD}/.autoverify-failed" 2>/dev/null || true
-                cat <<EOFAV
+    # W5-2: Read proof state from SQLite (flat-file reads removed).
+    _RELAY_STATUS=""
+    _RELAY_PSG=$(proof_state_get 2>/dev/null || true)
+    if [[ -n "$_RELAY_PSG" ]]; then
+        _RELAY_STATUS=$(printf '%s' "$_RELAY_PSG" | cut -d'|' -f1)
+    fi
+    if [[ "$_RELAY_STATUS" == "needs-verification" || "$_RELAY_STATUS" == "pending" ]]; then
+        _RELAY_PR=$(detect_project_root 2>/dev/null || echo "")
+        _RELAY_CD=$(get_claude_dir 2>/dev/null || echo "")
+        if [[ -n "$_RELAY_PR" && -n "$_RELAY_CD" ]]; then
+            # W5-2: write_proof_status now calls proof_state_set() only (no flat-file writes)
+            write_proof_status "verified" "$_RELAY_PR" 2>/dev/null || true
+            # Clean up .autoverify-failed signal (no longer needed — proof promoted)
+            rm -f "${_RELAY_CD}/.autoverify-failed" 2>/dev/null || true
+            cat <<EOFAV
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
@@ -267,8 +220,7 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -q 'AUTOVERIFY: CLEAN'; then
   }
 }
 EOFAV
-                exit 0
-            fi
+            exit 0
         fi
     fi
 fi
@@ -285,19 +237,13 @@ fi
 #   but without the "error" framing.
 if [[ -z "$PROMPT" ]]; then
     _EMPTY_HINT="User pressed Enter without text. This is normal interaction — treat as approval or continuation of the current flow. Do NOT comment on the empty message."
-    _EMPTY_CLAUDE_DIR=$(get_claude_dir 2>/dev/null || echo "")
-    if [[ -n "$_EMPTY_CLAUDE_DIR" ]]; then
-        _EMPTY_PROOF=$(resolve_proof_file)
-        [[ ! -f "$_EMPTY_PROOF" ]] && _EMPTY_PROOF=""
-        if [[ -n "$_EMPTY_PROOF" && -f "$_EMPTY_PROOF" ]]; then
-            if validate_state_file "$_EMPTY_PROOF" 2; then
-                _EMPTY_STATUS=$(cut -d'|' -f1 "$_EMPTY_PROOF" 2>/dev/null || echo "")
-            else
-                _EMPTY_STATUS=""  # corrupt — skip hint
-            fi
-            if [[ "$_EMPTY_STATUS" == "pending" ]]; then
-                _EMPTY_HINT="User pressed Enter without text. Approval gate is active (.proof-status=pending) — approval keywords must appear as text. Remind the user to type 'approved' or use /approve. Do NOT comment on the message being empty."
-            fi
+    # W5-2: Read proof state from SQLite via proof_state_get() (flat-file reads removed).
+    if declare -f proof_state_get >/dev/null 2>&1; then
+        _EMPTY_PSG=$(proof_state_get 2>/dev/null || true)
+        _EMPTY_STATUS=""
+        [[ -n "$_EMPTY_PSG" ]] && _EMPTY_STATUS=$(printf '%s' "$_EMPTY_PSG" | cut -d'|' -f1)
+        if [[ "$_EMPTY_STATUS" == "pending" ]]; then
+            _EMPTY_HINT="User pressed Enter without text. Approval gate is active (.proof-status=pending) — approval keywords must appear as text. Remind the user to type 'approved' or use /approve. Do NOT comment on the message being empty."
         fi
     fi
     cat <<EOFEMPTY

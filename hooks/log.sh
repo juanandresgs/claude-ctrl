@@ -343,35 +343,26 @@ resolve_proof_file_for_path() {
     fi
 }
 
-# write_proof_status — atomically write a proof status to the canonical proof-status file.
+# write_proof_status — write a proof status to SQLite via proof_state_set().
 #
 # Usage: write_proof_status <status> [project_root]
 #
-# Since W2-1: PRIMARY write goes to SQLite proof_state table via proof_state_set().
-# DUAL-WRITE (W5-2 remove): also writes flat file for backward compatibility.
-# Flat-file writes are kept for hooks not yet migrated to proof_state_get().
+# Since W5-2: SQLite is the SOLE authority for proof state. All flat-file dual-writes
+# have been removed. proof_state_set() is called directly and enforces the monotonic
+# lattice atomically via BEGIN IMMEDIATE.
 #
-# Enforces a monotonic status lattice via proof_state_set() (SQLite enforces lattice
-# with epoch reset support). The bash-side lattice check is kept as defense-in-depth.
+# Also creates a guardian marker in SQLite when status is "verified", closing the
+# proof-invalidation window between verification and Guardian dispatch.
 #
 # @decision DEC-LOG-002
-# @title write_proof_status: atomic single-path proof status writer
+# @title write_proof_status: SQLite-only proof status writer (W5-2 cleanup)
 # @status accepted
-# @rationale prompt-submit.sh, check-tester.sh, and post-task.sh all need to write
-#   "verified" status. The function writes only to the canonical scoped file
-#   (.proof-status-{phash}) since all hooks share CLAUDE_DIR. Atomic write via tmp
-#   file prevents partial reads under concurrent hook execution.
-#   Previously wrote to 3 paths (scoped, legacy, worktree) — simplified by
-#   DEC-PROOF-SINGLE-001 and DEC-PROOF-BREADCRUMB-001.
-#   Since W2-1: proof_state_set() is the PRIMARY write path; flat files are dual-write.
-#
-# @decision DEC-PROOF-LOCK-001
-# @title Single flock around the canonical write in write_proof_status()
-# @status accepted
-# @rationale The previous implementation wrote to 3 files sequentially without a lock.
-#   A single flock(1) on .proof-status.lock serializes all callers. The 5-second
-#   timeout matches state_update(); on timeout, the function returns 1 (the status
-#   transition is rejected rather than silently skipped, since this IS authoritative).
+# @rationale Since W5-2, all flat-file dual-writes have been removed. proof_state_set()
+#   in state-lib.sh is the sole authoritative write path. The function remains as a
+#   thin wrapper that ensures state-lib.sh is loaded, calls proof_state_set(), and
+#   creates a guardian marker when status is "verified". The locking subshell and
+#   bash-side lattice have been removed — lattice enforcement is now entirely in SQLite
+#   via proof_state_set()'s BEGIN IMMEDIATE transaction. DEC-STATE-UNIFY-004 closed.
 #
 # @decision DEC-PROOF-BREADCRUMB-001
 # @title Remove breadcrumb system
@@ -380,30 +371,14 @@ resolve_proof_file_for_path() {
 #   that introduced more bugs than they solved. Single canonical path means
 #   no worktree copy, no breadcrumb needed, no stale breadcrumb failures.
 #
-# @decision DEC-PROOF-LATTICE-001
-# @title Monotonic status lattice enforcement in write_proof_status()
-# @status accepted
-# @rationale Regressions (e.g., verified → pending) can happen when post-write.sh
-#   fires during Guardian's commit workflow if the guardian marker is missing. Enforcing
-#   a strict ordinal map prevents status regression without an explicit epoch reset.
-#   Epoch reset is supported via .proof-epoch: if this file exists and is NEWER than
-#   the current .proof-status, the lattice is bypassed and any status is accepted.
-#   This allows deliberate resets (e.g., starting a new verification cycle) while
-#   preventing accidental regressions from race conditions.
-#   Since W2-1: lattice is enforced in proof_state_set() (SQLite); bash-side kept
-#   as defense-in-depth for the flat-file dual-write path.
-#
 # @decision DEC-STATE-UNIFY-004
-# @title Dual-write: proof_state_set (SQLite PRIMARY) + flat file (W5-2 remove)
+# @title Dual-write removed in W5-2: SQLite is now sole proof state authority
 # @status accepted
-# @rationale During the transition period (W2-1 through W5-1), both the SQLite
-#   proof_state table and the flat proof-status files are written on every status
-#   change. This ensures backward compatibility: hooks not yet migrated to
-#   proof_state_get() continue to read flat files without interruption. The flat-file
-#   write in write_proof_status() is marked "W5-2 remove" — it will be deleted when
-#   all readers have been migrated to proof_state_get(). The SQLite write is first
-#   (primary) because it enforces the lattice atomically with BEGIN IMMEDIATE.
-#   See MASTER_PLAN.md DEC-STATE-UNIFY-004.
+# @rationale The transition period (W2-1 through W5-1) required dual-writing to both
+#   SQLite and flat files for backward compatibility. With W5-2, all readers have been
+#   migrated to proof_state_get() (SQLite). Flat-file writes have been removed from
+#   write_proof_status() and all other callers. The lint gate (state-dotfile-bypass)
+#   in lint.sh now enforces that no new flat-file state I/O is introduced.
 write_proof_status() {
     local proof_status="${1:?write_proof_status requires a status argument}"
     local project_root="${2:-${PROJECT_ROOT:-$(detect_project_root)}}"
@@ -411,127 +386,48 @@ write_proof_status() {
     claude_dir=$(PROJECT_ROOT="$project_root" get_claude_dir)
     local phash
     phash=$(project_hash "$project_root")
-    # New lock path: state/locks/proof.lock
-    local locks_dir="${claude_dir}/state/locks"
-    mkdir -p "$locks_dir" 2>/dev/null || true
-    local lockfile="${locks_dir}/proof.lock"
 
     mkdir -p "$claude_dir" 2>/dev/null || return 1
 
     # --- PRIMARY: Write to SQLite via proof_state_set() ---
     # proof_state_set() enforces the monotonic lattice atomically via BEGIN IMMEDIATE.
     # Requires state-lib.sh to be loaded (via require_state in the calling hook).
-    # If proof_state_set is not available (state-lib not loaded), falls through to
-    # flat-file only (backward compatible). DEC-STATE-UNIFY-004.
+    # Returns 1 on lattice violation (same behavior as before: transition rejected).
     if declare -f proof_state_set >/dev/null 2>&1; then
         PROJECT_ROOT="$project_root" CLAUDE_DIR="$claude_dir" \
-            proof_state_set "$proof_status" "write_proof_status" 2>/dev/null || true
+            proof_state_set "$proof_status" "write_proof_status" 2>/dev/null || return 1
+    else
+        log_info "write_proof_status" "proof_state_set not available — state-lib.sh not loaded" 2>/dev/null || true
+        return 1
     fi
 
-    local _result=0
-    (
-        if ! _lock_fd 5 9; then
-            log_info "write_proof_status" "lock timeout — status transition rejected" 2>/dev/null || true
-            exit 1
+    local timestamp
+    timestamp=$(date +%s)
+
+    # Pre-create guardian marker in SQLite to close proof-invalidation window.
+    # Between verification and Guardian dispatch, any source file Write/Edit
+    # triggers post-write.sh which resets verified→pending when no marker exists.
+    # marker_create uses INSERT OR REPLACE — idempotent, safe to call multiple times.
+    if [[ "$proof_status" == "verified" ]]; then
+        if declare -f marker_create >/dev/null 2>&1; then
+            local _session="${CLAUDE_SESSION_ID:-$$}"
+            local _wf_id
+            _wf_id=$(workflow_id 2>/dev/null || echo "main")
+            marker_create "guardian" "$_session" "$_wf_id" "$$" "" "pre-dispatch" 2>/dev/null || true
         fi
+    fi
 
-        local timestamp
-        timestamp=$(date +%s)
-        local content="${proof_status}|${timestamp}"
+    log_info "write_proof_status" "Wrote '${proof_status}' to SQLite proof_state for project $(basename "$project_root") [${phash}]"
 
-        # --- Monotonic lattice enforcement ---
-        # Ordinal map: none < needs-verification < pending < verified < committed
-        # Use case statement instead of declare -A for bash 3 (macOS) compatibility.
-        # declare -A fails on bash 3.2 (macOS default), causing the subshell to exit
-        # under set -e before writing the status file.
-        _proof_ordinal() {
-            case "$1" in
-                none)                 echo 0 ;;
-                needs-verification)   echo 1 ;;
-                pending)              echo 2 ;;
-                verified)             echo 3 ;;
-                committed)            echo 4 ;;
-                *)                    echo 0 ;;
-            esac
-        }
-
-        # New canonical path: state/{phash}/proof-status
-        local state_dir_path="${claude_dir}/state/${phash}"
-        local new_proof="${state_dir_path}/proof-status"
-        # Old path for backward compat during migration
-        local old_proof="${claude_dir}/.proof-status-${phash}"
-
-        # Read current status from NEW path first, fall back to old
-        local current="none"
-        if [[ -f "$new_proof" ]]; then
-            current=$(cut -d'|' -f1 "$new_proof" 2>/dev/null || echo "none")
-        elif [[ -f "$old_proof" ]]; then
-            current=$(cut -d'|' -f1 "$old_proof" 2>/dev/null || echo "none")
-        fi
-        [[ -z "$current" ]] && current="none"
-
-        local current_ord
-        current_ord=$(_proof_ordinal "$current")
-        local new_ord
-        new_ord=$(_proof_ordinal "$proof_status")
-
-        if (( new_ord < current_ord )); then
-            # Check for epoch reset: proof-epoch newer than proof-status
-            # Check new state dir location first, fall back to old dotfile
-            local epoch_file="${claude_dir}/state/${phash}/proof-epoch"
-            if [[ ! -f "$epoch_file" ]]; then
-                epoch_file="${claude_dir}/.proof-epoch"
-            fi
-            # Use new_proof for comparison; fall back to old_proof if new doesn't exist
-            local proof_file_for_cmp="$new_proof"
-            [[ ! -f "$proof_file_for_cmp" ]] && proof_file_for_cmp="$old_proof"
-
-            local allow_reset=false
-            if [[ -f "$epoch_file" && -f "$proof_file_for_cmp" ]]; then
-                local epoch_mtime proof_mtime
-                epoch_mtime=$(_file_mtime "$epoch_file")
-                proof_mtime=$(_file_mtime "$proof_file_for_cmp")
-                if [[ "$epoch_mtime" -gt "$proof_mtime" ]]; then
-                    allow_reset=true
-                fi
-            fi
-
-            if [[ "$allow_reset" == "false" ]]; then
-                log_info "write_proof_status" "rejecting regression ${current} → ${proof_status} (ordinals: ${current_ord} → ${new_ord})" 2>/dev/null || true
-                exit 1
-            fi
-            log_info "write_proof_status" "epoch reset allowed: ${current} → ${proof_status}" 2>/dev/null || true
-        fi
-
-        # --- DUAL-WRITE: flat files (W5-2 remove when all readers use proof_state_get) ---
-        # These writes maintain backward compatibility during the W2→W5 migration window.
-        # Primary: state/{phash}/proof-status
-        mkdir -p "$state_dir_path"
-        printf '%s\n' "$content" > "${new_proof}.tmp" && mv "${new_proof}.tmp" "$new_proof"
-        # Secondary: legacy .proof-status-{phash} (W5-2 remove)
-        printf '%s\n' "$content" > "${old_proof}.tmp" && mv "${old_proof}.tmp" "$old_proof"
-
-        # Pre-create guardian marker to close proof-invalidation window.
-        # Between verification and Guardian dispatch, any source file Write/Edit
-        # triggers post-write.sh which resets verified→pending when no marker exists.
-        # This marker uses "pre-verified|<epoch>" format — post-write.sh's TTL check
-        # accepts it. task-track.sh overwrites with "pre-dispatch|<epoch>" at dispatch.
-        # finalize_trace() cleans all .active-guardian-* markers via wildcard.
-        if [[ "$proof_status" == "verified" ]]; then
-            local trace_store="${TRACE_STORE:-$HOME/.claude/traces}"
-            local session="${CLAUDE_SESSION_ID:-$$}"
-            echo "pre-verified|${timestamp}" > "${trace_store}/.active-guardian-${session}-${phash}" 2>/dev/null || true
-        fi
-
-        log_info "write_proof_status" "Wrote '${proof_status}' to canonical proof-status for project $(basename "$project_root") [${phash}]"
-
-        # W5-1: direct state_update (type guard removed; state-lib loaded by callers via require_state)
-        state_update ".proof.status" "$proof_status" "write_proof_status" >/dev/null 2>/dev/null || true
-        # W5-1: emit proof transition event to ledger (best-effort; stdout suppressed — state_emit outputs row ID)
+    # Emit proof transition event to ledger (best-effort)
+    if declare -f state_emit >/dev/null 2>&1; then
         state_emit "proof.transition" "{\"to\":\"${proof_status}\",\"project\":\"${phash}\"}" >/dev/null 2>/dev/null || true
-    ) 9>"$lockfile"
-    _result=$?
-    return $_result
+    fi
+    # Also update generic state table for backward compat with state_read callers
+    if declare -f state_update >/dev/null 2>&1; then
+        state_update ".proof.status" "$proof_status" "write_proof_status" >/dev/null 2>/dev/null || true
+    fi
+    return 0
 }
 
 # Export for subshells

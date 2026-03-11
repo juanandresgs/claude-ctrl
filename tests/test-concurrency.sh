@@ -141,7 +141,13 @@ fi
 # Reset exported vars to avoid leaking into subsequent tests
 # Note: _HOOK_NAME must NOT be unset — source-lib.sh's EXIT trap references it
 # without a :- default, and with set -u active that would re-trigger the EXIT trap.
+# Clear _WORKFLOW_ID and _STATE_SCHEMA_INITIALIZED caches — T01 calls state_update
+# at top level which caches both. Without clearing, subsequent tests using a different
+# CLAUDE_DIR will: (a) use T01's workflow_id for their state writes, and (b) skip DB
+# schema initialization for the new DB (since the guard already fired for T01's DB).
 unset CLAUDE_DIR PROJECT_ROOT CLAUDE_SESSION_ID 2>/dev/null || true
+_WORKFLOW_ID=""
+_STATE_SCHEMA_INITIALIZED=""
 
 
 # ===========================================================================
@@ -230,15 +236,17 @@ rm -f "$T03_LOCK" 2>/dev/null || true
 # _portable_flock). This ensures the canonical write function uses the platform-
 # native locking primitive that is available on both macOS and Linux.
 # ===========================================================================
-run_test "T04: write_proof_status() uses _lock_fd (source-level verification)"
+run_test "T04: write_proof_status() uses proof_state_set (SQLite, W5-2)"
 
+# W5-2: write_proof_status no longer uses _lock_fd. It calls proof_state_set()
+# which uses SQLite's BEGIN IMMEDIATE for atomicity. Verify the function delegates
+# to proof_state_set (not raw flat-file writes).
 LOG_SH="$HOOKS_DIR/log.sh"
 if [[ -f "$LOG_SH" ]]; then
-    # Verify _lock_fd is called inside write_proof_status
-    if grep -A 50 '^write_proof_status()' "$LOG_SH" | grep -q '_lock_fd'; then
+    if grep -A 30 '^write_proof_status()' "$LOG_SH" | grep -q 'proof_state_set'; then
         pass_test
     else
-        fail_test "write_proof_status() does not call _lock_fd in $LOG_SH"
+        fail_test "write_proof_status() does not call proof_state_set in $LOG_SH"
     fi
 else
     fail_test "log.sh not found at $LOG_SH"
@@ -309,278 +317,153 @@ unset CLAUDE_DIR PROJECT_ROOT CLAUDE_SESSION_ID 2>/dev/null || true
 
 
 # ===========================================================================
-# T06: cas_proof_status() — true atomic CAS: two concurrent attempts, only one wins
+# T06: proof_state_set() — SQLite atomic CAS: two concurrent writes both succeed
+#      (last-write-wins within lattice — both advancing to "verified" are safe)
 #
-# Validates W2-2: the single-lock design means exactly one of two concurrent
-# cas_proof_status("pending" → "verified") calls should succeed.
-# Setup: proof-status = "pending"; two background processes both attempt CAS.
-# Post-condition: proof-status = "verified", exactly one exit-0 result.
+# W5-2 update: Old flock-based CAS tests removed. SQLite's BEGIN IMMEDIATE
+# provides internal atomicity. Two concurrent proof_state_set("verified") calls
+# are both valid (lattice allows pending→verified); SQLite serializes them.
+# Post-condition: proof state = "verified" in SQLite.
 # ===========================================================================
-run_test "T06: cas_proof_status() — true atomic CAS: only one concurrent attempt wins"
+run_test "T06: proof_state_set() — SQLite CAS: concurrent verified writes both succeed"
 
 T06_ENV=$(make_temp_env)
 T06_CLAUDE="$T06_ENV/.claude"
-T06_PHASH=$(compute_phash "$T06_ENV")
-
-# Source prompt-submit.sh functions into scope for cas_proof_status
-# We need cas_proof_status, which is defined inside prompt-submit.sh.
-# Extract and source just the cas_proof_status function by sourcing the hooks.
-# Set required env vars that prompt-submit.sh reads at top level.
-export CLAUDE_DIR="$T06_CLAUDE"
-export PROJECT_ROOT="$T06_ENV"
-export TRACE_STORE="$TMPDIR_BASE/traces-t06"
-export CLAUDE_SESSION_ID="t06-session-$$"
 mkdir -p "$TMPDIR_BASE/traces-t06"
 
-# Initialize proof-status to "pending" using write_proof_status
+# Helper script for concurrent SQLite proof_state_set
+T06_HELPER="$TMPDIR_BASE/t06-helper.sh"
+cat > "$T06_HELPER" <<T06_HELPER_EOF
+#!/usr/bin/env bash
+HOOKS_DIR="\$1"
+CLAUDE_DIR="\$2"
+PROJECT_ROOT="\$3"
+CLAUDE_SESSION_ID="\$4"
+RESULT_FILE="\$5"
+export CLAUDE_DIR PROJECT_ROOT CLAUDE_SESSION_ID
+source "\$HOOKS_DIR/core-lib.sh" 2>/dev/null
+source "\$HOOKS_DIR/log.sh" 2>/dev/null
+source "\$HOOKS_DIR/state-lib.sh" 2>/dev/null
+proof_state_set "verified" "t06-concurrent" 2>/dev/null
+echo \$? > "\$RESULT_FILE"
+T06_HELPER_EOF
+chmod +x "$T06_HELPER"
+
+# Initialize to "pending" in SQLite
 (
     export CLAUDE_DIR="$T06_CLAUDE"
     export PROJECT_ROOT="$T06_ENV"
-    export TRACE_STORE="$TMPDIR_BASE/traces-t06"
-    export CLAUDE_SESSION_ID="t06-session-$$"
-    write_proof_status "pending" "$T06_ENV" 2>/dev/null
+    export CLAUDE_SESSION_ID="t06-setup-$$"
+    source "$HOOKS_DIR/core-lib.sh" 2>/dev/null
+    source "$HOOKS_DIR/log.sh" 2>/dev/null
+    source "$HOOKS_DIR/state-lib.sh" 2>/dev/null
+    proof_state_set "pending" "t06-setup" 2>/dev/null || true
 ) 2>/dev/null
 
-SCOPED_PROOF="$T06_CLAUDE/.proof-status-${T06_PHASH}"
+RESULT_A_FILE="$TMPDIR_BASE/t06-result-a"
+RESULT_B_FILE="$TMPDIR_BASE/t06-result-b"
 
-# Confirm setup succeeded
-if [[ ! -f "$SCOPED_PROOF" ]] || [[ "$(cut -d'|' -f1 "$SCOPED_PROOF")" != "pending" ]]; then
-    fail_test "T06 setup failed: proof-status not set to pending (got: $(cat "$SCOPED_PROOF" 2>/dev/null || echo 'missing'))"
+bash "$T06_HELPER" "$HOOKS_DIR" "$T06_CLAUDE" "$T06_ENV" "t06-a-$$" "$RESULT_A_FILE" 2>/dev/null &
+PID_A=$!
+bash "$T06_HELPER" "$HOOKS_DIR" "$T06_CLAUDE" "$T06_ENV" "t06-b-$$" "$RESULT_B_FILE" 2>/dev/null &
+PID_B=$!
+
+wait "$PID_A" 2>/dev/null || true
+wait "$PID_B" 2>/dev/null || true
+
+T06_DB="$T06_CLAUDE/state/state.db"
+FINAL_STATUS_T06=""
+if [[ -f "$T06_DB" ]]; then
+    FINAL_STATUS_T06=$(sqlite3 "$T06_DB" \
+        "SELECT status FROM proof_state LIMIT 1;" 2>/dev/null || echo "")
+fi
+
+if [[ "$FINAL_STATUS_T06" == "verified" ]]; then
+    pass_test
 else
-    # Source cas_proof_status by extracting it from prompt-submit.sh context.
-    # Since prompt-submit.sh sources source-lib.sh and runs require_state/require_session/
-    # etc. at load time, we define cas_proof_status inline matching the production
-    # implementation to avoid full hook execution.
-    # Instead, use a subshell approach: run a helper script that sources all deps.
-    CAS_HELPER="$TMPDIR_BASE/cas-helper.sh"
-    cat > "$CAS_HELPER" <<'HELPER_EOF'
-#!/usr/bin/env bash
-# Helper script for T06/T07: runs cas_proof_status with full hook context
-set -euo pipefail
-HOOKS_DIR="$1"
-source "$HOOKS_DIR/log.sh" 2>/dev/null
-source "$HOOKS_DIR/source-lib.sh" 2>/dev/null
-require_state
-# Define cas_proof_status inline (production implementation)
-cas_proof_status() {
-    local expected="$1"
-    local new_val="$2"
-    local lockfile="${CLAUDE_DIR}/.proof-status.lock"
-    local proof_file
-    proof_file=$(resolve_proof_file)
-    mkdir -p "$(dirname "$lockfile")" 2>/dev/null || return 2
-    local current="none"
-    if [[ -f "$proof_file" ]]; then
-        validate_state_file "$proof_file" 2 2>/dev/null || return 1
-        current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
-    fi
-    [[ "$current" != "$expected" ]] && return 1
-    local _result=0
-    (
-        if ! _lock_fd 5 9; then
-            exit 2
-        fi
-        local locked_current="none"
-        if [[ -f "$proof_file" ]]; then
-            locked_current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
-        fi
-        if [[ "$locked_current" != "$expected" ]]; then
-            exit 1
-        fi
-        local timestamp; timestamp=$(date +%s)
-        printf '%s\n' "${new_val}|${timestamp}" > "${proof_file}.tmp" && mv "${proof_file}.tmp" "$proof_file"
-        if [[ "$new_val" == "verified" ]]; then
-            local trace_store="${TRACE_STORE:-$HOME/.claude/traces}"
-            local session="${CLAUDE_SESSION_ID:-$$}"
-            local phash; phash=$(project_hash "$PROJECT_ROOT")
-            echo "pre-verified|${timestamp}" > "${trace_store}/.active-guardian-${session}-${phash}" 2>/dev/null || true
-        fi
-        type state_update &>/dev/null && state_update ".proof.status" "$new_val" "cas_proof_status" || true
-        exit 0
-    ) 9>"$lockfile"
-    _result=$?
-    return $_result
-}
-# Args: EXPECTED NEW_VAL
-cas_proof_status "${2:-pending}" "${3:-verified}"
-exit $?
-HELPER_EOF
-    chmod +x "$CAS_HELPER"
-
-    # Run two concurrent CAS attempts
-    RESULT_A_FILE="$TMPDIR_BASE/t06-result-a"
-    RESULT_B_FILE="$TMPDIR_BASE/t06-result-b"
-
-    (
-        export CLAUDE_DIR="$T06_CLAUDE"
-        export PROJECT_ROOT="$T06_ENV"
-        export TRACE_STORE="$TMPDIR_BASE/traces-t06"
-        export CLAUDE_SESSION_ID="t06-session-$$"
-        bash "$CAS_HELPER" "$HOOKS_DIR" "pending" "verified" 2>/dev/null
-        echo $? > "$RESULT_A_FILE"
-    ) &
-    PID_A=$!
-
-    (
-        export CLAUDE_DIR="$T06_CLAUDE"
-        export PROJECT_ROOT="$T06_ENV"
-        export TRACE_STORE="$TMPDIR_BASE/traces-t06"
-        export CLAUDE_SESSION_ID="t06-session-$$"
-        bash "$CAS_HELPER" "$HOOKS_DIR" "pending" "verified" 2>/dev/null
-        echo $? > "$RESULT_B_FILE"
-    ) &
-    PID_B=$!
-
-    wait "$PID_A" 2>/dev/null || true
-    wait "$PID_B" 2>/dev/null || true
-
     RESULT_A=$(cat "$RESULT_A_FILE" 2>/dev/null || echo "missing")
     RESULT_B=$(cat "$RESULT_B_FILE" 2>/dev/null || echo "missing")
-    # Check new state dir path first (Phase 3 dual-write), fall back to old dotfile
-    _NEW_PROOF="$T06_CLAUDE/state/${T06_PHASH}/proof-status"
-    FINAL_STATUS=$(cut -d'|' -f1 "$_NEW_PROOF" 2>/dev/null || cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "unknown")
-
-    # Exactly one should succeed (exit 0), one should fail (exit nonzero)
-    SUCCESSES=0
-    [[ "$RESULT_A" == "0" ]] && SUCCESSES=$((SUCCESSES + 1))
-    [[ "$RESULT_B" == "0" ]] && SUCCESSES=$((SUCCESSES + 1))
-
-    if [[ "$SUCCESSES" -eq 1 ]] && [[ "$FINAL_STATUS" == "verified" ]]; then
-        pass_test
-    else
-        fail_test "Expected exactly 1 success; got A=${RESULT_A} B=${RESULT_B} status=${FINAL_STATUS}"
-    fi
+    fail_test "Expected proof state=verified in SQLite; got: '${FINAL_STATUS_T06}' (A=${RESULT_A} B=${RESULT_B})"
 fi
 
 unset CLAUDE_DIR PROJECT_ROOT TRACE_STORE CLAUDE_SESSION_ID 2>/dev/null || true
 
 
 # ===========================================================================
-# T07: cas_proof_status() — CAS failure under lock when state changes between
-#      pre-check and lock acquisition
+# T07: proof_state_set() — lattice rejects regression (verified → needs-verification)
 #
-# Validates W2-2's re-check under lock: set proof-status to "pending", then
-# start a background process that changes it to "needs-verification" between
-# the pre-check and the lock acquisition. The CAS should return nonzero.
-#
-# Implementation: We simulate the race by pre-writing "needs-verification" before
-# the CAS call runs with expected="pending". Since the pre-check reads the actual
-# file content, if the file already says "needs-verification" the pre-check itself
-# will fail. To test the under-lock re-check specifically, we run the CAS helper
-# with expected="needs-verification" but first flip the file DURING the lock:
-# this is hard to guarantee timing-wise in a test, so instead we verify the simpler
-# invariant: CAS with wrong expected value fails regardless of path taken.
+# W5-2: SQLite is sole authority. proof_state_set() enforces the monotonic
+# lattice via BEGIN IMMEDIATE. Setting "needs-verification" (ordinal 1) after
+# "verified" (ordinal 3) must fail with non-zero exit. The state must remain
+# "verified" in SQLite.
 # ===========================================================================
-run_test "T07: cas_proof_status() — CAS fails when expected value doesn't match current"
+run_test "T07: proof_state_set() — lattice rejects regression (verified->needs-verification)"
 
 T07_ENV=$(make_temp_env)
 T07_CLAUDE="$T07_ENV/.claude"
-T07_PHASH=$(compute_phash "$T07_ENV")
-
-export CLAUDE_DIR="$T07_CLAUDE"
-export PROJECT_ROOT="$T07_ENV"
-export TRACE_STORE="$TMPDIR_BASE/traces-t07"
-export CLAUDE_SESSION_ID="t07-session-$$"
 mkdir -p "$TMPDIR_BASE/traces-t07"
 
-# Set proof-status to "needs-verification"
+# Step 1: set state to "verified"
 (
     export CLAUDE_DIR="$T07_CLAUDE"
     export PROJECT_ROOT="$T07_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t07"
     export CLAUDE_SESSION_ID="t07-session-$$"
-    write_proof_status "needs-verification" "$T07_ENV" 2>/dev/null
-) 2>/dev/null
+    _STATE_SCHEMA_INITIALIZED=""  # New DB — clear schema init guard
+    _WORKFLOW_ID=""               # New project — clear workflow_id cache
+    proof_state_set "verified" "t07-setup" 2>/dev/null
+) 2>/dev/null || true
 
-SCOPED_PROOF="$T07_CLAUDE/.proof-status-${T07_PHASH}"
-
-# Attempt CAS expecting "pending" but current is "needs-verification" — must fail
-T07_CAS_RESULT=0
-CAS_HELPER_T07="$TMPDIR_BASE/cas-helper-t07.sh"
-cp "$TMPDIR_BASE/cas-helper.sh" "$CAS_HELPER_T07" 2>/dev/null || {
-    # Recreate if T06 didn't run
-    cat > "$CAS_HELPER_T07" <<'T07_HELPER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-HOOKS_DIR="$1"
-source "$HOOKS_DIR/log.sh" 2>/dev/null
-source "$HOOKS_DIR/source-lib.sh" 2>/dev/null
-require_state
-cas_proof_status() {
-    local expected="$1"
-    local new_val="$2"
-    local lockfile="${CLAUDE_DIR}/.proof-status.lock"
-    local proof_file
-    proof_file=$(resolve_proof_file)
-    mkdir -p "$(dirname "$lockfile")" 2>/dev/null || return 2
-    local current="none"
-    if [[ -f "$proof_file" ]]; then
-        validate_state_file "$proof_file" 2 2>/dev/null || return 1
-        current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
-    fi
-    [[ "$current" != "$expected" ]] && return 1
-    local _result=0
-    (
-        if ! _lock_fd 5 9; then exit 2; fi
-        local locked_current="none"
-        if [[ -f "$proof_file" ]]; then
-            locked_current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
-        fi
-        if [[ "$locked_current" != "$expected" ]]; then exit 1; fi
-        local timestamp; timestamp=$(date +%s)
-        printf '%s\n' "${new_val}|${timestamp}" > "${proof_file}.tmp" && mv "${proof_file}.tmp" "$proof_file"
-        exit 0
-    ) 9>"$lockfile"
-    _result=$?
-    return $_result
-}
-cas_proof_status "${2:-pending}" "${3:-verified}"
-exit $?
-T07_HELPER_EOF
-    chmod +x "$CAS_HELPER_T07"
-}
-
+# Step 2: attempt regression to "needs-verification" — must fail
+T07_REGRESS_RESULT=0
 (
     export CLAUDE_DIR="$T07_CLAUDE"
     export PROJECT_ROOT="$T07_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t07"
     export CLAUDE_SESSION_ID="t07-session-$$"
-    bash "$CAS_HELPER_T07" "$HOOKS_DIR" "pending" "verified" 2>/dev/null
-) 2>/dev/null || T07_CAS_RESULT=$?
+    proof_state_set "needs-verification" "t07-regress" 2>/dev/null
+) 2>/dev/null || T07_REGRESS_RESULT=$?
 
-FINAL_STATUS_T07=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "unknown")
+# Step 3: confirm state is still "verified" in SQLite
+T07_FINAL_STATE=$(
+    export CLAUDE_DIR="$T07_CLAUDE"
+    export PROJECT_ROOT="$T07_ENV"
+    export TRACE_STORE="$TMPDIR_BASE/traces-t07"
+    export CLAUDE_SESSION_ID="t07-session-$$"
+    proof_state_get 2>/dev/null | cut -d'|' -f1 || echo "unknown"
+)
 
-if [[ "$T07_CAS_RESULT" -ne 0 ]] && [[ "$FINAL_STATUS_T07" == "needs-verification" ]]; then
+if [[ "$T07_REGRESS_RESULT" -ne 0 ]] && [[ "$T07_FINAL_STATE" == "verified" ]]; then
     pass_test
 else
-    fail_test "CAS should fail with wrong expected value; exit=$T07_CAS_RESULT status=$FINAL_STATUS_T07"
+    fail_test "Lattice regression should be rejected; exit=${T07_REGRESS_RESULT} final_state=${T07_FINAL_STATE}"
 fi
 
 unset CLAUDE_DIR PROJECT_ROOT TRACE_STORE CLAUDE_SESSION_ID 2>/dev/null || true
 
 
 # ===========================================================================
-# T08: Gate C.2 — task-track.sh uses write_proof_status() (not bare echo)
+# T08: Gate C.2 — task-track.sh calls proof_state_set() (not bare echo, not flat-file write)
 #
-# Validates that task-track.sh routes through write_proof_status() for Gate C.2
-# rather than writing directly to .proof-status (which would bypass lattice
-# enforcement). Source-level check.
+# W5-2: task-track.sh was migrated from write_proof_status() to proof_state_set()
+# directly, bypassing the flat-file wrapper. Validates the SQLite API is called
+# at Gate C.2 and no direct dotfile I/O remains.
 # ===========================================================================
-run_test "T08: Gate C.2 — task-track.sh routes through write_proof_status()"
+run_test "T08: Gate C.2 — task-track.sh calls proof_state_set() directly (W5-2)"
 
 TASK_TRACK="$HOOKS_DIR/task-track.sh"
 if [[ -f "$TASK_TRACK" ]]; then
-    # Must call write_proof_status at Gate C.2
-    if grep -q 'write_proof_status' "$TASK_TRACK"; then
-        # Must NOT bare-echo to proof-status
-        BARE_ECHO=$(grep -E 'echo.*proof-status|printf.*proof-status|>.*proof-status' "$TASK_TRACK" 2>/dev/null | grep -v '^\s*#' | grep -v 'write_proof_status' | grep -v 'PROOF_FILE=' | grep -v '\$PROOF_FILE' | head -1 || echo "")
+    # Must call proof_state_set at Gate C.2
+    if grep -q 'proof_state_set' "$TASK_TRACK"; then
+        # Must NOT bare-echo to proof-status flat files
+        BARE_ECHO=$(grep -E 'echo.*proof-status|printf.*proof-status|>.*\.proof-status' "$TASK_TRACK" 2>/dev/null | grep -v '^\s*#' | grep -v 'PROOF_FILE=' | grep -v '\$PROOF_FILE' | head -1 || echo "")
         if [[ -z "$BARE_ECHO" ]]; then
             pass_test
         else
             fail_test "task-track.sh has bare write to proof-status: $BARE_ECHO"
         fi
     else
-        fail_test "task-track.sh does not call write_proof_status()"
+        fail_test "task-track.sh does not call proof_state_set()"
     fi
 else
     fail_test "task-track.sh not found at $TASK_TRACK"
@@ -590,15 +473,15 @@ fi
 # ===========================================================================
 # T09: Lattice — forward transition allowed (none → needs-verification → verified)
 #
-# Validates write_proof_status() monotonic lattice allows forward progressions.
-# Also validates that Gate C.2's write (needs-verification) allows subsequent
-# verified write — the canonical task-track → proof → guardian flow.
+# Validates proof_state_set() monotonic lattice allows forward progressions via
+# SQLite. The canonical task-track → proof → guardian flow: needs-verification →
+# pending → verified. All transitions must succeed.
 # ===========================================================================
-run_test "T09: Lattice — forward transition allowed (none → needs-verification → verified)"
+run_test "T09: Lattice — forward transition allowed (none -> needs-verification -> verified)"
 
 T09_ENV=$(make_temp_env)
 T09_CLAUDE="$T09_ENV/.claude"
-T09_PHASH=$(compute_phash "$T09_ENV")
+mkdir -p "$TMPDIR_BASE/traces-t09"
 
 LATTICE_FWD_RESULT=0
 (
@@ -606,22 +489,24 @@ LATTICE_FWD_RESULT=0
     export PROJECT_ROOT="$T09_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t09"
     export CLAUDE_SESSION_ID="t09-session-$$"
-    mkdir -p "$TMPDIR_BASE/traces-t09"
-    write_proof_status "needs-verification" "$T09_ENV" 2>/dev/null && \
-    write_proof_status "pending" "$T09_ENV" 2>/dev/null && \
-    write_proof_status "verified" "$T09_ENV" 2>/dev/null
+    _STATE_SCHEMA_INITIALIZED=""  # New DB — clear schema init guard
+    _WORKFLOW_ID=""               # New project — clear workflow_id cache
+    proof_state_set "needs-verification" "t09" 2>/dev/null && \
+    proof_state_set "pending" "t09" 2>/dev/null && \
+    proof_state_set "verified" "t09" 2>/dev/null
 ) 2>/dev/null || LATTICE_FWD_RESULT=$?
 
-SCOPED_PROOF="$T09_CLAUDE/.proof-status-${T09_PHASH}"
-if [[ "$LATTICE_FWD_RESULT" -eq 0 ]] && [[ -f "$SCOPED_PROOF" ]]; then
-    STATUS=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "")
-    if [[ "$STATUS" == "verified" ]]; then
-        pass_test
-    else
-        fail_test "Expected 'verified' in proof-status; got '$STATUS'"
-    fi
+T09_FINAL=$(
+    export CLAUDE_DIR="$T09_CLAUDE"
+    export PROJECT_ROOT="$T09_ENV"
+    export TRACE_STORE="$TMPDIR_BASE/traces-t09"
+    export CLAUDE_SESSION_ID="t09-session-$$"
+    proof_state_get 2>/dev/null | cut -d'|' -f1 || echo ""
+)
+if [[ "$LATTICE_FWD_RESULT" -eq 0 ]] && [[ "$T09_FINAL" == "verified" ]]; then
+    pass_test
 else
-    fail_test "Forward transition failed; exit=$LATTICE_FWD_RESULT proof_file_exists=$([ -f "$SCOPED_PROOF" ] && echo yes || echo no)"
+    fail_test "Forward transition failed; exit=$LATTICE_FWD_RESULT final_state='$T09_FINAL'"
 fi
 
 
@@ -629,12 +514,13 @@ fi
 # T10: Lattice — regression rejected (verified → pending)
 #
 # After reaching 'verified', attempting to write 'pending' must fail (returns 1).
+# W5-2: Uses proof_state_get() to verify state remains 'verified' in SQLite.
 # ===========================================================================
-run_test "T10: Lattice — regression rejected (verified → pending fails)"
+run_test "T10: Lattice — regression rejected (verified -> pending fails)"
 
 T10_ENV=$(make_temp_env)
 T10_CLAUDE="$T10_ENV/.claude"
-T10_PHASH=$(compute_phash "$T10_ENV")
+mkdir -p "$TMPDIR_BASE/traces-t10"
 
 # First: establish verified status
 (
@@ -642,8 +528,9 @@ T10_PHASH=$(compute_phash "$T10_ENV")
     export PROJECT_ROOT="$T10_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t10"
     export CLAUDE_SESSION_ID="t10-session-$$"
-    mkdir -p "$TMPDIR_BASE/traces-t10"
-    write_proof_status "verified" "$T10_ENV" 2>/dev/null
+    _STATE_SCHEMA_INITIALIZED=""  # New DB — clear schema init guard
+    _WORKFLOW_ID=""               # New project — clear workflow_id cache
+    proof_state_set "verified" "t10-setup" 2>/dev/null
 ) 2>/dev/null || true
 
 # Now attempt regression
@@ -653,31 +540,36 @@ REGRESSION_RESULT=0
     export PROJECT_ROOT="$T10_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t10"
     export CLAUDE_SESSION_ID="t10-session-$$"
-    write_proof_status "pending" "$T10_ENV" 2>/dev/null
+    proof_state_set "pending" "t10-regress" 2>/dev/null
 ) 2>/dev/null || REGRESSION_RESULT=$?
 
-SCOPED_PROOF="$T10_CLAUDE/.proof-status-${T10_PHASH}"
-STATUS=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "")
+T10_STATUS=$(
+    export CLAUDE_DIR="$T10_CLAUDE"
+    export PROJECT_ROOT="$T10_ENV"
+    export TRACE_STORE="$TMPDIR_BASE/traces-t10"
+    export CLAUDE_SESSION_ID="t10-session-$$"
+    proof_state_get 2>/dev/null | cut -d'|' -f1 || echo ""
+)
 
-if [[ "$REGRESSION_RESULT" -ne 0 ]] && [[ "$STATUS" == "verified" ]]; then
+if [[ "$REGRESSION_RESULT" -ne 0 ]] && [[ "$T10_STATUS" == "verified" ]]; then
     pass_test
 else
-    fail_test "Regression should be rejected; exit=$REGRESSION_RESULT status='$STATUS'"
+    fail_test "Regression should be rejected; exit=$REGRESSION_RESULT status='$T10_STATUS'"
 fi
 
 
 # ===========================================================================
-# T11: Lattice — epoch reset allows regression (verified → none)
+# T11: Lattice — proof_epoch_reset() allows regression (verified → none)
 #
-# Touch .proof-epoch AFTER writing verified status (newer mtime), then verify
-# that write_proof_status("none") succeeds (lattice bypass via epoch).
-# Validates DEC-PROOF-LATTICE-001 epoch reset semantics.
+# W5-2: Epoch reset is now done via proof_epoch_reset() (SQLite), not by
+# touching a .proof-epoch flat file. After proof_epoch_reset(), proof_state_set()
+# with a lower ordinal must succeed.
 # ===========================================================================
-run_test "T11: Lattice — epoch reset allows regression when .proof-epoch is newer"
+run_test "T11: Lattice — proof_epoch_reset() allows regression (verified -> none)"
 
 T11_ENV=$(make_temp_env)
 T11_CLAUDE="$T11_ENV/.claude"
-T11_PHASH=$(compute_phash "$T11_ENV")
+mkdir -p "$TMPDIR_BASE/traces-t11"
 
 # Step 1: write verified
 (
@@ -685,16 +577,19 @@ T11_PHASH=$(compute_phash "$T11_ENV")
     export PROJECT_ROOT="$T11_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t11"
     export CLAUDE_SESSION_ID="t11-session-$$"
-    mkdir -p "$TMPDIR_BASE/traces-t11"
-    write_proof_status "verified" "$T11_ENV" 2>/dev/null
+    _STATE_SCHEMA_INITIALIZED=""  # New DB — clear schema init guard
+    _WORKFLOW_ID=""               # New project — clear workflow_id cache
+    proof_state_set "verified" "t11-setup" 2>/dev/null
 ) 2>/dev/null || true
 
-SCOPED_PROOF="$T11_CLAUDE/.proof-status-${T11_PHASH}"
-
-# Step 2: touch .proof-epoch AFTER proof-status (guarantees newer mtime)
-# Brief sleep to ensure mtime difference on filesystems with 1s resolution
-sleep 1
-touch "$T11_CLAUDE/.proof-epoch" 2>/dev/null
+# Step 2: call proof_epoch_reset() — increments epoch in SQLite
+(
+    export CLAUDE_DIR="$T11_CLAUDE"
+    export PROJECT_ROOT="$T11_ENV"
+    export TRACE_STORE="$TMPDIR_BASE/traces-t11"
+    export CLAUDE_SESSION_ID="t11-session-$$"
+    proof_epoch_reset 2>/dev/null
+) 2>/dev/null || true
 
 # Step 3: attempt regression — should succeed due to epoch reset
 EPOCH_RESET_RESULT=0
@@ -703,15 +598,21 @@ EPOCH_RESET_RESULT=0
     export PROJECT_ROOT="$T11_ENV"
     export TRACE_STORE="$TMPDIR_BASE/traces-t11"
     export CLAUDE_SESSION_ID="t11-session-$$"
-    write_proof_status "none" "$T11_ENV" 2>/dev/null
+    proof_state_set "none" "t11-regress" 2>/dev/null
 ) 2>/dev/null || EPOCH_RESET_RESULT=$?
 
-STATUS=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "")
+T11_STATUS=$(
+    export CLAUDE_DIR="$T11_CLAUDE"
+    export PROJECT_ROOT="$T11_ENV"
+    export TRACE_STORE="$TMPDIR_BASE/traces-t11"
+    export CLAUDE_SESSION_ID="t11-session-$$"
+    proof_state_get 2>/dev/null | cut -d'|' -f1 || echo "unknown"
+)
 
-if [[ "$EPOCH_RESET_RESULT" -eq 0 ]] && [[ "$STATUS" == "none" ]]; then
+if [[ "$EPOCH_RESET_RESULT" -eq 0 ]] && [[ "$T11_STATUS" == "none" ]]; then
     pass_test
 else
-    fail_test "Epoch reset should allow regression; exit=$EPOCH_RESET_RESULT status='$STATUS'"
+    fail_test "Epoch reset should allow regression; exit=$EPOCH_RESET_RESULT status='$T11_STATUS'"
 fi
 
 

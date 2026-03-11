@@ -250,17 +250,12 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
         _AV_PHASH_CT=$(project_hash "$PROJECT_ROOT")
         mkdir -p "$TRACE_STORE" 2>/dev/null || true
 
-        # --- W3-2: PRIMARY — SQLite marker_create for autoverify (DEC-STATE-UNIFY-004) ---
+        # SQLite marker for autoverify (DEC-STATE-UNIFY-004)
         require_state 2>/dev/null || true
         _AV_WF_CT=$(workflow_id 2>/dev/null || echo "main")
         marker_create "autoverify" "$_AV_SESSION_CT" "$_AV_WF_CT" "$$" "" "active" 2>/dev/null || true
-        # DUAL-WRITE: dotfile (W5-2 remove)
-        echo "auto-verify|$(date +%s)" > "${TRACE_STORE}/.active-autoverify-${_AV_SESSION_CT}-${_AV_PHASH_CT}"
-        # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
-        declare -f proof_state_set >/dev/null 2>&1 && \
-            PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "verified" "check-tester-autoverify" 2>/dev/null || true
-        # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
-        write_proof_status "verified" "$PROJECT_ROOT"
+        # Write proof state to SQLite (sole authority since W5-2)
+        PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "verified" "check-tester-autoverify" 2>/dev/null || true
         AUTO_VERIFIED=true
     fi
 fi
@@ -362,11 +357,8 @@ fi
 #   keeping them in sync. Fixes bug #81: proof gate stuck on needs-verification
 #   because tester wrote verified to legacy path while gate read from new path.
 if [[ "$PROOF_STATUS" == "missing" && -n "$RESPONSE_TEXT" ]]; then
-    # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
-    declare -f proof_state_set >/dev/null 2>&1 && \
-        PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "check-tester-safetynet" 2>/dev/null || true
-    # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
-    write_proof_status "pending" "$PROJECT_ROOT"
+    # Write proof state to SQLite (sole authority since W5-2)
+    PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "check-tester-safetynet" 2>/dev/null || true
     PROOF_STATUS="pending"
 fi
 

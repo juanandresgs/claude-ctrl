@@ -92,6 +92,119 @@ _emit_findings() {
     printf '{"additionalContext":%s}\n' "$escaped"
 }
 
+# --- state-dotfile-bypass gate ---
+# Prevents regression: no hook may bypass the SQLite state API by writing to
+# or reading from proof-status or marker dotfiles directly.
+#
+# Only applies to hooks/*.sh files — tests, scripts, and agents are excluded.
+#
+# @decision DEC-STATE-UNIFY-005
+# @title state-dotfile-bypass lint gate prevents SQLite API bypass in hooks
+# @status accepted
+# @rationale W5-2 removed all flat-file dual-writes and dual-reads from hooks.
+#   Without an enforcement gate, a future implementer could re-introduce dotfile
+#   state I/O, silently bypassing the SQLite proof lifecycle. This gate detects
+#   the specific I/O patterns at write/edit time, before the change is committed.
+#   Only hooks/*.sh files are gated — tests and scripts may legitimately access
+#   dotfiles for diagnostic or validation purposes. Allowlist: comments (#),
+#   legitimate append-only logs (.session-events.jsonl, .hook-timing.log,
+#   .hook-deny.log), cache (.statusline-cache), lint infrastructure (.lint-cooldown).
+_check_state_dotfile_bypass() {
+    local file="$1"
+    local project_root="${PROJECT_ROOT:-$(detect_project_root)}"
+    local rel="${file#"${project_root}/"}"
+
+    # Only gate hooks/*.sh files
+    [[ "$rel" == hooks/*.sh ]] || return 0
+
+    # Patterns that indicate direct state dotfile I/O (violation patterns):
+    #   echo|printf ... > .proof-status*       (write to proof state file)
+    #   echo|printf ... > .test-status*        (write to test status file)
+    #   cat .proof-status | cut .proof-status  (direct read of state files)
+    #   touch .active-guardian- / echo > .active-implementer- (marker creation)
+    #   rm .active-guardian- / rm .proof-status- (marker/state deletion)
+    #
+    # Allowlist patterns (legitimate uses):
+    #   Lines starting with # (comments)
+    #   Lines containing .session-events.jsonl (append-only event log)
+    #   Lines containing .hook-timing.log or .hook-deny.log (append-only logs)
+    #   Lines containing .statusline-cache (UI cache, not state)
+    #   Lines containing .lint-cooldown (lint infrastructure)
+    #   Lines containing resolve_proof_file (returns path, does not do I/O)
+
+    local violations=""
+    while IFS= read -r line; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        # Skip allowlisted patterns
+        [[ "$line" == *".session-events.jsonl"* ]] && continue
+        [[ "$line" == *".hook-timing.log"* ]] && continue
+        [[ "$line" == *".hook-deny.log"* ]] && continue
+        [[ "$line" == *".statusline-cache"* ]] && continue
+        [[ "$line" == *".lint-cooldown"* ]] && continue
+        [[ "$line" == *"resolve_proof_file"* ]] && continue
+        # resolve_proof_file_for_path returns a path but does not do I/O itself
+        [[ "$line" == *"resolve_proof_file_for_path"* ]] && continue
+
+        # Check for violation patterns
+        local is_violation=false
+
+        # Direct writes to proof/test status dotfiles
+        if [[ "$line" =~ ('>'|'>>')[[:space:]]*(\"|\$\{[^}]+\})?\.proof-status || \
+              "$line" =~ ('>'|'>>')[[:space:]]*(\"|\$\{[^}]+\})?\.test-status ]]; then
+            is_violation=true
+        fi
+
+        # printf to state dotfiles
+        if [[ "$line" =~ printf[[:space:]].*[[:space:]]('>'|'>>')+[[:space:]].*\.proof-status || \
+              "$line" =~ printf[[:space:]].*[[:space:]]('>'|'>>')+[[:space:]].*\.test-status ]]; then
+            is_violation=true
+        fi
+
+        # Direct cat/cut reads of state dotfiles
+        if [[ "$line" =~ (cat|cut)[[:space:]]+(\")?\.proof-status || \
+              "$line" =~ (cat|cut)[[:space:]]+(\")?\.test-status ]]; then
+            is_violation=true
+        fi
+
+        # Marker dotfile creation: echo/printf/touch to .active-TYPE- files
+        if [[ "$line" =~ (echo|printf|touch)[[:space:]].*[[:space:]]('>'|'>>')*[[:space:]]*(\"|\$\{[^}]+\})?[^/]*\.active-(guardian|implementer|tester|planner|autoverify)- ]]; then
+            is_violation=true
+        fi
+
+        # Marker dotfile deletion: rm .active-TYPE-
+        if [[ "$line" =~ rm[[:space:]].*\.active-(guardian|implementer|tester|planner|autoverify)- ]]; then
+            is_violation=true
+        fi
+
+        # Marker dotfile deletion: rm .proof-status- (historical flat-file cleanup)
+        if [[ "$line" =~ rm[[:space:]].*\.proof-status- ]]; then
+            is_violation=true
+        fi
+
+        if [[ "$is_violation" == "true" ]]; then
+            violations+="  ${line}"$'\n'
+        fi
+    done < "$file"
+
+    if [[ -n "$violations" ]]; then
+        local msg
+        msg="state-dotfile-bypass: Direct dotfile state I/O detected in ${rel}.
+Use state-lib.sh API: proof_state_get/set, marker_create/query, state_emit/events_since
+
+Violations:
+${violations}
+See DEC-STATE-UNIFY-005 for context."
+        local escaped
+        escaped=$(printf '%s' "$msg" | jq -Rs .)
+        printf '{"additionalContext":%s}\n' "$escaped"
+        return 2
+    fi
+    return 0
+}
+
 # --- Shellcheck exclusions matching CI (.github/workflows/validate.yml) ---
 # Hooks use the short exclusion list; tests/scripts use the longer one.
 #
@@ -113,6 +226,16 @@ _shellcheck_exclusions() {
         printf '%s' "SC2034,SC1091,SC2155,SC2011,SC2016,SC2030,SC2031,SC2010,SC2005,SC1007,SC2153,SC2064,SC2329,SC2086,SC1090,SC2129,SC2320,SC2188,SC2015,SC2162,SC2045,SC2001,SC2088,SC2012,SC2105,SC2126,SC2295,SC2002,SC2317,SC2164"
     fi
 }
+
+# --- Run state-dotfile-bypass gate (hooks/*.sh only) ---
+# Run this before shellcheck so violations are reported immediately.
+# The gate exits 2 on violation (soft advisory), 0 on clean.
+_SDB_EXIT=0
+_check_state_dotfile_bypass "$FILE_PATH" || _SDB_EXIT=$?
+if [[ "$_SDB_EXIT" -eq 2 ]]; then
+    # Bypass gate violation reported — exit 2 as soft advisory
+    exit 2
+fi
 
 # --- Run linter and emit results ---
 LINT_OUTPUT=""

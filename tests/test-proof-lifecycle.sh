@@ -117,49 +117,74 @@ fi
 rm -rf "$T02_REPO" "$T02_OTHER"
 
 # ---------------------------------------------------------------------------
-# T03: W2 — write_proof_status("verified") creates guardian marker
+# T03: W2 — write_proof_status("verified") creates SQLite guardian marker
+# W5-2 update: dotfile markers removed; now checks SQLite agent_markers table
 # ---------------------------------------------------------------------------
-run_test "T03: W2 — write_proof_status('verified') creates guardian marker"
+run_test "T03: W2 — write_proof_status('verified') creates SQLite guardian marker"
 
 T03_REPO=$(make_temp_repo)
 T03_TRACE=$(mktemp -d)
+T03_RESULT=""
 
-(
+T03_RESULT=$(
     export CLAUDE_PROJECT_DIR="$T03_REPO"
+    export CLAUDE_DIR="$T03_REPO/.claude"
     export TRACE_STORE="$T03_TRACE"
     export CLAUDE_SESSION_ID="test3-$$"
     source "$HOOKS_DIR/core-lib.sh" 2>/dev/null
     source "$HOOKS_DIR/log.sh" 2>/dev/null
-    write_proof_status "verified" "$T03_REPO" 2>/dev/null
+    source "$HOOKS_DIR/state-lib.sh" 2>/dev/null
+    write_proof_status "verified" "$T03_REPO" 2>/dev/null || true
+    # Check for SQLite guardian marker
+    T03_DB="$T03_REPO/.claude/state/state.db"
+    if [[ -f "$T03_DB" ]]; then
+        marker_count=$(sqlite3 "$T03_DB" \
+            "SELECT COUNT(*) FROM agent_markers WHERE agent_type='guardian' AND status='pre-dispatch';" \
+            2>/dev/null || echo "0")
+        echo "$marker_count"
+    else
+        echo "0"
+    fi
 )
 
-T03_MARKERS=$(ls "$T03_TRACE"/.active-guardian-* 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$T03_MARKERS" -ge 1 ]]; then
+if [[ "${T03_RESULT:-0}" -ge 1 ]]; then
     pass_test
 else
-    fail_test "no .active-guardian-* marker found after write_proof_status('verified')"
+    fail_test "no SQLite guardian pre-dispatch marker found after write_proof_status('verified') — got: ${T03_RESULT}"
 fi
 rm -rf "$T03_REPO" "$T03_TRACE"
 
 # ---------------------------------------------------------------------------
 # T04: W2 — write_proof_status("pending") does NOT create guardian marker
+# W5-2 update: checks SQLite agent_markers table
 # ---------------------------------------------------------------------------
 run_test "T04: W2 — write_proof_status('pending') does NOT create guardian marker"
 
 T04_REPO=$(make_temp_repo)
 T04_TRACE=$(mktemp -d)
 
-(
+T04_RESULT=$(
     export CLAUDE_PROJECT_DIR="$T04_REPO"
+    export CLAUDE_DIR="$T04_REPO/.claude"
     export TRACE_STORE="$T04_TRACE"
     export CLAUDE_SESSION_ID="test4-$$"
     source "$HOOKS_DIR/core-lib.sh" 2>/dev/null
     source "$HOOKS_DIR/log.sh" 2>/dev/null
-    write_proof_status "pending" "$T04_REPO" 2>/dev/null
+    source "$HOOKS_DIR/state-lib.sh" 2>/dev/null
+    write_proof_status "pending" "$T04_REPO" 2>/dev/null || true
+    # Check for SQLite guardian marker — should NOT exist after "pending"
+    T04_DB="$T04_REPO/.claude/state/state.db"
+    if [[ -f "$T04_DB" ]]; then
+        marker_count=$(sqlite3 "$T04_DB" \
+            "SELECT COUNT(*) FROM agent_markers WHERE agent_type='guardian';" \
+            2>/dev/null || echo "0")
+        echo "$marker_count"
+    else
+        echo "0"
+    fi
 )
 
-T04_MARKERS=$(find "$T04_TRACE" -maxdepth 1 -name '.active-guardian-*' 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$T04_MARKERS" -eq 0 ]]; then
+if [[ "${T04_RESULT:-0}" -eq 0 ]]; then
     pass_test
 else
     fail_test "guardian marker found after write_proof_status('pending') — should not exist"
@@ -271,16 +296,24 @@ rm -rf "$T07_REPO" "$T07_TRACE_STORE"
 run_test "T08: W4 — prompt-submit.sh emits DISPATCH GUARDIAN NOW on approval"
 
 T08_REPO=$(make_temp_repo)
-T08_PHASH=$(echo "$T08_REPO" | $_SHA256_CMD | cut -c1-8)
 
-# Create pending proof-status in new state/{phash}/proof-status path
-mkdir -p "$T08_REPO/.claude/state/${T08_PHASH}"
-echo "pending|$(date +%s)" > "$T08_REPO/.claude/state/${T08_PHASH}/proof-status"
+# W5-2: Set up pending proof state in SQLite (flat-file fallback removed)
+(
+    export CLAUDE_PROJECT_DIR="$T08_REPO"
+    export CLAUDE_DIR="$T08_REPO/.claude"
+    export CLAUDE_SESSION_ID="test8setup-$$"
+    source "$HOOKS_DIR/core-lib.sh" 2>/dev/null
+    source "$HOOKS_DIR/log.sh" 2>/dev/null
+    source "$HOOKS_DIR/state-lib.sh" 2>/dev/null
+    # Set proof state to "pending" in SQLite
+    PROJECT_ROOT="$T08_REPO" proof_state_set "pending" "test-setup" 2>/dev/null || true
+) 2>/dev/null
 
 T08_INPUT="{\"prompt\":\"approved\",\"cwd\":\"${T08_REPO}\"}"
 
 T08_OUT=$(
     export CLAUDE_PROJECT_DIR="$T08_REPO"
+    export CLAUDE_DIR="$T08_REPO/.claude"
     export CLAUDE_SESSION_ID="test8-$$"
     printf '%s' "$T08_INPUT" | bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
 )
@@ -377,16 +410,25 @@ rm -rf "$T11_REPO"
 run_test "T12: Fast path — approval keyword with pending proof emits DISPATCH GUARDIAN NOW"
 
 T12_REPO=$(make_temp_repo)
-T12_PHASH=$(echo "$T12_REPO" | $_SHA256_CMD | cut -c1-8)
-mkdir -p "$T12_REPO/.claude/state/${T12_PHASH}"
-echo "pending|$(date +%s)" > "$T12_REPO/.claude/state/${T12_PHASH}/proof-status"
 _CLEANUP_DIRS+=("$T12_REPO")
+
+# W5-2: Set up pending proof state in SQLite (flat-file fallback removed)
+(
+    export CLAUDE_PROJECT_DIR="$T12_REPO"
+    export CLAUDE_DIR="$T12_REPO/.claude"
+    export CLAUDE_SESSION_ID="test12setup-$$"
+    source "$HOOKS_DIR/core-lib.sh" 2>/dev/null
+    source "$HOOKS_DIR/log.sh" 2>/dev/null
+    source "$HOOKS_DIR/state-lib.sh" 2>/dev/null
+    PROJECT_ROOT="$T12_REPO" proof_state_set "pending" "test-setup" 2>/dev/null || true
+) 2>/dev/null
 
 T12_INPUT="{\"prompt\":\"lgtm\",\"cwd\":\"${T12_REPO}\"}"
 
 T12_START=$(date +%s)
 T12_OUT=$(
     export CLAUDE_PROJECT_DIR="$T12_REPO"
+    export CLAUDE_DIR="$T12_REPO/.claude"
     export CLAUDE_SESSION_ID="test12-$$"
     printf '%s' "$T12_INPUT" | _with_timeout 5 bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
 )
@@ -432,23 +474,29 @@ fi
 # ---------------------------------------------------------------------------
 # T14: Stale lock cleanup — CAS succeeds after removing stale lock
 # ---------------------------------------------------------------------------
-run_test "T14: Stale lock cleanup — CAS succeeds after removing stale lock"
+run_test "T14: SQLite CAS succeeds when proof state is pending"
 
+# W5-2: Stale lock cleanup is no longer relevant (SQLite handles atomicity internally).
+# Test that prompt-submit CAS succeeds when proof state is 'pending' in SQLite.
 T14_REPO=$(make_temp_repo)
-T14_PHASH=$(echo "$T14_REPO" | $_SHA256_CMD | cut -c1-8)
-mkdir -p "$T14_REPO/.claude/state/${T14_PHASH}"
-echo "pending|$(date +%s)" > "$T14_REPO/.claude/state/${T14_PHASH}/proof-status"
 _CLEANUP_DIRS+=("$T14_REPO")
 
-# Create stale lock file (backdate by 30 seconds) — new lock path: state/locks/proof.lock
-mkdir -p "$T14_REPO/.claude/state/locks"
-touch "$T14_REPO/.claude/state/locks/proof.lock"
-python3 -c "import os,time; os.utime('$T14_REPO/.claude/state/locks/proof.lock', (time.time()-30, time.time()-30))" 2>/dev/null || true
+# W5-2: Set up pending proof state in SQLite
+(
+    export CLAUDE_PROJECT_DIR="$T14_REPO"
+    export CLAUDE_DIR="$T14_REPO/.claude"
+    export CLAUDE_SESSION_ID="test14setup-$$"
+    source "$HOOKS_DIR/core-lib.sh" 2>/dev/null
+    source "$HOOKS_DIR/log.sh" 2>/dev/null
+    source "$HOOKS_DIR/state-lib.sh" 2>/dev/null
+    PROJECT_ROOT="$T14_REPO" proof_state_set "pending" "test-setup" 2>/dev/null || true
+) 2>/dev/null
 
 T14_INPUT="{\"prompt\":\"approved\",\"cwd\":\"${T14_REPO}\"}"
 
 T14_OUT=$(
     export CLAUDE_PROJECT_DIR="$T14_REPO"
+    export CLAUDE_DIR="$T14_REPO/.claude"
     export CLAUDE_SESSION_ID="test14-$$"
     printf '%s' "$T14_INPUT" | _with_timeout 10 bash "${HOOKS_DIR}/prompt-submit.sh" 2>/dev/null || true
 )
@@ -456,7 +504,7 @@ T14_OUT=$(
 if echo "$T14_OUT" | grep -q "DISPATCH GUARDIAN NOW"; then
     pass_test
 else
-    fail_test "expected DISPATCH GUARDIAN NOW after stale lock; got: $(echo "$T14_OUT" | head -3)"
+    fail_test "expected DISPATCH GUARDIAN NOW with SQLite pending proof; got: $(echo "$T14_OUT" | head -3)"
 fi
 
 # ---------------------------------------------------------------------------

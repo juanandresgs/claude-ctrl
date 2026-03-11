@@ -808,7 +808,19 @@ COMPACT_TEST_DIR=$(mktemp -d)
 git init "$COMPACT_TEST_DIR" >/dev/null 2>&1
 (cd "$COMPACT_TEST_DIR" && git checkout -b feature/compact-test >/dev/null 2>&1 && git commit -m "init" --allow-empty >/dev/null 2>&1)
 mkdir -p "$COMPACT_TEST_DIR/.claude"
-echo "needs-verification|$(date +%s)" > "$COMPACT_TEST_DIR/.claude/.proof-status"
+# W5-2: Set proof state via SQLite (flat-file .proof-status no longer written by W5-2+).
+# Use proof_state_set via a helper that loads state-lib.sh.
+(
+    export CLAUDE_DIR="$COMPACT_TEST_DIR/.claude"
+    export PROJECT_ROOT="$COMPACT_TEST_DIR"
+    export CLAUDE_SESSION_ID="compact-test-$$"
+    export _HOOK_NAME="run-hooks"
+    _STATE_SCHEMA_INITIALIZED=""  # Clear schema guard (new DB)
+    _WORKFLOW_ID=""               # Clear workflow_id cache (new project)
+    source "$HOOKS_DIR/source-lib.sh" 2>/dev/null
+    require_state
+    proof_state_set "needs-verification" "run-hooks-compact-test" 2>/dev/null
+) 2>/dev/null || true
 
 COMPACT_FIXTURE="$COMPACT_TEST_DIR/fixture-$$.json"
 echo '{"compact_trigger":"manual"}' > "$COMPACT_FIXTURE"

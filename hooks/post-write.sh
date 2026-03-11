@@ -152,13 +152,12 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
             #   A recently-created file (within GUARDIAN_ACTIVE_TTL) is still active.
             #
             # @decision DEC-STATE-UNIFY-004
-            # @title W3-2: SQLite PRIMARY marker check in post-write.sh with dotfile fallback
+            # @title W5-2: SQLite sole authority for guardian/autoverify marker detection
             # @status accepted
             # @rationale marker_query provides PID liveness — dead-PID markers excluded.
-            #   SQLite detection is tried first; dotfile glob is FALLBACK (W5-2 remove)
-            #   for pre-migration markers. Both guardian and autoverify markers are checked.
+            #   Dotfile glob fallback removed in W5-2. All markers are now in SQLite.
 
-            # --- W3-2: PRIMARY — SQLite marker_query (guardian and autoverify) ---
+            # SQLite marker_query (guardian and autoverify)
             declare -f require_state >/dev/null 2>&1 && require_state 2>/dev/null || true
             if declare -f marker_query >/dev/null 2>&1; then
                 _pw_sql_guardian=$(marker_query "guardian" 2>/dev/null || echo "")
@@ -168,42 +167,6 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                     _pw_sql_autoverify=$(marker_query "autoverify" 2>/dev/null || echo "")
                     [[ -n "$_pw_sql_autoverify" ]] && _guardian_active=true
                 fi
-            fi
-
-            # --- W3-2: FALLBACK — dotfile glob (W5-2 remove when SQLite is sole source) ---
-            if [[ "$_guardian_active" == "false" ]]; then
-                _pw_now=$(date +%s)
-                for _gm in "${TRACE_STORE:-$HOME/.claude/traces}/.active-guardian-"*; do
-                    if [[ -f "$_gm" ]]; then
-                        _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "")
-                        # Fallback: no pipe delimiter → use file mtime
-                        if [[ ! "$_marker_ts" =~ ^[0-9]+$ ]]; then
-                            _marker_ts=$(_file_mtime "$_gm")
-                        fi
-                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _pw_now - _marker_ts )) -lt ${GUARDIAN_ACTIVE_TTL:-600} ]]; then
-                            _guardian_active=true; break
-                        fi
-                    fi
-                done
-            fi
-
-            # Check auto-verify markers — FALLBACK dotfile (W5-2 remove)
-            # @decision DEC-PROOF-RACE-001: Auto-verify markers created by post-task.sh and
-            # check-tester.sh protect the window between "verified" write and Guardian dispatch.
-            # Same TTL as guardian markers prevents permanent blocking from crashes.
-            if [[ "$_guardian_active" == "false" ]]; then
-                _pw_now=$(date +%s)
-                for _avm in "${TRACE_STORE:-$HOME/.claude/traces}/.active-autoverify-"*; do
-                    if [[ -f "$_avm" ]]; then
-                        _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "")
-                        if [[ ! "$_marker_ts" =~ ^[0-9]+$ ]]; then
-                            _marker_ts=$(_file_mtime "$_avm")
-                        fi
-                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _pw_now - _marker_ts )) -lt ${GUARDIAN_ACTIVE_TTL:-600} ]]; then
-                            _guardian_active=true; break
-                        fi
-                    fi
-                done
             fi
 
             if [[ "$_guardian_active" == "false" ]]; then
@@ -221,40 +184,12 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                     # @status accepted
                     # @rationale Files written to a worktree (/.worktrees/NAME/...) should
                     #   only invalidate that worktree's proof status, not the project-wide
-                    #   or other worktrees' proof status. resolve_proof_file_for_path()
-                    #   returns the workflow-specific path. If that file exists and is
-                    #   "verified", we write "pending" directly (bypassing write_proof_status
-                    #   lattice which is project-scoped). For "main" workflow, fall back to
-                    #   the standard write_proof_status() call for backward compatibility.
-                    _wf_proof_file=$(resolve_proof_file_for_path "$FILE_PATH")
-                    if [[ "$_wf_proof_file" == */worktrees/* ]]; then
-                        # Workflow-scoped invalidation: write directly to worktree proof file
-                        # Create parent directory if needed
-                        mkdir -p "$(dirname "$_wf_proof_file")" 2>/dev/null || true
-                        _wf_current=""
-                        if [[ -f "$_wf_proof_file" ]]; then
-                            _wf_current=$(cut -d'|' -f1 "$_wf_proof_file" 2>/dev/null || echo "")
-                        fi
-                        # Only downgrade: verified→pending (not committed→pending, etc.)
-                        if [[ "$_wf_current" == "verified" || "$_wf_current" == "needs-verification" || -z "$_wf_current" ]]; then
-                            # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
-                            declare -f proof_state_set >/dev/null 2>&1 && \
-                                PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "post-write-wf" 2>/dev/null || true
-                            # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
-                            printf 'pending|%s\n' "$(date +%s)" > "${_wf_proof_file}.tmp" && \
-                                mv "${_wf_proof_file}.tmp" "$_wf_proof_file" || true
-                        fi
-                    else
-                        # Main workflow: use standard write_proof_status (lattice-enforced)
-                        # || true: write_proof_status returns 1 if the monotonic lattice
-                        # (DEC-PROOF-LATTICE-001) rejects verified→pending without an epoch reset.
-                        # Non-fatal: if the epoch reset isn't set up, proof stays verified.
-                        # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
-                        declare -f proof_state_set >/dev/null 2>&1 && \
-                            PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "post-write-main" 2>/dev/null || true
-                        # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
-                        write_proof_status "pending" "$PROJECT_ROOT" || true
-                    fi
+                    #   or other worktrees' proof status. W5-2: All proof state writes go to
+                    #   SQLite via proof_state_set(). Flat-file writes removed.
+                    # Invalidate proof state: write "pending" to SQLite (sole authority since W5-2)
+                    # || true: proof_state_set returns 1 if the monotonic lattice rejects the
+                    # transition (DEC-PROOF-LATTICE-001). Non-fatal.
+                    PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "pending" "post-write" 2>/dev/null || true
                 fi
             fi
         fi

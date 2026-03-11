@@ -154,7 +154,6 @@ COMPLIANCE_IMPL_INIT_EOF
     _CI_SESSION="${CLAUDE_SESSION_ID:-$$}"
     _CI_WF_ID=$(workflow_id 2>/dev/null || echo "main")
     marker_update "implementer" "$_CI_SESSION" "$_CI_WF_ID" "completed" "${TRACE_ID}" 2>/dev/null || true
-    # DUAL-WRITE: dotfile cleanup already handled by finalize_trace (W5-2 remove comment)
 
     # --- Observatory Phase 1: Snapshot pre-capture artifact existence ---
     # Record which artifacts existed BEFORE auto-capture runs. This lets compliance.json

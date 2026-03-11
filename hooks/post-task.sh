@@ -49,6 +49,7 @@ source "$(dirname "$0")/source-lib.sh"
 
 require_trace
 require_session
+require_state  # Needed for proof_state_set (via write_proof_status) and marker_create
 
 init_hook
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
@@ -823,12 +824,13 @@ fi
 # Create auto-verify protection marker — prevents post-write.sh from
 # invalidating proof-status before Guardian is dispatched.
 # @decision DEC-PROOF-RACE-001: Auto-verify markers protect the verified→guardian
-# dispatch gap. Same pipe-delimited pattern as guardian markers. Cleaned up when
-# Guardian takes over at Gate A.
+# dispatch gap. Cleaned up when Guardian takes over at Gate A.
+# W5-2: Migrated from flat-file to SQLite via marker_create (sole authority).
 _AV_SESSION="${CLAUDE_SESSION_ID:-$$}"
 _AV_PHASH=$(project_hash "$PROJECT_ROOT")
 mkdir -p "$TRACE_STORE" 2>/dev/null || true
-echo "auto-verify|$(date +%s)" > "${TRACE_STORE}/.active-autoverify-${_AV_SESSION}-${_AV_PHASH}"
+_AV_WF=$(workflow_id 2>/dev/null || echo "main")
+marker_create "autoverify" "$_AV_SESSION" "$_AV_WF" "$$" "" "active" 2>/dev/null || true
 
 write_proof_status "verified" "$PROJECT_ROOT"
 

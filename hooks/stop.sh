@@ -646,24 +646,11 @@ if $_RUN_SUMMARY; then
     esac
     SESS_SUMMARY+="\n$GIT_LINE"
 
-    # Proof-of-work status
-    # W5-1: Primary read via proof_state_get (SQLite). Falls back to flat files.
-    # W5-2: Remove flat-file reads (_NEW_PROOF, _OLD_PROOF) once all readers migrated.
-    _PHASH=$(project_hash "$PROJECT_ROOT")
+    # Proof-of-work status — W5-2: SQLite is sole authority via proof_state_get
     _PROOF_VAL=""
-    # Primary: SQLite via proof_state_get (returns "status|epoch|workflow_id" pipe-delimited)
-    _PSG_OUT=$(proof_state_get "$PROJECT_ROOT" 2>/dev/null || true)
+    _PSG_OUT=$(proof_state_get 2>/dev/null || true)
     if [[ -n "$_PSG_OUT" ]]; then
         _PROOF_VAL=$(printf '%s' "$_PSG_OUT" | cut -d'|' -f1)
-    else
-        # Fallback: flat files (W5-2 remove when all readers use proof_state_get)
-        _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"  # W5-2 remove
-        _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"        # W5-2 remove
-        if [[ -f "$_NEW_PROOF" ]]; then
-            _PROOF_VAL=$(cut -d'|' -f1 "$_NEW_PROOF" 2>/dev/null || echo "")
-        elif [[ -f "$_OLD_PROOF" ]]; then
-            _PROOF_VAL=$(cut -d'|' -f1 "$_OLD_PROOF" 2>/dev/null || echo "")
-        fi
     fi
     case "${_PROOF_VAL:-}" in
         verified)           SESS_SUMMARY+="\nProof: verified." ;;

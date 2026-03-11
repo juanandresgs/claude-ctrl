@@ -167,7 +167,6 @@ COMPLIANCE_GUARDIAN_INIT_EOF
     _CG_SESSION="${CLAUDE_SESSION_ID:-$$}"
     _CG_WF_ID=$(workflow_id 2>/dev/null || echo "main")
     marker_update "guardian" "$_CG_SESSION" "$_CG_WF_ID" "completed" "${TRACE_ID}" 2>/dev/null || true
-    # DUAL-WRITE: dotfile cleanup already handled by finalize_trace (W5-2 remove comment)
 fi
 
 get_git_state "$PROJECT_ROOT"
@@ -395,37 +394,18 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     if [[ -n "$HAS_COMMIT" ]]; then
         # Clean the canonical scoped proof-status file after successful commit.
         # @decision DEC-ISOLATION-006
-        # @title check-guardian cleans the canonical scoped proof-status file
+        # @title check-guardian transitions proof state to committed after successful commit
         # @status accepted
-        # @rationale Updated for RSM Phase 3 dual-write migration: check new state/
-        #   directory first, fall back to old dotfile. Both are cleaned after commit
-        #   to prevent stale "verified" from bypassing the proof gate in the next cycle.
-        _PHASH=$(project_hash "$PROJECT_ROOT")
-        _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"
-        _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-        # Check new path first, fall back to old
-        SCOPED_PROOF=""
-        if [[ -f "$_NEW_PROOF" ]]; then
-            SCOPED_PROOF="$_NEW_PROOF"
-        elif [[ -f "$_OLD_PROOF" ]]; then
-            SCOPED_PROOF="$_OLD_PROOF"
-        fi
-        if [[ -n "$SCOPED_PROOF" ]]; then
-            if validate_state_file "$SCOPED_PROOF" 2; then
-                PROOF_VAL=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "")
-            else
-                PROOF_VAL=""  # corrupt — skip cleanup (leave for manual review)
-            fi
-            if [[ "$PROOF_VAL" == "verified" ]]; then
-                # --- W2-1: PRIMARY write to SQLite via proof_state_set (DEC-STATE-UNIFY-004) ---
-                declare -f proof_state_set >/dev/null 2>&1 && \
-                    PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "committed" "check-guardian" 2>/dev/null || true
-                # DUAL-WRITE: flat file (W5-2 remove when all readers migrated to proof_state_get)
-                write_proof_status "committed" "$PROJECT_ROOT"
-                # Clean both flat-file locations (W5-2: rm these lines when dual-write removed)
-                rm -f "$_NEW_PROOF" "$_OLD_PROOF"
-                log_info "CHECK-GUARDIAN" "Cleaned proof-status after successful commit"
-            fi
+        # @rationale W5-2: SQLite is the sole authority for proof state. After a successful
+        #   commit, proof_state_set("committed") transitions the state in the proof_state table,
+        #   preventing stale "verified" from bypassing the proof gate in the next cycle.
+        #   Flat-file cleanup removed since flat-file writes were eliminated in W5-2.
+        # Read current proof state from SQLite (sole authority since W5-2)
+        PROOF_VAL=$(proof_state_get 2>/dev/null | cut -d'|' -f1 || echo "")
+        if [[ "$PROOF_VAL" == "verified" ]]; then
+            # Transition to committed in SQLite
+            PROJECT_ROOT="$PROJECT_ROOT" proof_state_set "committed" "check-guardian" 2>/dev/null || true
+            log_info "CHECK-GUARDIAN" "Proof state set to committed after successful commit"
         fi
 
         # Check 7b: Post-merge worktree directory verification.

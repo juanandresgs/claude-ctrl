@@ -15,7 +15,7 @@
 #   state_dir           - Return canonical state directory for project
 #   state_locks_dir     - Return centralized locks directory
 #   state_migrate       - Run pending schema migrations (idempotent)
-#   proof_state_get     - Read proof state as pipe-delimited string (with flat-file fallback)
+#   proof_state_get     - Read proof state as pipe-delimited string (SQLite sole authority)
 #   proof_state_set     - Transition proof state with monotonic lattice enforcement
 #   proof_epoch_reset   - Bump epoch to allow proof state regression
 #   marker_create       - Create an agent marker in agent_markers table
@@ -705,13 +705,10 @@ state_locks_dir() {
 #   Return current proof state as pipe-delimited string:
 #     status|epoch|updated_at|updated_by
 #   If WORKFLOW_ID not provided, uses workflow_id().
-#   Returns empty string (exit 1) if no entry found and no flat-file fallback.
+#   Returns empty string (exit 1) if no entry found.
 #
-#   Dual-read fallback (DEC-STATE-UNIFY-004): when the proof_state table has
-#   no row for the workflow, fall back to the flat proof-status file at:
-#     $CLAUDE_DIR/state/{phash}/proof-status  (new path)
-#     $CLAUDE_DIR/.proof-status-{phash}       (old path)
-#   Flat-file output uses the format: status|0|timestamp|flat-file-fallback
+#   W5-2: Flat-file fallback removed. SQLite is the sole authority for proof state.
+#   All writers use proof_state_set(); all readers use proof_state_get().
 #
 # @decision DEC-STATE-UNIFY-003
 # @title proof_state typed table for structured proof lifecycle state
@@ -726,6 +723,15 @@ state_locks_dir() {
 #   scoped to proof lifecycle semantics; (4) workflow_id as PRIMARY KEY
 #   enforces one-proof-state-per-workflow invariant at the DB level.
 #   This is the typed table approach from DEC-STATE-UNIFY-003 in MASTER_PLAN.md.
+#
+# @decision DEC-STATE-UNIFY-004
+# @title W5-2: Remove flat-file dual-read fallback from proof_state_get
+# @status accepted
+# @rationale All hook callers have been migrated to proof_state_set() for writes
+#   and proof_state_get() for reads. The dual-write window (W2-1 through W5-1) is
+#   closed. The flat-file fallback is no longer needed and would allow stale
+#   flat files to shadow correct SQLite state. Removing it makes SQLite the sole
+#   authority and enables the state-dotfile-bypass lint gate.
 proof_state_get() {
     local wf_id="${1:-}"
     if [[ -z "$wf_id" ]]; then
@@ -747,34 +753,6 @@ LIMIT 1;
     if [[ -n "$result" ]]; then
         echo "$result"
         return 0
-    fi
-
-    # Dual-read fallback: read flat proof-status file (DEC-STATE-UNIFY-004).
-    # Flat-file format: "status|timestamp" (written by write_proof_status()).
-    # We synthesize the 4-field output as: status|0|timestamp|flat-file-fallback
-    local claude_dir="${CLAUDE_DIR:-$(get_claude_dir)}"
-    local project_root="${PROJECT_ROOT:-$(detect_project_root 2>/dev/null || echo "$PWD")}"
-    local phash
-    phash=$(project_hash "$project_root")
-    local new_path="${claude_dir}/state/${phash}/proof-status"
-    local old_path="${claude_dir}/.proof-status-${phash}"
-
-    local flat_file=""
-    if [[ -f "$new_path" ]]; then
-        flat_file="$new_path"
-    elif [[ -f "$old_path" ]]; then
-        flat_file="$old_path"
-    fi
-
-    if [[ -n "$flat_file" ]]; then
-        local flat_val flat_ts
-        flat_val=$(cut -d'|' -f1 "$flat_file" 2>/dev/null || true)
-        flat_ts=$(cut -d'|' -f2 "$flat_file" 2>/dev/null || true)
-        [[ -z "$flat_ts" ]] && flat_ts=$(date +%s)
-        if [[ -n "$flat_val" ]]; then
-            echo "${flat_val}|0|${flat_ts}|flat-file-fallback"
-            return 0
-        fi
     fi
 
     return 1
@@ -1423,84 +1401,6 @@ COMMIT;
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Legacy functions (preserved for Wave 2 dual-write migration)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# _legacy_state_update KEY VALUE [SOURCE]
-#   Original jq-based state_update. Renamed for Wave 2 dual-write.
-#   DEPRECATED: Use state_update() instead. Kept for migration compatibility.
-#
-# @decision DEC-STATE-002
-# @title flock on state_update() to prevent TOCTOU race conditions (legacy, superseded)
-# @status superseded
-# @rationale SQLite WAL handles concurrency without external locking.
-#   This implementation is preserved for the Wave 2 dual-write window only.
-_legacy_state_update() {
-    local key="${1:?_legacy_state_update requires a key}"
-    local value="${2:?_legacy_state_update requires a value}"
-    local source="${3:-${_HOOK_NAME:-unknown}}"
-    local claude_dir="${CLAUDE_DIR:-$(get_claude_dir 2>/dev/null || echo "$HOME/.claude")}"
-    local state_dir_base="${claude_dir}/state"
-    mkdir -p "$state_dir_base" 2>/dev/null || true
-    local state_file="${state_dir_base}/state.json"
-    local locks_dir="${state_dir_base}/locks"
-    mkdir -p "$locks_dir" 2>/dev/null || true
-    local lockfile="${locks_dir}/state.lock"
-    local timestamp
-    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-    mkdir -p "$claude_dir" 2>/dev/null || return 0
-
-    (
-        if ! _lock_fd 5 9; then
-            log_info "STATE" "lock timeout for ${key}, skipping update" 2>/dev/null || true
-            return 0
-        fi
-
-        if [[ ! -f "$state_file" ]]; then
-            echo '{"history":[]}' > "$state_file" 2>/dev/null || return 0
-        fi
-
-        local tmp="${state_file}.tmp.$$"
-        jq --arg key "$key" \
-           --arg val "$value" \
-           --arg src "$source" \
-           --arg ts "$timestamp" \
-           '
-           setpath($key | split(".") | map(select(. != "")); $val) |
-           .history = ([{key: $key, value: $val, source: $src, ts: $ts}] + (.history // []))[:20]
-           ' "$state_file" > "$tmp" 2>/dev/null && mv "$tmp" "$state_file" 2>/dev/null || {
-            rm -f "$tmp" 2>/dev/null
-            return 0
-        }
-
-        log_info "STATE" "updated ${key}=${value} (source=${source})" 2>/dev/null || true
-    ) 9>"$lockfile"
-}
-
-# _legacy_state_read KEY
-#   Original jq-based state_read. Renamed for Wave 2 dual-write.
-#   DEPRECATED: Use state_read() instead. Kept for migration compatibility.
-_legacy_state_read() {
-    local key="${1:?_legacy_state_read requires a key}"
-    local claude_dir="${CLAUDE_DIR:-$(get_claude_dir 2>/dev/null || echo "$HOME/.claude")}"
-    local state_file="${claude_dir}/state/state.json"
-    if [[ ! -f "$state_file" && -f "${claude_dir}/state.json" ]]; then
-        state_file="${claude_dir}/state.json"
-    fi
-
-    [[ ! -f "$state_file" ]] && return 1
-
-    local value
-    value=$(jq -r "getpath(\"${key}\" | split(\".\") | map(select(. != \"\"))) // empty" "$state_file" 2>/dev/null)
-    if [[ -n "$value" ]]; then
-        echo "$value"
-        return 0
-    fi
-    return 1
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Integrity Check and Recovery
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1583,7 +1483,6 @@ export -f _migration_001_initial_schema
 export -f proof_state_get proof_state_set proof_epoch_reset
 export -f marker_create marker_query marker_update marker_cleanup
 export -f state_emit state_events_since state_checkpoint state_events_count state_gc_events
-export -f _legacy_state_update _legacy_state_read
 export -f _sql_escape _proof_ordinal
 
 _STATE_LIB_LOADED=1
