@@ -18,6 +18,7 @@ require_session
 require_git
 require_plan
 require_trace  # for TRACE_STORE (active trace listing at compaction time)
+require_state  # W5-1: needed for proof_state_get
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
@@ -118,9 +119,30 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     fi
 fi
 
+# --- Proof state ---
+# W5-1: Primary read via proof_state_get (SQLite). Falls back to flat files.
+# W5-2: Remove flat-file fallback when all readers use proof_state_get.
+_PHASH_CP=$(project_hash "$PROJECT_ROOT")
+_CP_PROOF_VAL=""
+_CP_PSG=$(proof_state_get "$PROJECT_ROOT" 2>/dev/null || true)
+if [[ -n "$_CP_PSG" ]]; then
+    _CP_PROOF_VAL=$(printf '%s' "$_CP_PSG" | cut -d'|' -f1)
+else
+    # Flat-file fallback (W5-2 remove)
+    _CP_NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH_CP}/proof-status"  # W5-2 remove
+    _CP_OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH_CP}"        # W5-2 remove
+    if [[ -f "$_CP_NEW_PROOF" ]]; then
+        _CP_PROOF_VAL=$(cut -d'|' -f1 "$_CP_NEW_PROOF" 2>/dev/null || echo "")
+    elif [[ -f "$_CP_OLD_PROOF" ]]; then
+        _CP_PROOF_VAL=$(cut -d'|' -f1 "$_CP_OLD_PROOF" 2>/dev/null || echo "")
+    fi
+fi
+if [[ -n "$_CP_PROOF_VAL" && "$_CP_PROOF_VAL" != "none" ]]; then
+    CONTEXT_PARTS+=("Proof status: ${_CP_PROOF_VAL}")
+fi
+
 # --- Test status ---
 # Check new path (state/{phash}/test-status) first, fall back to legacy .test-status
-_PHASH_CP=$(project_hash "$(detect_project_root)")
 TEST_STATUS="${CLAUDE_DIR}/state/${_PHASH_CP}/test-status"
 if [[ ! -f "$TEST_STATUS" ]]; then
     TEST_STATUS="${CLAUDE_DIR}/.test-status"

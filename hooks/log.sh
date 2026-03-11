@@ -525,8 +525,10 @@ write_proof_status() {
 
         log_info "write_proof_status" "Wrote '${proof_status}' to canonical proof-status for project $(basename "$project_root") [${phash}]"
 
-        # Dual-write to state.json (audit/coordination layer)
-        type state_update &>/dev/null && state_update ".proof.status" "$proof_status" "write_proof_status" || true
+        # W5-1: direct state_update (type guard removed; state-lib loaded by callers via require_state)
+        state_update ".proof.status" "$proof_status" "write_proof_status" >/dev/null 2>/dev/null || true
+        # W5-1: emit proof transition event to ledger (best-effort; stdout suppressed — state_emit outputs row ID)
+        state_emit "proof.transition" "{\"to\":\"${proof_status}\",\"project\":\"${phash}\"}" >/dev/null 2>/dev/null || true
     ) 9>"$lockfile"
     _result=$?
     return $_result

@@ -186,7 +186,11 @@ track_subagent_start() {
     else
         echo "ACTIVE|${agent_type}|$(date +%s)" >> "$tracker"
     fi
-    type state_update &>/dev/null && state_update ".agents.${agent_type}.status" "active" "track_subagent_start" || true
+    # W5-1: direct state_update (type guard removed; require_state called by callers)
+    state_update ".agents.${agent_type}.status" "active" "track_subagent_start" 2>/dev/null || true
+    # W5-1: emit lifecycle event to event ledger (best-effort; stdout suppressed — state_emit outputs row ID)
+    local _sa_start_session="${CLAUDE_SESSION_ID:-$$}"
+    state_emit "agent.started" "{\"type\":\"${agent_type}\",\"session\":\"${_sa_start_session}\"}" >/dev/null 2>/dev/null || true
 }
 
 track_subagent_stop() {
@@ -222,7 +226,11 @@ track_subagent_stop() {
     else
         rm -f "$tmp"
     fi
-    type state_update &>/dev/null && state_update ".agents.${agent_type}.status" "inactive" "track_subagent_stop" || true
+    # W5-1: direct state_update (type guard removed; require_state called by callers)
+    state_update ".agents.${agent_type}.status" "inactive" "track_subagent_stop" 2>/dev/null || true
+    # W5-1: emit lifecycle event to event ledger (best-effort; stdout suppressed — state_emit outputs row ID)
+    local _sa_stop_session="${CLAUDE_SESSION_ID:-$$}"
+    state_emit "agent.stopped" "{\"type\":\"${agent_type}\",\"session\":\"${_sa_stop_session}\"}" >/dev/null 2>/dev/null || true
 }
 
 get_subagent_status() {

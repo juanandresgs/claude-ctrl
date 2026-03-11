@@ -72,6 +72,7 @@ source "$(dirname "$0")/source-lib.sh"
 require_git
 require_plan
 require_session
+require_state  # W5-1: needed for proof_state_get, state_emit
 # require_trace and require_doc deferred to inside their gated blocks (DEC-PERF-004)
 
 init_hook
@@ -97,6 +98,11 @@ RESPONSE=$(printf '%s' "$_PARSED_FIELDS" | tail -n +2)
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
+
+# W5-1: emit session.end lifecycle event (best-effort — must never break the hook)
+_STOP_BRANCH="${GIT_BRANCH:-unknown}"  # GIT_BRANCH populated by require_git above
+_STOP_SID="${CLAUDE_SESSION_ID:-$$}"
+state_emit "session.end" "{\"session\":\"${_STOP_SID}\",\"branch\":\"${_STOP_BRANCH}\"}" >/dev/null 2>/dev/null || true
 
 # Find session tracking file via shared library (DEC-V3-005)
 # OPT-3: Call get_session_changes once here and save the file path.
@@ -641,35 +647,30 @@ if $_RUN_SUMMARY; then
     SESS_SUMMARY+="\n$GIT_LINE"
 
     # Proof-of-work status
-    # OPT-5: Fast path — when no active-worktree breadcrumb exists, read .proof-status
-    # directly from CLAUDE_DIR (common non-worktree case). Skip the full breadcrumb
-    # chain. Falls back to resolve_proof_file() when breadcrumbs are present.
+    # W5-1: Primary read via proof_state_get (SQLite). Falls back to flat files.
+    # W5-2: Remove flat-file reads (_NEW_PROOF, _OLD_PROOF) once all readers migrated.
     _PHASH=$(project_hash "$PROJECT_ROOT")
-    # New path first (state/{phash}/proof-status), fall back to legacy .proof-status-{phash}
-    _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"
-    _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-    if [[ -f "$_NEW_PROOF" ]]; then
-        PROOF_STATUS_FILE="$_NEW_PROOF"
-    elif [[ -f "$_OLD_PROOF" ]]; then
-        PROOF_STATUS_FILE="$_OLD_PROOF"
+    _PROOF_VAL=""
+    # Primary: SQLite via proof_state_get (returns "status|epoch|workflow_id" pipe-delimited)
+    _PSG_OUT=$(proof_state_get "$PROJECT_ROOT" 2>/dev/null || true)
+    if [[ -n "$_PSG_OUT" ]]; then
+        _PROOF_VAL=$(printf '%s' "$_PSG_OUT" | cut -d'|' -f1)
     else
-        PROOF_STATUS_FILE=""
-    fi
-    if [[ -n "$PROOF_STATUS_FILE" && -f "$PROOF_STATUS_FILE" ]]; then
-        if validate_state_file "$PROOF_STATUS_FILE" 2; then
-            _PROOF_VAL=$(cut -d'|' -f1 "$PROOF_STATUS_FILE" 2>/dev/null || echo "")
-        else
-            _PROOF_VAL=""  # corrupt — skip
+        # Fallback: flat files (W5-2 remove when all readers use proof_state_get)
+        _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"  # W5-2 remove
+        _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"        # W5-2 remove
+        if [[ -f "$_NEW_PROOF" ]]; then
+            _PROOF_VAL=$(cut -d'|' -f1 "$_NEW_PROOF" 2>/dev/null || echo "")
+        elif [[ -f "$_OLD_PROOF" ]]; then
+            _PROOF_VAL=$(cut -d'|' -f1 "$_OLD_PROOF" 2>/dev/null || echo "")
         fi
-        case "$_PROOF_VAL" in
-            verified)           SESS_SUMMARY+="\nProof: verified." ;;
-            pending)            SESS_SUMMARY+="\nProof: PENDING." ;;
-            needs-verification) SESS_SUMMARY+="\nProof: PENDING." ;;
-            *)                  SESS_SUMMARY+="\nProof: not started." ;;
-        esac
-    else
-        SESS_SUMMARY+="\nProof: not started."
     fi
+    case "${_PROOF_VAL:-}" in
+        verified)           SESS_SUMMARY+="\nProof: verified." ;;
+        pending)            SESS_SUMMARY+="\nProof: PENDING." ;;
+        needs-verification) SESS_SUMMARY+="\nProof: PENDING." ;;
+        *)                  SESS_SUMMARY+="\nProof: not started." ;;
+    esac
 
     # Workflow phase → next-action guidance
     IS_MAIN=false

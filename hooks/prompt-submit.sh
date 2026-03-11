@@ -129,8 +129,8 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
                 echo "pre-verified|${timestamp}" > "${trace_store}/.active-guardian-${session}-${phash}" 2>/dev/null || true
             fi
             log_info "cas_proof_status" "CAS succeeded: ${expected} → ${new_val}" 2>/dev/null || true
-            # Dual-write to state.json
-            type state_update &>/dev/null && state_update ".proof.status" "$new_val" "cas_proof_status" || true
+            # W5-1: direct state_update (type guard removed; require_state called at prompt-submit top)
+            state_update ".proof.status" "$new_val" "cas_proof_status" 2>/dev/null || true
             exit 0
         ) 9>"$lockfile"
         _result=$?

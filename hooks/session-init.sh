@@ -67,6 +67,20 @@ CLAUDE_DIR=$(get_claude_dir)
 _PHASH=$(project_hash "$PROJECT_ROOT")
 CONTEXT_PARTS=()
 
+# W5-1: emit session.start lifecycle event (best-effort — must never break the hook)
+_SINIT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+_SINIT_PROJECT=$(basename "$PROJECT_ROOT")
+_SINIT_SID="${CLAUDE_SESSION_ID:-$$}"
+state_emit "session.start" "{\"branch\":\"${_SINIT_BRANCH}\",\"project\":\"${_SINIT_PROJECT}\",\"session\":\"${_SINIT_SID}\"}" >/dev/null 2>/dev/null || true
+
+# W5-1: check pending governor assessments in event ledger
+# If 3+ governor.assessment events are pending (not yet consumed), surface an advisory.
+_PENDING_GOVERNOR=$(state_events_count "governor" "governor.assessment" 2>/dev/null || echo "0")
+[[ "$_PENDING_GOVERNOR" =~ ^[0-9]+$ ]] || _PENDING_GOVERNOR=0
+if (( _PENDING_GOVERNOR >= 3 )); then
+    CONTEXT_PARTS+=("GOVERNOR ADVISORY: ${_PENDING_GOVERNOR} pending assessment events in ledger. Consider dispatching governor to review project trajectory.")
+fi
+
 # --- Record orchestrator session ID for dispatch enforcement ---
 # @decision DEC-DISPATCH-002
 # @title SESSION_ID-based orchestrator detection for pre-write.sh Gate 1.5
