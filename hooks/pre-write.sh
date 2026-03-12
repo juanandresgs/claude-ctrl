@@ -55,7 +55,7 @@ require_session
 # Hooks are invoked with < /dev/null in scan mode, so stdin is empty.
 # This block MUST be before read_input() to avoid early-exit on empty FILE_PATH.
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
-    declare_gate "proof-status-content" "Direct Write/Edit to protected state files (.proof-status, .test-status, .proof-epoch, lock files)" "deny"
+    declare_gate "proof-status-content" "Direct Write/Edit to protected state files (.proof-status, .test-status, lock files)" "deny"
     declare_gate "branch-guard-write" "Source writes on main branch" "deny"
     declare_gate "orchestrator-source-guard" "Source writes from orchestrator context (must use implementer)" "deny"
     declare_gate "plan-check" "Writes without MASTER_PLAN.md" "deny"
@@ -117,10 +117,10 @@ fi
 #   All legitimate status transitions go through write_proof_status() called from
 #   hooks — agents never need to write these files directly.
 # ============================================================
-declare_gate "proof-status-content" "Direct Write/Edit to protected state files (.proof-status, .test-status, .proof-epoch, lock files)" "deny"
+declare_gate "proof-status-content" "Direct Write/Edit to protected state files (.proof-status, .test-status, lock files)" "deny"
 
 if is_protected_state_file "$FILE_PATH"; then
-    emit_deny "Direct writes to .proof-status, .test-status, .proof-epoch, or lock files are not allowed. Status transitions go through write_proof_status() in hooks only. Use the verification flow: run tests, get tester confirmation, user approval triggers prompt-submit.sh."
+    emit_deny "Direct writes to .proof-status, .test-status, or lock files are not allowed. Status transitions go through write_proof_status() in hooks only. Use the verification flow: run tests, get tester confirmation, user approval triggers prompt-submit.sh."
 fi
 
 # ============================================================

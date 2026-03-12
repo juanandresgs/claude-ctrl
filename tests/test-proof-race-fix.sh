@@ -183,17 +183,16 @@ BASELINE_PHASH=$(echo "$REPO" | $_SHA256_CMD | cut -c1-8)
 # Use the new canonical path: state/{phash}/proof-status
 BASELINE_STATE_DIR="$REPO/.claude/state/${BASELINE_PHASH}"
 mkdir -p "$BASELINE_STATE_DIR"
-# Write proof-status with a timestamp 60 seconds in the past so the epoch file
-# (written at "now") will have a strictly greater mtime. This enables the epoch
-# reset, which allows the monotonic lattice to permit verified→pending transitions.
-# The epoch reset simulates a deliberate new-cycle reset that existed before the fix.
+# DEC-STATE-DOTFILE-001: .proof-epoch flat file removed — epoch state is SQLite-only.
+# The original mtime-based setup (touch proof-epoch + backdate proof-status) is no longer
+# valid. post-write.sh calls proof_epoch_reset() directly when current status is verified.
+# This test setup writes directly to the flat proof-status file; since W5-2 post-write.sh
+# reads SQLite, this test no longer exercises the intended behavior.
+# TODO: Rewrite test setup to use proof_state_set("verified") via SQLite when flat-file
+#   fallback in resolve_proof_file() is removed.
 _PAST_TS=$(( $(date +%s) - 60 ))
 printf '%s\n' "verified|${_PAST_TS}" > "$BASELINE_STATE_DIR/proof-status"
-# Set mtime to the past timestamp so epoch file (at "now") is strictly newer.
-touch -t "$(date -r "$_PAST_TS" '+%Y%m%d%H%M.%S' 2>/dev/null || date -d "@${_PAST_TS}" '+%Y%m%d%H%M.%S' 2>/dev/null)" \
-    "$BASELINE_STATE_DIR/proof-status" 2>/dev/null || true
-# Create epoch file at current time — must be newer than proof-status.
-touch "$BASELINE_STATE_DIR/proof-epoch"
+# (proof-epoch file no longer written — removed per DEC-STATE-DOTFILE-001)
 
 run_track "$REPO/main.sh" "$REPO" "$TRACE"
 

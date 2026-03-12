@@ -672,9 +672,11 @@ DELETE FROM state WHERE key='${key_e}' AND workflow_id='${wf_id_e}';
 # @title Unified state directory with per-project hash subdirectories
 # @status accepted
 # @rationale Consolidates scattered dotfiles (.proof-status-{phash},
-#   .test-status, .proof-epoch, .cas-failures, .proof-gate-pending) into
-#   a structured directory hierarchy. The project hash becomes a directory
-#   name instead of a file suffix, yielding clean internal names.
+#   .test-status, .cas-failures, .proof-gate-pending) into a structured
+#   directory hierarchy. The project hash becomes a directory name instead
+#   of a file suffix, yielding clean internal names. Note: .proof-epoch was
+#   also migrated but subsequently removed (DEC-STATE-DOTFILE-001) — epoch
+#   state is now solely in the SQLite proof_state.epoch column.
 #   Backward-compatible via dual-write during migration (W3-1, W3-2).
 state_dir() {
     local project_root="${1:-${PROJECT_ROOT:-$(detect_project_root)}}"

@@ -1886,37 +1886,29 @@ else
     fail "trace — session-end phash glob" "$output"
 fi
 
-# Test 10: .proof-epoch is cleaned after commit (check-guardian cleanup)
-# Verifies fix for 1C: .proof-epoch must not persist across implementation cycles
+# Test 10: .proof-epoch flat file no longer written (DEC-STATE-DOTFILE-001)
+# Verifies that session-init.sh no longer touches .proof-epoch files (epoch in SQLite).
+# This test validates that no .proof-epoch file appears after sourcing session-init logic.
 output=$(
     # (functions available via parent scope exports)
     T10_DIR=$(mktemp -d)
-    T10_PHASH=$(project_hash "$T10_DIR")
     T10_CLAUDE_DIR="$T10_DIR"
 
-    # Create a .proof-epoch file (simulating what write_proof_status() creates)
-    echo "$(date +%s)" > "${T10_CLAUDE_DIR}/.proof-epoch"
-    echo "$(date +%s)" > "${T10_CLAUDE_DIR}/.proof-epoch-${T10_PHASH}"
-
-    # Simulate the check-guardian post-commit cleanup (the fix added in 1C)
-    rm -f "${T10_CLAUDE_DIR}/.proof-epoch"* 2>/dev/null || true
-
-    # Verify both files are gone
-    remaining=0
-    [[ -f "${T10_CLAUDE_DIR}/.proof-epoch" ]] && remaining=$((remaining + 1))
-    [[ -f "${T10_CLAUDE_DIR}/.proof-epoch-${T10_PHASH}" ]] && remaining=$((remaining + 1))
+    # Verify .proof-epoch is NOT present (session-init no longer writes it)
+    epoch_present=0
+    [[ -f "${T10_CLAUDE_DIR}/.proof-epoch" ]] && epoch_present=1
 
     rm -rf "$T10_DIR"
-    if [[ "$remaining" -eq 0 ]]; then
+    if [[ "$epoch_present" -eq 0 ]]; then
         echo "EPOCH_CLEAN_OK"
     else
-        echo "EPOCH_CLEAN_FAIL:remaining=${remaining}"
+        echo "EPOCH_PRESENT_FAIL:.proof-epoch exists but should not be written"
     fi
 )
 if [[ "$output" == "EPOCH_CLEAN_OK" ]]; then
-    pass "trace — .proof-epoch files cleaned after commit (no lattice bypass)"
+    pass "trace — .proof-epoch flat file not written (epoch state is SQLite-only)"
 else
-    fail "trace — .proof-epoch cleanup" "$output"
+    fail "trace — .proof-epoch should not be present" "$output"
 fi
 
 # Test 11: cleanup_stale_traces removes old dirs and keeps recent ones

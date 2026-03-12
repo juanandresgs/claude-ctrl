@@ -358,15 +358,13 @@ REPO=$(make_temp_repo)
 _CLEANUP_DIRS+=("${REPO}")
 # Use scoped path — post-write.sh reads/writes .proof-status-{phash} via resolve_proof_file()
 _TRACK_PROOF=$(scoped_proof_path "$REPO")
-# Write "verified" status directly to the file, bypassing write_proof_status() lattice.
-# Then create .proof-epoch newer than .proof-status — this signals that the next
-# write_proof_status() call (from post-write.sh) is an intentional reset, not a race
-# condition. The monotonic lattice (DEC-PROOF-LATTICE-001) requires epoch_mtime >
-# proof_mtime to allow a verified → pending regression.
-# sleep 1 ensures filesystem mtime granularity (1s on HFS+) makes epoch strictly newer.
+# NOTE: The .proof-epoch flat file was removed in DEC-STATE-DOTFILE-001 (W5-2 cleanup).
+# Since W5-2, post-write.sh reads proof state from SQLite (proof_state_get) and calls
+# proof_epoch_reset() to allow verified→pending regression. This test writes directly
+# to the flat file as a legacy setup path; once resolve_proof_file() returns SQLite-backed
+# paths only, this test will need to be updated to write via proof_state_set().
+# TODO: Update this test setup to use proof_state_set() when flat-file fallback is removed.
 echo "verified|$(date +%s)" > "$_TRACK_PROOF"
-sleep 1
-touch "$REPO/.claude/.proof-epoch"
 # Use $REPO directly as file parent (exists) — post-write.sh exits early if parent missing
 run_track "$REPO/main.sh" "$REPO"
 if [[ -f "$_TRACK_PROOF" ]]; then

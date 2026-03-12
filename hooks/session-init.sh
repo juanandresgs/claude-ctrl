@@ -1072,17 +1072,14 @@ rm -f "${CLAUDE_DIR}/.prompt-count-"*
 rm -f "${CLAUDE_DIR}/.session-start-epoch"
 rm -f "${CLAUDE_DIR}/.subagent-tracker"
 
-# --- Proof-epoch initialization ---
-# Touch proof-epoch at session start to mark the epoch boundary for lattice resets.
-# write_proof_status() in log.sh compares proof-epoch mtime against proof-status mtime:
-# if epoch is newer, a lattice regression (e.g., verified→pending) is allowed as a
-# clean-session reset. Without this touch, epoch mtime predates any proof-status written
-# in a previous session, and the lattice would reject the reset.
-# Dual-write: state/{phash}/proof-epoch (new) + .proof-epoch (legacy migration).
-# The 2>/dev/null || true suppresses errors if CLAUDE_DIR is read-only (graceful degradation).
+# @decision DEC-STATE-DOTFILE-001
+# @title Remove .proof-epoch flat file — SQLite proof_state.epoch is sole authority
+# @status accepted
+# @rationale .proof-epoch was a legacy mtime-based sentinel for monotonic lattice
+#   enforcement in write_proof_status(). Since W5-2, proof_state_set() uses the
+#   SQLite proof_state.epoch column exclusively. No code path reads the flat file.
+#   Removal confirmed by static analysis: zero readers across all hooks/scripts.
 mkdir -p "${CLAUDE_DIR}/state/${_PHASH}" 2>/dev/null || true
-touch "${CLAUDE_DIR}/state/${_PHASH}/proof-epoch" 2>/dev/null || true
-touch "${CLAUDE_DIR}/.proof-epoch" 2>/dev/null || true  # keep during migration
 # Prune orphaned session-scoped tracker files from crashed sessions.
 # Each tracker is named .subagent-tracker-<SESSION_ID_or_PID>.
 # If the PID portion is numeric and the process is dead, the file is stale.

@@ -93,8 +93,8 @@ write_proof() {
     echo "${status}|$(date +%s)" > "$repo/.claude/.proof-status-${phash}"
     # Backdate proof files so epoch reset can work (monotonic lattice)
     touch -t 202601010000 "${proof_dir}/proof-status" "$repo/.claude/.proof-status-${phash}"
-    # Create epoch file at "now" — newer than proof, allowing verified→pending regression
-    echo "epoch|$(date +%s)" > "${proof_dir}/proof-epoch"
+    # DEC-STATE-DOTFILE-001: proof-epoch flat file removed — epoch state is SQLite-only.
+    # post-write.sh calls proof_epoch_reset() directly when current status is verified.
 }
 
 # ---------------------------------------------------------------------------

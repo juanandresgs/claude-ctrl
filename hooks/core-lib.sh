@@ -118,20 +118,19 @@ project_hash() {
 # @status accepted
 # @rationale Gate 0 in pre-write.sh originally used inline pattern matching
 #   (*proof-status* || *test-status*) to detect protected files. As the state
-#   management system grew (adding .proof-epoch, .state.lock, .proof-status.lock),
+#   management system grew (adding .state.lock, .proof-status.lock),
 #   this inline list would need to be updated in every gate that references it.
 #   The registry pattern centralizes the list in core-lib.sh (always-loaded),
 #   making is_protected_state_file() available to any hook without duplication.
 #   New protected files need only be added here — all gates update automatically.
+#   Note: .proof-epoch removed per DEC-STATE-DOTFILE-001 — epoch state is SQLite-only.
 _PROTECTED_STATE_FILES=(
     ".proof-status"
     ".test-status"
-    ".proof-epoch"
     ".state.lock"
     ".proof-status.lock"
     "proof-status"       # state/{phash}/proof-status (no dot prefix)
     "test-status"        # state/{phash}/test-status (no dot prefix)
-    "proof-epoch"        # state/{phash}/proof-epoch (no dot prefix)
     "proof.lock"         # state/locks/proof.lock
     "state.lock"         # state/locks/state.lock (no dot prefix)
     ".orchestrator-sid"  # Dispatch enforcement: orchestrator session marker
