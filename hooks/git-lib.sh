@@ -25,7 +25,7 @@ get_git_state() {
 
     # Support both regular repos (.git dir) and git worktrees (.git file).
     # rev-parse --git-dir is the canonical check — works for both.
-    git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return
+    git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
     GIT_BRANCH=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     GIT_DIRTY_COUNT=$(git -C "$root" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
