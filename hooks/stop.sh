@@ -125,18 +125,15 @@ if [[ -f "$_OBS_TOKEN_HIST" ]]; then
 fi
 state_emit "observatory.session" "{\"session\":\"${_STOP_SID}\",\"branch\":\"${_STOP_BRANCH}\",\"tokens\":\"${_OBS_TOTAL_TOKENS}\"}" >/dev/null 2>/dev/null || true
 
-# W6-1: Event GC — clean up events older than 7 days that all consumers have processed.
-# Runs at every session end to prevent unbounded event table growth.
-# 604800 = 7 * 24 * 3600 seconds. Best-effort: GC failures are non-fatal.
-#
 # @decision DEC-STATE-W6-1-006
-# @title Event GC at session end with 7-day retention
-# @status accepted
-# @rationale Events accumulate per session. GC at session end (not on every write)
-#   bounds the cleanup cost to once per session. 7 days retains enough history for
-#   the observatory's weekly analysis window. state_gc_events only removes events
-#   where ALL consumers have checkpointed past the event's sequence number.
-state_gc_events 604800 >/dev/null 2>/dev/null || true
+# @title Event GC REMOVED — events are institutional memory, never discarded
+# @status superseded
+# @rationale Original design deleted events older than 7 days. User directive:
+#   events are the system's institutional memory — the complete record of how
+#   the system has been functioning. The observatory organizes and derives insight
+#   from this history. Efficiency comes from better indexing and archival, not
+#   deletion. Future: archive to cold storage (events_archive table or JSONL
+#   export) when hot table performance degrades. See issue #229.
 
 # Find session tracking file via shared library (DEC-V3-005)
 # OPT-3: Call get_session_changes once here and save the file path.

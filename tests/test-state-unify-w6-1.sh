@@ -224,17 +224,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# T09: Event GC runs at session end (stop.sh calls state_gc_events)
+# T09: Event GC REMOVED — stop.sh must NOT call state_gc_events (issue #229)
+# Events are institutional memory; the superseded annotation must be present.
 # ---------------------------------------------------------------------------
-echo "T09: stop.sh calls state_gc_events for event cleanup..."
+echo "T09: stop.sh must not call state_gc_events (events are institutional memory)..."
 
 if [[ ! -f "$STOP_SH" ]]; then
     fail "T09: stop.sh not found"
 else
     if grep -q 'state_gc_events' "$STOP_SH" 2>/dev/null; then
-        pass "T09: stop.sh calls state_gc_events"
+        fail "T09: stop.sh still calls state_gc_events — GC was removed per issue #229"
     else
-        fail "T09: stop.sh does not call state_gc_events"
+        pass "T09: stop.sh does not call state_gc_events"
+    fi
+    if grep -q 'DEC-STATE-W6-1-006' "$STOP_SH" 2>/dev/null && grep -q 'superseded' "$STOP_SH" 2>/dev/null; then
+        pass "T09b: superseded annotation DEC-STATE-W6-1-006 present in stop.sh"
+    else
+        fail "T09b: superseded annotation DEC-STATE-W6-1-006 missing from stop.sh"
     fi
 fi
 
