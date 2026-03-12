@@ -64,6 +64,13 @@ track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"implementer\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 
+# W6-1: Emit governor.assessment event for event-driven governor triggers.
+# require_state loads state-lib.sh (state_emit, workflow_id) — best-effort,
+# must never break the hook. @decision DEC-STATE-W6-1-001 (see test-state-unify-w6-1.sh)
+require_state 2>/dev/null || true
+_CI_WF_GOV=$(workflow_id 2>/dev/null || echo "main")
+state_emit "governor.assessment" "{\"type\":\"implementation_complete\",\"agent\":\"implementer\",\"workflow\":\"${_CI_WF_GOV}\"}" >/dev/null 2>/dev/null || true
+
 # --- Trace protocol: finalize trace (RUNS FIRST to beat timeout) ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
 TRACE_DIR=""

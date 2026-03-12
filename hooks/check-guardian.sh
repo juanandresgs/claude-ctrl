@@ -50,6 +50,15 @@ track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"guardian\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 
+# W6-1: Emit governor.assessment event after guardian operation.
+# Guardians are major lifecycle milestones (merge/commit) — high-value signals
+# for governor trajectory assessment. Best-effort: must never break the hook.
+# require_state loads state-lib.sh (state_emit, workflow_id) before the emit.
+require_state 2>/dev/null || true
+_CG_WF_GOV=$(workflow_id 2>/dev/null || echo "main")
+_CG_BRANCH_GOV=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+state_emit "governor.assessment" "{\"type\":\"merge_complete\",\"branch\":\"${_CG_BRANCH_GOV}\",\"workflow\":\"${_CG_WF_GOV}\"}" >/dev/null 2>/dev/null || true
+
 # --- W3-1: Emit `commit` event if Guardian advanced HEAD ---
 # subagent-start.sh saves HEAD SHA when Guardian is spawned.
 # We compare here (after Guardian ran) to detect whether a commit occurred.

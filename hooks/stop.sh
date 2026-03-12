@@ -104,6 +104,37 @@ _STOP_BRANCH="${GIT_BRANCH:-unknown}"  # GIT_BRANCH populated by require_git abo
 _STOP_SID="${CLAUDE_SESSION_ID:-$$}"
 state_emit "session.end" "{\"session\":\"${_STOP_SID}\",\"branch\":\"${_STOP_BRANCH}\"}" >/dev/null 2>/dev/null || true
 
+# W6-1: Emit observatory.session event with session metadata for observatory consumption.
+# The observatory signal flywheel uses these events to track session patterns, token usage,
+# and agent dispatch frequency. Best-effort — must never break the hook.
+#
+# @decision DEC-STATE-W6-1-005
+# @title Observatory session event emitted at Stop for signal flywheel
+# @status accepted
+# @rationale The observatory (observatory/) analyzes traces to surface improvement signals.
+#   A lightweight structured event at session end enables SQL queries over session history
+#   without parsing raw trace files. Fields are best-guess from available session state:
+#   branch from git, tokens from .session-token-history, agents from .session-changes.
+_OBS_TOTAL_TOKENS=0
+_OBS_TOKEN_HIST="${CLAUDE_DIR}/.session-token-history"
+if [[ -f "$_OBS_TOKEN_HIST" ]]; then
+    # Last line: timestamp|input|output|total|cost|project_hash|project_name
+    _OBS_LAST_LINE=$(tail -1 "$_OBS_TOKEN_HIST" 2>/dev/null || echo "")
+    _OBS_TOTAL_TOKENS=$(echo "$_OBS_LAST_LINE" | cut -d'|' -f4 2>/dev/null || echo "0")
+    [[ "$_OBS_TOTAL_TOKENS" =~ ^[0-9]+$ ]] || _OBS_TOTAL_TOKENS=0
+fi
+state_emit "observatory.session" "{\"session\":\"${_STOP_SID}\",\"branch\":\"${_STOP_BRANCH}\",\"tokens\":\"${_OBS_TOTAL_TOKENS}\"}" >/dev/null 2>/dev/null || true
+
+# @decision DEC-STATE-W6-1-006
+# @title Event GC REMOVED — events are institutional memory, never discarded
+# @status superseded
+# @rationale Original design deleted events older than 7 days. User directive:
+#   events are the system's institutional memory — the complete record of how
+#   the system has been functioning. The observatory organizes and derives insight
+#   from this history. Efficiency comes from better indexing and archival, not
+#   deletion. Future: archive to cold storage (events_archive table or JSONL
+#   export) when hot table performance degrades. See issue #229.
+
 # Find session tracking file via shared library (DEC-V3-005)
 # OPT-3: Call get_session_changes once here and save the file path.
 # Section 1 may rm -f "$CHANGES"; Section 2 previously re-called get_session_changes()

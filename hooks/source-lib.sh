@@ -82,6 +82,25 @@ _hook_log_timing() {
         mkdir -p "$corpus_dir" 2>/dev/null || true
         printf '%s\n' "$HOOK_INPUT" > "$corpus_dir/$(date +%Y%m%d-%H%M%S)-${_HOOK_NAME}.json" 2>/dev/null || true
     fi
+    # W6-1: Emit hook.failure event when a hook exits with non-zero code.
+    # Uses bootstrap-order guard (type state_emit) because source-lib.sh loads BEFORE
+    # state-lib.sh — state_emit may not be available at this point. This is the ONLY
+    # place in the codebase where the type guard is appropriate; elsewhere require_state
+    # is called first, making state_emit unconditionally available.
+    #
+    # @decision DEC-STATE-W6-1-004
+    # @title Bootstrap-order guard for hook.failure emission in source-lib.sh
+    # @status accepted
+    # @rationale source-lib.sh loads before state-lib.sh (it IS the bootstrap).
+    #   Using `type state_emit &>/dev/null &&` here is intentional — it prevents
+    #   the trap from crashing on hooks that load source-lib.sh but not state-lib.sh
+    #   (e.g., early-exit paths). The guard is NOT a compatibility shim (all removed
+    #   in W5-1) — it is a bootstrap-order necessity. Best-effort: failures in this
+    #   block must never affect hook exit behavior.
+    if [[ "$_exit_code" -ne 0 ]]; then
+        type state_emit &>/dev/null && \
+            state_emit "hook.failure" "{\"hook\":\"${_HOOK_NAME}\",\"exit_code\":${_exit_code},\"event\":\"${_HOOK_EVENT_TYPE:-unknown}\"}" >/dev/null 2>/dev/null || true
+    fi
 }
 # Preserve existing EXIT trap (e.g., crash trap from pre-bash.sh) so both fire on exit.
 # Without this, trap '_hook_log_timing' EXIT would REPLACE the crash trap set by pre-bash.sh

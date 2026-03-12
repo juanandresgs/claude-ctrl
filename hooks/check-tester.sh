@@ -381,6 +381,15 @@ track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 
+# W6-1: Emit governor.assessment event for event-driven governor triggers.
+# Emitted regardless of verification outcome — the governor assesses trajectory,
+# not individual pass/fail. Best-effort: must never break the hook.
+# require_state loads state-lib.sh — called here because Phase 1 require_state
+# is inside the CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY gate and may not have run.
+require_state 2>/dev/null || true
+_CT_WF_GOV=$(workflow_id 2>/dev/null || echo "main")
+state_emit "governor.assessment" "{\"type\":\"tester_verification\",\"workflow\":\"${_CT_WF_GOV}\"}" >/dev/null 2>/dev/null || true
+
 # --- Trace protocol: detect and prepare for finalization ---
 # If detect_active_trace returns empty, log trace_skip (not trace_orphan) — the
 # tester may not have initialized a trace (e.g., quick verifications, or

@@ -834,6 +834,13 @@ marker_create "autoverify" "$_AV_SESSION" "$_AV_WF" "$$" "" "active" 2>/dev/null
 
 write_proof_status "verified" "$PROJECT_ROOT"
 
+# W6-1: Emit governor.assessment event for the auto-verified tester run.
+# This is a high-confidence signal — auto-verify is the highest-quality lifecycle event.
+# Best-effort: must never break the hook.
+require_state 2>/dev/null || true
+_PT_WF_GOV=$(workflow_id 2>/dev/null || echo "main")
+state_emit "governor.assessment" "{\"type\":\"auto_verified\",\"workflow\":\"${_PT_WF_GOV}\"}" >/dev/null 2>/dev/null || true
+
 # Audit trail
 if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then
     append_audit "$PROJECT_ROOT" "auto_verify" "post-task: AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified (${WHITELISTED_COUNT} environmental 'Not tested' item(s) whitelisted)"
