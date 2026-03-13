@@ -949,6 +949,25 @@ ${line}"
     echo "${_CL_TIMESTAMP}|${_CL_LINES}|${_CL_HAS_RESUME}|${_CL_HAS_PLAN}" >> "$_COMPACTION_LOG"
 fi
 
+# --- Stale lint cooldown cleanup ---
+# lint.sh creates per-file cooldown sentinels (3s TTL) but never cleans them up.
+# All are stale by session start. Eliminates 50-100+ orphaned files.
+rm -f "${CLAUDE_DIR}/.lint-cooldown-"* 2>/dev/null
+
+# --- Stale state directory cleanup ---
+# state/{phash}/proof-status files are superseded by SQLite proof_state table
+# (DEC-STATE-UNIFY-004). Safe to remove — no readers remain after Gate A migration.
+_PHASH_CLEANUP=$(project_hash "${PROJECT_ROOT:-}" 2>/dev/null || echo "")
+if [[ -n "$_PHASH_CLEANUP" ]]; then
+    rm -f "${CLAUDE_DIR}/state/${_PHASH_CLEANUP}/proof-status" 2>/dev/null
+fi
+
+# --- Archive legacy state.json ---
+# state.json is superseded by state.db (DEC-STATE-UNIFY-003). Archive once.
+if [[ -f "${CLAUDE_DIR}/state/state.json" && ! -f "${CLAUDE_DIR}/state/state.json.archive" ]]; then
+    mv "${CLAUDE_DIR}/state/state.json" "${CLAUDE_DIR}/state/state.json.archive" 2>/dev/null || true
+fi
+
 # --- Stale session files ---
 STALE_FILE_COUNT=0
 for pattern in "${CLAUDE_DIR}/.session-changes"* "${CLAUDE_DIR}/.session-decisions"*; do
