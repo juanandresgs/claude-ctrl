@@ -428,8 +428,8 @@ reason message. See upstream issue anthropics/claude-code#26506.
 ```
 
 **State files read:**
-- `.claude/.test-status` — `pass|fail_count|epoch` format
-- `.claude/.proof-status` — `verified|needs-verification|pending|epoch` format
+- `test_status` key in SQLite state.db — `result|fail_count|epoch` format (migrated to SQLite — see state-lib.sh API: `state_read "test_status"`)
+- proof state in SQLite state.db — `verified|needs-verification|pending|epoch` format (migrated to SQLite — see state-lib.sh API: `proof_state_get`)
 
 **Configuration:** pre-bash.sh has no configuration options. All thresholds are
 constants in `core-lib.sh` (`TEST_STALENESS_THRESHOLD=600` seconds).
@@ -464,7 +464,7 @@ of write — before errors can compound.
 **Incorporated functionality:**
 
 - **test-gate:** Escalating gate that blocks source writes when tests are failing.
-  Reads `.test-status` (written by async test-runner logic in post-write.sh).
+  Reads test state via `state_read "test_status"` (state-lib.sh API; migrated to SQLite — formerly `.test-status`).
   No test data → allow. Tests passing → allow, reset strikes. Tests stale >10min → allow.
   Strike 1 → advisory. Strike 2+ → DENY with trajectory-aware guidance.
   Test files are always allowed so fixes can proceed.
@@ -504,7 +504,7 @@ at the orchestrator level, and skipping them avoids false positives on in-progre
 before MASTER_PLAN.md is updated.
 
 **State files read/written:** `.claude/.test-gate-strikes`, `.claude/.mock-gate-strikes`,
-`.claude/.test-status`, `.claude/.session-events.jsonl`, `.claude/.plan-drift`,
+SQLite `test_status` key (migrated from `.claude/.test-status` — see state-lib.sh API), `.claude/.session-events.jsonl`, `.claude/.plan-drift`,
 `.claude/.plan-churn-cache`, `.claude/.checkpoint-counter`, `.claude/.session-changes-<session_id>`
 
 ---
@@ -520,9 +520,7 @@ reliable interception point for agent lifecycle management.
 
 **What you can count on (three gates):**
 
-**Gate A (Guardian dispatch):** Requires `.proof-status = verified` when the gate
-is active (file exists). Missing file = no implementation in progress = allow.
-Prevents Guardian from committing unverified work.
+**Gate A (Guardian dispatch):** Requires proof state = verified (read via `proof_state_get()` in state-lib.sh; migrated from `.proof-status` flat file) when the gate is active. Missing state = no implementation in progress = allow. Prevents Guardian from committing unverified work.
 
 **Gate B (Tester dispatch):** Blocks tester dispatch if an implementer trace is
 still active (checking `.active-implementer-*` marker in traces/). Prevents
@@ -530,12 +528,11 @@ premature tester dispatch before implementer returns.
 
 **Gate C (Implementer dispatch):**
 - Gate C.1: Blocks implementer on main/master branch.
-- Gate C.2: Creates `.proof-status = needs-verification` to activate Gate A.
-- Gate C.3: Writes `.active-worktree-path` breadcrumb (most-recent non-main worktree)
-  so `resolve_proof_file()` can find `.proof-status` in worktree scenarios.
+- Gate C.2: Sets proof state = needs-verification via `proof_state_set()` to activate Gate A (migrated from `.proof-status` flat file).
+- Gate C.3: Writes `.active-worktree-path` breadcrumb (most-recent non-main worktree).
 
-**State files read:** `.claude/.proof-status`, `traces/.active-implementer-*`
-**State files written:** `.claude/.proof-status` (creates), `.claude/.active-worktree-path` (breadcrumb)
+**State files read:** SQLite proof state via `proof_state_get()` (migrated from `.claude/.proof-status`), `traces/.active-implementer-*`
+**State files written:** SQLite proof state via `proof_state_set()` (migrated from `.claude/.proof-status`), `.claude/.active-worktree-path` (breadcrumb)
 
 ---
 
@@ -564,7 +561,7 @@ overhead and keeps the feedback pipeline in a single, coherent place.
 - Every file path written this session appears in `.session-changes-<SESSION_ID>`.
 - Source file changes after `verified` status reset proof to `pending`.
 - Test suite runs async after every write — does not block Claude.
-- Writes `pass|0|<epoch>` or `fail|N|<epoch>` to `.test-status`.
+- Writes test result to SQLite state.db via `state_read/state_update "test_status"` (migrated from `.test-status` flat file — format: `result|fail_count|epoch`).
 
 **Incorporated functionality:**
 
@@ -573,7 +570,7 @@ overhead and keeps the feedback pipeline in a single, coherent place.
   clippy (Rust), golangci-lint (Go), rubocop (Ruby). Exit code 2 triggers retry.
 
 - **track (formerly track.sh):** Records every Write/Edit to a session-scoped tracking
-  file. Also invalidates `.proof-status = verified` when source files change post-verification.
+  file. Also resets proof state to `pending` via `proof_state_set()` when source files change post-verification (migrated from `.proof-status` flat file).
   check-implementer.sh, stop.sh, and check-guardian.sh all read this file.
 
 - **test-runner (formerly test-runner.sh, async):** Auto-detects test framework and runs
@@ -587,7 +584,7 @@ overhead and keeps the feedback pipeline in a single, coherent place.
   MASTER_PLAN.md for alignment. Catches plan drift at write-time rather than session end.
 
 **State files read/written:** `.claude/.lint-cache`, `.claude/.lint-breaker`,
-`.claude/.session-changes-<SESSION_ID>`, `.claude/.proof-status`, `.claude/.test-status`
+`.claude/.session-changes-<SESSION_ID>`, SQLite proof state (migrated from `.claude/.proof-status`), SQLite `test_status` key (migrated from `.claude/.test-status`)
 
 ---
 
@@ -709,7 +706,7 @@ processes, and writes a session index entry for cross-session learning.
 - Session-scoped files are always cleaned up on normal exit:
   `.session-changes-<ID>`, `.session-decisions-<ID>`, `.lint-cache`, `.test-gate-strikes`,
   `.mock-gate-strikes`, `.test-gate-cold-warned`, `.skill-result*`, `.track.*`.
-- Persists: `.audit-log`, `.agent-findings`, `.lint-breaker`, `.plan-drift`, `.test-status`.
+- Persists: `.audit-log`, `.agent-findings`, `.lint-breaker`, `.plan-drift`, SQLite state.db (test_status + proof state, migrated from `.test-status`).
 - Kills lingering `test-runner.sh` processes.
 - Archives `.session-events.jsonl` to project-specific archive directory.
 - Writes session index entry (project hash, outcome, duration, test result, proof status).
@@ -743,7 +740,7 @@ annotations while they're still easy to fix, surfaces session state, and keeps m
   on current session state. Reads plan status and suggests "next phase," "run tests," etc.
 
 **State files read:** `.session-changes-<SESSION_ID>`, `.session-changes-*`,
-`.test-status`, `.proof-status`, `MASTER_PLAN.md`
+SQLite `test_status` key (migrated from `.test-status`), SQLite proof state (migrated from `.proof-status`), `MASTER_PLAN.md`
 **State files written:** `.claude/.plan-drift`
 
 ---
@@ -822,18 +819,18 @@ requirements (REQ-P0-NNN), decisions (DEC-NNN), and GitHub Issues (one per phase
 ### Tester Agent (agents/tester.md)
 
 **Input:** Implementer trace directory, feature description.
-**Output:** Live verification report with evidence, `.proof-status = pending`.
+**Output:** Live verification report with evidence, proof state = pending (SQLite).
 
 **Methodology:**
 1. Read implementer's trace for context.
 2. Discover available tools (Playwright, browser, CLI).
 3. Collect evidence: test output, live demo, screenshots.
-4. Write `.proof-status = pending|<epoch>` to worktree's `.claude/`.
+4. Set proof state = pending via `proof_state_set()` (migrated from `.proof-status` flat file).
 5. Present verification assessment with: methodology, coverage gaps, confidence level.
-6. If AUTOVERIFY: CLEAN conditions met → check-tester.sh auto-writes `verified`.
+6. If AUTOVERIFY: CLEAN conditions met → check-tester.sh auto-writes `verified` via `proof_state_set()`.
 
 **SubagentStop check (check-tester.sh) — auto-verify critical path:**
-1. `.proof-status` exists (tester wrote `pending`).
+1. Proof state is set (tester called `proof_state_set("pending")`).
 2. If response contains `AUTOVERIFY: CLEAN`:
    - Secondary validation: `**High**` confidence present.
    - No `Partially verified` in coverage.
@@ -893,18 +890,18 @@ feature, presents evidence, and gets user or auto-verification. Only then is
 Guardian allowed to commit.
 
 **What you can count on:**
-- No Guardian dispatch without `.proof-status = verified` (task-track.sh Gate A).
-- No git commit/merge without `.proof-status = verified` (pre-bash.sh proof gate (Check 8)).
-- No agent can write `verified` to `.proof-status` (pre-bash.sh proof-write gate (Check 9) blocks Bash writes).
+- No Guardian dispatch without proof state = verified (task-track.sh Gate A, reads via `proof_state_get()`).
+- No git commit/merge without proof state = verified (pre-bash.sh proof gate (Check 8)).
+- No agent can write `verified` to proof state (pre-bash.sh proof-write gate (Check 9) blocks direct Bash writes; use `proof_state_set()` via state-lib.sh).
 - `prompt-submit.sh` is the only path for human-verified status.
 - `check-tester.sh` is the only path for auto-verified status.
-- Source file changes after `verified` reset status to `pending` (track.sh).
+- Source file changes after `verified` reset status to `pending` (track.sh via `proof_state_set()`).
 
 ### 9-Step Verification Lifecycle
 
 ```
 Step 1: Orchestrator dispatches implementer
-        → task-track.sh Gate C writes ".proof-status = needs-verification"
+        → task-track.sh Gate C calls proof_state_set("needs-verification")
         → Gate A now active: Guardian blocked
 
 Step 2: Implementer runs in worktree
@@ -918,43 +915,45 @@ Step 4: Orchestrator dispatches tester
         → subagent-start.sh injects implementer trace context
 
 Step 5: Tester verifies feature live
-        → Writes ".proof-status = pending|<epoch>" to worktree .claude/
+        → Calls proof_state_set("pending") via state-lib.sh
         → Presents: test results, screenshots, API responses
 
 Step 6: check-tester.sh fires (SubagentStop:tester)
-        → Phase 1 (critical path, <2s): check .proof-status, scan for AUTOVERIFY: CLEAN
+        → Phase 1 (critical path, <2s): proof_state_get(), scan for AUTOVERIFY: CLEAN
         → Auto-verify path: High confidence + full coverage + no caveats
-          → writes ".proof-status = verified|<epoch>"
+          → calls proof_state_set("verified") via state-lib.sh
           → Orchestrator presents report + dispatches Guardian in parallel
         → Manual path: emits advisory, waits for user
 
 Step 7: User sees evidence and responds (manual path only)
         → User types "approved", "lgtm", "looks good", "verified", or "ship it"
-        → prompt-submit.sh detects keyword → writes ".proof-status = verified|<epoch>"
-        → Dual-write to both worktree and orchestrator .proof-status
+        → prompt-submit.sh detects keyword → calls proof_state_set("verified")
 
 Step 8: Orchestrator dispatches Guardian
-        → task-track.sh Gate A: reads ".proof-status = verified" → allow
+        → task-track.sh Gate A: proof_state_get() returns "verified" → allow
 
 Step 9: Guardian commits
-        → pre-bash.sh proof gate (Check 8): reads ".proof-status = verified" → allow
+        → pre-bash.sh proof gate (Check 8): reads proof state = "verified" → allow
         → Commit proceeds, worktree cleaned up
-        → track.sh: any subsequent source writes reset to "pending"
+        → track.sh: any subsequent source writes reset to "pending" via proof_state_set()
 ```
 
-### State File: .proof-status
+### State: Proof Status (SQLite)
 
-**Location:** `.claude/.proof-status` (relative to project root or worktree root).
-**Format:** `status|epoch` (pipe-delimited, one line).
+**Location:** SQLite state.db — proof state table (migrated from `.claude/.proof-status` flat file).
+**API:** `proof_state_get()` to read, `proof_state_set(status)` to write (state-lib.sh).
+**Format:** `status|epoch` (pipe-delimited string returned by `proof_state_get()`).
 **States:**
-- `needs-verification|<epoch>` — created by task-track.sh at implementer dispatch. Gate active.
-- `pending|<epoch>` — written by tester after live verification. Awaiting approval.
-- `verified|<epoch>` — written by prompt-submit.sh (user) or check-tester.sh (auto). Gate open.
+- `needs-verification|<epoch>` — set by task-track.sh at implementer dispatch. Gate active.
+- `pending|<epoch>` — set by tester after live verification. Awaiting approval.
+- `verified|<epoch>` — set by prompt-submit.sh (user) or check-tester.sh (auto). Gate open.
 
-**Resolution in worktree scenarios:** `resolve_proof_file()` in `log.sh` reads
-`.active-worktree-path` breadcrumb (written by task-track.sh) to find the correct
-`.proof-status` path. Without the breadcrumb, hooks default to the orchestrator's
-`CLAUDE_DIR/.proof-status`.
+**Worktree scoping:** State-lib.sh uses workflow IDs for scope isolation across worktrees.
+The `.active-worktree-path` breadcrumb (written by task-track.sh) assists hooks that
+still use the legacy path resolution path. New code uses `proof_state_get/set()` directly.
+
+**Note:** `resolve_proof_file()` in `log.sh` is the legacy flat-file resolver (kept for backward
+compat). New code should use `proof_state_get()` from state-lib.sh instead.
 
 ---
 
@@ -1290,13 +1289,14 @@ stdin caching, field extraction, logging, and path detection.
 - `log_info <stage> <message>` — human-readable logging to stderr.
 - `detect_project_root()` — finds git root, falls back to `CLAUDE_PROJECT_DIR`, then `$HOME`.
 - `get_claude_dir()` — returns `.claude` dir path. For `~/.claude` itself, returns the path without double-nesting (fixes #77).
-- `resolve_proof_file()` — breadcrumb-based proof-status path resolution for worktree scenarios.
+- `resolve_proof_file()` — legacy breadcrumb-based proof-status path resolution (kept for backward compat; new code uses `proof_state_get()` from state-lib.sh instead).
 
-**Why `resolve_proof_file()` exists:** In worktree scenarios, task-track.sh writes
-`.proof-status` to the worktree's `.claude/` and writes `.active-worktree-path` breadcrumb.
-The tester agent runs inside the worktree and writes proof-status there. prompt-submit.sh
-and guard.sh need to find the same file. `resolve_proof_file()` reads the breadcrumb
-and returns the worktree path when active; falls back to CLAUDE_DIR otherwise.
+**Why `resolve_proof_file()` existed (legacy):** In worktree scenarios, task-track.sh wrote
+`.proof-status` flat files and `.active-worktree-path` breadcrumb.
+The State Unification initiative migrated proof state to SQLite (`proof_state_get/set()` in state-lib.sh).
+`resolve_proof_file()` is retained for hooks that still use the legacy flat-file path;
+new code should use `proof_state_get()` from state-lib.sh.
+**Note (DEC-PROOF-PATH-002):** This decision is superseded by State Unification — see state-lib.sh.
 
 ---
 
@@ -1356,8 +1356,8 @@ project root unless marked as `~/.claude/` (global).
 
 | File | Location | Format | Written by | Read by | Purpose |
 |------|----------|--------|------------|---------|---------|
-| `.test-status` | `.claude/` | `result\|fail_count\|epoch` | post-write.sh (test-runner logic) | pre-bash.sh, pre-write.sh (test-gate logic), session-init.sh | Gate commits; block source writes while failing |
-| `.proof-status` | `.claude/` | `status\|epoch` | task-track.sh (create), prompt-submit.sh (verify), check-tester.sh (auto-verify) | pre-bash.sh, task-track.sh, check-tester.sh | Verification gate — must be `verified` to commit |
+| `test_status` (SQLite key) | state.db | `result\|fail_count\|epoch` | post-write.sh test-runner logic via `state_update` | pre-bash.sh, pre-write.sh (test-gate logic via `state_read`), session-init.sh | Gate commits; block source writes while failing. **Migrated to SQLite** (formerly `.test-status`) |
+| proof state (SQLite) | state.db | `status\|epoch` | task-track.sh (`proof_state_set`), prompt-submit.sh, check-tester.sh | pre-bash.sh, task-track.sh (`proof_state_get`), check-tester.sh | Verification gate — must be `verified` to commit. **Migrated to SQLite** (formerly `.proof-status`) |
 | `.session-changes-<ID>` | `.claude/` | One path per line | post-write.sh (track + checkpoint logic) | check-implementer.sh, stop.sh (surface logic), check-guardian.sh | Track modified files per session |
 | `.session-events.jsonl` | `.claude/` | JSONL (one event per line) | post-write.sh (track logic), skill-result.sh, session-init.sh | pre-write.sh (test-gate trajectory), session-end.sh | Session trajectory for diagnosis |
 | `.audit-log` | `.claude/` | `ISO8601\|event\|detail` per line | core-lib.sh `append_audit()` | (human review) | Persistent audit trail of all gate events |
@@ -1625,7 +1625,7 @@ Done. Feature merged to main.
 | DEC-UPDATE-BG-001 | session-init.sh | accepted | Background update-check with previous-session result display |
 | DEC-UPDATE-BG-002 | session-init.sh | accepted | Background update-check: display result in next session |
 | DEC-LOG-001 | log.sh | accepted | Shared logging and path utilities for all hooks |
-| DEC-PROOF-PATH-002 | log.sh | accepted | resolve_proof_file: breadcrumb-based worktree proof-status resolution |
+| DEC-PROOF-PATH-002 | log.sh | superseded | resolve_proof_file: breadcrumb-based worktree proof-status resolution — superseded by State Unification (use proof_state_get/set in state-lib.sh) |
 | DEC-QUICKFIX-001 | log.sh | accepted | Fix double-nested paths when PROJECT_ROOT is ~/.claude |
 | DEC-SRCLIB-001 | source-lib.sh | accepted | Direct hook library sourcing (replaces session-scoped caching) |
 | DEC-TASK-GATE-001 | task-track.sh | accepted | Block implementer dispatch on main/master branch |

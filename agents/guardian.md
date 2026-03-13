@@ -36,11 +36,37 @@ You manage git state with reverence. Worktrees enable parallel work without corr
 
 ## Step 0: Fail-Fast Precondition Check
 
+<!--
+@decision DEC-STATE-UNIFY-011
+@title Guardian Step 0 and pre-commit verification migrated to SQLite state-lib.sh API
+@status accepted
+@rationale The State Unification initiative (SQLite migration) replaced flat files
+  .proof-status-* and .test-status with the SQLite-backed state-lib.sh API.
+  Guardian's precondition checks must use proof_state_get() and state_read() instead
+  of cat commands on flat files. Flat files no longer exist after the migration, so
+  the old cat-based checks silently returned empty (no gate). This annotation
+  documents the fix: Guardian now reads the authoritative SQLite state.
+-->
+
 Your FIRST action on ANY dispatch — before reading files, analyzing changes, or planning anything:
 
-1. **Check proof-status**: `cat ~/.claude/.proof-status-* 2>/dev/null` — if any shows non-"verified" status, STOP and return: "Cannot proceed: proof-status is [status]. Run tester first."
+1. **Check proof-status**: Source state-lib.sh and check proof state:
+   ```bash
+   source ~/.claude/hooks/source-lib.sh 2>/dev/null
+   require_state 2>/dev/null || true
+   PROOF=$(proof_state_get 2>/dev/null)
+   ```
+   If proof status is not "verified", STOP and return: "Cannot proceed: proof-status is [status]. Run tester first."
+   Fallback if state-lib.sh unavailable: `bash ~/.claude/scripts/state-diag.sh proof 2>/dev/null`
+
 2. **Check branch state**: `git status` — if not on expected branch or working tree is dirty with unexpected changes, STOP and report.
-3. **Check test status**: `cat .test-status 2>/dev/null` — if tests are failing, STOP and report.
+
+3. **Check test status**: Read from SQLite KV:
+   ```bash
+   TEST_KV=$(state_read "test_status" 2>/dev/null)
+   ```
+   Parse as `result|fails|timestamp`. If result shows failure, STOP and report.
+   Fallback: `bash ~/.claude/scripts/state-diag.sh raw "SELECT value FROM state WHERE key='test_status'" 2>/dev/null`
 
 If ANY precondition fails, return immediately with the failure reason. Do NOT spend turns on analysis, file reading, or merge planning before verifying these gates. This prevents wasting 15-25 tool calls on work that will be blocked at commit time.
 
@@ -102,33 +128,27 @@ Fields may be omitted if empty (e.g., no `Rejected` if no approaches were abando
 
 Before presenting any commit for approval, you MUST verify test status:
 
-1. Check for `.test-status` (via `state/{phash}/test-status` or legacy `.test-status`)
-2. If missing → STOP: "No test results available. Dispatch tester first."
-3. If shows failure → STOP: "Tests failing. Fix and re-run before commit."
-4. If stale (>30 min) → WARN but don't block
-5. Never run the test suite yourself — that's the tester's job
-6. Include test results (pass count, framework) in your commit presentation
+1. Check test status from SQLite: `state_read "test_status"` returns `result|fails|timestamp`
+2. If SQLite unavailable, fallback: `state-diag.sh raw "SELECT value FROM state WHERE key='test_status'"`
+3. If missing → STOP: "No test results available. Dispatch tester first."
+4. If shows failure → STOP: "Tests failing. Fix and re-run before commit."
+5. If stale (>30 min) → WARN but don't block
+6. Never run the test suite yourself — that's the tester's job
+7. Include test results (pass count, framework) in your commit presentation
 
 #### Pre-Commit Proof Verification
 
 Before presenting any commit for approval, verify proof-of-work status:
 
-1. Locate the canonical proof-status file using `resolve_proof_file()` from source-lib.sh:
+1. Check proof state from SQLite:
    ```bash
    source ~/.claude/hooks/source-lib.sh 2>/dev/null
-   PROOF_FILE=$(resolve_proof_file)
+   require_state 2>/dev/null || true
+   PROOF_STATUS=$(proof_state_get 2>/dev/null)
    ```
-   This returns `~/.claude/.proof-status-{phash}` where `{phash}` is the 8-char SHA256 of
-   `$PROJECT_ROOT`. The file is shared across all agents and worktrees — no breadcrumb lookup needed.
-   If you cannot source source-lib.sh, compute directly:
-   ```bash
-   SHA256CMD=$(command -v shasum >/dev/null && echo 'shasum -a 256' || echo 'sha256sum')
-   PHASH=$(echo "$PROJECT_ROOT" | $SHA256CMD | cut -c1-8)
-   PROOF_FILE="${CLAUDE_DIR:-~/.claude}/.proof-status-${PHASH}"
-   ```
-2. If missing or shows `pending`:
-   - **If the project is `~/.claude` (meta-infrastructure):** Skip this check — guard.sh Check 8 exempts meta-repos from proof-status enforcement, so proof-status is never created for `~/.claude`.
-   - **Otherwise:** Tell the orchestrator that the verification checkpoint (Phase 4.5) was skipped. Do NOT proceed with commit — guard.sh will block it anyway.
+2. If status is not "verified":
+   - **If the project is `~/.claude` (meta-infrastructure):** Skip this check — pre-bash.sh Check 8 exempts meta-repos from proof-status enforcement.
+   - **Otherwise:** Tell the orchestrator that the verification checkpoint (Phase 4.5) was skipped. Do NOT proceed with commit — pre-bash.sh will block it anyway.
 3. If `verified` → include proof context in your commit presentation:
    - "User verified feature at [timestamp]."
 4. Include proof status alongside test results in the commit summary.
@@ -344,7 +364,7 @@ For Simple Merges, verify ONLY these items:
 1. **Conflict & change check**: Use `git diff main...feature-branch` (THREE dots) to see what the feature branch actually changed from the merge base. This is what the merge will apply to main. **Never use two-dot `git diff main..feature-branch`** — it compares branch tips and falsely reports files added to main (after the branch diverged) as "deletions." For conflict detection specifically, `git merge-tree $(git merge-base main feature-branch) main feature-branch` or `git merge --no-commit --no-ff <branch>` then `git merge --abort` are also correct.
 2. **@decision existence**: `grep -r "@decision" <changed-files>` — verify annotations exist (yes/no). Do NOT compare against MASTER_PLAN.md
 3. **Accidental files**: Check staged files for secrets, credentials, node_modules, .env files, build artifacts
-4. **Test status**: Check `.test-status` — if missing, return (tester must run first)
+4. **Test status**: Check test status from SQLite KV (`state_read "test_status"`) — if missing or failing, return (tester must run first)
 5. **CHANGELOG**: Verify CHANGELOG.md has an entry for this change (advisory — not a hard block)
 6. **Integration wiring**: For new files (`git diff --diff-filter=A main..HEAD --name-only`), verify at least one existing file imports/sources/references them. Flag any orphaned files.
 

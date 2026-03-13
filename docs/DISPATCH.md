@@ -164,7 +164,7 @@ After initiative completion (all phases merged, before `compress_initiative()`),
 
 ## Auto-Verify Fast Path
 
-When post-task.sh detects `AUTOVERIFY: CLEAN` with High confidence, full coverage, and no caveats, it auto-writes `.proof-status = verified` and emits `AUTO-VERIFIED` in a system-reminder.
+When post-task.sh detects `AUTOVERIFY: CLEAN` with High confidence, full coverage, and no caveats, it sets proof state to verified via `proof_state_set()` and emits `AUTO-VERIFIED` in a system-reminder.
 
 When the orchestrator receives this system-reminder:
 1. Dispatch Guardian with `AUTO-VERIFY-APPROVED` in the prompt — this tells
@@ -181,7 +181,7 @@ When post-task.sh emits `AUTOVERIFY EXPECTED` (tester met criteria but omitted s
 ## Manual Approval Fast Path
 
 When prompt-submit.sh detects an approval keyword (approved, verified, lgtm, etc.)
-and transitions `.proof-status` to `verified`, it emits `DISPATCH GUARDIAN NOW with
+and transitions proof state to verified (via `proof_state_set()`), it emits `DISPATCH GUARDIAN NOW with
 AUTO-VERIFY-APPROVED`. This is functionally equivalent to the auto-verify path above:
 
 1. The user has already approved — their approval keyword IS the approval.
@@ -192,9 +192,9 @@ AUTO-VERIFY-APPROVED`. This is functionally equivalent to the auto-verify path a
 ## Pre-Dispatch Gates (Mechanically Enforced)
 
 - Tester dispatch: requires implementer to have returned with tests passing
-- Guardian dispatch: requires `.proof-status = verified` when file exists (PreToolUse:Task|Agent gate in task-track.sh). Missing file = no gate (bootstrap path — implementer dispatch activates the gate by writing `needs-verification`)
-- The user's approval (verified, approved, lgtm, looks good, ship it) triggers `.proof-status = verified` via prompt-submit.sh — no agent can write it
-- INFER-VERIFY dispatches still require proof-status to be at least pending (not missing).
+- Guardian dispatch: requires proof state = verified (SQLite proof_state table, read via `proof_state_get()`) when active (PreToolUse:Task|Agent gate in task-track.sh). Missing state = no gate (bootstrap path — implementer dispatch activates the gate via `proof_state_set("needs-verification")`)
+- The user's approval (verified, approved, lgtm, looks good, ship it) triggers proof state = verified via `proof_state_set()` in prompt-submit.sh — no agent can write it directly
+- INFER-VERIFY dispatches still require proof state to be at least pending (not missing).
 - Governor dispatch: no proof-status gate, no worktree gate. Governor is read-only and advisory.
 
 ## Trace and Recovery Protocols

@@ -85,7 +85,7 @@ approval fast-path for the proof-of-work state machine.
 
 | Trigger | Signal | Size |
 |---------|--------|------|
-| "verified", "approved", "lgtm", "looks good", "ship it" | CAS transition pending → verified; emits `AUTO-VERIFY-APPROVED` | ~100 bytes |
+| "verified", "approved", "lgtm", "looks good", "ship it" | CAS transition pending → verified via `proof_state_set()` (SQLite); emits `AUTO-VERIFY-APPROVED` | ~100 bytes |
 | Empty prompt (Enter only) | Approval/continuation hint | ~80 bytes |
 | `.proof-gate-pending` breadcrumb detected | Interrupted verification warning | ~120 bytes |
 | `.subagent-tracker` active entries | Active-agent advisory with elapsed times | ~150 bytes |
@@ -202,10 +202,10 @@ enforcement, trace management.
 | Gate | Type | Condition |
 |------|------|-----------|
 | A.0: Duplicate guardian detection | deny | Active `.active-guardian-*-{phash}` marker within TTL (600s); prevents burst dispatch |
-| A: Guardian proof gate | deny | `.proof-status` ≠ verified before Guardian dispatch; exceptions: plan-only merges, bootstrap path |
+| A: Guardian proof gate | deny | proof state ≠ verified (SQLite, read via `proof_state_get()`; migrated from `.proof-status`) before Guardian dispatch; exceptions: plan-only merges, bootstrap path |
 | B: Tester trace gate | advisory | Implementer trace still active (must return first); self-heals after 5 min stale |
 | C.1: Implementer dispatch gate | deny | No linked worktree (dispatching implementer from main without worktree) |
-| C.2: Proof gate activation | side-effect | Sets `.proof-status = needs-verification` on implementer dispatch (workflow-scoped or project-wide) |
+| C.2: Proof gate activation | side-effect | Sets proof state = needs-verification via `proof_state_set()` (SQLite; migrated from `.proof-status`) on implementer dispatch (workflow-scoped or project-wide) |
 | D: Plan vs planner advisory | advisory | Warns when `subagent_type=Plan` used for MASTER_PLAN.md work |
 | E: isolation:worktree advisory | advisory | Warns when governance agents use `isolation: worktree` bypass |
 
@@ -262,7 +262,7 @@ attention on already-prescribed actions.
 
 | Step | Type | Action |
 |------|------|--------|
-| 1: Track | side-effect | Append file path to `.session-changes-{SID}`; update `.agent-progress` breadcrumb; append to `.session-events.jsonl`; invalidate doc/lint cache; reset `.proof-status` to pending on non-test source changes |
+| 1: Track | side-effect | Append file path to `.session-changes-{SID}`; update `.agent-progress` breadcrumb; append to `.session-events.jsonl`; invalidate doc/lint cache; reset proof state to pending via `proof_state_set()` (SQLite; migrated from `.proof-status`) on non-test source changes |
 | 2: Plan validate | advisory | MASTER_PLAN.md structural validation if that file was written (required sections, phase structure, initiative format) |
 | 3: Lint | advisory | Auto-detect linter (eslint, pylint, shellcheck, etc.); run with project config; results cached in `.lint-cache` |
 
@@ -450,7 +450,7 @@ Six specialized hooks fire when specific agent types complete.
 - Plan recency check (compare MASTER_PLAN.md mtime to commit)
 - Git cleanliness check (dirty count post-commit)
 - Test status verification
-- Phase B: clean up `.proof-status-{phash}` (resets verification cycle for next iteration)
+- Phase B: clean up proof state via `proof_epoch_reset()` (resets verification cycle for next iteration; migrated from `.proof-status-{phash}`)
 - CI status injection if CI was run
 
 ---
@@ -590,7 +590,7 @@ saves content to `tmp/explore-overflow-{timestamp}.md` and flags orchestrator.
 - Async test-runner processes
 
 **Persists:**
-- `.audit-log`, `.agent-findings`, `.proof-status` files, `.test-status`
+- `.audit-log`, `.agent-findings`, SQLite state.db (proof state + test_status; migrated from `.proof-status` and `.test-status` flat files)
 
 **Session index (DEC-V2-PHASE4-002):** Writes outcome to `.session-index`
 (cross-session learning, trimmed to 20 entries).
@@ -748,10 +748,8 @@ Warm-path cached: plan (300s TTL), git (60s TTL).
 State: pending → verified → committed → pending (cycle)
 ```
 
-- **CAS (Compare-And-Swap):** `cas_proof_status()` uses file locks
-  (`.claude/state/locks/proof.lock`, 2s timeout, 10s stale cleanup)
-- **Dual-write migration:** New path `.claude/state/{phash}/proof-status` +
-  old `.claude/.proof-status-{phash}` (backward compat)
+- **CAS (Compare-And-Swap):** `state_cas()` in state-lib.sh uses SQLite WAL transactions (migrated from file-lock-based `cas_proof_status()`)
+- **State Unification migration complete:** Proof state and test_status now stored in SQLite state.db via `proof_state_get/set()` and `state_read/state_update()`. Legacy `.proof-status-{phash}` flat files no longer used.
 - **Bootstrap paradox detection:** Tracks CAS failures; 2+ failures → diagnostic
   warning injected
 
@@ -771,9 +769,9 @@ fail-closed behavior if the hook crashes before completion.
 
 ### Proof Gate Scoping
 
-- **Workflow-scoped (new):** `.claude/state/{phash}/worktrees/{name}/proof-status`
-- **Project-wide (backward compat):** `.claude/state/{phash}/proof-status`
-- Dual-write during migration supports both paths simultaneously
+- **SQLite-backed (current):** Proof state stored in SQLite state.db via `proof_state_get/set()` in state-lib.sh
+- **Workflow scoping:** state-lib.sh workflow IDs provide isolation across worktrees
+- Dual-write migration is complete — all readers/writers use SQLite backend
 
 ### Session Event Log
 
