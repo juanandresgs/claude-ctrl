@@ -50,6 +50,7 @@ set -euo pipefail
 source "$(dirname "$0")/source-lib.sh"
 
 require_session
+require_state
 
 # Redirect stderr to /dev/null — log_info writes to stderr, and Claude Code
 # treats any stderr output from SessionEnd hooks as a failure even when exit
@@ -452,6 +453,9 @@ done
 
 # --- Clean up session-scoped files (these don't persist) ---
 # Clean up orchestrator session marker (written by session-init.sh at startup)
+# Primary: delete from SQLite KV store (DEC-STATE-KV-001)
+state_delete "orchestrator_sid" 2>/dev/null || true
+# Fallback: remove flat-file for backward compat during migration (DEC-STATE-UNIFY-004)
 rm -f "${CLAUDE_DIR}/.orchestrator-sid" 2>/dev/null || true
 rm -f "${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "${CLAUDE_DIR}/.session-changes"*

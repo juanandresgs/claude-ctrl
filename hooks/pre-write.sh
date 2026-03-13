@@ -48,8 +48,10 @@ enable_fail_closed "pre-write"
 # require_plan: get_plan_status, get_drift_data (Gate 2: plan-check)
 # require_session: read_test_status, append_session_event, detect_approach_pivots
 #   (Gate 3: test-gate, Gate 6: checkpoint session tracking)
+# require_state: state_read (Gate 1.5: orchestrator_sid SQLite read, DEC-STATE-KV-001)
 require_plan
 require_session
+require_state
 
 # In scan mode: emit all gate declarations and exit cleanly BEFORE reading stdin.
 # Hooks are invoked with < /dev/null in scan mode, so stdin is empty.
@@ -244,9 +246,22 @@ fi
 declare_gate "orchestrator-source-guard" "Source writes from orchestrator context (must use implementer)" "deny"
 
 if [[ "$_IN_WORKTREE" == "true" ]] && is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
-    _ORCH_SID_FILE="${_CACHED_CLAUDE_DIR}/.orchestrator-sid"
-    if [[ -n "${CLAUDE_SESSION_ID:-}" && -f "$_ORCH_SID_FILE" ]]; then
-        _ORCH_SID=$(cat "$_ORCH_SID_FILE" 2>/dev/null || echo "")
+    if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
+        _ORCH_SID=""
+        # Primary: read orchestrator_sid from SQLite (DEC-STATE-KV-001).
+        # Use explicit workflow_id = {phash}_main: session-init.sh always runs in the
+        # main checkout (no WORKTREE_PATH), so it writes with wt_id="main". When
+        # pre-write.sh runs inside an implementer subagent, WORKTREE_PATH may be set,
+        # which would make workflow_id() return {phash}_kv-feature-name instead of
+        # {phash}_main. Explicit _main suffix avoids that mismatch.
+        _orch_main_wf="$(project_hash "$(detect_project_root 2>/dev/null || echo "$HOME/.claude")")_main"
+        _ORCH_SID=$(state_read "orchestrator_sid" "$_orch_main_wf" 2>/dev/null || echo "")
+        # Fallback: flat-file read for backward compat during migration (DEC-STATE-UNIFY-004).
+        # Retained until SQLite write is confirmed stable across all deployments.
+        if [[ -z "$_ORCH_SID" ]]; then
+            _ORCH_SID_FILE="${_CACHED_CLAUDE_DIR}/.orchestrator-sid"
+            [[ -f "$_ORCH_SID_FILE" ]] && _ORCH_SID=$(cat "$_ORCH_SID_FILE" 2>/dev/null || echo "")
+        fi
         if [[ -n "$_ORCH_SID" && "$CLAUDE_SESSION_ID" == "$_ORCH_SID" ]]; then
             emit_deny "BLOCKED: Source writes from orchestrator context. The orchestrator must dispatch an implementer subagent for all source code work (Sacred Practice #2 + Dispatch Rules). Use: Agent tool with subagent_type=implementer, prompt describing the task, working in this worktree."
         fi

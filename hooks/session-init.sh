@@ -129,7 +129,21 @@ fi
 #   marker: pre-write.sh Gate 1.5 compares CLAUDE_SESSION_ID against this file to
 #   detect orchestrator context and deny source writes. Fixes the enforcement gap
 #   where the orchestrator could bypass implementer dispatch by writing directly.
+#
+# @decision DEC-STATE-KV-001
+# @title Migrate .orchestrator-sid from flat-file to SQLite KV
+# @status accepted
+# @rationale First KV migration in the dotfile-to-SQLite initiative. .orchestrator-sid
+#   is session-scoped, has exactly 2 callers (session-init writer, pre-write reader),
+#   and stores a simple string. SQLite state_update() provides atomic writes without
+#   the temp-file rename dance. state_read() in pre-write.sh replaces cat of flat file.
+#   Dual-write (SQLite primary + flat-file fallback) maintained during migration per
+#   DEC-STATE-UNIFY-004. require_state is already called at line 63 so state_update
+#   is unconditionally available here — no type guard needed.
 if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
+    # Primary: write to SQLite KV store (atomic, no temp-file dance)
+    state_update "orchestrator_sid" "$CLAUDE_SESSION_ID" "session-init" 2>/dev/null || true
+    # Fallback: keep flat-file for backward compat during migration (DEC-STATE-UNIFY-004)
     _ORCH_SID_FILE="${CLAUDE_DIR}/.orchestrator-sid"
     printf '%s\n' "$CLAUDE_SESSION_ID" > "${_ORCH_SID_FILE}.tmp" && mv "${_ORCH_SID_FILE}.tmp" "$_ORCH_SID_FILE"
 fi
