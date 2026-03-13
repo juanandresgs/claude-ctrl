@@ -1306,6 +1306,9 @@ if read_ci_status "$PROJECT_ROOT"; then
             # Persist to .agent-findings so other hooks pick it up
             _CI_FINDINGS_FILE="${CLAUDE_DIR}/.agent-findings"
             echo "CI FAILING: $(format_ci_summary)" >> "$_CI_FINDINGS_FILE" 2>/dev/null || true
+            # DEC-STATE-KV-007: Emit audit event alongside flat-file delivery (best-effort).
+            _CI_TEXT=$(printf '%s' "$(format_ci_summary)" | sed 's/"/\\"/g')
+            state_emit "agent.finding" "{\"agent\":\"CI\",\"text\":\"CI FAILING: ${_CI_TEXT}\"}" 2>/dev/null || true
             ;;
         pending)
             # Stale pending (> 30min) → fall through to Tier 2

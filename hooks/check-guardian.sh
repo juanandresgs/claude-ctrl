@@ -517,6 +517,15 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     if ! grep -qxF "$FINDING" "$FINDINGS_FILE" 2>/dev/null; then
         echo "$FINDING" >> "$FINDINGS_FILE"
     fi
+    # @decision DEC-STATE-KV-007
+    # @title Emit agent.finding events to SQLite audit trail alongside flat-file delivery
+    # @status accepted
+    # @rationale Per DEC-STATE-UNIFY-009, events are institutional memory — never deleted.
+    #   The flat file uses consume-and-clear delivery (prompt-submit.sh reads and deletes).
+    #   state_emit preserves a permanent audit trail in the events ledger without changing
+    #   the delivery mechanism. Best-effort: 2>/dev/null || true ensures this never blocks.
+    _GF_TEXT=$(printf '%s' "${ISSUES[*]}" | sed 's/"/\\"/g')
+    state_emit "agent.finding" "{\"agent\":\"guardian\",\"text\":\"${_GF_TEXT}\"}" 2>/dev/null || true
 fi
 
 # Output as additionalContext

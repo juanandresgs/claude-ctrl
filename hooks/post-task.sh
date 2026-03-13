@@ -460,6 +460,8 @@ if [[ -z "$SUMMARY_TEXT" ]]; then
     if ! grep -qxF "$_LF_FINDING" "$_LF_FINDINGS" 2>/dev/null; then
         echo "$_LF_FINDING" >> "$_LF_FINDINGS" 2>/dev/null || true
     fi
+    # DEC-STATE-KV-007: Emit audit event alongside flat-file delivery (best-effort).
+    state_emit "agent.finding" "{\"agent\":\"tester\",\"text\":\"Auto-verify chain failed: all summary.md detection tiers exhausted\"}" 2>/dev/null || true
 
     _LF_MSG="AUTOVERIFY CHAIN FAILED: post-task.sh exhausted all 4 summary.md detection tiers (active marker, breadcrumb, session scan, project-scoped scan) and found no tester summary. The proof gate is at risk of deadlock (proof=${PROOF_STATUS}, Guardian blocked at Gate A). RECOVERY OPTIONS: (1) If the tester reported 'AUTOVERIFY: CLEAN' in its response, relay that text in your next prompt — prompt-submit.sh detects it and promotes proof-status to verified. (2) If the tester showed a clean run, relay its output and let the user approve with 'approved'/'lgtm'/'verified'. (3) Emergency override: .autoverify-failed signal is active — if necessary, a direct write to .proof-status will be allowed within 300s."
     _LF_ESC=$(printf '%s' "$_LF_MSG" | jq -Rs .)
@@ -651,6 +653,8 @@ EOF
         if ! grep -qxF "$_PT_FINDING" "$_PT_FINDINGS" 2>/dev/null; then
             echo "$_PT_FINDING" >> "$_PT_FINDINGS" 2>/dev/null || true
         fi
+        # DEC-STATE-KV-007: Emit audit event alongside flat-file delivery (best-effort).
+        state_emit "agent.finding" "{\"agent\":\"tester\",\"text\":\"Incomplete tester run (outcome=${PT_TRACE_OUTCOME})\"}" 2>/dev/null || true
         append_audit "$PROJECT_ROOT" "tester_incomplete" "post-task: tester trace outcome=${PT_TRACE_OUTCOME}, verification artifact missing"
 
         cat <<EOF
@@ -795,6 +799,9 @@ if [[ "$AV_FAIL" == "true" ]]; then
     if ! grep -qxF "$_AV_FINDING" "$_AV_FINDINGS" 2>/dev/null; then
         echo "$_AV_FINDING" >> "$_AV_FINDINGS" 2>/dev/null || true
     fi
+    # DEC-STATE-KV-007: Emit audit event alongside flat-file delivery (best-effort).
+    _AV_TEXT=$(printf '%s' "${_AV_REASONS:-unknown reason}" | sed 's/"/\\"/g')
+    state_emit "agent.finding" "{\"agent\":\"tester\",\"text\":\"Auto-verify blocked: ${_AV_TEXT}\"}" 2>/dev/null || true
 
     cat <<EOF
 {

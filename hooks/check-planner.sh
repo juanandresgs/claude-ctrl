@@ -311,6 +311,11 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     if ! grep -qxF "$FINDING" "$FINDINGS_FILE" 2>/dev/null; then
         echo "$FINDING" >> "$FINDINGS_FILE"
     fi
+    # DEC-STATE-KV-007: Emit audit event alongside flat-file delivery (best-effort).
+    # require_state ensures state_emit is available (check-planner.sh does not call it at top).
+    require_state 2>/dev/null || true
+    _PF_TEXT=$(printf '%s' "${ISSUES[*]}" | sed 's/"/\\"/g')
+    state_emit "agent.finding" "{\"agent\":\"planner\",\"text\":\"${_PF_TEXT}\"}" 2>/dev/null || true
     for issue in "${ISSUES[@]}"; do
         append_audit "$PROJECT_ROOT" "agent_planner" "$issue"
     done
