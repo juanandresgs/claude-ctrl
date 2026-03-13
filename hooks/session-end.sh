@@ -460,6 +460,10 @@ rm -f "${CLAUDE_DIR}/.orchestrator-sid" 2>/dev/null || true
 rm -f "${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "${CLAUDE_DIR}/.session-changes"*
 rm -f "${CLAUDE_DIR}/.session-decisions"*
+# DEC-STATE-KV-002: delete prompt_count and session_start_epoch from SQLite KV (primary)
+state_delete "prompt_count" 2>/dev/null || true
+state_delete "session_start_epoch" 2>/dev/null || true
+# Flat-file fallback cleanup during migration window
 rm -f "${CLAUDE_DIR}/.prompt-count-"*
 rm -f "${CLAUDE_DIR}/.lint-cache"
 rm -f "${CLAUDE_DIR}/.test-runner."*

@@ -1082,6 +1082,9 @@ fi
 # The first-prompt path in prompt-submit.sh is the reliable HUD injection point.
 # Without this reset, /clear leaves the old prompt-count file and the fallback
 # never triggers again, so the HUD disappears.
+# DEC-STATE-KV-002: delete SQLite KV entries first (primary), then remove flat files (fallback).
+state_delete "prompt_count" 2>/dev/null || true
+state_delete "session_start_epoch" 2>/dev/null || true
 rm -f "${CLAUDE_DIR}/.prompt-count-"*
 rm -f "${CLAUDE_DIR}/.session-start-epoch"
 rm -f "${CLAUDE_DIR}/.subagent-tracker"

@@ -308,12 +308,29 @@ if [[ -f "$_CAS_FAIL_CHECK" ]]; then
 fi
 
 # --- First-prompt mitigation for session-init bug (Issue #10373) ---
+#
+# @decision DEC-STATE-KV-002
+# @title Migrate session_start_epoch and prompt_count to SQLite KV store
+# @status accepted
+# @rationale .session-start-epoch and .prompt-count-{SESSION_ID} are written together
+#   in the first-prompt block and cleaned together at session boundaries. Migrating to
+#   SQLite provides atomic writes and eliminates TOCTOU races between concurrent hook
+#   processes. Flat-file dual-write is retained during the migration window so any
+#   environment that hasn't run session-init.sh (older Claude Code versions) falls back
+#   gracefully. The prompt_count key is session-scoped via workflow_id (no SESSION_ID
+#   suffix needed in the key name — workflow_id already encodes worktree context).
 PROMPT_COUNT_FILE="${CLAUDE_DIR}/.prompt-count-${CLAUDE_SESSION_ID:-$$}"
-if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
+# SQLite primary: read prompt_count; empty result means first prompt
+_PC_KV_VAL=$(state_read "prompt_count" 2>/dev/null || echo "")
+if [[ -z "$_PC_KV_VAL" && ! -f "$PROMPT_COUNT_FILE" ]]; then
     require_session
     require_git
     require_plan
     mkdir -p "${CLAUDE_DIR}"
+    # Primary: write to SQLite KV store
+    state_update "prompt_count" "1" "prompt-submit" 2>/dev/null || true
+    state_update "session_start_epoch" "$(date +%s)" "prompt-submit" 2>/dev/null || true
+    # Dual-write fallback: keep flat files during migration window
     echo "1" > "$PROMPT_COUNT_FILE"
     date +%s > "${CLAUDE_DIR}/.session-start-epoch"
     # Inject full session context (same as session-init.sh)
@@ -547,10 +564,18 @@ if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|communit
 fi
 
 # --- Increment prompt counter ---
+# Primary: read from SQLite KV, increment there; flat-file dual-write as fallback
+_PC_CURRENT=$(state_read "prompt_count" 2>/dev/null || echo "")
+if [[ -z "$_PC_CURRENT" ]]; then
+    # Fall back to flat file if SQLite read is empty (migration window)
+    _PC_CURRENT=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
+fi
+[[ "$_PC_CURRENT" =~ ^[0-9]+$ ]] || _PC_CURRENT=0
+_PC_NEXT=$((_PC_CURRENT + 1))
+state_update "prompt_count" "$_PC_NEXT" "prompt-submit" 2>/dev/null || true
+# Dual-write: keep flat file in sync during migration window
 if [[ -f "$PROMPT_COUNT_FILE" ]]; then
-    CURRENT_COUNT=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
-    [[ "$CURRENT_COUNT" =~ ^[0-9]+$ ]] || CURRENT_COUNT=0
-    echo "$((CURRENT_COUNT + 1))" > "$PROMPT_COUNT_FILE"
+    echo "$_PC_NEXT" > "$PROMPT_COUNT_FILE"
 fi
 
 # --- Compaction heuristic ---
@@ -561,8 +586,12 @@ fi
 # or 45, 90 minutes) to prevent context overflow. Primary trigger is prompt count
 # (more reliable). Secondary is session duration (catches long sessions with fewer
 # prompts). Narrow time windows prevent spam across multiple prompts.
-if [[ -f "$PROMPT_COUNT_FILE" ]]; then
-    PROMPT_NUM=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
+# DEC-STATE-KV-002: prompt_count and session_start_epoch read from SQLite primary,
+# with flat-file fallback for backward compat during migration window.
+_PC_KV_FOR_COMPACT=$(state_read "prompt_count" 2>/dev/null || echo "")
+[[ -z "$_PC_KV_FOR_COMPACT" ]] && _PC_KV_FOR_COMPACT=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "")
+if [[ -n "$_PC_KV_FOR_COMPACT" ]]; then
+    PROMPT_NUM="$_PC_KV_FOR_COMPACT"
     [[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
 
     SUGGEST_COMPACT=false
@@ -574,16 +603,23 @@ if [[ -f "$PROMPT_COUNT_FILE" ]]; then
         COMPACT_REASON="$PROMPT_NUM prompts in this session"
     fi
 
-    # Secondary: session duration
-    EPOCH_FILE="${CLAUDE_DIR}/.session-start-epoch"
-    if [[ "$SUGGEST_COMPACT" == "false" && -f "$EPOCH_FILE" ]]; then
-        START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")
-        NOW_EPOCH=$(date +%s)
-        ELAPSED_MIN=$(( (NOW_EPOCH - START_EPOCH) / 60 ))
-        if [[ "$ELAPSED_MIN" -ge 45 && "$ELAPSED_MIN" -le 47 ]] || \
-           [[ "$ELAPSED_MIN" -ge 90 && "$ELAPSED_MIN" -le 92 ]]; then
-            SUGGEST_COMPACT=true
-            COMPACT_REASON="${ELAPSED_MIN} minutes into session"
+    # Secondary: session duration — read from SQLite primary, flat-file fallback
+    START_EPOCH=""
+    if [[ "$SUGGEST_COMPACT" == "false" ]]; then
+        START_EPOCH=$(state_read "session_start_epoch" 2>/dev/null || echo "")
+        # Flat-file fallback during migration window
+        if [[ -z "$START_EPOCH" ]]; then
+            EPOCH_FILE="${CLAUDE_DIR}/.session-start-epoch"
+            [[ -f "$EPOCH_FILE" ]] && START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")
+        fi
+        if [[ -n "$START_EPOCH" && "$START_EPOCH" != "0" ]]; then
+            NOW_EPOCH=$(date +%s)
+            ELAPSED_MIN=$(( (NOW_EPOCH - START_EPOCH) / 60 ))
+            if [[ "$ELAPSED_MIN" -ge 45 && "$ELAPSED_MIN" -le 47 ]] || \
+               [[ "$ELAPSED_MIN" -ge 90 && "$ELAPSED_MIN" -le 92 ]]; then
+                SUGGEST_COMPACT=true
+                COMPACT_REASON="${ELAPSED_MIN} minutes into session"
+            fi
         fi
     fi
 

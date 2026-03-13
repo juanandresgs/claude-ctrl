@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `feature/kv-session-prompt`: Migrate `.session-start-epoch` and `.prompt-count-*` to SQLite KV store — prompt-submit.sh dual-writes session_start_epoch and prompt_count via state_update() with flat-file fallback; session-init.sh and session-end.sh call state_delete() before flat-file rm; SQLite-primary reads with graceful flat-file fallback during migration window (DEC-STATE-KV-002)
 - `feature/kv-orchestrator-sid`: Migrate `.orchestrator-sid` from flat-file to SQLite KV store — session-init.sh writes orchestrator_sid via state_update() (dual-write with flat file), pre-write.sh Gate 1.5 reads SQLite primary via state_read() with flat-file fallback, session-end.sh deletes via state_delete(); first KV dotfile-to-SQLite migration (DEC-STATE-KV-001)
 - `feature/dispatch-inject`: Dynamic dispatch summary injection — DISPATCH.md maintains a delimited summary section that session-init.sh extracts and injects into session context at startup, single source of truth for dispatch routing; CLAUDE.md v2.4 slims dispatch rules to pointer, removes redundant paragraph (DEC-DISPATCH-INJECT-001)
 - `worktree-agent-a72614e7`: Agent context injection optimization — shared-protocols.md reduced 37% (2568->1626 bytes), subagent-start.sh now uses section-aware extraction with per-agent-type conditional injection (governor skips CWD Safety, implementer gets lockfile reminder), HTML comment stripping prevents @decision annotations from entering agent context (DEC-PROMPT-002)
@@ -49,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/fix-token-format`: Token formatting consistency — capitalize K in K-notation (145K not 145k) and add space before `tks` suffix in all three display locations (session, subagent, lifetime)
 
 ### Changed
+- `feature/kv-session-prompt`: Migrate `.session-start-epoch` and `.prompt-count-*` to SQLite KV store — prompt-submit.sh dual-writes session_start_epoch and prompt_count via state_update() with flat-file fallback; session-init.sh and session-end.sh call state_delete() before flat-file rm; SQLite-primary reads with graceful flat-file fallback during migration window (DEC-STATE-KV-002)
 - `fix/autoverify-guardian-infer`: AUTOVERIFY reliability Wave 2 — Guardian inference-based fallback (INFER-VERIFY) for when AUTO-VERIFY-APPROVED is absent but tester evidence is clean; 5 validation criteria in guardian.md, INFER-VERIFY dispatch docs in DISPATCH.md, Wave 2 tests 9-12 (DEC-AV-GUARDIAN-001, #196)
 - `feature/autoverify-reliability`: AUTOVERIFY reliability Wave 1 — rewrite tester Auto-Verify Signal section with positive-default framing (emit CLEAN unless blockers apply), fix check-tester.sh Phase 2 audit from misleading `auto_verify_rejected` to accurate `auto_verify_advisory`, add post-task.sh inference check for missed AUTOVERIFY signals on clean assessments (DEC-TESTER-AUTOVERIFY-001, DEC-AV-MISS-001, #194, #195)
 - `housekeeping/plan-maintenance`: MASTER_PLAN.md housekeeping batch — close Prompt Purpose Restoration and Governance Signal Audit initiatives (moved to Completed with narratives), add RSM completed summary, fix Created date and architecture counts, add 15 Decision Log entries (DEC-RECK-010 through DEC-RECK-016 and others)
@@ -96,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/fix-dispatch-integrity`: Restore dispatch protocol integrity after Task-to-Agent rename — migrate all test fixtures/scripts from Task to Agent tool name, remove non-existent max_turns parameter, add Gate D (plan vs planner advisory) and Gate E (worktree isolation advisory) to task-track.sh, add tool-name canary to session-init.sh for future rename detection, add Wave Dispatch section to DISPATCH.md, update turn budget docs to prompt-based
 
 ### Changed
+- `feature/kv-session-prompt`: Migrate `.session-start-epoch` and `.prompt-count-*` to SQLite KV store — prompt-submit.sh dual-writes session_start_epoch and prompt_count via state_update() with flat-file fallback; session-init.sh and session-end.sh call state_delete() before flat-file rm; SQLite-primary reads with graceful flat-file fallback during migration window (DEC-STATE-KV-002)
 - `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - `feature/impl-perf-fixes`: Remove CYCLE_MODE auto-flow entirely (orchestrator controls cycle with visible dispatches); slim implementer.md 289->223 lines by removing hook-enforced redundancies; fix subagent token cache path to session-scoped; raise stale marker threshold 15min->60min; add TEST_SCOPE signal for proportional testing
 - `feature/rsm-phase3`: Unified state directory with dual-write migration — `state_dir()` in state-lib.sh provides `state/{phash}/` per-project directories; proof-status, test-status, and session hooks migrated to state directories with backward-compatible fallback reads from legacy dotfile paths; breadcrumb system retired; 50+ new state directory migration tests (DEC-RSM-STATEDIR-001, DEC-RSM-STATEDIR-TEST-001)
@@ -193,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARCHITECTURE.md comprehensive technical reference (this release)
 
 ### Changed
+- `feature/kv-session-prompt`: Migrate `.session-start-epoch` and `.prompt-count-*` to SQLite KV store — prompt-submit.sh dual-writes session_start_epoch and prompt_count via state_update() with flat-file fallback; session-init.sh and session-end.sh call state_delete() before flat-file rm; SQLite-primary reads with graceful flat-file fallback during migration window (DEC-STATE-KV-002)
 - `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - `feature/statusline-data`: Phase 2 data pipeline — todo split display (`todos: 3p 7g` with project/global counts), session cost persistence to `.session-cost-history`, lifetime cost annotation (`Σ~$12.40`) next to session cost; +9 new tests (48 total dedicated) (#72)
 - `feature/statusline-rendering`: Statusline rendering overhaul — domain-clustered labels (`dirty:`, `wt:`, `agents:`, `todos:`), aggregate token segment with K/M notation, `~$` cost prefix; +12 new tests (39 total dedicated)
@@ -276,6 +280,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Test harness auto-update system
 
 ### Changed
+- `feature/kv-session-prompt`: Migrate `.session-start-epoch` and `.prompt-count-*` to SQLite KV store — prompt-submit.sh dual-writes session_start_epoch and prompt_count via state_update() with flat-file fallback; session-init.sh and session-end.sh call state_delete() before flat-file rm; SQLite-primary reads with graceful flat-file fallback during migration window (DEC-STATE-KV-002)
 - `worktree-agent-a9bc4dc5`: Statusline aesthetic + cache discovery — system blocks changed from ▓ to █ with dim color for cleaner visuals, cache discovery fallback finds most recent `.statusline-cache-*` when CLAUDE_SESSION_ID unavailable (DEC-DUALBAR-004), core-lib.sh `is_protected_state_file()` non-dot patterns use exact match to prevent false positives
 - Promoted 16 safe utilities to global allow list in `settings.json`
 - Removed LLM review hook (external command review discontinued)
