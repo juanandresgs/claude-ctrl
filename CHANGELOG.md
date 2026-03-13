@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `feature/kv-cost-history`: Migrate session cost history to SQLite — migration v3 adds `cost_usd REAL NOT NULL DEFAULT 0` to session_tokens, session-end.sh INSERT includes cost_usd from session-end JSON, session-init.sh reads LIFETIME_COST from SQLite SUM with flat-file fallback (DEC-STATE-KV-004)
 - `feature/kv-token-history`: Migrate token history to SQLite — session_tokens table with migration v2, session-end.sh dual-writes INSERT alongside flat-file append, session-init.sh reads lifetime tokens from SQLite primary with one-time backfill from flat file, statusline.sh drops per-render .session-main-tokens write, orphaned .statusline-cache cleanup on init (DEC-STATE-KV-003)
 - `feature/kv-session-prompt`: Migrate `.session-start-epoch` and `.prompt-count-*` to SQLite KV store — prompt-submit.sh dual-writes session_start_epoch and prompt_count via state_update() with flat-file fallback; session-init.sh and session-end.sh call state_delete() before flat-file rm; SQLite-primary reads with graceful flat-file fallback during migration window (DEC-STATE-KV-002)
 - `feature/kv-orchestrator-sid`: Migrate `.orchestrator-sid` from flat-file to SQLite KV store — session-init.sh writes orchestrator_sid via state_update() (dual-write with flat file), pre-write.sh Gate 1.5 reads SQLite primary via state_read() with flat-file fallback, session-end.sh deletes via state_delete(); first KV dotfile-to-SQLite migration (DEC-STATE-KV-001)
