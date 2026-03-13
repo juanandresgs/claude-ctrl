@@ -499,7 +499,57 @@ workflow_id() {
     if [[ -n "${_WORKFLOW_ID:-}" ]]; then echo "$_WORKFLOW_ID"; return 0; fi
     local project_root="${PROJECT_ROOT:-$(detect_project_root 2>/dev/null || echo "$PWD")}"
     local phash
-    phash=$(project_hash "$project_root")
+    # @decision DEC-WORKFLOW-ID-CLI-001
+    # @title workflow_id() CLI fallback: handle missing project_hash and empty phash
+    # @status accepted
+    # @rationale When state-lib.sh is sourced from CLI without log.sh or core-lib.sh
+    #   first (e.g., `source ~/.claude/hooks/state-lib.sh && proof_epoch_reset`),
+    #   project_hash() is not defined — it lives in log.sh and core-lib.sh.
+    #   The result: project_hash returns command-not-found, phash is empty, and
+    #   workflow_id() returns "_main" instead of "{7e8570fa}_main".
+    #   Fix: (1) if project_hash is not available, compute inline with shasum/sha256sum;
+    #   (2) if phash is still empty (hash cmd missing), try CLAUDE_DIR or PROJECT_ROOT
+    #   env vars as the path to hash; (3) last resort: use git rev-parse from PWD.
+    #   This fix ONLY activates on empty phash — normal hook path is unchanged.
+    #   Fixes issue #239.
+    if declare -f project_hash >/dev/null 2>&1; then
+        phash=$(project_hash "$project_root" 2>/dev/null || echo "")
+    else
+        # Inline SHA-256 computation — mirrors log.sh/core-lib.sh project_hash()
+        # Only reached when state-lib.sh is sourced without its normal dependencies.
+        local _sha_cmd=""
+        if command -v shasum >/dev/null 2>&1; then
+            _sha_cmd="shasum -a 256"
+        elif command -v sha256sum >/dev/null 2>&1; then
+            _sha_cmd="sha256sum"
+        fi
+        if [[ -n "$_sha_cmd" ]]; then
+            phash=$(printf '%s' "$project_root" | $_sha_cmd | cut -c1-8 2>/dev/null || echo "")
+        fi
+    fi
+    # If phash is empty (hash command missing or project_root empty), try env var fallbacks.
+    # Fallback priority: PROJECT_ROOT → CLAUDE_DIR → git rev-parse from PWD
+    if [[ -z "$phash" ]]; then
+        local _fallback_root=""
+        if [[ -n "${PROJECT_ROOT:-}" ]]; then
+            _fallback_root="$PROJECT_ROOT"
+        elif [[ -n "${CLAUDE_DIR:-}" ]]; then
+            _fallback_root="$CLAUDE_DIR"
+        else
+            _fallback_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+        fi
+        if [[ -n "$_fallback_root" ]]; then
+            local _sha_cmd2=""
+            if command -v shasum >/dev/null 2>&1; then
+                _sha_cmd2="shasum -a 256"
+            elif command -v sha256sum >/dev/null 2>&1; then
+                _sha_cmd2="sha256sum"
+            fi
+            if [[ -n "$_sha_cmd2" ]]; then
+                phash=$(printf '%s' "$_fallback_root" | $_sha_cmd2 | cut -c1-8 2>/dev/null || echo "")
+            fi
+        fi
+    fi
     local wt_id
     wt_id=$(detect_workflow_id "" 2>/dev/null || echo "main")
     _WORKFLOW_ID="${phash}_${wt_id}"
