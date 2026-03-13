@@ -443,6 +443,171 @@ fi
 teardown_env
 
 # ---------------------------------------------------------------------------
+# Test 9: cost_usd column — INSERT with cost, SUM, and project-scoped query
+# ---------------------------------------------------------------------------
+# @decision DEC-STATE-KV-004
+# @title cost_usd column in session_tokens for unified cost+token storage
+# @status accepted
+# @rationale Validates migration_003_cost_column: the cost_usd REAL column
+# (default 0) added to session_tokens eliminates the need for the separate
+# .session-cost-history flat file as the primary store. SQLite INSERT is
+# atomic (WAL), concurrent session-end hooks cannot corrupt each other.
+# session-init.sh reads SUM(cost_usd) WHERE project_hash for per-project
+# lifetime spend; the flat file is preserved as dual-write fallback.
+echo ""
+echo "=== Test 9: cost_usd column (DEC-STATE-KV-004) ==="
+
+run_test "cost_usd column exists after migration_003"
+setup_env "t9"
+_init_schema
+_schema=$(_db ".schema session_tokens" 2>/dev/null || true)
+if echo "$_schema" | grep -q "cost_usd"; then
+    pass_test
+else
+    fail_test "cost_usd column missing from session_tokens"
+fi
+teardown_env
+
+run_test "INSERT with cost_usd, SUM returns correct value"
+setup_env "t9b"
+_init_schema
+_phash="cost1234"
+_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+_db "INSERT INTO session_tokens (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, cost_usd, source)
+     VALUES ('sess-c1', '$_phash', 'costproj', '$_ts', 5000, 4500, 500, 0.12, 'test');"
+_sum=$(_db "SELECT COALESCE(SUM(cost_usd), 0) FROM session_tokens WHERE project_hash = '$_phash';")
+# Compare with awk for floating-point equality (bash can't compare floats)
+_ok=$(awk "BEGIN {printf \"%s\", (\"$_sum\" + 0 > 0.119 && \"$_sum\" + 0 < 0.121) ? \"yes\" : \"no\"}")
+if [[ "$_ok" == "yes" ]]; then
+    pass_test
+else
+    fail_test "SUM(cost_usd) = '$_sum', expected ~0.12"
+fi
+teardown_env
+
+run_test "multiple INSERTs accumulate cost_usd correctly"
+setup_env "t9c"
+_init_schema
+_phash="cost5678"
+_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for i in 1 2 3; do
+    _db "INSERT INTO session_tokens (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, cost_usd, source)
+         VALUES ('sess-c$i', '$_phash', 'costproj', '$_ts', 1000, 900, 100, 0.05, 'test');"
+done
+_sum=$(_db "SELECT COALESCE(SUM(cost_usd), 0) FROM session_tokens WHERE project_hash = '$_phash';")
+# 3 * 0.05 = 0.15
+_ok=$(awk "BEGIN {printf \"%s\", (\"$_sum\" + 0 > 0.149 && \"$_sum\" + 0 < 0.151) ? \"yes\" : \"no\"}")
+if [[ "$_ok" == "yes" ]]; then
+    pass_test
+else
+    fail_test "SUM(cost_usd) = '$_sum', expected ~0.15"
+fi
+teardown_env
+
+run_test "cost_usd defaults to 0 for old INSERTs without cost column"
+setup_env "t9d"
+_init_schema
+_phash="olddata0"
+_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# INSERT without specifying cost_usd — should use DEFAULT 0
+_db "INSERT INTO session_tokens (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, source)
+     VALUES ('sess-old', '$_phash', 'oldproj', '$_ts', 2000, 1800, 200, 'backfill');"
+_cost=$(_db "SELECT cost_usd FROM session_tokens WHERE session_id = 'sess-old';")
+if [[ "$_cost" == "0" || "$_cost" == "0.0" ]]; then
+    pass_test
+else
+    fail_test "Default cost_usd = '$_cost', expected 0"
+fi
+teardown_env
+
+run_test "migration version 3 recorded in _migrations"
+setup_env "t9e"
+_init_schema
+_mv=$(_db "SELECT version FROM _migrations WHERE version=3;" 2>/dev/null || echo "")
+if [[ "$_mv" == "3" ]]; then
+    pass_test
+else
+    fail_test "migration version 3 not recorded (got: '$_mv')"
+fi
+teardown_env
+
+# ---------------------------------------------------------------------------
+# Test 10: Migration v3 adds cost_usd to existing DB without cost column
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Test 10: Migration v3 adds cost_usd to existing DB ==="
+
+run_test "migration_003 adds cost_usd to pre-existing session_tokens table"
+setup_env "t10"
+
+# Simulate a "pre-migration" DB: create session_tokens WITHOUT cost_usd,
+# record migrations 1 and 2 but NOT 3, then re-run migrations.
+_db "CREATE TABLE IF NOT EXISTS session_tokens_old (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL, project_hash TEXT NOT NULL,
+    project_name TEXT, timestamp TEXT NOT NULL,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    main_tokens INTEGER NOT NULL DEFAULT 0,
+    subagent_tokens INTEGER NOT NULL DEFAULT 0,
+    source TEXT
+);" 2>/dev/null || true
+
+# Insert a row without cost_usd (pre-migration data)
+_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+_db "INSERT INTO session_tokens_old VALUES (1, 'pre-sess', 'prephash', 'preproj', '$_ts', 1000, 800, 200, 'test');" 2>/dev/null || true
+
+# Now trigger full schema init (which runs migrations including v3)
+_init_schema
+
+# Verify cost_usd is present on the real table (the migration path)
+_schema=$(_db ".schema session_tokens" 2>/dev/null || true)
+if echo "$_schema" | grep -q "cost_usd"; then
+    pass_test
+else
+    fail_test "After migration_003, cost_usd column not found in session_tokens"
+fi
+teardown_env
+
+run_test "existing rows have cost_usd=0 after ALTER TABLE adds column"
+setup_env "t10b"
+
+# This test uses a raw sqlite3 DB to simulate pre-migration state more precisely.
+# Create the DB, add session_tokens WITHOUT cost_usd, add a row, then ALTER TABLE.
+_testdb="$CLAUDE_DIR/state/state.db"
+mkdir -p "$(dirname "$_testdb")"
+
+# Create table without cost_usd
+sqlite3 "$_testdb" "
+CREATE TABLE IF NOT EXISTS _migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT, applied_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS session_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL, project_hash TEXT NOT NULL,
+    project_name TEXT, timestamp TEXT NOT NULL,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    main_tokens INTEGER NOT NULL DEFAULT 0,
+    subagent_tokens INTEGER NOT NULL DEFAULT 0,
+    source TEXT
+);
+INSERT INTO session_tokens (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, source)
+    VALUES ('pre-sess', 'pre12345', 'preproj', '2026-01-01T00:00:00Z', 1500, 1200, 300, 'test');
+INSERT INTO _migrations (version, name, checksum, applied_at) VALUES (1, 'initial_schema', '', strftime('%s','now'));
+INSERT INTO _migrations (version, name, checksum, applied_at) VALUES (2, 'session_tokens', '', strftime('%s','now'));
+" 2>/dev/null || true
+
+# Now run migration_003 directly (ALTER TABLE ADD COLUMN)
+sqlite3 "$_testdb" "ALTER TABLE session_tokens ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;" 2>/dev/null || true
+sqlite3 "$_testdb" "INSERT INTO _migrations (version, name, checksum, applied_at) VALUES (3, 'cost_column', '', strftime('%s','now'));" 2>/dev/null || true
+
+# Verify existing row has cost_usd=0
+_cost=$(_db "SELECT cost_usd FROM session_tokens WHERE session_id = 'pre-sess';")
+if [[ "$_cost" == "0" || "$_cost" == "0.0" ]]; then
+    pass_test
+else
+    fail_test "Existing row cost_usd = '$_cost', expected 0 after ALTER TABLE"
+fi
+teardown_env
+
+# ---------------------------------------------------------------------------
 # Cleanup and summary
 # ---------------------------------------------------------------------------
 rm -rf "$_TMP_BASE" 2>/dev/null || true

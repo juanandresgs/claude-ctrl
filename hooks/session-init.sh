@@ -487,17 +487,34 @@ fi
 
 # --- Sum lifetime session cost for statusline display (REQ-P1-001) ---
 # @decision DEC-LIFETIME-COST-001
-# @title Sum lifetime cost from .session-cost-history at session start
+# @title Sum lifetime cost from session_tokens.cost_usd (SQLite primary) with flat-file fallback
 # @status accepted
-# @rationale .session-cost-history is a pipe-delimited file written by session-end.sh
-# containing one entry per session (timestamp|cost_usd|session_id). Summing the cost
-# column with awk at session start is inexpensive (O(N) over ~100 lines) and gives
-# the user a running lifetime spend visible in the statusline.
+# @rationale Original: summed from .session-cost-history (flat file). Updated (DEC-STATE-KV-004):
+# SQLite is now primary — SELECT SUM(cost_usd) WHERE project_hash is atomic and race-free.
+# The flat-file fallback (.session-cost-history) handles: brand-new installs, pre-migration
+# DBs, and external tooling that reads the flat file directly. Both paths are preserved
+# so no history is lost. _PHASH is available from line 67 (top-level project_hash call).
 LIFETIME_COST=0
-_COST_HISTORY="${CLAUDE_DIR}/.session-cost-history"
-if [[ -f "$_COST_HISTORY" ]]; then
-    _LIFETIME=$(awk -F'|' '{sum += $2} END {printf "%.6f", sum+0}' "$_COST_HISTORY" 2>/dev/null || echo "0")
-    LIFETIME_COST="${_LIFETIME:-0}"
+# SQLite primary: sum cost_usd from session_tokens for this project
+_lc_db="$(state_dir)/state.db"
+if [[ -f "$_lc_db" ]]; then
+    _lc_phash_e=$(printf '%s' "$_PHASH" | sed "s/'/''/g")
+    _lc_cost=$(sqlite3 "$_lc_db" \
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM session_tokens WHERE project_hash = '${_lc_phash_e}';" \
+        2>/dev/null || echo "0")
+    _lc_cost="${_lc_cost:-0}"
+    # Use SQLite result if non-zero (awk comparison handles floating-point)
+    if awk "BEGIN {exit (\"$_lc_cost\" + 0 > 0) ? 0 : 1}" 2>/dev/null; then
+        LIFETIME_COST="$_lc_cost"
+    fi
+fi
+# Flat-file fallback (pre-migration DBs, new installs, external tooling)
+if [[ "$LIFETIME_COST" == "0" || -z "$LIFETIME_COST" ]]; then
+    _COST_HISTORY="${CLAUDE_DIR}/.session-cost-history"
+    if [[ -f "$_COST_HISTORY" ]]; then
+        _LIFETIME=$(awk -F'|' '{sum += $2} END {printf "%.6f", sum+0}' "$_COST_HISTORY" 2>/dev/null || echo "0")
+        LIFETIME_COST="${_LIFETIME:-0}"
+    fi
 fi
 
 # --- Sum lifetime tokens from .session-token-history ---

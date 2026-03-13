@@ -303,6 +303,7 @@ CREATE INDEX IF NOT EXISTS idx_session_tokens_project
 _MIGRATIONS=(
     "1:initial_schema:_migration_001_initial_schema"
     "2:session_tokens:_migration_002_session_tokens"
+    "3:cost_column:_migration_003_cost_column"
 )
 
 # _migration_001_initial_schema DB
@@ -340,6 +341,31 @@ _migration_002_session_tokens() {
     # No-op: table created by _state_ensure_schema() with IF NOT EXISTS.
     # Migration version 2 records this schema addition in _migrations.
     return 0
+}
+
+# _migration_003_cost_column DB
+#   Adds cost_usd REAL column (default 0) to session_tokens.
+#   Existing rows (from pre-migration sessions) get cost_usd=0 automatically.
+#   ALTER TABLE ADD COLUMN is idempotent via the migration version check — this
+#   function runs only once per DB (version 3 not yet in _migrations).
+#   Uses printf+sqlite3 directly (not _state_sql) per migration framework rules.
+#
+# @decision DEC-STATE-KV-004
+# @title cost_usd column in session_tokens for unified cost+token storage
+# @status accepted
+# @rationale .session-cost-history is a separate flat file (timestamp|cost_usd|session_id)
+#   that has the same race conditions as .session-token-history: bare >> append is not
+#   atomic when multiple sessions end concurrently. Adding cost_usd to session_tokens
+#   gives us one atomic INSERT per session that captures both token counts and cost.
+#   session-init.sh reads SUM(cost_usd) WHERE project_hash for per-project lifetime
+#   spend display. The flat file remains as dual-write to preserve backward compatibility
+#   for any external tooling that reads .session-cost-history. Existing session_tokens
+#   rows receive cost_usd=0 (DEFAULT), preserving accurate token sums while noting
+#   that pre-migration sessions have no recorded cost in the SQLite column.
+_migration_003_cost_column() {
+    local db="$1"
+    printf '.timeout 5000\nALTER TABLE session_tokens ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;\n' \
+        | sqlite3 "$db" 2>/dev/null || true
 }
 
 # _state_checksum_fn FUNCTION_NAME
@@ -1524,6 +1550,7 @@ export -f state_dir state_locks_dir
 export -f state_integrity_check
 export -f state_migrate _state_run_migrations _state_checksum_fn
 export -f _migration_001_initial_schema
+export -f _migration_002_session_tokens _migration_003_cost_column
 export -f proof_state_get proof_state_set proof_epoch_reset
 export -f marker_create marker_query marker_update marker_cleanup
 export -f state_emit state_events_since state_checkpoint state_events_count state_gc_events
