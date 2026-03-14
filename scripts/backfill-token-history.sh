@@ -131,6 +131,62 @@ fi
 
 echo "Loaded ${#trace_epochs[@]} trace(s) from index"
 
+# @decision DEC-BACKFILL-PHASH-002
+# @title Pre-scan history file to learn correct path-based hashes from live entries
+# @status accepted
+# @supersedes DEC-BACKFILL-PHASH-001
+# @rationale DEC-BACKFILL-PHASH-001 claimed that hashing the project_name was acceptable
+# because old entries "fall through the NF < 6 backward-compat clause." That was wrong:
+# once backfill upgrades entries to 7 columns, NF < 6 no longer matches, so they are
+# silently excluded from per-project filtering in session-init.sh (which filters by
+# $6 == $_PHASH, the path-based hash). The bug caused 5.6M tokens to be invisible to
+# per-project views.
+#
+# Fix: pre-scan the history file before processing. Live-written entries (session_id !=
+# "unknown") have the correct path-based hash because session-end.sh calls
+# project_hash(PROJECT_ROOT). We collect these into an associative array keyed by
+# project_name. When the main loop assigns a hash to a newly backfilled entry, it first
+# looks up the project_name in known_hashes. If found, it uses the correct path-based
+# hash. If not found (no live entry exists for this project_name), it falls back to
+# hash(project_name) — same behavior as before, acceptable for orphaned data.
+#
+# This approach is O(N) additional reads (one extra pass over the history file) and does
+# not require the PROJECT_ROOT path to be known at backfill time. It leverages the
+# invariant that any project with live token history entries will have at least one
+# correctly-hashed entry in the file.
+#
+# Implementation note: bash 3.2 (macOS default) does not support associative arrays
+# (declare -A). We use a temp directory as a portable key-value store: one file per
+# project_name, containing the hash. File names are the raw project_name (project names
+# are basenames, safe as filenames). This is O(N) disk ops but the history file is tiny.
+HASH_STORE=$(mktemp -d)
+trap 'rm -rf "$HASH_STORE" 2>/dev/null || true' EXIT
+_known_hash_count=0
+while IFS='|' read -r _ps_ts _ps_tok _ps_main _ps_sub _ps_sid _ps_phash _ps_pname; do
+    # Only learn from 7-column entries where session_id is NOT "unknown"
+    # (live-written entries, not previously backfilled ones which had wrong hashes)
+    if [[ -n "${_ps_phash:-}" && -n "${_ps_pname:-}" && "${_ps_sid:-}" != "unknown" ]]; then
+        # Skip if we already have a hash for this project (first live entry wins)
+        local_key_file="${HASH_STORE}/${_ps_pname}"
+        if [[ ! -f "$local_key_file" ]]; then
+            printf '%s' "$_ps_phash" > "$local_key_file"
+            _known_hash_count=$(( _known_hash_count + 1 ))
+        fi
+    fi
+done < "$HISTORY_FILE"
+echo "Pre-scan learned ${_known_hash_count} project hash(es) from live entries"
+
+# Lookup helper: get the known path-based hash for a project_name (or empty string)
+_known_hash() {
+    local _kh_pname="$1"
+    local _kh_file="${HASH_STORE}/${_kh_pname}"
+    if [[ -f "$_kh_file" ]]; then
+        cat "$_kh_file"
+    else
+        echo ""
+    fi
+}
+
 # Process history file
 MATCH_WINDOW=1800  # 30 minutes in seconds
 
@@ -223,11 +279,15 @@ while IFS='|' read -r ts total_tok main_tok sub_tok sid rest; do
     fi
 
     if (( best_diff <= MATCH_WINDOW )); then
-        # Matched — compute project hash
-        # We don't have the PROJECT_ROOT path, only the name. Use the name itself
-        # as a reproducible key: phash of "project_name" (not a real path, but consistent)
-        # Caveat noted in @decision below.
-        best_phash=$(_phash "$best_pname")
+        # Matched — assign project hash.
+        # Prefer the path-based hash learned from live entries (correct).
+        # Fall back to hash(project_name) only when no live entry exists (DEC-BACKFILL-PHASH-002).
+        _live_hash=$(_known_hash "$best_pname")
+        if [[ -n "$_live_hash" ]]; then
+            best_phash="$_live_hash"
+        else
+            best_phash=$(_phash "$best_pname")
+        fi
         echo "${ts}|${total_tok}|${main_tok}|${sub_tok}|${sid}|${best_phash}|${best_pname}" >> "$TEMP_OUT"
         count_backfilled=$(( count_backfilled + 1 ))
     else
@@ -239,15 +299,13 @@ done < "$HISTORY_FILE"
 
 # @decision DEC-BACKFILL-PHASH-001
 # @title Backfill uses project_name hash, not project_root hash
-# @status accepted
-# @rationale The trace index contains project_name (basename) but not PROJECT_ROOT
-# (full path). Computing phash("my-project") will NOT match phash("/Users/me/my-project")
-# from session-end.sh. This is an acceptable limitation for backfill: the goal is to
-# associate old entries with a project_name for human readability, not to enable
-# accurate per-project filtering for those old entries. Old entries already fall through
-# the (NF < 6) backward-compat clause in session-init.sh anyway. A future enhancement
-# could cross-reference with session archive paths, but the complexity isn't justified
-# for historical data.
+# @status superseded
+# @superseded-by DEC-BACKFILL-PHASH-002
+# @rationale SUPERSEDED. The original assumption that old entries "fall through NF < 6"
+# was incorrect: once this backfill script upgrades them to 7 columns, NF < 6 no longer
+# matches and they are silently excluded from per-project filtering. The pre-scan approach
+# in DEC-BACKFILL-PHASH-002 fixes this by learning correct hashes from live entries.
+# See the pre-scan block above for the new implementation.
 
 # Replace original with processed output
 mv "$TEMP_OUT" "$HISTORY_FILE"
