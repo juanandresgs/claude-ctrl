@@ -45,13 +45,13 @@ The system has four layers:
 
 1. **Instruction layer** — `CLAUDE.md` and agent prompts tell Claude what to do.
 2. **Hook layer** — Hook scripts and shared libraries enforce it mechanically, regardless of instructions.
-3. **Agent layer** — 4 specialized agents (Planner, Implementer, Tester, Guardian)
+3. **Agent layer** — 6 specialized agents (Planner, Implementer, Tester, Guardian, Governor, DB Guardian)
    divide complex work into deterministic phases.
-4. **State layer** — ~20 state files persist information between hooks, agents, and sessions.
+4. **State layer** — SQLite KV store (`state/state.db`) is the canonical state backend since the State Unification initiative. All proof state, test status, session tokens, agent markers, and KV data live in a single WAL-mode SQLite database. A small number of session-scoped flat files (lint cooldowns, preserved context, audit log) remain for non-KV concerns.
 
 No single layer is sufficient alone. Instructions drift under context pressure.
 Hooks enforce deterministically but can't plan. Agents plan but need enforcement.
-State files bridge the gap — hooks communicate with each other through files, not memory.
+State bridges the gap — hooks communicate with each other through SQLite and session-scoped files, not memory.
 
 ### Directory Map
 
@@ -87,19 +87,24 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── ci-lib.sh             # Shared library — CI detection, workflow helpers
 │   ├── log.sh                # Shared library — JSON I/O, stdin caching, path utilities
 │   └── source-lib.sh         # Shared library — bootstrapper (log.sh + core-lib.sh) + require_*() lazy loaders
-├── agents/                   # 4 agent prompt definitions
+├── agents/                   # 6 agent prompt definitions + shared-protocols.md library
 │   ├── planner.md            # Planner agent — MASTER_PLAN.md creation
 │   ├── implementer.md        # Implementer agent — test-first development
 │   ├── tester.md             # Tester agent — e2e verification
-│   └── guardian.md           # Guardian agent — git operations
-├── skills/                   # 7 skill directories
+│   ├── guardian.md           # Guardian agent — git operations
+│   ├── governor.md           # Governor agent — initiative health evaluation
+│   ├── db-guardian.md        # DB Guardian agent — database operation safety
+│   └── shared-protocols.md  # Shared library — injected into all agents at dispatch time
+├── skills/                   # 9 skill directories
 │   ├── deep-research/        # Multi-provider research synthesis
 │   ├── decide/               # Interactive decision configurator
 │   ├── consume-content/      # URL → structured digest
 │   ├── context-preservation/ # Pre-compaction context capture (/compact)
 │   ├── diagnose/             # System health diagnostics
 │   ├── rewind/               # Checkpoint recovery (/rewind)
-│   └── prd/                  # PRD generation
+│   ├── prd/                  # PRD generation
+│   ├── observatory/          # Self-improving trace analysis flywheel
+│   └── reckoning/            # Structured retrospective and self-assessment
 ├── commands/                 # Slash commands (lightweight, no context fork)
 │   ├── backlog.md            # /backlog — GitHub Issues integration
 │   └── compact.md            # /compact — context preservation
@@ -122,8 +127,8 @@ State files bridge the gap — hooks communicate with each other through files, 
 ├── tests/                    # Hook validation suite
 │   ├── run-hooks.sh          # Main test runner
 │   ├── fixtures/             # Input/expected-output fixture pairs
-│   └── test-*.sh             # 30+ specialized test scripts
-└── settings.json             # Hook registry — 10 event types
+│   └── test-*.sh             # 90 specialized test scripts
+└── settings.json             # Hook registry — 10 event types, 24 registered hook entries
 ```
 
 ### Component Diagram
@@ -177,7 +182,8 @@ State files bridge the gap — hooks communicate with each other through files, 
 │ SubagentStart: subagent-start.sh                                    │
 │ SubagentStop: check-planner.sh, check-implementer.sh,              │
 │              check-tester.sh, check-guardian.sh,                    │
-│              check-explore.sh, check-general-purpose.sh             │
+│              check-governor.sh, check-explore.sh,                   │
+│              check-general-purpose.sh                               │
 │ Stop: stop.sh (decision audit + session summary + next steps)       │
 │ SessionEnd: session-end.sh                                          │
 │ Notification: notify.sh                                             │
@@ -349,6 +355,7 @@ with the `additionalContext` injected. `lint.sh` uses this for auto-fix loops.
 | **SubagentStop** | `implementer` | When implementer completes | check-implementer.sh |
 | **SubagentStop** | `tester` | When tester completes | check-tester.sh |
 | **SubagentStop** | `guardian` | When guardian completes | check-guardian.sh |
+| **SubagentStop** | `governor` | When governor completes | check-governor.sh (advisory only) |
 | **SubagentStop** | `Explore\|explore` | When Explore agent completes | check-explore.sh |
 | **SubagentStop** | `general-purpose` | When general-purpose agent completes | check-general-purpose.sh |
 | **Stop** | (all) | After Claude finishes responding | stop.sh (consolidates surface, session-summary, forward-motion) |
@@ -747,28 +754,32 @@ SQLite `test_status` key (migrated from `.test-status`), SQLite proof state (mig
 
 ## 6. Agent System
 
-**What it does:** Four specialized agents divide complex work into phases with
+**What it does:** Six specialized agents divide complex work into phases with
 clear handoffs. Each agent has a dedicated prompt, a model assignment, and
 SubagentStop validation.
 
 **Why it exists:** A single context window cannot maintain the full state of
 planner + implementer + verifier + committer simultaneously. Specialization
-lets each agent go deep on its role without context dilution.
+lets each agent go deep on its role without context dilution. Governor and DB Guardian
+add ongoing health evaluation and database safety as independent enforcement layers.
 
 **What you can count on:**
 - Orchestrator (main context) dispatches agents via Task tool — it does NOT write source code.
 - Each agent handoff is enforced by SubagentStop hooks.
 - Dispatch order is enforced by task-track.sh gates (implementer → tester → guardian).
 - max_turns are set by the orchestrator on every Task invocation.
+- `agents/shared-protocols.md` is a library injected into all agents at dispatch time via subagent-start.sh — it is NOT an agent.
 
-### The Four Agents
+### The Six Agents
 
 | Agent | Model | max_turns | Primary Output | SubagentStop Validator |
 |-------|-------|-----------|----------------|------------------------|
 | Planner | claude-opus-4-6 | 65 | MASTER_PLAN.md + GitHub Issues | check-planner.sh |
 | Implementer | claude-sonnet-4-6 | 85 | Tests + source code in worktree | check-implementer.sh |
-| Tester | claude-sonnet-4-6 | 40 | .proof-status + verification report | check-tester.sh |
+| Tester | claude-sonnet-4-6 | 40 | proof state = verified + verification report | check-tester.sh |
 | Guardian | claude-opus-4-6 | 30 | git commit + merge + cleanup | check-guardian.sh |
+| Governor | claude-opus-4-6 | 25 | Initiative health pulse / full evaluation | check-governor.sh (advisory) |
+| DB Guardian | claude-opus-4-6 | 30 | Database operation safety approval | (dispatched on demand) |
 
 ### Planner Agent (agents/planner.md)
 
@@ -1350,6 +1361,12 @@ TRACE_STORE="$HOME/.claude/traces"
 ---
 
 ## 13. State File Registry
+
+**SQLite is the sole canonical state backend** since the State Unification initiative completed
+(all 16 migratable dotfiles resolved). `state/state.db` (WAL mode) stores proof state, test
+status, session tokens, prompt counts, agent markers, and all KV data. The flat files below
+are session-scoped ephemeral concerns (lint cooldowns, preserved context, audit log) that do
+not belong in the KV store.
 
 Complete table of every persistent state file. All paths are relative to the
 project root unless marked as `~/.claude/` (global).

@@ -11,7 +11,7 @@
 
 **Instructions guide. Hooks enforce.**
 
-A deterministic governance layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that uses shell-script hooks to intercept every tool call —bash commands, file writes, agent dispatches, session boundaries— and mechanically enforce sound principles. Responsibilities are divided between specialized agents (Planner, Implementer, Tester, Guardian) to ensure quality work. The hooks enforce the process so the model can focus on the task at hand.
+A deterministic governance layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that uses shell-script hooks to intercept every tool call —bash commands, file writes, agent dispatches, session boundaries— and mechanically enforce sound principles. Responsibilities are divided between 6 specialized agents (Planner, Implementer, Tester, Guardian, Governor, DB Guardian) to ensure quality work. The hooks enforce the process so the model can focus on the task at hand.
 
 ---
 
@@ -31,11 +31,11 @@ I've never been much of a gambler myself.
 
 ---
 
-<h2 align="center">Metanoia v3.0</h2>
+<h2 align="center">Metanoia v4.0</h2>
 
 <p align="center"><em>metanoia (n.) — a fundamental change in thinking; a transformative shift in approach</em></p>
 
-<p align="center"><strong>617 commits over v2.0</strong> — a ground-up refactor of the hook architecture,<br>state management, and agent governance.</p>
+<p align="center"><strong>SQLite unified state · Database Safety Framework · Governor subagent · 90 tests</strong></p>
 
 ---
 
@@ -106,6 +106,16 @@ flowchart TD
 Every arrow is a hook. Every feedback loop is mechanical. The model doesn't choose to follow the process — the hooks won't let it skip. Write on main? Denied. No plan? Denied. Tests failing? Blocked. Undocumented? Blocked. No tester sign-off? Commit denied. The system self-corrects until the work meets the standard.
 
 **The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get denied with corrections (`--force` → `--force-with-lease`, `/tmp/` → project `tmp/`). You describe what you want and review what comes out.
+
+### v4 Feature Highlights
+
+**Database Safety Framework** — defense-in-depth interception for database CLI commands (psql, mysql, sqlite3, mongosh, redis-cli), IaC operations (terraform destroy), container volume removal, and MCP JSON-RPC calls. Environment tiering: dev=permissive, staging=approval, prod=read-only. Database Guardian subagent (`agents/db-guardian.md`) reviews ambiguous operations before they execute.
+
+**Governor Subagent** — sixth agent that evaluates initiative health against project trajectory. Two tiers: a lightweight health pulse (~3-5K tokens) for routine checks and a full evaluation (~15-20K tokens) for strategic decisions. Triggered automatically when a planner returns a multi-wave initiative; check-governor.sh fires as an advisory SubagentStop hook.
+
+**AUTOVERIFY** — the tester's auto-verify signal (`AUTOVERIFY: CLEAN`) is operational in `post-task.sh`. When check-tester.sh detects high confidence with full coverage, it writes proof state = verified automatically without requiring manual user approval. If the signal is absent but tester evidence is clean, Guardian inference-based fallback (`INFER-VERIFY`) activates as a secondary path per DEC-AV-GUARDIAN-001. The phase 1 gate (`CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY`) is currently disabled.
+
+**SQLite Unified State** — all probe state, test status, session tokens, agent markers, and KV data live in `state/state.db` (WAL mode). The 16-migration State Unification initiative replaced all scattered dotfiles with a single SQLite backend. Legacy flat-file reads were removed; SQLite is now the sole canonical authority.
 
 ---
 
