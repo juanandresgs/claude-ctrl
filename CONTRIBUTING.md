@@ -88,7 +88,7 @@ EOF
 
 - **`source-lib.sh`** — Bootstrap loader: sources `log.sh` + `core-lib.sh`, provides `require_*()` lazy loaders for domain libraries. All new hooks should source this first.
 - **`log.sh`** — `read_input`, `get_field`, `detect_project_root`, `log_info`, `log_json`
-- **`context-lib.sh`** — Backward-compatible shim that sources all domain libraries. New hooks should use `source-lib.sh` with `require_*()` lazy loaders instead.
+- **`core-lib.sh`** — Shared library providing deny/allow/advisory output helpers, atomic writes, and source file detection
 
 Source them with `source "$(dirname "$0")/source-lib.sh"`. See the existing hooks for patterns.
 
@@ -131,7 +131,7 @@ Create `tests/fixtures/my-hook-*.json` with sample inputs:
 - **jq for JSON**: Use `jq` for all JSON parsing and generation — no `sed`/`awk` on JSON
 - **Stderr for logging**: All debug/info output goes to stderr. Stdout is exclusively for hook protocol responses
 - **Exit codes**: 0 = success, non-zero = hook error (logged, does not block tool). Exception: exit 2 in PostToolUse linting hooks triggers retry
-- **Shared libraries**: Always use `log.sh` and `context-lib.sh` instead of reimplementing input parsing or project detection
+- **Shared libraries**: Always use `log.sh` and `source-lib.sh` instead of reimplementing input parsing or project detection
 
 ## PR Expectations
 
@@ -148,7 +148,7 @@ Your pull request should include:
 
 ### Agent definitions (`agents/*.md`)
 
-These are instruction files for the Planner, Implementer, and Guardian agents. Changes here affect the agent workflow, so include clear rationale.
+These are instruction files for the Planner, Implementer, Tester, and Guardian agents. Changes here affect the agent workflow, so include clear rationale.
 
 ### Skills (`skills/*/SKILL.md`)
 

@@ -58,13 +58,18 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 ```
 ~/.claude/
 ├── hooks/                    # Hook scripts and shared libraries
+│   ├── pre-ask.sh            # PreToolUse:AskUserQuestion — question merit filter
 │   ├── pre-bash.sh           # PreToolUse:Bash — safety gate (consolidates guard.sh, doc-freshness.sh)
+│   ├── pre-mcp.sh            # PreToolUse:MCP — MCP governance layer
 │   ├── pre-write.sh          # PreToolUse:Write|Edit — all write gates (consolidates test-gate.sh, mock-gate.sh, branch-guard.sh, doc-gate.sh, plan-check.sh, checkpoint.sh)
 │   ├── task-track.sh         # PreToolUse:Task — agent dispatch gates
-│   ├── post-write.sh         # PostToolUse:Write|Edit — quality feedback (consolidates lint.sh, track.sh, code-review.sh, plan-validate.sh, test-runner.sh)
-│   ├── webfetch-fallback.sh  # PostToolUse:WebFetch — suggest alternatives on failure
+│   ├── lint.sh               # PostToolUse:Write|Edit — auto-detect linter and run on modified files
 │   ├── playwright-cleanup.sh # PostToolUse:mcp__playwright__browser_snapshot
+│   ├── post-task.sh          # PostToolUse:Task|Agent — auto-verify on tester completion
+│   ├── post-write.sh         # PostToolUse:Write|Edit — quality feedback (consolidates track.sh, plan-validate.sh)
 │   ├── skill-result.sh       # PostToolUse:Skill — skill completion tracking
+│   ├── test-runner.sh        # PostToolUse:Write|Edit (async) — auto-detect test framework and run
+│   ├── webfetch-fallback.sh  # PostToolUse:WebFetch — suggest alternatives on failure
 │   ├── session-init.sh       # SessionStart — context injection
 │   ├── prompt-submit.sh      # UserPromptSubmit — verification gate + dynamic context
 │   ├── compact-preserve.sh   # PreCompact — context preservation before compaction
@@ -78,22 +83,24 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 │   ├── stop.sh               # Stop — decision audit + session summary + next steps (consolidates surface.sh, session-summary.sh, forward-motion.sh)
 │   ├── session-end.sh        # SessionEnd — cleanup
 │   ├── notify.sh             # Notification — permission/idle alerts
-│   ├── core-lib.sh           # Shared library — deny/allow/advisory output, atomic writes
-│   ├── git-lib.sh            # Shared library — git state, branch guards, worktree safety
-│   ├── plan-lib.sh           # Shared library — plan lifecycle, staleness scoring
-│   ├── trace-lib.sh          # Shared library — trace init/finalize, audit trail
-│   ├── session-lib.sh        # Shared library — session summary, trajectory, compaction
-│   ├── doc-lib.sh            # Shared library — @decision enforcement, doc-gate rules
 │   ├── ci-lib.sh             # Shared library — CI detection, workflow helpers
+│   ├── core-lib.sh           # Shared library — deny/allow/advisory output, atomic writes
+│   ├── db-safety-lib.sh      # Shared library — database CLI safety, environment tiering
+│   ├── doc-lib.sh            # Shared library — @decision enforcement, doc-gate rules
+│   ├── git-lib.sh            # Shared library — git state, branch guards, worktree safety
 │   ├── log.sh                # Shared library — JSON I/O, stdin caching, path utilities
-│   └── source-lib.sh         # Shared library — bootstrapper (log.sh + core-lib.sh) + require_*() lazy loaders
-├── agents/                   # 4 agent prompt definitions + shared-protocols.md library
+│   ├── plan-lib.sh           # Shared library — plan lifecycle, staleness scoring
+│   ├── session-lib.sh        # Shared library — session summary, trajectory, compaction
+│   ├── source-lib.sh         # Shared library — bootstrapper (log.sh + core-lib.sh) + require_*() lazy loaders
+│   ├── state-lib.sh          # Shared library — SQLite state management, per-worktree isolation
+│   └── trace-lib.sh          # Shared library — trace init/finalize, audit trail
+├── agents/                   # Agent prompt definitions + shared-protocols.md library
 │   ├── planner.md            # Planner agent — MASTER_PLAN.md creation
 │   ├── implementer.md        # Implementer agent — test-first development
 │   ├── tester.md             # Tester agent — e2e verification
 │   ├── guardian.md           # Guardian agent — git operations
 │   └── shared-protocols.md  # Shared library — injected into all agents at dispatch time
-├── skills/                   # 11 skill directories
+├── skills/                   # Skill directories
 │   ├── bazaar/               # Community discussion aggregator
 │   ├── consume-content/      # URL → structured digest
 │   ├── context-preservation/ # Pre-compaction context capture (/compact)
@@ -127,8 +134,8 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 ├── tests/                    # Hook validation suite
 │   ├── run-hooks.sh          # Main test runner
 │   ├── fixtures/             # Input/expected-output fixture pairs
-│   └── test-*.sh             # 85 specialized test scripts
-└── settings.json             # Hook registry — 10 event types, 24 registered hook entries
+│   └── test-*.sh             # Specialized test scripts
+└── settings.json             # Hook registry — event types and registered hook entries
 ```
 
 ### Component Diagram
@@ -164,14 +171,14 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Hook System (enforcement layer)                  │
 ├─────────────────────────────────────────────┬───────────────────────┤
-│ PreToolUse (3 hooks)                        │ PostToolUse (4 hooks) │
+│ PreToolUse                                  │ PostToolUse           │
 │                                             │                       │
 │ Bash: pre-bash.sh                          │ Write|Edit:           │
 │   (safety gate, cmd classification,        │   post-write.sh       │
-│    doc-freshness at merge)                 │   (lint, track,       │
-│ Write|Edit: pre-write.sh                   │    code-review,       │
-│   (test-gate, mock-gate, branch-guard,     │    plan-validate,     │
-│    doc-gate, plan-check, checkpoint)       │    test-runner async) │
+│    doc-freshness at merge)                 │   (track, plan-validate│
+│ Write|Edit: pre-write.sh                   │   lint.sh             │
+│   (test-gate, mock-gate, branch-guard,     │   test-runner.sh      │
+│    doc-gate, plan-check, checkpoint)       │    (async)            │
 │ Task: task-track.sh                        │ WebFetch:             │
 │                                             │   webfetch-fallback.sh│
 │                                             │ Skill: skill-result.sh│
@@ -344,7 +351,7 @@ with the `additionalContext` injected. `lint.sh` uses this for auto-fix loops.
 | **PreToolUse** | `Write\|Edit` | Before Write or Edit tool | pre-write.sh (consolidates test-gate, mock-gate, branch-guard, doc-gate, plan-check, checkpoint) |
 | **PreToolUse** | `Bash` | Before every Bash call | pre-bash.sh (consolidates guard, doc-freshness) |
 | **PreToolUse** | `Task` | Before every agent dispatch | task-track.sh |
-| **PostToolUse** | `Write\|Edit` | After Write or Edit completes | post-write.sh (consolidates lint, track, code-review, plan-validate, test-runner) |
+| **PostToolUse** | `Write\|Edit` | After Write or Edit completes | post-write.sh (consolidates track, plan-validate), lint.sh, test-runner.sh |
 | **PostToolUse** | `WebFetch` | After WebFetch | webfetch-fallback.sh |
 | **PostToolUse** | `mcp__playwright__browser_snapshot` | After Playwright snapshot | playwright-cleanup.sh |
 | **PostToolUse** | `Skill` | After skill execution | skill-result.sh |
@@ -1238,15 +1245,15 @@ bash scripts/hook-timing-report.sh --hook pre-bash
 ## 12. Shared Libraries
 
 Seven files form the shared library layer. All hooks source `source-lib.sh` which bootstraps
-`log.sh` and `core-lib.sh` (~1,093 lines). Domain libraries are loaded on demand via `require_*()`
+`log.sh` and `core-lib.sh`. Domain libraries are loaded on demand via `require_*()`
 lazy loaders — each hook loads only what it needs.
 
 **Library loading architecture (Phase 2 optimization):**
 
 ```
 source-lib.sh (loaded by every hook)
-├── log.sh        — 441 lines (always loaded)
-├── core-lib.sh   — 652 lines (always loaded)
+├── log.sh        (always loaded)
+├── core-lib.sh   (always loaded)
 └── require_*() lazy loaders:
     ├── require_git()     → git-lib.sh
     ├── require_plan()    → plan-lib.sh
@@ -1259,7 +1266,7 @@ source-lib.sh (loaded by every hook)
 ```
 
 Previously `source-lib.sh` sourced `context-lib.sh` which loaded all domain libraries
-(3,175 lines total). Now every hook pays only ~1,093 lines on startup; domain libraries
+at once. Now every hook pays only for the bootstrapper on startup; domain libraries
 are loaded on demand. `require_all()` was removed in Phase 3 (dead code — no hook called it).
 `context-lib.sh` compatibility shim was removed in issue #65 — tests now use `require_*()` directly.
 
