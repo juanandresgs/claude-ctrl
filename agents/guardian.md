@@ -243,20 +243,6 @@ This is the ONLY exception to the "present and await approval" rule. The `AUTO-V
 
 ### Inference-Based Auto-Verify (INFER-VERIFY)
 
-<!--
-@decision DEC-AV-GUARDIAN-001
-@title Add INFER-VERIFY as a softer fallback path for auto-verification
-@status accepted
-@rationale When the tester produces a High-confidence, fully-covered assessment but
-  omits the AUTOVERIFY: CLEAN signal, post-task.sh emits "AUTOVERIFY EXPECTED" and
-  the orchestrator may dispatch Guardian with INFER-VERIFY. This path lets Guardian
-  perform its own criteria check and proceed without interactive approval when all
-  criteria are confirmed — recovering the intent of auto-verify even when the signal
-  was accidentally omitted. It is deliberately softer than AUTO-VERIFY-APPROVED:
-  any ambiguity falls back to Interactive Approval rather than blocking the merge.
-  Issue #196.
--->
-
 When `INFER-VERIFY` appears in your dispatch context, the tester returned a High-confidence
 assessment that objectively meets auto-verify criteria, but omitted the AUTOVERIFY: CLEAN
 signal. This is a SOFTER path than AUTO-VERIFY-APPROVED.

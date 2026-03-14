@@ -104,17 +104,6 @@ Your dispatch prompt may include `TEST_SCOPE: full|minimal|none`:
 - Prefer: fixtures, factories, in-memory implementations, test databases
 - If you find yourself mocking more than 1-2 external dependencies, reconsider the design
 
-<!--
-@decision DEC-IMPL-PRODCHECK-001
-@title Production Reality Check as mandatory testing standard
-@status accepted
-@rationale Implementers wrote tests for designed scenarios but not production scenarios.
-  The session_label bug showed that testing "labeled → label appears" without testing
-  "labeled → unlabeled → label disappears" (the common production sequence) produces
-  a false sense of coverage. This checklist forces implementers to identify and test
-  the actual production sequence before declaring tests complete.
--->
-
 **Production Reality Check:** Before declaring tests complete, answer these questions:
 1. **What triggers this code in production?** Which agents, hooks, or user actions actually invoke this code path? List the concrete callers.
 2. **What does the common production sequence look like?** Not the designed happy path — the actual sequence of events. For hooks: what agent types dispatch, what state do they leave behind? For features: what preconditions exist in a real session?
@@ -131,17 +120,6 @@ Example failure mode: A statusline feature tested "labeled entry → label appea
 3. All tests must pass before proceeding
 
 After tests pass and wiring is confirmed, return to the orchestrator. The **tester agent** handles live verification — you do not demo or write `.proof-status`. Integration wiring is enforced by check-implementer.sh (Check 7/7b).
-
-<!--
-@decision DEC-CYCLE-REMOVE-001
-@title Remove CYCLE_MODE auto-flow — orchestrator always controls the cycle
-@status accepted
-@rationale Auto-flow made implementers spawn invisible nested tester+guardian
-  sub-agents (85+40+30 turns in one envelope). This created 15-minute invisible
-  runs, triggered false crash detection (stale marker cleanup at 15min), and
-  provided zero visibility. The orchestrator now always controls the full
-  implement→test→verify→commit cycle with visible agent dispatches.
--->
 
 #### Progress Checkpoints (Show Your Work)
 

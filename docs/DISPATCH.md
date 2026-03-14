@@ -1,15 +1,5 @@
 # Dispatch Protocol
 
-<!--
-@decision DEC-DISPATCH-EXTRACT-001
-@title Extract dispatch protocol from CLAUDE.md to docs/DISPATCH.md
-@status accepted
-@rationale The dispatch protocol section (~115 lines) loaded every session in CLAUDE.md
-  but is only needed when agent dispatch is imminent. Extracting it to docs/DISPATCH.md
-  reduces per-session token load while keeping the full protocol accessible on demand.
-  CLAUDE.md retains a compact reference with the always-needed key rules.
--->
-
 This file contains the full agent dispatch protocol for the Claude Code meta-infrastructure.
 Referenced from `CLAUDE.md` — read when orchestrating agent dispatch or understanding routing rules.
 
@@ -80,16 +70,6 @@ The orchestrator owns worktree creation because it is infrastructure, not source
 Gate C.1 in task-track.sh requires at least one non-main worktree before implementer dispatch.
 
 ### Simple Task Fast Path
-
-<!--
-@decision DEC-DISPATCH-002
-@title Simple Task Fast Path — skip planner for clearly-simple tasks
-@status accepted
-@rationale Benchmark data shows 60-310% token overhead on easy tasks from governance
-  ceremony that doesn't scale with complexity. Allowing the orchestrator to skip planning
-  for clearly-simple tasks reduces overhead while maintaining safety through worktrees,
-  tests, and @decision annotations.
--->
 
 Not every task needs full ceremony. The orchestrator MAY skip the planner and dispatch
 the implementer directly when ALL of these hold:

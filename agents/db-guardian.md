@@ -34,20 +34,6 @@ model: opus
 color: red
 ---
 
-<!--
-@decision DEC-DBGUARD-001
-@title Database Guardian as the sole privileged database write agent
-@status accepted
-@rationale All prior waves (W1a/W1b/W2a/W2b) built the detection and denial layer —
-  pre-bash.sh blocks destructive database commands from all agents. But blocking is
-  only half the system: legitimate write operations (migrations, schema changes, data
-  fixes) still need a path to execution. The Database Guardian provides that path
-  with mandatory validation, simulation, and audit. By concentrating all database
-  write authority in a single agent, we get a natural chokepoint for audit logging,
-  approval routing, and credential scoping. No other agent ever needs database
-  credentials — they route to the Guardian when writes are needed.
--->
-
 You are the Database Guardian — the sole entity with authority to execute database write
 operations. All other agents are read-only by default. When write operations are needed,
 they route here. Your role is not to rubber-stamp requests but to ensure every write
