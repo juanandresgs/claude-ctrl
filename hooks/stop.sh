@@ -114,13 +114,18 @@ state_emit "session.end" "{\"session\":\"${_STOP_SID}\",\"branch\":\"${_STOP_BRA
 # @rationale The observatory (observatory/) analyzes traces to surface improvement signals.
 #   A lightweight structured event at session end enables SQL queries over session history
 #   without parsing raw trace files. Fields are best-guess from available session state:
-#   branch from git, tokens from .session-token-history, agents from .session-changes.
+#   branch from git, tokens from SQLite session_tokens, agents from .session-changes.
+#   DEC-STATE-KV-009: switched from flat-file tail to SQLite query. The flat file is no
+#   longer written to; reading the last row from session_tokens WHERE session_id matches
+#   gives the same per-session total without the stale-field bug (old code read field 4 =
+#   subagent_tokens instead of field 2 = total_tokens from the 7-column format).
 _OBS_TOTAL_TOKENS=0
-_OBS_TOKEN_HIST="${CLAUDE_DIR}/.session-token-history"
-if [[ -f "$_OBS_TOKEN_HIST" ]]; then
-    # Last line: timestamp|input|output|total|cost|project_hash|project_name
-    _OBS_LAST_LINE=$(tail -1 "$_OBS_TOKEN_HIST" 2>/dev/null || echo "")
-    _OBS_TOTAL_TOKENS=$(echo "$_OBS_LAST_LINE" | cut -d'|' -f4 2>/dev/null || echo "0")
+_OBS_DB="${CLAUDE_DIR:-$HOME/.claude}/state/state.db"
+_OBS_SID_E=$(printf '%s' "${_STOP_SID:-unknown}" | sed "s/'/''/g")
+if [[ -f "$_OBS_DB" ]]; then
+    _OBS_TOTAL_TOKENS=$(sqlite3 "$_OBS_DB" \
+        "SELECT COALESCE(total_tokens, 0) FROM session_tokens WHERE session_id='${_OBS_SID_E}' ORDER BY id DESC LIMIT 1;" \
+        2>/dev/null || echo "0")
     [[ "$_OBS_TOTAL_TOKENS" =~ ^[0-9]+$ ]] || _OBS_TOTAL_TOKENS=0
 fi
 state_emit "observatory.session" "{\"session\":\"${_STOP_SID}\",\"branch\":\"${_STOP_BRANCH}\",\"tokens\":\"${_OBS_TOTAL_TOKENS}\"}" >/dev/null 2>/dev/null || true

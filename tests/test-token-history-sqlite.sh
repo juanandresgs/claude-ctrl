@@ -342,28 +342,30 @@ fi
 teardown_env
 
 # ---------------------------------------------------------------------------
-# Test 6: Dual-write — flat file still written
+# Test 6: SQLite-only write — no flat file (DEC-STATE-KV-009)
 # ---------------------------------------------------------------------------
+# @decision DEC-STATE-KV-009
+# @title SQLite is sole authority — flat file write removed from session-end.sh
+# @status accepted
+# @rationale Tests updated: flat file is no longer written to. session-end.sh
+#   writes ONLY to SQLite. Verify SQLite receives the correct row and that no
+#   flat file is created.
 echo ""
-echo "=== Test 6: Dual-write — flat file preserved ==="
+echo "=== Test 6: SQLite-only write (DEC-STATE-KV-009) ==="
 
-run_test "flat file has entry after dual-write"
+run_test "SQLite-only: flat file NOT written by session-end write path"
 setup_env "t6"
 _init_schema
 
 _SESSION_TOKENS=12345
 _MAIN_TOKENS=10000
 _SUBAGENT_TOTAL=2345
-_TOKEN_HISTORY="${CLAUDE_DIR}/.session-token-history"
 _TOKEN_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 _TOKEN_PHASH="aaaa1111"
 _TOKEN_PNAME="testproject"
-_SID="test-session-dual"
+_SID="test-session-sqlite-only"
 
-# Dual-write: flat file
-echo "${_TOKEN_TS}|${_SESSION_TOKENS}|${_MAIN_TOKENS}|${_SUBAGENT_TOTAL}|${_SID}|${_TOKEN_PHASH}|${_TOKEN_PNAME}" >> "$_TOKEN_HISTORY"
-
-# Dual-write: SQLite INSERT (mirrors session-end.sh logic)
+# SQLite-only INSERT (mirrors session-end.sh logic after DEC-STATE-KV-009)
 _phash_e=$(printf '%s' "$_TOKEN_PHASH" | sed "s/'/''/g")
 _pname_e=$(printf '%s' "$_TOKEN_PNAME" | sed "s/'/''/g")
 _sid_e=$(printf '%s' "$_SID" | sed "s/'/''/g")
@@ -371,28 +373,27 @@ _state_sql "INSERT INTO session_tokens
     (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, source)
     VALUES ('$_sid_e', '$_phash_e', '$_pname_e', '$_TOKEN_TS', $_SESSION_TOKENS, $_MAIN_TOKENS, $_SUBAGENT_TOTAL, 'session-end');" >/dev/null 2>/dev/null || true
 
-_ff_count=$(wc -l < "$_TOKEN_HISTORY" | tr -d ' ')
-if [[ "${_ff_count:-0}" -ge "1" ]]; then
+# Flat file should NOT exist (no longer written by session-end.sh)
+_TOKEN_HISTORY="${CLAUDE_DIR}/.session-token-history"
+if [[ ! -f "$_TOKEN_HISTORY" ]]; then
     pass_test
 else
-    fail_test "flat file empty after dual-write"
+    fail_test "flat file unexpectedly exists: $_TOKEN_HISTORY"
 fi
 teardown_env
 
-run_test "SQLite has correct total_tokens after dual-write"
+run_test "SQLite-only: correct total_tokens written to session_tokens"
 setup_env "t6b"
 _init_schema
 
 _SESSION_TOKENS=12345
 _MAIN_TOKENS=10000
 _SUBAGENT_TOTAL=2345
-_TOKEN_HISTORY="${CLAUDE_DIR}/.session-token-history"
 _TOKEN_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 _TOKEN_PHASH="aaaa1111"
 _TOKEN_PNAME="testproject"
-_SID="test-session-dual"
+_SID="test-session-sqlite-only"
 
-echo "${_TOKEN_TS}|${_SESSION_TOKENS}|${_MAIN_TOKENS}|${_SUBAGENT_TOTAL}|${_SID}|${_TOKEN_PHASH}|${_TOKEN_PNAME}" >> "$_TOKEN_HISTORY"
 _phash_e=$(printf '%s' "$_TOKEN_PHASH" | sed "s/'/''/g")
 _pname_e=$(printf '%s' "$_TOKEN_PNAME" | sed "s/'/''/g")
 _sid_e=$(printf '%s' "$_SID" | sed "s/'/''/g")
