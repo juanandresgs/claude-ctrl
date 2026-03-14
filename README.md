@@ -43,8 +43,6 @@ I've never been much of a gambler myself.
 
 **Database Safety Framework** — defense-in-depth interception for database CLI commands (psql, mysql, sqlite3, mongosh, redis-cli), IaC operations, container volume removal, and MCP JSON-RPC calls. Environment tiering: dev=permissive, staging=approval, prod=read-only.
 
-**AUTOVERIFY** — when the tester agent produces high-confidence verification with full coverage, the system writes proof state automatically without requiring manual approval. Clean end-to-end verifications flow straight to the Guardian for commit and merge.
-
 ---
 
 ### End-to-End Benchmark (Claude-Ctrl-Performance Harness)
