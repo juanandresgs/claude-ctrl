@@ -9,8 +9,8 @@
 # @title Four-line status bar redesign (was 3-line in v2)
 # @status accepted
 # @rationale The original 3-line layout packed all 8 metrics onto one line. With the
-# 65-char right-panel reservation (DEC-STATUSLINE-TERMWIDTH-003), "Project Lifetime"
-# was dropped at any COLUMNS <= 125. The 4-line layout gives primary metrics their own
+# former 65-char right-panel reservation (DEC-STATUSLINE-TERMWIDTH-003, now 15 chars),
+# "Project Lifetime" was dropped at COLUMNS <= 125. The 4-line layout gives primary metrics their own
 # line (Line 2) and secondary metrics their own line (Line 3), dramatically reducing
 # segment dropping. See DEC-STATUSLINE-4LINE-001 for full design rationale.
 # Removed: time (HH:MM:SS), plan phase inline segment, test status, community
@@ -18,15 +18,33 @@
 # Added: context window bar, cost (~$X.XX), duration (ms to human), lines
 # changed, cache %, token count (tokens: Nk), initiative highlight bar (Line 4).
 #
+# @decision DEC-STATUSLINE-REORG-001
+# @title Statusline layout reorganization — domain-driven 4-line redesign
+# @status accepted
+# @rationale Reorganized segment placement to group by information domain:
+#   Line 1 (repo context): workspace | N uncommitted +N/-N lines | N worktrees | agents
+#     - Merged "dirty: N" + "+N/-N lines" from old Line 3 into one segment for repo state
+#     - Relabeled "wt: N" → "N worktrees" for clarity
+#     - Removed todos from Line 1 (moved to Line 3 session-meta)
+#   Line 2 (model & resources): model [ctx bar] | NK tks(+subs SK tks) | ∑NK tks | cache hit N%
+#     - Combined model name + context bar into one leading segment
+#     - Moved ∑ lifetime tokens adjacent to session tokens (both are resource metrics)
+#     - Moved cache hit % from old Line 3 to Line 2 (it's a resource efficiency metric)
+#     - Removed per-session cost from Line 2 (moved to Line 3)
+#   Line 3 (session meta): initiative | todos: Np Ng | session Nh Nm
+#     - Added initiative (from session_label cache field) as priority-1 dim segment
+#     - Todos moved from Line 1 to Line 3 (it's session/workflow state)
+#     - Relabeled duration as "session Nh Nm" for explicitness
+#     - Lifetime cost removed from Line 3; now shown as dim parenthetical on Line 2 ∑ segment
+#   Line 4 (highlight, conditional): session_label or initiative banner (unchanged)
+#
 # @decision DEC-STATUSLINE-001
 # @title Domain clustering for project-context line (Line 1) segments
 # @status accepted
 # @rationale Grouping related segments with explicit labels reduces cognitive
 # load when scanning the statusline. Line 1 clusters: workspace ("where am I"),
-# git state with dirty:/wt: labels ("repo state"), agents: with type list
-# ("what work is active"), todos: count ("pending work"). Labels make numeric
-# values unambiguous — "8 dirty" is less clear than "dirty: 8". Model display
-# name is on Line 3 (secondary metrics) so the project line stays workspace-focused.
+# git state ("N uncommitted +N/-N lines"), worktrees, and active agents.
+# Todos moved to Line 3 (session meta) where workflow state belongs.
 #
 # @decision DEC-STATUSLINE-002
 # @title Token count segment with K/M notation and usage-based color
@@ -42,10 +60,10 @@
 # Output (stdout): 4 ANSI-formatted lines, each truncated to terminal width with ...
 #
 # Line layout (top to bottom):
-#   Line 1 (project):  workspace │ dirty: N  wt: N │ agents │ todos: Np Ng
-#   Line 2 (primary):  [context bar] N% │ Nktks(+subs Stks) │ ~$cost(Σ~$total) │ Project Lifetime: ∑Tk tks
-#   Line 3 (secondary): model │ cache N% │ duration │ +N/-N lines
-#   Line 4 (highlight, conditional): Initiative Name (Phase N/M): Phase Title  ← bold cyan, bottom
+#   Line 1 (repo):    workspace │ N uncommitted +N/-N lines │ N worktrees │ agents
+#   Line 2 (model):   model [ctx bar] N% │ NK tks(+subs SK tks) │ ∑NK tks (API equiv: ~$N) │ cache hit N%
+#   Line 3 (session): initiative │ todos: Np Ng │ session Nh Nm
+#   Line 4 (highlight, conditional): session_label or initiative banner ← bold cyan, bottom
 #
 # @decision DEC-STATUSLINE-DEPS-001
 # @title Statusline configuration dependency chain
@@ -607,32 +625,35 @@ fi
 
 # Terminal width — must be resolved before the responsive layout sections below.
 # @decision DEC-STATUSLINE-TERMWIDTH-003
-# @title Reserve 65 chars for Claude Code right-panel, clamp floor to 60
+# @title Reserve 15 chars for Claude Code right-panel, clamp floor to 60
 # @status accepted
 # @rationale Claude Code renders right-aligned info on the same lines as the custom
 # statusline ("Context left until auto-compact: N% · /model ..."), consuming ~60-70
 # visible characters. Without reserving this space, the responsive drop system uses
 # full COLUMNS, produces segments that overflow into the right panel, and Claude Code's
 # UI clips them — causing the metrics line to collapse to just the context bar.
-# Subtracting 65 chars from COLUMNS gives the responsive system the true available
-# width. Floor of 60 prevents negative/tiny widths from dropping everything.
+# Originally subtracted 65 chars, which was too aggressive: on a 130-col terminal only
+# 65 chars were available and important segments (lifetime cost, todos) were dropped
+# unnecessarily. Reduced to 15-char buffer — enough to guard against any right-side UI
+# elements without hiding content. Floor of 60 prevents negative/tiny widths.
 # Supersedes DEC-STATUSLINE-TERMWIDTH-002.
 term_w="${COLUMNS:-0}"
-(( term_w > 65 )) && term_w=$(( term_w - 65 )) || term_w=60
+(( term_w > 15 )) && term_w=$(( term_w - 15 )) || term_w=60
 (( term_w < 60 )) && term_w=60
 (( term_w > 200 )) && term_w=200
 
 # ---------------------------------------------------------------------------
-# LINE 2 (project): Workspace + git + agents + todos
+# LINE 1 (repo context): Workspace + git + worktrees + agents
 # Responsive layout: build segments as parallel arrays, drop lowest priority
 # segments first when total width exceeds terminal width.
 #
 # Priority table (lower number = higher priority, dropped last):
 #   1 = workspace (always shown)
-#   2 = dirty: N
-#   3 = wt: N
-#   4 = agents: N (types)
-#   5 = todos: Np Ng  (drops first)
+#   2 = N uncommitted +N/-N lines (dirty count merged with lines changed)
+#   3 = N worktrees (drops before agents)
+#   4 = agents: N (types)  (drops first on this line)
+#
+# Note: todos moved to Line 3 (session meta). Lines changed merged into Line 1 dirty segment.
 # ---------------------------------------------------------------------------
 
 # Build project line segments into parallel arrays (bash 3.2 compat, no namerefs)
@@ -643,18 +664,28 @@ _s=$(printf '\033[1;36m%s\033[0m' "$workspace")
 ansi_visible_width "$_s"; _p1_w_0=$_AVW; _p1_t_0="$_s"; _p1_p_0=1
 _p1_count=1
 
-# --- Segment P1.2: dirty (priority 2, conditional) ---
+# --- Segment P1.2: N uncommitted +N/-N lines (priority 2, conditional) ---
+# Merges old "dirty: N" (Line 1) with old "+N/-N lines" (Line 3).
+# Format: "N uncommitted +N/-N lines" when lines changed, "N uncommitted" otherwise.
+# Omitted entirely when dirty=0.
 _p1_t_1=""; _p1_w_1=0; _p1_p_1=2
 if (( cache_dirty > 0 )); then
-  _s=$(printf '\033[31mdirty: %d\033[0m' "$cache_dirty")
+  total_lines_l1=$(( lines_add + lines_rm ))
+  if (( total_lines_l1 > 0 )); then
+    _s=$(printf '\033[31m%d uncommitted\033[0m \033[32m+%d\033[0m/\033[31m-%d\033[0m \033[2mlines\033[0m' \
+      "$cache_dirty" "$lines_add" "$lines_rm")
+  else
+    _s=$(printf '\033[31m%d uncommitted\033[0m' "$cache_dirty")
+  fi
   ansi_visible_width "$_s"; _p1_w_1=$_AVW; _p1_t_1="$_s"
 fi
 _p1_count=2
 
-# --- Segment P1.3: wt (priority 3, conditional) ---
+# --- Segment P1.3: N worktrees (priority 3, conditional) ---
+# Relabeled from "wt: N" to "N worktrees" for clarity.
 _p1_t_2=""; _p1_w_2=0; _p1_p_2=3
 if (( cache_wt > 0 )); then
-  _s=$(printf '\033[36mwt: %d\033[0m' "$cache_wt")
+  _s=$(printf '\033[36m%d worktrees\033[0m' "$cache_wt")
   ansi_visible_width "$_s"; _p1_w_2=$_AVW; _p1_t_2="$_s"
 fi
 _p1_count=3
@@ -740,38 +771,11 @@ if (( cache_agents > 0 )); then
 fi
 _p1_count=4
 
-# --- Segment P1.5: todos (priority 5, drops first) ---
-# @decision DEC-TODO-SPLIT-003
-# @title Todo segment: split project/global display with legacy fallback
-# @status accepted
-# @rationale When cache has todo_project/todo_global fields (>= 0), show split format:
-# "todos: 3p 7g" (both), "todos: 3p" (project only), "todos: 7g" (global only).
-# 'p' and 'g' suffixes are dim; counts are magenta. When cache fields are absent
-# (-1 sentinel), fall back to legacy .todo-count single number.
-_p1_t_4=""; _p1_w_4=0; _p1_p_4=5
-if (( cache_todo_project >= 0 || cache_todo_global >= 0 )); then
-  _tp=$(( cache_todo_project > 0 ? cache_todo_project : 0 ))
-  _tg=$(( cache_todo_global > 0 ? cache_todo_global : 0 ))
-  if (( _tp > 0 && _tg > 0 )); then
-    _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m\033[35m %d\033[2mg\033[0m' "$_tp" "$_tg")
-    ansi_visible_width "$_s"; _p1_w_4=$_AVW; _p1_t_4="$_s"
-  elif (( _tp > 0 )); then
-    _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m' "$_tp")
-    ansi_visible_width "$_s"; _p1_w_4=$_AVW; _p1_t_4="$_s"
-  elif (( _tg > 0 )); then
-    _s=$(printf '\033[35mtodos: %d\033[2mg\033[0m' "$_tg")
-    ansi_visible_width "$_s"; _p1_w_4=$_AVW; _p1_t_4="$_s"
-  fi
-elif (( todo_count > 0 )); then
-  _s=$(printf '\033[35mtodos: %d\033[0m' "$todo_count")
-  ansi_visible_width "$_s"; _p1_w_4=$_AVW; _p1_t_4="$_s"
-fi
-_p1_count=5
-
-# --- Responsive drop loop for Line 2 ---
+# --- Responsive drop loop for Line 1 ---
 # Count visible segments (non-empty text), compute total width with separators.
-# Separator " │ " = 3 visible chars. Drop from priority 5 down until it fits.
-_p1_drop_0=0; _p1_drop_1=0; _p1_drop_2=0; _p1_drop_3=0; _p1_drop_4=0
+# Separator " │ " = 3 visible chars. Drop from priority 4 down until it fits.
+# Todos are on Line 3 (not Line 1) in the new layout.
+_p1_drop_0=0; _p1_drop_1=0; _p1_drop_2=0; _p1_drop_3=0
 
 _compute_p1_width() {
   local total=0 seg_count=0
@@ -779,7 +783,6 @@ _compute_p1_width() {
   [[ $_p1_drop_1 -eq 0 && -n "$_p1_t_1" ]] && total=$(( total + _p1_w_1 )) && (( seg_count++ )) || true
   [[ $_p1_drop_2 -eq 0 && -n "$_p1_t_2" ]] && total=$(( total + _p1_w_2 )) && (( seg_count++ )) || true
   [[ $_p1_drop_3 -eq 0 && -n "$_p1_t_3" ]] && total=$(( total + _p1_w_3 )) && (( seg_count++ )) || true
-  [[ $_p1_drop_4 -eq 0 && -n "$_p1_t_4" ]] && total=$(( total + _p1_w_4 )) && (( seg_count++ )) || true
   # Each separator between adjacent segments is 3 chars
   (( seg_count > 1 )) && total=$(( total + (seg_count - 1) * 3 )) || true
   _P1_TOTAL=$total
@@ -787,14 +790,13 @@ _compute_p1_width() {
 
 _P1_TOTAL=0
 _compute_p1_width
-# Drop from max priority (5) down to 2; never drop workspace (priority 1)
+# Drop from priority 4 (agents) down to 2; never drop workspace (priority 1)
 # Use [[ ]] for string non-empty check, (( )) for numeric comparison
-if (( _P1_TOTAL > term_w )) && [[ -n "$_p1_t_4" ]]; then _p1_drop_4=1; _compute_p1_width; fi
 if (( _P1_TOTAL > term_w )) && [[ -n "$_p1_t_3" ]]; then _p1_drop_3=1; _compute_p1_width; fi
 if (( _P1_TOTAL > term_w )) && [[ -n "$_p1_t_2" ]]; then _p1_drop_2=1; _compute_p1_width; fi
 if (( _P1_TOTAL > term_w )) && [[ -n "$_p1_t_1" ]]; then _p1_drop_1=1; _compute_p1_width; fi
 
-# Assemble Line 2 from remaining segments
+# Assemble Line 1 from remaining segments
 line1=""
 _p1_first=1
 _append_p1_seg() {
@@ -811,43 +813,35 @@ _append_p1_seg() {
 [[ $_p1_drop_1 -eq 0 ]] && _append_p1_seg "$_p1_t_1"
 [[ $_p1_drop_2 -eq 0 ]] && _append_p1_seg "$_p1_t_2"
 [[ $_p1_drop_3 -eq 0 ]] && _append_p1_seg "$_p1_t_3"
-[[ $_p1_drop_4 -eq 0 ]] && _append_p1_seg "$_p1_t_4"
 
 # ---------------------------------------------------------------------------
 # @decision DEC-STATUSLINE-4LINE-001
-# @title 4-line statusline layout: split metrics into primary (Line 2) and secondary (Line 3)
+# @title 4-line statusline layout: domain-grouped metrics across lines 1-3
 # @status accepted
-# @rationale The original 3-line layout packed all 8 metric segments onto one line. With a
-#   65-char right-panel reservation (term_w = COLUMNS - 65), the responsive drop loop would
-#   eliminate "Project Lifetime: ∑5.7M tks" (priority 4) at any COLUMNS <= 125. The user
-#   explicitly requested a 4th line rather than aggressive dropping: "It's stupid how much
-#   it compresses. May as well just push the lines down by one if that'll fix the room."
+# @rationale See DEC-STATUSLINE-REORG-001 for the full design rationale.
+#   Supersedes the original 3-line layout described in DEC-CACHE-002.
 #
-#   New layout:
-#     Line 1: workspace | dirty | wt | agents | todos     (unchanged)
-#     Line 2: [ctx bar] | NK tks | ~$cost | ∑Lifetime tks (primary — drop only lifetime at extreme width)
-#     Line 3: model | cache N% | duration | +N/-N lines   (secondary — drops from lowest priority up)
-#     Line 4: Initiative Name (+N more)                   (initiative banner — unchanged, just moved to line 4)
+#   New layout (post-reorg):
+#     Line 1: workspace | N uncommitted +N/-N lines | N worktrees | agents
+#     Line 2: model [ctx bar] | NK tks(+subs SK tks) | ∑NK tks (API equiv: ~$N) | cache hit N%
+#     Line 3: initiative | todos: Np Ng | session Nh Nm
+#     Line 4: session_label or initiative banner (bold cyan, unchanged)
 #
-#   This dramatically reduces segment dropping. Line 2 with only 4 segments (ctx+tks+cost+lifetime)
-#   fits at any terminal width without dropping, except possibly lifetime at very narrow (<60) effective widths.
-#   Line 3 overflow segments drop independently from their own responsive loop without affecting Line 2.
-#   Always emit 4 newlines for stable height (same DEC-STATUSLINE-005 reasoning extended to 4 lines).
-#   Supersedes the 3-line layout described in DEC-CACHE-002.
+#   Always emit 4 newlines for stable height (DEC-STATUSLINE-005 reasoning extended to 4 lines).
 #
-# LINE 2 (primary metrics): context bar + tokens + cost + lifetime
+# LINE 2 (model & resources): model+ctx bar + tokens + lifetime + cache hit
 # Priority table (lower number = higher priority, dropped last):
-#   1 = [context bar] N%                      (always kept)
+#   1 = model [ctx bar] N%                    (always kept — model name dim, bar normal)
 #   2 = NK tks(+subs S tks)                   (token consumption)
-#   3 = ~$cost (Σ~$total)                     (cost with lifetime annotation)
-#   4 = Project Lifetime: ∑NK tks             (drops only at extreme width)
+#   3 = ∑NK tks                               (lifetime tokens, adjacent to session)
+#   4 = cache hit N%                          (drops first on this line)
 #
-# LINE 3 (secondary metrics): model + cache% + duration + lines
+# LINE 3 (session meta): initiative + todos + duration (3 segments)
 # Priority table:
-#   1 = model name                            (always kept — can be dropped in extremis)
-#   2 = cache N%                              (efficiency metric)
-#   3 = duration                              (session time)
-#   4 = +N/-N lines                           (drops first)
+#   1 = initiative name                       (from session_label cache field, dim)
+#   2 = todos: Np Ng                          (pending work)
+#   3 = session Nh Nm                         (session duration, relabeled)
+# NOTE: lifetime cost removed from Line 3 — now a dim parenthetical on Line 2 ∑ segment
 # ---------------------------------------------------------------------------
 
 # Token count segment with subagent breakdown and project lifetime
@@ -897,77 +891,66 @@ else
   tokens_display=$(printf '\033[%sm%s tks\033[0m' "$tokens_color" "$tokens_str")
 fi
 
-# Compute lifetime token grand total segment
+# Compute lifetime token grand total segment.
 # Format: "∑<N> tks" — compact lifetime sum; ∑ prefix indicates cumulative project total.
 # ∑ is U+2211 (mathematical summation), distinct from Σ (U+03A3 Greek capital letter).
+# @decision DEC-LIFETIME-COST-002
+# @title Move lifetime cost to Line 2 as a dim parenthetical on the ∑ segment
+# @status accepted
+# @rationale Lifetime cost was previously shown as "~$N est. lifetime" on Line 3.
+# This was the first segment to drop when space was tight. Moving it to Line 2 as a dim
+# parenthetical "∑NK tks (API equiv: ~$N)" keeps it adjacent to the token metric it
+# contextualizes, and removes a whole segment from Line 3 (simplifying its drop logic
+# from 4 segments to 3). Only shown when lifetime_cost > 0 to avoid visual noise.
 _token_grand_total=$(( cache_lifetime_tokens_int + total_tokens_int + cache_subagent_tokens_int ))
+_lifetime_int="${cache_lifetime_cost%.*}"
+_lifetime_int="${_lifetime_int:-0}"
 grand_total_display=""
 if (( _token_grand_total > total_tokens_int + cache_subagent_tokens_int && _token_grand_total > 0 )); then
   grand_total_str=$(format_tokens "$_token_grand_total")
-  grand_total_display=$(printf '\033[2m∑%s tks\033[0m' "$grand_total_str")
+  if (( _lifetime_int > 0 )) 2>/dev/null; then
+    _grand_cost=$(awk "BEGIN {printf \"%.2f\", $cache_lifetime_cost + $cost_usd}")
+    grand_total_display=$(printf '\033[2m∑%s tks (API equiv: ~$%s)\033[0m' "$grand_total_str" "$_grand_cost")
+  else
+    grand_total_display=$(printf '\033[2m∑%s tks\033[0m' "$grand_total_str")
+  fi
 fi
 
-# Build cost display
-# @decision DEC-LIFETIME-COST-002
-# @title Display lifetime cost as Σ annotation next to session cost
-# @status accepted
-# @rationale Appending lifetime cost as "(Σ~$N.NN)" after the session cost keeps the
-# display compact and contextual — the user sees session cost at a glance and can
-# recognize the running total from the Σ symbol. Dim rendering avoids visual noise.
-cost_int=${cost_usd%.*}
-if   (( cost_int >= 5 )); then cost_color="31"
-elif (( cost_int >= 1 )); then cost_color="33"
-else                           cost_color="32"
-fi
-cost_display=$(printf '\033[%sm~$%.2f\033[0m' "$cost_color" "$cost_usd")
-_lifetime_int="${cache_lifetime_cost%.*}"
-_lifetime_int="${_lifetime_int:-0}"
-if (( _lifetime_int > 0 )) 2>/dev/null; then
-  _grand_cost=$(awk "BEGIN {printf \"%.2f\", $cache_lifetime_cost + $cost_usd}")
-  cost_display=$(printf '%s \033[2m(Σ~$%s)\033[0m' "$cost_display" "$_grand_cost")
-fi
-
-# Cache efficiency display
+# Cache efficiency display — "cache hit N%" label (was "cache N%")
 cache_display=""
 if (( cache_efficiency >= 0 )); then
   if   (( cache_efficiency >= 60 )); then cache_color="32"
   elif (( cache_efficiency >= 30 )); then cache_color="33"
   else                                    cache_color="2"
   fi
-  cache_display=$(printf '\033[%smcache %d%%\033[0m' "$cache_color" "$cache_efficiency")
+  cache_display=$(printf '\033[%smcache hit %d%%\033[0m' "$cache_color" "$cache_efficiency")
 fi
 
-# Lines changed display
-lines_display=""
-total_lines=$(( lines_add + lines_rm ))
-if (( total_lines > 0 )); then
-  lines_display=$(printf '\033[32m+%d\033[0m/\033[31m-%d\033[0m' "$lines_add" "$lines_rm")
-fi
-
-# Duration display
-duration_display=$(printf '\033[2m%s\033[0m' "$(format_duration "$duration_ms")")
+# Duration display — "session Nh Nm" prefix for explicitness
+duration_display=$(printf '\033[2msession %s\033[0m' "$(format_duration "$duration_ms")")
 
 # ---------------------------------------------------------------------------
-# Build LINE 2 segments: primary metrics (ctx bar + tokens + cost + lifetime)
+# Build LINE 2 segments: model+ctx bar + tokens + lifetime tokens + cache hit
 # ---------------------------------------------------------------------------
 
-# L2.0: context bar (priority 1 — always kept)
-_l2_0=$(build_context_bar "$ctx_pct" "$baseline_pct")
+# L2.0: model [ctx bar] N% (priority 1 — model dim, ctx bar normal, combined)
+_ctx_bar=$(build_context_bar "$ctx_pct" "$baseline_pct")
+_l2_0=$(printf '\033[2m%s\033[0m %s' "$model" "$_ctx_bar")
 ansi_visible_width "$_l2_0"; _l2w0=$_AVW
 
-# L2.1: tks: Nk(+subs Sk) (priority 2)
+# L2.1: NK tks(+subs SK tks) (priority 2)
 _l2_1="$tokens_display"
 ansi_visible_width "$_l2_1"; _l2w1=$_AVW
 
-# L2.2: ~$cost (Σ~$total) (priority 3)
-_l2_2="$cost_display"
+# L2.2: ∑NK tks (priority 3, conditional — lifetime token grand total)
+_l2_2="$grand_total_display"
 ansi_visible_width "$_l2_2"; _l2w2=$_AVW
 
-# L2.3: Project Lifetime: ∑NK tks (priority 4, conditional — drops only at extreme width)
-_l2_3="$grand_total_display"
+# L2.3: cache hit N% (priority 4, drops first, conditional)
+_l2_3="$cache_display"
 ansi_visible_width "$_l2_3"; _l2w3=$_AVW
 
-# Responsive drop loop for Line 2: only lifetime (priority 4) can be dropped
+# Responsive drop loop for Line 2
 _l2d0=0; _l2d1=0; _l2d2=0; _l2d3=0
 
 _compute_l2_width() {
@@ -982,12 +965,13 @@ _compute_l2_width() {
 
 _L2_TOTAL=0
 _compute_l2_width
-# Drop lifetime first (priority 4), then cost (3), then tokens (2) — ctx bar (1) never drops
+# Drop cache hit first (priority 4), then grand total (3), then tokens (2)
+# model+ctx bar (priority 1) never drops
 if (( _L2_TOTAL > term_w && _l2w3 > 0 )); then _l2d3=1; _compute_l2_width; fi
 if (( _L2_TOTAL > term_w && _l2w2 > 0 )); then _l2d2=1; _compute_l2_width; fi
 if (( _L2_TOTAL > term_w && _l2w1 > 0 )); then _l2d1=1; _compute_l2_width; fi
 
-# Assemble Line 2: [ctx bar] │ tokens │ cost │ lifetime
+# Assemble Line 2: model [ctx bar] │ tokens │ ∑lifetime │ cache hit
 line2=""
 _l2_first=1
 _append_l2_seg() {
@@ -1006,51 +990,78 @@ _append_l2_seg() {
 [[ $_l2d3 -eq 0 ]] && _append_l2_seg "$_l2_3"
 
 # ---------------------------------------------------------------------------
-# Build LINE 3 segments: secondary metrics (model + cache% + duration + lines)
+# Build LINE 3 segments: session meta (initiative + todos + duration)
+# 3 segments only — lifetime cost moved to Line 2 as dim parenthetical on ∑ segment.
 # Priority table (lower = higher priority):
-#   1 = model name                (always kept — last to drop)
-#   2 = cache N%                  (efficiency metric)
-#   3 = duration                  (session time)
-#   4 = +N/-N lines               (drops first)
+#   1 = initiative (from cache_session_label field, dim)  (always kept — last to drop)
+#   2 = todos: Np Ng                                       (split project/global)
+#   3 = session Nh Nm                                      (relabeled from "duration")
 # ---------------------------------------------------------------------------
 
-# L3.0: model name (priority 1 — kept even at narrow widths)
-_l3_0=$(printf '\033[2m%s\033[0m' "$model")
-ansi_visible_width "$_l3_0"; _l3w0=$_AVW
+# L3.0: initiative (priority 1 — from cache_session_label, dim rendering)
+# Use the session_label field (what Line 4 shows as bold cyan), but here dim.
+# If session_label is empty, skip this segment (initiative is shown on Line 4).
+_l3_0=""
+_l3w0=0
+if [[ -n "$cache_session_label" ]]; then
+  _l3_0=$(printf '\033[2m%s\033[0m' "$cache_session_label")
+  ansi_visible_width "$_l3_0"; _l3w0=$_AVW
+fi
 
-# L3.1: cache N% (priority 2, conditional)
-_l3_1="$cache_display"
-ansi_visible_width "$_l3_1"; _l3w1=$_AVW
+# L3.1: todos: Np Ng (priority 2, conditional)
+# @decision DEC-TODO-SPLIT-003
+# @title Todo segment: split project/global display with legacy fallback (now on Line 3)
+# @status accepted
+# @rationale Todos moved from Line 1 to Line 3 (session meta). Format unchanged:
+# "todos: 3p 7g" (both), "todos: 3p" (project only), "todos: 7g" (global only).
+# 'p' and 'g' suffixes are dim; counts are magenta. When cache fields are absent
+# (-1 sentinel), fall back to legacy .todo-count single number.
+_l3_1=""; _l3w1=0
+if (( cache_todo_project >= 0 || cache_todo_global >= 0 )); then
+  _tp=$(( cache_todo_project > 0 ? cache_todo_project : 0 ))
+  _tg=$(( cache_todo_global > 0 ? cache_todo_global : 0 ))
+  if (( _tp > 0 && _tg > 0 )); then
+    _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m\033[35m %d\033[2mg\033[0m' "$_tp" "$_tg")
+    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+  elif (( _tp > 0 )); then
+    _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m' "$_tp")
+    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+  elif (( _tg > 0 )); then
+    _s=$(printf '\033[35mtodos: %d\033[2mg\033[0m' "$_tg")
+    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+  fi
+elif (( todo_count > 0 )); then
+  _s=$(printf '\033[35mtodos: %d\033[0m' "$todo_count")
+  ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+fi
 
-# L3.2: duration (priority 3)
+# L3.2: session Nh Nm (priority 3)
 _l3_2="$duration_display"
 ansi_visible_width "$_l3_2"; _l3w2=$_AVW
 
-# L3.3: +N/-N lines (priority 4, drops first, conditional)
-_l3_3="$lines_display"
-ansi_visible_width "$_l3_3"; _l3w3=$_AVW
+# NOTE: lifetime cost was removed from Line 3 (was L3.3, priority 4).
+# It is now a dim parenthetical on the ∑ segment of Line 2.
+# Line 3 now has only 3 segments: initiative (1), todos (2), session duration (3).
 
-# Responsive drop loop for Line 3
-_l3d0=0; _l3d1=0; _l3d2=0; _l3d3=0
+# Responsive drop loop for Line 3 (3 segments: initiative, todos, duration)
+_l3d0=0; _l3d1=0; _l3d2=0
 
 _compute_l3_width() {
   local total=0 seg_count=0
   [[ $_l3d0 -eq 0 && -n "$_l3_0" ]] && total=$(( total + _l3w0 )) && (( seg_count++ )) || true
   [[ $_l3d1 -eq 0 && -n "$_l3_1" ]] && total=$(( total + _l3w1 )) && (( seg_count++ )) || true
   [[ $_l3d2 -eq 0 && -n "$_l3_2" ]] && total=$(( total + _l3w2 )) && (( seg_count++ )) || true
-  [[ $_l3d3 -eq 0 && -n "$_l3_3" ]] && total=$(( total + _l3w3 )) && (( seg_count++ )) || true
   (( seg_count > 1 )) && total=$(( total + (seg_count - 1) * 3 )) || true
   _L3_TOTAL=$total
 }
 
 _L3_TOTAL=0
 _compute_l3_width
-# Drop from priority 4 down; model (priority 1) is last resort
-if (( _L3_TOTAL > term_w && _l3w3 > 0 )); then _l3d3=1; _compute_l3_width; fi
+# Drop from priority 3 down; initiative (priority 1) is last resort
 if (( _L3_TOTAL > term_w && _l3w2 > 0 )); then _l3d2=1; _compute_l3_width; fi
 if (( _L3_TOTAL > term_w && _l3w1 > 0 )); then _l3d1=1; _compute_l3_width; fi
 
-# Assemble Line 3: model │ cache% │ duration │ +N/-N lines
+# Assemble Line 3: initiative │ todos │ session
 line3=""
 _l3_first=1
 _append_l3_seg() {
@@ -1066,46 +1077,42 @@ _append_l3_seg() {
 [[ $_l3d0 -eq 0 ]] && _append_l3_seg "$_l3_0"
 [[ $_l3d1 -eq 0 ]] && _append_l3_seg "$_l3_1"
 [[ $_l3d2 -eq 0 ]] && _append_l3_seg "$_l3_2"
-[[ $_l3d3 -eq 0 ]] && _append_l3_seg "$_l3_3"
 
 # ---------------------------------------------------------------------------
 # Output: 4-line layout — each line independently truncated to terminal width.
-#   Line 1 (top):     project   — workspace, git, agents, todos
-#   Line 2:           primary   — context bar, tokens, cost, lifetime
-#   Line 3:           secondary — model, cache%, duration, lines changed
-#   Line 4 (bottom):  highlight — initiative banner (conditional, bold cyan)
+#   Line 1 (top):     repo      — workspace, N uncommitted +N/-N lines, N worktrees, agents
+#   Line 2:           model     — model [ctx bar], tokens, ∑lifetime (API equiv: ~$N), cache hit
+#   Line 3:           session   — initiative (dim), todos, session duration
+#   Line 4 (bottom):  highlight — session_label or initiative banner (conditional, bold cyan)
 #
 # @decision DEC-STATUSLINE-004
 # @title Four-line status bar with per-line ANSI-aware truncation
 # @status accepted
 # @rationale The 3-line layout packed all metrics onto one line, causing aggressive
-# responsive dropping that hid "Project Lifetime" at any COLUMNS <= 125. The 4-line
-# layout gives primary metrics (ctx bar, tokens, cost, lifetime) their own line where
-# they virtually never get dropped, and moves secondary metrics (model, cache, duration,
-# lines) to a separate line with their own independent drop loop. The initiative banner
-# moves from Line 3 to Line 4. Always emit 4 newlines for stable height (same
-# DEC-STATUSLINE-005 reasoning: stable line count prevents terminal resize flicker).
-# See DEC-STATUSLINE-4LINE-001 for full design rationale.
+# responsive dropping. The 4-line layout splits by information domain: repo state,
+# model/resource metrics, session meta, and the bold initiative highlight. Each line
+# has its own independent responsive drop loop. Always emit 4 newlines for stable
+# height (same DEC-STATUSLINE-005 reasoning: stable line count prevents resize flicker).
+# See DEC-STATUSLINE-4LINE-001 and DEC-STATUSLINE-REORG-001 for full design rationale.
 # ---------------------------------------------------------------------------
 
-# Line 1: project context (workspace + git + agents + todos)
+# Line 1: repo context (workspace + uncommitted + worktrees + agents)
 truncate_ansi "$line1" "$term_w"
 printf '\n'
 
-# Line 2: primary metrics (context bar + tokens + cost + lifetime)
+# Line 2: model & resources (model+ctx bar + tokens + ∑lifetime + cache hit)
 truncate_ansi "$line2" "$term_w"
 printf '\n'
 
-# Line 3: secondary metrics (model + cache% + duration + lines changed)
+# Line 3: session meta (initiative + todos + session duration)
 truncate_ansi "$line3" "$term_w"
 
-# Line 4: initiative highlight bar (always allocated to prevent resize flicker)
+# Line 4: highlight bar (session_label or initiative — always allocated to prevent resize flicker)
 # @decision DEC-STATUSLINE-005
 # @title Always emit Line 4 newline regardless of initiative presence
 # @status accepted
-# @rationale Extended from the original 3-line rationale (DEC-STATUSLINE-005): always
-# emitting the final newline keeps the status bar height stable at 4 lines regardless
-# of whether an initiative is active, preventing resize flicker when the cache populates.
+# @rationale Always emitting the final newline keeps the status bar height stable at 4 lines
+# regardless of whether an initiative is active, preventing resize flicker when cache populates.
 printf '\n'
 if [[ -n "$line0" ]]; then
   truncate_ansi "$line0" "$term_w"

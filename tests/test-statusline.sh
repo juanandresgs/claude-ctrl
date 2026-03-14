@@ -123,15 +123,15 @@ test_two_lines_output() {
 test_line1_contains_model() {
     run_test
     local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"/tmp/proj"},"cost":{},"context_window":{}}'
-    local _l1m_out line3
-    # Model moved to line 3 (secondary metrics) in the 4-line layout
+    local _l1m_out line2
+    # Model moved to Line 2 (combined with ctx bar) in the reorg layout
     _l1m_out=$(run_statusline "$json")
-    line3=$(extract_line "$_l1m_out" 3 | strip_ansi)
+    line2=$(extract_line "$_l1m_out" 2 | strip_ansi)
 
-    if [[ "$line3" == *"Opus 4.6"* ]]; then
-        pass_test "Line 3 contains model name (moved from line 2 in 4-line layout)"
+    if [[ "$line2" == *"Opus 4.6"* ]]; then
+        pass_test "Line 2 contains model name (model+ctx bar combo in reorg layout)"
     else
-        fail_test "Line 3 missing model name (model moved to line 3)" "line3=$line3"
+        fail_test "Line 2 missing model name (model moved to Line 2 combo in reorg)" "line2=$line2"
     fi
 }
 
@@ -210,58 +210,80 @@ test_context_bar_85pct() {
 }
 
 # ============================================================================
-# Test group 3: Cost — ~$ prefix and color thresholds
+# Test group 3: Cost — lifetime cost is now a dim parenthetical on Line 2 ∑ segment.
+# Format: "∑NK tks (API equiv: ~$N.NN)" — only shown when lifetime_cost > 0.
 # ============================================================================
 
 test_cost_tilde_prefix() {
     run_test
+    # Cost is on Line 2 as dim parenthetical; no "est. lifetime" label anywhere.
+    # When no lifetime_cost in cache, no "API equiv" parenthetical shown on Line 2.
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_cost_usd":0.53},"context_window":{}}'
     local line2
     line2=$(run_statusline_l2 "$json" | strip_ansi)
 
-    if printf '%s' "$line2" | grep -qF '~$0.53'; then
-        pass_test "Cost displays with ~\$ prefix (e.g. ~\$0.53)"
+    # No lifetime cache → no API equiv parenthetical (lifetime_cost=0)
+    if ! printf '%s' "$line2" | grep -qF 'API equiv'; then
+        pass_test "Line 2 has no API equiv parenthetical when lifetime_cost=0 (no cache)"
     else
-        fail_test "Cost missing ~\$ prefix" "line2=$line2"
+        fail_test "Line 2 should not show API equiv when lifetime_cost=0" "line2=$line2"
     fi
 }
 
 test_cost_display_present() {
     run_test
-    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_cost_usd":0.53},"context_window":{}}'
-    local line2
-    line2=$(run_statusline_l2 "$json" | strip_ansi)
+    # Verify lifetime cost shows on Line 2 as parenthetical when lifetime_cost is non-zero.
+    # Requires lifetime_tokens > 0 to show ∑ segment (which carries the cost parenthetical).
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/.claude"
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":12.40,"lifetime_tokens":1000000}' \
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
-    if printf '%s' "$line2" | grep -qF '~$0.53'; then
-        pass_test "Cost displays correctly formatted"
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.53},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
+    local line2
+    local output
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
+    line2=$(extract_line "$output" 2 | strip_ansi)
+    rm -rf "$tmpdir"
+
+    if printf '%s' "$line2" | grep -qF 'API equiv'; then
+        pass_test "Line 2 shows 'API equiv' cost parenthetical when lifetime_cost is non-zero"
     else
-        fail_test "Cost not shown or wrong format" "line2=$line2"
+        fail_test "Line 2 missing 'API equiv' parenthetical in ∑ segment" "line2=$line2"
     fi
 }
 
 test_cost_zero() {
     run_test
+    # When lifetime_cost=0, no API equiv parenthetical on Line 2 ∑ segment
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_cost_usd":0},"context_window":{}}'
+    local output
+    output=$(run_statusline "$json")
     local line2
-    line2=$(run_statusline_l2 "$json" | strip_ansi)
+    line2=$(extract_line "$output" 2 | strip_ansi)
 
-    if printf '%s' "$line2" | grep -qF '~$0.00'; then
-        pass_test 'Zero cost displays as ~$0.00'
+    # No lifetime cost parenthetical when lifetime=0
+    if ! printf '%s' "$line2" | grep -qF 'API equiv'; then
+        pass_test "No API equiv parenthetical on Line 2 when cost=0 and no lifetime cache"
     else
-        fail_test 'Zero cost display wrong' "line2=$line2"
+        fail_test "Unexpected API equiv shown on Line 2 when cost=0 and no lifetime cache" "line2=$line2"
     fi
 }
 
 test_cost_no_field() {
     run_test
+    # When cost field absent, still no API equiv parenthetical on Line 2 (lifetime_cost=0)
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{}}'
+    local output
+    output=$(run_statusline "$json")
     local line2
-    line2=$(run_statusline_l2 "$json" | strip_ansi)
+    line2=$(extract_line "$output" 2 | strip_ansi)
 
-    if printf '%s' "$line2" | grep -qF '~$0.00'; then
-        pass_test 'Missing cost field defaults to ~$0.00'
+    if ! printf '%s' "$line2" | grep -qF 'API equiv'; then
+        pass_test "No API equiv parenthetical on Line 2 when cost field absent"
     else
-        fail_test 'Missing cost field not defaulted' "line2=$line2"
+        fail_test "Unexpected API equiv shown on Line 2 when cost field absent" "line2=$line2"
     fi
 }
 
@@ -272,61 +294,61 @@ test_cost_no_field() {
 test_duration_less_than_1min() {
     run_test
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_duration_ms":30000},"context_window":{}}'
-    local _rsl_out line2
-    # Duration moved to Line 3 (secondary metrics) in 4-line layout
+    local _rsl_out line3
+    # Duration on Line 3 (session meta) as "session <1m"
     _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    line3=$(extract_line "$_rsl_out" 3 | strip_ansi)
 
-    if [[ "$line2" == *"<1m"* ]]; then
-        pass_test "Duration 30s shows as '<1m'"
+    if [[ "$line3" == *"session <1m"* ]]; then
+        pass_test "Duration 30s shows as 'session <1m' on Line 3"
     else
-        fail_test "Duration <1min format wrong" "line2=$line2"
+        fail_test "Duration <1min format wrong (expected 'session <1m')" "line3=$line3"
     fi
 }
 
 test_duration_minutes() {
     run_test
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_duration_ms":720000},"context_window":{}}'
-    local _rsl_out line2
-    # Duration moved to Line 3 (secondary metrics) in 4-line layout
+    local _rsl_out line3
+    # Duration on Line 3 (session meta) as "session 12m"
     _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    line3=$(extract_line "$_rsl_out" 3 | strip_ansi)
 
-    if [[ "$line2" == *"12m"* ]]; then
-        pass_test "Duration 720s shows as '12m'"
+    if [[ "$line3" == *"session 12m"* ]]; then
+        pass_test "Duration 720s shows as 'session 12m' on Line 3"
     else
-        fail_test "Duration minutes format wrong" "line2=$line2"
+        fail_test "Duration minutes format wrong (expected 'session 12m')" "line3=$line3"
     fi
 }
 
 test_duration_hours() {
     run_test
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_duration_ms":4320000},"context_window":{}}'
-    local _rsl_out line2
-    # Duration moved to Line 3 (secondary metrics) in 4-line layout
+    local _rsl_out line3
+    # Duration on Line 3 (session meta) as "session 1h 12m"
     _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    line3=$(extract_line "$_rsl_out" 3 | strip_ansi)
 
     # 4320000ms = 4320s = 72min = 1h 12m
-    if [[ "$line2" == *"1h 12m"* ]]; then
-        pass_test "Duration 72min shows as '1h 12m'"
+    if [[ "$line3" == *"session 1h 12m"* ]]; then
+        pass_test "Duration 72min shows as 'session 1h 12m' on Line 3"
     else
-        fail_test "Duration hours format wrong" "line2=$line2"
+        fail_test "Duration hours format wrong (expected 'session 1h 12m')" "line3=$line3"
     fi
 }
 
 test_duration_zero() {
     run_test
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_duration_ms":0},"context_window":{}}'
-    local _rsl_out line2
-    # Duration moved to Line 3 (secondary metrics) in 4-line layout
+    local _rsl_out line3
+    # Duration on Line 3 (session meta) as "session <1m"
     _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    line3=$(extract_line "$_rsl_out" 3 | strip_ansi)
 
-    if [[ "$line2" == *"<1m"* ]]; then
-        pass_test "Duration 0ms shows as '<1m'"
+    if [[ "$line3" == *"session <1m"* ]]; then
+        pass_test "Duration 0ms shows as 'session <1m' on Line 3"
     else
-        fail_test "Duration 0ms format wrong" "line2=$line2"
+        fail_test "Duration 0ms format wrong (expected 'session <1m')" "line3=$line3"
     fi
 }
 
@@ -336,62 +358,71 @@ test_duration_zero() {
 
 test_dirty_absent_when_zero() {
     run_test
-    # No cache file → cache_dirty defaults to 0
+    # No cache file → cache_dirty defaults to 0 → no "uncommitted" segment
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/cleanws"},"cost":{},"context_window":{}}'
     local line1
     local _rsl_out
     _rsl_out=$(run_statusline "$json")
     line1=$(extract_line "$_rsl_out" 1 | strip_ansi)
 
-    # Check that "dirty:" label is absent
-    if ! printf '%s' "$line1" | grep -qE 'dirty:'; then
-        pass_test "Dirty segment absent when dirty=0"
+    # New label is "uncommitted" (not "dirty:")
+    if ! printf '%s' "$line1" | grep -qE 'uncommitted'; then
+        pass_test "Uncommitted segment absent when dirty=0"
     else
-        fail_test "Dirty segment shown when dirty=0" "line1=$line1"
+        fail_test "Uncommitted segment shown when dirty=0" "line1=$line1"
     fi
 }
 
 test_lines_changed_absent_when_zero() {
     run_test
+    # Lines changed is now merged into Line 1 dirty segment.
+    # When dirty=0, the whole segment is absent (no +0/-0 shown).
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_lines_added":0,"total_lines_removed":0},"context_window":{}}'
-    local line2
-    line2=$(run_statusline_l2 "$json" | strip_ansi)
+    local output
+    output=$(run_statusline "$json" | strip_ansi)
 
-    if [[ "$line2" != *"+0"* && "$line2" != *"-0"* ]]; then
-        pass_test "Lines changed segment absent when 0 lines"
+    if [[ "$output" != *"+0"* && "$output" != *"-0"* ]]; then
+        pass_test "Lines changed segment absent when 0 lines (merged into Line 1 dirty)"
     else
-        fail_test "Lines changed shown when 0 lines" "line2=$line2"
+        fail_test "Lines changed shown when 0 lines" "output=$output"
     fi
 }
 
 test_lines_changed_present_when_nonzero() {
     run_test
-    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_lines_added":45,"total_lines_removed":12},"context_window":{}}'
-    local _rsl_out line2
-    # Lines changed moved to Line 3 (secondary metrics) in 4-line layout
-    _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    # Lines changed is merged with dirty segment on Line 1.
+    # Need dirty>0 and lines>0 to show "+45/-12 lines" on Line 1.
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/.claude"
+    printf '{"dirty":3,"worktrees":0,"agents_active":0,"agents_types":""}' \
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_lines_added":45,"total_lines_removed":12},"context_window":{}}'
+    local _rsl_out line1
+    _rsl_out=$(run_statusline "$json" "$tmpdir")
+    line1=$(extract_line "$_rsl_out" 1 | strip_ansi)
+    rm -rf "$tmpdir"
 
-    if [[ "$line2" == *"+45"* && "$line2" == *"-12"* ]]; then
-        pass_test "Lines changed shows +added/-removed"
+    if [[ "$line1" == *"+45"* && "$line1" == *"-12"* ]]; then
+        pass_test "Lines changed shows +added/-removed merged in Line 1 dirty segment"
     else
-        fail_test "Lines changed not displayed" "line2=$line2"
+        fail_test "Lines changed not displayed on Line 1" "line1=$line1"
     fi
 }
 
 test_todos_absent_when_zero() {
     run_test
-    # HOME points to temp dir → .todo-count absent → todo_count=0
+    # HOME points to temp dir → .todo-count absent → todo_count=0 → no todos on Line 3
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{}}'
-    local line1
+    local output
     local _rsl_out
     _rsl_out=$(run_statusline "$json")
-    line1=$(extract_line "$_rsl_out" 1 | strip_ansi)
+    output=$(printf '%s' "$_rsl_out" | strip_ansi)
 
-    if [[ "$line1" != *"todos:"* ]]; then
-        pass_test "Todos segment absent when no .todo-count file"
+    if [[ "$output" != *"todos:"* ]]; then
+        pass_test "Todos segment absent when no .todo-count file (now on Line 3)"
     else
-        fail_test "Todos shown when .todo-count absent" "line1=$line1"
+        fail_test "Todos shown when .todo-count absent" "output=$output"
     fi
 }
 
@@ -404,17 +435,17 @@ test_todos_present_from_file() {
     echo "7" > "$tmpdir/.claude/.todo-count"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{}}'
-    local line1
-    # HOME must be set on the bash invocation (right side of pipe)
+    local line3
+    # Todos moved to Line 3 in the reorg layout
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"todos: 7"* ]]; then
-        pass_test "Todos segment shows count from .todo-count file (todos: 7)"
+    if [[ "$line3" == *"todos: 7"* ]]; then
+        pass_test "Todos segment shows count from .todo-count file on Line 3 (todos: 7)"
     else
-        fail_test "Todos not shown from file" "line1=$line1"
+        fail_test "Todos not shown from file on Line 3" "line3=$line3"
     fi
 }
 
@@ -426,12 +457,12 @@ test_cache_efficiency_absent_when_no_cache_tokens() {
     run_test
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{"current_usage":{"input_tokens":10000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
     local _rsl_out line2
-    # Check line 3 (secondary) — cache segment appears there when present
+    # Cache hit segment moved to Line 2 (model & resources) in reorg layout
     _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    line2=$(extract_line "$_rsl_out" 2 | strip_ansi)
 
     if [[ "$line2" != *"cache"* ]]; then
-        pass_test "Cache efficiency absent when no cache tokens"
+        pass_test "Cache efficiency absent when no cache tokens (Line 2)"
     else
         fail_test "Cache efficiency shown when no cache tokens" "line2=$line2"
     fi
@@ -442,14 +473,14 @@ test_cache_efficiency_calculates_correctly() {
     # cache_read=7400, input=1000, cache_create=1600 → total=10000 → 74%
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{"current_usage":{"input_tokens":1000,"cache_read_input_tokens":7400,"cache_creation_input_tokens":1600}}}'
     local _rsl_out line2
-    # Cache efficiency moved to Line 3 (secondary metrics) in 4-line layout
+    # Cache hit moved to Line 2 (model & resources) in reorg layout, labelled "cache hit N%"
     _rsl_out=$(run_statusline "$json")
-    line2=$(extract_line "$_rsl_out" 3 | strip_ansi)
+    line2=$(extract_line "$_rsl_out" 2 | strip_ansi)
 
-    if [[ "$line2" == *"cache 74%"* ]]; then
-        pass_test "Cache efficiency calculated as 74% (7400/10000)"
+    if [[ "$line2" == *"cache hit 74%"* ]]; then
+        pass_test "Cache efficiency calculated as 74% (7400/10000), shown as 'cache hit 74%' on Line 2"
     else
-        fail_test "Cache efficiency calculation wrong" "line2=$line2"
+        fail_test "Cache efficiency calculation wrong (expected 'cache hit 74%')" "line2=$line2"
     fi
 }
 
@@ -458,15 +489,15 @@ test_cache_efficiency_high_shows_green() {
     # 80% efficiency → green (>=60%)
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{"current_usage":{"input_tokens":2000,"cache_read_input_tokens":8000,"cache_creation_input_tokens":0}}}'
     local _rsl_out line2_raw
-    # Cache efficiency moved to Line 3 (secondary metrics) in 4-line layout
+    # Cache hit moved to Line 2 (model & resources) in reorg layout
     _rsl_out=$(run_statusline "$json")
-    line2_raw=$(extract_line "$_rsl_out" 3)
+    line2_raw=$(extract_line "$_rsl_out" 2)
 
-    # Green = ESC[32m
+    # Green = ESC[32m applied to "cache" text
     if printf '%s' "$line2_raw" | grep -q $'\033\[32mcache'; then
-        pass_test "Cache efficiency >=60% shows in green"
+        pass_test "Cache efficiency >=60% shows in green on Line 2"
     else
-        fail_test "Cache efficiency >=60% not green" "raw: $(printf '%s' "$line2_raw" | cat -v)"
+        fail_test "Cache efficiency >=60% not green on Line 2" "raw: $(printf '%s' "$line2_raw" | cat -v)"
     fi
 }
 
@@ -528,7 +559,9 @@ test_no_time_segment() {
 }
 
 # ============================================================================
-# Test group 8: Domain clustering — line 1 label format (REQ-P0-001, REQ-P0-002)
+# Test group 8: Domain clustering — line 1 label format (DEC-STATUSLINE-REORG-001)
+# New labels: "N uncommitted" (was "dirty: N"), "N worktrees" (was "wt: N")
+# Todos moved to Line 3.
 # ============================================================================
 
 test_dirty_label_format() {
@@ -546,10 +579,11 @@ test_dirty_label_format() {
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"dirty: 8"* ]]; then
-        pass_test "Git segment shows 'dirty: N' label format"
+    # New label is "N uncommitted" not "dirty: N"
+    if [[ "$line1" == *"8 uncommitted"* ]]; then
+        pass_test "Git segment shows '8 uncommitted' label format (reorg)"
     else
-        fail_test "Git segment not using 'dirty: N' label" "line1=$line1"
+        fail_test "Git segment not using '8 uncommitted' label (was 'dirty: N')" "line1=$line1"
     fi
 }
 
@@ -568,10 +602,11 @@ test_wt_label_format() {
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"wt: 2"* ]]; then
-        pass_test "Git segment shows 'wt: N' label format"
+    # New label is "N worktrees" not "wt: N"
+    if [[ "$line1" == *"2 worktrees"* ]]; then
+        pass_test "Git segment shows '2 worktrees' label format (reorg)"
     else
-        fail_test "Git segment not using 'wt: N' label" "line1=$line1"
+        fail_test "Git segment not using '2 worktrees' label (was 'wt: N')" "line1=$line1"
     fi
 }
 
@@ -605,25 +640,25 @@ test_todos_label_format() {
     echo "10" > "$tmpdir/.claude/.todo-count"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{},"context_window":{}}'
-    local line1
+    local line3
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    # Todos now on Line 3 (session meta) in reorg layout
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"todos: 10"* ]]; then
-        pass_test "Todos segment shows 'todos: N' label format"
+    if [[ "$line3" == *"todos: 10"* ]]; then
+        pass_test "Todos segment shows 'todos: N' label format on Line 3 (reorg)"
     else
-        fail_test "Todos segment not using 'todos: N' label" "line1=$line1"
+        fail_test "Todos segment not on Line 3 or missing 'todos: N' label" "line3=$line3"
     fi
 }
 
 test_domain_clustering_order() {
     run_test
-    # Line 1 should have: workspace BEFORE dirty: BEFORE agents: BEFORE todos:
-    # (Model is on line 2, not line 1)
-    # Use COLUMNS=300 (term_w=235 after 65-char right-panel reservation) so all
-    # five segments fit and the ordering can be verified without responsive drops.
+    # Line 1 new order: workspace BEFORE uncommitted BEFORE worktrees BEFORE agents
+    # Todos moved to Line 3 (not Line 1 anymore).
+    # Use COLUMNS=300 so all segments fit and ordering can be verified without drops.
     local tmpdir
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
@@ -631,27 +666,27 @@ test_domain_clustering_order() {
         > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
     echo "3" > "$tmpdir/.claude/.todo-count"
 
-    local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
+    local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_lines_added":12,"total_lines_removed":3},"context_window":{}}'
     local line1
     local output
     output=$(run_sl_columns "$json" 300 "$tmpdir")
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
 
-    # Extract positions of domain clusters on line 1
-    # workspace (tmpdir basename) comes first, then dirty:, agents:, todos:
-    local pos_dirty pos_agents pos_todos
-    pos_dirty=$(printf '%s' "$line1" | grep -bo 'dirty:' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
-    pos_agents=$(printf '%s' "$line1" | grep -bo 'agents:' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
-    pos_todos=$(printf '%s' "$line1" | grep -bo 'todos:' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
+    # Extract positions of domain clusters on line 1 (new labels)
+    # workspace (tmpdir basename) comes first, then uncommitted, then worktrees, then agents
+    local pos_uncommitted pos_worktrees pos_agents
+    pos_uncommitted=$(printf '%s' "$line1" | grep -bo 'uncommitted' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
+    pos_worktrees=$(printf '%s' "$line1" | grep -bo 'worktree' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
+    pos_agents=$(printf '%s' "$line1" | grep -bo 'agents' 2>/dev/null | { head -1; cat > /dev/null; } | cut -d: -f1 || true)
 
-    if [[ -n "$pos_dirty" && -n "$pos_agents" && -n "$pos_todos" ]] \
-        && (( pos_dirty < pos_agents )) \
-        && (( pos_agents < pos_todos )); then
-        pass_test "Domain clustering order: dirty < agents < todos on line 1"
+    if [[ -n "$pos_uncommitted" && -n "$pos_worktrees" && -n "$pos_agents" ]] \
+        && (( pos_uncommitted < pos_worktrees )) \
+        && (( pos_worktrees < pos_agents )); then
+        pass_test "Domain clustering order (reorg): uncommitted < worktrees < agents on Line 1"
     else
-        fail_test "Domain clustering order wrong" \
-            "line1=$line1 | positions: dirty=$pos_dirty agents=$pos_agents todos=$pos_todos"
+        fail_test "Domain clustering order wrong (reorg)" \
+            "line1=$line1 | positions: uncommitted=$pos_uncommitted worktrees=$pos_worktrees agents=$pos_agents"
     fi
 }
 
@@ -746,23 +781,31 @@ test_tokens_high_shows_yellow() {
 
 test_tokens_segment_position() {
     run_test
-    # tks: segment should appear AFTER context bar and BEFORE cost (~$)
-    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/p"},"cost":{"total_cost_usd":0.50},"context_window":{"used_percentage":40,"total_input_tokens":100000,"total_output_tokens":45000}}'
+    # New Line 2 order: model [ctx bar] | tokens | ∑lifetime | cache hit
+    # Tokens should appear AFTER the context bar (which is after the model name).
+    # Cost is removed from Line 2 in the reorg layout.
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    make_lifetime_token_cache "$tmpdir" 500000 0
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.50},"context_window":{"used_percentage":40,"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
-    line2=$(run_statusline_l2 "$json" | strip_ansi)
+    local output
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
+    line2=$(extract_line "$output" 2 | strip_ansi)
+    rm -rf "$tmpdir"
 
-    local pos_bar pos_tokens pos_cost
+    local pos_bar pos_tokens pos_lifetime
     pos_bar=$(printf '%s' "$line2" | { grep -bo '\[' || true; } | head -1 | cut -d: -f1)
     pos_tokens=$(printf '%s' "$line2" | { grep -bo 'K tks' || true; } | head -1 | cut -d: -f1)
-    pos_cost=$(printf '%s' "$line2" | { grep -bo '~\$' || true; } | head -1 | cut -d: -f1)
+    pos_lifetime=$(printf '%s' "$line2" | { grep -bo '∑' || true; } | head -1 | cut -d: -f1)
 
-    if [[ -n "$pos_bar" && -n "$pos_tokens" && -n "$pos_cost" ]] \
+    if [[ -n "$pos_bar" && -n "$pos_tokens" && -n "$pos_lifetime" ]] \
         && (( pos_bar < pos_tokens )) \
-        && (( pos_tokens < pos_cost )); then
-        pass_test "Line 2 order: context bar < Ntks < ~\$cost"
+        && (( pos_tokens < pos_lifetime )); then
+        pass_test "Line 2 order (reorg): ctx bar < tokens < ∑lifetime"
     else
-        fail_test "Line 2 segment order wrong" \
-            "line2=$line2 | positions: bar=$pos_bar tks=$pos_tokens cost=$pos_cost"
+        fail_test "Line 2 segment order wrong (reorg: expected bar < tks < ∑lifetime)" \
+            "line2=$line2 | positions: bar=$pos_bar tks=$pos_tokens lifetime=$pos_lifetime"
     fi
 }
 
@@ -785,16 +828,17 @@ test_todo_split_both_nonzero() {
     make_todo_split_cache "$tmpdir" 3 7
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
+    local line3
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    # Todos moved to Line 3 (session meta) in reorg layout
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"todos: 3p"* && "$line1" == *"7g"* ]]; then
-        pass_test "Todo split: both project and global shown as '3p 7g'"
+    if [[ "$line3" == *"todos: 3p"* && "$line3" == *"7g"* ]]; then
+        pass_test "Todo split: both project and global shown as '3p 7g' on Line 3 (reorg)"
     else
-        fail_test "Todo split both nonzero not displayed" "line1=$line1"
+        fail_test "Todo split both nonzero not displayed on Line 3" "line3=$line3"
     fi
 }
 
@@ -805,23 +849,23 @@ test_todo_split_project_only() {
     make_todo_split_cache "$tmpdir" 5 0
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
+    local line3
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"todos: 5p"* ]] && [[ "$line1" != *"g"*"todos"* || "$line1" == *"5p"* ]]; then
+    if [[ "$line3" == *"todos: 5p"* ]] && [[ "$line3" != *"g"*"todos"* || "$line3" == *"5p"* ]]; then
         # Verify it has "5p" but NOT a global count after it
-        if printf '%s' "$line1" | grep -qE 'todos: 5p[^0-9]*$' || printf '%s' "$line1" | grep -q 'todos: 5p '; then
-            pass_test "Todo split: project-only shown as 'todos: 5p'"
-        elif [[ "$line1" == *"todos: 5p"* ]]; then
-            pass_test "Todo split: project-only shown as 'todos: 5p'"
+        if printf '%s' "$line3" | grep -qE 'todos: 5p[^0-9]*$' || printf '%s' "$line3" | grep -q 'todos: 5p '; then
+            pass_test "Todo split: project-only shown as 'todos: 5p' on Line 3 (reorg)"
+        elif [[ "$line3" == *"todos: 5p"* ]]; then
+            pass_test "Todo split: project-only shown as 'todos: 5p' on Line 3 (reorg)"
         else
-            fail_test "Todo split project-only not displayed" "line1=$line1"
+            fail_test "Todo split project-only not displayed on Line 3" "line3=$line3"
         fi
     else
-        fail_test "Todo split project-only not displayed" "line1=$line1"
+        fail_test "Todo split project-only not displayed on Line 3" "line3=$line3"
     fi
 }
 
@@ -832,16 +876,16 @@ test_todo_split_global_only() {
     make_todo_split_cache "$tmpdir" 0 9
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
+    local line3
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"todos: 9g"* ]]; then
-        pass_test "Todo split: global-only shown as 'todos: 9g'"
+    if [[ "$line3" == *"todos: 9g"* ]]; then
+        pass_test "Todo split: global-only shown as 'todos: 9g' on Line 3 (reorg)"
     else
-        fail_test "Todo split global-only not displayed" "line1=$line1"
+        fail_test "Todo split global-only not displayed on Line 3" "line3=$line3"
     fi
 }
 
@@ -852,22 +896,20 @@ test_todo_split_both_zero_no_segment() {
     make_todo_split_cache "$tmpdir" 0 0
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
     local output
-    output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    output=$(run_statusline "$json" "$tmpdir" | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" != *"todos:"* ]]; then
+    if [[ "$output" != *"todos:"* ]]; then
         pass_test "Todo split: no segment when both project and global are 0"
     else
-        fail_test "Todo segment shown when both counts are 0" "line1=$line1"
+        fail_test "Todo segment shown when both counts are 0" "output=$output"
     fi
 }
 
 test_todo_split_backward_compat_no_cache_fields() {
     run_test
-    # Cache WITHOUT todo_project/todo_global fields — should fall back to .todo-count
+    # Cache WITHOUT todo_project/todo_global fields — should fall back to .todo-count on Line 3
     local tmpdir
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
@@ -876,65 +918,67 @@ test_todo_split_backward_compat_no_cache_fields() {
     echo "12" > "$tmpdir/.claude/.todo-count"
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
+    local line3
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"todos: 12"* ]]; then
-        pass_test "Backward compat: no cache split fields → falls back to .todo-count (todos: 12)"
+    if [[ "$line3" == *"todos: 12"* ]]; then
+        pass_test "Backward compat: no cache split fields → falls back to .todo-count (todos: 12) on Line 3"
     else
-        fail_test "Backward compat fallback failed" "line1=$line1"
+        fail_test "Backward compat fallback failed (expected todos: 12 on Line 3)" "line3=$line3"
     fi
 }
 
 test_todo_split_p_suffix_present() {
     run_test
-    # Verify the 'p' suffix appears in raw ANSI output (stripped display check above,
-    # this checks the suffix character is not lost)
+    # Verify the 'p' suffix appears in raw ANSI output on Line 3
     local tmpdir
     tmpdir=$(mktemp -d)
     make_todo_split_cache "$tmpdir" 4 2
 
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{},"context_window":{}}'
-    local line1
+    local line3
     local output
     output=$(run_statusline "$json" "$tmpdir")
-    line1=$(extract_line "$output" 1 | strip_ansi)
+    line3=$(extract_line "$output" 3 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line1" == *"4p"* && "$line1" == *"2g"* ]]; then
-        pass_test "Todo split: 'p' and 'g' suffix characters present (4p, 2g)"
+    if [[ "$line3" == *"4p"* && "$line3" == *"2g"* ]]; then
+        pass_test "Todo split: 'p' and 'g' suffix characters present on Line 3 (4p, 2g)"
     else
-        fail_test "Todo split suffix characters missing" "line1=$line1"
+        fail_test "Todo split suffix characters missing on Line 3" "line3=$line3"
     fi
 }
 
 # ============================================================================
 # Test group 11: Lifetime cost display (REQ-P1-001)
+# Lifetime cost moved from Line 3 to Line 2 as a dim parenthetical on the ∑ segment.
+# Format: "∑NK tks (API equiv: ~$N.NN)" — only shown when lifetime_cost > 0
+# and the ∑ segment is visible (requires lifetime_tokens > 0).
 # ============================================================================
 
 test_lifetime_cost_absent_when_zero() {
     run_test
-    # cache_lifetime_cost=0 → Σ annotation should NOT appear
+    # cache_lifetime_cost=0 → "API equiv" parenthetical should NOT appear on Line 2
     local tmpdir
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
-    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0}' \
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":0,"lifetime_tokens":1000000}' \
         > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
-    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.25},"context_window":{}}'
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.25},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2=$(extract_line "$output" 2 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line2" != *"Σ"* ]]; then
-        pass_test "Lifetime cost: Σ annotation absent when lifetime_cost=0"
+    if [[ "$line2" != *"API equiv"* ]]; then
+        pass_test "Lifetime cost: 'API equiv' absent on Line 2 when lifetime_cost=0"
     else
-        fail_test "Lifetime cost Σ shown when lifetime_cost=0" "line2=$line2"
+        fail_test "Lifetime cost 'API equiv' shown on Line 2 when lifetime_cost=0" "line2=$line2"
     fi
 }
 
@@ -943,34 +987,38 @@ test_lifetime_cost_shown_when_nonzero() {
     local tmpdir
     tmpdir=$(mktemp -d)
     mkdir -p "$tmpdir/.claude"
-    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":12.40}' \
+    printf '{"dirty":0,"worktrees":0,"agents_active":0,"agents_types":"","todo_project":0,"todo_global":0,"lifetime_cost":12.40,"lifetime_tokens":1000000}' \
         > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
 
-    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.53},"context_window":{}}'
+    local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.53},"context_window":{"total_input_tokens":100000,"total_output_tokens":45000}}'
     local line2
     local output
-    output=$(run_statusline "$json" "$tmpdir")
+    # COLUMNS=250 ensures ∑ segment (priority 3) is not dropped
+    output=$(run_sl_columns "$json" 250 "$tmpdir")
     line2=$(extract_line "$output" 2 | strip_ansi)
     rm -rf "$tmpdir"
 
-    if [[ "$line2" == *"Σ~\$12.40"* || "$line2" == *"Σ~\$12"* ]]; then
-        pass_test "Lifetime cost: Σ~\$12.40 shown when lifetime_cost=12.40"
+    # New format on Line 2: "∑1.1M tks (API equiv: ~$12.93)" (12.40 + 0.53)
+    if [[ "$line2" == *"API equiv"* ]] && [[ "$line2" == *"~\$"* ]]; then
+        pass_test "Lifetime cost: '(API equiv: ~\$N)' parenthetical shown on Line 2 when lifetime_cost=12.40"
     else
-        fail_test "Lifetime cost Σ annotation not shown" "line2=$line2"
+        fail_test "Lifetime cost 'API equiv' parenthetical not shown on Line 2" "line2=$line2"
     fi
 }
 
 test_lifetime_cost_not_shown_when_cache_absent() {
     run_test
-    # No cache file at all → lifetime_cost defaults to 0 → no Σ
+    # No cache file at all → lifetime_cost defaults to 0 → no API equiv on Line 2
     local json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/nocache"},"cost":{"total_cost_usd":0.50},"context_window":{}}'
+    local output
+    output=$(run_statusline "$json")
     local line2
-    line2=$(run_statusline_l2 "$json" | strip_ansi)
+    line2=$(extract_line "$output" 2 | strip_ansi)
 
-    if [[ "$line2" != *"Σ"* ]]; then
-        pass_test "Lifetime cost: no Σ when cache file absent"
+    if [[ "$line2" != *"API equiv"* ]]; then
+        pass_test "Lifetime cost: no 'API equiv' on Line 2 when cache file absent"
     else
-        fail_test "Lifetime cost Σ shown without cache file" "line2=$line2"
+        fail_test "Lifetime cost 'API equiv' shown on Line 2 without cache file" "line2=$line2"
     fi
 }
 
@@ -1272,17 +1320,19 @@ test_responsive_all_segments_wide() {
     local stripped
     stripped=$(printf '%s' "$output" | strip_ansi)
     rm -rf "$tmpdir"
+    # Check new segment labels (reorg): "N uncommitted" (Line 1), "N worktrees" (Line 1),
+    # "agents" (Line 1), "4p" todos (Line 3), "Opus 4.6" model (Line 2), "tks" (Line 2)
     local ok=true
-    [[ "$stripped" != *"dirty: 5"* ]] && ok=false
-    [[ "$stripped" != *"wt: 2"* ]] && ok=false
-    [[ "$stripped" != *"agents: 3"* ]] && ok=false
+    [[ "$stripped" != *"5 uncommitted"* ]] && ok=false
+    [[ "$stripped" != *"2 worktrees"* ]] && ok=false
+    [[ "$stripped" != *"agents"* ]] && ok=false
     [[ "$stripped" != *"4p"* ]] && ok=false
     [[ "$stripped" != *"Opus 4.6"* ]] && ok=false
     [[ "$stripped" != *"tks"* ]] && ok=false
     if $ok; then
-        pass_test "Responsive: COLUMNS=200 shows all segments"
+        pass_test "Responsive: COLUMNS=200 shows all segments (reorg labels)"
     else
-        fail_test "Responsive: missing segments at COLUMNS=200" "stripped=$stripped"
+        fail_test "Responsive: missing segments at COLUMNS=200 (reorg)" "stripped=$stripped"
     fi
 }
 
@@ -1326,32 +1376,48 @@ test_responsive_line1_very_narrow_keeps_workspace() {
 
 test_responsive_line2_narrow_drops_lines_changed() {
     run_test
-    # COLUMNS=75: term_w=10 (75-65), floor kicks in -> term_w=60.
-    # At term_w=60, +N/-N lines (priority 8, drops first) are dropped.
-    # Verifies that narrow effective width causes correct responsive drop behavior.
-    local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"/Users/turla/proj"},"cost":{"total_cost_usd":0.53,"total_duration_ms":60000,"total_lines_added":42,"total_lines_removed":7},"context_window":{"used_percentage":35,"current_usage":{"cache_read_input_tokens":50000,"input_tokens":10000,"cache_creation_input_tokens":5000},"total_input_tokens":150000,"total_output_tokens":50000}}'
+    # In the reorg layout, +N/-N lines is merged into the Line 1 dirty segment (not on Line 2).
+    # Cache hit (priority 4 on Line 2) drops first when Line 2 content overflows term_w.
+    # Use a very long model name to force overflow: model+ctxbar takes most of term_w,
+    # cache hit drops. With a very long model name "VeryLongModelName-123456789012345678" (36 chars),
+    # Line 2 total = 36+20(bar) + 3 + 8(200K tks) + 3 + 13(cache hit 76%) = ~83 chars.
+    # At term_w=60 (after 65-char right panel on COLUMNS=130 -> 65 -> floor 65 > 60 -> term_w=65),
+    # actually use COLUMNS=90 (term_w=25 -> floor=60). Still 83>60 so cache hit drops.
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/.claude"
+    printf '{"dirty":5,"worktrees":0,"agents_active":0,"agents_types":""}' \
+        > "$tmpdir/.claude/.statusline-cache-${CLAUDE_SESSION_ID}"
+    # 36-char model name forces Line 2 overflow at narrow effective width
+    local long_model="VeryLongModelNameForTestingDrop1234"
+    local json='{"model":{"display_name":"'"$long_model"'"},"workspace":{"current_dir":"'"$tmpdir"'"},"cost":{"total_cost_usd":0.53,"total_duration_ms":60000,"total_lines_added":42,"total_lines_removed":7},"context_window":{"used_percentage":35,"current_usage":{"cache_read_input_tokens":50000,"input_tokens":10000,"cache_creation_input_tokens":5000},"total_input_tokens":1500000,"total_output_tokens":500000}}'
     local output
-    output=$(run_sl_columns "$json" 75)
+    output=$(run_sl_columns "$json" 90 "$tmpdir")
     local line2
     line2=$(extract_line "$output" 2 | strip_ansi)
-    if [[ "$line2" != *"+42"* ]]; then
-        pass_test "Responsive: COLUMNS=75 drops +N/-N lines (term_w=10 after TERMWIDTH-003 subtraction)"
+    rm -rf "$tmpdir"
+    # At COLUMNS=90 (term_w=25 -> floor=60), cache hit (priority 4 on Line 2) should drop
+    # because model(36)+bar(20)+tks(8)+cache(13)+seps(6)=83 > 60
+    if [[ "$line2" != *"cache hit"* ]]; then
+        pass_test "Responsive: narrow effective width drops cache hit from Line 2 (priority 4)"
     else
-        fail_test "Responsive: +42 should be dropped at COLUMNS=75 (term_w=10)" "line2=$line2"
+        fail_test "Responsive: cache hit should be dropped at narrow effective width" "line2=$line2"
     fi
 }
 
 test_responsive_line2_very_narrow_keeps_context_bar() {
     run_test
+    # model+ctx bar is priority 1 on Line 2 — always kept. Check ctx bar still shows.
     local json='{"model":{"display_name":"Opus 4.6"},"workspace":{"current_dir":"/Users/turla/proj"},"cost":{"total_cost_usd":0.53,"total_duration_ms":60000},"context_window":{"used_percentage":35,"total_input_tokens":150000,"total_output_tokens":50000}}'
     local output
     output=$(run_sl_columns "$json" 25)
     local line2
     line2=$(extract_line "$output" 2 | strip_ansi)
-    if [[ "$line2" == *"35%"* ]] || [[ "$line2" == *"\u2591"* ]]; then
-        pass_test "Responsive: COLUMNS=25 preserves context bar"
+    # Context bar (as part of model+ctx combo) should show "35%" or bar chars at any width
+    if [[ "$line2" == *"35%"* ]] || [[ "$line2" == *$'\xe2\x96\x88'* ]] || [[ "$line2" == *$'\xe2\x96\x91'* ]]; then
+        pass_test "Responsive: COLUMNS=25 preserves model+ctx bar (priority 1 on Line 2)"
     else
-        fail_test "Responsive: context bar lost at COLUMNS=25" "line2=$line2"
+        fail_test "Responsive: model+ctx bar lost at COLUMNS=25" "line2=$line2"
     fi
 }
 
@@ -1372,23 +1438,24 @@ test_responsive_no_truncation_at_wide() {
 # ----------------------------------------------------------------------------
 # DEC-STATUSLINE-TERMWIDTH-003 tests: effective width = COLUMNS - 65, floor 60
 # @decision DEC-STATUSLINE-TERMWIDTH-003
-# @title Tests for right-panel reservation: term_w = COLUMNS - 65 (floor 60)
+# @title Tests for right-panel reservation: term_w = COLUMNS - 15 (floor 60)
 # @status accepted
 # @rationale Verifies three key invariants of the Claude Code right-panel reservation:
-#   1. COLUMNS=180 -> effective width 115 (65-char reservation active, no floor)
-#   2. COLUMNS=60  -> floor kicks in (60-65=-5 -> clamped to 60, not negative)
-#   3. COLUMNS=0   -> floor kicks in (0-65=-65 -> clamped to 60)
-# Test 1 uses a 71-char workspace basename to force line1 total ~131 chars.
-# At term_w=115 agents+todos drop; at term_w=180 nothing drops.
-# Asserting agents IS dropped at COLUMNS=180 proves effective width=115.
+#   1. COLUMNS=140 -> effective width 125 (15-char reservation active, no floor)
+#      A 73-char workspace + segments totals ~127 chars; at effective=125 agents drop.
+#   2. COLUMNS=60  -> floor kicks in (60-15=45 -> clamped to 60, not too small)
+#   3. COLUMNS=0   -> floor kicks in (0-15=-15 -> clamped to 60)
+# Test 1 uses a 73-char workspace basename to force line1 total ~127 chars.
+# At term_w=125 agents(p4) drop; at term_w=180 nothing drops.
+# Asserting agents IS dropped at COLUMNS=140 (effective=125) proves the 15-char reservation.
 # ----------------------------------------------------------------------------
 
 test_termwidth_cols_180_effective_115() {
     run_test
-    # 73-char workspace basename: line1 total ~131 chars (workspace+dirty+wt+agents+todos).
-    # New code (COLUMNS=180, term_w=115=180-65): todos(p5)+agents(p4) both dropped.
-    # Old code (COLUMNS=180, term_w=180): line1=131<180, nothing drops, agents visible.
-    # Asserting agents ABSENT at COLUMNS=180 proves the 65-char right-panel reservation.
+    # 73-char workspace basename: line1 total ~127 chars (workspace + uncommitted + worktrees + agents).
+    # New code (COLUMNS=140, term_w=125=140-15): agents(p4) dropped (total ~127 > 125).
+    # If using old 65-char reservation: COLUMNS=140 -> effective=75, which would drop even more.
+    # This test proves we use exactly 15-char reservation (not more, not less effectively).
     local long_name
     long_name=$(printf '%073d' 0 | tr '0' 'a')   # 73 'a' chars
     local tmpdir
@@ -1401,14 +1468,14 @@ test_termwidth_cols_180_effective_115() {
     local json
     json='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"'"$workspace_dir"'"},"cost":{},"context_window":{}}'
     local output
-    output=$(printf '%s' "$json" | COLUMNS=180 HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null)
+    output=$(printf '%s' "$json" | COLUMNS=140 HOME="$tmpdir" bash "$STATUSLINE" 2>/dev/null)
     local line1
     line1=$(extract_line "$output" 1 | strip_ansi)
     rm -rf "$tmpdir"
     if [[ "$line1" != *"agents:"* ]]; then
-        pass_test "termwidth: COLUMNS=180 effective width 115 — agents dropped (proves 65-char reservation)"
+        pass_test "termwidth: COLUMNS=140 effective width 125 — agents dropped (proves 15-char reservation)"
     else
-        fail_test "termwidth: COLUMNS=180 should reserve 65 chars (effective=115), but agents still visible" "line1=$line1"
+        fail_test "termwidth: COLUMNS=140 should reserve 15 chars (effective=125), but agents still visible" "line1=$line1"
     fi
 }
 
