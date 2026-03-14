@@ -169,21 +169,21 @@ Source with: `source "$(dirname "$0")/source-lib.sh"`
 Bootstrap loader that sources `log.sh` and `core-lib.sh`. Provides `require_*()` lazy loaders
 for domain libraries. All hooks source this file as their first dependency.
 
-**What loads immediately (~1,093 lines total):**
-- `log.sh` (441 lines) — JSON I/O, stdin caching, path utilities
-- `core-lib.sh` (652 lines) — deny/allow/advisory output, atomic writes
+**What loads immediately:**
+- `log.sh` — JSON I/O, stdin caching, path utilities
+- `core-lib.sh` — deny/allow/advisory output, atomic writes
 
 **What loads on demand via `require_*()`:**
 
-| Function | Library | Lines | Purpose |
-|----------|---------|-------|---------|
-| `require_git()` | `git-lib.sh` | 78 | Git state detection, branch guards, worktree safety |
-| `require_plan()` | `plan-lib.sh` | 542 | Plan lifecycle, staleness scoring, MASTER_PLAN.md parsing |
-| `require_trace()` | `trace-lib.sh` | 789 | Trace init/finalize, audit trail, agent markers |
-| `require_session()` | `session-lib.sh` | 751 | Session summary, trajectory, compaction context |
-| `require_doc()` | `doc-lib.sh` | 308 | @decision enforcement, doc-gate rules |
-| `require_ci()` | `ci-lib.sh` | 219 | CI detection, workflow helpers |
-| `require_state()` | `state-lib.sh` | 564 | Per-worktree state management and isolation |
+| Function | Library | Purpose |
+|----------|---------|---------|
+| `require_git()` | `git-lib.sh` | Git state detection, branch guards, worktree safety |
+| `require_plan()` | `plan-lib.sh` | Plan lifecycle, staleness scoring, MASTER_PLAN.md parsing |
+| `require_trace()` | `trace-lib.sh` | Trace init/finalize, audit trail, agent markers |
+| `require_session()` | `session-lib.sh` | Session summary, trajectory, compaction context |
+| `require_doc()` | `doc-lib.sh` | @decision enforcement, doc-gate rules |
+| `require_ci()` | `ci-lib.sh` | CI detection, workflow helpers |
+| `require_state()` | `state-lib.sh` | Per-worktree state management and isolation |
 
 Each `require_*()` is idempotent — calling `require_git()` twice is a no-op. Hooks that need
 multiple domains call them explicitly (e.g., `require_git; require_plan`). `require_all()` was
@@ -222,7 +222,7 @@ PreToolUse:W/E  → pre-write.sh (consolidated: branch-guard + doc-gate + test-g
                     ↓
 [Tool executes]
                     ↓
-PostToolUse:W/E → post-write.sh (consolidated: lint + track + code-review + plan-validate + test-runner)
+PostToolUse:W/E → post-write.sh (consolidated: track + plan-validate)
 PostToolUse:Task → post-task.sh (auto-verify on tester completion)
                     ↓
 SubagentStart   → subagent-start.sh
@@ -247,7 +247,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 |------|-------|---------|
 | **pre-bash.sh** | PreToolUse:Bash | guard.sh, doc-freshness.sh |
 | **pre-write.sh** | PreToolUse:Write\|Edit | branch-guard, doc-gate, test-gate, mock-gate, plan-check, checkpoint |
-| **post-write.sh** | PostToolUse:Write\|Edit | lint, track, code-review, plan-validate, test-runner |
+| **post-write.sh** | PostToolUse:Write\|Edit | track.sh, plan-validate.sh |
 | **stop.sh** | Stop | surface, session-summary, forward-motion |
 
 ### Domain Libraries (Metanoia)
@@ -323,7 +323,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ---
 
-## Key guard.sh Behaviors
+## Key pre-bash.sh Behaviors
 
 The most complex hook — 11 checks covering 7 nuclear denies, 1 early-exit gate, 2 deny-with-correction, 3 CWD safety denies, 3 hard blocks, 2 evidence gates, and 2 human gate enforcers.
 
@@ -380,7 +380,7 @@ Proof-of-work: the user must see the feature work before code is committed. The 
 
 ---
 
-## Key plan-check.sh Behaviors
+## Key Plan-Check Behaviors
 
 Beyond checking for MASTER_PLAN.md existence, this hook scores plan staleness using two signals:
 
