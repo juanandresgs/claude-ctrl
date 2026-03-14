@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `fix/architecture-postwrite`: Correct post-write.sh description in ARCHITECTURE.md — previous text incorrectly claimed all 5 legacy hooks were fully absorbed; actual state is track.sh/plan-validate.sh/lint.sh absorbed internally, lint.sh and test-runner.sh remain as separate registered hooks, code-review.sh was pruned
 - `feature/fix-hash-length`: Standardize project hash to 8 chars via `project_hash()` — session-lib.sh and session-end.sh used 12-char inline `cut -c1-12` while all other sites used 8-char, causing session data written with 12-char hashes to be invisible to 8-char reads; now `project_hash()` is the universal single source of truth (DEC-HASH-CONSOLIDATE-001)
 - `feature/fix-doc-counts`: Strip rotting line/file counts from ARCHITECTURE.md and HOOKS.md, add 7 missing files to directory map, fix stale consolidation references in CONTRIBUTING.md
 - `feature/fix-backfill-phash`: Fix backfill-token-history.sh hashing project NAME instead of project ROOT PATH, which orphaned 5.6M tokens from per-project lifetime counts (DEC-BACKFILL-PHASH-002)
