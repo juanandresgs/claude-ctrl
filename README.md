@@ -19,7 +19,7 @@ A deterministic governance layer for [Claude Code](https://docs.anthropic.com/en
 
 Telling a model to 'never commit on main' works... until context pressure erases the rule. After compaction, under heavy cognitive load, after 40 minutes of deep implementation, the constraints that live in the model's context aren't constraints. At best, they're suggestions. Most of the time, they're prayers.
 
-LLMs are not deterministic systems with probabilistic quirks. They are **probabilistic systems** — and the only way to harness them into producing reliably good outcomes is through deterministic, event-based enforcement. Wiring a hook that fires before every bash command and mechanically denies commits on main works regardless of what the model remembers or forgets or decides to prioritize. Cybernetics gave us a framework to harness these systems decades ago. The hook system enforces standards determinitically. The observatory jots down traces to analyze for each run. That feedback improves performance and guides how the gates adapt. 
+LLMs are not deterministic systems with probabilistic quirks. They are **probabilistic systems** — and the only way to harness them into producing reliably good outcomes is through deterministic, event-based enforcement. Wiring a hook that fires before every bash command and mechanically denies commits on main works regardless of what the model remembers or forgets or decides to prioritize. Cybernetics gave us a framework to harness these systems decades ago. The hook system enforces standards deterministically. The observatory jots down traces to analyze for each run. That feedback improves performance and guides how the gates adapt. 
 
 Every version teaches me something about how to govern probabilistic systems, and those lessons feed into the next iteration. The end-state goal is an instantiation of what I call **Self-Evaluating Self-Adaptive Programs (SESAPs)**: probabilistic systems constrained to deterministically produce a range of desired outcomes.
 
@@ -35,7 +35,39 @@ I've never been much of a gambler myself.
 
 <p align="center"><em>homonia (n.) — harmony of minds; concord</em></p>
 
-<p align="center"><strong>SQLite unified state · Database Safety Framework · 485 tests</strong></p>
+<p align="center"><strong>SQLite unified state · Database Safety Framework</strong></p>
+
+### v4 Feature Highlights
+
+**SQLite Unified State** — all state lives in `state/state.db` (WAL mode): proof state, test status, session tokens, agent markers, and KV data. The State Unification initiative replaced 16 scattered dotfiles with a single SQLite backend, eliminating race conditions and giving concurrent agents clean transactional semantics. WAL mode means readers never block writers — parallel worktrees share state without contention.
+
+**Database Safety Framework** — defense-in-depth interception for database CLI commands (psql, mysql, sqlite3, mongosh, redis-cli), IaC operations, container volume removal, and MCP JSON-RPC calls. Environment tiering: dev=permissive, staging=approval, prod=read-only.
+
+**AUTOVERIFY** — when the tester agent produces high-confidence verification with full coverage, the system writes proof state automatically without requiring manual approval. Clean end-to-end verifications flow straight to the Guardian for commit and merge.
+
+---
+
+### End-to-End Benchmark (Claude-Ctrl-Performance Harness)
+
+Docker-isolated A/B comparison across 6 task types (Opus 4.6, 1M context, n=3 per cell):
+
+| Task | Category | v3.0 Avg Tokens | v4.0 Avg Tokens | Delta |
+|------|----------|-----------------|-----------------|-------|
+| T01 — Simple bugfix | Easy | 478K | 512K | +7% |
+| T06 — Multi-file feature | Hard | 1,389K | 1,392K | 0% |
+| T13 — Instruction compliance | Behavioral | 448K | 448K | 0% |
+| T14 — Conflicting instructions | Behavioral | 614K | 550K | **-10%** |
+| T15 — Deep navigation (3-hop) | Behavioral | 742K | 627K | **-16%** |
+| T16 — Error recovery | Behavioral | 522K | 655K | +25% |
+
+| Metric | v3.0 | v4.0 | Delta |
+|--------|------|------|-------|
+| Pass rate | 16/16 (100%) | 18/18 (100%) | — |
+| CPSO (tokens per success) | 707K | 697K | **-1.4%** |
+
+**What changed:** Governor and db-guardian agents removed (−7K tokens/session prompt mass), `@decision` blocks cleaned from context-injected files, compaction heuristic removed (was firing at 17% context on 1M windows), fast-path criteria inlined into CLAUDE.md, SQLite KV replaced 14 flatfile state stores (eliminating race conditions between concurrent hooks).
+
+**v4.0 wins or ties 4 of 6 tasks with 1.4% better CPSO overall.** T16 error-recovery (+25%) is the one regression — under investigation. The behavioral tasks (T14, T15) show the largest gains: fewer wasted tokens on judgment calls where the leaner prompt lets the model focus.
 
 ---
 
@@ -84,14 +116,6 @@ flowchart TD
 Every arrow is a hook. Every feedback loop is mechanical. The model doesn't choose to follow the process — the hooks won't let it skip. Write on main? Denied. No plan? Denied. Tests failing? Blocked. Undocumented? Blocked. No tester sign-off? Commit denied. The system self-corrects until the work meets the standard.
 
 **The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get denied with corrections (`--force` → `--force-with-lease`, `/tmp/` → project `tmp/`). You describe what you want and review what comes out.
-
-### v4 Feature Highlights
-
-**SQLite Unified State** — all state lives in `state/state.db` (WAL mode): proof state, test status, session tokens, agent markers, and KV data. The State Unification initiative replaced 16 scattered dotfiles with a single SQLite backend, eliminating race conditions and giving concurrent agents clean transactional semantics. WAL mode means readers never block writers — parallel worktrees share state without contention.
-
-**Database Safety Framework** — defense-in-depth interception for database CLI commands (psql, mysql, sqlite3, mongosh, redis-cli), IaC operations, container volume removal, and MCP JSON-RPC calls. Environment tiering: dev=permissive, staging=approval, prod=read-only.
-
-**AUTOVERIFY** — when the tester agent produces high-confidence verification with full coverage, the system writes proof state automatically without requiring manual approval. Clean end-to-end verifications flow straight to the Guardian for commit and merge.
 
 ---
 
