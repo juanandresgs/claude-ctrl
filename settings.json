@@ -309,16 +309,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "governor",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/check-governor.sh",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "PreCompact": [

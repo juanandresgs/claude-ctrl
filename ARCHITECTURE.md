@@ -45,7 +45,7 @@ The system has four layers:
 
 1. **Instruction layer** — `CLAUDE.md` and agent prompts tell Claude what to do.
 2. **Hook layer** — Hook scripts and shared libraries enforce it mechanically, regardless of instructions.
-3. **Agent layer** — 5 specialized agents (Planner, Implementer, Tester, Guardian, Governor)
+3. **Agent layer** — 4 specialized agents (Planner, Implementer, Tester, Guardian)
    divide complex work into deterministic phases.
 4. **State layer** — SQLite KV store (`state/state.db`) is the canonical state backend since the State Unification initiative. All proof state, test status, session tokens, agent markers, and KV data live in a single WAL-mode SQLite database. A small number of session-scoped flat files (lint cooldowns, preserved context, audit log) remain for non-KV concerns.
 
@@ -87,12 +87,11 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 │   ├── ci-lib.sh             # Shared library — CI detection, workflow helpers
 │   ├── log.sh                # Shared library — JSON I/O, stdin caching, path utilities
 │   └── source-lib.sh         # Shared library — bootstrapper (log.sh + core-lib.sh) + require_*() lazy loaders
-├── agents/                   # 5 agent prompt definitions + shared-protocols.md library
+├── agents/                   # 4 agent prompt definitions + shared-protocols.md library
 │   ├── planner.md            # Planner agent — MASTER_PLAN.md creation
 │   ├── implementer.md        # Implementer agent — test-first development
 │   ├── tester.md             # Tester agent — e2e verification
 │   ├── guardian.md           # Guardian agent — git operations
-│   ├── governor.md           # Governor agent — initiative health evaluation
 │   └── shared-protocols.md  # Shared library — injected into all agents at dispatch time
 ├── skills/                   # 11 skill directories
 │   ├── bazaar/               # Community discussion aggregator
@@ -183,8 +182,7 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 │ SubagentStart: subagent-start.sh                                    │
 │ SubagentStop: check-planner.sh, check-implementer.sh,              │
 │              check-tester.sh, check-guardian.sh,                    │
-│              check-governor.sh, check-explore.sh,                   │
-│              check-general-purpose.sh                               │
+│              check-explore.sh, check-general-purpose.sh             │
 │ Stop: stop.sh (decision audit + session summary + next steps)       │
 │ SessionEnd: session-end.sh                                          │
 │ Notification: notify.sh                                             │
@@ -356,7 +354,6 @@ with the `additionalContext` injected. `lint.sh` uses this for auto-fix loops.
 | **SubagentStop** | `implementer` | When implementer completes | check-implementer.sh |
 | **SubagentStop** | `tester` | When tester completes | check-tester.sh |
 | **SubagentStop** | `guardian` | When guardian completes | check-guardian.sh |
-| **SubagentStop** | `governor` | When governor completes | check-governor.sh (advisory only) |
 | **SubagentStop** | `Explore\|explore` | When Explore agent completes | check-explore.sh |
 | **SubagentStop** | `general-purpose` | When general-purpose agent completes | check-general-purpose.sh |
 | **Stop** | (all) | After Claude finishes responding | stop.sh (consolidates surface, session-summary, forward-motion) |
@@ -755,14 +752,14 @@ SQLite `test_status` key (migrated from `.test-status`), SQLite proof state (mig
 
 ## 6. Agent System
 
-**What it does:** Five specialized agents divide complex work into phases with
+**What it does:** Four specialized agents divide complex work into phases with
 clear handoffs. Each agent has a dedicated prompt, a model assignment, and
 SubagentStop validation.
 
 **Why it exists:** A single context window cannot maintain the full state of
 planner + implementer + verifier + committer simultaneously. Specialization
-lets each agent go deep on its role without context dilution. Governor adds
-ongoing health evaluation as an independent enforcement layer.
+lets each agent go deep on its role without context dilution. Database safety
+is enforced by deterministic hooks (db-safety-lib.sh), not an agent.
 
 **What you can count on:**
 - Orchestrator (main context) dispatches agents via Task tool — it does NOT write source code.
@@ -771,7 +768,7 @@ ongoing health evaluation as an independent enforcement layer.
 - max_turns are set by the orchestrator on every Task invocation.
 - `agents/shared-protocols.md` is a library injected into all agents at dispatch time via subagent-start.sh — it is NOT an agent.
 
-### The Five Agents
+### The Four Agents
 
 | Agent | Model | max_turns | Primary Output | SubagentStop Validator |
 |-------|-------|-----------|----------------|------------------------|
@@ -779,7 +776,6 @@ ongoing health evaluation as an independent enforcement layer.
 | Implementer | claude-sonnet-4-6 | 85 | Tests + source code in worktree | check-implementer.sh |
 | Tester | claude-sonnet-4-6 | 40 | proof state = verified + verification report | check-tester.sh |
 | Guardian | claude-opus-4-6 | 30 | git commit + merge + cleanup | check-guardian.sh |
-| Governor | claude-opus-4-6 | 25 | Initiative health pulse / full evaluation | check-governor.sh (advisory) |
 
 ### Planner Agent (agents/planner.md)
 

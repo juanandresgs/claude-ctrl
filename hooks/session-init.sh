@@ -86,35 +86,6 @@ _SINIT_PROJECT=$(basename "$PROJECT_ROOT")
 _SINIT_SID="${CLAUDE_SESSION_ID:-$$}"
 state_emit "session.start" "{\"branch\":\"${_SINIT_BRANCH}\",\"project\":\"${_SINIT_PROJECT}\",\"session\":\"${_SINIT_SID}\"}" >/dev/null 2>/dev/null || true
 
-# W6-1: Enhanced governor trigger — check pending assessment events with context
-# If 3+ governor.assessment events are pending (not yet consumed), surface an advisory
-# with the recent event details so the orchestrator has context for dispatching governor.
-#
-# @decision DEC-STATE-W6-1-002
-# @title Governor advisory threshold at 3 pending assessment events with event details
-# @status accepted
-# @rationale 3 events represents a full implement→test→merge cycle. Lower thresholds
-#   produce noise on busy sessions; higher thresholds delay useful governor guidance.
-#   Fetching recent events (up to 10) provides context about what work was done,
-#   enabling the orchestrator to judge whether a health pulse is warranted.
-_PENDING_GOVERNOR=$(state_events_count "governor" "governor.assessment" 2>/dev/null || echo "0")
-[[ "$_PENDING_GOVERNOR" =~ ^[0-9]+$ ]] || _PENDING_GOVERNOR=0
-if (( _PENDING_GOVERNOR >= 3 )); then
-    # Fetch recent events for context (pipe-delimited: seq|type|workflow_id|session_id|payload|created_at)
-    _GOV_EVENTS=$(state_events_since "governor" "governor.assessment" "" "10" 2>/dev/null || echo "")
-    _GOV_RECENT=""
-    if [[ -n "$_GOV_EVENTS" ]]; then
-        # Extract payload column (field 5) from first 3 events for brief context
-        _GOV_RECENT=$(echo "$_GOV_EVENTS" | head -3 | cut -d'|' -f5 | tr '\n' '; ' | sed 's/; $//')
-    fi
-    _GOV_ADVISORY="GOVERNOR ADVISORY: ${_PENDING_GOVERNOR} assessment events pending review."
-    if [[ -n "$_GOV_RECENT" ]]; then
-        _GOV_ADVISORY+=" Recent: ${_GOV_RECENT}."
-    fi
-    _GOV_ADVISORY+=" Consider dispatching governor for a health pulse (governor agent evaluates initiative alignment and infrastructure health)."
-    CONTEXT_PARTS+=("$_GOV_ADVISORY")
-fi
-
 # W6-1: Self-heal advisory — surface accumulated hook failures for /diagnose
 # If 5+ hook.failure events are pending, the system may have a degraded hook.
 # This threshold prevents noise from transient errors while catching systematic issues.

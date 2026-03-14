@@ -126,7 +126,6 @@ The @decision annotation is the mechanism: it binds a decision to the exact line
 | `agents/implementer.md` | Implementing code in a worktree |
 | `agents/tester.md` | Verifying implementation works end-to-end |
 | `agents/guardian.md` | Committing, merging, branch management |
-| `agents/governor.md` | Evaluating initiatives against project trajectory |
 | `docs/DISPATCH.md` | Full agent dispatch protocol (routing, gates, TEST_SCOPE, interruption) |
 | `hooks/HOOKS.md` | Understanding hook behavior, debugging hooks, @decision format |
 | `README.md` | Full system overview, directory map, all hooks/skills/commands |

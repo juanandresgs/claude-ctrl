@@ -50,9 +50,10 @@ track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"guardian\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 
-# W6-1: Emit governor.assessment event after guardian operation.
-# Guardians are major lifecycle milestones (merge/commit) — high-value signals
-# for governor trajectory assessment. Best-effort: must never break the hook.
+# W6-1: Emit governor.assessment event into SQLite event ledger.
+# Governor is parked (DEC-PERF-006) but events are retained for future restoration.
+# Guardians are major lifecycle milestones (merge/commit) — high-value signals.
+# Best-effort: must never break the hook.
 # require_state loads state-lib.sh (state_emit, workflow_id) before the emit.
 require_state 2>/dev/null || true
 _CG_WF_GOV=$(workflow_id 2>/dev/null || echo "main")

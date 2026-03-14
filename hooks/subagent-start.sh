@@ -138,10 +138,9 @@ fi
 
 # --- Inject shared agent protocols ---
 # Section-aware extraction from agents/shared-protocols.md.
-# Governor (read-only) skips CWD Safety. All sections are included for
-# worktree-touching agents (implementer, tester, guardian, planner).
-# HTML comments are stripped to prevent @decision annotations from
-# consuming agent context tokens.
+# All sections are included for worktree-touching agents (implementer, tester,
+# guardian, planner). HTML comments are stripped to prevent @decision
+# annotations from consuming agent context tokens.
 #
 # @decision DEC-PROMPT-002
 # @title Extract shared defensive protocols into shared-protocols.md
@@ -149,9 +148,7 @@ fi
 # @rationale CWD safety, trace protocol, and return message rules were
 #   duplicated verbatim across implementer.md, tester.md, guardian.md, and
 #   planner.md. A single edit to shared-protocols.md now propagates to all
-#   agents at spawn time. Section-aware extraction skips CWD Safety for
-#   governor (read-only agent that never touches worktrees), reducing its
-#   injection by ~350 bytes. HTML comment stripping ensures @decision
+#   agents at spawn time. HTML comment stripping ensures @decision
 #   annotations don't consume agent context tokens.
 _SHARED_PROTO="$(dirname "$0")/../agents/shared-protocols.md"
 if [[ -f "$_SHARED_PROTO" ]] && [[ "$AGENT_TYPE" != "Bash" ]] && [[ "$AGENT_TYPE" != "Explore" ]]; then
@@ -166,11 +163,9 @@ if [[ -f "$_SHARED_PROTO" ]] && [[ "$AGENT_TYPE" != "Bash" ]] && [[ "$AGENT_TYPE
 
     _PROTO_PARTS=""
 
-    # CWD Safety — skip for governor (read-only agent, never touches worktrees)
-    if [[ "$AGENT_TYPE" != "governor" ]]; then
-        _sec=$(_extract_proto_section "CWD Safety")
-        [[ -n "$_sec" ]] && _PROTO_PARTS+="CWD Safety: $_sec"$'\n'
-    fi
+    # CWD Safety — inject for all worktree-touching agents
+    _sec=$(_extract_proto_section "CWD Safety")
+    [[ -n "$_sec" ]] && _PROTO_PARTS+="CWD Safety: $_sec"$'\n'
 
     # Always: Trace Recovery, Return Protocol, Session End
     for _name in "Trace Recovery" "Return Protocol" "Session End"; do
@@ -408,55 +403,6 @@ case "$AGENT_TYPE" in
         fi
         if [[ -n "$TRACE_DIR" ]]; then
             CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (merge-analysis.md). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
-        fi
-        ;;
-    governor)
-        # Governor: mechanical feedback mechanism — read-only evaluation agent.
-        # Evaluates initiatives against project intent, principles, and trajectory.
-        # Never acts on findings — reports and returns. Advisory only.
-        #
-        # @decision DEC-GOV-WIRE-002
-        # @title subagent-start.sh governor case injects Original Intent + Principles + latest reckoning
-        # @status accepted
-        # @rationale Governor's evaluation quality depends on knowing (1) the project's
-        #   original intent and stated principles (from MASTER_PLAN.md) and (2) where
-        #   the project actually IS right now (from the most recent reckoning verdict and
-        #   "what to confront" section). Without both, governor assessments are ungrounded.
-        #   Capped at 500 bytes for MASTER_PLAN intent/principles (structural sections only)
-        #   and 2000 bytes for reckoning context (verdict + what-to-confront) to prevent
-        #   context bloat while covering the critical grounding material.
-        CONTEXT_PARTS+=("Role: Governor — mechanical feedback mechanism. Evaluate the initiative against project intent, principles, and trajectory.")
-        # Inject Original Intent and Principles from MASTER_PLAN.md (compact, ~500 bytes max)
-        if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
-            _GOV_INTENT=$(awk '/^## Original Intent/{f=1; next} f && /^## /{exit} f{print}' \
-                "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -c 400 || echo "")
-            _GOV_PRINCIPLES=$(awk '/^## Principles/{f=1; next} f && /^## /{exit} f{print}' \
-                "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -c 300 || echo "")
-            if [[ -n "$_GOV_INTENT" ]]; then
-                CONTEXT_PARTS+=("Original Intent (from MASTER_PLAN.md): $_GOV_INTENT")
-            fi
-            if [[ -n "$_GOV_PRINCIPLES" ]]; then
-                CONTEXT_PARTS+=("Principles (from MASTER_PLAN.md): $_GOV_PRINCIPLES")
-            fi
-        fi
-        # Inject most recent reckoning verdict + "What to Confront" section (cap at 2000 bytes)
-        _RECKONING_DIR="$PROJECT_ROOT/reckonings"
-        if [[ -d "$_RECKONING_DIR" ]]; then
-            _LATEST_RECKONING=$(ls -t "$_RECKONING_DIR"/*.md 2>/dev/null | head -1 || echo "")
-            if [[ -n "$_LATEST_RECKONING" && -f "$_LATEST_RECKONING" ]]; then
-                _RECKONING_CONTENT=$(awk '
-                    /Verdict:|verdict:|## Verdict|## What to Confront|## Trajectory/{f=1}
-                    f{print}
-                    f && /^## / && !/Verdict|Confront|Trajectory/{if(++n>1) exit}
-                ' "$_LATEST_RECKONING" 2>/dev/null | head -c 2000 || echo "")
-                if [[ -n "$_RECKONING_CONTENT" ]]; then
-                    _RECKONING_FILE=$(basename "$_LATEST_RECKONING")
-                    CONTEXT_PARTS+=("Latest reckoning ($_RECKONING_FILE): $_RECKONING_CONTENT")
-                fi
-            fi
-        fi
-        if [[ -n "$TRACE_DIR" ]]; then
-            CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (evaluation.json, evaluation-summary.md). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
         fi
         ;;
     Bash)

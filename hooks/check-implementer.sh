@@ -64,7 +64,8 @@ track_agent_tokens "$AGENT_RESPONSE"
 append_session_event "agent_stop" "{\"type\":\"implementer\"}" "$PROJECT_ROOT"
 rm -f "${CLAUDE_DIR}/.agent-progress"
 
-# W6-1: Emit governor.assessment event for event-driven governor triggers.
+# W6-1: Emit governor.assessment event into SQLite event ledger.
+# Governor is parked (DEC-PERF-006) but events are retained for future restoration.
 # require_state loads state-lib.sh (state_emit, workflow_id) — best-effort,
 # must never break the hook. @decision DEC-STATE-W6-1-001 (see test-state-unify-w6-1.sh)
 require_state 2>/dev/null || true

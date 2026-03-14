@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- `feature/perf-park-governor`: Park governor agent — remove from dispatch infrastructure to save ~4,200 tokens/session from Agent tool schema; governor.md, check-governor.sh, test-governor-wiring.sh deleted; settings.json/DISPATCH.md/ARCHITECTURE.md/README.md cleaned; SQLite governor.assessment events retained for future restoration (DEC-PERF-006, #253)
+
 ## [4.0.0] - 2026-03-14
 
 v4.0 completes three major initiatives: SQLite Unified State Store (sole canonical backend,

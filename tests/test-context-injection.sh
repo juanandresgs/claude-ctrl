@@ -130,24 +130,25 @@ else
 fi
 
 # ============================================================
-# CI-02: Governor skips CWD Safety
+# CI-02: Governor is parked — subagent-start.sh has no governor case (DEC-PERF-006)
 # ============================================================
-echo "--- CI-02: Governor skips CWD Safety ---"
+echo "--- CI-02: Governor is parked (no governor) case in subagent-start.sh ---"
 
-proj=$(make_project)
-gov_output=$(run_subagent_start "governor" "$proj")
-
-if echo "$gov_output" | grep -q "CWD Safety"; then
-    fail "CI-02: Governor output contains CWD Safety" "Governor should skip CWD Safety section"
+# Governor was parked in Issue #253 to save ~4,200 tokens/session.
+# Verify subagent-start.sh has no governor) case (which would inject context
+# and load governor.md into the Agent tool schema).
+SUBAGENT_START="$HOOKS_DIR/subagent-start.sh"
+if ! grep -q 'governor)' "$SUBAGENT_START" 2>/dev/null; then
+    pass "CI-02: subagent-start.sh has no governor) case (governor parked)"
 else
-    pass "CI-02: Governor output does not contain CWD Safety"
+    fail "CI-02: subagent-start.sh still has governor) case" "Governor should be parked (DEC-PERF-006)"
 fi
 
-# Governor should still get Trace Recovery and Return Protocol
-if echo "$gov_output" | grep -qi "summary.md"; then
-    pass "CI-02[trace-recovery]: Governor gets Trace Recovery content"
+# Also verify no governor-specific string references remain
+if ! grep -q '"governor"' "$SUBAGENT_START" 2>/dev/null; then
+    pass "CI-02[strings]: subagent-start.sh has no \"governor\" string references"
 else
-    fail "CI-02[trace-recovery]: Governor missing Trace Recovery" "summary.md not found in governor output"
+    fail "CI-02[strings]: subagent-start.sh still has governor string references"
 fi
 
 # ============================================================
@@ -260,12 +261,11 @@ else
          "New file should be leaner than original"
 fi
 
-# For governor (skips CWD Safety), verify the injected content is less than
-# a non-governor agent by checking the section lengths
+# Verify CWD Safety section exists in shared-protocols.md (still injected for all active agents)
 cwd_section=$(_extract_proto_section "CWD Safety")
 cwd_bytes=${#cwd_section}
 if [[ "$cwd_bytes" -gt 0 ]]; then
-    pass "CI-07[cwd-section-exists]: CWD Safety section has $cwd_bytes bytes (skipped for governor)"
+    pass "CI-07[cwd-section-exists]: CWD Safety section has $cwd_bytes bytes (injected for all agents)"
 else
     fail "CI-07[cwd-section-exists]: CWD Safety section empty" "Section should have content"
 fi

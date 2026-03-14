@@ -92,59 +92,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# T04: session-init.sh triggers governor advisory when >= 3 assessments
+# T04: session-init.sh governor advisory REMOVED (governor parked, DEC-PERF-006)
 # ---------------------------------------------------------------------------
-echo "T04: session-init.sh has governor advisory at threshold >= 3..."
+echo "T04: session-init.sh has no governor advisory block (governor parked)..."
 
 SINIT_SH="$HOOKS_DIR/session-init.sh"
 if [[ ! -f "$SINIT_SH" ]]; then
     fail "T04: session-init.sh not found"
 else
-    # Must check event count AND emit advisory
-    HAS_COUNT_CHECK=false
-    HAS_ADVISORY=false
-    # Check for event count check (>= 3 threshold)
-    if grep -qE '_pending_gov.*>=.*3|_PENDING_GOVERNOR.*>=.*3|\(\(.*>=.*3.*\)\)' "$SINIT_SH" 2>/dev/null; then
-        HAS_COUNT_CHECK=true
-    fi
-    # Check that advisory with "assessment events" is added to CONTEXT_PARTS
-    if grep -q 'GOVERNOR ADVISORY.*assessment' "$SINIT_SH" 2>/dev/null; then
-        HAS_ADVISORY=true
-    fi
-
-    if $HAS_COUNT_CHECK && $HAS_ADVISORY; then
-        pass "T04: session-init.sh has governor advisory with count >= 3 threshold"
-    elif ! $HAS_COUNT_CHECK; then
-        fail "T04: session-init.sh missing >= 3 threshold check for governor advisory"
+    # Governor advisory was removed when governor was parked (Issue #253).
+    # The _PENDING_GOVERNOR variable and GOVERNOR ADVISORY text should not exist.
+    if ! grep -q '_PENDING_GOVERNOR=' "$SINIT_SH" 2>/dev/null && \
+       ! grep -q 'GOVERNOR ADVISORY' "$SINIT_SH" 2>/dev/null; then
+        pass "T04: session-init.sh governor advisory removed (governor parked)"
     else
-        fail "T04: session-init.sh missing 'GOVERNOR ADVISORY...assessment' text"
+        fail "T04: session-init.sh still has governor advisory block — should be removed (DEC-PERF-006)"
     fi
 fi
 
 # ---------------------------------------------------------------------------
-# T05: session-init.sh does NOT show advisory when < 3 assessments
-#      (Verified by checking the conditional structure uses >= 3)
+# T05: session-init.sh no governor event count check (advisory removed)
 # ---------------------------------------------------------------------------
-echo "T05: session-init.sh advisory gated on >= 3 (not unconditional)..."
+echo "T05: session-init.sh has no governor event count check..."
 
 if [[ ! -f "$SINIT_SH" ]]; then
     fail "T05: session-init.sh not found"
 else
-    # The advisory must be inside an if block, not unconditional
-    # Verify there's a conditional guard before GOVERNOR ADVISORY text
-    GOV_LINE=$(grep -n 'GOVERNOR ADVISORY' "$SINIT_SH" 2>/dev/null | head -1 || echo "")
-    if [[ -z "$GOV_LINE" ]]; then
-        fail "T05: GOVERNOR ADVISORY text not found in session-init.sh"
+    # The state_events_count("governor", ...) call was part of the advisory block.
+    # With the block removed, there should be no _PENDING_GOVERNOR variable.
+    if ! grep -qE '_pending_gov.*>=.*3|_PENDING_GOVERNOR.*>=.*3' "$SINIT_SH" 2>/dev/null; then
+        pass "T05: session-init.sh has no governor event count threshold check"
     else
-        # Extract line number and check that there's an if statement nearby
-        GOV_LINENO=$(echo "$GOV_LINE" | cut -d: -f1)
-        # Look for if/conditional in the 5 lines preceding the advisory
-        PRECEDING=$(sed -n "$((GOV_LINENO - 5)),${GOV_LINENO}p" "$SINIT_SH" 2>/dev/null || echo "")
-        if echo "$PRECEDING" | grep -qE 'if \(\(|if \['; then
-            pass "T05: GOVERNOR ADVISORY is conditional (gated by if block)"
-        else
-            fail "T05: GOVERNOR ADVISORY may not be properly gated by conditional"
-        fi
+        fail "T05: session-init.sh still has governor count threshold check"
     fi
 fi
 

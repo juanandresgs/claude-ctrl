@@ -145,16 +145,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# T06: session-init.sh checks event count for governor trigger
+# T06: session-init.sh checks event count (self-heal advisory)
 # ---------------------------------------------------------------------------
-echo "T06: session-init.sh checks event count for governor auto-trigger..."
+echo "T06: session-init.sh calls state_events_count for self-heal advisory..."
+# Note: governor advisory was removed (DEC-PERF-006); self-heal advisory remains.
 
 SESSION_INIT="$HOOKS_DIR/session-init.sh"
 if [[ ! -f "$SESSION_INIT" ]]; then
     fail "T06: session-init.sh not found"
 else
     if grep -q 'state_events_count' "$SESSION_INIT" 2>/dev/null; then
-        pass "T06: session-init.sh calls state_events_count for governor trigger check"
+        pass "T06: session-init.sh calls state_events_count (self-heal advisory)"
     else
         fail "T06: session-init.sh does not call state_events_count"
     fi
