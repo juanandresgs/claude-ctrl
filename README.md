@@ -11,7 +11,7 @@
 
 **Instructions guide. Hooks enforce.**
 
-A deterministic governance layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that uses shell-script hooks to intercept every tool call —bash commands, file writes, agent dispatches, session boundaries— and mechanically enforce sound principles. Responsibilities are divided between 6 specialized agents (Planner, Implementer, Tester, Guardian, Governor, DB Guardian) to ensure quality work. The hooks enforce the process so the model can focus on the task at hand.
+A deterministic governance layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that uses shell-script hooks to intercept every tool call —bash commands, file writes, agent dispatches, session boundaries— and mechanically enforce sound principles. Responsibilities are divided between 5 specialized agents (Planner, Implementer, Tester, Guardian, Governor) to ensure quality work. The hooks enforce the process so the model can focus on the task at hand.
 
 ---
 
@@ -35,7 +35,7 @@ I've never been much of a gambler myself.
 
 <p align="center"><em>metanoia (n.) — a fundamental change in thinking; a transformative shift in approach</em></p>
 
-<p align="center"><strong>SQLite unified state · Database Safety Framework · Governor subagent · 90 tests</strong></p>
+<p align="center"><strong>SQLite unified state · Database Safety Framework · Governor subagent · 378 tests</strong></p>
 
 ---
 
@@ -109,9 +109,9 @@ Every arrow is a hook. Every feedback loop is mechanical. The model doesn't choo
 
 ### v4 Feature Highlights
 
-**Database Safety Framework** — defense-in-depth interception for database CLI commands (psql, mysql, sqlite3, mongosh, redis-cli), IaC operations (terraform destroy), container volume removal, and MCP JSON-RPC calls. Environment tiering: dev=permissive, staging=approval, prod=read-only. Database Guardian subagent (`agents/db-guardian.md`) reviews ambiguous operations before they execute.
+**Database Safety Framework** — defense-in-depth interception for database CLI commands (psql, mysql, sqlite3, mongosh, redis-cli), IaC operations (terraform destroy), container volume removal, and MCP JSON-RPC calls. Environment tiering: dev=permissive, staging=approval, prod=read-only.
 
-**Governor Subagent** — sixth agent that evaluates initiative health against project trajectory. Two tiers: a lightweight health pulse (~3-5K tokens) for routine checks and a full evaluation (~15-20K tokens) for strategic decisions. Triggered automatically when a planner returns a multi-wave initiative; check-governor.sh fires as an advisory SubagentStop hook.
+**Governor Subagent** — fifth agent that evaluates initiative health against project trajectory. Two tiers: a lightweight health pulse (~3-5K tokens) for routine checks and a full evaluation (~15-20K tokens) for strategic decisions. Triggered automatically when a planner returns a multi-wave initiative; check-governor.sh fires as an advisory SubagentStop hook.
 
 **AUTOVERIFY** — the tester's auto-verify signal (`AUTOVERIFY: CLEAN`) is operational in `post-task.sh`. When check-tester.sh detects high confidence with full coverage, it writes proof state = verified automatically without requiring manual user approval. If the signal is absent but tester evidence is clean, Guardian inference-based fallback (`INFER-VERIFY`) activates as a secondary path per DEC-AV-GUARDIAN-001. The phase 1 gate (`CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY`) is currently disabled.
 

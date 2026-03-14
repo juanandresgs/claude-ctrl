@@ -45,7 +45,7 @@ The system has four layers:
 
 1. **Instruction layer** — `CLAUDE.md` and agent prompts tell Claude what to do.
 2. **Hook layer** — Hook scripts and shared libraries enforce it mechanically, regardless of instructions.
-3. **Agent layer** — 6 specialized agents (Planner, Implementer, Tester, Guardian, Governor, DB Guardian)
+3. **Agent layer** — 5 specialized agents (Planner, Implementer, Tester, Guardian, Governor)
    divide complex work into deterministic phases.
 4. **State layer** — SQLite KV store (`state/state.db`) is the canonical state backend since the State Unification initiative. All proof state, test status, session tokens, agent markers, and KV data live in a single WAL-mode SQLite database. A small number of session-scoped flat files (lint cooldowns, preserved context, audit log) remain for non-KV concerns.
 
@@ -755,14 +755,14 @@ SQLite `test_status` key (migrated from `.test-status`), SQLite proof state (mig
 
 ## 6. Agent System
 
-**What it does:** Six specialized agents divide complex work into phases with
+**What it does:** Five specialized agents divide complex work into phases with
 clear handoffs. Each agent has a dedicated prompt, a model assignment, and
 SubagentStop validation.
 
 **Why it exists:** A single context window cannot maintain the full state of
 planner + implementer + verifier + committer simultaneously. Specialization
-lets each agent go deep on its role without context dilution. Governor and DB Guardian
-add ongoing health evaluation and database safety as independent enforcement layers.
+lets each agent go deep on its role without context dilution. Governor adds
+ongoing health evaluation as an independent enforcement layer.
 
 **What you can count on:**
 - Orchestrator (main context) dispatches agents via Task tool — it does NOT write source code.
@@ -771,7 +771,7 @@ add ongoing health evaluation and database safety as independent enforcement lay
 - max_turns are set by the orchestrator on every Task invocation.
 - `agents/shared-protocols.md` is a library injected into all agents at dispatch time via subagent-start.sh — it is NOT an agent.
 
-### The Six Agents
+### The Five Agents
 
 | Agent | Model | max_turns | Primary Output | SubagentStop Validator |
 |-------|-------|-----------|----------------|------------------------|
@@ -780,7 +780,6 @@ add ongoing health evaluation and database safety as independent enforcement lay
 | Tester | claude-sonnet-4-6 | 40 | proof state = verified + verification report | check-tester.sh |
 | Guardian | claude-opus-4-6 | 30 | git commit + merge + cleanup | check-guardian.sh |
 | Governor | claude-opus-4-6 | 25 | Initiative health pulse / full evaluation | check-governor.sh (advisory) |
-| DB Guardian | claude-opus-4-6 | 30 | Database operation safety approval | (dispatched on demand) |
 
 ### Planner Agent (agents/planner.md)
 
