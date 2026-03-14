@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `feature/remove-flat-file`: Remove `.session-token-history` flat file — SQLite is now sole authority for token history; eliminates dual-write divergence, flat-file fallback in session-init.sh (~70 lines), and race-prone bare `>>` appends; stop.sh observatory query migrated from `tail -1` to SQLite with field-offset bug fix; backfill script deprecated (DEC-STATE-KV-009)
+
 ### Fixed
 - `fix/architecture-postwrite`: Correct post-write.sh description in ARCHITECTURE.md — previous text incorrectly claimed all 5 legacy hooks were fully absorbed; actual state is track.sh/plan-validate.sh/lint.sh absorbed internally, lint.sh and test-runner.sh remain as separate registered hooks, code-review.sh was pruned
 - `feature/fix-hash-length`: Standardize project hash to 8 chars via `project_hash()` — session-lib.sh and session-end.sh used 12-char inline `cut -c1-12` while all other sites used 8-char, causing session data written with 12-char hashes to be invisible to 8-char reads; now `project_hash()` is the universal single source of truth (DEC-HASH-CONSOLIDATE-001)

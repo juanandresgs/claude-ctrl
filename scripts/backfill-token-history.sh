@@ -2,6 +2,16 @@
 # backfill-token-history.sh — Retroactively add project_hash and project_name
 # (columns 6+7) to existing .session-token-history entries.
 #
+# DEPRECATED (DEC-STATE-KV-009): The flat file .session-token-history is no longer
+# written to by session-end.sh. SQLite (session_tokens table in state/state.db) is
+# the sole authority for token history. This script remains as a one-time migration
+# tool for operators who want to upgrade old flat-file entries to 7-column format
+# before they become inaccessible. It does NOT write to SQLite — if you want old
+# flat-file entries in SQLite, use the backfill path in session-init.sh (which was
+# present until DEC-STATE-KV-009 removed it). In practice: all sessions after the
+# DEC-STATE-KV-009 migration write only to SQLite, so the flat file is frozen
+# historical data. This script only modifies the flat file itself (adds columns 6+7).
+#
 # Purpose: Old-format entries in .session-token-history have only 5 columns:
 #   timestamp|total_tokens|main_tokens|subagent_tokens|session_id
 #
@@ -25,7 +35,8 @@
 #
 # @decision DEC-BACKFILL-TOKEN-HISTORY-001
 # @title Backfill script adds project_hash/name columns to old token history
-# @status accepted
+# @status deprecated
+# @superseded-by DEC-STATE-KV-009
 # @rationale Existing history files pre-date issue #160. Without backfill, the
 # per-project filter in session-init.sh would treat all old entries as "unscoped"
 # and include them in every project's sum — inflating each project's lifetime count.
@@ -34,6 +45,8 @@
 # (backward-compat: still counted for all projects) rather than being silently
 # dropped. The 30-minute window is generous: most sessions produce traces within
 # a few minutes of the token history entry.
+# DEPRECATED: session-end.sh no longer writes to the flat file (DEC-STATE-KV-009).
+# This script is kept for historical flat-file maintenance only.
 
 set -euo pipefail
 

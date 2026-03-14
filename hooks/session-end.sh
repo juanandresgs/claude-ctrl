@@ -218,31 +218,29 @@ _COST_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)
 echo "${_COST_TS}|${_SESSION_COST}|${CLAUDE_SESSION_ID:-unknown}" >> "$_COST_HISTORY"
 log_info "SESSION-END" "Persisted session cost: ${_SESSION_COST}"
 
-# --- Persist session tokens to .session-token-history ---
-# @decision DEC-LIFETIME-TOKENS-002
-# @title Append session tokens to pipe-delimited history file at session-end
+# --- Persist session tokens to SQLite (DEC-STATE-KV-009) ---
+# @decision DEC-STATE-KV-009
+# @title Remove flat file write — SQLite is sole authority for token history
 # @status accepted
-# @rationale Mirrors DEC-COST-PERSIST-002 for tokens. A pipe-delimited file is the
-# lowest-overhead persistence format: append-only, awk-summable, human-readable.
-# Format: timestamp|total_tokens|main_tokens|subagent_tokens|session_id|project_hash|project_name
-# (7 columns; previously 5 — columns 6+7 added in issue #160 to enable per-project filtering).
-# main_tokens are read from .session-main-tokens (written by statusline.sh on
+# @rationale The State Unification initiative (DEC-STATE-KV-001 through KV-007) migrated
+# token tracking to SQLite session_tokens table. Dual-writing to both SQLite AND the flat
+# file .session-token-history created the entire bug chain that led to KV-008 (wrong DB
+# path causing flat-file fallback to activate even when SQLite was populated). The flat
+# file also had inherent race conditions: bare >> append is not atomic when multiple
+# sessions end concurrently, whereas SQLite WAL+BEGIN IMMEDIATE is. Removing the flat
+# file write completes the migration: SQLite is now the sole write target, and
+# session-init.sh reads only from SQLite (flat-file fallback path also removed).
+# The flat file ~/.claude/.session-token-history is preserved as historical data but
+# no longer written to. scripts/backfill-token-history.sh is deprecated.
+# References: DEC-LIFETIME-TOKENS-002, DEC-PROJECT-TOKEN-HISTORY-001,
+#             DEC-STATE-KV-003, DEC-STATE-KV-004, DEC-STATE-KV-008.
+# @decision DEC-LIFETIME-TOKENS-002
+# @title Session token computation — main + subagent breakdown
+# @status accepted
+# @rationale main_tokens are read from .session-main-tokens (written by statusline.sh on
 # each render — most recent value before session ends). subagent_tokens are summed
 # from the session-scoped .subagent-tokens-<SESSION_ID> file (field 7 = total).
 # The subagent tokens file MUST be read before it is deleted in the cleanup section.
-# session-init.sh sums the total_tokens column filtered by project_hash (column 6) for
-# per-project lifetime display, with backward compat for old 5-column entries (no filter).
-# @decision DEC-PROJECT-TOKEN-HISTORY-001
-# @title Add project_hash and project_name as columns 6+7 of .session-token-history
-# @status accepted
-# @rationale Before this change, all sessions for all projects accumulated into one
-# sum, conflating work across projects. Adding the project hash (8-char SHA-256 of
-# PROJECT_ROOT) as column 6 lets session-init.sh filter by project. project_name
-# (basename of PROJECT_ROOT) is column 7 for human readability. Both are already
-# available in session-end.sh via PROJECT_ROOT and project_hash(). Old 5-column
-# entries are treated as "unscoped" and included in all project sums (backward compat).
-# Backfill script: scripts/backfill-token-history.sh retroactively adds these columns
-# using trace timestamps to identify the most likely project.
 _SUBAGENT_TOKEN_FILE="${CLAUDE_DIR}/.subagent-tokens-${CLAUDE_SESSION_ID:-$$}"
 _SUBAGENT_TOTAL=0
 if [[ -f "$_SUBAGENT_TOKEN_FILE" ]]; then
@@ -268,30 +266,15 @@ fi
 
 _SESSION_TOKENS=$(( _MAIN_TOKENS + _SUBAGENT_TOTAL ))
 if [[ "$_SESSION_TOKENS" -gt 0 ]]; then
-    _TOKEN_HISTORY="${CLAUDE_DIR}/.session-token-history"
     _TOKEN_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)
-    # Columns 6+7: project_hash and project_name for per-project filtering in session-init.sh
     _TOKEN_PHASH=$(project_hash "${PROJECT_ROOT:-}" 2>/dev/null || echo "")
     _TOKEN_PNAME=$(basename "${PROJECT_ROOT:-unknown}" 2>/dev/null || echo "unknown")
-    # @decision DEC-NO-TRIM-001
-    # @title Remove 100-line trim from session history files
-    # @status accepted
-    # @rationale Each entry is ~80 bytes. Even 10,000 entries (3 years at 10 sessions/day)
-    #   is under 1MB. The trim was destroying valuable historical data (token spending,
-    #   cost tracking) for negligible disk savings. Users should never lose history they
-    #   might want to analyze. If size management is ever needed, annual rotation is
-    #   more appropriate than aggressive trimming.
-    echo "${_TOKEN_TS}|${_SESSION_TOKENS}|${_MAIN_TOKENS}|${_SUBAGENT_TOTAL}|${CLAUDE_SESSION_ID:-unknown}|${_TOKEN_PHASH}|${_TOKEN_PNAME}" >> "$_TOKEN_HISTORY"
-
-    # --- SQLite dual-write (DEC-STATE-KV-003 + DEC-STATE-KV-004) ---
-    # Atomic INSERT into session_tokens alongside the flat-file append.
-    # SQLite WAL+BEGIN IMMEDIATE makes this race-free when multiple sessions
-    # end concurrently. session-init.sh will prefer the SQLite path once
-    # data is available; the flat file remains as a backward-compat fallback.
+    # --- SQLite write (sole authority — DEC-STATE-KV-009) ---
+    # Atomic INSERT. SQLite WAL+BEGIN IMMEDIATE makes this race-free when multiple
+    # sessions end concurrently. cost_usd (DEC-STATE-KV-004): _SESSION_COST extracted
+    # at the top of the cost section is still in scope; it holds cost.total_cost_usd
+    # from the session-end JSON (0 if absent/null).
     # _sql_escape: replace ' with '' (SQLite convention, not backslash).
-    # cost_usd (DEC-STATE-KV-004): _SESSION_COST extracted at the top of the
-    # cost section (line ~196) is still in scope here; it holds the
-    # cost.total_cost_usd from the session-end JSON (0 if absent/null).
     _tk_sid_e=$(printf '%s' "${CLAUDE_SESSION_ID:-unknown}" | sed "s/'/''/g")
     _tk_phash_e=$(printf '%s' "${_TOKEN_PHASH}" | sed "s/'/''/g")
     _tk_pname_e=$(printf '%s' "${_TOKEN_PNAME}" | sed "s/'/''/g")
