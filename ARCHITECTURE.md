@@ -127,7 +127,7 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 ├── tests/                    # Hook validation suite
 │   ├── run-hooks.sh          # Main test runner
 │   ├── fixtures/             # Input/expected-output fixture pairs
-│   └── test-*.sh             # 84 specialized test scripts
+│   └── test-*.sh             # 85 specialized test scripts
 └── settings.json             # Hook registry — 10 event types, 24 registered hook entries
 ```
 

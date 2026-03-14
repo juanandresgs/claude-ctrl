@@ -35,7 +35,7 @@ I've never been much of a gambler myself.
 
 <p align="center"><em>metanoia (n.) — a fundamental change in thinking; a transformative shift in approach</em></p>
 
-<p align="center"><strong>SQLite unified state · Database Safety Framework · 371 tests</strong></p>
+<p align="center"><strong>SQLite unified state · Database Safety Framework · 485 tests</strong></p>
 
 ---
 

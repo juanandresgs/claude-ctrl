@@ -7,16 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- `feature/perf-rm-compact-heuristic`: Remove compaction heuristic from prompt-submit.sh — fixed thresholds (35/60 prompts, 45/90 minutes) designed for 200K context fired at ~17% usage with 1M context; 42-line block removed, replaced with DEC-PERF-007 annotation; 10 new tests verify removal (DEC-PERF-007)
-- `feature/perf-park-governor`: Park governor agent — remove from dispatch infrastructure to save ~4,200 tokens/session from Agent tool schema; governor.md, check-governor.sh, test-governor-wiring.sh deleted; settings.json/DISPATCH.md/ARCHITECTURE.md/README.md cleaned; SQLite governor.assessment events retained for future restoration (DEC-PERF-006, #253)
-
 ## [4.0.0] - 2026-03-14
 
 v4.0 completes three major initiatives: SQLite Unified State Store (sole canonical backend,
-16 dotfiles migrated), Database Safety Framework (5-layer defense-in-depth), and Governor
-Subagent (6th agent). Also includes lint cooldown consolidation, runtime file cleanup, and
-17+ KV migration decisions.
+16 dotfiles migrated), Database Safety Framework (5-layer defense-in-depth via hooks), and
+@decision context optimization (Gate 5a enforcement). Also includes lint cooldown consolidation,
+compaction heuristic removal for 1M context, runtime file cleanup, and 17+ KV migration decisions.
 
 ### Added
 - `initiative/state-unification`: State Unification initiative — replaces four overlapping state management eras (dotfiles, state.json+jq, atomic tmp->mv, shadow SQLite) with SQLite as sole authority; 6-wave plan covering schema+migration framework, proof state typed table, agent markers, event ledger, hook migrations, and lint enforcement; 9 P0 requirements, 7 architectural decisions (DEC-STATE-UNIFY-001 through 007), issues #213-#221
@@ -40,6 +36,7 @@ Subagent (6th agent). Also includes lint cooldown consolidation, runtime file cl
 - `feature/rsm-phase4`: Self-validation infrastructure — version sentinels in all library files, `bash -n` syntax preflight in session-init.sh, `hooks-gen` integrity check via post-merge git hook, 292-line self-validation test suite (test-self-validation.sh)
 
 ### Changed
+- `feature/perf-rm-compact-heuristic`: Remove compaction heuristic from prompt-submit.sh — fixed thresholds (35/60 prompts, 45/90 minutes) designed for 200K context fired at ~17% usage with 1M context; 42-line block removed, replaced with DEC-PERF-007 annotation; 10 new tests verify removal (DEC-PERF-007)
 - `feature/remove-db-guardian`: Remove db-guardian dead weight — delete agents/db-guardian.md, hooks/db-guardian-lib.sh, and 2 test files (~2,800 lines); relocate _dbg_emit_guardian_required() to db-safety-lib.sh; stub require_db_guardian() as no-op; 14 removal verification tests (DEC-PERF-001, closes #247)
 - `feature/clean-decisions`: Remove @decision blocks from 10 context-injected files (-243 lines) and add Gate 5a enforcement in pre-write.sh to block re-addition — context-injected files (CLAUDE.md, agents/*.md, docs/DISPATCH.md, SECURITY.md) now excluded from @decision requirements; 3 gate test scopes (25 pre-write + 21 gate tests)
 - `feature/v4-w2-1`: Migrate 3 dotfiles to SQLite KV dual-write — db-safety-lib.sh stats (db_safety_stats_total/denied/allowed), pre-mcp.sh rate state (mcp_rate_state) and credential advisory (mcp_credential_advisory) now dual-write to SQLite KV via state_update(); session-end.sh deletes all 6 new KV keys alongside flat-file rm; 22 new tests (DEC-V4-KV-001, closes #244)
@@ -59,6 +56,7 @@ Subagent (6th agent). Also includes lint cooldown consolidation, runtime file cl
 - `worktree-agent-a9ed6103`: Fix stale flat-file references in Guardian and docs post-State-Unification — guardian.md Step 0 now uses proof_state_get() and state_read() instead of deprecated resolve_proof_file()/SHA256 paths; ~20 surgical updates across ARCHITECTURE.md, DISPATCH.md, governance-signal-map.md (DEC-STATE-UNIFY-011, closes #236)
 
 ### Removed
+- `feature/perf-park-governor`: Park governor agent — remove from dispatch infrastructure to save ~4,200 tokens/session from Agent tool schema; governor.md, check-governor.sh, test-governor-wiring.sh deleted; settings.json/DISPATCH.md/ARCHITECTURE.md/README.md cleaned; SQLite governor.assessment events retained for future restoration (DEC-PERF-006, #253)
 - `feature/rm-proof-epoch`: Remove dead `.proof-epoch` flat file — SQLite `proof_state.epoch` column is sole epoch authority since W5-2; removed touch/cleanup from session-init.sh and session-end.sh, removed from core-lib.sh protected files registry (DEC-STATE-DOTFILE-001)
 - `feature/remove-legacy-dotfiles`: Remove legacy dotfile read/write paths and migrate Gate A to SQLite — trace-lib.sh and post-task.sh fixed to use `state/{phash}/`; task-track.sh Gate A proof check migrated from flat-file `resolve_proof_file()` to `proof_state_get()`, fixing Guardian dispatch deadlock (DEC-STATE-DOTFILE-002, DEC-STATE-DOTFILE-003)
 - `revert/governance-eff-w1`: Revert 5 commits from Governance Efficiency W1/W2, T2 backstop, and governor wiring — these collectively degraded agent performance by overloading context with governance metadata, blocking auto-verify with an impossible regex, and injecting governor signals unconditionally; 2524 lines net reduction across 21 files
