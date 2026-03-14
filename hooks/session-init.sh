@@ -508,38 +508,59 @@ LIFETIME_TOKENS=0
 GLOBAL_LIFETIME_TOKENS=0
 
 # --- One-time backfill: import .session-token-history into SQLite (DEC-STATE-KV-003) ---
-# Runs automatically the first time a session starts after the migration. If the
-# session_tokens table is empty and the flat file has entries, parse the flat file
-# and INSERT each row into SQLite. This is a one-time O(N) operation; subsequent
-# sessions skip it because the table is non-empty. Best-effort: failures are silently
-# ignored so the fallback awk path continues to work.
-_bf_db="$(state_dir)/state.db"
+# @decision DEC-STATE-KV-008
+# @title Fix state.db path in session-init.sh — use canonical root-level DB, not per-project subdir
+# @status accepted
+# @rationale session-init.sh previously resolved the SQLite path via state_dir(), which returns
+# ~/.claude/state/{phash}/ — a per-project directory. The session_tokens table lives in the
+# root-level ~/.claude/state/state.db (returned by _state_db_path() in state-lib.sh). This
+# caused session-init.sh to look for {phash}/state.db (which exists but is 0 bytes) instead
+# of the real database (~582K). Backfill also failed because COUNT(*) on the wrong DB returned
+# 0, but then state_dir()/state.db didn't exist as a file so the outer -f guard was false.
+# The read path here now mirrors session-end.sh which writes correctly via _state_sql().
+# Additionally: the old backfill guard (COUNT(*) = 0) was blocked by a stale test-session row
+# in the real DB. The new guard compares flat-file line count vs DB row count so backfill
+# runs whenever the flat file has more entries, safely skipping rows that already exist via
+# an existence check on (session_id, timestamp).
+#
+# Runs automatically on first session after migration OR whenever flat file outpaces DB.
+# Best-effort: failures are silently ignored so the fallback awk path continues to work.
+_bf_db="${CLAUDE_DIR:-$HOME/.claude}/state/state.db"
 if [[ -f "$_bf_db" ]]; then
-    _bf_count=$(sqlite3 "$_bf_db" "SELECT COUNT(*) FROM session_tokens;" 2>/dev/null || echo "1")
     _bf_history="${CLAUDE_DIR}/.session-token-history"
-    if [[ "${_bf_count:-1}" -eq 0 && -f "$_bf_history" ]]; then
-        # Parse pipe-delimited flat file: timestamp|total|main|subagent|session_id|project_hash|project_name
-        while IFS='|' read -r _bf_ts _bf_total _bf_main _bf_sub _bf_sid _bf_phash _bf_pname; do
-            # Skip blank lines and header-like entries
-            [[ -z "$_bf_ts" || -z "$_bf_total" ]] && continue
-            # Sanitize integers (strip non-digits)
-            _bf_total="${_bf_total//[^0-9]/}"
-            _bf_main="${_bf_main//[^0-9]/}"
-            _bf_sub="${_bf_sub//[^0-9]/}"
-            [[ -z "$_bf_total" ]] && continue
-            # SQL-escape string fields
-            _bf_sid_e=$(printf '%s' "${_bf_sid:-unknown}" | sed "s/'/''/g")
-            _bf_phash_e=$(printf '%s' "${_bf_phash:-}" | sed "s/'/''/g")
-            _bf_pname_e=$(printf '%s' "${_bf_pname:-unknown}" | sed "s/'/''/g")
-            _bf_ts_e=$(printf '%s' "${_bf_ts:-}" | sed "s/'/''/g")
-            sqlite3 "$_bf_db" \
-                "INSERT OR IGNORE INTO session_tokens (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, source)
-                 VALUES ('${_bf_sid_e}', '${_bf_phash_e}', '${_bf_pname_e}', '${_bf_ts_e}', ${_bf_total:-0}, ${_bf_main:-0}, ${_bf_sub:-0}, 'backfill');" \
-                2>/dev/null || true
-        done < "$_bf_history"
+    if [[ -f "$_bf_history" ]]; then
+        _bf_flatfile_count=$(wc -l < "$_bf_history" 2>/dev/null | tr -d ' ')
+        _bf_db_count=$(sqlite3 "$_bf_db" "SELECT COUNT(*) FROM session_tokens;" 2>/dev/null || echo "0")
+        if [[ "${_bf_flatfile_count:-0}" -gt "${_bf_db_count:-0}" ]]; then
+            # Parse pipe-delimited flat file: timestamp|total|main|subagent|session_id|project_hash|project_name
+            while IFS='|' read -r _bf_ts _bf_total _bf_main _bf_sub _bf_sid _bf_phash _bf_pname; do
+                # Skip blank lines and header-like entries
+                [[ -z "$_bf_ts" || -z "$_bf_total" ]] && continue
+                # Sanitize integers (strip non-digits)
+                _bf_total="${_bf_total//[^0-9]/}"
+                _bf_main="${_bf_main//[^0-9]/}"
+                _bf_sub="${_bf_sub//[^0-9]/}"
+                [[ -z "$_bf_total" ]] && continue
+                # SQL-escape string fields
+                _bf_sid_e=$(printf '%s' "${_bf_sid:-unknown}" | sed "s/'/''/g")
+                _bf_phash_e=$(printf '%s' "${_bf_phash:-}" | sed "s/'/''/g")
+                _bf_pname_e=$(printf '%s' "${_bf_pname:-unknown}" | sed "s/'/''/g")
+                _bf_ts_e=$(printf '%s' "${_bf_ts:-}" | sed "s/'/''/g")
+                # Deduplicate by (session_id, timestamp) — INSERT OR IGNORE on autoincrement id
+                # does not deduplicate on content, so we check existence first.
+                _bf_exists=$(sqlite3 "$_bf_db" \
+                    "SELECT COUNT(*) FROM session_tokens WHERE session_id='${_bf_sid_e}' AND timestamp='${_bf_ts_e}';" \
+                    2>/dev/null || echo "0")
+                [[ "${_bf_exists:-0}" -gt 0 ]] && continue
+                sqlite3 "$_bf_db" \
+                    "INSERT INTO session_tokens (session_id, project_hash, project_name, timestamp, total_tokens, main_tokens, subagent_tokens, source)
+                     VALUES ('${_bf_sid_e}', '${_bf_phash_e}', '${_bf_pname_e}', '${_bf_ts_e}', ${_bf_total:-0}, ${_bf_main:-0}, ${_bf_sub:-0}, 'backfill');" \
+                    2>/dev/null || true
+            done < "$_bf_history"
+        fi
     fi
-    unset _bf_db _bf_count _bf_history _bf_ts _bf_total _bf_main _bf_sub _bf_sid _bf_phash _bf_pname
-    unset _bf_sid_e _bf_phash_e _bf_pname_e _bf_ts_e
+    unset _bf_db _bf_flatfile_count _bf_db_count _bf_history _bf_ts _bf_total _bf_main _bf_sub _bf_sid _bf_phash _bf_pname
+    unset _bf_sid_e _bf_phash_e _bf_pname_e _bf_ts_e _bf_exists
 fi
 
 # --- SQLite primary: sum session_tokens for this project (DEC-STATE-KV-003) ---
@@ -547,7 +568,8 @@ fi
 # and WHERE project_hash benefits from idx_session_tokens_project.
 # Falls back to awk on the flat file when the SQLite DB is absent or empty
 # (e.g., brand-new installs, sessions before the migration ran).
-_lt_db="$(state_dir)/state.db"
+# Path uses the canonical root-level state.db (not per-project subdir) — see DEC-STATE-KV-008.
+_lt_db="${CLAUDE_DIR:-$HOME/.claude}/state/state.db"
 if [[ -f "$_lt_db" ]]; then
     _lt_phash_e=$(printf '%s' "$_PHASH" | sed "s/'/''/g")
     _LT_DB_TOK=$(sqlite3 "$_lt_db" \
