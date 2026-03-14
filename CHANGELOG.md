@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `feature/fix-state-db-path`: Fix session-init.sh SQLite read path — two sites resolved state.db to per-project `state/{phash}/state.db` (0 bytes) instead of canonical `~/.claude/state/state.db` (590K); also fix backfill guard from `COUNT(*) = 0` to flat-file vs DB row count comparison with per-row dedup (DEC-STATE-KV-008)
+
 ## [4.0.0] - 2026-03-14
 
 v4.0 completes three major initiatives: SQLite Unified State Store (sole canonical backend,
