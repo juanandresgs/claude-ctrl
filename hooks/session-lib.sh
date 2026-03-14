@@ -556,8 +556,15 @@ get_prior_sessions() {
         project_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
     fi
 
+    # @decision DEC-HASH-CONSOLIDATE-001
+    # @title Use canonical project_hash() from core-lib.sh (8-char, not 12-char)
+    # @status accepted
+    # @rationale Bug: inline computation used cut -c1-12 while core-lib.sh project_hash()
+    #   uses cut -c1-8. session-end.sh writes under 8-char paths; this function was reading
+    #   from 12-char paths — directory mismatch meant session history was never found.
+    #   Fix: delegate to project_hash() which is always loaded via source-lib.sh → core-lib.sh.
     local project_hash
-    project_hash=$(echo "$project_root" | ${_SHA256_CMD:-shasum -a 256} 2>/dev/null | cut -c1-12 || echo "")
+    project_hash=$(project_hash "$project_root" 2>/dev/null || echo "")
     [[ -z "$project_hash" ]] && return 0
 
     local index_file="$HOME/.claude/sessions/${project_hash}/index.jsonl"

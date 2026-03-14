@@ -98,7 +98,14 @@ fi
 SESSION_EVENT_FILE="${CLAUDE_DIR}/.session-events.jsonl"
 if [[ -f "$SESSION_EVENT_FILE" && -s "$SESSION_EVENT_FILE" ]]; then
     # Create project-specific archive directory
-    PROJECT_HASH=$(echo "$PROJECT_ROOT" | ${_SHA256_CMD:-shasum -a 256} 2>/dev/null | cut -c1-12)
+    # @decision DEC-HASH-CONSOLIDATE-001
+    # @title Use canonical project_hash() from core-lib.sh (8-char, not 12-char)
+    # @status accepted
+    # @rationale Bug: inline computation used cut -c1-12 while core-lib.sh project_hash()
+    #   uses cut -c1-8. get_prior_sessions() in session-lib.sh reads from 8-char paths;
+    #   this write was going to 12-char paths — directory mismatch meant archived sessions
+    #   were invisible to the reader. Fix: delegate to project_hash() from core-lib.sh.
+    PROJECT_HASH=$(project_hash "$PROJECT_ROOT" 2>/dev/null)
     ARCHIVE_DIR="$HOME/.claude/sessions/${PROJECT_HASH}"
     mkdir -p "$ARCHIVE_DIR"
 

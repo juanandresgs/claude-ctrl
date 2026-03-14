@@ -78,7 +78,7 @@ make_index_entry() {
 
 # Helper: compute project hash (same algorithm as get_prior_sessions)
 project_hash() {
-    echo "$1" | $_SHA256_CMD 2>/dev/null | cut -c1-12
+    echo "$1" | $_SHA256_CMD 2>/dev/null | cut -c1-8
 }
 
 # Helper: set up isolated sessions dir
