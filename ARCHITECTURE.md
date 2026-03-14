@@ -95,16 +95,18 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 │   ├── governor.md           # Governor agent — initiative health evaluation
 │   ├── db-guardian.md        # DB Guardian agent — database operation safety
 │   └── shared-protocols.md  # Shared library — injected into all agents at dispatch time
-├── skills/                   # 9 skill directories
-│   ├── deep-research/        # Multi-provider research synthesis
-│   ├── decide/               # Interactive decision configurator
+├── skills/                   # 11 skill directories
+│   ├── bazaar/               # Community discussion aggregator
 │   ├── consume-content/      # URL → structured digest
 │   ├── context-preservation/ # Pre-compaction context capture (/compact)
+│   ├── decide/               # Interactive decision configurator
+│   ├── deep-research/        # Multi-provider research synthesis
 │   ├── diagnose/             # System health diagnostics
-│   ├── rewind/               # Checkpoint recovery (/rewind)
-│   ├── prd/                  # PRD generation
+│   ├── last30days/           # Recent community discussions with engagement metrics
 │   ├── observatory/          # Self-improving trace analysis flywheel
-│   └── reckoning/            # Structured retrospective and self-assessment
+│   ├── prd/                  # PRD generation
+│   ├── reckoning/            # Structured retrospective and self-assessment
+│   └── rewind/               # Checkpoint recovery (/rewind)
 ├── commands/                 # Slash commands (lightweight, no context fork)
 │   ├── backlog.md            # /backlog — GitHub Issues integration
 │   └── compact.md            # /compact — context preservation
@@ -127,7 +129,7 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 ├── tests/                    # Hook validation suite
 │   ├── run-hooks.sh          # Main test runner
 │   ├── fixtures/             # Input/expected-output fixture pairs
-│   └── test-*.sh             # 90 specialized test scripts
+│   └── test-*.sh             # 85 specialized test scripts
 └── settings.json             # Hook registry — 10 event types, 24 registered hook entries
 ```
 
