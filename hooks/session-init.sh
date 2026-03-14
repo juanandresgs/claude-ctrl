@@ -137,28 +137,24 @@ fi
 # @title SESSION_ID-based orchestrator detection for pre-write.sh Gate 1.5
 # @status accepted
 # @rationale SessionStart fires ONLY for the top-level orchestrator process.
-#   Subagents receive SubagentStart, not SessionStart. CLAUDE_SESSION_ID differs
-#   between orchestrator and subagent processes. Writing it here creates a reliable
-#   marker: pre-write.sh Gate 1.5 compares CLAUDE_SESSION_ID against this file to
-#   detect orchestrator context and deny source writes. Fixes the enforcement gap
-#   where the orchestrator could bypass implementer dispatch by writing directly.
+#   Subagents receive SubagentStart, not SessionStart. CLAUDE_SESSION_ID is
+#   stored in SQLite KV so pre-write.sh Gate 1.5 can compare CLAUDE_SESSION_ID
+#   against orchestrator_sid to detect orchestrator context and deny source writes.
 #
-# @decision DEC-STATE-KV-001
-# @title Migrate .orchestrator-sid from flat-file to SQLite KV
+# @decision DEC-V4-ORCH-001
+# @title Remove .orchestrator-sid flat-file — SQLite KV is sole authority
 # @status accepted
-# @rationale First KV migration in the dotfile-to-SQLite initiative. .orchestrator-sid
-#   is session-scoped, has exactly 2 callers (session-init writer, pre-write reader),
-#   and stores a simple string. SQLite state_update() provides atomic writes without
-#   the temp-file rename dance. state_read() in pre-write.sh replaces cat of flat file.
-#   Dual-write (SQLite primary + flat-file fallback) maintained during migration per
-#   DEC-STATE-UNIFY-004. require_state is already called at line 63 so state_update
-#   is unconditionally available here — no type guard needed.
+# @rationale The flat-file was a migration fallback per DEC-STATE-UNIFY-004.
+#   SQLite KV (state_update/state_read) has been stable across all deployments.
+#   The flat-file dual-write and pre-write.sh flat-file fallback read are removed.
+#   SQLite-only path is now the enforced path; test-orchestrator-guard.sh Test 1a
+#   (flat-file existence check) and Test 2 (flat-file seed) removed from active
+#   coverage — Tests 1b, 2b, and 7 (SQLite paths) remain authoritative.
+#   .orchestrator-sid remains in .gitignore and _PROTECTED_STATE_FILES for any
+#   legacy files that may exist in users' environments.
 if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
-    # Primary: write to SQLite KV store (atomic, no temp-file dance)
+    # Sole writer: SQLite KV store (atomic, session-scoped, no temp-file dance)
     state_update "orchestrator_sid" "$CLAUDE_SESSION_ID" "session-init" 2>/dev/null || true
-    # Fallback: keep flat-file for backward compat during migration (DEC-STATE-UNIFY-004)
-    _ORCH_SID_FILE="${CLAUDE_DIR}/.orchestrator-sid"
-    printf '%s\n' "$CLAUDE_SESSION_ID" > "${_ORCH_SID_FILE}.tmp" && mv "${_ORCH_SID_FILE}.tmp" "$_ORCH_SID_FILE"
 fi
 
 # --- A3: state.db backup at session start ---
@@ -948,11 +944,6 @@ ${line}"
     [[ -n "${_PLAN_ANCHOR_PATH:-}" ]] && _CL_HAS_PLAN="$_PLAN_ANCHOR_PATH"
     echo "${_CL_TIMESTAMP}|${_CL_LINES}|${_CL_HAS_RESUME}|${_CL_HAS_PLAN}" >> "$_COMPACTION_LOG"
 fi
-
-# --- Stale lint cooldown cleanup ---
-# lint.sh creates per-file cooldown sentinels (3s TTL) but never cleans them up.
-# All are stale by session start. Eliminates 50-100+ orphaned files.
-rm -f "${CLAUDE_DIR}/.lint-cooldown-"* 2>/dev/null
 
 # --- Stale state directory cleanup ---
 # state/{phash}/proof-status files are superseded by SQLite proof_state table

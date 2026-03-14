@@ -481,11 +481,8 @@ for _stale_cache in "${CLAUDE_DIR}/.statusline-cache-"*; do
 done
 
 # --- Clean up session-scoped files (these don't persist) ---
-# Clean up orchestrator session marker (written by session-init.sh at startup)
-# Primary: delete from SQLite KV store (DEC-STATE-KV-001)
+# Clean up orchestrator session marker (sole authority: SQLite KV, DEC-V4-ORCH-001)
 state_delete "orchestrator_sid" 2>/dev/null || true
-# Fallback: remove flat-file for backward compat during migration (DEC-STATE-UNIFY-004)
-rm -f "${CLAUDE_DIR}/.orchestrator-sid" 2>/dev/null || true
 rm -f "${CLAUDE_DIR}/.session-events.jsonl"
 rm -f "${CLAUDE_DIR}/.session-changes"*
 rm -f "${CLAUDE_DIR}/.session-decisions"*

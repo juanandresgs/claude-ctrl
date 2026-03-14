@@ -6,14 +6,15 @@
 # while allowing writes from subagent context or when .orchestrator-sid is absent.
 #
 # Test coverage:
-#   1. session-init.sh writes .orchestrator-sid (flat-file) AND SQLite orchestrator_sid
-#   2. Gate 1.5 denies source write when SESSION_ID matches orchestrator-sid (flat-file seed)
-#   2b. Gate 1.5 denies source write when SESSION_ID matches orchestrator_sid (SQLite seed)
+#   1. session-init.sh writes SQLite orchestrator_sid (sole authority, DEC-V4-ORCH-001)
+#      1a. session-init.sh does NOT write .orchestrator-sid flat-file (removed)
+#      1b. session-init.sh writes orchestrator_sid to SQLite with correct SESSION_ID
+#   2. Gate 1.5 denies source write when SESSION_ID matches orchestrator_sid (SQLite)
 #   3. Gate 1.5 allows source write when SESSION_ID differs (subagent context)
-#   4. Gate 1.5 allows source write when .orchestrator-sid is missing AND SQLite absent
+#   4. Gate 1.5 allows source write when SQLite is absent (backward compat)
 #   5. Gate 1.5 allows non-source writes even when SESSION_ID matches
 #   6. .orchestrator-sid is registered in _PROTECTED_STATE_FILES (core-lib.sh)
-#   7. SQLite-only path: Gate 1.5 denies when SQLite has SID but flat-file is absent
+#   7. SQLite-only path: Gate 1.5 denies when SQLite has SID (authoritative path)
 #
 # @decision DEC-TEST-ORCH-GUARD-001
 # @title Test suite for Gate 1.5 orchestrator source write guard
@@ -21,12 +22,12 @@
 # @rationale Gate 1.5 (DEC-DISPATCH-003) closes the enforcement gap where the
 #   orchestrator could bypass implementer dispatch by writing source code directly.
 #   These tests verify the three-way decision logic: deny when SIDs match,
-#   allow when SIDs differ, allow when .orchestrator-sid is absent. They also
-#   verify that session-init.sh correctly seeds the .orchestrator-sid file and
-#   that core-lib.sh's protected-state registry includes .orchestrator-sid to
-#   prevent accidental overwrites. Uses real hook executables, no mocks.
-#   Extended (DEC-STATE-KV-001): Added dual-path tests for SQLite primary + flat-file
-#   fallback (DEC-STATE-UNIFY-004). Test 7 validates SQLite-only deny path.
+#   allow when SIDs differ, allow when orchestrator_sid is absent. Uses real
+#   hook executables, no mocks.
+#   Updated (DEC-V4-ORCH-001): Removed flat-file dual-path tests (Tests 1a flat-file,
+#   Test 2 flat-file-seeded). SQLite KV is now the sole authority. Test 1a now
+#   verifies the flat-file is NOT written (removal confirmed). Tests 2b and 7
+#   remain as the primary deny-path tests (SQLite-only).
 #
 # Implementation notes:
 #   - session-init.sh uses detect_project_root() which reads CLAUDE_PROJECT_DIR
@@ -167,41 +168,39 @@ echo "=== Gate 1.5: Orchestrator Source Write Guard Tests ==="
 echo ""
 
 # ============================================================
-# Test 1: session-init.sh writes .orchestrator-sid AND SQLite orchestrator_sid
+# Test 1: session-init.sh writes SQLite orchestrator_sid only (DEC-V4-ORCH-001)
 #
-# session-init.sh's detect_project_root() uses CLAUDE_PROJECT_DIR (not
-# PROJECT_ROOT) to determine where to write .orchestrator-sid. We set
-# CLAUDE_PROJECT_DIR to our isolated temp dir and verify BOTH the flat file
-# AND SQLite KV entry are written.
+# session-init.sh's detect_project_root() uses CLAUDE_PROJECT_DIR. We set
+# CLAUDE_PROJECT_DIR to our isolated temp dir and verify:
+#   1a: .orchestrator-sid flat-file is NOT written (removed in v4)
+#   1b: orchestrator_sid is written to SQLite KV (sole authority)
 # ============================================================
-echo "=== Test 1: session-init.sh writes .orchestrator-sid (flat-file + SQLite) ==="
+echo "=== Test 1: session-init.sh writes SQLite orchestrator_sid (NOT flat-file) ==="
 
 T1_ENV=$(make_temp_env)
 T1_CLAUDE="$T1_ENV/.claude"
 T1_SESSION_ID="test-orch-session-123"
 
+T1_INPUT=$(mktemp)
+echo '{"session_event":"startup"}' > "$T1_INPUT"
+
 CLAUDE_PROJECT_DIR="$T1_ENV" \
 CLAUDE_SESSION_ID="$T1_SESSION_ID" \
 TRACE_STORE="$T1_CLAUDE/traces" \
 bash "$HOOKS_DIR/session-init.sh" \
-    < <(echo '{"session_event":"startup"}') >/dev/null 2>/dev/null || true
+    < "$T1_INPUT" >/dev/null 2>/dev/null || true
+rm -f "$T1_INPUT"
 
-# Test 1a: flat-file still written (backward compat)
+# Test 1a: flat-file must NOT be written (DEC-V4-ORCH-001 removes flat-file write)
 T1_SID_FILE="$T1_CLAUDE/.orchestrator-sid"
-if [[ -f "$T1_SID_FILE" ]]; then
-    T1_SID_CONTENT=$(cat "$T1_SID_FILE")
-    if [[ "$T1_SID_CONTENT" == "$T1_SESSION_ID" ]]; then
-        pass "Test 1a: session-init.sh writes .orchestrator-sid (flat-file) with correct SESSION_ID"
-    else
-        fail "Test 1a: session-init.sh writes .orchestrator-sid (flat-file) with correct SESSION_ID" \
-             "expected '$T1_SESSION_ID', got '$T1_SID_CONTENT'"
-    fi
+if [[ ! -f "$T1_SID_FILE" ]]; then
+    pass "Test 1a: session-init.sh does NOT write .orchestrator-sid flat-file (removed in v4)"
 else
-    fail "Test 1a: session-init.sh writes .orchestrator-sid (flat-file) with correct SESSION_ID" \
-         ".orchestrator-sid not found at $T1_SID_FILE"
+    fail "Test 1a: session-init.sh does NOT write .orchestrator-sid flat-file" \
+         "flat-file found at $T1_SID_FILE (content: $(cat "$T1_SID_FILE" 2>/dev/null))"
 fi
 
-# Test 1b: SQLite orchestrator_sid written (new primary path)
+# Test 1b: SQLite orchestrator_sid written (sole authority)
 T1_SQLITE_VAL=$(read_sqlite_orchestrator_sid "$T1_CLAUDE" "$T1_ENV" 2>/dev/null || echo "")
 if [[ "$T1_SQLITE_VAL" == "$T1_SESSION_ID" ]]; then
     pass "Test 1b: session-init.sh writes orchestrator_sid to SQLite with correct SESSION_ID"
@@ -213,72 +212,40 @@ fi
 echo ""
 
 # ============================================================
-# Test 2: Gate 1.5 denies source write when SESSION_ID matches orchestrator-sid
+# Test 2: Gate 1.5 denies source write when SESSION_ID matches orchestrator_sid (SQLite)
 #
-# When CLAUDE_SESSION_ID == content of .orchestrator-sid, the caller is the
-# orchestrator. Gate 1.5 must deny source writes that target a .worktrees/ path.
-# (Flat-file path — backward compat test)
+# SQLite is the sole authority (DEC-V4-ORCH-001). When orchestrator_sid is in
+# SQLite and CLAUDE_SESSION_ID matches, Gate 1.5 denies the source write.
 # ============================================================
-echo "=== Test 2: Gate 1.5 denies source write from orchestrator context (flat-file path) ==="
+echo "=== Test 2: Gate 1.5 denies source write from orchestrator context (SQLite path) ==="
 
 T2_ENV=$(make_temp_env)
 T2_CLAUDE="$T2_ENV/.claude"
 T2_ORCH_SID="orch-session-abc"
 
-# Seed .orchestrator-sid with the orchestrator's session ID (flat-file)
-printf '%s\n' "$T2_ORCH_SID" > "$T2_CLAUDE/.orchestrator-sid"
+# Seed SQLite only (sole authority — no flat-file)
+seed_sqlite_orchestrator_sid "$T2_CLAUDE" "$T2_ENV" "$T2_ORCH_SID"
 
 # File must be in a .worktrees/ path for _IN_WORKTREE=true (Gate 1.5 precondition)
 T2_TARGET="$T2_ENV/.worktrees/feature-test/src/feature.sh"
 T2_INPUT=$(make_write_input "$T2_TARGET" "# Source file\necho 'hello'\n")
 
 T2_OUTPUT=$(
-    PROJECT_ROOT="$T2_ENV" \
+    CLAUDE_PROJECT_DIR="$T2_ENV" \
     CLAUDE_SESSION_ID="$T2_ORCH_SID" \
     bash "$HOOKS_DIR/pre-write.sh" \
     < <(echo "$T2_INPUT") 2>/dev/null
 ) || true
 
 assert_orch_deny "$T2_OUTPUT" \
-    "Test 2: Gate 1.5 denies source write when SESSION_ID matches orchestrator-sid (flat-file)"
-
-echo ""
-
-# ============================================================
-# Test 2b: Gate 1.5 denies source write when SESSION_ID matches orchestrator_sid (SQLite)
-#
-# SQLite primary path: when orchestrator_sid is in SQLite (no flat-file),
-# Gate 1.5 must still deny. This is the new primary enforcement path.
-# ============================================================
-echo "=== Test 2b: Gate 1.5 denies source write from orchestrator context (SQLite path) ==="
-
-T2B_ENV=$(make_temp_env)
-T2B_CLAUDE="$T2B_ENV/.claude"
-T2B_ORCH_SID="orch-session-sqlite-path"
-
-# Seed SQLite only (no flat-file)
-seed_sqlite_orchestrator_sid "$T2B_CLAUDE" "$T2B_ENV" "$T2B_ORCH_SID"
-rm -f "$T2B_CLAUDE/.orchestrator-sid" 2>/dev/null || true
-
-T2B_TARGET="$T2B_ENV/.worktrees/feature-test/src/feature.sh"
-T2B_INPUT=$(make_write_input "$T2B_TARGET" "# Source file\necho 'hello'\n")
-
-T2B_OUTPUT=$(
-    CLAUDE_PROJECT_DIR="$T2B_ENV" \
-    CLAUDE_SESSION_ID="$T2B_ORCH_SID" \
-    bash "$HOOKS_DIR/pre-write.sh" \
-    < <(echo "$T2B_INPUT") 2>/dev/null
-) || true
-
-assert_orch_deny "$T2B_OUTPUT" \
-    "Test 2b: Gate 1.5 denies source write when SESSION_ID matches orchestrator_sid (SQLite-only)"
+    "Test 2: Gate 1.5 denies source write when SESSION_ID matches orchestrator_sid (SQLite)"
 
 echo ""
 
 # ============================================================
 # Test 3: Gate 1.5 allows source write when SESSION_ID differs (subagent context)
 #
-# When CLAUDE_SESSION_ID != .orchestrator-sid content, the caller is a subagent
+# When CLAUDE_SESSION_ID differs from orchestrator_sid, the caller is a subagent
 # (implementer). Gate 1.5 must not fire; write should proceed past this gate.
 # ============================================================
 echo "=== Test 3: Gate 1.5 allows source write when SESSION_ID differs ==="
@@ -288,8 +255,7 @@ T3_CLAUDE="$T3_ENV/.claude"
 T3_ORCH_SID="orch-session-abc"
 T3_IMPL_SID="impl-session-xyz"
 
-# Seed both flat-file and SQLite with orchestrator SID
-printf '%s\n' "$T3_ORCH_SID" > "$T3_CLAUDE/.orchestrator-sid"
+# Seed SQLite only with orchestrator SID (no flat-file — DEC-V4-ORCH-001)
 seed_sqlite_orchestrator_sid "$T3_CLAUDE" "$T3_ENV" "$T3_ORCH_SID"
 
 T3_TARGET="$T3_ENV/.worktrees/feature-test/src/feature.sh"
@@ -308,19 +274,17 @@ assert_no_orch_deny "$T3_OUTPUT" \
 echo ""
 
 # ============================================================
-# Test 4: Gate 1.5 allows when both flat-file AND SQLite are absent (backward compat)
+# Test 4: Gate 1.5 allows when SQLite is absent (new install or no session-init yet)
 #
 # If orchestrator_sid was never written (new install, or running without
 # CLAUDE_SESSION_ID), Gate 1.5 must fall through.
 # ============================================================
-echo "=== Test 4: Gate 1.5 allows when flat-file AND SQLite are absent ==="
+echo "=== Test 4: Gate 1.5 allows when SQLite orchestrator_sid is absent ==="
 
 T4_ENV=$(make_temp_env)
 T4_CLAUDE="$T4_ENV/.claude"
 
-# Ensure both paths are absent
-rm -f "$T4_CLAUDE/.orchestrator-sid"
-# No SQLite write (no state.db)
+# No SQLite write, no flat-file (both absent)
 
 T4_TARGET="$T4_ENV/.worktrees/feature-test/src/feature.sh"
 T4_INPUT=$(make_write_input "$T4_TARGET" "# Source file\necho 'hello'\n")
@@ -333,7 +297,7 @@ T4_OUTPUT=$(
 ) || true
 
 assert_no_orch_deny "$T4_OUTPUT" \
-    "Test 4: Gate 1.5 allows when orchestrator-sid is absent (both flat-file and SQLite)"
+    "Test 4: Gate 1.5 allows when orchestrator_sid is absent (SQLite empty — no session-init yet)"
 
 echo ""
 
@@ -349,8 +313,7 @@ T5_ENV=$(make_temp_env)
 T5_CLAUDE="$T5_ENV/.claude"
 T5_ORCH_SID="orch-session-abc"
 
-# Orchestrator context — both flat-file and SQLite seeded
-printf '%s\n' "$T5_ORCH_SID" > "$T5_CLAUDE/.orchestrator-sid"
+# Orchestrator context — SQLite only (DEC-V4-ORCH-001, flat-file removed)
 seed_sqlite_orchestrator_sid "$T5_CLAUDE" "$T5_ENV" "$T5_ORCH_SID"
 
 # Non-source: .md file
@@ -431,23 +394,19 @@ assert_protected_state_deny "$T6B_OUTPUT" \
 echo ""
 
 # ============================================================
-# Test 7: SQLite-only enforcement path (flat-file absent, SQLite present)
+# Test 7: SQLite-only enforcement path (authoritative path, DEC-V4-ORCH-001)
 #
-# After the migration stabilizes and the flat-file write is removed,
-# the ONLY source of truth will be SQLite. This test validates that
-# Gate 1.5 correctly denies when SQLite has the orchestrator SID
-# but the flat-file (.orchestrator-sid) is absent. This is the
-# primary new path introduced by DEC-STATE-KV-001.
+# SQLite is the sole source of truth. Gate 1.5 correctly denies when
+# orchestrator_sid is in SQLite. No flat-file interaction.
 # ============================================================
-echo "=== Test 7: Gate 1.5 denies when SQLite has SID and flat-file is absent ==="
+echo "=== Test 7: Gate 1.5 denies when orchestrator_sid in SQLite (authoritative path) ==="
 
 T7_ENV=$(make_temp_env)
 T7_CLAUDE="$T7_ENV/.claude"
 T7_ORCH_SID="orch-sqlite-only-test"
 
-# SQLite only — explicitly remove flat-file if exists
+# SQLite only (no flat-file — flat-file is never written in v4)
 seed_sqlite_orchestrator_sid "$T7_CLAUDE" "$T7_ENV" "$T7_ORCH_SID"
-rm -f "$T7_CLAUDE/.orchestrator-sid" 2>/dev/null || true
 
 T7_TARGET="$T7_ENV/.worktrees/feature-test/src/main.sh"
 T7_INPUT=$(make_write_input "$T7_TARGET" "# main script\necho 'main'\n")
@@ -460,7 +419,7 @@ T7_OUTPUT=$(
 ) || true
 
 assert_orch_deny "$T7_OUTPUT" \
-    "Test 7: Gate 1.5 denies when orchestrator_sid in SQLite (flat-file absent)"
+    "Test 7: Gate 1.5 denies when orchestrator_sid in SQLite (authoritative SQLite-only path)"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed out of $((PASS + FAIL)) tests ==="

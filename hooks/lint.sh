@@ -17,6 +17,8 @@
 #
 # Cooldown: the same file is not re-linted within 3 seconds to avoid spam
 # during rapid edits (e.g. multi-Edit sequences by the agent).
+# Implemented via a single tmp/.lint-cooldowns file (path|timestamp lines)
+# rather than per-file sentinels — see DEC-V4-LINT-001.
 #
 # @decision DEC-LINT-001
 # @title lint.sh — synchronous PostToolUse lint-on-write hook
@@ -60,15 +62,40 @@ BREADCRUMB_DIR="${CLAUDE_DIR}/.lint-advisories"
 mkdir -p "$BREADCRUMB_DIR" 2>/dev/null || true
 
 # --- Cooldown (3 seconds): avoid spam on rapid multi-edit sequences ---
-_COOLDOWN_FILE="${CLAUDE_DIR}/.lint-cooldown-$(printf '%s' "$FILE_PATH" | tr '/' '_')"
-if [[ -f "$_COOLDOWN_FILE" ]]; then
-    _LAST_LINT=$(<"$_COOLDOWN_FILE")
-    _NOW=$(date +%s)
-    if (( _NOW - _LAST_LINT < 3 )); then
-        exit 0
+#
+# @decision DEC-V4-LINT-001
+# @title Consolidated lint cooldown via tmp/.lint-cooldowns instead of per-file sentinels
+# @status accepted
+# @rationale The old per-file sentinel approach (.lint-cooldown-<sanitized_path>) created
+#   one file per edited file and never cleaned them up, accumulating 200+ orphan files in
+#   CLAUDE_DIR. The new approach uses a single tmp/.lint-cooldowns file with path|timestamp
+#   lines. On each call: read the file, filter stale lines, check for fresh entry.
+#   This eliminates file pollution while maintaining identical <10ms latency.
+#   tmp/ is already gitignored and cleaned by session teardown.
+_COOLDOWN_DB="${CLAUDE_DIR}/tmp/.lint-cooldowns"
+mkdir -p "${CLAUDE_DIR}/tmp" 2>/dev/null || true
+_NOW=$(date +%s)
+_SKIP_LINT=false
+if [[ -f "$_COOLDOWN_DB" ]]; then
+    # Check if a fresh entry for this file exists
+    _FRESH_ENTRY=$(grep -F "${FILE_PATH}|" "$_COOLDOWN_DB" 2>/dev/null | tail -1 || true)
+    if [[ -n "$_FRESH_ENTRY" ]]; then
+        _LAST_TS=$(printf '%s' "$_FRESH_ENTRY" | cut -d'|' -f2)
+        if [[ "$_LAST_TS" =~ ^[0-9]+$ ]] && (( _NOW - _LAST_TS < 3 )); then
+            _SKIP_LINT=true
+        fi
     fi
 fi
-printf '%s' "$(date +%s)" > "$_COOLDOWN_FILE"
+if [[ "$_SKIP_LINT" == "true" ]]; then
+    exit 0
+fi
+# Update/add entry for this file (filter old entries for this path, then append fresh one)
+if [[ -f "$_COOLDOWN_DB" ]]; then
+    # Remove stale and existing entries for this file, keep all others
+    grep -vF "${FILE_PATH}|" "$_COOLDOWN_DB" > "${_COOLDOWN_DB}.tmp" 2>/dev/null || true
+    mv "${_COOLDOWN_DB}.tmp" "$_COOLDOWN_DB" 2>/dev/null || true
+fi
+printf '%s|%s\n' "$FILE_PATH" "$_NOW" >> "$_COOLDOWN_DB" 2>/dev/null || true
 
 # --- Emit one-time advisory when linter is not installed ---
 # Uses a breadcrumb file per-linter to avoid repeating the message.
@@ -144,6 +171,8 @@ _check_state_dotfile_bypass() {
         [[ "$line" == *".hook-deny.log"* ]] && continue
         [[ "$line" == *".statusline-cache"* ]] && continue
         [[ "$line" == *".lint-cooldown"* ]] && continue
+        [[ "$line" == *"tmp/.lint-cooldowns"* ]] && continue
+        [[ "$line" == *"_COOLDOWN_DB"* ]] && continue
         [[ "$line" == *"resolve_proof_file"* ]] && continue
         # resolve_proof_file_for_path returns a path but does not do I/O itself
         [[ "$line" == *"resolve_proof_file_for_path"* ]] && continue

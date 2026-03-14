@@ -248,7 +248,7 @@ declare_gate "orchestrator-source-guard" "Source writes from orchestrator contex
 if [[ "$_IN_WORKTREE" == "true" ]] && is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
     if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
         _ORCH_SID=""
-        # Primary: read orchestrator_sid from SQLite (DEC-STATE-KV-001).
+        # Read orchestrator_sid from SQLite KV — sole authority (DEC-V4-ORCH-001).
         # Use explicit workflow_id = {phash}_main: session-init.sh always runs in the
         # main checkout (no WORKTREE_PATH), so it writes with wt_id="main". When
         # pre-write.sh runs inside an implementer subagent, WORKTREE_PATH may be set,
@@ -256,12 +256,6 @@ if [[ "$_IN_WORKTREE" == "true" ]] && is_source_file "$FILE_PATH" && ! is_skippa
         # {phash}_main. Explicit _main suffix avoids that mismatch.
         _orch_main_wf="$(project_hash "$(detect_project_root 2>/dev/null || echo "$HOME/.claude")")_main"
         _ORCH_SID=$(state_read "orchestrator_sid" "$_orch_main_wf" 2>/dev/null || echo "")
-        # Fallback: flat-file read for backward compat during migration (DEC-STATE-UNIFY-004).
-        # Retained until SQLite write is confirmed stable across all deployments.
-        if [[ -z "$_ORCH_SID" ]]; then
-            _ORCH_SID_FILE="${_CACHED_CLAUDE_DIR}/.orchestrator-sid"
-            [[ -f "$_ORCH_SID_FILE" ]] && _ORCH_SID=$(cat "$_ORCH_SID_FILE" 2>/dev/null || echo "")
-        fi
         if [[ -n "$_ORCH_SID" && "$CLAUDE_SESSION_ID" == "$_ORCH_SID" ]]; then
             # Exempt: active implementer marker proves this IS a dispatched subagent.
             # When subagent-start.sh fires for an implementer, it writes:
