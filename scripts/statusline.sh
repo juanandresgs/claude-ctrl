@@ -1021,7 +1021,10 @@ _append_l2_seg "$_l2_4"  # model name — always shown, last position
 # If initiative is empty, skip this segment.
 _l3_0=""
 _l3w0=0
-if [[ -n "$cache_initiative" ]]; then
+# Show initiative on Line 3 only when it differs from Line 4's session_label.
+# When both are identical (e.g., session_label derived from initiative name),
+# suppress to avoid visually duplicating text across adjacent lines.
+if [[ -n "$cache_initiative" && "$cache_initiative" != "${cache_session_label:-}" ]]; then
   _l3_0=$(printf '\033[2m%s\033[0m' "$cache_initiative")
   ansi_visible_width "$_l3_0"; _l3w0=$_AVW
 fi
