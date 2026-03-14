@@ -66,8 +66,29 @@ When commands produce verbose output (build logs, test results, git diffs):
 
 ## Dispatch Rules
 
+<!--
+@decision DEC-PERF-002
+@title Inline Simple Task Fast Path criteria into CLAUDE.md
+@status accepted
+@rationale Benchmark data shows v40 over-governs simple tasks. session-init injects
+  only a 1-line summary; the model needs the full qualifying criteria, still-required
+  rules, and escalation signals visible without reading DISPATCH.md. DISPATCH.md retains
+  the authoritative full version with its DEC-DISPATCH-002 annotation.
+-->
+
 The orchestrator dispatches to specialized agents — it does NOT write source code directly.
 Full protocol: `docs/DISPATCH.md`. Summary injected at session start.
+
+### Simple Task Fast Path
+Skip planner and dispatch implementer directly when ALL hold:
+- Scope is ≤2 files
+- No architectural decisions needed
+- Active MASTER_PLAN.md exists
+- Task is a bug fix, typo, or small enhancement
+
+**Still required on fast path:** worktree isolation, tests, @decision annotations.
+
+**Escalate to planner if:** ≥3 files, new interfaces/API design, ambiguous requirements, or unexpected complexity discovered.
 
 ## Sacred Practices
 

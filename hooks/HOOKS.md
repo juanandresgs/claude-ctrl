@@ -431,7 +431,7 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | File | Written By | Read By | Contents |
 |------|-----------|---------|----------|
 | `.session-changes-$ID` | track.sh | surface.sh, session-summary.sh, check-implementer.sh, compact-preserve.sh | One file path per line — every Write/Edit this session |
-| `.prompt-count-$ID` | prompt-submit.sh | prompt-submit.sh | Tracks whether first-prompt mitigation has fired |
+| `.prompt-count-$ID` | ~~prompt-submit.sh~~ (removed) | ~~prompt-submit.sh~~ (removed) | **Deprecated** — migrated to SQLite `prompt_count` key (DEC-PERF-003, 2026-03-14). File no longer written or read. session-init.sh and session-end.sh retain `rm -f .prompt-count-*` to clean up orphans from sessions predating the migration. |
 | `.test-gate-strikes` | test-gate.sh | test-gate.sh | Strike count for escalating enforcement |
 | `.mock-gate-strikes` | mock-gate.sh | mock-gate.sh | Strike count for escalating enforcement |
 | `.test-runner.lock` | test-runner.sh | test-runner.sh | PID of active test process (prevents concurrent runs) |
