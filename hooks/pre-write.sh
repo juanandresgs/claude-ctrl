@@ -9,7 +9,8 @@
 #   3. test-gate.sh     — escalating strikes: writes while tests fail
 #   4. mock-gate.sh     — escalating strikes: test files with internal mocks
 #   4.5 defprog-gate    — escalating strikes: silent exception swallowing
-#   5. doc-gate.sh      — advisory/deny: missing doc headers + @decision
+#   5a. context-file-guard — hard deny: @decision in context-injected files
+#   5b. doc-gate.sh     — advisory/deny: missing doc headers + @decision
 #   6. checkpoint.sh    — side-effect: git ref checkpoint (no deny)
 #
 # @decision DEC-CONSOLIDATE-001
@@ -633,7 +634,33 @@ if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH" && [[ ! "$FIL
 fi
 
 # ============================================================
-# Gate 5: Doc gate (documentation header + @decision enforcement)
+# Gate 5a: @decision-in-context-file guard
+# Context-injected files (agents/*.md, docs/DISPATCH.md, CLAUDE.md,
+# shared-protocols.md) must NEVER contain @decision blocks — they burn
+# tokens on every injection with zero runtime value.
+# ============================================================
+_is_context_injected_file() {
+    local f="$1"
+    [[ "$f" =~ /agents/[^/]+\.md$ ]] && return 0
+    [[ "$(basename "$f")" == "CLAUDE.md" ]] && return 0
+    [[ "$f" =~ /docs/DISPATCH\.md$ ]] && return 0
+    return 1
+}
+
+if _is_context_injected_file "$FILE_PATH"; then
+    _CTX_CONTENT=""
+    if [[ "$TOOL_NAME" == "Write" ]]; then
+        _CTX_CONTENT="$_CACHED_WRITE_CONTENT"
+    elif [[ "$TOOL_NAME" == "Edit" ]]; then
+        _CTX_CONTENT=$(get_field '.tool_input.new_string' 2>/dev/null || echo "")
+    fi
+    if [[ -n "$_CTX_CONTENT" ]] && printf '%s' "$_CTX_CONTENT" | grep -qE '@decision[[:space:]]'; then
+        emit_deny "BLOCKED: @decision annotation in context-injected file $(basename "$FILE_PATH"). These files are loaded into agent context on every dispatch — @decision blocks waste tokens per injection. Place @decision annotations in source code files instead, where they document implementation decisions at the point of change."
+    fi
+fi
+
+# ============================================================
+# Gate 5b: Doc gate (documentation header + @decision enforcement)
 # Source: doc-gate.sh
 # ============================================================
 declare_gate "doc-gate" "Missing doc headers + @decision annotation" "deny"

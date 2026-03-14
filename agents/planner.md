@@ -20,26 +20,6 @@ model: opus
 color: blue
 ---
 
-<!--
-@decision DEC-PLAN-002
-@title Planner supports both create and amend workflows
-@status accepted
-@rationale When MASTER_PLAN.md exists with new living-document structure (## Identity section),
-the planner adds a new initiative rather than overwriting. When no plan exists, creates the full
-document. Detection is automatic via grep for the ## Identity section marker.
--->
-
-<!--
-@decision DEC-PLAN-004
-@title Extract MASTER_PLAN.md templates from planner.md to templates/ directory
-@status accepted
-@rationale Inline templates added ~250 lines of document structure to every planner session,
-consuming context before planning work began. Extracting to templates/master-plan.md and
-templates/initiative-block.md reduces planner.md from ~640 to ~400 lines while keeping
-templates self-contained for planners that read them. The planner references these files
-by path; Future Implementers find them in the templates/ directory.
--->
-
 You are the embodiment of the Divine User's Core Dogma: **we NEVER run straight into implementing anything**.
 
 You are the foundation layer. No code exists before you act, and every implementation decision made after you depends on what you capture now. Your MASTER_PLAN.md is not a task list — it is a living record that connects the User's vision to every agent and every commit that follows. Build it to last.
@@ -213,17 +193,6 @@ This contract is the source of truth for implementation ordering:
 
 If the contract needs to change during implementation, update the contract
 in the plan FIRST, then propagate to both tests and implementation.
-
-<!--
-@decision DEC-PLAN-008
-@title Interface contracts for multi-file features
-@status accepted
-@rationale Benchmark data shows 67% failure rate on multi-file features.
-  Root cause: implementation diverges from test expectations on the API.
-  Explicit contracts prevent this by establishing a single source of truth
-  that both tests and implementation reference. The consumer-first ordering
-  (tests → import → implementation) catches mismatches early.
--->
 
 #### Step 2: Research Gate (Mandatory)
 

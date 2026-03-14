@@ -155,13 +155,13 @@ _scope_pattern() {
     case "$1" in
         syntax)      echo "Syntax Validation|Configuration" ;;
         pre-bash)    echo "guard\.sh|nuclear commands|false positives|cross-project git|git-in-text|flag bypass|main is sacred" ;;
-        pre-write)   echo "branch-guard\.sh behavioral|plan-check\.sh lifecycle|plan lifecycle|plan archival|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
+        pre-write)   echo "branch-guard\.sh behavioral|plan-check\.sh lifecycle|plan lifecycle|plan archival|doc-gate\.sh behavioral|Gate 5a @decision-in-context-file guard|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
         post-write)  echo "plan-validate\.sh|statusline\.sh|State Registry Lint" ;;
         unit)        echo "core-lib\.sh: is_source_file|core-lib\.sh: is_skippable_path|git-lib\.sh: get_git_state|session-lib\.sh: build_resume_directive" ;;
         session)     echo "session-init\.sh|prompt-submit\.sh|compact-preserve\.sh" ;;
         integration) echo "settings\.json|subagent tracking|update-check\.sh" ;;
         trace)       echo "trace protocol" ;;
-        gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
+        gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|Gate 5a @decision-in-context-file guard|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
         state)       echo "State Registry Lint" ;;
         fixtures)    echo "Expanded Fixture Coverage" ;;
         todo)        echo "todo\.sh" ;;
@@ -441,6 +441,58 @@ rm -f "$DOC_FIXTURE_WITH_DECISION"
 rm -rf "$DOC_TEST_DIR"
 echo ""
 fi # end: doc-gate.sh behavioral tests
+
+# --- Test: Gate 5a — @decision-in-context-file guard ---
+if should_run_section "Gate 5a @decision-in-context-file guard"; then
+echo "--- Gate 5a @decision-in-context-file guard ---"
+
+# Test 1: Deny Write of @decision into an agents/*.md file
+CTX_FIXTURE_DENY_AGENT="$FIXTURES_DIR/ctx-file-gate-deny-agent.json"
+cat > "$CTX_FIXTURE_DENY_AGENT" <<'EOF'
+{"tool_name":"Write","tool_input":{"file_path":"/Users/test/.claude/agents/implementer.md","content":"# Agent\n\n/**\n * @decision DEC-IMPL-001\n * @title Some decision\n * @status accepted\n * @rationale Some rationale\n */\n\nSome content here.\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$CTX_FIXTURE_DENY_AGENT")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "Gate 5a — deny Write @decision into agents/*.md"
+else
+    fail "Gate 5a — deny Write @decision into agents/*.md" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$CTX_FIXTURE_DENY_AGENT"
+
+# Test 2: Deny Write of @decision into CLAUDE.md
+CTX_FIXTURE_DENY_CLAUDE="$FIXTURES_DIR/ctx-file-gate-deny-claude.json"
+cat > "$CTX_FIXTURE_DENY_CLAUDE" <<'EOF'
+{"tool_name":"Write","tool_input":{"file_path":"/Users/test/.claude/CLAUDE.md","content":"# Instructions\n\n/**\n * @decision DEC-CLAUDE-001\n * @title Some decision\n * @status accepted\n */\n\nContent here.\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$CTX_FIXTURE_DENY_CLAUDE")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "Gate 5a — deny Write @decision into CLAUDE.md"
+else
+    fail "Gate 5a — deny Write @decision into CLAUDE.md" "expected deny, got: ${decision:-no output}"
+fi
+rm -f "$CTX_FIXTURE_DENY_CLAUDE"
+
+# Test 3: Allow Write to agents/*.md with no @decision block
+CTX_FIXTURE_ALLOW_AGENT="$FIXTURES_DIR/ctx-file-gate-allow-agent.json"
+cat > "$CTX_FIXTURE_ALLOW_AGENT" <<'EOF'
+{"tool_name":"Write","tool_input":{"file_path":"/Users/test/.claude/agents/planner.md","content":"# Planner Agent\n\nThis agent plans features. No decision annotations here.\n"}}
+EOF
+
+output=$(run_hook "$HOOKS_DIR/pre-write.sh" "$CTX_FIXTURE_ALLOW_AGENT")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" != "deny" ]]; then
+    pass "Gate 5a — allow Write to agents/*.md without @decision"
+else
+    fail "Gate 5a — allow Write to agents/*.md without @decision" "should allow but got deny"
+fi
+rm -f "$CTX_FIXTURE_ALLOW_AGENT"
+
+echo ""
+fi # end: Gate 5a @decision-in-context-file guard
 
 # --- Test: test-gate.sh behavioral tests ---
 if should_run_section "test-gate.sh behavioral tests"; then

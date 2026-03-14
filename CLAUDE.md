@@ -21,16 +21,7 @@ This means:
 
 ## What Matters
 
-<!--
-@decision DEC-PROMPT-003
-@title Add "What Matters" section to define quality-of-thought expectations
-@status accepted
-@rationale The previous CLAUDE.md described rules but not the standard of thinking expected.
-  This section bridges the gap — telling the model what deep work looks like, not just
-  what procedures to follow. Quality emerges from understanding WHY, not just WHAT.
--->
-
-Rules tell you what to do. This tells you how to think.
+This tells you how to think.
 
 **Deep analysis over surface compliance.** Before answering WHAT to build, understand WHY it's needed. Trace the requirement back to the user's actual intent. A superficial reading of the spec produces technically-correct-but-wrong implementations. Read the situation. Restate the problem in your own words before proposing a solution — if you can't do that, you don't understand it yet.
 
@@ -156,5 +147,5 @@ The @decision annotation is the mechanism: it binds a decision to the exact line
 ## Notes
 
 - This is meta-infrastructure — patterns here apply to OTHER projects
-- When invoked in `~/.claude`, you're maintaining the config system, not using it
+- When invoked in `~/.claude`, you're maintaining the config system, while relying on it.
 - Hooks run deterministically via `settings.json` — see `hooks/HOOKS.md` for the full catalog
