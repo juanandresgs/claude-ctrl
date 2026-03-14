@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `fix/model-priority`: Model name drops first on statusline Line 2 at narrow widths (priority 5) — restores visibility of lifetime tokens and cache hit at standard terminal widths (DEC-STATUSLINE-MODEL-PRIORITY-001)
 - `fix/l3-dedup`: Suppress statusline Line 3 initiative when identical to Line 4 session label — prevents visually duplicating text across adjacent lines
 - `worktree-agent-a5e17e58`: Statusline Line 3 duplicate fix and Line 2 model reorder — Line 3 now shows MASTER_PLAN initiative (dim) instead of duplicating session label, Line 2 reordered to `[ctx bar] | tokens | lifetime | cache hit | model` placing model at end (DEC-STATUSLINE-L2-MODEL-END-001)
 - `fix/test-failures`: Resolve all 4 test failures + T05 pre-existing — db-guardian-lib.sh exempted from settings sync check (library, not hook), three shellcheck fixes in test files (SC2059, SC2004, SC2221/SC2222), T05 updated from removed dual-write contract to SQLite-only; test suite 372/372 pass
