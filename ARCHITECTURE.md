@@ -557,10 +557,11 @@ write but they can inject feedback, update state, and trigger retry loops.
 
 ### post-write.sh
 
-**What it does:** Consolidated PostToolUse:Write|Edit hook. Runs all post-write
-quality checks: linting, session tracking, code complexity advisory, plan alignment,
-and async test execution. Replaces the 5 previously separate PostToolUse:Write|Edit hooks
-(lint.sh, track.sh, code-review.sh, plan-validate.sh, test-runner.sh).
+**What it does:** Consolidated PostToolUse:Write|Edit hook. Runs session tracking,
+plan alignment validation, linting, and code complexity advisory. Absorbs track.sh,
+plan-validate.sh, and lint.sh logic internally. lint.sh and test-runner.sh also
+remain as separate registered hooks in settings.json (test-runner.sh runs async
+with its own timeout). code-review.sh was pruned (low-signal MCP dependency).
 
 **Why it exists:** Post-write quality feedback must happen immediately after every
 write — before the agent's next action compounds errors. Consolidation reduces
