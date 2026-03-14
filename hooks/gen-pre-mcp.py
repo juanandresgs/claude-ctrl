@@ -115,7 +115,7 @@ lines4=[
 ']
 lines5=[
 '',
-'# _mcp_deny: deny with DB-GUARDIAN-REQUIRED signal',
+'# _mcp_deny: deny with DB-GUARDIAN-REQUIRED signal (function from db-safety-lib.sh)',
 '_mcp_deny() {',
 '    local reason="$1" op_type="${2:-data_mutation}" sql="${3:-}"',
 '    require_db_guardian',

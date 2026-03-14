@@ -1572,3 +1572,60 @@ _db_read_session_stats() {
     printf 'checked=%d\nblocked=%d\nwarned=%d\n' "$checked" "$blocked" "$warned"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _dbg_emit_guardian_required OPERATION_TYPE DENIED_COMMAND DENY_REASON TARGET_ENV
+#
+# Emits a DB-GUARDIAN-REQUIRED signal for inclusion in pre-bash.sh deny messages.
+# This is the machine-readable trigger that causes the orchestrator to dispatch
+# the Database Guardian agent (if one is ever dispatched).
+#
+# The caller (pre-bash.sh, pre-mcp.sh) appends this to the human-readable deny
+# message so that the orchestrator can parse the JSON and construct a full request.
+#
+# Relocated from db-guardian-lib.sh (Wave 3a) as part of dead-code removal:
+#   db-guardian-lib.sh had zero invocations across 1,093 traces. This function
+#   is a safety signal, not an agent function — it belongs in the safety library.
+#
+# @decision DEC-PERF-001
+# @title Relocate _dbg_emit_guardian_required to db-safety-lib.sh
+# @status accepted
+# @rationale db-guardian-lib.sh (1,161 lines, ~12.8KB) was fully built but never
+#   dispatched across 1,093 recorded traces. The only active callers were in
+#   pre-bash.sh and pre-mcp.sh, both of which already load db-safety-lib.sh via
+#   require_db_safety. Moving this single function here preserves all safety
+#   signal behavior while allowing the entire db-guardian agent layer to be
+#   removed. See Issue #247.
+#
+# Returns: formatted signal string on stdout
+# ---------------------------------------------------------------------------
+_dbg_emit_guardian_required() {
+    local op_type="${1:-data_mutation}"
+    local denied_cmd="${2:-}"
+    local deny_reason="${3:-}"
+    local target_env="${4:-unknown}"
+
+    # Truncate long commands for the signal (full command is in the deny context)
+    local cmd_preview
+    if [[ ${#denied_cmd} -gt 200 ]]; then
+        cmd_preview="${denied_cmd:0:200}..."
+    else
+        cmd_preview="$denied_cmd"
+    fi
+
+    # Escape for JSON
+    local esc_cmd esc_reason
+    if command -v jq >/dev/null 2>&1; then
+        esc_cmd=$(jq -Rr '.' <<< "$cmd_preview" 2>/dev/null || printf '%s' "$cmd_preview")
+        esc_reason=$(jq -Rr '.' <<< "$deny_reason" 2>/dev/null || printf '%s' "$deny_reason")
+    else
+        esc_cmd=$(printf '%s' "$cmd_preview" | sed 's/"/\\"/g')
+        esc_reason=$(printf '%s' "$deny_reason" | sed 's/"/\\"/g')
+    fi
+
+    printf '\nDB-GUARDIAN-REQUIRED: {"operation_type":"%s","denied_command":"%s","deny_reason":"%s","target_environment":"%s"}' \
+        "$op_type" \
+        "$esc_cmd" \
+        "$esc_reason" \
+        "$target_env"
+}

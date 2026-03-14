@@ -311,26 +311,16 @@ require_db_safety() {
 # See hooks/db-safety-lib.sh for DEC-DBSAFE-001 (modular architecture rationale).
 
 require_db_guardian() {
-    [[ -n "${_DB_GUARDIAN_LIB_LOADED:-}" ]] && return 0
-    source "${_SRCLIB_DIR}/db-guardian-lib.sh"
+    # No-op: db-guardian-lib.sh was removed in Issue #247 (zero invocations
+    # across 1,093 traces). _dbg_emit_guardian_required now lives in
+    # db-safety-lib.sh (loaded via require_db_safety, which pre-bash.sh and
+    # pre-mcp.sh already call before any deny path). This stub preserves
+    # backward compatibility in case any caller still invokes require_db_guardian.
+    # @decision DEC-PERF-001 — see db-safety-lib.sh for full rationale.
+    return 0
 }
-# require_db_guardian is called from the Database Safety Checks section of pre-bash.sh
-# when a destructive DB command is denied and the DB-GUARDIAN-REQUIRED signal needs to
-# be emitted. It is loaded lazily — only fired when an actual deny triggers handoff.
-# See hooks/db-guardian-lib.sh for DEC-DBGUARD-002 (JSON marshalling rationale).
-# state_update/state_read are used optionally via: type state_update &>/dev/null && ...
-# (in log.sh and session-lib.sh). Tests call require_state directly.
-# See test-proof-lifecycle.sh:T09 for the test coverage of this loader.
-
-require_db_guardian() {
-    [[ -n "${_DB_GUARDIAN_LIB_LOADED:-}" ]] && return 0
-    source "${_SRCLIB_DIR}/db-guardian-lib.sh"
-}
-# require_db_guardian is called by the DB Guardian agent at the start of every
-# database operation assessment. It loads the policy engine (D3), simulation
-# helpers (D4), and approval gate (D5). This is NOT loaded by pre-bash.sh —
-# it is an agent-layer library, not a hook-layer library.
-# See hooks/db-guardian-lib.sh for DEC-DBGUARD-001 (separation rationale).
+# require_db_guardian: backward-compatible no-op after db-guardian-lib.sh removal.
+# _dbg_emit_guardian_required is available via require_db_safety → db-safety-lib.sh.
 
 # verify_library_consistency
 #   Checks that all loaded library versions match the expected version.

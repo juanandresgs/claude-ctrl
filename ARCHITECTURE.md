@@ -87,13 +87,12 @@ State bridges the gap — hooks communicate with each other through SQLite and s
 │   ├── ci-lib.sh             # Shared library — CI detection, workflow helpers
 │   ├── log.sh                # Shared library — JSON I/O, stdin caching, path utilities
 │   └── source-lib.sh         # Shared library — bootstrapper (log.sh + core-lib.sh) + require_*() lazy loaders
-├── agents/                   # 6 agent prompt definitions + shared-protocols.md library
+├── agents/                   # 5 agent prompt definitions + shared-protocols.md library
 │   ├── planner.md            # Planner agent — MASTER_PLAN.md creation
 │   ├── implementer.md        # Implementer agent — test-first development
 │   ├── tester.md             # Tester agent — e2e verification
 │   ├── guardian.md           # Guardian agent — git operations
 │   ├── governor.md           # Governor agent — initiative health evaluation
-│   ├── db-guardian.md        # DB Guardian agent — database operation safety
 │   └── shared-protocols.md  # Shared library — injected into all agents at dispatch time
 ├── skills/                   # 11 skill directories
 │   ├── bazaar/               # Community discussion aggregator
