@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `feature/remove-flat-file`: Remove `.session-token-history` flat file — SQLite is now sole authority for token history; eliminates dual-write divergence, flat-file fallback in session-init.sh (~70 lines), and race-prone bare `>>` appends; stop.sh observatory query migrated from `tail -1` to SQLite with field-offset bug fix; backfill script deprecated (DEC-STATE-KV-009)
+
 ### Fixed
 - `feature/fix-hash-length`: Standardize project hash to 8 chars via `project_hash()` — session-lib.sh and session-end.sh used 12-char inline `cut -c1-12` while all other sites used 8-char, causing session data written with 12-char hashes to be invisible to 8-char reads; now `project_hash()` is the universal single source of truth (DEC-HASH-CONSOLIDATE-001)
 - `feature/fix-doc-counts`: Strip rotting line/file counts from ARCHITECTURE.md and HOOKS.md, add 7 missing files to directory map, fix stale consolidation references in CONTRIBUTING.md
