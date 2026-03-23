@@ -77,6 +77,7 @@ claude-ctrl-hardFork/
       proof.py
       dispatch.py
       markers.py
+      statusline.py
       worktrees.py
       policy.py
     cli.py
@@ -145,12 +146,56 @@ The runtime owns exactly these core domains:
 5. `events`
 6. `worktrees`
 
+The successor runtime also owns all workflow coordination state. Flat files,
+breadcrumb files, session-local marker files, and cache files are not permitted
+as workflow authorities once the runtime cutover is complete.
+
 The runtime does not own:
 
 - prompt text
 - plan markdown content
 - docs rendering
 - feature flags for optional sidecars
+
+### No Flatfiles Or Breadcrumbs
+
+The successor state machine must obviate flat-file and breadcrumb coordination.
+
+- Hooks may not coordinate workflow state through files such as
+  `.proof-status*`, `.subagent-tracker*`, `.statusline-cache*`,
+  `.agent-findings`, or similarly named session breadcrumbs after cutover.
+- Filename presence, file timestamps, or directory breadcrumbs are not valid
+  workflow authority signals in the successor architecture.
+- Trace artifacts may exist for evidence and recovery, but they are never read
+  as authority for proof state, dispatch state, active role, or worktree truth.
+- Migration helpers may read legacy flat files during cutover, but must delete
+  or ignore them once canonical runtime state exists.
+- Statusline, diagnostics, and observability read from runtime projections, not
+  ad hoc cache files.
+
+### Statusline Read Model
+
+The statusline is a runtime-backed read model, not a governance authority.
+
+- `scripts/statusline.sh` is the renderer only.
+- `runtime/core/statusline.py` derives a statusline snapshot from the canonical
+  state machine plus Claude-provided stdin metrics.
+- No statusline field may become a second source of truth for workflow state.
+- The statusline may not depend on `.statusline-cache*` or similar breadcrumb
+  files once the successor runtime is live.
+- Statusline data must be reconstructable from:
+  - `proof_state`
+  - `dispatch_cycles`
+  - `agent_markers`
+  - `worktrees`
+  - `events`
+  - plan summary metadata
+  - Claude runtime stdin fields such as model, tokens, cost, and context usage
+- The statusline must degrade gracefully when optional data is missing; it must
+  never block the core control plane.
+- Rich HUD features from `claude-config-pro` are in scope, but only when
+  reimplemented on top of the successor runtime instead of old
+  cache/contracts/state coupling.
 
 ### Stable CLI Interface
 
@@ -169,6 +214,7 @@ cc-policy dispatch ack --id <queue_id>
 cc-policy marker create --workflow <id> --role <planner|implementer|tester|guardian> --session <id> --trace <path>
 cc-policy marker query --workflow <id> --role <...>
 cc-policy marker clear-stale
+cc-policy statusline snapshot --workflow <id> --session <id> --parent-pid <pid>
 cc-policy worktree register --workflow <id> --path <path> --branch <branch> --session <id>
 cc-policy worktree heartbeat --path <path> --session <id>
 cc-policy worktree list --workflow <id>
@@ -221,12 +267,29 @@ Owns:
 - critical-path-first ordering
 - trace-lite handoff capture
 
+Trace-lite artifacts are evidence only. They must not become coordination
+breadcrumbs or workflow authority.
+
 ### `check-*.sh`
 
 Own:
 
 - agent-specific validation and return-shape checking
 - no orchestration policy beyond their own role contract
+
+### `scripts/statusline.sh`
+
+Owns:
+
+- rendering Claude stdin fields plus runtime snapshot data
+- ANSI formatting, truncation, and graceful fallback display
+- no policy decisions
+
+Does not own:
+
+- direct workflow-state writes
+- ad hoc cache authority
+- parallel state derivation separate from runtime truth
 
 ## Canonical Prompt Set
 
@@ -405,9 +468,13 @@ Import into core:
 - CWD/worktree deletion protections
 - cross-platform `mtime` and timeout wrappers
 - trace-lite manifests and summaries
+- the useful statusline HUD concepts, but only when they read runtime
+  projections instead of flat-file caches or breadcrumb markers
 - per-gate audit events
 - integration-surface dispatch context
 - simple task fast path, but only with full WHO enforcement and planner fallback
+- statusline information architecture and useful HUD segments, reimplemented on
+  top of runtime-backed snapshot reads rather than old cache/contracts coupling
 
 Import as sidecars later:
 
@@ -453,6 +520,8 @@ Do not import into core:
   `hooks/lib/runtime-bridge.sh`.
 - Migrate proof, dispatch, markers, events, and worktree coordination to
   runtime calls.
+- Implement `runtime/core/statusline.py` and `cc-policy statusline snapshot` as
+  a projection over runtime state plus Claude stdin metrics.
 - Prohibit direct `sqlite3` usage in hook entrypoints.
 - Success criterion: no core hook writes shared state except through
   `cc-policy`.
@@ -462,6 +531,8 @@ Do not import into core:
 - Rebuild `pre-bash.sh`, `pre-write.sh`, `post-task.sh`, and `check-*.sh`
   around the thin-hook model.
 - Split policy logic into `hooks/lib/*.sh` by domain.
+- Rebuild `scripts/statusline.sh` as a renderer over runtime statusline
+  snapshots, not hook-owned ad hoc cache files.
 - Front-load all critical emissions before heavy loads.
 - Add per-gate audit events and timing logs.
 - Success criterion: hot-path hooks are readable, timed, and locally testable.
@@ -514,7 +585,7 @@ Do not import into core:
 - direct `state-lib.sh` style shared-state ownership in bash
 - judge-based plan bookkeeping bypass
 - general-purpose agent routing
-- flat-file state as fallback authority
+- flat-file or breadcrumb-based workflow coordination
 - direct sidecar participation in deny paths
 
 ### New Environment Variables
@@ -550,6 +621,16 @@ Do not import into core:
 14. Architectural changes without a Decision Log append are denied.
 15. Cross-platform timeout and `mtime` behavior is consistent on macOS and
     Linux.
+16. `statusline.sh` renders successfully from runtime snapshots when all data is
+    present and when optional fields are absent.
+17. Statusline fields for worktrees, active agents, proof state, and initiative
+    are derived from canonical runtime state rather than separate cache
+    authority.
+18. Rich HUD segments from the successor statusline do not block prompts or hook
+    execution when runtime reads fail; they degrade to safe defaults.
+19. No successor hook, script, or validation path requires flat-file or
+    breadcrumb coordination for proof state, dispatch state, active role, or
+    statusline truth.
 
 ## Rollout and Validation
 
@@ -575,5 +656,10 @@ Do not import into core:
   runtime database.
 - Search and observatory are included in the successor roadmap, but not in the
   deny path.
+- The richer statusline HUD from `claude-config-pro` is part of the successor
+  roadmap, but only as a runtime-backed read model, never as an independent
+  authority path.
+- Trace files may remain as evidence artifacts, but the successor state machine
+  does not use flat files or breadcrumbs for workflow coordination.
 - This file is the authoritative successor bootstrap plan for
   `claude-ctrl-hardFork`.
