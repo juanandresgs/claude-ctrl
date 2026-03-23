@@ -1,0 +1,1 @@
+"""Future event store module."""

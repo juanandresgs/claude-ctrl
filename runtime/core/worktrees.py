@@ -1,0 +1,1 @@
+"""Future worktree authority module."""
