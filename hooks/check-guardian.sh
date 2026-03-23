@@ -95,7 +95,7 @@ fi
 # Check 6: Proof status for git operations
 PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git merge|git commit|git push' || echo "")
-if [[ -n "$HAS_GIT_OP" && "$PROOF_STATUS" != "verified" && ! is_claude_meta_repo "$PROJECT_ROOT" ]]; then
+if [[ -n "$HAS_GIT_OP" && "$PROOF_STATUS" != "verified" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
     ISSUES+=("Proof-of-work is '$PROOF_STATUS' after git operation — Guardian should only proceed after Tester evidence and explicit user verification")
 fi
 

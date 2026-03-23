@@ -294,5 +294,5 @@
   "installation": {
     "method": "native"
   },
-  "model": "opus"
+  "model": "opus[1m]"
 }
