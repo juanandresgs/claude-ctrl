@@ -80,6 +80,29 @@ CREATE TABLE IF NOT EXISTS dispatch_cycles (
 )
 """
 
+TRACES_DDL = """
+CREATE TABLE IF NOT EXISTS traces (
+    session_id  TEXT    PRIMARY KEY,
+    agent_role  TEXT,
+    ticket      TEXT,
+    started_at  INTEGER NOT NULL,
+    ended_at    INTEGER,
+    summary     TEXT
+)
+"""
+
+TRACE_MANIFEST_DDL = """
+CREATE TABLE IF NOT EXISTS trace_manifest (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,
+    entry_type  TEXT    NOT NULL,
+    path        TEXT,
+    detail      TEXT,
+    created_at  INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES traces(session_id)
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -88,6 +111,8 @@ ALL_DDL: list[str] = [
     WORKTREES_DDL,
     DISPATCH_QUEUE_DDL,
     DISPATCH_CYCLES_DDL,
+    TRACES_DDL,
+    TRACE_MANIFEST_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
