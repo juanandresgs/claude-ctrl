@@ -109,3 +109,21 @@ rt_event_emit() {
     _rt_ensure_schema
     cc_policy event emit "$1" --detail "${2:-}" >/dev/null 2>&1
 }
+
+# ---------------------------------------------------------------------------
+# Statusline snapshot wrapper
+# ---------------------------------------------------------------------------
+
+# rt_statusline_snapshot
+# Prints the full JSON snapshot dict to stdout, or nothing on failure.
+# scripts/statusline.sh calls this instead of reading flat-file cache so
+# all HUD state flows through the canonical runtime projection.
+#
+# Returns raw JSON (not a scalar) so the caller can jq-parse any field it needs:
+#   proof_status, proof_workflow, active_agent, active_agent_id,
+#   worktree_count, worktrees[], dispatch_status, dispatch_initiative,
+#   dispatch_cycle_id, recent_event_count, recent_events[], snapshot_at
+rt_statusline_snapshot() {
+    _rt_ensure_schema
+    cc_policy statusline snapshot 2>/dev/null
+}
