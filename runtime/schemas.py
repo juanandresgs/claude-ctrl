@@ -103,6 +103,25 @@ CREATE TABLE IF NOT EXISTS trace_manifest (
 )
 """
 
+SESSION_TOKENS_DDL = """
+CREATE TABLE IF NOT EXISTS session_tokens (
+    session_id   TEXT    NOT NULL,
+    project_hash TEXT    NOT NULL,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (session_id, project_hash)
+)
+"""
+
+TODO_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS todo_state (
+    project_hash   TEXT    PRIMARY KEY,
+    project_count  INTEGER NOT NULL DEFAULT 0,
+    global_count   INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -113,6 +132,8 @@ ALL_DDL: list[str] = [
     DISPATCH_CYCLES_DDL,
     TRACES_DDL,
     TRACE_MANIFEST_DDL,
+    SESSION_TOKENS_DDL,
+    TODO_STATE_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK

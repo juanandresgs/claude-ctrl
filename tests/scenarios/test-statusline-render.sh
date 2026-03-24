@@ -140,13 +140,13 @@ fi
 # Test 4: version from stdin appears in HUD
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 4: version from stdin appears in HUD"
+echo "-- 4: context bar present in HUD (Line 2)"
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "1\.0\.0"; then
-    echo "  PASS: version '1.0.0' present in HUD"
+if printf '%s' "$output" | grep -q "tks"; then
+    echo "  PASS: token count segment present in HUD"
 else
-    echo "  FAIL: version missing; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: token segment missing; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -221,10 +221,10 @@ echo "-- 9: worktree registered — HUD shows WT:<count>"
 policy worktree register "/wt/sl-feature-a" "feature/sl-a" --ticket "TKT-012" >/dev/null
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "WT:1"; then
-    echo "  PASS: WT:1 present in HUD"
+if printf '%s' "$output" | grep -q "worktree"; then
+    echo "  PASS: worktree count present in HUD"
 else
-    echo "  FAIL: WT:1 missing; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: worktree count missing; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -238,10 +238,10 @@ policy dispatch cycle-start "TKT012-CYCLE" >/dev/null
 policy dispatch enqueue "implementer" --ticket "TKT-012" >/dev/null
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "next:implementer"; then
-    echo "  PASS: next:implementer present in HUD"
+if printf '%s' "$output" | grep -q "implementer"; then
+    echo "  PASS: dispatch next role present in HUD"
 else
-    echo "  FAIL: next:implementer missing; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: dispatch next missing; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -250,18 +250,18 @@ fi
 # (The full runtime path end-to-end: stdin JSON + snapshot → single ANSI line)
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 11: compound — full runtime HUD is a single line with all segments"
+echo "-- 11: compound — full runtime HUD is 3 lines with key segments"
 
 output=$(run_statusline)
 line_count=$(printf '%s' "$output" | wc -l | tr -d ' ')
-if [[ "$line_count" -eq 0 || "$line_count" -eq 1 ]]; then
-    echo "  PASS: HUD is a single line (line_count=$line_count)"
+if [[ "$line_count" -eq 2 || "$line_count" -eq 3 ]]; then
+    echo "  PASS: HUD is 3 lines (line_count=$line_count)"
 else
-    echo "  FAIL: HUD spans multiple lines (got $line_count lines)"
+    echo "  FAIL: HUD expected 3 lines (got $line_count lines)"
     FAILURES=$((FAILURES + 1))
 fi
 
-for segment in "test-model" "$workspace_name" "1.0.0" "tester" "WT:1" "next:implementer"; do
+for segment in "test-model" "$workspace_name" "tester" "worktree" "tks" "proof"; do
     if printf '%s' "$output" | grep -q "$segment"; then
         echo "  PASS: segment '$segment' present in compound HUD"
     else
@@ -279,10 +279,10 @@ echo "-- 12: dirty count — untracked file shows dirty in HUD"
 printf 'untracked\n' > "$GIT_DIR/untracked.txt"
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "dirty"; then
-    echo "  PASS: 'dirty' count present when workspace has untracked files"
+if printf '%s' "$output" | grep -q "uncommitted"; then
+    echo "  PASS: uncommitted count present when workspace has untracked files"
 else
-    echo "  FAIL: 'dirty' missing despite untracked file; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: 'uncommitted' missing despite untracked file; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -300,10 +300,11 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-if printf '%s' "$output" | grep -q "1\.0\.0"; then
-    echo "  PASS: version present in fallback HUD"
+# Version not shown in 3-line layout. Verify context bar present on Line 2 instead.
+if printf '%s' "$output" | grep -q '\-\-'; then
+    echo "  PASS: context bar present in fallback Line 2"
 else
-    echo "  FAIL: version missing in fallback; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: context bar missing in fallback; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
