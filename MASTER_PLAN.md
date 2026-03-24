@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-24 (INIT-002 closed; INIT-003 wave detail added)
+Last updated: 2026-03-24 (43 component-level @decision IDs registered in Decision Log)
 
 ## Identity
 
@@ -108,6 +108,105 @@ into the new mainline.
   cutover are live. Flat-file shared-state authorities have been deleted. The
   dispatch queue exists but is not yet enforced as the sole dispatch path --
   enforcement moves to INIT-003 after the queue proves stable through use.
+
+### Hook-layer decisions
+
+- `2026-03-24 — DEC-FORK-014` Planner-only governance markdown writes.
+- `2026-03-24 — DEC-HOOK-001` Thin policy delegation to existing hooks.
+- `2026-03-24 — DEC-HOOK-002` Thin bash policy delegation.
+- `2026-03-24 — DEC-HOOK-003` Consolidated Write|Edit entrypoint.
+- `2026-03-24 — DEC-HOOK-004` Consolidated Bash entrypoint.
+- `2026-03-24 — DEC-BRIDGE-001` Shell wrappers isolate hook scripts from
+  cc_policy JSON parsing.
+- `2026-03-24 — DEC-CTX-001` Dual-write migration: runtime primary, flat-file
+  fallback.
+- `2026-03-24 — DEC-CACHE-001` Statusline cache for status bar enrichment.
+- `2026-03-24 — DEC-SUBAGENT-001` Subagent lifecycle tracking via state file.
+- `2026-03-24 — DEC-COMPACT-001` Smart compaction suggestions based on prompts
+  and session duration.
+- `2026-03-24 — DEC-AUTOREVIEW-001` Three-tier command classification with
+  recursive analysis.
+- `2026-03-24 — DEC-MOCK-001` Escalating mock detection gate.
+
+### Dispatch decisions
+
+- `2026-03-24 — DEC-DISPATCH-001` Shell wrappers for dispatch queue operations.
+- `2026-03-24 — DEC-DISPATCH-002` Test canonical flow suggestions from
+  post-task.sh.
+- `2026-03-24 — DEC-DISPATCH-003` Test dispatch queue FIFO ordering and
+  lifecycle transitions.
+
+### Runtime decisions
+
+- `2026-03-24 — DEC-RT-001` Canonical SQLite schema for all shared workflow
+  state.
+- `2026-03-24 — DEC-RT-011` Statusline snapshot is a read-only projection
+  across all runtime tables.
+
+### Plan discipline decisions
+
+- `2026-03-24 — DEC-PLAN-001` planctl.py as the single enforcement authority
+  for MASTER_PLAN.md discipline.
+- `2026-03-24 — DEC-PLAN-002` plan-policy.sh as thin shell bridge to
+  planctl.py.
+
+### Trace decisions
+
+- `2026-03-24 — DEC-TRACE-001` Trace-lite uses dedicated tables, not the events
+  table.
+
+### Sidecar decisions
+
+- `2026-03-24 — DEC-SIDECAR-001` Sidecars are read-only consumers of the
+  canonical SQLite runtime.
+- `2026-03-24 — DEC-SIDECAR-002` Observatory receives a pre-opened connection,
+  not a db path.
+- `2026-03-24 — DEC-SIDECAR-003` SearchIndex loads traces and manifest entries
+  into memory.
+
+### Statusline decisions
+
+- `2026-03-24 — DEC-SL-001` Runtime-backed statusline renderer.
+
+### Capture infrastructure decisions
+
+- `2026-03-24 — DEC-CAP-001` Capture wrapper: passthrough with payload logging.
+- `2026-03-24 — DEC-CAP-002` Capture install modifies only a settings copy,
+  never the live file.
+
+### Scenario test decisions
+
+- `2026-03-24 — DEC-SMOKE-001` Shell-based scenario test harness for hook
+  validation.
+- `2026-03-24 — DEC-SMOKE-002` Test all named agent types produce
+  additionalContext on spawn.
+- `2026-03-24 — DEC-SMOKE-003` Guardian-allow test requires all three gates:
+  role, test, proof.
+- `2026-03-24 — DEC-SMOKE-010` Orchestrator source-write deny test.
+- `2026-03-24 — DEC-SMOKE-011` Implementer source-write allow test.
+- `2026-03-24 — DEC-SMOKE-012` Tester source-write deny test.
+- `2026-03-24 — DEC-SMOKE-013` Planner source-write deny test.
+- `2026-03-24 — DEC-SMOKE-014` Non-source file WHO pass-through test.
+- `2026-03-24 — DEC-TKT008-002` Compound allow path: all three bash-policy
+  gates satisfied.
+
+### Acceptance suite decisions
+
+- `2026-03-24 — DEC-ACC-001` Full lifecycle test exercises the complete dispatch
+  cycle end-to-end.
+- `2026-03-24 — DEC-ACC-002` Enforcement matrix covers every WHO x action cell
+  independently.
+- `2026-03-24 — DEC-ACC-003` Runtime consistency tests exercise the full
+  read-write round trip.
+- `2026-03-24 — DEC-ACC-004` Master runner aggregates all suites into a single
+  JSON report.
+
+### Flat-file migration decisions
+
+- `2026-03-24 — DEC-FORK-016` `.plan-drift` is a flat-file state authority
+  (written by `hooks/surface.sh`, read by `hooks/context-lib.sh` and
+  `hooks/plan-check.sh`) that violates DEC-FORK-007. It should be migrated to a
+  runtime computation or eliminated. Until then it remains a known exception.
 
 ## Active Initiatives
 
