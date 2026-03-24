@@ -1,112 +1,91 @@
 #!/usr/bin/env bash
-# statusline.sh — Claude Code status line with enriched HUD segments.
+# statusline.sh — Renders the Claude Code statusline HUD.
 #
-# Purpose: Reads JSON from stdin (model, workspace, version), reads cached
-# todo count and .statusline-cache, and outputs ANSI-formatted status line.
-# Extracted from the inline command in settings.json for maintainability.
+# Produces a compact single-line HUD of key:value pairs for the terminal.
+# Primary data source: runtime snapshot via cc-policy statusline snapshot.
+# Fallback: basic git branch/dirty state when the runtime is unavailable.
 #
-# @decision DEC-CACHE-002
-# @title Status bar enrichment with cached hook data
+# Input: none (standalone; does not read stdin)
+# Output: single-line HUD string, no trailing newline
+#
+# @decision DEC-SL-001
+# @title Runtime-backed statusline renderer
 # @status accepted
-# @rationale Hooks compute git/plan/test state on every prompt and session start.
-# Cache that data so the status bar can display rich context without re-computing.
-# Segments show dirty count (red), worktrees (cyan), plan phase (blue/dim), test
-# status (green/red/dim), active agents (yellow). Only shown when relevant (dirty>0, etc).
-#
-# Input (stdin): JSON with .model.display_name, .workspace.current_dir, .version
-# Output (stdout): ANSI-formatted status line
-#
-# Segments: model | workspace | time | dirty (if >0) | worktrees (if >0) | plan | tests | agents (if >0) | todos (if >0) | version
+# @rationale The statusline must be a read model over canonical runtime state,
+#   not a second authority. All data comes from cc-policy statusline snapshot
+#   via rt_statusline_snapshot() in runtime-bridge.sh. Flat-file reading has
+#   been removed; the bridge wrapper already handles schema bootstrap, error
+#   suppression, and scoping CLAUDE_POLICY_DB. Flat-file fallback (git branch
+#   + dirty count) exists for graceful degradation only — when the runtime CLI
+#   is unreachable or returns a non-ok status. This design eliminates the
+#   .statusline-cache file as a data authority and makes the HUD a direct
+#   projection of the canonical SQLite-backed runtime state.
+#   Replaces the previous stdin-driven, .statusline-cache-reading version.
+#   See TKT-012 and DEC-RT-011 (statusline snapshot canonical projection).
 set -euo pipefail
 
-TODO_CACHE="$HOME/.claude/.todo-count"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Read JSON from stdin
-input=$(cat)
+# Source the runtime bridge — this provides rt_statusline_snapshot().
+# The bridge sources safely and suppresses its own errors; we tolerate
+# a missing file here with || true so the fallback path still runs.
+# shellcheck source=../hooks/lib/runtime-bridge.sh
+source "$SCRIPT_DIR/../hooks/lib/runtime-bridge.sh" 2>/dev/null || true
 
-# Extract fields
-model=$(echo "$input" | jq -r '.model.display_name')
-workspace=$(basename "$(echo "$input" | jq -r '.workspace.current_dir')")
-version=$(echo "$input" | jq -r '.version')
-timestamp=$(date '+%H:%M:%S')
-
-# Read cached todo count
-todo_count=0
-if [[ -f "$TODO_CACHE" ]]; then
-    todo_count=$(cat "$TODO_CACHE" 2>/dev/null || echo 0)
-    # Sanitize: ensure it's a number
-    [[ "$todo_count" =~ ^[0-9]+$ ]] || todo_count=0
+# ---------------------------------------------------------------------------
+# Attempt: call rt_statusline_snapshot() and validate the response.
+# rt_statusline_snapshot() returns raw JSON or empty string on failure.
+# We require .status == "ok" before trusting any field.
+# ---------------------------------------------------------------------------
+SNAPSHOT=""
+if declare -f rt_statusline_snapshot >/dev/null 2>&1; then
+    SNAPSHOT=$(rt_statusline_snapshot 2>/dev/null) || SNAPSHOT=""
 fi
 
-# Read statusline cache
-workspace_dir=$(echo "$input" | jq -r '.workspace.current_dir')
-CACHE_FILE="$workspace_dir/.claude/.statusline-cache"
-cache_dirty=0
-cache_wt=0
-cache_plan=""
-cache_test=""
-cache_agents=0
-cache_agents_types=""
-cache_agents_total=0
-if [[ -f "$CACHE_FILE" ]]; then
-    cache_dirty=$(jq -r '.dirty // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-    cache_wt=$(jq -r '.worktrees // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-    cache_plan=$(jq -r '.plan // ""' "$CACHE_FILE" 2>/dev/null || echo "")
-    cache_test=$(jq -r '.test // ""' "$CACHE_FILE" 2>/dev/null || echo "")
-    cache_agents=$(jq -r '.agents_active // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
-    cache_agents_types=$(jq -r '.agents_types // ""' "$CACHE_FILE" 2>/dev/null || echo "")
-    cache_agents_total=$(jq -r '.agents_total // 0' "$CACHE_FILE" 2>/dev/null || echo 0)
+if [[ -n "$SNAPSHOT" ]] && printf '%s' "$SNAPSHOT" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+    # -----------------------------------------------------------------------
+    # Runtime path: parse snapshot fields and build HUD from them.
+    # All fields default safely via jq // operator so missing keys never
+    # cause the script to crash.
+    # -----------------------------------------------------------------------
+    PROOF=$(printf '%s' "$SNAPSHOT"      | jq -r '.proof_status // "idle"')
+    AGENT=$(printf '%s' "$SNAPSHOT"      | jq -r '.active_agent // "null"')
+    WT_COUNT=$(printf '%s' "$SNAPSHOT"   | jq -r '.worktree_count // 0')
+    DISPATCH=$(printf '%s' "$SNAPSHOT"   | jq -r '.dispatch_status // "null"')
+    INITIATIVE=$(printf '%s' "$SNAPSHOT" | jq -r '.dispatch_initiative // "null"')
+
+    # Build HUD as array of key:value parts then join with spaces.
+    PARTS=()
+    PARTS+=("proof:$PROOF")
+
+    # Agent — omit when null/none (no active agent is the common case; keep HUD lean)
+    if [[ "$AGENT" != "none" && "$AGENT" != "null" && -n "$AGENT" ]]; then
+        PARTS+=("agent:$AGENT")
+    fi
+
+    # Worktree count — omit when 0
+    if [[ "$WT_COUNT" -gt 0 ]]; then
+        PARTS+=("wt:$WT_COUNT")
+    fi
+
+    # Dispatch next role — omit when queue is empty
+    if [[ -n "$DISPATCH" && "$DISPATCH" != "null" ]]; then
+        PARTS+=("next:$DISPATCH")
+    fi
+
+    # Dispatch initiative — omit when no active cycle
+    if [[ -n "$INITIATIVE" && "$INITIATIVE" != "null" ]]; then
+        PARTS+=("init:$INITIATIVE")
+    fi
+
+    printf '%s' "${PARTS[*]}"
+else
+    # -----------------------------------------------------------------------
+    # Fallback path: runtime is unavailable.
+    # Render a minimal HUD from git state so the statusline is never blank.
+    # The "(no runtime)" marker lets the user know this is degraded output.
+    # -----------------------------------------------------------------------
+    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+    DIRTY=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    printf '%s' "branch:$BRANCH dirty:$DIRTY (no runtime)"
 fi
-
-# Build status line
-# Colors: dim=model, bold cyan=workspace, yellow=time, magenta=todos, green=version
-# \033[2m = dim, \033[1;36m = bold cyan, \033[33m = yellow
-# \033[35m = magenta, \033[32m = green, \033[0m = reset
-
-sep='\033[2m│\033[0m'
-
-line=$(printf '\033[2m%s\033[0m \033[1;36m%s\033[0m %b \033[33m%s\033[0m' \
-    "$model" "$workspace" "$sep" "$timestamp")
-
-# Git dirty (red, only if > 0)
-if [[ "$cache_dirty" -gt 0 ]]; then
-    line=$(printf '%s %b \033[31m%d dirty\033[0m' "$line" "$sep" "$cache_dirty")
-fi
-
-# Worktrees (cyan, only if > 0)
-if [[ "$cache_wt" -gt 0 ]]; then
-    line=$(printf '%s %b \033[36mWT:%d\033[0m' "$line" "$sep" "$cache_wt")
-fi
-
-# Plan phase (blue or dim)
-if [[ -n "$cache_plan" && "$cache_plan" != "no plan" ]]; then
-    line=$(printf '%s %b \033[34m%s\033[0m' "$line" "$sep" "$cache_plan")
-elif [[ "$cache_plan" == "no plan" ]]; then
-    line=$(printf '%s %b \033[2m%s\033[0m' "$line" "$sep" "$cache_plan")
-fi
-
-# Test status (green=pass, red=fail, dim=unknown)
-if [[ "$cache_test" == "pass" ]]; then
-    line=$(printf '%s %b \033[32m✓ tests\033[0m' "$line" "$sep" )
-elif [[ "$cache_test" == "fail" ]]; then
-    line=$(printf '%s %b \033[31m✗ tests\033[0m' "$line" "$sep")
-fi
-
-# Subagents (yellow, only if active > 0)
-if [[ "$cache_agents" -gt 0 && -n "$cache_agents_types" ]]; then
-    line=$(printf '%s %b \033[33m⚡%d agents (%s)\033[0m' "$line" "$sep" "$cache_agents" "$cache_agents_types")
-elif [[ "$cache_agents" -gt 0 ]]; then
-    line=$(printf '%s %b \033[33m⚡%d agents\033[0m' "$line" "$sep" "$cache_agents")
-fi
-
-# Add todo segment only if count > 0
-if [[ "$todo_count" -gt 0 ]]; then
-    local_s=""
-    [[ "$todo_count" -ne 1 ]] && local_s="s"
-    line=$(printf '%s %b \033[35m%d todo%s\033[0m' "$line" "$sep" "$todo_count" "$local_s")
-fi
-
-# Version
-line=$(printf '%s %b \033[32m%s\033[0m' "$line" "$sep" "$version")
-
-printf '%s' "$line"
