@@ -193,6 +193,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/check-planner.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/post-task.sh",
+            "timeout": 5
           }
         ]
       },
@@ -202,6 +207,11 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-implementer.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
         ]
@@ -213,6 +223,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/check-tester.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/post-task.sh",
+            "timeout": 5
           }
         ]
       },
@@ -222,6 +237,11 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-guardian.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
         ]
