@@ -109,6 +109,11 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/hooks/write-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/doc-gate.sh",
             "timeout": 5
           },
