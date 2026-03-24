@@ -97,7 +97,7 @@ tables = {r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type
 print(','.join(sorted(tables)))
 " 2>/dev/null || echo "ERROR")
 # sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns
-EXPECTED="agent_markers,dispatch_cycles,dispatch_queue,events,proof_state,sqlite_sequence,worktrees"
+EXPECTED="agent_markers,dispatch_cycles,dispatch_queue,events,proof_state,sqlite_sequence,trace_manifest,traces,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))
