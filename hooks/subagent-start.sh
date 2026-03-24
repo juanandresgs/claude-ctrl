@@ -25,7 +25,10 @@ CONTEXT_PARTS=()
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 
-# Track subagent spawn
+# Track subagent spawn in runtime marker store (primary) and flat-file tracker
+# (backward compat). Using PID as the agent_id gives a stable per-process key
+# that subagent-stop can match when deactivating the marker.
+rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
 track_subagent_start "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}"
 
 CTX_LINE="Context:"
