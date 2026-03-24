@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# post-task.sh — Dispatch emission after agent completion.
+# SubagentStop hook — fires when a named agent task ends.
+#
+# Records the completion in the SQLite event store and enqueues the next
+# role in the canonical dispatch flow (planner→implementer→tester→guardian).
+# Returns an additionalContext suggestion so the orchestrator sees the next
+# dispatch step in its context window without requiring manual tracking.
+#
+# @decision DEC-DISPATCH-001
+# @title Dispatch queue emission on agent stop
+# @status accepted
+# @rationale The canonical flow (planner→implementer→tester→guardian) was
+#   previously prompt-driven with no persistent queue. This hook records
+#   completions in SQLite via cc-policy and suggests next steps, making
+#   the flow visible and auditable without forcing automatic dispatch.
+#   The guardian case produces no suggestion because the cycle is complete.
+#   Unknown/absent agent_type exits silently — hooks must not interfere
+#   with inputs they do not own.
+set -euo pipefail
+
+source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/lib/runtime-bridge.sh"
+
+# ---------------------------------------------------------------------------
+# Read and validate hook input
+# ---------------------------------------------------------------------------
+
+HOOK_INPUT=$(read_input)
+
+# Tolerate both snake_case and camelCase field names for agent type
+AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
+    .agent_type //
+    .agentType  //
+    empty
+' 2>/dev/null || true)
+
+# Exit silently when agent_type is absent or empty; this hook only acts on
+# named agent completions in the canonical flow.
+[[ -z "$AGENT_TYPE" ]] && exit 0
+
+# ---------------------------------------------------------------------------
+# Record completion event in the audit store
+# ---------------------------------------------------------------------------
+
+rt_event_emit "agent_complete" "Agent $AGENT_TYPE completed" || true
+
+# ---------------------------------------------------------------------------
+# Determine the next role in the canonical dispatch flow
+# ---------------------------------------------------------------------------
+
+NEXT_ROLE=""
+case "$AGENT_TYPE" in
+    planner|Plan)  NEXT_ROLE="implementer" ;;
+    implementer)   NEXT_ROLE="tester"      ;;
+    tester)        NEXT_ROLE="guardian"    ;;
+    guardian)      NEXT_ROLE=""            ;;  # dispatch cycle complete
+    *)             exit 0                  ;;  # unknown type — stay silent
+esac
+
+# ---------------------------------------------------------------------------
+# Enqueue the next role (when applicable) and emit a context suggestion
+# ---------------------------------------------------------------------------
+
+if [[ -n "$NEXT_ROLE" ]]; then
+    # Enqueue into the persistent dispatch queue; failure is non-fatal so a
+    # degraded runtime does not block the agent conversation.
+    _rt_ensure_schema
+    cc_policy dispatch enqueue "$NEXT_ROLE" >/dev/null 2>&1 || true
+
+    SUGGESTION="Canonical flow suggests dispatching: $NEXT_ROLE"
+    ESCAPED=$(printf '%s' "$SUGGESTION" | jq -Rs .)
+    cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStop",
+    "additionalContext": $ESCAPED
+  }
+}
+EOF
+else
+    # Guardian is the terminal role — record cycle completion and stay silent
+    # (no additionalContext output so the orchestrator is not given a phantom
+    # next step).
+    rt_event_emit "cycle_complete" "Guardian completed — dispatch cycle done" || true
+fi
+
+exit 0
