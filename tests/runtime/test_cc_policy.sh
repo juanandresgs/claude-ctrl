@@ -97,7 +97,7 @@ tables = {r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type
 print(','.join(sorted(tables)))
 " 2>/dev/null || echo "ERROR")
 # sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns
-EXPECTED="agent_markers,dispatch_cycles,dispatch_queue,events,proof_state,sqlite_sequence,trace_manifest,traces,worktrees"
+EXPECTED="agent_markers,dispatch_cycles,dispatch_queue,events,proof_state,session_tokens,sqlite_sequence,todo_state,trace_manifest,traces,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))
@@ -253,6 +253,60 @@ for KEY in proof_status active_agent worktree_count dispatch_status recent_event
         FAIL=$((FAIL + 1))
     fi
 done
+
+# ---------------------------------------------------------------------------
+# Tokens
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tokens ---"
+
+OUT=$(cc tokens upsert "pid:1234" "proj-abc1" 50000)
+assert_ok "tokens upsert returns ok" "$OUT"
+
+OUT=$(cc tokens lifetime "proj-abc1")
+assert_ok "tokens lifetime returns ok" "$OUT"
+assert_field "tokens lifetime total" "$OUT" "total" "50000"
+
+# Second upsert replaces — no double-count
+OUT=$(cc tokens upsert "pid:1234" "proj-abc1" 80000)
+OUT=$(cc tokens lifetime "proj-abc1")
+assert_field "tokens upsert replaces (no double-count)" "$OUT" "total" "80000"
+
+# Two sessions sum correctly
+OUT=$(cc tokens upsert "pid:5678" "proj-abc1" 20000)
+OUT=$(cc tokens lifetime "proj-abc1")
+assert_field "tokens two sessions sum" "$OUT" "total" "100000"
+
+# Unknown project returns 0
+OUT=$(cc tokens lifetime "unknown-hash")
+assert_field "tokens lifetime unknown project=0" "$OUT" "total" "0"
+
+# ---------------------------------------------------------------------------
+# Todos
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Todos ---"
+
+OUT=$(cc todos set "proj-td1" 3 10)
+assert_ok "todos set returns ok" "$OUT"
+
+OUT=$(cc todos get "proj-td1")
+assert_ok "todos get returns ok" "$OUT"
+assert_field "todos get project count" "$OUT" "project" "3"
+assert_field "todos get global count" "$OUT" "global" "10"
+assert_field "todos get found=True" "$OUT" "found" "True"
+
+# Upsert replaces
+OUT=$(cc todos set "proj-td1" 1 5)
+OUT=$(cc todos get "proj-td1")
+assert_field "todos set replaces project count" "$OUT" "project" "1"
+assert_field "todos set replaces global count" "$OUT" "global" "5"
+
+# Missing project returns zeros
+OUT=$(cc todos get "no-such-project")
+assert_field "todos get missing found=False" "$OUT" "found" "False"
+assert_field "todos get missing project=0" "$OUT" "project" "0"
+assert_field "todos get missing global=0" "$OUT" "global" "0"
 
 # ---------------------------------------------------------------------------
 # Latency

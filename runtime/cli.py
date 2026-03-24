@@ -39,6 +39,8 @@ import runtime.core.worktrees as worktrees_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.traces as traces_mod
+import runtime.core.tokens as tokens_mod
+import runtime.core.todos as todos_mod
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
 
@@ -287,6 +289,48 @@ _SIDECAR_REGISTRY = {
 }
 
 
+def _handle_tokens(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "upsert":
+            tokens_mod.upsert(
+                conn,
+                session_id=args.session_id,
+                project_hash=args.project_hash,
+                total_tokens=int(args.total_tokens),
+            )
+            return _ok({"session_id": args.session_id, "project_hash": args.project_hash})
+
+        elif args.action == "lifetime":
+            result = tokens_mod.lifetime(conn, args.project_hash)
+            return _ok(result)
+
+    finally:
+        conn.close()
+    return _err(f"unknown tokens action: {args.action}")
+
+
+def _handle_todos(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "set":
+            todos_mod.set_counts(
+                conn,
+                project_hash=args.project_hash,
+                project_count=int(args.project_count),
+                global_count=int(args.global_count),
+            )
+            return _ok({"project_hash": args.project_hash})
+
+        elif args.action == "get":
+            result = todos_mod.get_counts(conn, args.project_hash)
+            return _ok(result)
+
+    finally:
+        conn.close()
+    return _err(f"unknown todos action: {args.action}")
+
+
 def _handle_sidecar(args) -> int:
     """Dispatch to shadow-mode sidecar subcommands.
 
@@ -444,6 +488,30 @@ def build_parser() -> argparse.ArgumentParser:
     tr_recent.add_argument("--limit", type=int, default=10,
                            help="Maximum number of traces to return (default 10)")
 
+    # tokens
+    tok_p = subparsers.add_parser("tokens", help="Session token accumulation")
+    tok_sub = tok_p.add_subparsers(dest="action", required=True)
+
+    tok_upsert = tok_sub.add_parser("upsert", help="Write session token total")
+    tok_upsert.add_argument("session_id", help="Session identifier (e.g. pid:1234)")
+    tok_upsert.add_argument("project_hash", help="8-char project hash")
+    tok_upsert.add_argument("total_tokens", type=int, help="Running token total for this session")
+
+    tok_lifetime = tok_sub.add_parser("lifetime", help="Sum tokens across all sessions for a project")
+    tok_lifetime.add_argument("project_hash", help="8-char project hash")
+
+    # todos
+    td_p = subparsers.add_parser("todos", help="Project-scoped todo counts")
+    td_sub = td_p.add_subparsers(dest="action", required=True)
+
+    td_set = td_sub.add_parser("set", help="Write project and global todo counts")
+    td_set.add_argument("project_hash", help="8-char project hash")
+    td_set.add_argument("project_count", type=int, help="Project-scoped todo count")
+    td_set.add_argument("global_count", type=int, help="Global todo count")
+
+    td_get = td_sub.add_parser("get", help="Read todo counts for a project")
+    td_get.add_argument("project_hash", help="8-char project hash")
+
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
     sc_sub = sc_p.add_subparsers(dest="action", required=True)
@@ -489,6 +557,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_statusline(args)
     if args.domain == "trace":
         return _handle_trace(args)
+    if args.domain == "tokens":
+        return _handle_tokens(args)
+    if args.domain == "todos":
+        return _handle_todos(args)
     if args.domain == "sidecar":
         return _handle_sidecar(args)
 
