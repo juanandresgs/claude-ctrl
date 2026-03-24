@@ -14,10 +14,12 @@
 #   confirms equivalence.
 #
 # Policy check order (first deny wins):
-#   1. branch-guard  — block source writes on main/master
-#   2. write-guard   — WHO: only implementer may write source files
-#   3. plan-guard    — WHO: only planner may write governance markdown
-#   4. plan-check    — plan existence + staleness gate for source writes
+#   1. branch-guard          — block source writes on main/master
+#   2. write-guard           — WHO: only implementer may write source files
+#   3. plan-guard            — WHO: only planner may write governance markdown
+#   4. plan-check            — plan existence + staleness gate for source writes
+#   5. plan-immutability     — permanent sections may not be rewritten (TKT-010)
+#   6. decision-log          — decision log entries are append-only (TKT-010)
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,7 +30,7 @@ HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
 [[ -z "$FILE_PATH" ]] && exit 0
 
-CHECKS=(check_branch_guard check_write_who check_plan_guard check_plan_exists)
+CHECKS=(check_branch_guard check_write_who check_plan_guard check_plan_exists check_plan_immutability_hook check_decision_log_hook)
 CONTEXT_PARTS=()
 
 for check_fn in "${CHECKS[@]}"; do
