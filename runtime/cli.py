@@ -39,6 +39,8 @@ import runtime.core.worktrees as worktrees_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.traces as traces_mod
+from sidecars.observatory.observe import Observatory
+from sidecars.search.search import SearchIndex
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +277,60 @@ def _handle_trace(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Sidecar handlers
+# ---------------------------------------------------------------------------
+
+# Registry of available sidecars by name, for `cc-policy sidecar list`
+_SIDECAR_REGISTRY = {
+    "observatory": "Read-only health observer over all runtime state domains",
+    "search":      "Read-only text search over traces and manifest entries",
+}
+
+
+def _handle_sidecar(args) -> int:
+    """Dispatch to shadow-mode sidecar subcommands.
+
+    Subcommands:
+      observatory       Run the observatory and print a JSON health report.
+      search <query>    Search traces and manifest entries for <query>.
+      list              Print the registry of available sidecars as JSON.
+
+    All sidecar subcommands are read-only: they open a db connection,
+    call observe() on the relevant sidecar class, and print JSON to stdout.
+    They never write to any canonical table.
+    """
+    conn = _get_conn()
+    try:
+        if args.action == "observatory":
+            obs = Observatory("observatory", conn)
+            obs.observe()
+            return _ok(obs.report())
+
+        elif args.action == "search":
+            si = SearchIndex("search", conn)
+            si.observe()
+            results = si.search(args.query, limit=getattr(args, "limit", 10))
+            return _ok({
+                "query": args.query,
+                "count": len(results),
+                "results": results,
+            })
+
+        elif args.action == "list":
+            return _ok({
+                "sidecars": [
+                    {"name": k, "description": v}
+                    for k, v in _SIDECAR_REGISTRY.items()
+                ],
+                "count": len(_SIDECAR_REGISTRY),
+            })
+
+    finally:
+        conn.close()
+    return _err(f"unknown sidecar action: {args.action}")
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -388,6 +444,18 @@ def build_parser() -> argparse.ArgumentParser:
     tr_recent.add_argument("--limit", type=int, default=10,
                            help="Maximum number of traces to return (default 10)")
 
+    # sidecar
+    sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
+    sc_sub = sc_p.add_subparsers(dest="action", required=True)
+
+    sc_sub.add_parser("observatory", help="Run observatory health report")
+    sc_sub.add_parser("list", help="List available sidecars")
+
+    sc_search = sc_sub.add_parser("search", help="Search traces and manifest entries")
+    sc_search.add_argument("query", help="Search term (case-insensitive substring)")
+    sc_search.add_argument("--limit", type=int, default=10,
+                           help="Maximum results to return (default 10)")
+
     return parser
 
 
@@ -421,6 +489,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_statusline(args)
     if args.domain == "trace":
         return _handle_trace(args)
+    if args.domain == "sidecar":
+        return _handle_sidecar(args)
 
     return _err(f"unknown domain: {args.domain}")
 
