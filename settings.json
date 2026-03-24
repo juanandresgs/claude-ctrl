@@ -58,7 +58,7 @@
       "Read(**/*credentials*)"
     ],
     "ask": [],
-    "defaultMode": "plan"
+    "defaultMode": "bypassPermissions"
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
@@ -104,27 +104,12 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/branch-guard.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/write-guard.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/plan-guard.sh",
-            "timeout": 5
+            "command": "$HOME/.claude/hooks/pre-write.sh",
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/doc-gate.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/plan-check.sh",
             "timeout": 5
           }
         ]
@@ -134,8 +119,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/guard.sh",
-            "timeout": 5
+            "command": "$HOME/.claude/hooks/pre-bash.sh",
+            "timeout": 10
           },
           {
             "type": "command",
