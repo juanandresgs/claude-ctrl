@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# test-enforcement-matrix.sh — Comprehensive deny/allow matrix for every
+# role x action combination in the kernel WHO enforcement surface.
+#
+# Matrix:
+#   Role          | Source Write | Governance Write | Git Op  | Expected
+#   --------------|--------------|-----------------|---------|--------
+#   none (orch.)  |    DENY      |      DENY       |  DENY   |   pass
+#   planner       |    DENY      |      ALLOW      |  DENY   |   pass
+#   implementer   |    ALLOW     |      DENY       |  DENY   |   pass
+#   tester        |    DENY      |      DENY       |  DENY   |   pass
+#   guardian      |    DENY      |      DENY       |  ALLOW* |   pass
+#
+#   *Guardian git allow requires proof=verified + test-status=pass.
+#
+# @decision DEC-ACC-002
+# @title Enforcement matrix covers every WHO x action cell independently
+# @status accepted
+# @rationale A regression in one role must not hide behind passing cells in
+#   another. Each row uses its own isolated temp project so state never leaks.
+#   Tests drive the real hook scripts (pre-write.sh, guard.sh) with synthetic
+#   JSON payloads — identical to the production execution path.
+#
+# Usage:  bash tests/acceptance/test-enforcement-matrix.sh
+# Exit:   0 all pass, 1 any fail
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PRE_WRITE="$REPO_ROOT/hooks/pre-write.sh"
+GUARD="$REPO_ROOT/hooks/guard.sh"
+TMP_BASE="$REPO_ROOT/tmp/enforce-matrix-$$"
+
+PASS=0
+FAIL=0
+FAILED_CASES=()
+
+cleanup() { rm -rf "$TMP_BASE"; }
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Project factory: minimal git project on a feature branch with MASTER_PLAN.md
+# ---------------------------------------------------------------------------
+make_project() {
+    local name="$1"
+    local dir="$TMP_BASE/$name"
+    mkdir -p "$dir/.claude" "$dir/src"
+    git -C "$dir" init -q
+    git -C "$dir" checkout -b feature/enforce-test -q 2>/dev/null || true
+    git -C "$dir" commit --allow-empty -m "init" -q
+    printf '# Plan\n## Status: in-progress\n' > "$dir/MASTER_PLAN.md"
+    git -C "$dir" add MASTER_PLAN.md
+    git -C "$dir" commit -m "add plan" -q
+    printf '%s\n' "$dir"
+}
+
+set_role() {
+    local project_dir="$1" role="$2"
+    if [[ -n "$role" ]]; then
+        printf 'ACTIVE|%s|%s\n' "$role" "$(date +%s)" \
+            > "$project_dir/.claude/.subagent-tracker"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Assertion helpers
+# ---------------------------------------------------------------------------
+assert_deny() {
+    local label="$1" output="$2"
+    local decision
+    decision=$(printf '%s' "$output" \
+        | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    if [[ "$decision" == "deny" ]]; then
+        printf '  PASS: %s\n' "$label"; PASS=$(( PASS + 1 ))
+    else
+        printf '  FAIL: %s — expected deny, got "%s"\n' "$label" "$decision"
+        [[ -n "$output" ]] && printf '       output: %s\n' "$output"
+        FAIL=$(( FAIL + 1 )); FAILED_CASES+=("$label")
+    fi
+}
+
+assert_allow() {
+    local label="$1" output="$2"
+    local decision
+    decision=$(printf '%s' "$output" \
+        | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    if [[ "$decision" == "deny" ]]; then
+        local reason
+        reason=$(printf '%s' "$output" \
+            | jq -r '.hookSpecificOutput.permissionDecisionReason // "(none)"' 2>/dev/null)
+        printf '  FAIL: %s — unexpected deny: %s\n' "$label" "$reason"
+        FAIL=$(( FAIL + 1 )); FAILED_CASES+=("$label")
+    else
+        printf '  PASS: %s\n' "$label"; PASS=$(( PASS + 1 ))
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Action runners
+# ---------------------------------------------------------------------------
+run_source_write() {
+    local project_dir="$1"
+    local payload
+    payload=$(jq -n \
+        --arg fp "$project_dir/src/app.py" \
+        '{tool_name:"Write",tool_input:{file_path:$fp,content:"x=1"}}')
+    printf '%s' "$payload" \
+        | CLAUDE_PROJECT_DIR="$project_dir" "$PRE_WRITE" 2>/dev/null || true
+}
+
+run_governance_write() {
+    local project_dir="$1"
+    local payload
+    payload=$(jq -n \
+        --arg fp "$project_dir/MASTER_PLAN.md" \
+        '{tool_name:"Write",tool_input:{file_path:$fp,content:"# Plan"}}')
+    printf '%s' "$payload" \
+        | CLAUDE_PROJECT_DIR="$project_dir" "$PRE_WRITE" 2>/dev/null || true
+}
+
+# Guardian git allow: pre-set proof + test gates, then run guard.sh.
+# All other roles: gates absent so guard.sh denies at WHO check.
+run_git_op() {
+    local project_dir="$1" role="$2"
+    local workflow_id="feature-enforce-test"
+
+    if [[ "$role" == "guardian" ]]; then
+        printf 'pass|0|%s\n' "$(date +%s)" > "$project_dir/.claude/.test-status"
+        printf 'verified|%s\n' "$(date +%s)" \
+            > "$project_dir/.claude/.proof-status-${workflow_id}"
+    fi
+
+    # Use "git status" as the command; guard.sh only enforces WHO on
+    # commit/merge/push — but we need to test the commit gate specifically.
+    # Pass a commit command string; guard.sh pattern-matches on it.
+    local payload
+    payload=$(jq -n \
+        --arg cmd "git commit --allow-empty -m test" \
+        --arg cwd "$project_dir" \
+        '{tool_name:"Bash",tool_input:{command:$cmd},cwd:$cwd}')
+    printf '%s' "$payload" \
+        | CLAUDE_PROJECT_DIR="$project_dir" "$GUARD" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Row 1: orchestrator (no role)
+# ---------------------------------------------------------------------------
+printf '\n=== Row 1: orchestrator (no role) ===\n'
+proj=$(make_project "orch")
+
+assert_deny  "orchestrator: source write denied"     "$(run_source_write     "$proj")"
+assert_deny  "orchestrator: governance write denied" "$(run_governance_write "$proj")"
+assert_deny  "orchestrator: git op denied"           "$(run_git_op           "$proj" "")"
+
+# ---------------------------------------------------------------------------
+# Row 2: planner
+# ---------------------------------------------------------------------------
+printf '\n=== Row 2: planner ===\n'
+proj=$(make_project "planner")
+set_role "$proj" "planner"
+
+assert_deny  "planner: source write denied"      "$(run_source_write     "$proj")"
+assert_allow "planner: governance write allowed" "$(run_governance_write "$proj")"
+assert_deny  "planner: git op denied"            "$(run_git_op           "$proj" "planner")"
+
+# ---------------------------------------------------------------------------
+# Row 3: implementer
+# ---------------------------------------------------------------------------
+printf '\n=== Row 3: implementer ===\n'
+proj=$(make_project "impl")
+set_role "$proj" "implementer"
+
+assert_allow "implementer: source write allowed"    "$(run_source_write     "$proj")"
+assert_deny  "implementer: governance write denied" "$(run_governance_write "$proj")"
+assert_deny  "implementer: git op denied"           "$(run_git_op           "$proj" "implementer")"
+
+# ---------------------------------------------------------------------------
+# Row 4: tester
+# ---------------------------------------------------------------------------
+printf '\n=== Row 4: tester ===\n'
+proj=$(make_project "tester")
+set_role "$proj" "tester"
+
+assert_deny  "tester: source write denied"     "$(run_source_write     "$proj")"
+assert_deny  "tester: governance write denied" "$(run_governance_write "$proj")"
+assert_deny  "tester: git op denied"           "$(run_git_op           "$proj" "tester")"
+
+# ---------------------------------------------------------------------------
+# Row 5: guardian
+# ---------------------------------------------------------------------------
+printf '\n=== Row 5: guardian ===\n'
+proj=$(make_project "guardian")
+set_role "$proj" "guardian"
+
+assert_deny  "guardian: source write denied"              "$(run_source_write     "$proj")"
+assert_deny  "guardian: governance write denied"          "$(run_governance_write "$proj")"
+assert_allow "guardian: git op allowed (gates satisfied)" "$(run_git_op           "$proj" "guardian")"
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+printf '\n=== test-enforcement-matrix: %d passed, %d failed ===\n' "$PASS" "$FAIL"
+
+if [[ "$FAIL" -gt 0 ]]; then
+    printf 'Failed cases:\n'
+    for c in "${FAILED_CASES[@]}"; do printf '  - %s\n' "$c"; done
+    printf '\nFAIL: test-enforcement-matrix\n'
+    exit 1
+fi
+
+printf 'PASS: test-enforcement-matrix\n'
+exit 0
