@@ -38,6 +38,7 @@ import runtime.core.events as events_mod
 import runtime.core.worktrees as worktrees_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.statusline as statusline_mod
+import runtime.core.traces as traces_mod
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +227,53 @@ def _handle_statusline(args) -> int:
         conn.close()
 
 
+def _handle_trace(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "start":
+            sid = traces_mod.start_trace(
+                conn,
+                session_id=args.session_id,
+                agent_role=getattr(args, "role", None),
+                ticket=getattr(args, "ticket", None),
+            )
+            return _ok({"session_id": sid})
+
+        elif args.action == "end":
+            traces_mod.end_trace(
+                conn,
+                session_id=args.session_id,
+                summary=getattr(args, "summary", None),
+            )
+            return _ok({"session_id": args.session_id})
+
+        elif args.action == "manifest":
+            traces_mod.add_manifest_entry(
+                conn,
+                session_id=args.session_id,
+                entry_type=args.entry_type,
+                path=getattr(args, "path", None),
+                detail=getattr(args, "detail", None),
+            )
+            return _ok({"session_id": args.session_id, "entry_type": args.entry_type})
+
+        elif args.action == "get":
+            result = traces_mod.get_trace(conn, args.session_id)
+            if result is None:
+                return _ok({"found": False, "session_id": args.session_id})
+            result["found"] = True
+            return _ok(result)
+
+        elif args.action == "recent":
+            limit = getattr(args, "limit", 10)
+            rows = traces_mod.recent_traces(conn, limit=limit)
+            return _ok({"items": rows, "count": len(rows)})
+
+    finally:
+        conn.close()
+    return _err(f"unknown trace action: {args.action}")
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -309,6 +357,37 @@ def build_parser() -> argparse.ArgumentParser:
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
     sl_sub.add_parser("snapshot")
 
+    # trace
+    tr_p = subparsers.add_parser("trace", help="Trace-lite session manifests and summaries")
+    tr_sub = tr_p.add_subparsers(dest="action", required=True)
+
+    tr_start = tr_sub.add_parser("start", help="Begin a new trace for a session")
+    tr_start.add_argument("session_id")
+    tr_start.add_argument("--role", dest="role", default=None,
+                          help="Agent role (implementer, tester, planner, ...)")
+    tr_start.add_argument("--ticket", default=None,
+                          help="Ticket reference (e.g. TKT-013)")
+
+    tr_end = tr_sub.add_parser("end", help="Close a trace with optional summary")
+    tr_end.add_argument("session_id")
+    tr_end.add_argument("--summary", default=None,
+                        help="Human-readable summary of what the session accomplished")
+
+    tr_manifest = tr_sub.add_parser("manifest",
+                                    help="Add a manifest entry to a trace")
+    tr_manifest.add_argument("session_id")
+    tr_manifest.add_argument("entry_type",
+                             help="Entry type: file_read, file_write, decision, command, event")
+    tr_manifest.add_argument("--path", default=None, help="File path (for file_read/file_write)")
+    tr_manifest.add_argument("--detail", default=None, help="Description of the entry")
+
+    tr_get = tr_sub.add_parser("get", help="Get a trace with its manifest")
+    tr_get.add_argument("session_id")
+
+    tr_recent = tr_sub.add_parser("recent", help="List recent traces")
+    tr_recent.add_argument("--limit", type=int, default=10,
+                           help="Maximum number of traces to return (default 10)")
+
     return parser
 
 
@@ -340,6 +419,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_dispatch(args)
     if args.domain == "statusline":
         return _handle_statusline(args)
+    if args.domain == "trace":
+        return _handle_trace(args)
 
     return _err(f"unknown domain: {args.domain}")
 
