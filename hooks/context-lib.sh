@@ -8,6 +8,19 @@
 # and worktree listing code. A shared library eliminates drift and reduces
 # maintenance surface. Status: accepted.
 #
+# @decision DEC-CTX-001
+# @title Dual-write migration: runtime primary, flat-file fallback
+# @status accepted
+# @rationale TKT-007 migrates shared workflow state (proof, markers, audit)
+#   from flat files to the SQLite runtime. During migration the flat files
+#   remain as a fallback so nothing breaks if the runtime is temporarily
+#   unavailable. State functions read runtime first; if the runtime call
+#   returns empty they fall back to the flat file. All writes go to both
+#   the runtime and the flat file. The flat-file deletion happens in TKT-008
+#   once the thin hooks prove end-to-end correctness. This pattern means
+#   every caller is insulated from both the old and new authority without
+#   needing to know which is live.
+#
 # Provides:
 #   get_git_state <project_root>     - Populates GIT_BRANCH, GIT_DIRTY_COUNT,
 #                                      GIT_WORKTREES, GIT_WT_COUNT
@@ -22,6 +35,14 @@
 #                                      DRIFT_UNIMPLEMENTED_COUNT,
 #                                      DRIFT_MISSING_DECISIONS,
 #                                      DRIFT_LAST_AUDIT_EPOCH
+
+# Source the runtime bridge so rt_proof_*, rt_marker_*, rt_event_* are available.
+# __CONTEXT_LIB_DIR is resolved once here; sourcing hooks set $0 differently so
+# we cannot rely on $(dirname "$0") being stable when this library is sourced
+# from multiple callers in the same process.
+__CONTEXT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/runtime-bridge.sh
+source "${__CONTEXT_LIB_DIR}/lib/runtime-bridge.sh"
 
 # --- Git state ---
 get_git_state() {
@@ -171,11 +192,16 @@ is_skippable_path() {
 }
 
 # --- Audit trail ---
+# Dual-writes: runtime event store (primary) + flat file (fallback/compat).
 append_audit() {
-    local root="$1" event="$2" detail="$3"
+    local root="$1" event="$2" detail="${3:-}"
+    # Runtime primary: emit to SQLite event store
+    rt_event_emit "$event" "$detail" || true
+    # Flat-file compat: keep appending during migration so nothing that reads
+    # .audit-log directly breaks before TKT-008 removes it.
     local audit_file="$root/.claude/.audit-log"
     mkdir -p "$root/.claude"
-    echo "$(date -u +%Y-%m-%dT%H:%M:%S)|${event}|${detail}" >> "$audit_file"
+    printf '%s|%s|%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S)" "$event" "$detail" >> "$audit_file" 2>/dev/null || true
 }
 
 # --- Session and workflow identity ---
@@ -241,18 +267,40 @@ read_proof_status() {
     local root="$1"
     local workflow_id="${2:-}"
     local proof_file
+    local status=""
 
-    proof_file=$(resolve_proof_file "$root" "$workflow_id")
-    read_proof_status_file "$proof_file"
+    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
+
+    # Runtime primary: query SQLite proof store
+    status=$(rt_proof_get "$workflow_id" 2>/dev/null) || status=""
+
+    # Flat-file fallback: used when runtime unavailable or DB not yet seeded
+    if [[ -z "$status" ]]; then
+        proof_file=$(resolve_proof_file "$root" "$workflow_id")
+        status=$(read_proof_status_file "$proof_file")
+    fi
+
+    printf '%s\n' "${status:-idle}"
 }
 
 read_proof_timestamp() {
     local root="$1"
     local workflow_id="${2:-}"
     local proof_file
+    local ts=""
 
-    proof_file=$(resolve_proof_file "$root" "$workflow_id")
-    read_proof_timestamp_file "$proof_file"
+    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
+
+    # Runtime primary: query SQLite proof store for updated_at
+    ts=$(rt_proof_timestamp "$workflow_id" 2>/dev/null) || ts=""
+
+    # Flat-file fallback
+    if [[ -z "$ts" || "$ts" == "0" ]]; then
+        proof_file=$(resolve_proof_file "$root" "$workflow_id")
+        ts=$(read_proof_timestamp_file "$proof_file")
+    fi
+
+    printf '%s\n' "${ts:-0}"
 }
 
 write_proof_status() {
@@ -262,6 +310,11 @@ write_proof_status() {
     local proof_file
 
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
+
+    # Runtime primary: upsert into SQLite proof store
+    rt_proof_set "$workflow_id" "$status" || true
+
+    # Flat-file compat: dual-write during migration
     proof_file=$(resolve_proof_file "$root" "$workflow_id")
     mkdir -p "$root/.claude"
     printf '%s|%s\n' "$status" "$(date +%s)" > "$proof_file"
@@ -334,13 +387,20 @@ current_active_agent_role() {
     local tracker="$root/.claude/.subagent-tracker"
     local role=""
 
+    # Env var takes precedence — explicit override always wins
     if [[ -n "${CLAUDE_AGENT_ROLE:-}" ]]; then
         printf '%s\n' "$CLAUDE_AGENT_ROLE"
         return 0
     fi
 
-    if [[ -f "$tracker" ]]; then
-        role=$(awk -F'|' '$1=="ACTIVE"{active=$2} END{print active}' "$tracker" 2>/dev/null || true)
+    # Runtime primary: query SQLite agent_markers for the active role
+    role=$(rt_marker_get_active_role 2>/dev/null) || role=""
+
+    # Flat-file fallback: read .subagent-tracker when runtime returns empty
+    if [[ -z "$role" ]]; then
+        if [[ -f "$tracker" ]]; then
+            role=$(awk -F'|' '$1=="ACTIVE"{active=$2} END{print active}' "$tracker" 2>/dev/null || true)
+        fi
     fi
 
     printf '%s\n' "$role"
@@ -366,10 +426,25 @@ is_claude_meta_repo() {
 # @rationale Hooks already compute git/plan/test state. Cache it so statusline.sh
 # can render rich status bar without re-computing or re-parsing. Atomic writes
 # prevent race conditions. JSON format for extensibility.
+# Runtime snapshot path added in TKT-007: when the runtime is available its
+# statusline snapshot is written directly, giving the statusline a richer
+# runtime-backed projection. Falls back to the computed-fields path when the
+# runtime is unavailable.
 write_statusline_cache() {
     local root="$1"
     local cache_file="$root/.claude/.statusline-cache"
     mkdir -p "$root/.claude"
+
+    # Runtime primary: write the runtime-backed snapshot directly to cache
+    local snapshot
+    snapshot=$(cc_policy statusline snapshot 2>/dev/null) || snapshot=""
+    if [[ -n "$snapshot" ]]; then
+        local tmp_cache="${cache_file}.tmp.$$"
+        printf '%s\n' "$snapshot" > "$tmp_cache" && mv "$tmp_cache" "$cache_file"
+        return 0
+    fi
+
+    # Fallback: compute cache from hook-gathered state (pre-runtime path)
 
     # Plan phase display
     local plan_display="no plan"
@@ -481,4 +556,5 @@ get_subagent_status() {
 
 # Export for subshells
 export SOURCE_EXTENSIONS
+export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit
 export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status
