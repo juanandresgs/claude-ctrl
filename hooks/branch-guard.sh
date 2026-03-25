@@ -62,6 +62,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
+    "blockingHook": "branch-guard.sh",
     "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Invoke the Guardian agent to create an isolated worktree for this work."
   }
 }

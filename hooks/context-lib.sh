@@ -52,7 +52,9 @@ get_git_state() {
     GIT_WORKTREES=""
     GIT_WT_COUNT=0
 
-    [[ ! -d "$root/.git" ]] && return
+    # Fix #465: In a worktree .git is a FILE (gitdir pointer), not a directory.
+    # Use git rev-parse to test git membership uniformly for both cases.
+    git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return
 
     GIT_BRANCH=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     GIT_DIRTY_COUNT=$(git -C "$root" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
@@ -95,7 +97,8 @@ get_plan_status() {
         PLAN_AGE_DAYS=$(( (now - plan_mod) / 86400 ))
 
         # Commits since last plan update
-        if [[ -d "$root/.git" ]]; then
+        # Fix #465: use git rev-parse instead of -d .git; works in worktrees too.
+        if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             local plan_date
             plan_date=$(date -r "$plan_mod" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$plan_mod" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
             if [[ -n "$plan_date" ]]; then

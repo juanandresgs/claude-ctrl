@@ -30,6 +30,12 @@ COMMAND=$(get_field '.tool_input.command')
 output=$(check_git_guard "$HOOK_INPUT")
 
 if [[ -n "$output" ]]; then
+    # Annotate deny with blockingHook so agents can diagnose which check fired.
+    # Fix #466: guard.sh runs 10 internal checks; without blockingHook agents
+    # see a generic denial and cannot determine which policy triggered it.
+    if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+        output=$(echo "$output" | jq '.hookSpecificOutput.blockingHook = "guard.sh"')
+    fi
     echo "$output"
 fi
 
