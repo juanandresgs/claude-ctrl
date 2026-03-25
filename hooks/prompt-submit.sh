@@ -118,7 +118,8 @@ if [[ -x "$TODO_SCRIPT" ]]; then
     if [[ -n "$ISSUE_REF" ]]; then
         ISSUE_NUM="${ISSUE_REF#\#}"
         # Auto-claim — fire and forget, don't block the prompt
-        if [[ -d "$PROJECT_ROOT/.git" ]]; then
+        # Fix #465: use -e (exists) instead of -d; in a worktree .git is a file.
+        if [[ -e "$PROJECT_ROOT/.git" ]]; then
             "$TODO_SCRIPT" claim "$ISSUE_NUM" --auto 2>/dev/null || true
         else
             "$TODO_SCRIPT" claim "$ISSUE_NUM" --global --auto 2>/dev/null || true
