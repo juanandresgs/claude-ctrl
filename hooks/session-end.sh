@@ -47,23 +47,15 @@ rm -f "$PROJECT_ROOT/.claude/.mock-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.track."*
 
 # DO NOT delete (cross-session state):
-#   .audit-log       — persistent audit trail
-#   .agent-findings  — pending agent issues
 #   .lint-breaker    — circuit breaker state
-#   .plan-drift      — decision drift data from last surface audit
 # NOTE: .test-status is cleared at session START (session-init.sh), not here.
 # It must survive session-end so session-init can read it for context injection,
 # then clears it to prevent stale results from satisfying the commit gate.
-
-# --- Trim audit log to prevent unbounded growth (keep last 100 entries) ---
-AUDIT_LOG="$PROJECT_ROOT/.claude/.audit-log"
-if [[ -f "$AUDIT_LOG" ]]; then
-    LINES=$(wc -l < "$AUDIT_LOG" | tr -d ' ')
-    if [[ "$LINES" -gt 100 ]]; then
-        tail -100 "$AUDIT_LOG" > "${AUDIT_LOG}.tmp"
-        mv "${AUDIT_LOG}.tmp" "$AUDIT_LOG"
-    fi
-fi
+#
+# TKT-008 removals — these flat files are no longer written and need no trimming:
+#   .audit-log       — audit trail now lives in SQLite (runtime event store)
+#   .agent-findings  — findings emitted via rt_event_emit "agent_finding"
+#   .plan-drift      — drift scoring removed; commit-count heuristic used instead
 
 log_info "SESSION-END" "Cleanup complete"
 exit 0

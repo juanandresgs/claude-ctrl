@@ -101,13 +101,18 @@ EOF
     exit 0
 fi
 
-# --- Plan staleness check (composite: churn % + drift IDs) ---
-# DECISION: Composite churn+drift staleness. Rationale: Raw commit count
-# doesn't normalize by project size or change significance. Source file churn
-# percentage is self-normalizing (consensus from multi-model deep research).
-# Decision drift from surface audit provides structural signal. Status: accepted.
+# --- Plan staleness check (churn % + commit-count heuristic) ---
+# @decision DEC-HOOK-007
+# @title TKT-008 — .plan-drift scoring removed; commit-count heuristic is the secondary signal
+# @status accepted
+# @rationale The .plan-drift flat file was written by surface.sh and read here
+#   to score decision drift. TKT-008 removes all flat-file reads from hot-path
+#   hooks. The plan-baseline immutability check (TKT-010) is a stronger structural
+#   gate than drift scoring. The commit-count heuristic (already present as the
+#   bootstrap fallback when no prior audit existed) is retained as the sole
+#   secondary signal alongside source-file churn %.
+#   get_drift_data() is now a no-op stub; DRIFT_LAST_AUDIT_EPOCH is always 0.
 get_plan_status "$PROJECT_ROOT"
-get_drift_data "$PROJECT_ROOT"
 
 # Churn tier (primary signal, self-normalizing by project size)
 CHURN_WARN_PCT="${PLAN_CHURN_WARN:-15}"
@@ -117,18 +122,10 @@ CHURN_TIER="ok"
 [[ "$PLAN_SOURCE_CHURN_PCT" -ge "$CHURN_DENY_PCT" ]] && CHURN_TIER="deny"
 [[ "$CHURN_TIER" == "ok" && "$PLAN_SOURCE_CHURN_PCT" -ge "$CHURN_WARN_PCT" ]] && CHURN_TIER="warn"
 
-# Drift tier (secondary signal, from last session's surface audit)
+# Commit-count heuristic (secondary signal; .plan-drift scoring removed TKT-008)
 DRIFT_TIER="ok"
-TOTAL_DRIFT=0
-if [[ "$DRIFT_LAST_AUDIT_EPOCH" -gt 0 ]]; then
-    TOTAL_DRIFT=$((DRIFT_UNPLANNED_COUNT + DRIFT_UNIMPLEMENTED_COUNT))
-    [[ "$TOTAL_DRIFT" -ge 5 ]] && DRIFT_TIER="deny"
-    [[ "$DRIFT_TIER" == "ok" && "$TOTAL_DRIFT" -ge 2 ]] && DRIFT_TIER="warn"
-else
-    # No prior audit — fall back to commit count as bootstrap heuristic
-    [[ "$PLAN_COMMITS_SINCE" -ge 100 ]] && DRIFT_TIER="deny"
-    [[ "$DRIFT_TIER" == "ok" && "$PLAN_COMMITS_SINCE" -ge 40 ]] && DRIFT_TIER="warn"
-fi
+[[ "$PLAN_COMMITS_SINCE" -ge 100 ]] && DRIFT_TIER="deny"
+[[ "$DRIFT_TIER" == "ok" && "$PLAN_COMMITS_SINCE" -ge 40 ]] && DRIFT_TIER="warn"
 
 # Composite: worst tier wins
 STALENESS="ok"
@@ -138,11 +135,7 @@ STALENESS="ok"
 # Build diagnostic reason string
 DIAG_PARTS=()
 [[ "$CHURN_TIER" != "ok" ]] && DIAG_PARTS+=("Source churn: ${PLAN_SOURCE_CHURN_PCT}% of files changed (threshold: ${CHURN_WARN_PCT}%/${CHURN_DENY_PCT}%).")
-if [[ "$DRIFT_LAST_AUDIT_EPOCH" -gt 0 ]]; then
-    [[ "$DRIFT_TIER" != "ok" ]] && DIAG_PARTS+=("Decision drift: $TOTAL_DRIFT decisions out of sync (${DRIFT_UNPLANNED_COUNT} unplanned, ${DRIFT_UNIMPLEMENTED_COUNT} unimplemented).")
-else
-    [[ "$DRIFT_TIER" != "ok" ]] && DIAG_PARTS+=("Commit count fallback: $PLAN_COMMITS_SINCE commits since plan update.")
-fi
+[[ "$DRIFT_TIER" != "ok" ]] && DIAG_PARTS+=("Commit count: $PLAN_COMMITS_SINCE commits since plan update.")
 DIAGNOSTIC=""
 [[ ${#DIAG_PARTS[@]} -gt 0 ]] && DIAGNOSTIC=$(printf '%s ' "${DIAG_PARTS[@]}")
 

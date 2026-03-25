@@ -10,7 +10,7 @@ set -euo pipefail
 #   - MASTER_PLAN.md existence and active phase
 #   - Active worktrees
 #   - Agent-type-specific guidance
-#   - Tracks subagent spawn in .subagent-tracker for status bar
+#   - Tracks subagent spawn in runtime marker store (rt_marker_set)
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
@@ -25,11 +25,11 @@ CONTEXT_PARTS=()
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 
-# Track subagent spawn in runtime marker store (primary) and flat-file tracker
-# (backward compat). Using PID as the agent_id gives a stable per-process key
-# that subagent-stop can match when deactivating the marker.
+# Track subagent spawn in runtime marker store (sole authority, TKT-008).
+# Using PID as the agent_id gives a stable per-process key that the
+# check-*.sh SubagentStop hooks can match when deactivating the marker.
+# .subagent-tracker flat-file write removed.
 rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
-track_subagent_start "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}"
 
 CTX_LINE="Context:"
 [[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"

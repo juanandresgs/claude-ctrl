@@ -18,8 +18,7 @@ AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev
 
 PROJECT_ROOT=$(detect_project_root)
 
-# Track subagent completion
-track_subagent_stop "$PROJECT_ROOT" "implementer"
+# track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
 # Deactivate runtime marker for this completing agent.
 # SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs
@@ -129,12 +128,11 @@ else
 fi
 CONTEXT+="\n$VERIFICATION_NOTE"
 
-# Persist findings for next-prompt injection
+# Emit findings to runtime event store (TKT-008: .agent-findings flat file removed).
+# Events are queryable via cc-policy and surface through the runtime event log.
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-    mkdir -p "${PROJECT_ROOT}/.claude"
-    echo "implementer|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
     for issue in "${ISSUES[@]}"; do
+        rt_event_emit "agent_finding" "implementer|$issue" || true
         append_audit "$PROJECT_ROOT" "agent_implementer" "$issue"
     done
 fi
