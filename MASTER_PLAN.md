@@ -929,8 +929,9 @@ because it documents what is, not what should be.
     `hooks/lib/bash-policy.sh`.
   - `TKT-009`: `hooks/post-task.sh` dispatch emission. Detects completing agent
     role, enqueues next-phase dispatch entries into `dispatch_queue`, emits
-    events. Wired into `settings.json` SubagentStop hooks. Dispatch queue
-    helpers in `hooks/lib/dispatch-helpers.sh`.
+    events. Dispatch queue helpers in `hooks/lib/dispatch-helpers.sh`.
+    (Note: `post-task.sh` was created by TKT-009 but was not wired into
+    `settings.json` SubagentStop hooks until TKT-016 in Wave 3e.)
   - `TKT-011`: `runtime/core/statusline.py` with `snapshot()` function
     projecting all statusline fields from runtime state. `cc-policy statusline
     snapshot` CLI command producing valid JSON with graceful degradation.
