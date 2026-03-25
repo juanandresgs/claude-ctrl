@@ -15,7 +15,9 @@ mkdir -p "$TMP_DIR/.claude"
 git -C "$TMP_DIR" init -q
 git -C "$TMP_DIR" checkout -b feature/test -q 2>/dev/null || true
 git -C "$TMP_DIR" commit --allow-empty -m "init" -q
-echo "ACTIVE|implementer|$(date +%s)" > "$TMP_DIR/.claude/.subagent-tracker"
+# Set implementer role via cc-policy (TKT-018: .subagent-tracker removed)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "implementer" >/dev/null 2>&1
 
 TARGET_FILE="$TMP_DIR/MASTER_PLAN.md"
 

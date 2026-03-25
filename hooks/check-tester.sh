@@ -12,7 +12,7 @@ AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 PROJECT_ROOT=$(detect_project_root)
 
-track_subagent_stop "$PROJECT_ROOT" "tester"
+# track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
 # Deactivate runtime marker for this completing agent.
 # SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs

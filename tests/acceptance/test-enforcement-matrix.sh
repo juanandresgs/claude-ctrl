@@ -55,10 +55,14 @@ make_project() {
 }
 
 set_role() {
+    # TKT-018: role detection is runtime-only; .subagent-tracker removed.
+    # Write marker into the project-scoped state.db so rt_marker_get_active_role()
+    # finds it when hooks run with CLAUDE_PROJECT_DIR="$project_dir".
     local project_dir="$1" role="$2"
     if [[ -n "$role" ]]; then
-        printf 'ACTIVE|%s|%s\n' "$role" "$(date +%s)" \
-            > "$project_dir/.claude/.subagent-tracker"
+        local db="$project_dir/.claude/state.db"
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "$role" >/dev/null 2>&1
     fi
 }
 

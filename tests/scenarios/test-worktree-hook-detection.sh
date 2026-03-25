@@ -48,6 +48,20 @@ fail() { echo -e "${RED}FAIL${RESET}: $1"; (( FAIL++ )) || true; shift; [[ $# -g
 cleanup() { rm -rf "$TMP_BASE"; }
 trap cleanup EXIT
 
+# ---------------------------------------------------------------------------
+# Role helper: set a marker in the project-scoped state.db for a worktree.
+# TKT-018: .subagent-tracker removed; role detection is SQLite-only.
+# Hooks run with CLAUDE_PROJECT_DIR="$worktree_path" and no explicit
+# CLAUDE_POLICY_DB, so the runtime bridge auto-scopes the DB to
+# "$worktree_path/.claude/state.db". This helper writes to that same path.
+# ---------------------------------------------------------------------------
+set_worktree_role() {
+    local worktree_path="$1" role="$2"
+    local db="$worktree_path/.claude/state.db"
+    CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "$role" >/dev/null 2>&1
+}
+
 # --- Setup: real git repo + worktree ---
 # This must be a real git worktree, not just a directory, because the bug
 # only manifests when .git is a file (gitdir pointer) not a directory.
@@ -102,7 +116,7 @@ test_plan_check_worktree_detection() {
 
     # Write an implementer marker so write-guard doesn't deny first
     mkdir -p "$worktree_path/.claude"
-    echo "ACTIVE|implementer|$(date +%s)" > "$worktree_path/.claude/.subagent-tracker"
+    set_worktree_role "$worktree_path" "implementer"
     # No MASTER_PLAN.md — this is the condition plan-check.sh should catch
 
     local target_file="$worktree_path/src/app.ts"
@@ -154,7 +168,7 @@ test_deny_includes_blocking_hook() {
     }
 
     mkdir -p "$worktree_path/.claude" "$worktree_path/src"
-    echo "ACTIVE|implementer|$(date +%s)" > "$worktree_path/.claude/.subagent-tracker"
+    set_worktree_role "$worktree_path" "implementer"
     # No MASTER_PLAN.md — triggers plan-check deny
 
     local target_file="$worktree_path/src/app.ts"
@@ -215,7 +229,7 @@ test_repo_identity_from_file_path() {
     git -C "$main_repo" worktree add "$worktree_path" -b feature/identity-test -q
 
     mkdir -p "$worktree_path/.claude" "$worktree_path/src"
-    echo "ACTIVE|implementer|$(date +%s)" > "$worktree_path/.claude/.subagent-tracker"
+    set_worktree_role "$worktree_path" "implementer"
     # Worktree has no MASTER_PLAN.md — plan-check should catch this
 
     # The MASTER_PLAN is in main but NOT in the worktree
@@ -271,7 +285,7 @@ test_plan_check_worktree_allows_with_plan() {
     }
 
     mkdir -p "$worktree_path/.claude" "$worktree_path/src"
-    echo "ACTIVE|implementer|$(date +%s)" > "$worktree_path/.claude/.subagent-tracker"
+    set_worktree_role "$worktree_path" "implementer"
     # MASTER_PLAN.md IS present — plan-check should pass
     touch "$worktree_path/MASTER_PLAN.md"
 
@@ -320,7 +334,7 @@ test_full_chain_deny_observability() {
     }
 
     mkdir -p "$worktree_path/.claude" "$worktree_path/src"
-    echo "ACTIVE|implementer|$(date +%s)" > "$worktree_path/.claude/.subagent-tracker"
+    set_worktree_role "$worktree_path" "implementer"
     # No MASTER_PLAN.md
 
     local target_file="$worktree_path/src/service.ts"
