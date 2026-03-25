@@ -35,8 +35,8 @@ if [[ -n "$GIT_BRANCH" ]]; then
 fi
 
 # --- MASTER_PLAN.md ---
+# write_statusline_cache removed (TKT-008): statusline.sh reads runtime directly.
 get_plan_status "$PROJECT_ROOT"
-write_statusline_cache "$PROJECT_ROOT"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
     PLAN_LINE="Plan:"
@@ -106,14 +106,8 @@ if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
     fi
 fi
 
-# --- Pending agent findings ---
-FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
-    CONTEXT_PARTS+=("Unresolved agent findings from previous session:")
-    while IFS= read -r line; do
-        CONTEXT_PARTS+=("  $line")
-    done < "$FINDINGS_FILE"
-fi
+# .agent-findings flat file removed (TKT-008): agent findings now flow through
+# the runtime event store (rt_event_emit "agent_finding"). No file to inject.
 
 # --- Reset prompt-count so first-prompt fallback re-fires after /clear ---
 # The first-prompt path in prompt-submit.sh is the reliable HUD injection point.
@@ -121,7 +115,7 @@ fi
 # never triggers again, so the HUD disappears.
 rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
 rm -f "$PROJECT_ROOT/.claude/.session-start-epoch"
-rm -f "$PROJECT_ROOT/.claude/.subagent-tracker"
+# .subagent-tracker rm removed (TKT-008): file no longer written.
 
 # --- Clear stale test status from previous session ---
 # .test-status is now a hard gate for commits (guard.sh Checks 6/7).

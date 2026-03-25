@@ -267,6 +267,15 @@ if echo "$COMMAND" | grep -qE 'git\s+(commit|merge)'; then
                 deny "Cannot proceed: proof-of-work is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
             fi
         fi
+
+        # After a merge passes the verified gate, reset proof to idle so the
+        # next workflow cycle starts clean. Commits do not reset (they may be
+        # intermediate; the merge is the completion event).
+        # TKT-008: runtime-only write; no flat-file reset needed.
+        if echo "$COMMAND" | grep -qE 'git\s+merge'; then
+            MERGE_WF=$(current_workflow_id "$PROOF_DIR")
+            rt_proof_set "$MERGE_WF" "idle" 2>/dev/null || true
+        fi
     fi
 fi
 
