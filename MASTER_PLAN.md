@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-24 (43 component-level @decision IDs registered in Decision Log)
+Last updated: 2026-03-24 (Wave 3e stabilization added to INIT-003)
 
 ## Identity
 
@@ -208,26 +208,42 @@ into the new mainline.
   `hooks/plan-check.sh`) that violates DEC-FORK-007. It should be migrated to a
   runtime computation or eliminated. Until then it remains a known exception.
 
+### Stabilization decisions
+
+- `2026-03-24 — DEC-STAB-001` Wave 3e added as a stabilization pass before
+  INIT-003 exit. The acceptance suite (TKT-014) passed but post-delivery audit
+  found seven defects (#465-#471) proving the kernel is not yet mechanically
+  trustworthy. P0 enforcement reliability fixes (marker deactivation, post-task
+  wiring) must land before P1 hook correctness and flat-file elimination, which
+  must land before P2 doc reconciliation.
+
 ## Active Initiatives
 
 ### INIT-003: Plan Discipline and Successor Validation
 
-- **Status:** in-progress
+- **Status:** in-progress (Wave 3a-3d delivered; acceptance suite passed but
+  stabilization needed -- seven defects filed proving enforcement is not yet
+  reliable enough for exit criteria)
 - **Goal:** Finish the successor kernel so its plan discipline, verification, and
   release claims are mechanically trustworthy.
-- **Current truth:** [scripts/planctl.py](scripts/planctl.py) only validates
-  section presence and stamps a placeholder timestamp;
-  [hooks/plan-validate.sh](hooks/plan-validate.sh) runs inline structural
-  checks (phase status fields, decision-log presence, decision ID format) but
-  does not enforce immutability. `MASTER_PLAN.md` discipline is still largely
-  social rather than enforced. The enforcement gaps are documented in
-  [docs/PLAN_DISCIPLINE.md](docs/PLAN_DISCIPLINE.md) under "Not Yet Enforced."
+- **Current truth:** Wave 3a-3d delivered plan discipline (TKT-010), trace-lite
+  (TKT-013), 183-test acceptance suite (TKT-014), and shadow sidecars
+  (TKT-015). However, the acceptance suite and post-delivery audit exposed
+  seven defects: runtime marker deactivation never fires on SubagentStop
+  (#470), post-task.sh is not wired into the live hook chain (#471),
+  plan-check.sh fails in worktrees (#465), hook denials lack observability
+  (#466), write-time policy resolves repo identity from session root instead of
+  target file path (#468), .plan-drift gating still uses a flat file (#467),
+  and multiple flat-file breadcrumbs survive despite INIT-002 claiming deletion
+  (#469). Until these are resolved, the kernel is not mechanically trustworthy.
 - **Scope:** plan immutability, decision-log closure rules, initiative
   compression, trace-lite manifests, kernel acceptance suite, shadow-mode
-  sidecars, and readiness for daemon promotion.
+  sidecars, stabilization of enforcement reliability and flat-file elimination,
+  and readiness for daemon promotion.
 - **Exit:** Permanent-section replacement is mechanically blocked, the kernel
-  acceptance suite passes twice consecutively, and sidecars remain read-only
-  until the kernel is stable.
+  acceptance suite passes twice consecutively with zero enforcement defects,
+  no flat-file coordination mechanisms remain in hot-path hooks, and sidecars
+  remain read-only until the kernel is stable.
 - **Dependencies:** INIT-001, INIT-002
 - **Implementation tickets:**
 - `TKT-010` Expand [scripts/planctl.py](scripts/planctl.py) into real plan
@@ -240,6 +256,15 @@ into the new mainline.
   covering all enforcement surfaces end-to-end.
 - `TKT-015` Reintroduce search and observatory as read-only shadow sidecars
   under `sidecars/`.
+- `TKT-016` Fix SubagentStop lifecycle: deactivate runtime markers and wire
+  `post-task.sh` into the live hook chain (#470, #471).
+- `TKT-017` Fix hook worktree detection and deny observability (#465, #466,
+  #468).
+- `TKT-018` Eliminate flat-file dual-write bridge and remaining breadcrumbs
+  (#467, #469).
+- `TKT-019` Reconcile docs to match actual live behavior (ARCHITECTURE.md
+  scaffold language, MASTER_PLAN.md flat-file claims, dead statusline-cache
+  write).
 - **Post-ticket continuation:** Promote `cc-policy` to daemon mode after CLI
   mode proves stable through two consecutive green acceptance suite runs.
 
@@ -285,6 +310,7 @@ Wave 3a: TKT-010  (foundation -- planctl.py enforcement + plan-validate consolid
 Wave 3b: TKT-013  (trace-lite manifests and session summaries)
 Wave 3c: TKT-014  (kernel acceptance suite -- exercises all enforcement surfaces)
 Wave 3d: TKT-015  (shadow sidecars -- read-only consumers of runtime + trace data)
+Wave 3e: TKT-016, TKT-017, TKT-018, TKT-019  (stabilization -- enforcement reliability + flat-file elimination)
 ```
 
 ##### TKT-010: Plan Discipline Enforcement in planctl.py
@@ -565,6 +591,253 @@ Wave 3d: TKT-015  (shadow sidecars -- read-only consumers of runtime + trace dat
   - Does NOT modify: `runtime/`, `hooks/`, `scripts/`, `settings.json`,
     `agents/`, `docs/`
 
+#### Wave 3e: Stabilization (enforcement reliability + flat-file elimination)
+
+**Sequencing:** P0 first (marker deactivation + post-task wiring), then P1
+(hook worktree/observability fixes + flat-file removal), then P2 (doc
+reconciliation). TKT-016 and TKT-017 have no mutual dependency and can run
+in parallel after TKT-016's post-task wiring lands (TKT-017's deny
+observability changes touch the same hook output format). TKT-018 depends on
+TKT-017 completing (write-policy repo identity resolution must be correct
+before flat-file removal changes the fallback behavior). TKT-019 runs last
+because it documents what is, not what should be.
+
+**Critical path:** TKT-016 -> TKT-018 -> TKT-019 -> (done). Max width: 2
+(TKT-016 and TKT-017 can run in parallel).
+
+##### TKT-016: Fix SubagentStop Lifecycle (#470, #471)
+
+- **Weight:** M
+- **Gate:** review (user sees marker deactivation and dispatch emission in
+  acceptance suite output)
+- **Deps:** INIT-002 complete (runtime must be live)
+- **Implementer scope:**
+  - Wire `hooks/post-task.sh` into `settings.json` under SubagentStop for all
+    agent matchers. Currently SubagentStop only runs `check-*.sh` hooks;
+    `post-task.sh` exists but is not registered. Add it to the SubagentStop
+    hook array alongside the existing check hooks.
+  - Add `rt_marker_deactivate` call to the SubagentStop path. The function
+    exists in `hooks/lib/runtime-bridge.sh` (line 98) and is exported by
+    `hooks/context-lib.sh` (line 559), but no SubagentStop hook ever calls it.
+    The deactivation should happen in `hooks/post-task.sh` (or a dedicated
+    lifecycle hook) so the agent marker row gets `stopped_at` set and
+    `is_active` cleared.
+  - Add scenario tests:
+    - `tests/scenarios/test-marker-deactivation.sh`: spawn a mock agent,
+      verify marker is active, fire SubagentStop, verify marker is
+      deactivated.
+    - `tests/scenarios/test-post-task-wiring.sh`: fire SubagentStop with
+      implementer matcher, verify `post-task.sh` runs and emits dispatch
+      queue entries.
+  - Update existing acceptance suite tests that assert marker state to expect
+    deactivation after SubagentStop.
+- **Tester scope:**
+  - Run `python3 runtime/cli.py marker list` before and after SubagentStop
+    and verify `stopped_at` is populated and `is_active` is 0.
+  - Run acceptance suite and verify marker lifecycle tests pass.
+  - Verify dispatch queue entries appear after SubagentStop fires.
+- **Acceptance criteria:**
+  - `post-task.sh` appears in `settings.json` SubagentStop hook arrays.
+  - `rt_marker_deactivate` is called on every SubagentStop event.
+  - `marker list` shows `is_active=0` and non-null `stopped_at` for
+    completed agents.
+  - Dispatch queue entries are emitted on agent completion.
+  - All scenario tests pass.
+- **File boundaries:**
+  - Modifies: `settings.json` (add post-task.sh to SubagentStop),
+    `hooks/post-task.sh` (add marker deactivation call)
+  - Creates: `tests/scenarios/test-marker-deactivation.sh`,
+    `tests/scenarios/test-post-task-wiring.sh`
+  - Does NOT modify: `runtime/`, `hooks/lib/runtime-bridge.sh` (function
+    already exists), `hooks/context-lib.sh`
+
+##### TKT-017: Fix Hook Worktree Detection and Deny Observability (#465, #466, #468)
+
+- **Weight:** M
+- **Gate:** review (user sees correct behavior in worktree and clear deny
+  messages)
+- **Deps:** none (independent of TKT-016)
+- **Implementer scope:**
+  - **#465 -- plan-check.sh .git detection:** Replace `[[ ! -d
+    "$PROJECT_ROOT/.git" ]]` (line 67 of `hooks/plan-check.sh`) with
+    `[[ ! -d "$PROJECT_ROOT/.git" && ! -f "$PROJECT_ROOT/.git" ]]` or
+    equivalently `[[ ! -e "$PROJECT_ROOT/.git" ]]`. In a worktree, `.git` is
+    a file containing `gitdir: /path/to/main/.git/worktrees/<name>`. The
+    current `-d` test exits early, silently skipping plan-existence checks
+    for all worktree operations.
+  - **#466 -- deny observability:** When a hook denies an action, the deny
+    JSON must include a `"blockingHook"` field naming the specific hook file
+    that fired the denial. Currently the agent sees a generic denial message
+    and cannot tell which of the 5+ hooks in the write chain blocked it.
+    Add `"blockingHook": "<hook-filename>"` to the deny JSON output in:
+    `hooks/plan-guard.sh`, `hooks/write-guard.sh`, `hooks/plan-check.sh`,
+    `hooks/branch-guard.sh`, `hooks/guard.sh`, and the
+    `check_plan_immutability_hook` / `check_decision_log_hook` wrappers in
+    `hooks/lib/write-policy.sh`.
+  - **#468 -- write-time repo identity resolution:** Hooks that fire on
+    Write|Edit and call `detect_project_root()` resolve repo identity from
+    the session CWD, not from the target file's path. When a session on
+    `main` writes to a file in a worktree, the hook resolves the wrong
+    project root. The fix: in `hooks/lib/write-policy.sh` functions that
+    receive a `file_path` from the hook input, resolve `project_root` from
+    `git -C "$(dirname "$file_path")" rev-parse --show-toplevel` (as
+    `check_plan_immutability_hook` already does correctly on line 71). Apply
+    this pattern to the delegated hook calls in write-policy.sh that
+    currently pass session-root-resolved context. Also fix
+    `hooks/plan-check.sh` and `hooks/plan-guard.sh` to resolve from
+    file path when available.
+  - Add scenario tests:
+    - `tests/scenarios/test-plan-check-worktree.sh`: create a worktree,
+      attempt a source write from it, verify plan-check.sh fires (not
+      skipped).
+    - `tests/scenarios/test-deny-observability.sh`: trigger a write-guard
+      denial, verify the JSON output includes `blockingHook` field.
+    - `tests/scenarios/test-write-policy-repo-identity.sh`: write to a
+      worktree file from a main-branch session, verify the hook resolves the
+      worktree's project root.
+- **Tester scope:**
+  - Create a worktree and verify plan-check.sh runs correctly in it.
+  - Trigger each denial hook and verify `blockingHook` appears in the JSON.
+  - Verify write-policy resolves the correct project root for cross-worktree
+    writes.
+  - Run full acceptance suite to confirm no regressions.
+- **Acceptance criteria:**
+  - `plan-check.sh` uses `-e` (not `-d`) for `.git` existence check.
+  - All deny JSON responses include `blockingHook` field.
+  - Write-time policy resolves repo identity from target file path, not
+    session CWD.
+  - All scenario tests pass including worktree scenarios.
+- **File boundaries:**
+  - Modifies: `hooks/plan-check.sh`, `hooks/plan-guard.sh`,
+    `hooks/write-guard.sh`, `hooks/branch-guard.sh`, `hooks/guard.sh`,
+    `hooks/lib/write-policy.sh`
+  - Creates: `tests/scenarios/test-plan-check-worktree.sh`,
+    `tests/scenarios/test-deny-observability.sh`,
+    `tests/scenarios/test-write-policy-repo-identity.sh`
+  - Does NOT modify: `runtime/`, `settings.json`, `scripts/`
+
+##### TKT-018: Eliminate Flat-File Dual-Write Bridge and Remaining Breadcrumbs (#467, #469)
+
+- **Weight:** L
+- **Gate:** approve (user must approve the removal list before deletion --
+  some files may have undocumented consumers)
+- **Deps:** TKT-017 (write-policy repo identity must be correct before
+  changing fallback behavior)
+- **Implementer scope:**
+  - **#467 -- .plan-drift elimination:** `hooks/surface.sh` (line 274)
+    writes `.plan-drift`; `hooks/context-lib.sh` (line 148) and
+    `hooks/plan-check.sh` read it for staleness scoring. Migrate the drift
+    computation to a runtime function or compute it inline from git state
+    (the data is derivable from `git log` + plan timestamp). Remove
+    `.plan-drift` file creation, reading, and preservation from all hooks.
+    Remove the `session-end.sh` preservation of `.plan-drift`.
+  - **#469 -- remaining flat-file breadcrumbs:** Audit and remove all
+    remaining flat-file coordination from hot-path hooks:
+    - `.proof-status-*`: still referenced in `hooks/context-lib.sh` (line
+      245). The runtime `proof_state` table is canonical (INIT-002). Remove
+      flat-file reads and writes. Remove `resolve_proof_file` and
+      `resolve_proof_file_for_command` functions if they only serve the
+      flat-file path.
+    - `.subagent-tracker`: still referenced in `hooks/context-lib.sh`
+      (lines 387, 399, 493, 502, 533), `hooks/write-guard.sh` (lines 17,
+      55), `hooks/subagent-start.sh` (line 13), `hooks/session-init.sh`
+      (line 124). The runtime `agent_markers` table is canonical. Remove
+      `track_subagent_start`, `track_subagent_stop`, `get_subagent_status`
+      flat-file functions. Remove the flat-file fallback in
+      `current_active_agent_role`.
+    - `.statusline-cache`: `hooks/context-lib.sh` (line 435) still writes
+      it via `write_statusline_cache`. The statusline renderer reads
+      `cc-policy statusline snapshot` directly (TKT-012). Remove
+      `write_statusline_cache` function and all callers.
+    - `.audit-log`: still referenced in `hooks/context-lib.sh` (line 202),
+      `hooks/session-end.sh` (line 59), `hooks/surface.sh` (line 262),
+      `hooks/compact-preserve.sh` (line 96), `hooks/HOOKS.md` (line 381).
+      The runtime `events` table is canonical. Remove the flat-file
+      `append_audit` dual-write (keep the `rt_event_emit` call). Remove
+      `.audit-log` trimming from `session-end.sh`.
+    - `.agent-findings`: still referenced in `hooks/prompt-submit.sh` (line
+      103), `hooks/compact-preserve.sh` (line 87), `hooks/check-tester.sh`
+      (line 57), `hooks/session-init.sh` (line 110), and all `check-*.sh`
+      hooks. Migrate to runtime event queries or eliminate if findings
+      injection is no longer needed.
+  - Update `hooks/HOOKS.md` to remove all flat-file state references from
+    the state authority table.
+  - Add scenario tests:
+    - `tests/scenarios/test-no-flat-file-writes.sh`: run a representative
+      hook sequence and verify no `.proof-status-*`, `.subagent-tracker`,
+      `.statusline-cache`, `.audit-log`, `.agent-findings`, or `.plan-drift`
+      files are created.
+- **Tester scope:**
+  - Run the full hook chain and verify no flat files are created in
+    `.claude/`.
+  - Verify `current_active_agent_role` returns correct values from runtime
+    only.
+  - Verify `append_audit` emits to runtime only.
+  - Verify plan staleness scoring works without `.plan-drift`.
+  - Run full acceptance suite.
+- **Acceptance criteria:**
+  - Zero flat-file coordination mechanisms in hot-path hooks.
+  - `grep -r '\.proof-status\|\.subagent-tracker\|\.statusline-cache\|\.audit-log\|\.agent-findings\|\.plan-drift' hooks/` returns zero matches
+    (excluding comments documenting the removal).
+  - All runtime-backed alternatives work correctly.
+  - `hooks/HOOKS.md` state authority table reflects runtime-only authorities.
+  - All tests pass.
+- **File boundaries:**
+  - Modifies: `hooks/context-lib.sh`, `hooks/surface.sh`,
+    `hooks/plan-check.sh`, `hooks/session-end.sh`, `hooks/session-init.sh`,
+    `hooks/write-guard.sh`, `hooks/subagent-start.sh`,
+    `hooks/prompt-submit.sh`, `hooks/compact-preserve.sh`,
+    `hooks/check-tester.sh`, `hooks/check-planner.sh`,
+    `hooks/check-implementer.sh`, `hooks/check-guardian.sh`,
+    `hooks/HOOKS.md`
+  - Creates: `tests/scenarios/test-no-flat-file-writes.sh`
+  - Does NOT modify: `runtime/` (runtime is already canonical),
+    `settings.json`, `scripts/planctl.py`
+
+##### TKT-019: Reconcile Docs to Match Actual Live Behavior
+
+- **Weight:** S
+- **Gate:** review (user sees corrected docs)
+- **Deps:** TKT-016, TKT-017, TKT-018 (docs must describe the final state,
+  not an intermediate one)
+- **Implementer scope:**
+  - **docs/ARCHITECTURE.md scaffold language:** Lines 65-77 describe
+    `runtime/`, `runtime/core/`, `hooks/lib/runtime-bridge.sh`, and other
+    files as "scaffolds" with "no real state backend." These are all live,
+    implemented components as of INIT-002. Rewrite the "Current Bootstrap"
+    section to describe the actual architecture: thin hooks delegating to
+    write-policy/bash-policy, runtime-bridge.sh bridging to cc-policy CLI,
+    SQLite-backed runtime with 6+ tables, read-only sidecars.
+  - **MASTER_PLAN.md flat-file claims:** The Architecture section (line 26)
+    states "Flat-file authorities ... have been deleted." This is false --
+    dual-write is still active (or was, until TKT-018 removes it). After
+    TKT-018 lands, verify this claim is now true. If any flat-file remnants
+    survived TKT-018, update the Architecture section accordingly.
+  - **Dead statusline-cache write:** `hooks/context-lib.sh` function
+    `write_statusline_cache` (line 433) writes to `.statusline-cache` but
+    nothing reads it -- the renderer uses `cc-policy statusline snapshot`
+    directly. If TKT-018 did not already remove this function, remove it
+    here.
+  - **docs/ARCHITECTURE.md SubagentStop description:** Update to reflect
+    post-task.sh wiring (after TKT-016).
+  - **hooks/HOOKS.md:** Verify all hook descriptions match current behavior
+    after TKT-016/017/018 changes.
+- **Tester scope:**
+  - Read each modified doc section and verify every claim against the actual
+    codebase.
+  - Verify no doc claims protection that the hook chain cannot deliver
+    (Principle 8).
+- **Acceptance criteria:**
+  - `docs/ARCHITECTURE.md` describes the live system, not scaffolds.
+  - MASTER_PLAN.md Architecture section claims match reality.
+  - No dead code remains for flat-file writes that nothing reads.
+  - `hooks/HOOKS.md` matches current hook behavior.
+- **File boundaries:**
+  - Modifies: `docs/ARCHITECTURE.md`, `hooks/HOOKS.md`,
+    `hooks/context-lib.sh` (if dead code remains after TKT-018)
+  - May modify: MASTER_PLAN.md Architecture section (planner-gated)
+  - Does NOT modify: `runtime/`, `settings.json`, `scripts/`
+
 #### Wave 3 State Authority Map
 
 | State Domain | Current Authority (post-INIT-002) | Wave 3 Change | Ticket |
@@ -578,6 +851,17 @@ Wave 3d: TKT-015  (shadow sidecars -- read-only consumers of runtime + trace dat
 | Kernel enforcement verification | Manual spot-checking | `tests/scenarios/acceptance/` suite with JSON report | TKT-014 |
 | Search index | **NONE** (parked) | Read-only sidecar over `events` table | TKT-015 |
 | Observatory dashboard | **NONE** (parked) | Read-only sidecar over runtime state | TKT-015 |
+| Agent marker lifecycle | `agent_markers` table (write), flat-file `.subagent-tracker` (fallback read) | `agent_markers` table only; `rt_marker_deactivate` called on SubagentStop | TKT-016, TKT-018 |
+| Dispatch emission on agent stop | `check-*.sh` hooks only (no dispatch) | `post-task.sh` wired into SubagentStop; dispatch queue entries emitted | TKT-016 |
+| Plan-existence gate in worktrees | Broken (`.git` `-d` check exits early) | `-e` check handles both directory and file `.git` | TKT-017 |
+| Hook deny diagnostics | Generic deny JSON (no hook identification) | `blockingHook` field in all deny responses | TKT-017 |
+| Write-time repo identity | `detect_project_root()` from session CWD | `git -C "$(dirname "$file_path")"` from target file path | TKT-017 |
+| Plan staleness / drift data | `.plan-drift` flat file | Runtime computation or inline git derivation | TKT-018 |
+| Proof state (flat-file remnant) | `.proof-status-*` flat files (fallback) | `proof_state` table only | TKT-018 |
+| Subagent tracking (flat-file remnant) | `.subagent-tracker` flat file (fallback) | `agent_markers` table only | TKT-018 |
+| Audit trail (flat-file remnant) | `.audit-log` flat file (dual-write) | `events` table only via `rt_event_emit` | TKT-018 |
+| Agent findings (flat-file remnant) | `.agent-findings` flat file | Runtime event queries or eliminated | TKT-018 |
+| Statusline cache (flat-file remnant) | `.statusline-cache` flat file | Eliminated; renderer reads runtime directly | TKT-018 |
 
 #### Wave 3 Known Risks
 
@@ -604,6 +888,21 @@ Wave 3d: TKT-015  (shadow sidecars -- read-only consumers of runtime + trace dat
    database, which is updated by hooks. If a hook crashes before writing,
    the sidecar sees stale state. Mitigation: sidecars must display data
    timestamps and never claim real-time accuracy.
+6. **Flat-file removal cascading breakage.** TKT-018 touches 13+ hook files
+   to remove flat-file references. If any hook has an undocumented dependency
+   on a flat file that the audit missed, removing it silently degrades
+   behavior. Mitigation: the acceptance suite (TKT-014) must run green after
+   TKT-018 and the user must approve the removal list before deletion.
+7. **post-task.sh integration side effects.** Wiring post-task.sh into
+   SubagentStop may change hook chain timing or introduce failures that
+   previously didn't exist in the SubagentStop path. Mitigation: TKT-016
+   tests must verify that existing check-*.sh hooks still fire correctly
+   after post-task.sh is added to the chain.
+8. **Deny observability format change.** Adding `blockingHook` to deny JSON
+   changes the output format that agents parse. If any agent code parses
+   deny messages with exact string matching, the new field could break it.
+   Mitigation: `blockingHook` is added as a new field, not replacing existing
+   fields. The existing `permissionDecisionReason` string is unchanged.
 
 ## Completed Initiatives
 
