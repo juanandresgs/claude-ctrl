@@ -37,8 +37,11 @@ for check_fn in "${CHECKS[@]}"; do
     output=$("$check_fn" "$HOOK_INPUT")
 
     if [[ -n "$output" ]]; then
-        # First deny wins — pass it through unchanged
+        # First deny wins — annotate with blockingHook so agents can diagnose
+        # which of the 6 checks fired. Fix #466: without this field agents see
+        # a generic denial and cannot determine which hook blocked them.
         if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+            output=$(echo "$output" | jq --arg hook "$check_fn" '.hookSpecificOutput.blockingHook = $hook')
             echo "$output"
             exit 0
         fi

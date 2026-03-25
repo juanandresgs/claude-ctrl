@@ -45,8 +45,9 @@ LINE_COUNT=$(wc -l < "$FILE_PATH" 2>/dev/null | tr -d ' ')
 PROJECT_ROOT=$(detect_project_root)
 
 # Get the diff if this was an edit (more useful than full file for review)
+# Fix #465: use -e (exists) instead of -d; in a worktree .git is a file.
 DIFF_CONTEXT=""
-if [[ -d "$PROJECT_ROOT/.git" ]] && git -C "$PROJECT_ROOT" diff --quiet "$FILE_PATH" 2>/dev/null; then
+if [[ -e "$PROJECT_ROOT/.git" ]] && git -C "$PROJECT_ROOT" diff --quiet "$FILE_PATH" 2>/dev/null; then
     : # File is clean (no diff)
 else
     DIFF_CONTEXT=$(git -C "$PROJECT_ROOT" diff "$FILE_PATH" 2>/dev/null | head -10 || echo "")

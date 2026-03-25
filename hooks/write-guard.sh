@@ -51,9 +51,15 @@ is_source_file "$FILE_PATH" || exit 0
 # Skip test files, generated files, vendor directories
 is_skippable_path "$FILE_PATH" && exit 0
 
+# Resolve project root from the target file's path, not from session CWD.
+# Fix #468: detect_project_root() uses CWD — wrong when a main-branch session
+# writes to a file in a worktree. File-path resolution is authoritative here.
+FILE_DIR=$(dirname "$FILE_PATH")
+[[ ! -d "$FILE_DIR" ]] && FILE_DIR=$(dirname "$FILE_DIR")
+PROJECT_ROOT=$(git -C "$FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
+
 # Detect active agent role. Uses CLAUDE_AGENT_ROLE env var first (runtime
 # injection), then falls back to .subagent-tracker file.
-PROJECT_ROOT=$(detect_project_root)
 ROLE=$(current_active_agent_role "$PROJECT_ROOT")
 
 # ALLOW: implementer is the only role permitted to write source files
@@ -79,6 +85,7 @@ cat <<EOF
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
+    "blockingHook": "write-guard.sh",
     "permissionDecisionReason": $escaped_reason
   }
 }

@@ -79,8 +79,14 @@ if [[ "${CLAUDE_PLAN_MIGRATION:-}" == "1" ]]; then
     exit 0
 fi
 
+# Resolve project root from the target file's path, not from session CWD.
+# Fix #468: detect_project_root() uses CWD — wrong when a session on main
+# writes to a worktree file. File-path resolution is authoritative here.
+FILE_DIR=$(dirname "$FILE_PATH")
+[[ ! -d "$FILE_DIR" ]] && FILE_DIR=$(dirname "$FILE_DIR")
+PROJECT_ROOT=$(git -C "$FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
+
 # Read active agent role from subagent tracker or CLAUDE_AGENT_ROLE env var
-PROJECT_ROOT=$(detect_project_root)
 ROLE=$(current_active_agent_role "$PROJECT_ROOT")
 
 # Allow: planner or Plan role (both spellings seen in SubagentStart payloads)
@@ -98,6 +104,7 @@ cat <<EOF
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
+    "blockingHook": "plan-guard.sh",
     "permissionDecisionReason": "BLOCKED: $DENY_ROLE cannot write governance markdown ($FILE_PATH). Only the planner agent may modify plan and governance files.\n\nAction: Dispatch a planner agent for this change, or set CLAUDE_PLAN_MIGRATION=1 for permanent-section migrations."
   }
 }
