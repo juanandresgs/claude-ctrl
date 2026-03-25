@@ -113,7 +113,7 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | `get_research_status <root>` | `$RESEARCH_EXISTS`, `$RESEARCH_ENTRY_COUNT` |
 | `is_source_file <path>` | Tests against `$SOURCE_EXTENSIONS` regex |
 | `is_skippable_path <path>` | Tests for config/test/vendor/generated paths |
-| `append_audit <root> <event> <detail>` | Appends to `.claude/.audit-log` |
+| `append_audit <root> <event> <detail>` | Emits audit event via `rt_event_emit` (SQLite event store; `.audit-log` flat file removed in TKT-008) |
 | `canonical_session_id` | Stable session ID for per-session files |
 | `current_workflow_id <root>` | Stable workflow ID (usually current branch) |
 | `file_mtime <path>` | Cross-platform file mtime helper |
@@ -188,13 +188,13 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, proof status, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Seeds workflow proof state to `idle` when missing. Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
 | **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation, and records proof as `verified` when Tester asked for it and the user replies `verified` |
 | **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
-| **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Preserves cross-session state (`.audit-log`, `.agent-findings`, `.plan-drift`). Trims audit log to last 100 entries |
+| **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Cross-session flat files `.audit-log` and `.plan-drift` are no longer written or trimmed (TKT-008/TKT-018); `.agent-findings` is still written by check-*.sh and consumed by prompt-submit.sh |
 
 ### Stop Hooks
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **surface.sh** | Stop | Full decision audit pipeline: (1) extract — scans project source directories for @decision annotations using ripgrep (with grep fallback); (2) validate — checks changed files over 50 lines for @decision presence and rationale; (3) reconcile — compares DEC-IDs in MASTER_PLAN.md vs code, identifies unplanned decisions (in code but not plan) and unimplemented decisions (in plan but not code), respects deprecated/superseded status; (4) persist — writes structured drift data to `.plan-drift` for consumption by plan-check.sh next session. Reports via `systemMessage` |
+| **surface.sh** | Stop | Full decision audit pipeline: (1) extract — scans project source directories for @decision annotations using ripgrep (with grep fallback); (2) validate — checks changed files over 50 lines for @decision presence and rationale; (3) reconcile — compares DEC-IDs in MASTER_PLAN.md vs code, identifies unplanned decisions (in code but not plan) and unimplemented decisions (in plan but not code), respects deprecated/superseded status; (4) persist — still writes `.plan-drift` flat file (dead write: no consumer reads it since TKT-018 removed the plan-check.sh reader); audit events route through `rt_event_emit`. Reports via `systemMessage` |
 | **session-summary.sh** | Stop | Deterministic (<2s runtime). Counts unique files changed (source vs config), @decision annotations added. Reports git branch, dirty/clean state, test status (waits briefly for in-flight async test-runner). Generates workflow-aware next-action guidance: on main → "create plan" or "create worktrees"; on feature branch → "fix tests", "run tests", "review changes", or "merge to main" based on current state. Includes pending todo count |
 | **forward-motion.sh** | Stop | Deterministic regex check (not AI). Extracts the last paragraph of the assistant's response and checks for forward motion indicators: `?`, "want me to", "shall I", "let me know", "would you like", "next step", etc. Returns exit 2 (feedback loop) only if the response ends with a bare completion statement ("done", "finished", "all set") and no question mark — prompting the model to add a suggestion or offer |
 
@@ -208,11 +208,12 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Event / Matcher | What It Does |
 |------|-----------------|--------------|
-| **subagent-start.sh** | SubagentStart | Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, and a Tester handoff reminder. **Tester** marks proof `pending` and gets evidence/verification instructions. **Guardian** gets plan update rules, test status, and git authority reminders. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
-| **check-planner.sh** | SubagentStop (planner\|Plan) | 5 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
-| **check-implementer.sh** | SubagentStop (implementer) | 5 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"), (5) verification handoff note so Tester is the next role. Advisory only. Persists findings |
-| **check-tester.sh** | SubagentStop (tester) | 4 checks: (1) evidence surfaced, (2) explicit `verified` request was made to the user, (3) tests passed, (4) proof state is in `pending` or `verified`. Advisory only. Persists findings |
-| **check-guardian.sh** | SubagentStop (guardian) | 6 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected), (6) proof status for completed git operations. Advisory only. Persists findings |
+| **subagent-start.sh** | SubagentStart | Creates runtime agent marker via `rt_marker_set` (TKT-016). Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, and a Tester handoff reminder. **Tester** marks proof `pending` and gets evidence/verification instructions. **Guardian** gets plan update rules, test status, and git authority reminders. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
+| **check-planner.sh** | SubagentStop (planner\|Plan) | Deactivates runtime agent marker via `rt_marker_deactivate` (TKT-016). 5 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
+| **check-implementer.sh** | SubagentStop (implementer) | Deactivates runtime agent marker (TKT-016). 5 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"), (5) verification handoff note so Tester is the next role. Advisory only. Persists findings |
+| **check-tester.sh** | SubagentStop (tester) | Deactivates runtime agent marker (TKT-016). 4 checks: (1) evidence surfaced, (2) explicit `verified` request was made to the user, (3) tests passed, (4) proof state is in `pending` or `verified`. Advisory only. Persists findings |
+| **check-guardian.sh** | SubagentStop (guardian) | Deactivates runtime agent marker (TKT-016). 6 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected), (6) proof status for completed git operations. Advisory only. Persists findings |
+| **post-task.sh** | SubagentStop (all types) | Dispatch emission (TKT-009, wired by TKT-016). Detects completing agent role, enqueues next-phase dispatch entries into `dispatch_queue`, emits events |
 
 ---
 
@@ -326,11 +327,18 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | File | Written By | Read By | Contents |
 |------|-----------|---------|----------|
 | `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
-| `.proof-status-<workflow>` | tester / user verification flow | guard.sh (evidence gate), prompt-submit.sh (user `verified`), track.sh (invalidation), check-tester.sh, check-guardian.sh | `status\|timestamp` — `idle`, `pending`, or `verified`. track.sh resets to `pending` when source files change after verification |
-| `.plan-drift` | surface.sh | plan-check.sh (staleness scoring) | Structured key=value: `unplanned_count`, `unimplemented_count`, `missing_decisions`, `total_decisions`, `source_files_changed` |
-| `.agent-findings` | check-planner.sh, check-implementer.sh, check-guardian.sh | session-init.sh, prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery) |
+| `.agent-findings` | check-planner.sh, check-implementer.sh, check-tester.sh, check-guardian.sh | prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery). Still active; not yet migrated to runtime |
 | `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |
-| `.audit-log` | surface.sh, test-runner.sh, check-*.sh | compact-preserve.sh, session-summary.sh | Timestamped event trail — trimmed to last 100 entries by session-end.sh |
+
+**Eliminated flat files** (no longer written or read as state authority):
+
+| File | Former Role | Replacement | Removed By |
+|------|------------|-------------|-----------|
+| `.proof-status-<workflow>` | Proof state authority | `proof_state` table via `rt_proof_get`/`rt_proof_set` | TKT-007/TKT-018 |
+| `.subagent-tracker` | Active agent role tracking | `agent_markers` table via `rt_marker_set`/`rt_marker_deactivate` | TKT-007/TKT-018 |
+| `.statusline-cache` | Statusline data cache | `cc-policy statusline snapshot` runtime projection | TKT-012/TKT-018 |
+| `.audit-log` | Audit trail file | `events` table via `rt_event_emit` (through `append_audit`) | TKT-008. Note: `compact-preserve.sh` still has a stale reader |
+| `.plan-drift` | Drift scoring data | Dead write: `surface.sh` still writes it, but `plan-check.sh` no longer reads it (uses commit-count heuristic) | TKT-018 (reader removed) |
 
 ---
 
@@ -377,8 +385,8 @@ echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/g
 # Validate settings.json
 python3 -m json.tool ../settings.json
 
-# View audit trail
-tail -20 ../.claude/.audit-log
+# Query audit trail (now in SQLite event store)
+cc-policy event query --type audit --limit 20
 
 # Check test gate status
 cat <project>/.claude/.test-status
