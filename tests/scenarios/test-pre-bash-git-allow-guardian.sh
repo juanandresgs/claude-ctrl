@@ -16,7 +16,9 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 mkdir -p "$TMP_DIR/.claude"
 (cd "$TMP_DIR" && git init -q && git commit --allow-empty -m init -q && git checkout -b feature/ready -q)
-echo "ACTIVE|guardian|$(date +%s)" > "$TMP_DIR/.claude/.subagent-tracker"
+# Set guardian role via cc-policy (TKT-018: .subagent-tracker removed)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-feature-ready"
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m done"

@@ -43,7 +43,7 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     # Inject full session context (same as session-init.sh)
     get_git_state "$PROJECT_ROOT"
     get_plan_status "$PROJECT_ROOT"
-    write_statusline_cache "$PROJECT_ROOT"
+    # write_statusline_cache removed (TKT-018): statusline reads runtime directly.
     [[ -n "$GIT_BRANCH" ]] && CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH, $GIT_DIRTY_COUNT uncommitted")
     [[ "$PLAN_EXISTS" == "true" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done")
     [[ "$PLAN_EXISTS" == "false" ]] && CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")

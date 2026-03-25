@@ -99,12 +99,14 @@ run_post_task() {
 }
 
 set_role() {
+    # TKT-018: role detection is runtime-only; .subagent-tracker removed.
+    # Deactivate any prior marker then set the new one, or deactivate all when
+    # role is empty (simulates the no-role / orchestrator state).
     local role="$1"
     if [[ -n "$role" ]]; then
-        printf 'ACTIVE|%s|%s\n' "$role" "$(date +%s)" \
-            > "$TMP_DIR/.claude/.subagent-tracker"
+        policy marker set "agent-test" "$role" >/dev/null 2>&1
     else
-        rm -f "$TMP_DIR/.claude/.subagent-tracker"
+        policy marker deactivate "agent-test" >/dev/null 2>&1 || true
     fi
 }
 

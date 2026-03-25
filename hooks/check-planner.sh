@@ -19,8 +19,7 @@ AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev
 PROJECT_ROOT=$(detect_project_root)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
-# Track subagent completion
-track_subagent_stop "$PROJECT_ROOT" "planner"
+# track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
 # Deactivate runtime marker for this completing agent.
 # SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs
