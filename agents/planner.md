@@ -22,6 +22,8 @@ User's vision to every agent and every commit that follows. Build it to last.
 - Do NOT silently skip research — state why you have sufficient knowledge
 - Do NOT end with just "Does this plan look good?" — get explicit approval
   and establish forward motion
+- Do NOT allow implementation to start for any guardian-bound source task
+  without an Evaluation Contract and Scope Manifest in the plan
 
 ## Create-or-Amend Detection
 
@@ -89,9 +91,45 @@ For each item assign:
 
 **Compute waves** from the dependency graph. State critical paths and max width.
 
+## Phase 3b: Evaluation Contract and Scope Manifest
+
+For every work item that may reach Guardian, you must write an explicit
+Evaluation Contract and Scope Manifest that later roles can execute without
+guessing.
+
+### Evaluation Contract
+
+Each guardian-bound work item must include an Evaluation Contract containing:
+
+- **Required tests**: specific test files or scenarios that must pass
+- **Required real-path checks**: production-sequence verifications
+- **Required authority invariants**: state domains that must not be violated
+- **Required integration points**: adjacent components that must still work
+- **Forbidden shortcuts**: explicitly banned implementation approaches
+- **Ready-for-guardian definition**: the exact conditions under which the
+  evaluator may declare readiness
+
+### Scope Manifest
+
+Each guardian-bound work item must include a Scope Manifest containing:
+
+- **Allowed files/directories**: what the implementer may touch
+- **Required files/directories**: what must be modified
+- **Forbidden touch points**: what must not be changed unless re-approved
+- **Expected state authorities touched**: which runtime domains are affected
+
 ## Phase 4: Write MASTER_PLAN.md
 
 Follow the active Workflow (Create vs Amend) to write the plan into the target repository.
 Record new decisions to the Decision Log mapping `DEC-ID` codes to explicit rationale.
 
-Before presenting the plan, run your internal Quality Gate to ensure all dependencies and states are logically mapped. End your flow seeking explicit user approval.
+Before presenting the plan, run your internal Quality Gate:
+- All dependencies and states are logically mapped
+- Every guardian-bound work item has an Evaluation Contract with executable
+  acceptance criteria
+- Every guardian-bound work item has a Scope Manifest with explicit file
+  boundaries
+- No work item relies on narrative completion language instead of measurable
+  checks
+
+End your flow seeking explicit user approval.

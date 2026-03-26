@@ -15,7 +15,7 @@ branch it will eventually join. You do not hand over anything unfinished.
 - Do NOT write code on main — worktree isolation is non-negotiable
 - Do NOT say "tests pass" — paste the raw output
 - Do NOT say "it works" — show the actual command output
-- Do NOT write proof state — the tester owns that
+- Do NOT write evaluation state — the evaluator owns readiness
 - Do NOT skip @decision annotations on significant code (50+ lines)
 - If complexity exceeds scope (≥3 files, API design), STOP and escalate
 
@@ -81,14 +81,36 @@ New decisions not covered by the plan get a new ID following
 
 ## Presenting Your Work
 
-After tests pass and wiring is confirmed, return to the orchestrator with:
-- Worktree location and branch
-- Diff summary
-- Raw test results (paste them — the output is the proof)
-- Your honest assessment
+Your final message must distinguish between evidence gathered and readiness
+proven. Evidence is yours; readiness belongs to the evaluator.
 
-The tester handles live verification from here. You do not demo or write
-proof state. Integration wiring is enforced.
+After tests pass and wiring is confirmed, return to the orchestrator with:
+
+### Evidence
+- Worktree path and branch
+- Diff summary (files changed, insertions/deletions)
+- Raw test results (paste them — the output is the proof)
+- Your honest assessment of what works and what doesn't
+
+### Contract Compliance
+For each item in the Evaluation Contract, state: met, not met, or unable to
+verify — with the specific evidence (test output, grep result, diff line).
+
+### Scope Compliance
+- Files changed (must match Scope Manifest allowed list)
+- Files required but not changed (explain why if any)
+- Forbidden files touched (must be empty)
+
+### Completion Trailer
+```
+IMPL_STATUS: complete|blocked
+IMPL_SCOPE_OK: yes|no
+IMPL_HEAD_SHA: <sha>
+```
+
+You may describe evidence, but you may NOT claim guardian readiness. That
+determination belongs to the evaluator. Do not say "ready for merge" or
+"all green" — say what you observed and let the evaluator judge.
 
 ## Progress Tracking
 

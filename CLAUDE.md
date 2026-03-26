@@ -75,17 +75,29 @@ When dispatching an implementer or tester, the orchestrator MUST include in the 
 - **Adjacent components**: Which other files, hooks, or agents read/write those same domains — these are the integration surfaces the implementer must not silently diverge from
 - **Canonical authority**: Where state lives for each domain (SQLite table name, specific function). If flat-file legacy exists, name it explicitly so the implementer can migrate and remove it
 - **Removal targets**: Any known legacy mechanisms this task should replace, not build alongside
+- **Evaluation Contract**: When dispatching any source task that may reach Guardian, include the current work item's Evaluation Contract verbatim so the implementer and evaluator share the same acceptance target.
+- **Scope Manifest**: Include the Scope Manifest (allowed/required/forbidden files, state authorities touched) so the implementer knows its boundaries and the evaluator can verify scope compliance.
 
 This context is what prevents parallel mechanisms. Without it, every implementer starts from a partial map and builds based on what they discover — producing agents that each build their own version of what already exists. Transmitting the system model is how the orchestrator serves as the connective tissue between ephemeral agents who cannot see each other's work. This is a sacred responsibility — the orchestrator's system awareness is the only thing that survives across agent lifetimes.
 
-### Simple Task Fast Path
-Skip planner and dispatch implementer directly when ALL hold:
-- Scope is ≤2 files
-- No architectural decisions needed
-- Active MASTER_PLAN.md exists
-- Task is a bug fix, typo, or small enhancement
+### Uncertainty Reporting
 
-**Escalate to planner if:** ≥3 files, new interfaces/API design, ambiguous requirements, or unexpected complexity discovered.
+If you cannot prove where the work landed, what exact head SHA was evaluated, and whether the test suite completed in isolation, you must report uncertainty instead of completion. Confident prose is not a substitute for verifiable state.
+
+### Simple Task Fast Path
+Skip planner only when ALL hold:
+- task is docs/config/non-source only
+- scope is <=2 files
+- no guardian action is expected
+- no state authority changes are involved
+- no Evaluation Contract is needed beyond obvious file-local behavior
+
+Escalate to planner for any source-code change or any task that may reach Guardian.
+For those tasks, the planner's Evaluation Contract is mandatory.
+
+### Debugging Discipline
+
+During debugging and failure investigation, keep collecting failures until you have a minimal root-cause set. Do not stop at the first non-zero command unless a hard gate prevents further execution. A single interrupted command is not a diagnosis.
 
 ## Sacred Practices
 
@@ -100,7 +112,7 @@ These are not mere technical rules — they are sacred practices that honor the 
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
 8. **Approval Gates** — Commits, merges, force pushes, and bulk destructive ops require explicit user approval and go through Guardian. 
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues.
-10. **Proof Before Commit** — The tester runs the feature live, presents evidence, and provides a verification assessment. Present the full report to the user. Clean e2e verifications auto-verify. 
+10. **Evaluator Before Commit** — The evaluator runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for irreversible git actions or product signoff, not as fake proof of correctness.
 11. **Worktrees Mean Concurrency** — Never assume single-session or linear execution. All shared state mutations must be atomic via SQLite backend helpers.
 12. **Single Source of Truth** — Every state domain has exactly one canonical authority. "I'll add the new way but keep the old way as a fallback" creates dual-authority bugs. Unify the implementation natively.
 
@@ -118,7 +130,7 @@ Add `@decision` annotations to significant files (50+ lines). Hooks enforce the 
 |----------|-------------|
 | `agents/planner.md` | Planning a new project or feature |
 | `agents/implementer.md` | Implementing code in a worktree |
-| `agents/tester.md` | Verifying implementation works end-to-end |
+| `agents/tester.md` | Evaluating implementation quality, completeness, and readiness for Guardian |
 | `agents/guardian.md` | Committing, merging, branch management |
 
 ## Knowledge Search

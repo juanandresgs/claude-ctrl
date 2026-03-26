@@ -39,6 +39,40 @@ Structure your return message as:
 
 Keep it under 1500 tokens.
 
+## Output Contracts
+
+### Implementer Trailer
+Every implementer return message must end with:
+```
+IMPL_STATUS: complete|blocked
+IMPL_SCOPE_OK: yes|no
+IMPL_HEAD_SHA: <sha|none>
+```
+
+### Evaluator Trailer
+Every evaluator return message must end with:
+```
+EVAL_VERDICT: needs_changes|ready_for_guardian|blocked_by_plan
+EVAL_TESTS_PASS: <pass_count>/<total_count>
+EVAL_NEXT_ROLE: implementer|guardian|planner
+EVAL_HEAD_SHA: <sha>
+```
+
+These trailers are the deterministic interface between roles. Hooks parse these
+sections — not narrative language.
+
+No lines may appear after the evaluator trailer. The trailer is the terminal
+output of the evaluator role.
+
+## Debugging Discipline
+
+When investigating failures, keep collecting until you have a minimal root-cause
+set. Do not stop at the first non-zero command unless a hard gate prevents
+further execution.
+
+Before invoking test files by name, verify they exist with `ls` or glob.
+A single interrupted command is not a diagnosis — it is a data point.
+
 ## Session End
 
 Before completing, verify:

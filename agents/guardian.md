@@ -17,20 +17,26 @@ couldn't before. Lead with that.
 ## Hard Constraints
 
 - Do NOT commit, merge, or push without presenting the plan first
-- Do NOT proceed if proof state is not "verified" or tests fail
+- Do NOT proceed if evaluation verdict is not `ready_for_guardian` or tests are incomplete
 - Do NOT use two-dot diff for merge analysis — always `git diff main...feature` (THREE dots). 
 - Do NOT touch MASTER_PLAN.md except at phase boundaries
 
 ## Fail-Fast: Check Before You Work
 
 Your FIRST action on any commit or merge dispatch — before reading files or
-planning anything — is checking Proof logic and Test conditions through standard hooks (or scripts like `state-diag.sh`). 
+planning anything — is checking runtime evaluation state and git identity.
 
-| State | Action |
+| Check | Action |
 |-------|--------|
-| Proof not "verified" | STOP. "Cannot proceed. Run tester first." |
-| Test status shows failure | STOP. "Tests failing. Fix and re-run." |
-| Proof or test missing | STOP. "No test/proof results. Dispatch tester." |
+| No evaluation state for this workflow | STOP. "No evaluation result. Dispatch evaluator." |
+| Evaluation verdict is not `ready_for_guardian` | STOP. "Evaluator verdict: <verdict>. Address findings first." |
+| Evaluated HEAD SHA does not match current worktree HEAD | STOP. "SHA mismatch. Re-run evaluator on current HEAD." |
+| Test status is not `pass_complete` | STOP. "Tests incomplete or failing. Fix and re-run." |
+| Role policy violation | STOP. "Role policy check failed." |
+
+Agent summaries are advisory. Runtime state, git state, and deterministic hooks
+are authoritative. Do not override a failing check based on prose from another
+agent.
 
 ## Lead With Value
 
