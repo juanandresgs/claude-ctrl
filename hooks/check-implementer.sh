@@ -113,6 +113,46 @@ else
     VERIFICATION_NOTE="Proof-of-work is idle — dispatch Tester after implementation evidence is prepared."
 fi
 
+# Check 6: Workflow scope compliance (advisory — guard.sh enforces the hard deny)
+# Get changed files relative to base branch (uses workflow binding if available).
+_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+_CHANGED_FILES_JSON="[]"
+_BASE_BRANCH="main"
+
+# Try to get base_branch from binding
+_BINDING_JSON=$(cc_policy workflow get "$_WF_ID" 2>/dev/null) || _BINDING_JSON=""
+if [[ -n "$_BINDING_JSON" ]]; then
+    _FOUND=$(printf '%s' "$_BINDING_JSON" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+    if [[ "$_FOUND" == "yes" ]]; then
+        _BASE_BRANCH=$(printf '%s' "$_BINDING_JSON" | jq -r '.base_branch // "main"' 2>/dev/null || echo "main")
+    fi
+fi
+
+# Collect changed files vs base branch
+_CHANGED_RAW=$(git -C "$PROJECT_ROOT" diff --name-only "$_BASE_BRANCH"...HEAD 2>/dev/null || echo "")
+if [[ -n "$_CHANGED_RAW" ]]; then
+    _CHANGED_FILES_JSON=$(printf '%s\n' "$_CHANGED_RAW" | jq -Rs 'split("\n") | map(select(. != ""))' 2>/dev/null || echo "[]")
+fi
+
+# Check compliance (advisory only — exit 0 regardless)
+_SCOPE_RESULT=$(rt_workflow_scope_check "$_WF_ID" "$_CHANGED_FILES_JSON") || _SCOPE_RESULT=""
+if [[ -n "$_SCOPE_RESULT" ]]; then
+    _COMPLIANT=$(printf '%s' "$_SCOPE_RESULT" | jq -r '.compliant // "true"' 2>/dev/null || echo "true")
+    if [[ "$_COMPLIANT" == "false" ]]; then
+        _VIOLATIONS=$(printf '%s' "$_SCOPE_RESULT" | jq -r '.violations[]? // empty' 2>/dev/null || echo "")
+        ISSUES+=("Workflow scope violations detected (advisory — guard.sh will enforce on commit):")
+        while IFS= read -r viol; do
+            [[ -n "$viol" ]] && ISSUES+=("  $viol")
+        done <<< "$_VIOLATIONS"
+    fi
+    _NOTE=$(printf '%s' "$_SCOPE_RESULT" | jq -r '.note // empty' 2>/dev/null || echo "")
+    if [[ -n "$_NOTE" ]]; then
+        ISSUES+=("Scope note: $_NOTE")
+    fi
+elif [[ -z "$_BINDING_JSON" || "$_FOUND" != "yes" ]]; then
+    ISSUES+=("No workflow binding found for '$_WF_ID' — guard.sh will deny commit without binding.")
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then

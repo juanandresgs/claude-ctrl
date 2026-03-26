@@ -411,7 +411,52 @@ is_claude_meta_repo() {
 #   check-implementer.sh called track_subagent_stop; that call is removed too.
 #   session-init.sh deleted .subagent-tracker on startup; that line is removed.
 
+# get_workflow_binding [root]
+# Canonical way to discover the current workflow binding from the runtime.
+# Exports: WORKFLOW_ID, WORKFLOW_WORKTREE, WORKFLOW_BRANCH, WORKFLOW_TICKET
+# Returns 0 if binding exists, 1 if not found.
+#
+# @decision DEC-WF-003
+# @title get_workflow_binding is the canonical worktree identity lookup
+# @status accepted
+# @rationale Later roles (tester, guardian) must read the worktree path from
+#   the runtime binding rather than inferring from CWD or git state. This
+#   function is the single canonical entry point. It derives workflow_id via
+#   current_workflow_id (branch-based), queries the runtime for the
+#   worktree_path, and exports all four binding fields. Guard.sh Check 12
+#   and check-implementer.sh both call through this function.
+get_workflow_binding() {
+    local root="${1:-}"
+    [[ -n "$root" ]] || root=$(detect_project_root)
+
+    WORKFLOW_ID=$(current_workflow_id "$root")
+    WORKFLOW_WORKTREE=""
+    WORKFLOW_BRANCH=""
+    WORKFLOW_TICKET=""
+
+    # Query runtime for full binding
+    local binding_json
+    binding_json=$(cc_policy workflow get "$WORKFLOW_ID" 2>/dev/null) || binding_json=""
+
+    if [[ -z "$binding_json" ]]; then
+        return 1
+    fi
+
+    local found
+    found=$(printf '%s' "$binding_json" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+    if [[ "$found" != "yes" ]]; then
+        return 1
+    fi
+
+    WORKFLOW_WORKTREE=$(printf '%s' "$binding_json" | jq -r '.worktree_path // empty' 2>/dev/null || echo "")
+    WORKFLOW_BRANCH=$(printf '%s' "$binding_json" | jq -r '.branch // empty' 2>/dev/null || echo "")
+    WORKFLOW_TICKET=$(printf '%s' "$binding_json" | jq -r '.ticket // empty' 2>/dev/null || echo "")
+
+    export WORKFLOW_ID WORKFLOW_WORKTREE WORKFLOW_BRANCH WORKFLOW_TICKET
+    [[ -n "$WORKFLOW_WORKTREE" ]]
+}
+
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo
+export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding

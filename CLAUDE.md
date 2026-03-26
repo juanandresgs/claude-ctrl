@@ -76,7 +76,7 @@ When dispatching an implementer or tester, the orchestrator MUST include in the 
 - **Canonical authority**: Where state lives for each domain (SQLite table name, specific function). If flat-file legacy exists, name it explicitly so the implementer can migrate and remove it
 - **Removal targets**: Any known legacy mechanisms this task should replace, not build alongside
 - **Evaluation Contract**: When dispatching any source task that may reach Guardian, include the current work item's Evaluation Contract verbatim so the implementer and evaluator share the same acceptance target.
-- **Scope Manifest**: Include the Scope Manifest (allowed/required/forbidden files, state authorities touched) so the implementer knows its boundaries and the evaluator can verify scope compliance.
+- **Scope Manifest**: Include the Scope Manifest (allowed/required/forbidden files, state authorities touched) so the implementer knows its boundaries and the evaluator can verify scope compliance. Before dispatching the implementer, write the Scope Manifest to runtime via `cc-policy workflow scope-set` so hooks can enforce it mechanically.
 
 This context is what prevents parallel mechanisms. Without it, every implementer starts from a partial map and builds based on what they discover — producing agents that each build their own version of what already exists. Transmitting the system model is how the orchestrator serves as the connective tissue between ephemeral agents who cannot see each other's work. This is a sacred responsibility — the orchestrator's system awareness is the only thing that survives across agent lifetimes.
 

@@ -20,7 +20,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
-source "$(dirname "$0")/lib/runtime-bridge.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Read and validate hook input
@@ -68,7 +68,16 @@ if [[ -n "$NEXT_ROLE" ]]; then
     _rt_ensure_schema
     cc_policy dispatch enqueue "$NEXT_ROLE" >/dev/null 2>&1 || true
 
+    # Include workflow_id in dispatch context so the orchestrator can pass it
+    # to the next agent without re-deriving from CWD (DEC-WF-001).
+    _PROJECT_ROOT=$(detect_project_root 2>/dev/null || echo "")
+    _WF_ID=""
+    if [[ -n "$_PROJECT_ROOT" ]]; then
+        _WF_ID=$(current_workflow_id "$_PROJECT_ROOT" 2>/dev/null || echo "")
+    fi
+
     SUGGESTION="Canonical flow suggests dispatching: $NEXT_ROLE"
+    [[ -n "$_WF_ID" ]] && SUGGESTION="$SUGGESTION (workflow_id=$_WF_ID)"
     ESCAPED=$(printf '%s' "$SUGGESTION" | jq -Rs .)
     cat <<EOF
 {

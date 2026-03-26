@@ -127,3 +127,40 @@ rt_statusline_snapshot() {
     _rt_ensure_schema
     cc_policy statusline snapshot 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# Workflow binding wrappers
+# ---------------------------------------------------------------------------
+
+# rt_workflow_bind <workflow_id> <worktree_path> <branch> [ticket] [initiative]
+# Registers the workflow→worktree→branch binding in SQLite.
+# Silent on success; suppresses errors so hook callers are not disrupted.
+rt_workflow_bind() {
+    _rt_ensure_schema
+    local wf_id="$1" wt_path="$2" branch="$3"
+    local ticket="${4:-}" initiative="${5:-}"
+    local args=("workflow" "bind" "$wf_id" "$wt_path" "$branch")
+    [[ -n "$ticket" ]] && args+=("--ticket" "$ticket")
+    [[ -n "$initiative" ]] && args+=("--initiative" "$initiative")
+    cc_policy "${args[@]}" >/dev/null 2>&1
+}
+
+# rt_workflow_get <workflow_id>
+# Prints the worktree_path string for the workflow, or empty string on failure.
+# Used by get_workflow_binding() in context-lib.sh and guard.sh Check 12.
+rt_workflow_get() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy workflow get "$1" 2>/dev/null) || return 0
+    printf '%s\n' "$result" | jq -r 'if .found then .worktree_path else empty end' 2>/dev/null || true
+}
+
+# rt_workflow_scope_check <workflow_id> <changed_files_json>
+# Returns the compliance JSON dict from cc-policy, or empty string on failure.
+# Example: rt_workflow_scope_check "feature-foo" '["runtime/cli.py"]'
+rt_workflow_scope_check() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy workflow scope-check "$1" --changed "$2" 2>/dev/null) || return 0
+    printf '%s\n' "$result"
+}

@@ -59,6 +59,26 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("CRITICAL FIRST ACTION: No worktree detected. You MUST create a git worktree BEFORE writing any code. Run: git worktree add ../\<feature-name\> -b \<feature-name\> main — then cd into the worktree and work there. Do NOT write source code on main.")
         fi
         CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to 50+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
+
+        # Bind workflow to runtime so guard.sh Check 12 and later roles can
+        # discover the worktree path without inferring from CWD or git state.
+        # workflow_id is derived from the branch (current_workflow_id).
+        # After binding, check if scope exists for this workflow_id; if not
+        # but scope exists for a different workflow_id on the same worktree,
+        # emit a mismatch warning.
+        _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+        _WF_WORKTREE="$PROJECT_ROOT"
+        _WF_BRANCH="${GIT_BRANCH:-unknown}"
+        rt_workflow_bind "$_WF_ID" "$_WF_WORKTREE" "$_WF_BRANCH" || true
+        CONTEXT_PARTS+=("Workflow binding: id=$_WF_ID worktree=$_WF_WORKTREE branch=$_WF_BRANCH")
+
+        # Check for workflow_id mismatch: scope loaded for different workflow_id
+        _SCOPE_CHECK=$(cc_policy workflow scope-get "$_WF_ID" 2>/dev/null) || _SCOPE_CHECK=""
+        _SCOPE_FOUND=$(printf '%s' "${_SCOPE_CHECK:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+        if [[ "$_SCOPE_FOUND" != "yes" ]]; then
+            CONTEXT_PARTS+=("WARNING: No scope manifest found for workflow_id '$_WF_ID'. Planner should set scope via 'cc-policy workflow scope-set' before commit. Guard.sh will deny commit without scope.")
+        fi
+
         # Inject test status
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then

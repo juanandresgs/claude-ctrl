@@ -122,6 +122,30 @@ CREATE TABLE IF NOT EXISTS todo_state (
 )
 """
 
+WORKFLOW_BINDINGS_DDL = """
+CREATE TABLE IF NOT EXISTS workflow_bindings (
+    workflow_id   TEXT    PRIMARY KEY,
+    worktree_path TEXT    NOT NULL,
+    branch        TEXT    NOT NULL,
+    base_branch   TEXT    NOT NULL DEFAULT 'main',
+    ticket        TEXT,
+    initiative    TEXT,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+)
+"""
+
+WORKFLOW_SCOPE_DDL = """
+CREATE TABLE IF NOT EXISTS workflow_scope (
+    workflow_id       TEXT    PRIMARY KEY REFERENCES workflow_bindings(workflow_id),
+    allowed_paths     TEXT,
+    required_paths    TEXT,
+    forbidden_paths   TEXT,
+    authority_domains TEXT,
+    updated_at        INTEGER NOT NULL
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -134,6 +158,8 @@ ALL_DDL: list[str] = [
     TRACE_MANIFEST_DDL,
     SESSION_TOKENS_DDL,
     TODO_STATE_DDL,
+    WORKFLOW_BINDINGS_DDL,
+    WORKFLOW_SCOPE_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK

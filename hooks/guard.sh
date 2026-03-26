@@ -133,7 +133,8 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
 fi
 
 # --- Check 3: WHO enforcement for permanent git operations ---
-if echo "$COMMAND" | grep -qE 'git\s+(commit|merge|push)\b'; then
+# Pattern handles "git -C /path commit" and "git commit" forms.
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
     CURRENT_ROLE=$(current_active_agent_role "$PROJECT_ROOT")
     if ! is_guardian_role "$CURRENT_ROLE"; then
         deny "Only the Guardian agent may run git commit, merge, or push. Dispatch Guardian for permanent git operations."
@@ -144,7 +145,7 @@ fi
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
-if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$TARGET_DIR"; then
         CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
@@ -160,7 +161,7 @@ if echo "$COMMAND" | grep -qE 'git\s+commit'; then
 fi
 
 # --- Check 5: Force push handling ---
-if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(-f|--force)\b'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b.*(-f|--force)\b'; then
     if echo "$COMMAND" | grep -qE '(origin|upstream)\s+(main|master)\b'; then
         deny "Cannot force push to main/master. This is a destructive action that rewrites shared history."
     fi
@@ -171,15 +172,15 @@ if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(-f|--force)\b'; then
 fi
 
 # --- Check 6: No destructive git commands (hard blocks) ---
-if echo "$COMMAND" | grep -qE 'git\s+reset\s+--hard'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\breset\b.*--hard'; then
     deny "git reset --hard is destructive and discards uncommitted work. Use git stash or create a backup branch first."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+clean\s+.*-f'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bclean\b.*-f'; then
     deny "git clean -f permanently deletes untracked files. Use git clean -n (dry run) first to see what would be deleted."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+branch\s+.*-D\b'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bbranch\b.*-D\b'; then
     deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
@@ -204,7 +205,7 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
 fi
 
 # --- Check 8: Test status gate for merge commands ---
-if echo "$COMMAND" | grep -qE 'git\s+merge'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
@@ -226,7 +227,7 @@ if echo "$COMMAND" | grep -qE 'git\s+merge'; then
 fi
 
 # --- Check 9: Test status gate for commit commands ---
-if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
@@ -250,8 +251,8 @@ fi
 
 # --- Check 10: Proof-of-work verification gate ---
 # Requires workflow-scoped proof status = "verified" before commit/merge.
-if echo "$COMMAND" | grep -qE 'git\s+(commit|merge)'; then
-    if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
+    if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
         PROOF_DIR=$(extract_git_target_dir "$COMMAND")
     else
         PROOF_DIR=$(detect_project_root)
@@ -272,9 +273,59 @@ if echo "$COMMAND" | grep -qE 'git\s+(commit|merge)'; then
         # next workflow cycle starts clean. Commits do not reset (they may be
         # intermediate; the merge is the completion event).
         # TKT-008: runtime-only write; no flat-file reset needed.
-        if echo "$COMMAND" | grep -qE 'git\s+merge'; then
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
             MERGE_WF=$(current_workflow_id "$PROOF_DIR")
             rt_proof_set "$MERGE_WF" "idle" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# --- Check 12: Workflow binding + scope gate ---
+# @decision DEC-GUARD-012
+# @title Workflow binding and scope are mandatory before commit/merge
+# @status accepted
+# @rationale Guard.sh is the last enforcement point before git makes a
+#   permanent change. Checks 1-11 cover WHO, WHAT branch, test status, and
+#   proof-of-work. Check 12 closes the remaining gap: WHICH scope was the
+#   implementer authorized to touch. Without a binding the workflow_id is
+#   unknown; without a scope the authorized file set is unknown. Both are
+#   required for a traceable commit. Meta-repo bypass applies (config edits
+#   by the orchestrator do not go through the implementer workflow path).
+#   This check only fires on git commit/merge, not on push or other git ops.
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
+    if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
+        _CHECK12_DIR=$(extract_git_target_dir "$COMMAND")
+    else
+        _CHECK12_DIR=$(detect_project_root)
+    fi
+
+    if ! is_claude_meta_repo "$_CHECK12_DIR"; then
+        _WF12_ID=$(current_workflow_id "$_CHECK12_DIR")
+
+        # Sub-check A: binding must exist
+        _WF12_BINDING=$(rt_workflow_get "$_WF12_ID")
+        if [[ -z "$_WF12_BINDING" ]]; then
+            deny "No workflow binding for '$_WF12_ID'. Bind workflow before committing: cc-policy workflow bind $_WF12_ID <worktree_path> <branch>"
+        fi
+
+        # Sub-check B: scope must exist
+        _WF12_SCOPE=$(cc_policy workflow scope-get "$_WF12_ID" 2>/dev/null) || _WF12_SCOPE=""
+        _WF12_SCOPE_FOUND=$(printf '%s' "${_WF12_SCOPE:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+        if [[ "$_WF12_SCOPE_FOUND" != "yes" ]]; then
+            deny "No scope manifest for workflow '$_WF12_ID'. Set scope before committing: cc-policy workflow scope-set $_WF12_ID --allowed '[...]' --forbidden '[...]'"
+        fi
+
+        # Sub-check C: changed files must comply with scope
+        _WF12_BASE=$(cc_policy workflow get "$_WF12_ID" 2>/dev/null | jq -r '.base_branch // "main"' 2>/dev/null || echo "main")
+        _WF12_CHANGED_RAW=$(git -C "$_CHECK12_DIR" diff --name-only "${_WF12_BASE}...HEAD" 2>/dev/null || echo "")
+        if [[ -n "$_WF12_CHANGED_RAW" ]]; then
+            _WF12_CHANGED_JSON=$(printf '%s\n' "$_WF12_CHANGED_RAW" | jq -Rs 'split("\n") | map(select(. != ""))' 2>/dev/null || echo "[]")
+            _WF12_COMPLIANCE=$(rt_workflow_scope_check "$_WF12_ID" "$_WF12_CHANGED_JSON")
+            _WF12_COMPLIANT=$(printf '%s' "${_WF12_COMPLIANCE:-}" | jq -r '.compliant // "true"' 2>/dev/null || echo "true")
+            if [[ "$_WF12_COMPLIANT" == "false" ]]; then
+                _WF12_VIOLS=$(printf '%s' "$_WF12_COMPLIANCE" | jq -r '[.violations[]? // empty] | join(", ")' 2>/dev/null || echo "")
+                deny "Scope violation for workflow '$_WF12_ID'. Unauthorized files changed: $_WF12_VIOLS"
+            fi
         fi
     fi
 fi

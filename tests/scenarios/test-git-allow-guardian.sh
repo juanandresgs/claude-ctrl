@@ -8,6 +8,7 @@
 #   Check 4: not on main (we use a feature branch)
 #   Check 9: .test-status must be pass
 #   Check 10: proof-of-work must be verified
+#   Check 12: workflow binding + scope must exist
 #
 # @decision DEC-SMOKE-003
 # @title Guardian-allow test requires all three gates: role, test, proof
@@ -46,13 +47,20 @@ echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 WORKFLOW_ID="feature-ready-to-merge"
 echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-${WORKFLOW_ID}"
 
+# Gate 4: workflow binding + scope (Check 12)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    workflow bind "$WORKFLOW_ID" "$TMP_DIR" "feature/ready-to-merge" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    workflow scope-set "$WORKFLOW_ID" \
+    --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+
 PAYLOAD=$(jq -n \
     --arg tool_name "Bash" \
     --arg command "git -C \"$TMP_DIR\" commit --allow-empty -m 'merge ready'" \
     --arg cwd "$TMP_DIR" \
     '{tool_name: $tool_name, tool_input: {command: $command}, cwd: $cwd}')
 
-output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>/dev/null) || {
+output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" CLAUDE_RUNTIME_ROOT="$REPO_ROOT/runtime" "$HOOK" 2>/dev/null) || {
     echo "FAIL: $TEST_NAME — hook exited nonzero"
     exit 1
 }

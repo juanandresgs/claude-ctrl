@@ -41,6 +41,7 @@ import runtime.core.statusline as statusline_mod
 import runtime.core.traces as traces_mod
 import runtime.core.tokens as tokens_mod
 import runtime.core.todos as todos_mod
+import runtime.core.workflows as workflows_mod
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
 
@@ -278,6 +279,78 @@ def _handle_trace(args) -> int:
     return _err(f"unknown trace action: {args.action}")
 
 
+def _handle_workflow(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "bind":
+            workflows_mod.bind_workflow(
+                conn,
+                workflow_id=args.workflow_id,
+                worktree_path=args.worktree_path,
+                branch=args.branch,
+                base_branch=getattr(args, "base_branch", "main") or "main",
+                ticket=getattr(args, "ticket", None),
+                initiative=getattr(args, "initiative", None),
+            )
+            return _ok({
+                "workflow_id": args.workflow_id,
+                "worktree_path": args.worktree_path,
+                "branch": args.branch,
+            })
+
+        elif args.action == "get":
+            result = workflows_mod.get_binding(conn, args.workflow_id)
+            if result is None:
+                return _err(f"workflow_id '{args.workflow_id}' not found")
+            result["found"] = True
+            return _ok(result)
+
+        elif args.action == "scope-set":
+            import json as _json
+            try:
+                allowed = _json.loads(getattr(args, "allowed", "[]") or "[]")
+                required = _json.loads(getattr(args, "required", "[]") or "[]")
+                forbidden = _json.loads(getattr(args, "forbidden", "[]") or "[]")
+                authorities = _json.loads(getattr(args, "authorities", "[]") or "[]")
+            except _json.JSONDecodeError as e:
+                return _err(f"invalid JSON in scope arguments: {e}")
+            workflows_mod.set_scope(
+                conn,
+                workflow_id=args.workflow_id,
+                allowed_paths=allowed,
+                required_paths=required,
+                forbidden_paths=forbidden,
+                authority_domains=authorities,
+            )
+            return _ok({"workflow_id": args.workflow_id, "action": "scope-set"})
+
+        elif args.action == "scope-get":
+            result = workflows_mod.get_scope(conn, args.workflow_id)
+            if result is None:
+                return _err(f"no scope for workflow_id '{args.workflow_id}'")
+            result["found"] = True
+            return _ok(result)
+
+        elif args.action == "scope-check":
+            import json as _json
+            try:
+                changed = _json.loads(getattr(args, "changed", "[]") or "[]")
+            except _json.JSONDecodeError as e:
+                return _err(f"invalid JSON in --changed: {e}")
+            result = workflows_mod.check_scope_compliance(conn, args.workflow_id, changed)
+            return _ok(result)
+
+        elif args.action == "list":
+            rows = workflows_mod.list_bindings(conn)
+            return _ok({"items": rows, "count": len(rows)})
+
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown workflow action: {args.action}")
+
+
 # ---------------------------------------------------------------------------
 # Sidecar handlers
 # ---------------------------------------------------------------------------
@@ -512,6 +585,43 @@ def build_parser() -> argparse.ArgumentParser:
     td_get = td_sub.add_parser("get", help="Read todo counts for a project")
     td_get.add_argument("project_hash", help="8-char project hash")
 
+    # workflow
+    wf_p = subparsers.add_parser("workflow", help="Workflow binding and scope enforcement")
+    wf_sub = wf_p.add_subparsers(dest="action", required=True)
+
+    wf_bind = wf_sub.add_parser("bind", help="Bind workflow_id to worktree/branch")
+    wf_bind.add_argument("workflow_id")
+    wf_bind.add_argument("worktree_path")
+    wf_bind.add_argument("branch")
+    wf_bind.add_argument("--base-branch", default="main", dest="base_branch")
+    wf_bind.add_argument("--ticket", default=None)
+    wf_bind.add_argument("--initiative", default=None)
+
+    wf_get = wf_sub.add_parser("get", help="Get binding for a workflow_id")
+    wf_get.add_argument("workflow_id")
+
+    wf_scope_set = wf_sub.add_parser("scope-set", help="Set scope manifest for a workflow")
+    wf_scope_set.add_argument("workflow_id")
+    wf_scope_set.add_argument("--allowed", default="[]",
+                              help="JSON array of allowed path globs")
+    wf_scope_set.add_argument("--required", default="[]",
+                              help="JSON array of required path globs")
+    wf_scope_set.add_argument("--forbidden", default="[]",
+                              help="JSON array of forbidden path globs")
+    wf_scope_set.add_argument("--authorities", default="[]",
+                              help="JSON array of authority domain names")
+
+    wf_scope_get = wf_sub.add_parser("scope-get", help="Get scope manifest for a workflow")
+    wf_scope_get.add_argument("workflow_id")
+
+    wf_scope_check = wf_sub.add_parser("scope-check",
+                                       help="Check changed files against scope")
+    wf_scope_check.add_argument("workflow_id")
+    wf_scope_check.add_argument("--changed", default="[]",
+                                help="JSON array of changed file paths")
+
+    wf_sub.add_parser("list", help="List all workflow bindings")
+
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
     sc_sub = sc_p.add_subparsers(dest="action", required=True)
@@ -561,6 +671,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_tokens(args)
     if args.domain == "todos":
         return _handle_todos(args)
+    if args.domain == "workflow":
+        return _handle_workflow(args)
     if args.domain == "sidecar":
         return _handle_sidecar(args)
 
