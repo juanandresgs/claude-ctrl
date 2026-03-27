@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-27 (INIT-004 TKT-022 DB-scoping hardening revised)
+Last updated: 2026-03-27 (INIT-004 TKT-023 actor-truth hardening revised — Option A, eval deferred)
 
 ## Identity
 
@@ -250,6 +250,11 @@ into the new mainline.
   performance optimization. `scripts/statusline.sh` inherits correct scoping.
   This closes the split-authority bug where hooks/scripts could silently write
   to ~/.claude/state.db while intending project-scoped state.
+- `2026-03-27 — DEC-SELF-004` Statusline actor-truth hardening: `⚡impl`
+  replaced with `marker: impl (2m)` label that explicitly represents subagent
+  marker state, not current tool-call actor. Stale markers (>=5min) show `?`
+  suffix. Evaluator display deferred until evaluation_state schema exists on
+  main — this wave fixes actor-truth only.
 
 ## Active Initiatives
 
@@ -949,11 +954,14 @@ because it documents what is, not what should be.
 - **Status:** in-progress (Wave 1 prompt hardening landed at `a888c60`; Wave 2
   workflow identity and scope binding landed at `c1bd1f0`; proof-read hot-path
   fix landed at `a182d7a`; CLAUDE.md source-edit-routing patch landed at
-  `5cdc6b8`; Wave 3 DB-scoping hardening TKT-022 planned)
+  `5cdc6b8`; Wave 3 DB-scoping hardening TKT-022 planned; Wave 4 statusline
+  actor-truth hardening TKT-023 planned)
 - **Goal:** Harden prompts, runtime identity, scope enforcement, and hook
   mechanisms so the repo can accurately build and judge itself. Waves 1-2
-  delivered. Wave 3 closes the DB-scoping split-authority bug. Remaining waves
-  (test isolation, evaluator state, stop-hook hardening) are planned in the
+  delivered. Wave 3 closes the DB-scoping split-authority bug. Wave 4 closes the
+  statusline actor-truth gap (stale markers implying active agents). Evaluator
+  display is a future wave, deferred until evaluation_state schema exists on
+  main. Remaining waves (test isolation, stop-hook hardening) are planned in the
   forward plan but not yet scheduled in MASTER_PLAN.md.
 - **Scope:** Wave 1: 6 prompt/agent markdown files (landed). Wave 2: runtime
   schemas, domain module, CLI extensions, hook changes for binding and scope
@@ -961,10 +969,14 @@ because it documents what is, not what should be.
   Additional: proof-read hot-path fix migrating guard.sh Check 10 from flat-file
   to runtime (landed). CLAUDE.md source-edit-routing patch (landed). Wave 3:
   `hooks/log.sh` CLAUDE_PROJECT_DIR auto-export and DB-scoping scenario tests.
+  Wave 4: statusline marker label replaces actor-implying symbol with explicit
+  marker-state display; age suffix and stale indicator; session-init warns on
+  stale markers. No evaluation_state display in this wave.
 - **Exit:** All waves delivered. Prompts support evaluator-based readiness.
   Workflow identity is bound to worktrees. Scope manifests are mechanically
   enforced. Guardian denies unbound source tasks. DB scoping is unified: all
-  hook contexts resolve to the project DB when a git root exists.
+  hook contexts resolve to the project DB when a git root exists. Statusline
+  displays marker age and evaluation state accurately.
 - **Dependencies:** INIT-003 (additive; does not require INIT-003 completion
   but must not contradict its decisions)
 
@@ -1440,6 +1452,153 @@ All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
 - MODIFIED: `scripts/statusline.sh` — direct-CLI path now scoped
 - UNCHANGED: `hooks/lib/runtime-bridge.sh`, `runtime/cli.py`,
   `runtime/core/proof.py`, all other runtime modules
+
+#### Wave 4: Statusline Actor-Truth Hardening
+
+##### TKT-023: Wave 4 Statusline Actor-Truth Hardening
+
+- **Weight:** S
+- **Gate:** review
+- **Deps:** TKT-022 (DB scoping must be resolved so snapshot reads correct DB)
+
+**Problem:**
+
+The statusline `⚡impl` display implies the implementer is currently executing.
+In reality, the `agent_markers` table only tracks "this marker was set and has
+not been deactivated." The statusline has no liveness check and no age
+indicator. A 2-hour-old stale marker (e.g., after a crash where SubagentStop
+never fired) looks identical to a 2-second-old active marker.
+
+**Design:**
+
+Replace the actor-implying `⚡impl` with an explicit marker-state label:
+
+- **Fresh marker (<5min):** `marker: impl (2m)` — the parenthesized age makes
+  clear this is a temporal state, not a liveness assertion.
+- **Stale marker (>=5min):** `marker: impl? (7m)` — the `?` suffix signals the
+  marker may no longer reflect reality.
+- **No active marker:** segment omitted entirely (no empty label).
+
+The 5-minute staleness threshold is chosen because the longest typical agent
+dispatch (planner) completes well within 5 minutes. Agents that exceed this
+are either long-running implementers (where the age display is informative) or
+crashed/hung (where the `?` suffix is a warning).
+
+**HUD label semantics:**
+
+| Label | Meaning |
+|-------|---------|
+| `marker: impl (2m)` | An implementer subagent marker was set 2 minutes ago and has not been deactivated. The agent may or may not be the current tool-call actor. |
+| `marker: impl? (7m)` | Same, but the marker is >=5min old. Treat with lower confidence — the agent may have finished, crashed, or been superseded. |
+| (absent) | No active marker exists. |
+
+**Proof and dispatch displays:** Unchanged in this wave. `proof:` continues to
+show legacy proof_state. `next:` continues to show pending dispatch. Neither
+overstates actor identity. Evaluator display is deferred until the
+evaluation_state schema exists on main.
+
+**Implementer scope:**
+
+- `runtime/core/statusline.py` — add `marker_age_seconds` field to `snapshot()`.
+  Compute as `int(time.time()) - started_at` for the active marker.
+- `runtime/core/markers.py` — add `get_active_with_age(conn)` that returns the
+  marker dict with an additional `age_seconds` field. Keep existing
+  `get_active()` unchanged for backwards compatibility.
+- `scripts/statusline.sh` — replace `⚡{role}` segment with `marker: {role}
+  ({age})` format. Add `?` suffix when `marker_age_seconds >= 300`. Omit
+  segment entirely when no active marker.
+- `hooks/session-init.sh` — when marker is >=5min old, include advisory in
+  additionalContext: "Active subagent marker is Nm old and may be stale."
+- `tests/runtime/test_statusline_truth.py` — NEW: unit tests for
+  `get_active_with_age()` and `snapshot()` `marker_age_seconds` field.
+- `tests/scenarios/test-statusline-stale-marker.sh` — NEW: scenario test
+  proving stale marker gets `?` suffix and fresh marker does not.
+
+**Tester scope:**
+
+- Statusline snapshot includes `marker_age_seconds`
+- `marker:` label replaces `⚡` in HUD output
+- Stale threshold at 300 seconds produces `?` suffix
+- Fresh marker below threshold has no `?`
+- No active marker → segment absent
+- Session-init advisory fires when stale
+- Existing tests pass
+- All new tests pass
+
+###### Evaluation Contract for TKT-023
+
+**Required checks:**
+
+1. `runtime/core/markers.py` has `get_active_with_age(conn)` returning marker
+   dict with `age_seconds` field computed from `started_at`.
+2. `runtime/core/statusline.py` `snapshot()` includes `marker_age_seconds`
+   (integer, seconds since marker was set; None when no active marker).
+3. `scripts/statusline.sh` displays `marker: {role} ({age})` instead of
+   `⚡{role}`.
+4. `scripts/statusline.sh` appends `?` when `marker_age_seconds >= 300`:
+   `marker: impl? (7m)`.
+5. `scripts/statusline.sh` omits the marker segment entirely when no active
+   marker exists.
+6. `hooks/session-init.sh` includes stale-marker advisory in additionalContext
+   when marker age >= 300 seconds.
+7. Proof display (`proof:` segment) is unchanged.
+8. Dispatch display (`next:` segment) is unchanged.
+9. New unit tests for `get_active_with_age()` and snapshot age field pass.
+10. New scenario test proves: fresh marker → `marker: impl (Xs)` without `?`;
+    stale marker → `marker: impl? (Nm)` with `?`.
+11. All existing tests pass (no regression).
+
+**Required authority invariants:**
+
+- `agent_markers` table remains the sole source for marker state. No new table
+  or flat file introduced.
+- `marker_age_seconds` is computed (not stored) — no schema change.
+- The `marker:` label does not imply current tool-call actor identity. It
+  explicitly means "subagent marker state."
+
+**Forbidden shortcuts:**
+
+- Do not change marker write paths (`set_active`, `deactivate`).
+- Do not change `check-*.sh` deactivation logic.
+- Do not change `subagent-start.sh` marker-set logic.
+- Do not add `evaluation_state` display (deferred until schema exists on main).
+- Do not modify `settings.json`.
+- Do not modify agent prompts (`CLAUDE.md`, `agents/*.md`).
+- Do not change the runtime schema.
+
+**Ready-for-guardian definition:**
+
+All 11 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+`git diff --stat` shows only files in the Scope Manifest.
+
+###### Scope Manifest for TKT-023
+
+**Allowed files:**
+
+- `runtime/core/statusline.py` (modify: add marker_age_seconds to snapshot)
+- `runtime/core/markers.py` (modify: add get_active_with_age)
+- `scripts/statusline.sh` (modify: marker label, age display, stale suffix)
+- `hooks/session-init.sh` (modify: stale marker advisory)
+- `tests/runtime/test_statusline_truth.py` (new)
+- `tests/scenarios/test-statusline-stale-marker.sh` (new)
+
+**Required files:** All 6 must be created or modified.
+
+**Forbidden touch points:**
+
+- `hooks/check-*.sh`, `hooks/subagent-start.sh` (no marker lifecycle changes)
+- `runtime/schemas.py` (no schema changes)
+- `settings.json`
+- `CLAUDE.md`, `agents/*.md`
+- `MASTER_PLAN.md` (except this planning amendment)
+
+**Expected state authorities touched:**
+
+- MODIFIED: `runtime/core/statusline.py` — snapshot adds computed field
+- MODIFIED: `runtime/core/markers.py` — new read-only helper function
+- MODIFIED: `scripts/statusline.sh` — display format change
+- MODIFIED: `hooks/session-init.sh` — advisory context
+- UNCHANGED: `agent_markers` table schema, all write paths, all other hooks
 
 ## Completed Initiatives
 
