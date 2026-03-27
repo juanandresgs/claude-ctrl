@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-27 (INIT-003 stabilization verified; INIT-004 Waves 1-2 landed with proof-read fix)
+Last updated: 2026-03-27 (INIT-004 TKT-022 DB-scoping hardening revised)
 
 ## Identity
 
@@ -243,6 +243,13 @@ into the new mainline.
   branch). Scope manifests are stored as JSON arrays in `workflow_scope`, not
   flat files. Guardian denies commit/merge when no workflow binding exists for
   guardian-bound source tasks.
+- `2026-03-27 — DEC-SELF-003` DB scoping hardening: `runtime/core/config.py`
+  `default_db_path()` becomes the sole canonical DB resolver with 4-step
+  resolution: CLAUDE_POLICY_DB → CLAUDE_PROJECT_DIR → git-root+.claude/ →
+  ~/.claude/state.db. `hooks/log.sh` auto-exports CLAUDE_PROJECT_DIR as a
+  performance optimization. `scripts/statusline.sh` inherits correct scoping.
+  This closes the split-authority bug where hooks/scripts could silently write
+  to ~/.claude/state.db while intending project-scoped state.
 
 ## Active Initiatives
 
@@ -942,20 +949,22 @@ because it documents what is, not what should be.
 - **Status:** in-progress (Wave 1 prompt hardening landed at `a888c60`; Wave 2
   workflow identity and scope binding landed at `c1bd1f0`; proof-read hot-path
   fix landed at `a182d7a`; CLAUDE.md source-edit-routing patch landed at
-  `5cdc6b8`)
+  `5cdc6b8`; Wave 3 DB-scoping hardening TKT-022 planned)
 - **Goal:** Harden prompts, runtime identity, scope enforcement, and hook
   mechanisms so the repo can accurately build and judge itself. Waves 1-2
-  delivered. Remaining waves (test isolation, evaluator state, stop-hook
-  hardening) are planned in the forward plan but not yet scheduled in
-  MASTER_PLAN.md.
+  delivered. Wave 3 closes the DB-scoping split-authority bug. Remaining waves
+  (test isolation, evaluator state, stop-hook hardening) are planned in the
+  forward plan but not yet scheduled in MASTER_PLAN.md.
 - **Scope:** Wave 1: 6 prompt/agent markdown files (landed). Wave 2: runtime
   schemas, domain module, CLI extensions, hook changes for binding and scope
   enforcement, guard grep pattern broadening, unit and scenario tests (landed).
   Additional: proof-read hot-path fix migrating guard.sh Check 10 from flat-file
-  to runtime (landed). CLAUDE.md source-edit-routing patch (landed).
+  to runtime (landed). CLAUDE.md source-edit-routing patch (landed). Wave 3:
+  `hooks/log.sh` CLAUDE_PROJECT_DIR auto-export and DB-scoping scenario tests.
 - **Exit:** All waves delivered. Prompts support evaluator-based readiness.
   Workflow identity is bound to worktrees. Scope manifests are mechanically
-  enforced. Guardian denies unbound source tasks.
+  enforced. Guardian denies unbound source tasks. DB scoping is unified: all
+  hook contexts resolve to the project DB when a git root exists.
 - **Dependencies:** INIT-003 (additive; does not require INIT-003 completion
   but must not contradict its decisions)
 
@@ -1261,6 +1270,176 @@ taken. `git diff --stat` shows only files listed in the Scope Manifest below.
 - MODIFIED: `check-implementer.sh` validation chain — adding scope compliance
 - UNCHANGED: `proof_state`, `agent_markers`, `dispatch_queue`,
   `dispatch_cycles`, `worktrees`
+
+#### Wave 3: DB-Scoping Hardening
+
+##### TKT-022: Wave 3 DB-Scoping Hardening
+
+- **Weight:** M
+- **Gate:** review (user sees result before guardian merge)
+- **Deps:** TKT-021 (workflow binding reads/writes must target the correct DB)
+
+**Root cause:**
+
+The DB-scoping bug has three entry points, not one:
+
+1. **Hooks** call `detect_project_root()` but never export
+   `CLAUDE_PROJECT_DIR`. `runtime-bridge.sh`'s `cc_policy()` cannot scope to
+   the project DB and falls back to `~/.claude/state.db`.
+2. **`runtime/core/config.py` `default_db_path()`** only checks
+   `CLAUDE_POLICY_DB` → `~/.claude/state.db`. It has no awareness of project
+   context, CWD, or git root.
+3. **`scripts/statusline.sh`** calls `python3 cli.py` directly (not through
+   `runtime-bridge.sh`), bypassing the hook bridge entirely.
+
+Any fix that only patches hooks leaves direct CLI invocations and script paths
+silently hitting `~/.claude/state.db`.
+
+**Canonical DB resolution rule (to be implemented):**
+
+One resolver, in `runtime/core/config.py`, used by all paths:
+
+1. If `CLAUDE_POLICY_DB` is set → use it (explicit override, always wins)
+2. Else if `CLAUDE_PROJECT_DIR` is set → use `$CLAUDE_PROJECT_DIR/.claude/state.db`
+3. Else if CWD is inside a git repo that contains a `.claude/` directory → use
+   `<git-root>/.claude/state.db`
+4. Else → fall back to `~/.claude/state.db`
+
+Steps 1-2 are env-var-based (fast, no subprocess). Step 3 runs
+`git rev-parse --show-toplevel` and checks for `.claude/` — this is the
+project-detection fallback for direct CLI invocations that don't inherit hook
+env vars. Step 4 is the global fallback for non-project contexts.
+
+**Worktree behavior (explicit):**
+
+All worktrees of the same repo share the same project `.claude/state.db`
+because `git rev-parse --show-toplevel` in a worktree returns the main repo
+root. This is correct — workflow state, proof, and bindings are per-project,
+not per-worktree. The `workflow_bindings` table distinguishes work items by
+workflow_id (derived from branch name), not by worktree path.
+
+**Fix description:**
+
+- `runtime/core/config.py`: expand `default_db_path()` to implement the
+  4-step canonical resolution rule above. Add a `resolve_project_db()` helper
+  that encapsulates the git-root + `.claude/` check.
+- `hooks/log.sh`: auto-export `CLAUDE_PROJECT_DIR` after
+  `detect_project_root()` so hooks pass the env var to `cc_policy()`. This
+  is a performance optimization — the runtime resolver would find the same
+  path via git, but the export avoids a subprocess per cc_policy call.
+- `hooks/lib/runtime-bridge.sh`: no changes needed. `cc_policy()` already
+  exports `CLAUDE_POLICY_DB` from `CLAUDE_PROJECT_DIR` when set. With
+  `log.sh` now exporting `CLAUDE_PROJECT_DIR`, the bridge path is fixed.
+- `scripts/statusline.sh`: add `CLAUDE_PROJECT_DIR` or `CLAUDE_POLICY_DB`
+  export before calling `_cc()`, so the Python CLI receives the correct DB
+  path. Alternatively, rely on the new `config.py` git-root detection.
+- Tests: two scenario tests and one unit test.
+
+**Implementer scope (files to create or modify):**
+
+- `runtime/core/config.py` — expand `default_db_path()` with 4-step resolver;
+  add `resolve_project_db()` helper
+- `hooks/log.sh` — auto-export `CLAUDE_PROJECT_DIR` from
+  `detect_project_root()` with HOME guard
+- `scripts/statusline.sh` — ensure `_cc()` calls resolve to project DB
+- `tests/scenarios/test-guard-db-scoping.sh` — NEW: positive (project-scoped
+  proof write + guard read hit same DB) and negative (home DB proof alone does
+  not satisfy project guard)
+- `tests/scenarios/test-cli-db-scoping.sh` — NEW: direct `python3 cli.py`
+  invocation from inside a project without `CLAUDE_POLICY_DB` set resolves to
+  project `.claude/state.db`
+- `tests/runtime/test_config_scoping.py` — NEW: unit tests for
+  `default_db_path()` and `resolve_project_db()` covering all 4 resolution
+  steps
+
+**Tester scope (what to verify):**
+
+- Proof write in hook context → guard read → same project DB (no split)
+- Direct CLI invocation from project CWD → resolves to project DB
+- statusline.sh from project CWD → resolves to project DB
+- Home DB proof alone does not satisfy project-scoped guard
+- Non-git CWD → falls back to `~/.claude/state.db` (no crash, no wrong scope)
+- Worktree CWD → resolves to main repo project DB
+- Existing tests pass (no regression from resolver changes)
+
+###### Evaluation Contract for TKT-022
+
+**Required checks (each must be verified by the evaluator):**
+
+1. `runtime/core/config.py` `default_db_path()` implements the 4-step
+   resolution: CLAUDE_POLICY_DB → CLAUDE_PROJECT_DIR → git-root+.claude/ →
+   ~/.claude/state.db.
+2. `runtime/core/config.py` has a `resolve_project_db()` helper that checks
+   git root and `.claude/` directory existence.
+3. `hooks/log.sh` auto-exports `CLAUDE_PROJECT_DIR` from
+   `detect_project_root()` when not already set, with HOME guard.
+4. `scripts/statusline.sh` `_cc()` calls resolve to project DB when invoked
+   from inside a project.
+5. Proof write via hook (rt_proof_set) lands in project `.claude/state.db`.
+6. Proof read via guard.sh (read_proof_status) reads from same project
+   `.claude/state.db`.
+7. Proof in `~/.claude/state.db` alone does NOT satisfy guard in a project
+   context (negative test passes).
+8. Direct `python3 runtime/cli.py proof get ...` from project CWD without
+   `CLAUDE_POLICY_DB` set resolves to project `.claude/state.db`.
+9. Worktree CWD resolves to main repo `.claude/state.db` (shared across
+   worktrees of the same repo).
+10. Non-git CWD falls back to `~/.claude/state.db` without error.
+11. All existing scenario and acceptance tests pass (no regression).
+12. All new unit and scenario tests pass.
+
+**Required authority invariants:**
+
+- `runtime/core/config.py` `default_db_path()` is the sole canonical DB
+  resolver. All paths (Python, shell bridge, direct CLI, scripts) converge
+  through it.
+- No code path silently resolves to `~/.claude/state.db` when operating inside
+  a project with `.claude/state.db` present.
+- `hooks/log.sh` CLAUDE_PROJECT_DIR export is a performance optimization, not
+  the authority — `config.py` can find the project DB independently via git.
+
+**Forbidden shortcuts:**
+
+- Do not add a second resolver in `runtime-bridge.sh` that diverges from
+  `config.py`.
+- Do not hardcode DB paths in scripts or hooks.
+- Do not change `settings.json`.
+- Do not modify agent prompts.
+
+**Ready-for-guardian definition:**
+
+All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+`git diff --stat` shows only files in the Scope Manifest.
+
+###### Scope Manifest for TKT-022
+
+**Allowed files:**
+
+- `runtime/core/config.py` (modify: expand default_db_path, add
+  resolve_project_db)
+- `hooks/log.sh` (modify: add CLAUDE_PROJECT_DIR auto-export)
+- `scripts/statusline.sh` (modify: ensure project DB scoping for _cc calls)
+- `tests/scenarios/test-guard-db-scoping.sh` (new)
+- `tests/scenarios/test-cli-db-scoping.sh` (new)
+- `tests/runtime/test_config_scoping.py` (new)
+
+**Required files:** All 6 of the above must be created or modified.
+
+**Forbidden touch points:**
+
+- `hooks/lib/runtime-bridge.sh` (already correct, no changes needed)
+- `settings.json`
+- `CLAUDE.md`, `agents/*.md`
+- `MASTER_PLAN.md` (except for this planning amendment)
+- `runtime/cli.py` (config.py handles resolution; CLI inherits)
+
+**Expected state authorities touched:**
+
+- MODIFIED: `runtime/core/config.py` — sole canonical DB resolver
+- MODIFIED: `hooks/log.sh` — performance optimization for hook paths
+- MODIFIED: `scripts/statusline.sh` — direct-CLI path now scoped
+- UNCHANGED: `hooks/lib/runtime-bridge.sh`, `runtime/cli.py`,
+  `runtime/core/proof.py`, all other runtime modules
 
 ## Completed Initiatives
 
