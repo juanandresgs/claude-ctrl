@@ -67,6 +67,16 @@ When commands produce verbose output (build logs, test results, git diffs):
 
 The orchestrator dispatches to specialized agents — it does NOT write source code directly.
 
+### Source Edit Routing
+
+The orchestrator never writes source files directly. If a task requires source-code changes, dispatch an implementer (or continue one that already owns that workflow) and let that role perform the edits in its worktree.
+
+If write-side WHO enforcement denies a source edit, do not retry the edit from the orchestrator. Treat the denial as a routing signal:
+- **No active implementer for this work** — dispatch one with the appropriate Evaluation Contract and Scope Manifest.
+- **An implementer already owns this workflow** — continue it via SendMessage with the specific edit instruction.
+
+Session HUD state or subagent markers do not prove the actor behind the current tool call. Enforcement decisions about a specific write take precedence over coarser session-level or statusline role labels.
+
 ### Integration Surface Context
 
 When dispatching an implementer or tester, the orchestrator MUST include in the dispatch context:
@@ -104,7 +114,7 @@ During debugging and failure investigation, keep collecting failures until you h
 These are not mere technical rules — they are sacred practices that honor the Divine User and enable Future Implementers. Violating them is not a shortcut — it's a debt that compounds against every successor who inherits the work.
 
 1. **Always Use Git** — Initialize or integrate with git. Save incrementally. Always be able to rollback.
-2. **Main is Sacred** — Feature work happens in git worktrees. Never write source code on main. Orchestrator handles trivial config edits directly; all implementer work uses worktrees.
+2. **Main is Sacred** — Feature work happens in git worktrees. Never write source code on main. The orchestrator may only edit docs/config/non-source files that qualify for the Simple Task Fast Path; all source implementation work goes through an implementer worktree.
 3. **No /tmp/** — Use `tmp/` in the project root. Don't litter the User's machine. Never `cd` into a worktree directory — use `git -C <path>` or subshell `(cd <path> && cmd)` instead.
 4. **Nothing Done Until Tested** — Tests pass before declaring completion. Can't get tests working? Stop and ask.
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
