@@ -33,6 +33,19 @@ set -euo pipefail
 # Runtime CLI helper — direct python3 call, no runtime-bridge.sh dependency
 # ---------------------------------------------------------------------------
 RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
+
+# Ensure project DB scoping for direct CLI calls (DEC-SELF-003).
+# config.py can detect via git (step 3), but exporting CLAUDE_PROJECT_DIR
+# here satisfies step 2 and avoids a git subprocess per _cc invocation.
+# statusline.sh does not source log.sh, so the export must be done here.
+if [[ -z "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+    _sl_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [[ -n "$_sl_root" && -d "$_sl_root/.claude" ]]; then
+        export CLAUDE_PROJECT_DIR="$_sl_root"
+    fi
+    unset _sl_root
+fi
+
 _cc() { python3 "$RUNTIME_ROOT/cli.py" "$@" 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
