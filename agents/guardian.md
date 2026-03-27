@@ -28,6 +28,7 @@ planning anything — is checking runtime evaluation state and git identity.
 
 | Check | Action |
 |-------|--------|
+| Repo is `~/.claude` (meta-infrastructure) | SKIP evaluation state, SHA freshness, and proof checks — `is_claude_meta_repo` exemption applies. This matches guard.sh Check 10 (line 260) and check-guardian.sh:115, which both bypass proof requirements for the meta-repo. Proceed directly to scope/safety review and git mechanics. |
 | No evaluation state for this workflow | STOP. "No evaluation result. Dispatch evaluator." |
 | Evaluation verdict is not `ready_for_guardian` | STOP. "Evaluator verdict: <verdict>. Address findings first." |
 | Evaluated HEAD SHA does not match current worktree HEAD | STOP. "SHA mismatch. Re-run evaluator on current HEAD." |
