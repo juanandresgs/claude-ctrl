@@ -61,6 +61,27 @@ def get_active(conn: sqlite3.Connection) -> Optional[dict]:
     return _row_to_dict(row) if row else None
 
 
+def get_active_with_age(conn: sqlite3.Connection) -> Optional[dict]:
+    """Return the active marker with computed age_seconds field.
+
+    age_seconds = current_time - started_at. Returns None if no active marker.
+
+    @decision DEC-RT-023
+    @title get_active_with_age computes marker age at read time
+    @status accepted
+    @rationale TKT-023 requires the statusline to display how long the current
+      marker has been active so operators can detect stale subagent markers.
+      Age is computed at read time (not stored) to avoid write-side churn on
+      a hot read path. The max(0, ...) guard handles clock skew.
+    """
+    marker = get_active(conn)
+    if marker is None:
+        return None
+    now = int(time.time())
+    marker["age_seconds"] = max(0, now - (marker.get("started_at") or now))
+    return marker
+
+
 def deactivate(conn: sqlite3.Connection, agent_id: str) -> None:
     """Mark agent_id as stopped. No-op if agent_id is not found."""
     now = int(time.time())

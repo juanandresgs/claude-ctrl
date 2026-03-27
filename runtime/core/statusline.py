@@ -30,6 +30,8 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from runtime.core.markers import get_active_with_age
+
 
 def snapshot(conn: sqlite3.Connection) -> dict:
     """Return a read-only projection of runtime state for status display.
@@ -41,6 +43,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
       active_agent        — role of the most recently started active marker,
                             or None
       active_agent_id     — agent_id of that marker, or None
+      marker_age_seconds  — age in seconds of the active marker, or None
       worktree_count      — number of active (non-removed) worktrees
       worktrees           — list of {path, branch, ticket} for each active wt
       dispatch_status     — role of the oldest pending dispatch queue item,
@@ -62,6 +65,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "proof_workflow": None,
         "active_agent": None,
         "active_agent_id": None,
+        "marker_age_seconds": None,
         "worktree_count": 0,
         "worktrees": [],
         "dispatch_status": None,
@@ -97,20 +101,18 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             result["proof_workflow"] = row["workflow_id"]
 
         # ------------------------------------------------------------------
-        # Active agent — most recently started active marker
+        # Active agent — most recently started active marker with age.
+        #
+        # @decision DEC-RT-023: Use get_active_with_age() so the snapshot
+        # carries marker_age_seconds without a second query. The age is
+        # computed once at snapshot time and is consistent across all
+        # consumers of this dict.
         # ------------------------------------------------------------------
-        row = conn.execute(
-            """
-            SELECT agent_id, role
-            FROM   agent_markers
-            WHERE  is_active = 1
-            ORDER  BY started_at DESC
-            LIMIT  1
-            """
-        ).fetchone()
-        if row:
-            result["active_agent"] = row["role"]
-            result["active_agent_id"] = row["agent_id"]
+        marker = get_active_with_age(conn)
+        if marker:
+            result["active_agent"] = marker["role"]
+            result["active_agent_id"] = marker["agent_id"]
+            result["marker_age_seconds"] = marker["age_seconds"]
 
         # ------------------------------------------------------------------
         # Worktrees — all active (removed_at IS NULL), full detail rows

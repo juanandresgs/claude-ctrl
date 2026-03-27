@@ -58,6 +58,27 @@ if [[ "$RESEARCH_EXISTS" == "true" ]]; then
     CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries | recent: $RESEARCH_RECENT_TOPICS")
 fi
 
+# --- Stale marker advisory (TKT-023) ---
+# If a subagent marker has been active for >=300s at session start, warn the
+# incoming agent. The marker may belong to a crashed or abandoned subagent.
+# Uses the same cc-policy CLI path as statusline.sh. Soft advisory only —
+# no block, no write. Suppressed when the runtime is unavailable.
+_RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
+if [[ -f "$_RUNTIME_ROOT/cli.py" ]]; then
+    _snap=$(python3 "$_RUNTIME_ROOT/cli.py" statusline snapshot 2>/dev/null || true)
+    if [[ -n "$_snap" ]]; then
+        _active_agent=$(printf '%s' "$_snap" | jq -r '.active_agent // empty' 2>/dev/null || true)
+        _marker_age=$(printf '%s' "$_snap" | jq -r '.marker_age_seconds // 0' 2>/dev/null || echo "0")
+        [[ "$_active_agent" == "null" ]] && _active_agent=""
+        [[ "${_marker_age:-0}" =~ ^[0-9]+$ ]] || _marker_age=0
+        if [[ -n "$_active_agent" && "${_marker_age:-0}" -ge 300 ]]; then
+            _age_min=$(( _marker_age / 60 ))
+            CONTEXT_PARTS+=("WARNING: Active subagent marker ($_active_agent) is ${_age_min}m old and may be stale. If the previous subagent crashed, deactivate via: cc-policy marker deactivate <agent_id>")
+        fi
+    fi
+fi
+unset _RUNTIME_ROOT _snap _active_agent _marker_age _age_min
+
 # --- Workflow proof state ---
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     if [[ "$(read_proof_status "$PROJECT_ROOT")" == "idle" ]]; then

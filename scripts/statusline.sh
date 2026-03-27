@@ -124,15 +124,18 @@ fi
 # Extract snapshot fields (safe defaults when snapshot unavailable)
 proof_status="idle"
 active_agent=""
+marker_age_seconds=0
 wt_count=0
 dispatch_next=""
 if [[ -n "$snapshot" ]]; then
     proof_status=$(printf '%s' "$snapshot" | jq -r '.proof_status // "idle"' 2>/dev/null) || proof_status="idle"
     active_agent=$(printf '%s' "$snapshot" | jq -r '.active_agent // empty' 2>/dev/null) || active_agent=""
+    marker_age_seconds=$(printf '%s' "$snapshot" | jq -r '.marker_age_seconds // 0' 2>/dev/null) || marker_age_seconds=0
     wt_count=$(printf '%s' "$snapshot"    | jq -r '.worktree_count // 0' 2>/dev/null)    || wt_count=0
     dispatch_next=$(printf '%s' "$snapshot" | jq -r '.dispatch_status // empty' 2>/dev/null) || dispatch_next=""
 fi
 [[ "${wt_count:-0}" =~ ^[0-9]+$ ]] || wt_count=0
+[[ "${marker_age_seconds:-0}" =~ ^[0-9]+$ ]] || marker_age_seconds=0
 [[ "$active_agent"   == "null" ]] && active_agent=""
 [[ "$dispatch_next"  == "null" ]] && dispatch_next=""
 
@@ -324,13 +327,21 @@ fi
 duration_display=$(printf '\033[2msession %s\033[0m' "$(format_duration "$duration_ms")")
 
 # ---------------------------------------------------------------------------
-# LINE 1 (repo context): workspace │ N uncommitted +N/-N │ N worktrees │ ⚡impl
+# LINE 1 (repo context): workspace │ N uncommitted +N/-N │ N worktrees │ marker: impl (2m)
 #
 # Priority table (lower = higher priority, dropped last):
 #   1 = workspace (never dropped)
 #   2 = N uncommitted +N/-N lines
 #   3 = N worktrees
-#   4 = ⚡<agent> (drops first)
+#   4 = marker: <role> (<age>) (drops first)
+#
+# @decision DEC-SL-006
+# @title Replace ⚡impl actor-implying label with marker: impl (age) conservative label
+# @status accepted
+# @rationale TKT-023: ⚡impl implied current tool-call actor, which it cannot
+#   know. The label now shows subagent marker state explicitly: role and age.
+#   A ? suffix fires at >=300s to signal that the marker may be stale. Omit
+#   the segment entirely when no marker is active — no empty placeholder.
 # ---------------------------------------------------------------------------
 
 _p1_t_0=""; _p1_w_0=0
@@ -360,9 +371,24 @@ if (( wt_count > 0 )); then
   ansi_visible_width "$_s"; _p1_w_2=$_AVW; _p1_t_2="$_s"
 fi
 
-# P1.3: active agent (priority 4, conditional)
+# P1.3: active marker label (priority 4, conditional)
+# Shows "marker: <role>[?] (<age>)" — conservative label, not actor claim.
+# ? suffix appears when age >= 300s (stale marker advisory).
 if [[ -n "$active_agent" ]]; then
-  _s=$(printf '\033[33m⚡%s\033[0m' "$active_agent")
+  local _age_s="${marker_age_seconds:-0}"
+  local _age_display
+  if (( _age_s >= 3600 )); then
+    _age_display="$(( _age_s / 3600 ))h"
+  elif (( _age_s >= 60 )); then
+    _age_display="$(( _age_s / 60 ))m"
+  else
+    _age_display="${_age_s}s"
+  fi
+  local _stale_suffix=""
+  if (( _age_s >= 300 )); then
+    _stale_suffix="?"
+  fi
+  _s=$(printf '\033[33mmarker: %s%s (%s)\033[0m' "$active_agent" "$_stale_suffix" "$_age_display")
   ansi_visible_width "$_s"; _p1_w_3=$_AVW; _p1_t_3="$_s"
 fi
 
