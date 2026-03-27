@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-24 (Wave 3e stabilization added to INIT-003)
+Last updated: 2026-03-27 (INIT-003 stabilization verified; INIT-004 Waves 1-2 landed with proof-read fix)
 
 ## Identity
 
@@ -23,11 +23,24 @@ governs.
   [hooks/lib/runtime-bridge.sh](hooks/lib/runtime-bridge.sh). The `cc-policy`
   CLI is the sole write interface; shell hooks call it via bridge wrappers.
   Flat-file authorities (`.proof-status-*`, `.subagent-tracker`,
-  `.statusline-cache`, `.audit-log`, `.agent-findings`) have been deleted.
+  `.statusline-cache`, `.audit-log`) have been eliminated from hot paths.
+  `.agent-findings` remains active (written by check-guardian.sh, read by
+  prompt-submit.sh and compact-preserve.sh).
 - The statusline HUD reads from `cc-policy statusline snapshot` -- a runtime
   projection, not a separate authority.
 - Dispatch emission flows through `post-task.sh` into the `dispatch_queue` and
   `dispatch_cycles` tables. Queue enforcement is not yet live (INIT-003 scope).
+- INIT-004 added `workflow_bindings` and `workflow_scope` tables to the runtime
+  schema. Guard.sh Check 12 denies commit/merge without a bound workflow and
+  scope manifest. The orchestrator writes scope to runtime before implementer
+  dispatch; hooks enforce it mechanically.
+- Guard.sh Checks 3-12 use broadened grep patterns (`\bgit\b.*\bcommit\b`)
+  that handle both `git commit` and `git -C /path commit` command forms.
+- Proof-of-work reads (guard.sh Check 10) are runtime-only. Flat-file proof
+  helpers in context-lib.sh are deprecated with zero live callers.
+- Prompt files (CLAUDE.md, agents/*.md) use evaluator-based readiness semantics,
+  Evaluation Contract and Scope Manifest conventions, and structured output
+  trailers (IMPL_STATUS, EVAL_VERDICT).
 - The remaining hard gap is plan discipline: permanent-section immutability,
   append-only decision log, and initiative compression are prompt conventions,
   not mechanically enforced.
@@ -217,25 +230,45 @@ into the new mainline.
   wiring) must land before P1 hook correctness and flat-file elimination, which
   must land before P2 doc reconciliation.
 
+### Self-hosting hardening decisions
+
+- `2026-03-26 — DEC-SELF-001` Self-hosting hardening initiative begins with
+  prompt hardening (Wave 1). Evaluator semantics replace tester/proof-state
+  language. Evaluation Contract and Scope Manifest become mandatory planner
+  outputs for guardian-bound source work. Cornerstone beliefs preserved intact.
+- `2026-03-26 — DEC-SELF-002` Wave 2 adds `workflow_bindings` and
+  `workflow_scope` tables as the sole authorities for workflow-to-worktree
+  mapping and scope enforcement. The existing `worktrees` table remains a
+  registry; `workflow_bindings` adds semantic binding (initiative, ticket, base
+  branch). Scope manifests are stored as JSON arrays in `workflow_scope`, not
+  flat files. Guardian denies commit/merge when no workflow binding exists for
+  guardian-bound source tasks.
+
 ## Active Initiatives
 
 ### INIT-003: Plan Discipline and Successor Validation
 
-- **Status:** in-progress (Wave 3a-3d delivered; acceptance suite passed but
-  stabilization needed -- seven defects filed proving enforcement is not yet
-  reliable enough for exit criteria)
+- **Status:** stabilization complete (TKT-016/017/018/019 verified; acceptance
+  suite green; exit pending `.agent-findings` flat-file migration or explicit
+  exception — see below)
 - **Goal:** Finish the successor kernel so its plan discipline, verification, and
   release claims are mechanically trustworthy.
-- **Current truth:** Wave 3a-3d delivered plan discipline (TKT-010), trace-lite
-  (TKT-013), 183-test acceptance suite (TKT-014), and shadow sidecars
-  (TKT-015). However, the acceptance suite and post-delivery audit exposed
-  seven defects: runtime marker deactivation never fires on SubagentStop
-  (#470), post-task.sh is not wired into the live hook chain (#471),
-  plan-check.sh fails in worktrees (#465), hook denials lack observability
-  (#466), write-time policy resolves repo identity from session root instead of
-  target file path (#468), .plan-drift gating still uses a flat file (#467),
-  and multiple flat-file breadcrumbs survive despite INIT-002 claiming deletion
-  (#469). Until these are resolved, the kernel is not mechanically trustworthy.
+- **Current truth:** Waves 3a-3d delivered plan discipline (TKT-010),
+  trace-lite (TKT-013), acceptance suite (TKT-014), and shadow sidecars
+  (TKT-015). Wave 3e stabilization (TKT-016/017/018/019) is substantively
+  complete: runtime marker deactivation fires on SubagentStop (TKT-016),
+  post-task.sh is wired into the live hook chain (TKT-016), plan-check.sh
+  works in worktrees (TKT-017), hook denials include blockingHook observability
+  (TKT-017), write-time policy resolves from target file path (TKT-017),
+  flat-file dual-write bridge eliminated (TKT-018), and docs reconciled
+  (TKT-019). One residual: `.agent-findings` flat file is still written by
+  check-guardian.sh and read by prompt-submit.sh and compact-preserve.sh. This
+  is advisory output (not workflow state), but it is the last flat-file write
+  in the hook chain. Additionally, guard.sh Check 10 was migrated from
+  flat-file to runtime proof reads in INIT-004 (`a182d7a`), closing the last
+  flat-file proof reader. Minor documentation drift remains: write-guard.sh
+  line 17 has a stale comment referencing `.subagent-tracker` fallback (code
+  is correct, comment is not).
 - **Scope:** plan immutability, decision-log closure rules, initiative
   compression, trace-lite manifests, kernel acceptance suite, shadow-mode
   sidecars, stabilization of enforcement reliability and flat-file elimination,
@@ -903,6 +936,331 @@ because it documents what is, not what should be.
    deny messages with exact string matching, the new field could break it.
    Mitigation: `blockingHook` is added as a new field, not replacing existing
    fields. The existing `permissionDecisionReason` string is unchanged.
+
+### INIT-004: Self-Hosting Hardening
+
+- **Status:** in-progress (Wave 1 prompt hardening landed at `a888c60`; Wave 2
+  workflow identity and scope binding landed at `c1bd1f0`; proof-read hot-path
+  fix landed at `a182d7a`; CLAUDE.md source-edit-routing patch landed at
+  `5cdc6b8`)
+- **Goal:** Harden prompts, runtime identity, scope enforcement, and hook
+  mechanisms so the repo can accurately build and judge itself. Waves 1-2
+  delivered. Remaining waves (test isolation, evaluator state, stop-hook
+  hardening) are planned in the forward plan but not yet scheduled in
+  MASTER_PLAN.md.
+- **Scope:** Wave 1: 6 prompt/agent markdown files (landed). Wave 2: runtime
+  schemas, domain module, CLI extensions, hook changes for binding and scope
+  enforcement, guard grep pattern broadening, unit and scenario tests (landed).
+  Additional: proof-read hot-path fix migrating guard.sh Check 10 from flat-file
+  to runtime (landed). CLAUDE.md source-edit-routing patch (landed).
+- **Exit:** All waves delivered. Prompts support evaluator-based readiness.
+  Workflow identity is bound to worktrees. Scope manifests are mechanically
+  enforced. Guardian denies unbound source tasks.
+- **Dependencies:** INIT-003 (additive; does not require INIT-003 completion
+  but must not contradict its decisions)
+
+#### Wave 1: Prompt Hardening
+
+##### TKT-020: Wave 1 Prompt Hardening
+
+- **Weight:** M
+- **Gate:** approve (user must approve before merge since this changes governance
+  prompts)
+- **Deps:** none (pure prompt changes)
+
+###### Evaluation Contract for TKT-020
+
+**Required checks (each must be verified by the evaluator):**
+
+1. `CLAUDE.md` — Simple Task Fast Path tightened: planner skip only for
+   docs/config/non-source with no guardian path, no state-authority changes.
+   Source tasks require planner Evaluation Contract.
+2. `CLAUDE.md` — Sacred Practice #10 replaced: evaluator owns technical
+   readiness; user approval is for irreversible git actions or product signoff,
+   not proof of correctness.
+3. `CLAUDE.md` — Dispatch context requires Evaluation Contract for
+   guardian-bound source tasks.
+4. `CLAUDE.md` — Uncertainty-reporting rule added: if you cannot prove worktree,
+   branch, head SHA, and test completeness, report uncertainty not completion.
+5. `CLAUDE.md` — Debugging rule added: keep collecting failures until minimal
+   root-cause set; do not stop at first non-zero command.
+6. `agents/planner.md` — Hard constraint added: no guardian-bound source task
+   without Evaluation Contract and Scope Manifest.
+7. `agents/planner.md` — Evaluation Contract section added with: required tests,
+   real-path checks, authority invariants, integration points, forbidden
+   shortcuts, ready-for-guardian definition.
+8. `agents/planner.md` — Scope Manifest section added with: allowed/required/
+   forbidden paths, authority domains.
+9. `agents/planner.md` — Quality gate requires executable evaluation criteria.
+10. `agents/implementer.md` — "Presenting Your Work" replaced with
+    contract-driven report: Contract Compliance, Scope Compliance, minimal
+    trailer (IMPL_STATUS, IMPL_SCOPE_OK, IMPL_HEAD_SHA).
+11. `agents/implementer.md` — Rule added: may not claim guardian readiness;
+    evidence is implementer's, readiness belongs to evaluator.
+12. `agents/tester.md` — Semantic role changed to evaluator. Verdict set:
+    needs_changes, ready_for_guardian, blocked_by_plan.
+13. `agents/tester.md` — Refusal conditions added: unclear repo/worktree
+    identity, partial test execution, hung suite, non-isolated real state.
+14. `agents/tester.md` — Deterministic trailer with status, counts, next role,
+    head SHA.
+15. `agents/tester.md` — Must classify uncertainty instead of papering over it.
+16. `agents/guardian.md` — Proof-state trust replaced with: runtime evaluation
+    state, head SHA match, test completeness, role policy.
+17. `agents/guardian.md` — Explicit rule: prose summaries are non-authoritative;
+    agent summaries are advisory.
+18. `agents/shared-protocols.md` — Role-specific output contracts added
+    (implementer trailer, evaluator trailer).
+19. `agents/shared-protocols.md` — No lines after evaluator trailer rule.
+20. `agents/shared-protocols.md` — Debugging collection rule: keep collecting
+    failures until failure set is categorized.
+
+**Required authority invariants:**
+
+- Cornerstone Belief section in CLAUDE.md unchanged
+- Philosophy sections (What Matters, Interaction Style, Output Intelligence)
+  unchanged
+- All 5 bullet points under Cornerstone Belief unchanged
+- No prompt instructs user to reply "verified" as technical proof
+- No prompt uses "proof state" as the name for evaluator readiness
+
+**Forbidden shortcuts:**
+
+- Do not flatten the repo's philosophical language into generic corporate prompt
+  language
+- Do not remove @decision annotation requirements
+- Do not remove worktree isolation requirements
+- Do not change hooks, runtime, tests, settings, or any file outside the 6
+  prompt files
+
+**Ready-for-guardian definition:**
+
+All 20 required checks pass. Authority invariants hold. No forbidden shortcuts
+taken. `git diff --stat` shows exactly 6 files changed (CLAUDE.md,
+agents/planner.md, agents/implementer.md, agents/tester.md,
+agents/guardian.md, agents/shared-protocols.md).
+
+###### Scope Manifest for TKT-020
+
+**Allowed files:** CLAUDE.md, agents/planner.md, agents/implementer.md,
+agents/tester.md, agents/guardian.md, agents/shared-protocols.md
+
+**Required files:** All 6 of the above must be modified.
+
+**Forbidden touch points:** hooks/\*, runtime/\*, tests/\*, settings.json,
+scripts/\*, docs/\*, .claude/\*, MASTER_PLAN.md (except for this planning
+amendment)
+
+**Expected state authorities touched:** None — this is prompt-only, no runtime
+state changes.
+
+#### Wave 2: Workflow Identity and Scope Binding
+
+##### TKT-021: Wave 2 Workflow Identity and Scope Binding
+
+- **Weight:** L
+- **Gate:** review (user sees result before guardian merge)
+- **Deps:** TKT-020 (Wave 1 prompt hardening must be landed so evaluator
+  semantics and Evaluation Contract conventions are established)
+
+**Implementer scope (files to create or modify):**
+
+- `runtime/schemas.py` — add `workflow_bindings` and `workflow_scope` tables to
+  `ensure_schema()`
+- `runtime/core/workflows.py` — NEW: domain logic for workflow bindings and
+  scope (bind_workflow, get_binding, set_scope, get_scope,
+  check_scope_compliance, list_bindings)
+- `runtime/cli.py` — add `workflow` domain with bind, get, scope-set,
+  scope-get, scope-check, list actions
+- `hooks/lib/runtime-bridge.sh` — add workflow wrapper functions
+  (rt_workflow_bind, rt_workflow_get, rt_workflow_scope_check)
+- `hooks/subagent-start.sh` — bind workflow to worktree on implementer spawn
+- `hooks/check-implementer.sh` — validate changed files against workflow scope
+  manifest on implementer stop
+- `hooks/guard.sh` — add Check 12: workflow binding gate that denies
+  commit/merge when no binding exists for guardian-bound source tasks
+- `hooks/post-task.sh` — include workflow_id in dispatch context for later roles
+- `hooks/context-lib.sh` — add `get_workflow_binding()` function exposing
+  WORKFLOW_ID, WORKFLOW_WORKTREE, WORKFLOW_BRANCH, WORKFLOW_TICKET
+- `tests/runtime/test_workflows.py` — NEW: unit tests for workflow domain
+- `tests/scenarios/test-workflow-bind-roundtrip.sh` — NEW: scenario test for
+  bind-get roundtrip
+- `tests/scenarios/test-workflow-scope-check.sh` — NEW: scenario test for scope
+  compliance checking
+- `tests/scenarios/test-guard-workflow-binding-required.sh` — NEW: scenario test
+  for guardian fail-closed behavior
+- `tests/scenarios/test-guard-scope-missing-denied.sh` — NEW: scenario test for
+  guardian fail-closed when workflow_scope is missing
+- `CLAUDE.md` — narrow addition: add 1 sentence to Scope Manifest dispatch
+  bullet instructing orchestrator to write scope to runtime via
+  `cc-policy workflow scope-set` before dispatching implementer
+
+**Scope ingestion path (plan → runtime):**
+
+The planner writes the Scope Manifest as prose in MASTER_PLAN.md. The runtime
+`workflow_scope` table must be populated before the implementer starts. The
+ingestion path is:
+
+1. **Sole writer:** The orchestrator. No hook, no agent, no other component
+   writes to `workflow_scope`. The orchestrator calls
+   `cc-policy workflow scope-set <workflow_id> --allowed '...' --required '...'
+   --forbidden '...' --authorities '...'` as a Bash command.
+2. **When:** After plan approval, before implementer dispatch. The orchestrator
+   already reads the plan and extracts the Scope Manifest for the dispatch
+   context (per Wave 1 CLAUDE.md rules). Writing it to runtime is the same
+   extraction step, projected into SQLite.
+3. **workflow_id matching:** The orchestrator determines workflow_id from the
+   planned branch name — the same derivation as `current_workflow_id()` in
+   context-lib.sh (sanitized branch name). The orchestrator creates the
+   worktree with a known branch, so workflow_id is deterministic.
+4. **Missing scope:** If `workflow_scope` is empty when `check-implementer.sh`
+   runs → advisory warning. If empty when `guard.sh` runs → deny (fail-closed
+   for guardian-bound source tasks). This creates the forcing function: if the
+   orchestrator forgets, Guardian blocks.
+5. **Stale scope:** If the plan changes mid-implementation, the orchestrator
+   must re-write scope before re-dispatching. Staleness is detectable by
+   comparing `workflow_scope.updated_at` to `workflow_bindings.updated_at`.
+   Guard.sh does not enforce staleness in Wave 2 (deferred to Wave 4).
+
+**Tester scope (what to verify):**
+
+- Workflow binding roundtrip works (bind, get, verify fields match)
+- Scope ingestion roundtrip: orchestrator writes scope via CLI, runtime stores
+  it, check-implementer reads it, guard.sh reads it
+- Scope compliance check correctly accepts in-scope files and rejects
+  out-of-scope files
+- Guardian denies commit when no workflow binding exists
+- Guardian denies commit when workflow binding exists but workflow_scope is
+  missing
+- Guardian allows commit when workflow binding and scope both exist and are
+  compliant
+- Hook integration: subagent-start binds, check-implementer validates,
+  guard.sh gates
+- No flat-file scope or binding tracking introduced
+- No component other than the orchestrator (via CLI) writes to workflow_scope
+- Existing proof_state, agent_markers, dispatch tables unchanged
+- All existing tests continue to pass
+
+###### Evaluation Contract for TKT-021
+
+**Required checks (each must be verified by the evaluator):**
+
+1. `workflow_bindings` table exists in the SQLite schema with columns:
+   workflow_id (TEXT PK), worktree_path (TEXT NOT NULL), branch (TEXT NOT NULL),
+   base_branch (TEXT DEFAULT 'main'), ticket (TEXT), initiative (TEXT),
+   created_at (INTEGER NOT NULL), updated_at (INTEGER NOT NULL).
+2. `workflow_scope` table exists in the SQLite schema with columns:
+   workflow_id (TEXT PK, FK to workflow_bindings), allowed_paths (TEXT),
+   required_paths (TEXT), forbidden_paths (TEXT), authority_domains (TEXT),
+   updated_at (INTEGER NOT NULL).
+3. `runtime/core/workflows.py` implements: bind_workflow, get_binding,
+   set_scope, get_scope, check_scope_compliance, list_bindings. Each function
+   takes a connection as first argument.
+4. `runtime/cli.py` exposes `workflow` domain with actions: bind, get,
+   scope-set, scope-get, scope-check, list. Each action calls the corresponding
+   domain function via cc-policy CLI.
+5. `hooks/lib/runtime-bridge.sh` has shell wrapper functions: rt_workflow_bind,
+   rt_workflow_get, rt_workflow_scope_check. Each calls cc-policy workflow
+   with appropriate arguments.
+6. `hooks/subagent-start.sh` calls rt_workflow_bind when spawning an
+   implementer, passing workflow_id, worktree path, and branch.
+7. `hooks/check-implementer.sh` calls rt_workflow_scope_check on implementer
+   stop and reports violations if any files are out of scope.
+8. `hooks/guard.sh` has Check 12 (workflow binding gate) that denies
+   commit/merge when no workflow binding exists for guardian-bound source tasks.
+   The check must be skippable for meta-repo operations (e.g., MASTER_PLAN.md
+   edits on main).
+9. `hooks/context-lib.sh` has `get_workflow_binding()` that reads the binding
+   from runtime and exports WORKFLOW_ID, WORKFLOW_WORKTREE, WORKFLOW_BRANCH,
+   WORKFLOW_TICKET.
+10. Workflow binding roundtrip: bind a workflow, get it back, all fields match
+    what was bound.
+11. Scope compliance check: files matching allowed_paths pass; files outside
+    allowed_paths fail; files in forbidden_paths always fail.
+12. Guardian fail-closed: guard.sh denies commit when no workflow binding exists
+    for a guardian-bound source task (not a meta-repo bypass).
+13. Later roles do not infer worktree from CWD — they read the binding from
+    runtime via get_workflow_binding or rt_workflow_get.
+14. All unit tests pass (pytest tests/runtime/).
+15. All scenario tests pass (tests/scenarios/test-*.sh).
+16. Scope ingestion: `cc-policy workflow scope-set` writes to `workflow_scope`
+    table; `cc-policy workflow scope-get` reads it back with matching fields.
+17. Guardian fail-closed on missing scope: guard.sh denies commit when
+    `workflow_bindings` exists but `workflow_scope` is empty for that
+    workflow_id.
+18. `CLAUDE.md` dispatch context Scope Manifest bullet updated to instruct
+    orchestrator to write scope to runtime via `cc-policy workflow scope-set`
+    before implementer dispatch.
+
+**Required authority invariants:**
+
+- `workflow_bindings` is the single authority for workflow-to-worktree mapping.
+- `workflow_scope` is the single authority for scope manifests.
+- No flat-file scope or binding tracking introduced.
+- Existing `worktrees` table is NOT the authority for workflow binding — it
+  remains a registry. `workflow_bindings` adds workflow semantics (initiative,
+  ticket, base branch, scope).
+- Existing `proof_state`, `agent_markers`, `dispatch_queue`,
+  `dispatch_cycles`, `worktrees` tables are unchanged in schema.
+- The orchestrator is the sole writer for `workflow_scope`. No hook or agent
+  writes scope directly. Guard.sh enforces this by failing closed when scope
+  is missing — the forcing function that ensures the orchestrator writes it.
+
+**Forbidden shortcuts:**
+
+- Do not store scope in flat files.
+- Do not infer worktree from CWD in hooks when a binding exists.
+- Do not skip the guardian fail-closed check.
+- Do not modify agents/*.md (prompt changes were Wave 1).
+- CLAUDE.md may only be modified to add the scope-to-runtime instruction in
+  the existing Scope Manifest dispatch bullet — no other CLAUDE.md changes.
+- Do not modify `runtime/core/proof.py` (not changing proof semantics).
+
+**Ready-for-guardian definition:**
+
+All 18 required checks pass. Authority invariants hold. No forbidden shortcuts
+taken. `git diff --stat` shows only files listed in the Scope Manifest below.
+
+###### Scope Manifest for TKT-021
+
+**Allowed files:**
+
+- `runtime/schemas.py` (modify: add tables)
+- `runtime/core/workflows.py` (new)
+- `runtime/cli.py` (modify: add workflow domain)
+- `hooks/lib/runtime-bridge.sh` (modify: add workflow wrappers)
+- `hooks/subagent-start.sh` (modify: bind workflow on implementer spawn)
+- `hooks/check-implementer.sh` (modify: scope compliance check)
+- `hooks/guard.sh` (modify: Check 12 workflow binding gate)
+- `hooks/post-task.sh` (modify: include workflow_id in dispatch context)
+- `hooks/context-lib.sh` (modify: add get_workflow_binding)
+- `tests/runtime/test_workflows.py` (new: unit tests)
+- `tests/scenarios/test-workflow-bind-roundtrip.sh` (new: scenario test)
+- `tests/scenarios/test-workflow-scope-check.sh` (new: scenario test)
+- `tests/scenarios/test-guard-workflow-binding-required.sh` (new: scenario test)
+- `CLAUDE.md` (modify: 1-sentence addition to Scope Manifest dispatch bullet)
+- `tests/scenarios/test-guard-scope-missing-denied.sh` (new: scenario test)
+
+**Required files:** All 15 of the above must be created or modified.
+
+**Forbidden touch points:**
+
+- `agents/*.md` (Wave 1 scope, already landed)
+- `CLAUDE.md` sections other than the Scope Manifest dispatch bullet
+- `MASTER_PLAN.md` (except for this planning amendment)
+- `settings.json` (no new hook events needed — existing events cover this)
+- `runtime/core/proof.py` (not changing proof semantics in this wave)
+- `runtime/core/dispatch.py` (not changing dispatch semantics in this wave)
+- `runtime/core/worktrees.py` (not changing worktree registry in this wave)
+
+**Expected state authorities touched:**
+
+- NEW: `workflow_bindings` table — sole authority for workflow-to-worktree
+  mapping
+- NEW: `workflow_scope` table — sole authority for scope manifests
+- MODIFIED: `guard.sh` check chain — adding Check 12 (workflow binding gate)
+- MODIFIED: `check-implementer.sh` validation chain — adding scope compliance
+- UNCHANGED: `proof_state`, `agent_markers`, `dispatch_queue`,
+  `dispatch_cycles`, `worktrees`
 
 ## Completed Initiatives
 
