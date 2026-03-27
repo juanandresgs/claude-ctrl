@@ -127,11 +127,17 @@ run_governance_write() {
 run_git_op() {
     local project_dir="$1" role="$2"
     local workflow_id="feature-enforce-test"
+    local db="$project_dir/.claude/state.db"
 
     if [[ "$role" == "guardian" ]]; then
         printf 'pass|0|%s\n' "$(date +%s)" > "$project_dir/.claude/.test-status"
-        printf 'verified|%s\n' "$(date +%s)" \
-            > "$project_dir/.claude/.proof-status-${workflow_id}"
+        # Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" proof set "$workflow_id" "verified" >/dev/null 2>&1
+        # Workflow binding + scope required by Check 12
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
+            workflow bind "$workflow_id" "$project_dir" "feature/enforce-test" >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
+            workflow scope-set "$workflow_id" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
     fi
 
     # Use "git status" as the command; guard.sh only enforces WHO on
@@ -143,7 +149,10 @@ run_git_op() {
         --arg cwd "$project_dir" \
         '{tool_name:"Bash",tool_input:{command:$cmd},cwd:$cwd}')
     printf '%s' "$payload" \
-        | CLAUDE_PROJECT_DIR="$project_dir" "$GUARD" 2>/dev/null || true
+        | CLAUDE_PROJECT_DIR="$project_dir" \
+          CLAUDE_POLICY_DB="$db" \
+          CLAUDE_RUNTIME_ROOT="$REPO_ROOT/runtime" \
+          "$GUARD" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------

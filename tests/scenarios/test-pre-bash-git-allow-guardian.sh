@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-pre-bash-git-allow-guardian.sh: guardian+proof+tests issues git-commit
 # via pre-bash.sh — expects allow (no deny output).
+# Also satisfies guard.sh Check 12 (workflow binding + scope gate).
 #
 # @decision DEC-TKT008-002
 # @title Compound allow path: all three bash-policy gates satisfied
@@ -20,14 +21,20 @@ mkdir -p "$TMP_DIR/.claude"
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
-echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-feature-ready"
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" proof set "feature-ready" "verified" >/dev/null 2>&1
+# Satisfy Check 12: workflow binding + scope
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    workflow bind "feature-ready" "$TMP_DIR" "feature/ready" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    workflow scope-set "feature-ready" \
+    --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m done"
 PAYLOAD=$(jq -n \
     --arg tool_name "Bash" \
     --arg command "$CMD" \
     --arg cwd "$TMP_DIR" \
     '{tool_name: $tool_name, tool_input: {command: $command}, cwd: $cwd}')
-output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>/dev/null) || {
+output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" CLAUDE_RUNTIME_ROOT="$REPO_ROOT/runtime" "$HOOK" 2>/dev/null) || {
     echo "FAIL: $TEST_NAME — hook exited nonzero"; exit 1
 }
 if [[ -n "$output" ]]; then

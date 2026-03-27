@@ -9,7 +9,7 @@
 # Gates exercised:
 #   Check 3: WHO — guardian role (satisfied for both deny and allow paths)
 #   Check 9: test-status = pass (satisfied)
-#   Check 10: proof verified (satisfied via flat file)
+#   Check 10: proof verified (satisfied via runtime SQLite)
 #   Check 12A: workflow binding must exist → deny (no binding), allow (after bind)
 #
 # @decision DEC-SMOKE-WF-003
@@ -51,8 +51,8 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-tes
 # Satisfy Check 9: test-status = pass
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 
-# Satisfy Check 10: proof-of-work = verified (flat file read by guard.sh)
-echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-$WF_ID"
+# Satisfy Check 10: proof-of-work = verified (runtime only — flat file ignored since TKT-008)
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" proof set "$WF_ID" "verified" >/dev/null 2>&1
 
 COMMIT_CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test commit'"
 

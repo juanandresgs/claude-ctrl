@@ -88,6 +88,7 @@ run_guard() {
     local payload="$1"
     printf '%s' "$payload" \
         | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" \
+          CLAUDE_RUNTIME_ROOT="$REPO_ROOT/runtime" \
           "$GUARD" 2>/dev/null || true
 }
 
@@ -227,8 +228,11 @@ assert_contains "tester post-task: suggests guardian" "$post" "guardian"
 printf '\n-- Phase: guardian\n'
 set_role "guardian"
 printf 'pass|0|%s\n' "$(date +%s)" > "$TMP_DIR/.claude/.test-status"
-printf 'verified|%s\n' "$(date +%s)" \
-    > "$TMP_DIR/.claude/.proof-status-${WORKFLOW_ID}"
+# Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
+policy proof set "$WORKFLOW_ID" "verified" >/dev/null 2>&1
+# Workflow binding + scope required by Check 12
+policy workflow bind "$WORKFLOW_ID" "$TMP_DIR" "feature/lifecycle-test" >/dev/null 2>&1
+policy workflow scope-set "$WORKFLOW_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 
 out=$(run_pre_write "$SOURCE_PAYLOAD")
 assert_deny  "guardian: source write denied"           "$out"

@@ -17,11 +17,13 @@
 #   runtime (cc-policy) is the sole authority for proof, markers, and audit
 #   events. Functions that previously dual-wrote to .proof-status-*,
 #   .subagent-tracker, .audit-log, or .statusline-cache now use runtime-only
-#   paths. Flat-file helper functions (resolve_proof_file,
-#   read_proof_status_file, read_proof_timestamp_file) are retained only
-#   because guard.sh still calls read_proof_status_file directly on the
-#   worktree-resolved proof path. get_drift_data is retained as a no-op
-#   stub so callers in plan-check.sh compile without changes.
+#   paths. Flat-file proof helpers below (resolve_proof_file,
+#   read_proof_status_file, read_proof_timestamp_file,
+#   resolve_proof_file_for_command) are DEPRECATED — no live callers remain
+#   after guard.sh Check 10 migrated to runtime proof reads. Retained for
+#   backwards compatibility; deletion deferred to a cleanup pass.
+#   get_drift_data is retained as a no-op stub so callers in plan-check.sh
+#   compile without changes.
 #
 # Provides:
 #   get_git_state <project_root>     - Populates GIT_BRANCH, GIT_DIRTY_COUNT,
@@ -55,7 +57,7 @@ get_git_state() {
     # Use git rev-parse to test git membership uniformly for both cases.
     git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return
 
-    GIT_BRANCH=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    GIT_BRANCH=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null) || GIT_BRANCH="unknown"
     GIT_DIRTY_COUNT=$(git -C "$root" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
     GIT_WORKTREES=$(git -C "$root" worktree list 2>/dev/null | grep -v "(bare)" | tail -n +2 || echo "")
@@ -83,9 +85,9 @@ get_plan_status() {
     PLAN_EXISTS=true
 
     PLAN_PHASE=$(grep -iE '^\#.*phase|^\*\*Phase' "$root/MASTER_PLAN.md" 2>/dev/null | tail -1 || echo "")
-    PLAN_TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
-    PLAN_COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
-    PLAN_IN_PROGRESS_PHASES=$(grep -cE '\*\*Status:\*\*\s*in-progress' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    PLAN_TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$root/MASTER_PLAN.md" 2>/dev/null) || PLAN_TOTAL_PHASES=0
+    PLAN_COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$root/MASTER_PLAN.md" 2>/dev/null) || PLAN_COMPLETED_PHASES=0
+    PLAN_IN_PROGRESS_PHASES=$(grep -cE '\*\*Status:\*\*\s*in-progress' "$root/MASTER_PLAN.md" 2>/dev/null) || PLAN_IN_PROGRESS_PHASES=0
 
     # Plan age
     local plan_mod
@@ -162,7 +164,7 @@ get_research_status() {
     [[ ! -f "$log" ]] && return
 
     RESEARCH_EXISTS=true
-    RESEARCH_ENTRY_COUNT=$(grep -c '^### \[' "$log" 2>/dev/null || echo "0")
+    RESEARCH_ENTRY_COUNT=$(grep -c '^### \[' "$log" 2>/dev/null) || RESEARCH_ENTRY_COUNT=0
     RESEARCH_RECENT_TOPICS=$(grep '^### \[' "$log" | tail -3 | sed 's/^### \[[^]]*\] //' | paste -sd ', ' - 2>/dev/null || echo "")
 }
 
@@ -230,6 +232,7 @@ file_mtime() {
 }
 
 # --- Proof-of-work state ---
+# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
 resolve_proof_file() {
     local root="$1"
     local workflow_id="${2:-}"
@@ -238,6 +241,7 @@ resolve_proof_file() {
     printf '%s\n' "$root/.claude/.proof-status-${workflow_id}"
 }
 
+# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
 read_proof_status_file() {
     local proof_file="$1"
     if [[ -f "$proof_file" ]]; then
@@ -247,6 +251,7 @@ read_proof_status_file() {
     fi
 }
 
+# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
 read_proof_timestamp_file() {
     local proof_file="$1"
     if [[ -f "$proof_file" ]]; then
@@ -323,6 +328,7 @@ find_worktree_for_branch() {
     return 1
 }
 
+# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
 # For merges performed from main, prefer the source branch's worktree proof file.
 resolve_proof_file_for_command() {
     local root="$1"

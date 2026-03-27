@@ -9,7 +9,7 @@
 # Gates exercised:
 #   Check 3: WHO — guardian role (satisfied)
 #   Check 9: test-status = pass (satisfied)
-#   Check 10: proof verified (satisfied via flat file)
+#   Check 10: proof verified (satisfied via runtime SQLite)
 #   Check 12A: workflow binding present (satisfied — binding written before test)
 #   Check 12B: scope must exist → deny (no scope), allow (after scope-set)
 #
@@ -53,8 +53,8 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-tes
 # Satisfy Check 9: test-status = pass
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 
-# Satisfy Check 10: proof-of-work = verified (flat file)
-echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-$WF_ID"
+# Satisfy Check 10: proof-of-work = verified (runtime only — flat file ignored since TKT-008)
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" proof set "$WF_ID" "verified" >/dev/null 2>&1
 
 # Satisfy Check 12A: write binding (no scope yet)
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

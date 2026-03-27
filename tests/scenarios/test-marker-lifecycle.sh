@@ -43,14 +43,14 @@ echo "# MASTER_PLAN.md" > "$TMP_DIR/MASTER_PLAN.md"
 # Seed a .test-status so check-implementer/guardian pass test-status checks
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 
-# Seed a proof-status so check-tester proof-state check is satisfied.
-# workflow id is based on current branch — after git init the branch is
-# typically "main" or "master"; write both to be portable.
-echo "pending|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-main"
-echo "pending|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-master"
-
 # Pre-provision schema in scoped test DB
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" schema ensure >/dev/null 2>&1
+
+# Seed proof-status via runtime so check-tester proof-state check is satisfied.
+# workflow id is based on current branch — after git init the branch is
+# typically "main" or "master"; seed both to be portable.
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$CLI" proof set "main" "pending" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$CLI" proof set "master" "pending" >/dev/null 2>&1
 
 FAILURES=0
 

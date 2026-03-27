@@ -41,11 +41,11 @@ CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py"
 # Gate 2: test status = pass (format: result|failures|epoch)
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 
-# Gate 3: proof-of-work = verified
+# Gate 3: proof-of-work = verified (runtime only — flat file is ignored since TKT-008)
 # current_workflow_id uses sanitize_token on the branch name
 # branch "feature/ready-to-merge" -> sanitize: "feature-ready-to-merge"
 WORKFLOW_ID="feature-ready-to-merge"
-echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-${WORKFLOW_ID}"
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" proof set "$WORKFLOW_ID" "verified" >/dev/null 2>&1
 
 # Gate 4: workflow binding + scope (Check 12)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \

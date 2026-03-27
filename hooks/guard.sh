@@ -258,12 +258,23 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
         PROOF_DIR=$(detect_project_root)
     fi
     if ! is_claude_meta_repo "$PROOF_DIR"; then
-        PROOF_FILE=$(resolve_proof_file_for_command "$PROOF_DIR" "$COMMAND")
-        PROOF_STATUS=$(read_proof_status_file "$PROOF_FILE")
+        # Read proof from runtime (not flat files).
+        # For merge: check proof of the branch being merged.
+        # For commit: check proof of the current branch.
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
+            _MERGE_REF=$(extract_merge_ref "$COMMAND")
+            if [[ -n "$_MERGE_REF" ]]; then
+                PROOF_STATUS=$(read_proof_status "$PROOF_DIR" "$(sanitize_token "$_MERGE_REF")")
+            else
+                PROOF_STATUS=$(read_proof_status "$PROOF_DIR")
+            fi
+        else
+            PROOF_STATUS=$(read_proof_status "$PROOF_DIR")
+        fi
         if [[ "$PROOF_STATUS" != "verified" ]]; then
-            MERGE_REF=$(extract_merge_ref "$COMMAND")
-            if [[ -n "$MERGE_REF" ]]; then
-                deny "Cannot proceed: proof-of-work for workflow '$MERGE_REF' is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
+            _MERGE_REF_MSG=$(extract_merge_ref "$COMMAND")
+            if [[ -n "${_MERGE_REF_MSG:-}" ]]; then
+                deny "Cannot proceed: proof-of-work for workflow '$_MERGE_REF_MSG' is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
             else
                 deny "Cannot proceed: proof-of-work is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
             fi

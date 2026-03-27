@@ -117,10 +117,10 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | `canonical_session_id` | Stable session ID for per-session files |
 | `current_workflow_id <root>` | Stable workflow ID (usually current branch) |
 | `file_mtime <path>` | Cross-platform file mtime helper |
-| `resolve_proof_file <root> [workflow]` | Workflow-scoped proof file path |
-| `read_proof_status <root> [workflow]` | Proof status (`idle`, `pending`, `verified`) |
-| `write_proof_status <root> <status> [workflow]` | Writes workflow-scoped proof status |
-| `resolve_proof_file_for_command <root> <command>` | Uses merge source worktree proof when relevant |
+| `resolve_proof_file <root> [workflow]` | **DEPRECATED** — no live callers; flat-file path helper retained for backwards compat only |
+| `read_proof_status <root> [workflow]` | Proof status (`idle`, `pending`, `verified`) — reads from SQLite runtime |
+| `write_proof_status <root> <status> [workflow]` | Writes workflow-scoped proof status to SQLite runtime |
+| `resolve_proof_file_for_command <root> <command>` | **DEPRECATED** — no live callers; guard.sh Check 10 uses `read_proof_status` directly |
 | `current_active_agent_role <root>` | Best-effort current subagent role |
 | `is_guardian_role <role>` | True only for Guardian |
 
@@ -239,11 +239,11 @@ destructive git protection, and evidence gates.
 | Check | Requires | State File | Exemption |
 |-------|----------|------------|-----------|
 | 8-9 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
-| 10 | workflow proof = `verified` | `.claude/.proof-status-<workflow>` (format: `status\|timestamp`) | `~/.claude` meta-repo |
+| 10 | workflow proof = `verified` | `proof_state` table via `read_proof_status` (runtime SQLite); flat-file `.proof-status-*` is ignored | `~/.claude` meta-repo |
 
 Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
 
-Proof-of-work: the user must see the feature work before code is committed. Tester moves the workflow into `pending`, the user replies `verified`, and `track.sh` resets proof back to `pending` whenever verified source files change.
+Proof-of-work: the user must see the feature work before code is committed. Tester moves the workflow into `pending`, the user replies `verified`, and `track.sh` resets proof back to `pending` whenever verified source files change. Check 10 reads proof exclusively from the SQLite runtime (`proof_state` table via `read_proof_status`). Stale `.proof-status-*` flat files are ignored.
 
 ---
 
