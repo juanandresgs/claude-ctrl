@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-27 (INIT-004 TKT-023 actor-truth hardening revised — Option A, eval deferred)
+Last updated: 2026-03-27 (INIT-004 TKT-024 final revision — check-implementer added, proof writes enumerated, statusline tightened)
 
 ## Identity
 
@@ -255,6 +255,17 @@ into the new mainline.
   marker state, not current tool-call actor. Stale markers (>=5min) show `?`
   suffix. Evaluator display deferred until evaluation_state schema exists on
   main — this wave fixes actor-truth only.
+- `2026-03-27 — DEC-SELF-005` Evaluator-state readiness cutover:
+  `evaluation_state` replaces `proof_state` as the sole readiness authority.
+  Evaluator writes via EVAL_* trailer in check-tester.sh. Guard Check 10 gates
+  on eval_status + head_sha. prompt-submit.sh stops writing "verified" on user
+  reply. check-guardian.sh validates evaluator state. proof_state has zero
+  enforcement effect after cutover. User ceremony eliminated — readiness is
+  earned by evaluator verdict.
+  check-implementer.sh updated to evaluator-era handoff language. All five
+  proof writers removed from hook chain (prompt-submit, subagent-start,
+  guard merge-reset, track invalidation, session-init idle). Zero proof
+  writes remain after cutover.
 
 ## Active Initiatives
 
@@ -955,14 +966,16 @@ because it documents what is, not what should be.
   workflow identity and scope binding landed at `c1bd1f0`; proof-read hot-path
   fix landed at `a182d7a`; CLAUDE.md source-edit-routing patch landed at
   `5cdc6b8`; Wave 3 DB-scoping hardening TKT-022 planned; Wave 4 statusline
-  actor-truth hardening TKT-023 planned)
+  actor-truth hardening TKT-023 planned; Wave 5 evaluator-state cutover
+  TKT-024 planned (revised))
 - **Goal:** Harden prompts, runtime identity, scope enforcement, and hook
   mechanisms so the repo can accurately build and judge itself. Waves 1-2
   delivered. Wave 3 closes the DB-scoping split-authority bug. Wave 4 closes the
-  statusline actor-truth gap (stale markers implying active agents). Evaluator
-  display is a future wave, deferred until evaluation_state schema exists on
-  main. Remaining waves (test isolation, stop-hook hardening) are planned in the
-  forward plan but not yet scheduled in MASTER_PLAN.md.
+  statusline actor-truth gap (stale markers implying active agents). Wave 5
+  replaces proof_state with evaluation_state as the sole readiness authority for
+  Guardian commit/merge, eliminating the fake user-proof ceremony. Remaining
+  waves (test isolation, stop-hook hardening) are planned in the forward plan
+  but not yet scheduled in MASTER_PLAN.md.
 - **Scope:** Wave 1: 6 prompt/agent markdown files (landed). Wave 2: runtime
   schemas, domain module, CLI extensions, hook changes for binding and scope
   enforcement, guard grep pattern broadening, unit and scenario tests (landed).
@@ -971,12 +984,18 @@ because it documents what is, not what should be.
   `hooks/log.sh` CLAUDE_PROJECT_DIR auto-export and DB-scoping scenario tests.
   Wave 4: statusline marker label replaces actor-implying symbol with explicit
   marker-state display; age suffix and stale indicator; session-init warns on
-  stale markers. No evaluation_state display in this wave.
+  stale markers. Wave 5: evaluation_state schema, domain, CLI, bridge, context
+  functions, check-tester trailer parsing, guard.sh evaluation gate, post-task
+  verdict routing, track.sh invalidation, subagent-start and session-init
+  evaluation context, prompt-submit proof removal, check-guardian evaluator
+  check-implementer evaluator-era language,
+  validation, unit and scenario tests (23 files total).
 - **Exit:** All waves delivered. Prompts support evaluator-based readiness.
   Workflow identity is bound to worktrees. Scope manifests are mechanically
   enforced. Guardian denies unbound source tasks. DB scoping is unified: all
   hook contexts resolve to the project DB when a git root exists. Statusline
-  displays marker age and evaluation state accurately.
+  displays marker age accurately. Evaluation_state is the sole readiness
+  authority for Guardian; proof_state is deprecated display-only.
 - **Dependencies:** INIT-003 (additive; does not require INIT-003 completion
   but must not contradict its decisions)
 
@@ -1599,6 +1618,261 @@ All 11 checks pass. Authority invariants hold. No forbidden shortcuts taken.
 - MODIFIED: `scripts/statusline.sh` — display format change
 - MODIFIED: `hooks/session-init.sh` — advisory context
 - UNCHANGED: `agent_markers` table schema, all write paths, all other hooks
+
+#### Wave 5: Evaluator-State Readiness Cutover
+
+##### TKT-024: Wave 5 Evaluator-State Readiness Cutover
+
+- **Weight:** L
+- **Gate:** approve (changes the readiness authority — user must approve before
+  merge)
+- **Deps:** TKT-023 (statusline truth must be landed so HUD shows correct
+  marker state when the readiness authority changes)
+
+**Problem:**
+
+Readiness to commit/merge is currently gated on `proof_state.status ==
+"verified"`, which is set when the user types "verified" in response to the
+tester's evidence report (`hooks/prompt-submit.sh` lines 27-33). This is
+a ceremony — the user's reply is social confirmation, not technical proof.
+Guard.sh Check 10 enforces this gate; check-guardian.sh Check 6 validates it
+after the fact. Both read the same proof_state table.
+
+The evaluator prompts (Wave 1) already define EVAL_VERDICT / EVAL_TESTS_PASS /
+EVAL_NEXT_ROLE / EVAL_HEAD_SHA trailers, but no runtime backing exists on main.
+Readiness must become earned by evaluator verdict, not by user reply.
+
+**Design:**
+
+`evaluation_state` table replaces `proof_state` as the sole readiness authority.
+
+Schema:
+```
+evaluation_state (
+    workflow_id  TEXT PRIMARY KEY,
+    status       TEXT NOT NULL DEFAULT 'idle',
+    head_sha     TEXT,
+    blockers     INTEGER DEFAULT 0,
+    major        INTEGER DEFAULT 0,
+    minor        INTEGER DEFAULT 0,
+    updated_at   INTEGER NOT NULL
+)
+```
+
+Statuses: idle, pending, needs_changes, ready_for_guardian, blocked_by_plan.
+
+**Post-cutover meaning of proof_state:**
+
+`proof_state` is deprecated compatibility state with zero enforcement effect.
+It remains in the schema temporarily. Nothing gates on it. Nothing writes to it
+in the evaluator-era flow. `statusline.py` stops showing it as the readiness
+display — evaluator state takes that slot. Proof invalidation in `track.sh`
+is removed (only evaluation invalidation remains).
+All five active proof writers are removed: `prompt-submit.sh` (verified on
+user reply), `subagent-start.sh` (pending on tester spawn), `guard.sh` (idle
+after merge), `track.sh` (invalidation), `session-init.sh` (idle on session
+start). After cutover, zero hooks write `proof_state`. The `write_proof_status`
+and `rt_proof_set` functions remain in context-lib.sh and runtime-bridge.sh as
+deprecated exports but have zero callers in the hook chain.
+`prompt-submit.sh` stops
+writing "verified" on user reply. `check-guardian.sh` validates evaluator
+readiness, not proof readiness.
+
+**Cutover sequence (atomic enough — steps 1-9):**
+
+1. Add schema + domain + CLI + bridge + context (pure additions, no behavior
+   change)
+2. `post-task.sh`: implementer completion sets `evaluation_state = pending`
+3. `check-tester.sh`: parse EVAL_* trailer → write evaluator verdict to
+   evaluation_state (fail-closed on invalid/missing trailer)
+4. `post-task.sh`: tester completion routes on evaluator verdict
+   (needs_changes→implementer, ready_for_guardian→guardian,
+   blocked_by_plan→planner)
+5. `prompt-submit.sh`: remove proof verification on user "verified" reply —
+   user prompt content no longer alters Guardian eligibility
+6. `guard.sh` Check 10 + `check-guardian.sh` Check 6: switch from proof_state
+   to evaluation_state gating (eval_status == "ready_for_guardian" AND
+   head_sha matches current HEAD)
+7. `track.sh`: replace proof invalidation with evaluation invalidation
+   (ready_for_guardian→pending on source writes)
+8. `subagent-start.sh`: inject evaluation state into tester context;
+   `session-init.sh`: show evaluation state in session context
+9. `statusline.py`: evaluator state becomes the readiness display;
+   eval_status shown as the readiness segment (e.g., "eval: ready" or
+   "eval: needs_changes"). proof_status removed from the readiness segment.
+   If proof is shown at all, it must be visually distinct and labeled
+   "legacy" or equivalent — not presented alongside eval as a co-authority.
+
+**Implementer scope (files to create or modify):**
+
+Modified (15):
+- `runtime/schemas.py` — add evaluation_state table
+- `runtime/cli.py` — add evaluation domain (get/set/list/invalidate)
+- `runtime/core/statusline.py` — show eval_status as readiness; deprioritize
+  proof
+- `hooks/lib/runtime-bridge.sh` — add rt_eval_get, rt_eval_set, rt_eval_list,
+  rt_eval_invalidate
+- `hooks/context-lib.sh` — add read_evaluation_status, read_evaluation_state,
+  write_evaluation_status
+- `hooks/check-tester.sh` — parse EVAL_* trailer, write evaluation_state,
+  fail-closed on invalid
+- `hooks/check-guardian.sh` — Check 6: validate eval_status instead of
+  proof_status
+- `hooks/check-implementer.sh` — Check 5: replace proof-era verification
+  handoff status with evaluator-era language (read evaluation_state instead of
+  proof_state; report "evaluator pending" / "evaluator next" instead of
+  "proof-of-work pending" / "Tester is the next required role")
+- `hooks/guard.sh` — Check 10: gate on eval_status + head_sha match
+- `hooks/post-task.sh` — implementer sets eval pending; tester routes on
+  verdict
+- `hooks/prompt-submit.sh` — remove proof verification on user "verified"
+  reply
+- `hooks/subagent-start.sh` — inject evaluation state into tester context
+- `hooks/track.sh` — replace proof invalidation with evaluation invalidation
+- `hooks/session-init.sh` — show evaluation state in context
+
+New (8):
+- `runtime/core/evaluation.py` — domain module
+- `tests/runtime/test_evaluation.py` — unit tests
+- `tests/scenarios/test-guard-evaluator-gate-allows.sh` — ready_for_guardian +
+  SHA match allows
+- `tests/scenarios/test-guard-evaluator-gate-denies.sh` — needs_changes and
+  blocked_by_plan deny
+- `tests/scenarios/test-guard-evaluator-sha-mismatch.sh` — SHA mismatch denies
+- `tests/scenarios/test-check-tester-valid-trailer.sh` — valid trailer writes
+  state
+- `tests/scenarios/test-check-tester-invalid-trailer.sh` — invalid trailer
+  fails closed
+- `tests/scenarios/test-prompt-submit-no-verified.sh` — user "verified" no
+  longer flips readiness
+
+**Tester scope (what to verify):**
+
+- Evaluator ready_for_guardian + matching head SHA allows guardian path
+- Evaluator needs_changes denies guardian path
+- Evaluator blocked_by_plan denies guardian path
+- Invalid or missing EVAL_* trailer fails closed
+- Stale proof_state cannot satisfy guard after cutover
+- User prompt "verified" no longer satisfies guard after cutover
+- Source changes after evaluator clearance invalidate readiness
+- Implementer completion sets evaluation_state to pending
+- check-guardian.sh validates evaluator readiness, not proof
+- statusline shows evaluator state as readiness authority
+- All existing tests pass
+
+###### Evaluation Contract for TKT-024
+
+**Required checks (each must be verified by the evaluator):**
+
+1. `evaluation_state` table exists with correct schema (workflow_id, status,
+   head_sha, blockers, major, minor, updated_at).
+2. `runtime/core/evaluation.py` implements get(), set_status(), list_all(),
+   invalidate_if_ready().
+3. `runtime/cli.py` exposes evaluation domain (get/set/list/invalidate).
+4. `hooks/lib/runtime-bridge.sh` has rt_eval_get, rt_eval_set, rt_eval_list,
+   rt_eval_invalidate.
+5. `hooks/context-lib.sh` has read_evaluation_status, read_evaluation_state,
+   write_evaluation_status.
+6. `hooks/check-tester.sh` parses EVAL_VERDICT, EVAL_TESTS_PASS,
+   EVAL_NEXT_ROLE, EVAL_HEAD_SHA from tester output; writes evaluation_state
+   on valid trailer; fails closed on invalid/missing.
+7. `hooks/guard.sh` Check 10 denies unless eval_status ==
+   "ready_for_guardian" AND head_sha matches current HEAD.
+8. `hooks/check-guardian.sh` Check 6 validates eval_status instead of
+   proof_status.
+9. `hooks/post-task.sh` sets evaluation_state = pending on implementer
+   completion; routes on evaluator verdict on tester completion.
+10. `hooks/prompt-submit.sh` no longer writes proof_state on user "verified"
+    reply.
+11. `hooks/track.sh` invalidates evaluation ready_for_guardian→pending on
+    source writes; proof invalidation removed.
+12. `hooks/subagent-start.sh` injects evaluation state into tester context.
+13. `hooks/session-init.sh` shows evaluation state.
+14. `runtime/core/statusline.py` shows eval_status as the readiness display;
+    proof_status deprioritized or removed from readiness slot.
+15. Stale proof_state == "verified" cannot satisfy guard Check 10
+    (regression test).
+16. User prompt "verified" cannot flip readiness (regression test).
+17. Source changes after evaluator clearance invalidate readiness
+    (regression test).
+18. No normal hook path writes proof_state after cutover — verified by
+    grep: `grep -rn 'write_proof_status\|rt_proof_set' hooks/ scripts/`
+    returns zero non-deprecated/non-commented matches.
+19. All new unit and scenario tests pass.
+20. All existing tests pass (proof-based tests updated or removed).
+
+**Required authority invariants:**
+
+- `evaluation_state` is the sole readiness authority for Guardian commit/merge.
+- `proof_state` has zero enforcement effect — nothing gates on it.
+- `check-tester.sh` is the sole writer for evaluation_state verdicts.
+- `post-task.sh` is the sole writer for evaluation_state = pending.
+- `track.sh` is the sole invalidator for evaluation_state.
+- `prompt-submit.sh` does not write any readiness state.
+- `check-implementer.sh` reports evaluator-era next-step language, not proof-era.
+
+**Forbidden shortcuts:**
+
+- Do not remove proof_state table (schema cleanup deferred).
+- Do not rename tester agent files or settings.json hook wiring.
+- Do not modify CLAUDE.md or agents/*.md.
+- Do not let proof_state reads gate any Guardian operation.
+- Do not let user prompt content alter evaluation_state.
+
+**Ready-for-guardian definition:**
+
+All 20 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+`git diff --stat` shows only files in the Scope Manifest.
+
+###### Scope Manifest for TKT-024
+
+**Allowed files:**
+
+Modified (15):
+- `runtime/schemas.py`
+- `runtime/cli.py`
+- `runtime/core/statusline.py`
+- `hooks/lib/runtime-bridge.sh`
+- `hooks/context-lib.sh`
+- `hooks/check-tester.sh`
+- `hooks/check-guardian.sh`
+- `hooks/check-implementer.sh`
+- `hooks/guard.sh`
+- `hooks/post-task.sh`
+- `hooks/prompt-submit.sh`
+- `hooks/subagent-start.sh`
+- `hooks/track.sh`
+- `hooks/session-init.sh`
+
+New (8):
+- `runtime/core/evaluation.py`
+- `tests/runtime/test_evaluation.py`
+- `tests/scenarios/test-guard-evaluator-gate-allows.sh`
+- `tests/scenarios/test-guard-evaluator-gate-denies.sh`
+- `tests/scenarios/test-guard-evaluator-sha-mismatch.sh`
+- `tests/scenarios/test-check-tester-valid-trailer.sh`
+- `tests/scenarios/test-check-tester-invalid-trailer.sh`
+- `tests/scenarios/test-prompt-submit-no-verified.sh`
+
+**Required files:** All 23 must be created or modified.
+
+**Forbidden touch points:**
+
+- `settings.json`
+- `CLAUDE.md`, `agents/*.md`
+- `MASTER_PLAN.md` (except this amendment)
+- `runtime/core/proof.py` (not removed in this wave)
+
+**Expected state authorities touched:**
+
+- NEW: `evaluation_state` table — sole readiness authority
+- MODIFIED: `guard.sh` Check 10 — reads evaluation, not proof
+- MODIFIED: `check-guardian.sh` Check 6 — validates evaluation, not proof
+- MODIFIED: `prompt-submit.sh` — stops writing proof on user reply
+- MODIFIED: `track.sh` — evaluation invalidation replaces proof invalidation
+- MODIFIED: `post-task.sh` — sets eval pending + routes on verdict
+- MODIFIED: `check-tester.sh` — sole evaluator verdict writer
+- DEPRECATED: `proof_state` — zero enforcement effect after cutover
 
 ## Completed Initiatives
 
