@@ -18,6 +18,12 @@
 
 _HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Source context-lib.sh so is_source_file, is_skippable_path, and
+# SOURCE_EXTENSIONS are available to check_enforcement_gap when it runs
+# in a $() subshell from pre-write.sh's CHECKS loop.
+# shellcheck source=../context-lib.sh
+source "${_HOOKS_DIR}/context-lib.sh"
+
 # Source plan discipline policy functions (check_plan_immutability,
 # check_decision_log_append_only). Safe to source here; functions are no-ops
 # for non-MASTER_PLAN.md files.
@@ -95,8 +101,74 @@ check_decision_log_hook() {
     fi
 }
 
+# check_enforcement_gap <input>
+# Denies writes to source files whose extension has an unresolved enforcement
+# gap with encounter_count > 1. Reads .claude/.enforcement-gaps directly —
+# no subprocess to lint.sh. Fires AFTER branch-guard and write-guard so WHO
+# checks run first, but BEFORE plan checks (enforcement health > plan staleness).
+#
+# @decision DEC-LINT-002
+# @title PreToolUse enforcement-gap deny gate
+# @status accepted
+# @rationale On the first gap encounter lint.sh emits additionalContext and
+#   exits 2 (feedback to model). A single encounter might be a transient
+#   environment issue. On count > 1 the gap is confirmed persistent — the
+#   model has been told and did not fix it. At that point writes are denied
+#   outright so enforcement is not silently bypassed across multiple turns.
+check_enforcement_gap() {
+    local input="$1"
+    local file_path ext project_root gaps_file
+
+    file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+    [[ -z "$file_path" ]] && return 0
+
+    # Only check source files
+    is_source_file "$file_path" || return 0
+    is_skippable_path "$file_path" && return 0
+
+    ext="${file_path##*.}"
+    [[ -z "$ext" || "$ext" == "$file_path" ]] && return 0
+
+    # Resolve project root: prefer CLAUDE_PROJECT_DIR (set by log.sh auto-export),
+    # then walk up from the file's parent to find the first existing directory,
+    # then run git from there. The target file may not exist yet (Write creates
+    # it), so dirname may not be an existing directory.
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}" ]]; then
+        project_root="$CLAUDE_PROJECT_DIR"
+    else
+        local _dir
+        _dir="$(dirname "$file_path")"
+        while [[ -n "$_dir" && "$_dir" != "/" && ! -d "$_dir" ]]; do
+            _dir="$(dirname "$_dir")"
+        done
+        project_root=$(git -C "${_dir:-/}" rev-parse --show-toplevel 2>/dev/null || echo "")
+    fi
+    [[ -z "$project_root" ]] && return 0
+
+    gaps_file="$project_root/.claude/.enforcement-gaps"
+    [[ ! -f "$gaps_file" ]] && return 0
+
+    # Check both gap types for this extension
+    local gap_line count gap_type tool reason
+    for gap_type in unsupported missing_dep; do
+        gap_line=$(grep "^${gap_type}|${ext}|" "$gaps_file" 2>/dev/null || true)
+        [[ -z "$gap_line" ]] && continue
+        count=$(printf '%s' "$gap_line" | cut -d'|' -f5)
+        [[ "${count:-0}" -le 1 ]] && continue
+        tool=$(printf '%s' "$gap_line" | cut -d'|' -f3)
+        if [[ "$gap_type" == "unsupported" ]]; then
+            reason="Write denied: unresolved enforcement gap for .${ext} files (no linter profile). This gap has been encountered ${count} times. Add a linter config for .${ext} files to unblock writes."
+        else
+            reason="Write denied: unresolved enforcement gap for .${ext} files (linter '${tool}' not installed). This gap has been encountered ${count} times. Install '${tool}' to unblock writes."
+        fi
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' \
+            "$(printf '%s' "$reason" | sed 's/"/\\"/g')"
+        return 0
+    done
+}
+
 # Export hook wrappers so they are available in the $() subshells that
 # pre-write.sh spawns when iterating CHECKS=(... check_plan_immutability_hook ...).
 export -f check_branch_guard check_write_who check_plan_guard check_plan_exists \
-          check_plan_immutability_hook check_decision_log_hook \
+          check_plan_immutability_hook check_decision_log_hook check_enforcement_gap \
           _run_hook _is_deny

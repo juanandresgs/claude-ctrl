@@ -92,6 +92,23 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     fi
 fi
 
+# --- Enforcement gaps ---
+# Persist across sessions — surface any open gaps so the model knows
+# enforcement is degraded before it writes anything.
+GAPS_FILE="${PROJECT_ROOT}/.claude/.enforcement-gaps"
+if [[ -f "$GAPS_FILE" && -s "$GAPS_FILE" ]]; then
+    GAP_COUNT=0
+    while IFS='|' read -r gap_type ext tool _first _count; do
+        [[ -z "$gap_type" ]] && continue
+        GAP_COUNT=$(( GAP_COUNT + 1 ))
+        if [[ "$gap_type" == "unsupported" ]]; then
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files (unsupported). Writes to .${ext} source files are not being linted. Add a linter config to restore enforcement.")
+        else
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed (missing_dep). Install '${tool}' to restore lint enforcement.")
+        fi
+    done < "$GAPS_FILE"
+fi
+
 # --- Preserved context from pre-compaction ---
 # compact-preserve.sh writes .preserved-context before compaction.
 # Re-inject it here so the post-compaction session has full context

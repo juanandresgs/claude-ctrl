@@ -30,7 +30,7 @@ HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
 [[ -z "$FILE_PATH" ]] && exit 0
 
-CHECKS=(check_branch_guard check_write_who check_plan_guard check_plan_exists check_plan_immutability_hook check_decision_log_hook)
+CHECKS=(check_branch_guard check_write_who check_enforcement_gap check_plan_guard check_plan_exists check_plan_immutability_hook check_decision_log_hook)
 CONTEXT_PARTS=()
 
 for check_fn in "${CHECKS[@]}"; do

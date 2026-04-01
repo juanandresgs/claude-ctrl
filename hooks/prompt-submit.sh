@@ -97,6 +97,18 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
             CONTEXT_PARTS+=("Plan assessment: ${PLAN_SOURCE_CHURN_PCT}% source file churn since plan update. @decision coverage: $DECISION_FILE_COUNT/$TOTAL_SOURCE_COUNT source files (${COVERAGE_PCT}%). Review the plan and scan for @decision gaps before implementing.")
         fi
     fi
+    # --- Enforcement gap surfacing (first-prompt path) ---
+    GAPS_FILE_PS="${PROJECT_ROOT}/.claude/.enforcement-gaps"
+    if [[ -f "$GAPS_FILE_PS" && -s "$GAPS_FILE_PS" ]]; then
+        while IFS='|' read -r gap_type ext tool _first _count; do
+            [[ -z "$gap_type" ]] && continue
+            if [[ "$gap_type" == "unsupported" ]]; then
+                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files. Writes to .${ext} source files are not linted.")
+            else
+                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed. Install it to restore enforcement.")
+            fi
+        done < "$GAPS_FILE_PS"
+    fi
 fi
 
 # --- Inject agent findings from previous subagent runs ---

@@ -170,12 +170,13 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
 | **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files; Write = hard deny, Edit = advisory; warns on new root-level markdown files (Sacred Practice #9) |
 | **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; composite staleness scoring (source churn % + decision drift) warns then blocks when plan diverges from code; bypasses Edit tool, small writes (<20 lines), non-git dirs |
+| **pre-write.sh** (check_enforcement_gap) | Write\|Edit | Denies writes to source files whose extension has an unresolved enforcement gap with `encounter_count > 1` in `.enforcement-gaps`. Runs after branch-guard and write-guard, before plan checks — enforcement health is more fundamental than plan staleness |
 
 ### PostToolUse — Feedback After Execution
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **lint.sh** | Write\|Edit | Auto-detects project linter (ruff, black, prettier, eslint, etc.), runs on modified files. Exit 2 = feedback loop (Claude retries the fix automatically) |
+| **lint.sh** | Write\|Edit | Auto-detects project linter per extension (ruff, black, shellcheck, etc.), runs on modified files. Exit 2 = feedback loop. If no linter exists for the extension (unsupported) or the binary is missing (missing_dep), records an enforcement gap in `.enforcement-gaps` and exits 2 — never silently exits 0 for an in-scope source type. Shell files always map to shellcheck with no config required |
 | **track.sh** | Write\|Edit | Records file changes to `.session-changes-$SESSION_ID`. Also invalidates workflow-scoped proof when verified source files change — ensuring the user always verifies the final state, not an intermediate one |
 | **code-review.sh** | Write\|Edit | Fires on 20+ line source files (skips tests and config). Injects diff context and suggests `mcp__multi__codereview` for multi-model analysis. Falls back silently if Multi-MCP is unavailable |
 | **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structure on every write: phase Status fields (`planned`/`in-progress`/`completed`), Decision Log content for completed phases, original intent section preserved, DEC-COMPONENT-NNN ID format. Exit 2 = feedback loop with fix instructions |
@@ -295,7 +296,7 @@ Three patterns recur across the hook system:
 
 | Hook | Triggers exit 2 when |
 |------|---------------------|
-| **lint.sh** | Linter finds fixable issues in the written file |
+| **lint.sh** | Linter finds fixable issues in the written file; OR an enforcement gap is detected (unsupported extension or missing dependency) |
 | **plan-validate.sh** | MASTER_PLAN.md fails structural validation (missing Status fields, empty Decision Log, bad DEC-ID format) |
 | **forward-motion.sh** | Response ends with bare completion ("done") and no question, suggestion, or offer |
 
@@ -304,6 +305,51 @@ Three patterns recur across the hook system:
 | Hook | Corrective behavior |
 |------|--------------------|
 | **guard.sh** | Denies unsafe `/tmp/`, raw force push, and unsafe worktree removal with explicit replacement commands |
+
+---
+
+## Enforcement Coverage
+
+Every source file type in `SOURCE_EXTENSIONS` must have an active linter or the system must say so loudly. Silent non-enforcement is a policy violation, not a neutral skip.
+
+### Philosophy
+
+**Unsupported coverage** — a source extension in `SOURCE_EXTENSIONS` that has no configured linter profile — is a policy gap. The old behaviour was `exit 0` (silent pass). The new behaviour is `exit 2` with `additionalContext` explaining the gap, a persisted record in `.enforcement-gaps`, and a GitHub Issue filed on first encounter.
+
+**Missing enforcer dependency** — a linter profile is detected (e.g., shellcheck for `.sh`) but the binary is not on `PATH` — is a degraded enforcement state. Same treatment as unsupported.
+
+**Self-healing** — when lint.sh runs and the linter is now available for a previously-gapped extension, it removes the gap entry automatically. No manual cleanup needed.
+
+**No source write ends with "no enforcement ran and nobody was told."** If enforcement cannot run, the model is told, the gap is recorded, and writes are eventually blocked until the gap is resolved.
+
+### Four Signal Paths
+
+| Path | Mechanism | When | Effect |
+|------|-----------|------|--------|
+| **Immediate feedback** | `lint.sh` PostToolUse `additionalContext` + exit 2 | Every gap encounter | Model sees the gap in the same turn |
+| **Persisted gap state** | `.claude/.enforcement-gaps` | First + subsequent encounters | Survives session boundaries |
+| **Repeated-write deny** | `pre-write.sh` `check_enforcement_gap` PreToolUse `permissionDecision=deny` | When `encounter_count > 1` for the target file's extension | True deterministic block — write is rejected before it happens |
+| **Backlog/support record** | `scripts/todo.sh add --global` (GitHub Issue) | First encounter only, best-effort | Durable record visible outside Claude |
+
+### Gap State File Format
+
+`.claude/.enforcement-gaps` — one line per unique gap, keyed on `type|ext`:
+
+```
+type|ext|tool|first_epoch|encounter_count
+```
+
+- `type`: `unsupported` (no profile) or `missing_dep` (profile exists, binary missing)
+- `ext`: file extension without the dot (e.g., `java`, `sh`)
+- `tool`: linter name or `none`
+- `first_epoch`: Unix timestamp of first encounter
+- `encounter_count`: total encounters (incremented on each lint.sh run for this ext)
+
+The file is NOT cleaned by `session-end.sh`. It represents unresolved repo state. It IS cleaned when lint.sh runs successfully for the same extension (self-healing).
+
+### Shell File Enforcement
+
+Shell files (`.sh`, `.bash`, `.zsh`) now always map to `shellcheck` — no project config file is required. This is intentional: shell is the primary hook language for this system, so enforcement must be unconditional. If `shellcheck` is not installed, a `missing_dep` gap fires instead of silent pass.
 
 ---
 
@@ -329,6 +375,7 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
 | `.agent-findings` | check-planner.sh, check-implementer.sh, check-tester.sh, check-guardian.sh | prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery). Still active; not yet migrated to runtime |
 | `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |
+| `.enforcement-gaps` | lint.sh | pre-write.sh (check_enforcement_gap), session-init.sh, prompt-submit.sh | `type\|ext\|tool\|first_epoch\|encounter_count` — one line per unique gap; NOT cleaned by session-end.sh (represents unresolved repo state, not session ephemeral data); self-healed by lint.sh when tool is installed |
 
 **Eliminated flat files** (no longer written or read as state authority):
 
