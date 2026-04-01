@@ -79,17 +79,27 @@ if [[ -f "$_RUNTIME_ROOT/cli.py" ]]; then
 fi
 unset _RUNTIME_ROOT _snap _active_agent _marker_age _age_min
 
-# --- Workflow proof state ---
+# --- Workflow evaluation state (TKT-024) ---
+# Shows evaluation_state as the readiness display. proof_state is deprecated
+# with zero enforcement effect and is no longer shown here.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    if [[ "$(read_proof_status "$PROJECT_ROOT")" == "idle" ]]; then
-        write_proof_status "$PROJECT_ROOT" "idle"
-    fi
-    PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
-    if [[ "$PROOF_STATUS" == "pending" ]]; then
-        CONTEXT_PARTS+=("Proof: pending user verification for this workflow.")
-    elif [[ "$PROOF_STATUS" == "verified" ]]; then
-        CONTEXT_PARTS+=("Proof: already verified for this workflow. Any source edit will reset it to pending.")
-    fi
+    _SESS_EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
+    case "$_SESS_EVAL_STATUS" in
+        ready_for_guardian)
+            CONTEXT_PARTS+=("Evaluation: ready_for_guardian — Guardian may proceed to commit/merge.")
+            ;;
+        needs_changes)
+            CONTEXT_PARTS+=("Evaluation: needs_changes — Tester found issues. Implementer should address them.")
+            ;;
+        blocked_by_plan)
+            CONTEXT_PARTS+=("Evaluation: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner.")
+            ;;
+        pending)
+            CONTEXT_PARTS+=("Evaluation: pending — awaiting Tester evaluation.")
+            ;;
+        # idle: no output (background noise)
+    esac
+    unset _SESS_EVAL_STATUS
 fi
 
 # --- Enforcement gaps ---

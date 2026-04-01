@@ -97,15 +97,15 @@ CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
 check_deny "sub-test 3 (test gate)" "$output" "tests are failing\|test run did not pass"
 
-# --- Sub-test 4: git -C commit without proof verified → Check 10 proof gate deny ---
+# --- Sub-test 4: git -C commit without evaluation clearance → Check 10 eval gate deny ---
 setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-proof -q
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
-# No proof file → proof status is "idle"
+# No evaluation_state set → status is "idle"
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
-check_deny "sub-test 4 (proof gate)" "$output" "proof-of-work"
+check_deny "sub-test 4 (eval gate)" "$output" "evaluation_state"
 
 echo "PASS: $TEST_NAME (4 sub-tests)"
 exit 0

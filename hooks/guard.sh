@@ -249,44 +249,62 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     fi
 fi
 
-# --- Check 10: Proof-of-work verification gate ---
-# Requires workflow-scoped proof status = "verified" before commit/merge.
+# --- Check 10: Evaluator-state readiness gate (TKT-024) ---
+# Requires evaluation_state.status == "ready_for_guardian" AND
+# evaluation_state.head_sha matches the current HEAD SHA before commit/merge.
+# proof_state has zero enforcement effect after TKT-024 cutover.
+#
+# @decision DEC-EVAL-003
+# @title guard.sh Check 10 gates on evaluation_state, not proof_state
+# @status accepted
+# @rationale evaluation_state is written by check-tester.sh based on the
+#   evaluator's structured EVAL_* trailers. Only a tester-issued verdict of
+#   ready_for_guardian with a matching head_sha satisfies this gate. User
+#   prompt "verified" no longer affects Guardian eligibility (prompt-submit.sh
+#   no longer writes any readiness state). SHA match prevents a stale clearance
+#   from applying after subsequent source changes.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
     if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
-        PROOF_DIR=$(extract_git_target_dir "$COMMAND")
+        _EVAL_DIR=$(extract_git_target_dir "$COMMAND")
     else
-        PROOF_DIR=$(detect_project_root)
+        _EVAL_DIR=$(detect_project_root)
     fi
-    if ! is_claude_meta_repo "$PROOF_DIR"; then
-        # Read proof from runtime (not flat files).
-        # For merge: check proof of the branch being merged.
-        # For commit: check proof of the current branch.
+    if ! is_claude_meta_repo "$_EVAL_DIR"; then
+        # Resolve workflow_id — for merge, use the branch being merged.
         if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
             _MERGE_REF=$(extract_merge_ref "$COMMAND")
             if [[ -n "$_MERGE_REF" ]]; then
-                PROOF_STATUS=$(read_proof_status "$PROOF_DIR" "$(sanitize_token "$_MERGE_REF")")
+                _EVAL_WF=$(sanitize_token "$_MERGE_REF")
             else
-                PROOF_STATUS=$(read_proof_status "$PROOF_DIR")
+                _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
             fi
         else
-            PROOF_STATUS=$(read_proof_status "$PROOF_DIR")
+            _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
         fi
-        if [[ "$PROOF_STATUS" != "verified" ]]; then
-            _MERGE_REF_MSG=$(extract_merge_ref "$COMMAND")
-            if [[ -n "${_MERGE_REF_MSG:-}" ]]; then
-                deny "Cannot proceed: proof-of-work for workflow '$_MERGE_REF_MSG' is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
-            else
-                deny "Cannot proceed: proof-of-work is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
+
+        # Read evaluation_state from runtime
+        _EVAL_STATUS=$(read_evaluation_status "$_EVAL_DIR" "$_EVAL_WF")
+
+        if [[ "$_EVAL_STATUS" != "ready_for_guardian" ]]; then
+            deny "Cannot proceed: evaluation_state for workflow '$_EVAL_WF' is '$_EVAL_STATUS'. The tester must run and emit EVAL_VERDICT=ready_for_guardian before Guardian can commit or merge."
+        fi
+
+        # Verify head_sha matches current HEAD (prevents stale clearance)
+        _EVAL_STATE_JSON=$(read_evaluation_state "$_EVAL_DIR" "$_EVAL_WF")
+        _STORED_SHA=$(printf '%s' "${_EVAL_STATE_JSON:-}" | jq -r '.head_sha // empty' 2>/dev/null || true)
+        _CURRENT_HEAD=$(git -C "$_EVAL_DIR" rev-parse HEAD 2>/dev/null || true)
+        if [[ -n "$_STORED_SHA" && -n "$_CURRENT_HEAD" ]]; then
+            # Accept prefix match (short SHA vs full SHA)
+            if ! printf '%s' "$_CURRENT_HEAD" | grep -q "^${_STORED_SHA}" && \
+               ! printf '%s' "$_STORED_SHA" | grep -q "^${_CURRENT_HEAD}"; then
+                deny "Cannot proceed: evaluation_state head_sha '$_STORED_SHA' does not match current HEAD '$_CURRENT_HEAD'. Source changes after evaluator clearance require a new tester pass."
             fi
         fi
 
-        # After a merge passes the verified gate, reset proof to idle so the
-        # next workflow cycle starts clean. Commits do not reset (they may be
-        # intermediate; the merge is the completion event).
-        # TKT-008: runtime-only write; no flat-file reset needed.
+        # After a merge passes the gate, reset evaluation to idle so the
+        # next workflow cycle starts clean.
         if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
-            MERGE_WF=$(current_workflow_id "$PROOF_DIR")
-            rt_proof_set "$MERGE_WF" "idle" 2>/dev/null || true
+            rt_eval_set "$_EVAL_WF" "idle" 2>/dev/null || true
         fi
     fi
 fi

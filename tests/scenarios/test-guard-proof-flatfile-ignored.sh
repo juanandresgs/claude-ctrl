@@ -37,9 +37,11 @@ echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 
-# Write STALE flat file with "verified" — but do NOT set runtime proof.
-# Runtime proof is absent (idle) — Check 10 should deny.
+# Write STALE flat file with "verified" — but do NOT set evaluation_state.
+# evaluation_state is absent (idle) — Check 10 should deny.
+# Also write proof_state "verified" to prove it has zero enforcement effect.
 echo "verified|$(date +%s)" > "$TMP_DIR/.claude/.proof-status-$WF_ID"
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" proof set "$WF_ID" "verified" >/dev/null 2>&1
 
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 PAYLOAD=$(jq -n --arg t "Bash" --arg c "$CMD" --arg w "$TMP_DIR" \
@@ -58,8 +60,8 @@ if [[ "$decision" != "deny" ]]; then
     exit 1
 fi
 
-if ! printf '%s' "$reason" | grep -qi "proof-of-work"; then
-    echo "FAIL: $TEST_NAME — deny reason should mention proof-of-work"
+if ! printf '%s' "$reason" | grep -qi "evaluation_state"; then
+    echo "FAIL: $TEST_NAME — deny reason should mention evaluation_state (not proof)"
     echo "  reason: $reason"
     exit 1
 fi

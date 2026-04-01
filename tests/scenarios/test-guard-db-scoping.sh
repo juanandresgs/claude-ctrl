@@ -57,9 +57,10 @@ run_guard() {
           CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null || true
 }
 
-# --- Sub-test 1: Proof in PROJECT DB → guard allows ---
+# --- Sub-test 1: Evaluation in PROJECT DB → guard allows ---
 setup
-CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" proof set "$WF_ID" "verified" >/dev/null 2>&1
+HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
+CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
 
 output=$(run_guard)
 if [[ -n "$output" ]]; then
@@ -72,11 +73,12 @@ if [[ -n "$output" ]]; then
     fi
 fi
 
-# --- Sub-test 2: Proof in HOME DB only → guard denies ---
+# --- Sub-test 2: Evaluation in HOME DB only → guard denies ---
 setup
-# Set proof ONLY in the fake home DB, NOT in the project DB
-CLAUDE_POLICY_DB="$HOME_DB" python3 "$RUNTIME_ROOT/cli.py" proof set "$WF_ID" "verified" >/dev/null 2>&1
-# Project DB proof remains idle (default)
+# Set evaluation ONLY in the fake home DB, NOT in the project DB
+HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
+CLAUDE_POLICY_DB="$HOME_DB" python3 "$RUNTIME_ROOT/cli.py" evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
+# Project DB evaluation remains idle (default)
 
 output=$(run_guard)
 decision=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || echo "")

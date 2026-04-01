@@ -146,6 +146,18 @@ CREATE TABLE IF NOT EXISTS workflow_scope (
 )
 """
 
+EVALUATION_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS evaluation_state (
+    workflow_id  TEXT    PRIMARY KEY,
+    status       TEXT    NOT NULL DEFAULT 'idle',
+    head_sha     TEXT,
+    blockers     INTEGER DEFAULT 0,
+    major        INTEGER DEFAULT 0,
+    minor        INTEGER DEFAULT 0,
+    updated_at   INTEGER NOT NULL
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -160,12 +172,20 @@ ALL_DDL: list[str] = [
     TODO_STATE_DDL,
     WORKFLOW_BINDINGS_DDL,
     WORKFLOW_SCOPE_DDL,
+    EVALUATION_STATE_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
 # so that the error message is human-readable JSON rather than a constraint
 # violation traceback.
 PROOF_STATUSES: frozenset[str] = frozenset({"idle", "pending", "verified"})
+EVALUATION_STATUSES: frozenset[str] = frozenset({
+    "idle",
+    "pending",
+    "needs_changes",
+    "ready_for_guardian",
+    "blocked_by_plan",
+})
 DISPATCH_QUEUE_STATUSES: frozenset[str] = frozenset({"pending", "active", "done", "skipped"})
 DISPATCH_CYCLE_STATUSES: frozenset[str] = frozenset({"active", "complete"})
 

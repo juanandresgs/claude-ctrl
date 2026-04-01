@@ -33,6 +33,7 @@ from runtime.core.config import default_db_path
 from runtime.core.db import connect
 from runtime.schemas import ensure_schema
 import runtime.core.proof as proof_mod
+import runtime.core.evaluation as evaluation_mod
 import runtime.core.markers as markers_mod
 import runtime.core.events as events_mod
 import runtime.core.worktrees as worktrees_mod
@@ -101,6 +102,51 @@ def _handle_proof(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown proof action: {args.action}")
+
+
+def _handle_evaluation(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            result = evaluation_mod.get(conn, args.workflow_id)
+            if result is None:
+                return _ok({
+                    "workflow_id": args.workflow_id,
+                    "status": "idle",
+                    "head_sha": None,
+                    "blockers": 0,
+                    "major": 0,
+                    "minor": 0,
+                    "found": False,
+                })
+            result["found"] = True
+            return _ok(result)
+
+        elif args.action == "set":
+            evaluation_mod.set_status(
+                conn,
+                args.workflow_id,
+                args.status,
+                head_sha=getattr(args, "head_sha", None) or None,
+                blockers=int(getattr(args, "blockers", 0) or 0),
+                major=int(getattr(args, "major", 0) or 0),
+                minor=int(getattr(args, "minor", 0) or 0),
+            )
+            return _ok({"workflow_id": args.workflow_id, "status": args.status})
+
+        elif args.action == "list":
+            rows = evaluation_mod.list_all(conn)
+            return _ok({"items": rows, "count": len(rows)})
+
+        elif args.action == "invalidate":
+            invalidated = evaluation_mod.invalidate_if_ready(conn, args.workflow_id)
+            return _ok({"workflow_id": args.workflow_id, "invalidated": invalidated})
+
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown evaluation action: {args.action}")
 
 
 def _handle_marker(args) -> int:
@@ -476,6 +522,24 @@ def build_parser() -> argparse.ArgumentParser:
     ps_p.add_argument("status", choices=["idle", "pending", "verified"])
     proof_sub.add_parser("list")
 
+    # evaluation
+    eval_p = subparsers.add_parser("evaluation", help="Evaluator-state readiness authority")
+    eval_sub = eval_p.add_subparsers(dest="action", required=True)
+    eg = eval_sub.add_parser("get")
+    eg.add_argument("workflow_id")
+    es_p = eval_sub.add_parser("set")
+    es_p.add_argument("workflow_id")
+    es_p.add_argument("status", choices=[
+        "idle", "pending", "needs_changes", "ready_for_guardian", "blocked_by_plan"
+    ])
+    es_p.add_argument("--head-sha", dest="head_sha", default=None)
+    es_p.add_argument("--blockers", type=int, default=0)
+    es_p.add_argument("--major", type=int, default=0)
+    es_p.add_argument("--minor", type=int, default=0)
+    eval_sub.add_parser("list")
+    ei = eval_sub.add_parser("invalidate")
+    ei.add_argument("workflow_id")
+
     # marker
     marker_p = subparsers.add_parser("marker", help="Agent role markers")
     marker_sub = marker_p.add_subparsers(dest="action", required=True)
@@ -655,6 +719,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_schema(args)
     if args.domain == "proof":
         return _handle_proof(args)
+    if args.domain == "evaluation":
+        return _handle_evaluation(args)
     if args.domain == "marker":
         return _handle_marker(args)
     if args.domain == "event":
