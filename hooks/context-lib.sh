@@ -55,7 +55,7 @@ get_git_state() {
 
     # Fix #465: In a worktree .git is a FILE (gitdir pointer), not a directory.
     # Use git rev-parse to test git membership uniformly for both cases.
-    git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return
+    git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 
     GIT_BRANCH=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null) || GIT_BRANCH="unknown"
     GIT_DIRTY_COUNT=$(git -C "$root" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
@@ -388,6 +388,11 @@ is_claude_meta_repo() {
     local dir="$1"
     local repo_root
 
+    # Check CLAUDE_PROJECT_DIR first — symlinks cause git to resolve to the
+    # real path (e.g. ~/Code/foo) even when ~/.claude is the logical root.
+    if [[ "${CLAUDE_PROJECT_DIR:-}" == */.claude ]]; then
+        return 0
+    fi
     repo_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo "")
     [[ "$repo_root" == */.claude ]]
 }
