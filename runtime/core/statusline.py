@@ -4,25 +4,32 @@ Read-only projection across all runtime tables. Gathers all state in a single
 pass and returns a unified dict suitable for ANSI HUD rendering by
 scripts/statusline.sh without that script needing to call multiple subcommands.
 
-TKT-011 promotes this from a stub to the canonical implementation. The
-extended field set gives scripts/statusline.sh everything it needs for a
-richer HUD: proof workflow identity, active agent ID, per-worktree details,
-dispatch cycle identity, and a recent event list.
+TKT-011 promotes this from a stub to the canonical implementation.
+TKT-024 adds evaluation_state as the primary readiness display. proof_state
+is deprioritized — it is no longer the readiness authority but is retained
+in the snapshot for backward compatibility.
 
 @decision DEC-RT-011
 Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() is the single read surface for the statusline HUD. It
-  reads proof_state, agent_markers, worktrees, dispatch_cycles, dispatch_queue,
-  and events in one pass and returns a canonical dict. No writes happen here.
-  The extended field set (proof_workflow, active_agent_id, worktrees list,
-  dispatch_cycle_id, recent_events list) gives scripts/statusline.sh everything
-  it needs for the richer HUD without requiring multiple CLI round-trips.
+  reads evaluation_state (TKT-024 primary), proof_state (deprecated),
+  agent_markers, worktrees, dispatch_cycles, dispatch_queue, and events in
+  one pass and returns a canonical dict. No writes happen here.
   All fields default to None/0/[] so the statusline never crashes on an empty
   or partially-populated DB. The broad exception handler at the bottom guards
   against unexpected schema errors only; all normal empty-result paths are
   handled individually so partial state is still returned on any single
   query failure.
+
+@decision DEC-EVAL-006
+Title: statusline.py shows eval_status as the readiness display (TKT-024)
+Status: accepted
+Rationale: After TKT-024 cutover, evaluation_state is the sole readiness
+  authority. The snapshot surfaces eval_status and eval_workflow as the
+  primary readiness fields. proof_status is retained as a legacy field
+  (proof_status_legacy) so existing consumers that read it do not crash,
+  but it carries zero enforcement meaning.
 """
 
 from __future__ import annotations
@@ -37,9 +44,15 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     """Return a read-only projection of runtime state for status display.
 
     Fields returned:
-      proof_status        — status of the most recently active proof row
-                            ('pending'/'verified'), or 'idle' when none
-      proof_workflow      — workflow_id of that proof row, or None
+      eval_status         — evaluation_state status (TKT-024 primary readiness)
+                            ('idle'/'pending'/'needs_changes'/'ready_for_guardian'/
+                            'blocked_by_plan'), or 'idle' when none
+      eval_workflow       — workflow_id of the active evaluation row, or None
+      eval_head_sha       — head_sha from evaluation_state, or None
+      proof_status        — DEPRECATED: legacy proof_state status; zero
+                            enforcement effect after TKT-024. Retained for
+                            backward compatibility only.
+      proof_workflow      — DEPRECATED: workflow_id of proof row, or None
       active_agent        — role of the most recently started active marker,
                             or None
       active_agent_id     — agent_id of that marker, or None
@@ -61,6 +74,9 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     """
     now = int(time.time())
     result: dict = {
+        "eval_status": "idle",
+        "eval_workflow": None,
+        "eval_head_sha": None,
         "proof_status": "idle",
         "proof_workflow": None,
         "active_agent": None,
@@ -99,6 +115,24 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         if row:
             result["proof_status"] = row["status"]
             result["proof_workflow"] = row["workflow_id"]
+
+        # ------------------------------------------------------------------
+        # Evaluation state (TKT-024) — sole readiness authority.
+        # Prefer any non-idle row; most recently updated wins.
+        # ------------------------------------------------------------------
+        row = conn.execute(
+            """
+            SELECT workflow_id, status, head_sha
+            FROM   evaluation_state
+            WHERE  status != 'idle'
+            ORDER  BY updated_at DESC
+            LIMIT  1
+            """
+        ).fetchone()
+        if row:
+            result["eval_status"] = row["status"]
+            result["eval_workflow"] = row["workflow_id"]
+            result["eval_head_sha"] = row["head_sha"]
 
         # ------------------------------------------------------------------
         # Active agent — most recently started active marker with age.

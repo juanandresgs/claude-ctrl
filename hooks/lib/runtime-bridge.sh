@@ -75,6 +75,51 @@ rt_proof_timestamp() {
 }
 
 # ---------------------------------------------------------------------------
+# Evaluation-state wrappers (TKT-024: sole readiness authority)
+# ---------------------------------------------------------------------------
+
+# rt_eval_get <workflow_id>
+# Prints the evaluation status string ("idle", "pending", "needs_changes",
+# "ready_for_guardian", "blocked_by_plan") or "idle" on failure.
+rt_eval_get() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy evaluation get "$1" 2>/dev/null) || return 1
+    printf '%s\n' "$result" | jq -r '.status // "idle"'
+}
+
+# rt_eval_set <workflow_id> <status> [head_sha] [blockers] [major] [minor]
+# Upserts evaluation state in SQLite. Suppresses output; callers check exit code.
+rt_eval_set() {
+    _rt_ensure_schema
+    local wf_id="$1" status="$2"
+    local head_sha="${3:-}" blockers="${4:-0}" major="${5:-0}" minor="${6:-0}"
+    local args=("evaluation" "set" "$wf_id" "$status")
+    [[ -n "$head_sha" ]] && args+=("--head-sha" "$head_sha")
+    [[ "${blockers:-0}" -gt 0 ]] && args+=("--blockers" "$blockers")
+    [[ "${major:-0}" -gt 0 ]]   && args+=("--major"    "$major")
+    [[ "${minor:-0}" -gt 0 ]]   && args+=("--minor"    "$minor")
+    cc_policy "${args[@]}" >/dev/null 2>&1
+}
+
+# rt_eval_list
+# Prints raw JSON list of all evaluation_state rows, or nothing on failure.
+rt_eval_list() {
+    _rt_ensure_schema
+    cc_policy evaluation list 2>/dev/null
+}
+
+# rt_eval_invalidate <workflow_id>
+# Resets status from ready_for_guardian → pending if currently ready.
+# Prints "true" when invalidated, "false" when no-op.
+rt_eval_invalidate() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy evaluation invalidate "$1" 2>/dev/null) || return 1
+    printf '%s\n' "$result" | jq -r '.invalidated // false'
+}
+
+# ---------------------------------------------------------------------------
 # Agent marker wrappers
 # ---------------------------------------------------------------------------
 

@@ -37,13 +37,23 @@ echo "$FILE_PATH" > "$TMPFILE"
 cat "$TMPFILE" >> "$TRACKING_FILE"
 rm -f "$TMPFILE"
 
-# --- Invalidate workflow-scoped proof status when non-test source files change ---
-# If the user verified the feature and then source code changes, proof is stale.
-PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
-if [[ "$PROOF_STATUS" == "verified" ]]; then
-    if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
-        write_proof_status "$PROJECT_ROOT" "pending"
-        append_audit "$PROJECT_ROOT" "proof_reset" "$FILE_PATH"
+# --- Invalidate evaluation_state when source files change after clearance ---
+# If evaluation_state is ready_for_guardian and source code changes, the
+# evaluator clearance is stale. Reset to pending so a new tester pass is
+# required before Guardian can proceed. (TKT-024: proof invalidation removed)
+#
+# @decision DEC-EVAL-005
+# @title track.sh is the sole invalidator of evaluation_state
+# @status accepted
+# @rationale Source writes after evaluator clearance invalidate readiness.
+#   This enforces that the evaluated HEAD and the committed HEAD are the same.
+#   invalidate_if_ready() is a targeted atomic update — it only fires when
+#   status is exactly ready_for_guardian, so pending/idle writes are no-ops.
+if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
+    _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+    _INVALIDATED=$(rt_eval_invalidate "$_WF_ID" 2>/dev/null || echo "false")
+    if [[ "$_INVALIDATED" == "true" ]]; then
+        append_audit "$PROJECT_ROOT" "eval_reset" "$FILE_PATH"
     fi
 fi
 

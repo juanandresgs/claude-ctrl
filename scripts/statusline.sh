@@ -12,7 +12,7 @@
 # Line layout:
 #   Line 1 (repo):   workspace │ N uncommitted +N/-N lines │ N worktrees │ ⚡impl
 #   Line 2 (model):  model [████████░░░░] 52% │ 145K tks │ ∑1.2M tks │ cache hit 78% │ session 12m
-#   Line 3 (meta):   todos: 3p 10g │ proof: ✓ verified │ next: tester
+#   Line 3 (meta):   todos: 3p 10g │ eval: ✓ ready │ next: tester
 #
 # State source: cc-policy CLI (runtime/cli.py) — NOT runtime-bridge.sh.
 # statusline.sh is standalone; it invokes python3 directly.
@@ -122,13 +122,13 @@ fi
 [[ "${dirty:-0}" =~ ^[0-9]+$ ]] || dirty=0
 
 # Extract snapshot fields (safe defaults when snapshot unavailable)
-proof_status="idle"
+eval_status="idle"
 active_agent=""
 marker_age_seconds=0
 wt_count=0
 dispatch_next=""
 if [[ -n "$snapshot" ]]; then
-    proof_status=$(printf '%s' "$snapshot" | jq -r '.proof_status // "idle"' 2>/dev/null) || proof_status="idle"
+    eval_status=$(printf '%s' "$snapshot" | jq -r '.eval_status // "idle"' 2>/dev/null) || eval_status="idle"
     active_agent=$(printf '%s' "$snapshot" | jq -r '.active_agent // empty' 2>/dev/null) || active_agent=""
     marker_age_seconds=$(printf '%s' "$snapshot" | jq -r '.marker_age_seconds // 0' 2>/dev/null) || marker_age_seconds=0
     wt_count=$(printf '%s' "$snapshot"    | jq -r '.worktree_count // 0' 2>/dev/null)    || wt_count=0
@@ -375,8 +375,8 @@ fi
 # Shows "marker: <role>[?] (<age>)" — conservative label, not actor claim.
 # ? suffix appears when age >= 300s (stale marker advisory).
 if [[ -n "$active_agent" ]]; then
-  local _age_s="${marker_age_seconds:-0}"
-  local _age_display
+  _age_s="${marker_age_seconds:-0}"
+  _age_display=""
   if (( _age_s >= 3600 )); then
     _age_display="$(( _age_s / 3600 ))h"
   elif (( _age_s >= 60 )); then
@@ -384,7 +384,7 @@ if [[ -n "$active_agent" ]]; then
   else
     _age_display="${_age_s}s"
   fi
-  local _stale_suffix=""
+  _stale_suffix=""
   if (( _age_s >= 300 )); then
     _stale_suffix="?"
   fi
@@ -507,11 +507,11 @@ _append_l2_seg() {
 [[ $_l2d4 -eq 0 ]] && _append_l2_seg "$_l2_4"
 
 # ---------------------------------------------------------------------------
-# LINE 3 (meta): todos: 3p 10g │ proof: ✓ verified │ next: tester
+# LINE 3 (meta): todos: 3p 10g │ eval: ✓ ready │ next: tester
 #
 # Priority table (lower = higher priority, dropped last):
 #   1 = todos (project state — most actionable)
-#   2 = proof indicator (workflow gate signal)
+#   2 = evaluation readiness indicator (workflow gate signal)
 #   3 = next dispatch role (drops first)
 # ---------------------------------------------------------------------------
 
@@ -532,14 +532,24 @@ elif (( todo_global > 0 )); then
   ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
 fi
 
-# L3.1: proof indicator (priority 2, shown for non-idle proof)
-case "$proof_status" in
-  verified)
-    _s=$(printf '\033[32mproof: ✓ verified\033[0m')
+# L3.1: evaluation readiness indicator (priority 2, shown for non-idle eval)
+# TKT-024: evaluation_state is the sole readiness authority. proof_status is
+# no longer read or rendered here.
+case "$eval_status" in
+  ready_for_guardian)
+    _s=$(printf '\033[32meval: ✓ ready\033[0m')
     ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
     ;;
   pending)
-    _s=$(printf '\033[33mproof: ⏳ pending\033[0m')
+    _s=$(printf '\033[33meval: ⏳ pending\033[0m')
+    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+    ;;
+  needs_changes)
+    _s=$(printf '\033[31meval: ✗ needs_changes\033[0m')
+    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+    ;;
+  blocked_by_plan)
+    _s=$(printf '\033[31meval: ⚠ blocked_by_plan\033[0m')
     ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
     ;;
 esac

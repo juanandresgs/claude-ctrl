@@ -109,11 +109,13 @@ else
     ISSUES+=("No test results found — verify tests were run before committing")
 fi
 
-# Check 6: Proof status for git operations
-PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
+# Check 6: Evaluation state for git operations (TKT-024)
+# Validates evaluation_state instead of proof_state. Guardian should only
+# operate when evaluation_state == "ready_for_guardian" (set by check-tester.sh).
+EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git merge|git commit|git push' || echo "")
-if [[ -n "$HAS_GIT_OP" && "$PROOF_STATUS" != "verified" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    ISSUES+=("Proof-of-work is '$PROOF_STATUS' after git operation — Guardian should only proceed after Tester evidence and explicit user verification")
+if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after Tester issues EVAL_VERDICT=ready_for_guardian")
 fi
 
 # Build context message

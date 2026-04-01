@@ -21,7 +21,9 @@ mkdir -p "$TMP_DIR/.claude"
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
-CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" proof set "feature-ready" "verified" >/dev/null 2>&1
+# TKT-024: evaluation_state replaces proof_state as readiness authority
+HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" evaluation set "feature-ready" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
 # Satisfy Check 12: workflow binding + scope
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
     workflow bind "feature-ready" "$TMP_DIR" "feature/ready" >/dev/null 2>&1
