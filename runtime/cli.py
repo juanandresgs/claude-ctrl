@@ -43,6 +43,7 @@ import runtime.core.traces as traces_mod
 import runtime.core.tokens as tokens_mod
 import runtime.core.todos as todos_mod
 import runtime.core.workflows as workflows_mod
+import runtime.core.bugs as bugs_mod
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
 
@@ -50,6 +51,7 @@ from sidecars.search.search import SearchIndex
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _ok(payload: dict) -> int:
     payload.setdefault("status", "ok")
@@ -72,6 +74,7 @@ def _get_conn():
 # ---------------------------------------------------------------------------
 # Domain handlers
 # ---------------------------------------------------------------------------
+
 
 def _handle_schema(args) -> int:
     conn = _get_conn()
@@ -110,15 +113,17 @@ def _handle_evaluation(args) -> int:
         if args.action == "get":
             result = evaluation_mod.get(conn, args.workflow_id)
             if result is None:
-                return _ok({
-                    "workflow_id": args.workflow_id,
-                    "status": "idle",
-                    "head_sha": None,
-                    "blockers": 0,
-                    "major": 0,
-                    "minor": 0,
-                    "found": False,
-                })
+                return _ok(
+                    {
+                        "workflow_id": args.workflow_id,
+                        "status": "idle",
+                        "head_sha": None,
+                        "blockers": 0,
+                        "major": 0,
+                        "minor": 0,
+                        "found": False,
+                    }
+                )
             result["found"] = True
             return _ok(result)
 
@@ -338,11 +343,13 @@ def _handle_workflow(args) -> int:
                 ticket=getattr(args, "ticket", None),
                 initiative=getattr(args, "initiative", None),
             )
-            return _ok({
-                "workflow_id": args.workflow_id,
-                "worktree_path": args.worktree_path,
-                "branch": args.branch,
-            })
+            return _ok(
+                {
+                    "workflow_id": args.workflow_id,
+                    "worktree_path": args.worktree_path,
+                    "branch": args.branch,
+                }
+            )
 
         elif args.action == "get":
             result = workflows_mod.get_binding(conn, args.workflow_id)
@@ -353,6 +360,7 @@ def _handle_workflow(args) -> int:
 
         elif args.action == "scope-set":
             import json as _json
+
             try:
                 allowed = _json.loads(getattr(args, "allowed", "[]") or "[]")
                 required = _json.loads(getattr(args, "required", "[]") or "[]")
@@ -379,6 +387,7 @@ def _handle_workflow(args) -> int:
 
         elif args.action == "scope-check":
             import json as _json
+
             try:
                 changed = _json.loads(getattr(args, "changed", "[]") or "[]")
             except _json.JSONDecodeError as e:
@@ -398,13 +407,85 @@ def _handle_workflow(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Bug pipeline handler
+# ---------------------------------------------------------------------------
+
+
+def _handle_bug(args) -> int:
+    """Handle all ``cc-policy bug`` subcommands.
+
+    Subcommands:
+      qualify '<json>'        Dry-run qualification check — returns disposition.
+      file '<json>'           Full pipeline: qualify -> fingerprint -> SQLite -> todo.sh.
+      list [--disposition=X]  List tracked bugs, optionally filtered by disposition.
+      retry-failed            Retry all bugs with disposition='failed_to_file'.
+
+    JSON payload for ``file`` and ``qualify``:
+      {"bug_type":"...","title":"...","body":"...","scope":"global",
+       "source_component":"...","file_path":"...","evidence":"...","fixed_now":false}
+
+    All output is JSON. Errors write to stderr with exit code 1.
+    """
+    import json as _json
+
+    conn = _get_conn()
+    try:
+        if args.action == "qualify":
+            try:
+                payload = _json.loads(args.json_payload)
+            except _json.JSONDecodeError as e:
+                return _err(f"invalid JSON payload: {e}")
+            disposition = bugs_mod.qualify(
+                bug_type=payload.get("bug_type", ""),
+                title=payload.get("title", ""),
+                evidence=payload.get("evidence", ""),
+                fixed_now=bool(payload.get("fixed_now", False)),
+            )
+            return _ok({"disposition": disposition})
+
+        elif args.action == "file":
+            try:
+                payload = _json.loads(args.json_payload)
+            except _json.JSONDecodeError as e:
+                return _err(f"invalid JSON payload: {e}")
+            result = bugs_mod.file_bug(
+                conn,
+                bug_type=payload.get("bug_type", ""),
+                title=payload.get("title", ""),
+                body=payload.get("body", ""),
+                scope=payload.get("scope", "global"),
+                source_component=payload.get("source_component", ""),
+                file_path=payload.get("file_path", ""),
+                evidence=payload.get("evidence", ""),
+                fixed_now=bool(payload.get("fixed_now", False)),
+            )
+            return _ok(result)
+
+        elif args.action == "list":
+            disposition = getattr(args, "disposition", None) or None
+            limit = getattr(args, "limit", 50) or 50
+            rows = bugs_mod.list_bugs(conn, disposition=disposition, limit=int(limit))
+            return _ok({"items": rows, "count": len(rows)})
+
+        elif args.action == "retry-failed":
+            results = bugs_mod.retry_failed(conn)
+            return _ok({"items": results, "count": len(results)})
+
+    except Exception as e:
+        return _err(f"bug command error: {e}")
+    finally:
+        conn.close()
+    return _err(f"unknown bug action: {args.action}")
+
+
+# ---------------------------------------------------------------------------
 # Sidecar handlers
 # ---------------------------------------------------------------------------
 
 # Registry of available sidecars by name, for `cc-policy sidecar list`
 _SIDECAR_REGISTRY = {
     "observatory": "Read-only health observer over all runtime state domains",
-    "search":      "Read-only text search over traces and manifest entries",
+    "search": "Read-only text search over traces and manifest entries",
 }
 
 
@@ -473,20 +554,23 @@ def _handle_sidecar(args) -> int:
             si = SearchIndex("search", conn)
             si.observe()
             results = si.search(args.query, limit=getattr(args, "limit", 10))
-            return _ok({
-                "query": args.query,
-                "count": len(results),
-                "results": results,
-            })
+            return _ok(
+                {
+                    "query": args.query,
+                    "count": len(results),
+                    "results": results,
+                }
+            )
 
         elif args.action == "list":
-            return _ok({
-                "sidecars": [
-                    {"name": k, "description": v}
-                    for k, v in _SIDECAR_REGISTRY.items()
-                ],
-                "count": len(_SIDECAR_REGISTRY),
-            })
+            return _ok(
+                {
+                    "sidecars": [
+                        {"name": k, "description": v} for k, v in _SIDECAR_REGISTRY.items()
+                    ],
+                    "count": len(_SIDECAR_REGISTRY),
+                }
+            )
 
     finally:
         conn.close()
@@ -496,6 +580,7 @@ def _handle_sidecar(args) -> int:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -529,9 +614,10 @@ def build_parser() -> argparse.ArgumentParser:
     eg.add_argument("workflow_id")
     es_p = eval_sub.add_parser("set")
     es_p.add_argument("workflow_id")
-    es_p.add_argument("status", choices=[
-        "idle", "pending", "needs_changes", "ready_for_guardian", "blocked_by_plan"
-    ])
+    es_p.add_argument(
+        "status",
+        choices=["idle", "pending", "needs_changes", "ready_for_guardian", "blocked_by_plan"],
+    )
     es_p.add_argument("--head-sha", dest="head_sha", default=None)
     es_p.add_argument("--blockers", type=int, default=0)
     es_p.add_argument("--major", type=int, default=0)
@@ -600,21 +686,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     tr_start = tr_sub.add_parser("start", help="Begin a new trace for a session")
     tr_start.add_argument("session_id")
-    tr_start.add_argument("--role", dest="role", default=None,
-                          help="Agent role (implementer, tester, planner, ...)")
-    tr_start.add_argument("--ticket", default=None,
-                          help="Ticket reference (e.g. TKT-013)")
+    tr_start.add_argument(
+        "--role", dest="role", default=None, help="Agent role (implementer, tester, planner, ...)"
+    )
+    tr_start.add_argument("--ticket", default=None, help="Ticket reference (e.g. TKT-013)")
 
     tr_end = tr_sub.add_parser("end", help="Close a trace with optional summary")
     tr_end.add_argument("session_id")
-    tr_end.add_argument("--summary", default=None,
-                        help="Human-readable summary of what the session accomplished")
+    tr_end.add_argument(
+        "--summary", default=None, help="Human-readable summary of what the session accomplished"
+    )
 
-    tr_manifest = tr_sub.add_parser("manifest",
-                                    help="Add a manifest entry to a trace")
+    tr_manifest = tr_sub.add_parser("manifest", help="Add a manifest entry to a trace")
     tr_manifest.add_argument("session_id")
-    tr_manifest.add_argument("entry_type",
-                             help="Entry type: file_read, file_write, decision, command, event")
+    tr_manifest.add_argument(
+        "entry_type", help="Entry type: file_read, file_write, decision, command, event"
+    )
     tr_manifest.add_argument("--path", default=None, help="File path (for file_read/file_write)")
     tr_manifest.add_argument("--detail", default=None, help="Description of the entry")
 
@@ -622,8 +709,9 @@ def build_parser() -> argparse.ArgumentParser:
     tr_get.add_argument("session_id")
 
     tr_recent = tr_sub.add_parser("recent", help="List recent traces")
-    tr_recent.add_argument("--limit", type=int, default=10,
-                           help="Maximum number of traces to return (default 10)")
+    tr_recent.add_argument(
+        "--limit", type=int, default=10, help="Maximum number of traces to return (default 10)"
+    )
 
     # tokens
     tok_p = subparsers.add_parser("tokens", help="Session token accumulation")
@@ -634,7 +722,9 @@ def build_parser() -> argparse.ArgumentParser:
     tok_upsert.add_argument("project_hash", help="8-char project hash")
     tok_upsert.add_argument("total_tokens", type=int, help="Running token total for this session")
 
-    tok_lifetime = tok_sub.add_parser("lifetime", help="Sum tokens across all sessions for a project")
+    tok_lifetime = tok_sub.add_parser(
+        "lifetime", help="Sum tokens across all sessions for a project"
+    )
     tok_lifetime.add_argument("project_hash", help="8-char project hash")
 
     # todos
@@ -666,25 +756,54 @@ def build_parser() -> argparse.ArgumentParser:
 
     wf_scope_set = wf_sub.add_parser("scope-set", help="Set scope manifest for a workflow")
     wf_scope_set.add_argument("workflow_id")
-    wf_scope_set.add_argument("--allowed", default="[]",
-                              help="JSON array of allowed path globs")
-    wf_scope_set.add_argument("--required", default="[]",
-                              help="JSON array of required path globs")
-    wf_scope_set.add_argument("--forbidden", default="[]",
-                              help="JSON array of forbidden path globs")
-    wf_scope_set.add_argument("--authorities", default="[]",
-                              help="JSON array of authority domain names")
+    wf_scope_set.add_argument("--allowed", default="[]", help="JSON array of allowed path globs")
+    wf_scope_set.add_argument("--required", default="[]", help="JSON array of required path globs")
+    wf_scope_set.add_argument(
+        "--forbidden", default="[]", help="JSON array of forbidden path globs"
+    )
+    wf_scope_set.add_argument(
+        "--authorities", default="[]", help="JSON array of authority domain names"
+    )
 
     wf_scope_get = wf_sub.add_parser("scope-get", help="Get scope manifest for a workflow")
     wf_scope_get.add_argument("workflow_id")
 
-    wf_scope_check = wf_sub.add_parser("scope-check",
-                                       help="Check changed files against scope")
+    wf_scope_check = wf_sub.add_parser("scope-check", help="Check changed files against scope")
     wf_scope_check.add_argument("workflow_id")
-    wf_scope_check.add_argument("--changed", default="[]",
-                                help="JSON array of changed file paths")
+    wf_scope_check.add_argument("--changed", default="[]", help="JSON array of changed file paths")
 
     wf_sub.add_parser("list", help="List all workflow bindings")
+
+    # bug pipeline
+    bug_p = subparsers.add_parser("bug", help="Canonical bug-filing pipeline")
+    bug_sub = bug_p.add_subparsers(dest="action", required=True)
+
+    bug_qualify = bug_sub.add_parser("qualify", help="Dry-run qualification check")
+    bug_qualify.add_argument(
+        "json_payload",
+        metavar="JSON",
+        help="JSON payload with bug_type, title, evidence, [fixed_now]",
+    )
+
+    bug_file = bug_sub.add_parser("file", help="Full pipeline: qualify, dedup, file to GitHub")
+    bug_file.add_argument(
+        "json_payload",
+        metavar="JSON",
+        help="JSON payload with bug_type, title, body, scope, "
+        "source_component, file_path, evidence, [fixed_now]",
+    )
+
+    bug_list = bug_sub.add_parser("list", help="List tracked bugs")
+    bug_list.add_argument(
+        "--disposition",
+        default=None,
+        help="Filter by disposition (filed, duplicate, failed_to_file, ...)",
+    )
+    bug_list.add_argument(
+        "--limit", type=int, default=50, help="Maximum rows to return (default 50)"
+    )
+
+    bug_sub.add_parser("retry-failed", help="Retry all failed_to_file bugs")
 
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
@@ -695,8 +814,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sc_search = sc_sub.add_parser("search", help="Search traces and manifest entries")
     sc_search.add_argument("query", help="Search term (case-insensitive substring)")
-    sc_search.add_argument("--limit", type=int, default=10,
-                           help="Maximum results to return (default 10)")
+    sc_search.add_argument(
+        "--limit", type=int, default=10, help="Maximum results to return (default 10)"
+    )
 
     return parser
 
@@ -704,6 +824,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
@@ -741,6 +862,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_workflow(args)
     if args.domain == "sidecar":
         return _handle_sidecar(args)
+    if args.domain == "bug":
+        return _handle_bug(args)
 
     return _err(f"unknown domain: {args.domain}")
 

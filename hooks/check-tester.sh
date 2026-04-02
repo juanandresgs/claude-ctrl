@@ -112,6 +112,37 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
 fi
 
 # ---------------------------------------------------------------------------
+# BUG_FINDING trailer parsing — file bugs discovered by the tester
+#
+# Format (one per line in the tester response):
+#   BUG_FINDING: {"bug_type":"regression","title":"...","evidence":"...",
+#                 "scope":"global","source_component":"..."}
+#
+# Each BUG_FINDING line is routed through rt_bug_file() so all filings get
+# fingerprint dedup, SQLite persistence, and audit events. Malformed JSON
+# lines are skipped silently — bug filing is advisory and must never block
+# evaluation_state writes.
+# ---------------------------------------------------------------------------
+
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    while IFS= read -r _bug_line; do
+        _bug_json="${_bug_line#BUG_FINDING: }"
+        # Extract fields with jq; fall back to empty strings on parse failure
+        _bf_type=$(printf '%s' "$_bug_json" | jq -r '.bug_type // empty' 2>/dev/null || true)
+        _bf_title=$(printf '%s' "$_bug_json" | jq -r '.title // empty' 2>/dev/null || true)
+        _bf_evidence=$(printf '%s' "$_bug_json" | jq -r '.evidence // empty' 2>/dev/null || true)
+        _bf_scope=$(printf '%s' "$_bug_json" | jq -r '.scope // "global"' 2>/dev/null || echo "global")
+        _bf_component=$(printf '%s' "$_bug_json" | jq -r '.source_component // empty' 2>/dev/null || true)
+
+        # Skip lines with missing required fields
+        [[ -z "$_bf_type" || -z "$_bf_title" ]] && continue
+
+        rt_bug_file "$_bf_type" "$_bf_title" "" "$_bf_scope" "$_bf_component" "" "$_bf_evidence" \
+            >/dev/null 2>&1 || true
+    done < <(printf '%s\n' "$RESPONSE_TEXT" | grep '^BUG_FINDING: ' 2>/dev/null || true)
+fi
+
+# ---------------------------------------------------------------------------
 # Legacy advisory checks (informational — do not affect evaluation_state)
 # ---------------------------------------------------------------------------
 

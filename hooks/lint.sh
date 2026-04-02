@@ -14,7 +14,7 @@
 #   not a neutral skip. Silent exit 0 is replaced by:
 #     1. exit 2 + additionalContext to the model (immediate feedback)
 #     2. Persisted entry in .claude/.enforcement-gaps (survives session)
-#     3. GitHub Issue filed on first encounter via todo.sh (best-effort)
+#     3. GitHub Issue filed via canonical bug pipeline (rt_bug_file, best-effort)
 #   The write gate (pre-write.sh / check_enforcement_gap) escalates to
 #   permissionDecision=deny when encounter_count > 1 for the same ext.
 #
@@ -124,35 +124,22 @@ clear_enforcement_gap() {
 }
 
 # file_enforcement_gap_backlog <type> <ext> <tool>
-# Files a GitHub Issue on first encounter (count==1). Best-effort: never
-# blocks lint execution if gh CLI or todo.sh is unavailable.
-# Dedup: checks both local gap count AND existing open issues by title prefix
-# to prevent duplicate issues across fresh projects / worktrees / test runs.
+# Routes enforcement-gap bugs through the canonical bug-filing pipeline via
+# rt_bug_file() (hooks/lib/runtime-bridge.sh). Dedup is handled by fingerprint
+# matching in SQLite — more reliable across worktrees and fresh environments
+# than the prior local-gap-count + gh issue search approach.
+#
+# Migration (DEC-BUGS-003): replaced direct todo.sh add with rt_bug_file()
+# so filings gain: fingerprint dedup, SQLite persistence, and audit events.
+# The count==1 gate is removed — the pipeline's fingerprint check is authoritative.
+# Best-effort: rt_bug_file emits fallback JSON on runtime unavailability.
 file_enforcement_gap_backlog() {
     local gap_type="$1" ext="$2" tool="$3"
-
-    # Only file on first encounter (local gap count)
-    local count
-    count=$(get_enforcement_gap_count "$gap_type" "$ext")
-    [[ "$count" -ne 1 ]] && return 0
-
-    local todo_sh="$HOME/.claude/scripts/todo.sh"
-    [[ -x "$todo_sh" ]] || return 0
-    command -v gh >/dev/null 2>&1 || return 0
-
     local title="Enforcement gap: no linter for .${ext} files (${gap_type}: ${tool})"
-
-    # Title-based dedup: search for existing open issue with same title.
-    # This prevents duplicates across fresh worktrees / projects / test isolation.
-    local existing
-    existing=$(gh issue list --label claude-todo --state open --search "$title" \
-        --json number --jq '.[0].number' 2>/dev/null) || existing=""
-    [[ -n "$existing" ]] && return 0
-
-    # Synchronous (not fire-and-forget) so dedup check is reliable
-    "$todo_sh" add --global --priority=high \
-        "${title} -- silent non-enforcement on source writes" \
-        2>/dev/null || true
+    local body="Enforcement gap discovered. Extension: .${ext}, Type: ${gap_type}, Tool: ${tool}"
+    local evidence="lint.sh detected no linter for .${ext} files"
+    rt_bug_file "enforcement_gap" "$title" "$body" "global" "hooks/lint.sh" "" "$evidence" \
+        >/dev/null 2>&1 || true
 }
 
 # emit_gap_context <type> <ext> <tool> <count>
