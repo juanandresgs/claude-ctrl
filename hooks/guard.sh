@@ -7,7 +7,7 @@ set -euo pipefail
 # This backports the minimum safety improvements needed for v2:
 #   - deny unsafe /tmp usage with project-local guidance
 #   - deny risky worktree removal / CWD patterns instead of rewriting commands
-#   - enforce WHO: only Guardian may commit / merge / push
+#   - enforce WHO: Guardian required for high-risk ops (push); routine ops gated by evaluation_state
 #   - use workflow-scoped proof state for commit / merge gates
 
 source "$(dirname "$0")/log.sh"
@@ -133,12 +133,30 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
 fi
 
 # --- Check 3: WHO enforcement for permanent git operations ---
-# Pattern handles "git -C /path commit" and "git commit" forms.
+# Routine local ops (commit, merge) are gated by evaluation_state (Check 10),
+# not by agent role — any role may land after evaluator clearance.
+# High-risk ops (push, merge --no-ff) still require Guardian role.
+#
+# @decision DEC-GUARD-003
+# @title WHO enforcement uses classifier — routine local ops skip role check
+# @status accepted
+# @rationale evaluation_state=ready_for_guardian is sufficient authority for
+#   routine local landing (DEC-APPROVAL-001). Requiring Guardian role for
+#   commit/merge creates a marker race where concurrent sessions overwrite
+#   the active marker, blocking legitimate auto-land. The classifier
+#   (DEC-CLASSIFY-001) separates routine from high-risk. Check 10 gates
+#   routine ops on evaluation_state. Check 13 gates high-risk ops on
+#   approval tokens. WHO enforcement only adds value for push (remote ops).
 if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
-    CURRENT_ROLE=$(current_active_agent_role "$PROJECT_ROOT")
-    if ! is_guardian_role "$CURRENT_ROLE"; then
-        deny "Only the Guardian agent may run git commit, merge, or push. Dispatch Guardian for permanent git operations."
+    _WHO_CLASS=$(classify_git_op "$COMMAND")
+    if [[ "$_WHO_CLASS" != "routine_local" ]]; then
+        # High-risk (push, merge --no-ff) or unclassified: Guardian role required
+        CURRENT_ROLE=$(current_active_agent_role "$PROJECT_ROOT")
+        if ! is_guardian_role "$CURRENT_ROLE"; then
+            deny "Only the Guardian agent may run high-risk git operations (push, rebase, reset). Dispatch Guardian for these operations."
+        fi
     fi
+    # routine_local (commit, merge): skip WHO — Check 10 is the authority
 fi
 
 # --- Check 4: Main is sacred (no commits on main/master) ---
