@@ -286,18 +286,27 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
         _EVAL_STATUS=$(read_evaluation_status "$_EVAL_DIR" "$_EVAL_WF")
 
         if [[ "$_EVAL_STATUS" != "ready_for_guardian" ]]; then
-            deny "Cannot proceed: evaluation_state for workflow '$_EVAL_WF' is '$_EVAL_STATUS'. The tester must run and emit EVAL_VERDICT=ready_for_guardian before Guardian can commit or merge."
+            deny "Cannot proceed: evaluation_state for workflow '$_EVAL_WF' is '$_EVAL_STATUS'. The tester must emit EVAL_VERDICT=ready_for_guardian before local landing can proceed."
         fi
 
-        # Verify head_sha matches current HEAD (prevents stale clearance)
+        # Verify head_sha matches the relevant HEAD (prevents stale clearance).
+        # For commit: compare against worktree HEAD (source changes invalidate).
+        # For merge: compare against the tip of the branch being merged, not
+        # main's HEAD — the evaluator cleared the feature branch, not main.
         _EVAL_STATE_JSON=$(read_evaluation_state "$_EVAL_DIR" "$_EVAL_WF")
         _STORED_SHA=$(printf '%s' "${_EVAL_STATE_JSON:-}" | jq -r '.head_sha // empty' 2>/dev/null || true)
-        _CURRENT_HEAD=$(git -C "$_EVAL_DIR" rev-parse HEAD 2>/dev/null || true)
-        if [[ -n "$_STORED_SHA" && -n "$_CURRENT_HEAD" ]]; then
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && [[ -n "${_MERGE_REF:-}" ]]; then
+            _COMPARE_HEAD=$(git -C "$_EVAL_DIR" rev-parse "$_MERGE_REF" 2>/dev/null || true)
+            _SHA_LABEL="merge-ref ($_MERGE_REF)"
+        else
+            _COMPARE_HEAD=$(git -C "$_EVAL_DIR" rev-parse HEAD 2>/dev/null || true)
+            _SHA_LABEL="HEAD"
+        fi
+        if [[ -n "$_STORED_SHA" && -n "$_COMPARE_HEAD" ]]; then
             # Accept prefix match (short SHA vs full SHA)
-            if ! printf '%s' "$_CURRENT_HEAD" | grep -q "^${_STORED_SHA}" && \
-               ! printf '%s' "$_STORED_SHA" | grep -q "^${_CURRENT_HEAD}"; then
-                deny "Cannot proceed: evaluation_state head_sha '$_STORED_SHA' does not match current HEAD '$_CURRENT_HEAD'. Source changes after evaluator clearance require a new tester pass."
+            if ! printf '%s' "$_COMPARE_HEAD" | grep -q "^${_STORED_SHA}" && \
+               ! printf '%s' "$_STORED_SHA" | grep -q "^${_COMPARE_HEAD}"; then
+                deny "Cannot proceed: evaluation_state head_sha '$_STORED_SHA' does not match $_SHA_LABEL '$_COMPARE_HEAD'. Source changes after evaluator clearance require a new tester pass."
             fi
         fi
 
