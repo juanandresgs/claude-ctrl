@@ -209,3 +209,49 @@ rt_workflow_scope_check() {
     result=$(cc_policy workflow scope-check "$1" --changed "$2" 2>/dev/null) || return 0
     printf '%s\n' "$result"
 }
+
+# ---------------------------------------------------------------------------
+# Bug pipeline wrapper
+# ---------------------------------------------------------------------------
+
+# rt_bug_file <bug_type> <title> [body] [scope] [source_component] [file_path] [evidence]
+#
+# Routes a discovered bug through the canonical filing pipeline:
+#   cc-policy bug file '{"bug_type":...}'
+#
+# Returns the JSON result dict from cc-policy (includes "disposition", "fingerprint",
+# "issue_url", "encounter_count"). On runtime unavailability returns a safe fallback
+# JSON with disposition="failed_to_file" so callers can log and continue.
+#
+# All arguments after <title> are optional and default to empty / "global".
+# Never blocks hook execution: errors are swallowed and reported via the fallback JSON.
+#
+# @decision DEC-BUGS-003
+# @title rt_bug_file routes all enforcement-gap filings through the canonical pipeline
+# @status accepted
+# @rationale The prior direct `todo.sh add` call in file_enforcement_gap_backlog()
+#   bypassed deduplication, audit-event emission, and SQLite persistence. Routing
+#   through cc-policy bug file ensures: (1) fingerprint dedup prevents duplicate
+#   GitHub issues across worktrees; (2) failed filings are retryable; (3) every
+#   disposition emits an auditable event. The shell wrapper is intentionally thin —
+#   no logic beyond JSON assembly and the cc-policy call lives here.
+rt_bug_file() {
+    _rt_ensure_schema
+    local bug_type="$1"
+    local title="$2"
+    local body="${3:-}"
+    local scope="${4:-global}"
+    local source_component="${5:-}"
+    local file_path="${6:-}"
+    local evidence="${7:-}"
+
+    # Build JSON payload using printf to avoid subshell quoting pitfalls.
+    # Single-quotes inside values are not escaped here — callers must not pass
+    # single-quote characters in these fields. For hook usage this is safe.
+    local json
+    json=$(printf '{"bug_type":"%s","title":"%s","body":"%s","scope":"%s","source_component":"%s","file_path":"%s","evidence":"%s","fixed_now":false}' \
+        "$bug_type" "$title" "$body" "$scope" "$source_component" "$file_path" "$evidence")
+
+    cc_policy bug file "$json" 2>/dev/null \
+        || echo '{"disposition":"failed_to_file","error":"runtime unavailable","fingerprint":"","issue_url":null,"encounter_count":0}'
+}

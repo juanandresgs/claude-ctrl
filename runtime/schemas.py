@@ -158,6 +158,26 @@ CREATE TABLE IF NOT EXISTS evaluation_state (
 )
 """
 
+BUGS_DDL = """
+CREATE TABLE IF NOT EXISTS bugs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint      TEXT    NOT NULL UNIQUE,
+    bug_type         TEXT    NOT NULL,
+    title            TEXT    NOT NULL,
+    body             TEXT,
+    scope            TEXT    NOT NULL DEFAULT 'global',
+    source_component TEXT,
+    file_path        TEXT,
+    evidence         TEXT,
+    disposition      TEXT    NOT NULL DEFAULT 'pending',
+    issue_number     INTEGER,
+    issue_url        TEXT,
+    first_seen_at    INTEGER NOT NULL,
+    last_seen_at     INTEGER NOT NULL,
+    encounter_count  INTEGER NOT NULL DEFAULT 1
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -173,19 +193,22 @@ ALL_DDL: list[str] = [
     WORKFLOW_BINDINGS_DDL,
     WORKFLOW_SCOPE_DDL,
     EVALUATION_STATE_DDL,
+    BUGS_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
 # so that the error message is human-readable JSON rather than a constraint
 # violation traceback.
 PROOF_STATUSES: frozenset[str] = frozenset({"idle", "pending", "verified"})
-EVALUATION_STATUSES: frozenset[str] = frozenset({
-    "idle",
-    "pending",
-    "needs_changes",
-    "ready_for_guardian",
-    "blocked_by_plan",
-})
+EVALUATION_STATUSES: frozenset[str] = frozenset(
+    {
+        "idle",
+        "pending",
+        "needs_changes",
+        "ready_for_guardian",
+        "blocked_by_plan",
+    }
+)
 DISPATCH_QUEUE_STATUSES: frozenset[str] = frozenset({"pending", "active", "done", "skipped"})
 DISPATCH_CYCLE_STATUSES: frozenset[str] = frozenset({"active", "complete"})
 
