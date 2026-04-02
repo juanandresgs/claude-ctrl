@@ -186,16 +186,23 @@ fi
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
+#   - Merge commits (MERGE_HEAD exists): governed landing path for features.
+#     Check 3 (lease) and Check 10 (eval readiness) gate whether the merge
+#     should proceed; Check 4 only needs to allow the finalization commit.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$TARGET_DIR"; then
         CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
         if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-            STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
-            if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
-                :
+            if [[ -f "$TARGET_DIR/.git/MERGE_HEAD" ]]; then
+                :  # Merge commit — governed landing path
             else
-                deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
+                STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
+                if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
+                    :
+                else
+                    deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
+                fi
             fi
         fi
     fi
