@@ -209,3 +209,27 @@ rt_workflow_scope_check() {
     result=$(cc_policy workflow scope-check "$1" --changed "$2" 2>/dev/null) || return 0
     printf '%s\n' "$result"
 }
+
+# ---------------------------------------------------------------------------
+# Approval token wrappers (DEC-APPROVAL-001)
+# ---------------------------------------------------------------------------
+
+# rt_approval_grant <workflow_id> <op_type> [granted_by]
+# Silently creates a one-shot approval token in SQLite.
+# granted_by defaults to "user" when omitted.
+rt_approval_grant() {
+    _rt_ensure_schema
+    local args=("approval" "grant" "$1" "$2")
+    [[ -n "${3:-}" ]] && args+=("--granted-by" "$3")
+    cc_policy "${args[@]}" >/dev/null 2>&1
+}
+
+# rt_approval_check <workflow_id> <op_type>
+# Prints "true" if an unconsumed approval was found and consumed, "false" otherwise.
+# Returns exit code 1 on runtime failure (caller treats as false).
+rt_approval_check() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy approval check "$1" "$2" 2>/dev/null) || { echo "false"; return 1; }
+    printf '%s\n' "$result" | jq -r '.approved // false'
+}

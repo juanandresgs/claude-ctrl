@@ -158,6 +158,18 @@ CREATE TABLE IF NOT EXISTS evaluation_state (
 )
 """
 
+APPROVALS_DDL = """
+CREATE TABLE IF NOT EXISTS approvals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id TEXT    NOT NULL,
+    op_type     TEXT    NOT NULL,
+    granted_by  TEXT    NOT NULL DEFAULT 'user',
+    created_at  INTEGER NOT NULL,
+    consumed    INTEGER NOT NULL DEFAULT 0,
+    consumed_at INTEGER
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -172,6 +184,7 @@ ALL_DDL: list[str] = [
     TODO_STATE_DDL,
     WORKFLOW_BINDINGS_DDL,
     WORKFLOW_SCOPE_DDL,
+    APPROVALS_DDL,
     EVALUATION_STATE_DDL,
 ]
 
@@ -179,15 +192,30 @@ ALL_DDL: list[str] = [
 # so that the error message is human-readable JSON rather than a constraint
 # violation traceback.
 PROOF_STATUSES: frozenset[str] = frozenset({"idle", "pending", "verified"})
-EVALUATION_STATUSES: frozenset[str] = frozenset({
-    "idle",
-    "pending",
-    "needs_changes",
-    "ready_for_guardian",
-    "blocked_by_plan",
-})
+EVALUATION_STATUSES: frozenset[str] = frozenset(
+    {
+        "idle",
+        "pending",
+        "needs_changes",
+        "ready_for_guardian",
+        "blocked_by_plan",
+    }
+)
 DISPATCH_QUEUE_STATUSES: frozenset[str] = frozenset({"pending", "active", "done", "skipped"})
 DISPATCH_CYCLE_STATUSES: frozenset[str] = frozenset({"active", "complete"})
+
+# Approval token op_type values — must match approvals.py VALID_OP_TYPES.
+# Enforcement happens in the domain layer (ValueError), not SQL CHECK.
+APPROVAL_OP_TYPES: frozenset[str] = frozenset(
+    {
+        "push",
+        "rebase",
+        "reset",
+        "force_push",
+        "destructive_cleanup",
+        "non_ff_merge",
+    }
+)
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
