@@ -186,16 +186,23 @@ fi
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
+#   - Merge commits (MERGE_HEAD exists): governed landing path for features.
+#     Check 3 (lease) and Check 10 (eval readiness) gate whether the merge
+#     should proceed; Check 4 only needs to allow the finalization commit.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$TARGET_DIR"; then
         CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
         if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-            STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
-            if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
-                :
+            if [[ -f "$TARGET_DIR/.git/MERGE_HEAD" ]]; then
+                :  # Merge commit — governed landing path
             else
-                deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
+                STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
+                if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
+                    :
+                else
+                    deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
+                fi
             fi
         fi
     fi
@@ -246,7 +253,9 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
 fi
 
 # --- Check 8: Test status gate for merge commands ---
-if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
+# Admin recovery (merge --abort) is not a merge landing — skip the test gate.
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && \
+   ! echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
@@ -295,6 +304,11 @@ fi
 # evaluation_state.head_sha matches the current HEAD SHA before commit/merge.
 # proof_state has zero enforcement effect after TKT-024 cutover.
 #
+# Admin recovery (merge --abort, reset --merge) is exempt from this gate.
+# These are governed recovery operations, not landing operations — there is no
+# feature to evaluate. They are still gated by Check 3 (lease) and Check 13
+# (approval token). See DEC-LEASE-002 for the full authority model.
+#
 # @decision DEC-EVAL-003
 # @title guard.sh Check 10 gates on evaluation_state, not proof_state
 # @status accepted
@@ -304,7 +318,11 @@ fi
 #   prompt "verified" no longer affects Guardian eligibility (prompt-submit.sh
 #   no longer writes any readiness state). SHA match prevents a stale clearance
 #   from applying after subsequent source changes.
-if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
+_IS_ADMIN_RECOVERY=false
+if echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then _IS_ADMIN_RECOVERY=true; fi
+if echo "$COMMAND" | grep -qE '\breset\b.*--merge'; then _IS_ADMIN_RECOVERY=true; fi
+
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b' && [[ "$_IS_ADMIN_RECOVERY" != "true" ]]; then
     if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
         _EVAL_DIR=$(extract_git_target_dir "$COMMAND")
     else
@@ -409,11 +427,16 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
     fi
 fi
 
-# --- Check 13: High-risk operation approval gate (DEC-APPROVAL-001) ---
+# --- Check 13: High-risk and admin_recovery operation approval gate ---
 # Uses classify_git_op() to determine risk level. Routine local ops (commit,
 # merge without --no-ff) are gated by evaluation_state (Check 10) — no approval
-# needed here. High-risk ops (push, rebase, reset, merge --no-ff) require a
-# one-shot approval token from the SQLite approvals table.
+# needed here. High-risk ops (push, rebase, reset, merge --no-ff) AND
+# admin_recovery ops (merge --abort, reset --merge) require a one-shot approval
+# token from the SQLite approvals table.
+#
+# admin_recovery ops are exempt from Check 10 (no eval readiness required) but
+# still require an approval token here — they are significant repo-state changes
+# that must be explicitly sanctioned. See DEC-LEASE-002 for the authority model.
 #
 # Checks 5-6 remain hard denies for destructive variants (reset --hard,
 # push --force without lease, clean -f, branch -D) — they fire BEFORE this
@@ -429,13 +452,17 @@ fi
 #   classify_git_op() in context-lib.sh is the authority for risk classification.
 if echo "$COMMAND" | grep -qE '\bgit\b'; then
     _OP_CLASS=$(classify_git_op "$COMMAND")
-    if [[ "$_OP_CLASS" == "high_risk" ]]; then
+    if [[ "$_OP_CLASS" == "high_risk" || "$_OP_CLASS" == "admin_recovery" ]]; then
         # Determine the op_type for the approval lookup
         _APPROVAL_OP=""
         if echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b'; then
             _APPROVAL_OP="push"
         elif echo "$COMMAND" | grep -qE '\bgit\b.*\brebase\b'; then
             _APPROVAL_OP="rebase"
+        elif echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then
+            _APPROVAL_OP="admin_recovery"
+        elif echo "$COMMAND" | grep -qE '\breset\b.*--merge'; then
+            _APPROVAL_OP="admin_recovery"
         elif echo "$COMMAND" | grep -qE '\bgit\b.*\breset\b'; then
             _APPROVAL_OP="reset"
         elif echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then
@@ -446,7 +473,7 @@ if echo "$COMMAND" | grep -qE '\bgit\b'; then
             _APPROVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
             _APPROVAL_RESULT=$(rt_approval_check "$_APPROVAL_WF" "$_APPROVAL_OP" 2>/dev/null || echo "false")
             if [[ "$_APPROVAL_RESULT" != "true" ]]; then
-                deny "High-risk operation '$_APPROVAL_OP' requires explicit approval. Grant via: cc-policy approval grant $_APPROVAL_WF $_APPROVAL_OP"
+                deny "Operation '$_APPROVAL_OP' (class: $_OP_CLASS) requires explicit approval. Grant via: cc-policy approval grant $_APPROVAL_WF $_APPROVAL_OP"
             fi
             # Token consumed — allow the operation to proceed
         fi

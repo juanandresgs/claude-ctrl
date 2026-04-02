@@ -48,24 +48,45 @@ from runtime.schemas import DEFAULT_LEASE_TTL
 def classify_git_op(command: str) -> str:
     """Classify a git command string into an operation class.
 
-    Returns one of: "routine_local", "high_risk", "unclassified".
+    Returns one of: "routine_local", "high_risk", "admin_recovery",
+    "unclassified".
 
     This is the sole classifier for the migrated Check 3 path. Word-boundary
     matching prevents substring false positives (e.g. 'git remote' does not
     match 'git reset').
 
     Classification precedence (first match wins):
-      high_risk:     push, rebase, reset, merge --no-ff
-      routine_local: commit, merge (without --no-ff)
-      unclassified:  everything else
+      admin_recovery: merge --abort, reset --merge (governed recovery, not landing)
+      high_risk:      push, rebase, reset, merge --no-ff
+      routine_local:  commit, merge (without --no-ff)
+      unclassified:   everything else
+
+    @decision DEC-LEASE-002
+    Title: admin_recovery op class exempts merge --abort / reset --merge from
+           evaluation-readiness gate
+    Status: accepted
+    Rationale: merge --abort and reset --merge are governed administrative recovery
+      operations — they undo an in-progress merge, not land new code. Requiring
+      evaluation_state=ready_for_guardian for these operations is wrong because
+      there is no "feature" to evaluate; the purpose is to return the repo to a
+      clean state. They still require a lease and an approval token (same model as
+      high_risk), but bypass Check 10's eval-readiness gate. The admin_recovery
+      class is checked BEFORE the generic reset/merge patterns so the specific
+      variants win over the broader classification.
     """
+    # Admin recovery: merge --abort (governed recovery, not a landing operation)
+    if re.search(r"\bmerge\b.*--abort", command):
+        return "admin_recovery"
+    # Admin recovery: reset --merge (backed-out merge recovery)
+    if re.search(r"\breset\b.*--merge", command):
+        return "admin_recovery"
     # High-risk: push
     if re.search(r"\bpush\b", command):
         return "high_risk"
     # High-risk: rebase
     if re.search(r"\brebase\b", command):
         return "high_risk"
-    # High-risk: reset
+    # High-risk: reset (any form not already caught by admin_recovery above)
     if re.search(r"\breset\b", command):
         return "high_risk"
     # High-risk: merge --no-ff (must check before plain merge)
@@ -361,9 +382,12 @@ def validate_op(
         result["reason"] = f"op_class '{op_class}' not in allowed_ops {allowed_ops}"
         return result
 
-    # Eval check (when requires_eval and op is not unclassified).
+    # Eval check (when requires_eval and op is not unclassified or admin_recovery).
+    # admin_recovery (merge --abort, reset --merge) skips the eval gate because
+    # these are governed recovery operations, not landing operations — there is no
+    # feature to evaluate. They still require a lease and approval token (below).
     eval_ok = None
-    if lease["requires_eval"] and op_class != "unclassified":
+    if lease["requires_eval"] and op_class not in ("unclassified", "admin_recovery"):
         wf_id = lease["workflow_id"]
         if wf_id:
             eval_state = evaluation_mod.get(conn, wf_id)
@@ -385,8 +409,11 @@ def validate_op(
         result["reason"] = "evaluation_state is not ready_for_guardian (or SHA mismatch)"
         return result
 
-    # Approval check (high_risk ops only).
-    requires_approval = op_class == "high_risk"
+    # Approval check: high_risk AND admin_recovery both require an unconsumed token.
+    # admin_recovery shares the approval requirement with high_risk because these
+    # operations (merge --abort, reset --merge) are still significant repo-state
+    # changes that must be explicitly sanctioned — just not evaluated for code quality.
+    requires_approval = op_class in ("high_risk", "admin_recovery")
     result["requires_approval"] = requires_approval
     approval_ok = None
 
@@ -394,13 +421,14 @@ def validate_op(
         wf_id = lease["workflow_id"]
         pending = approvals_mod.list_pending(conn, workflow_id=wf_id)
         # Map op_class to the approval op_type we'd look for.
-        # high_risk ops may have different sub-types; for now we accept any pending token.
+        # high_risk and admin_recovery ops may have different sub-types;
+        # for now we accept any pending token for the workflow.
         approval_ok = len(pending) > 0
 
     result["approval_ok"] = approval_ok
 
     if requires_approval and not approval_ok:
-        result["reason"] = "high_risk op requires an unconsumed approval token"
+        result["reason"] = "op requires an unconsumed approval token (high_risk or admin_recovery)"
         return result
 
     result["allowed"] = True

@@ -1035,9 +1035,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap_grant.add_argument("workflow_id")
     ap_grant.add_argument(
         "op_type",
-        choices=sorted(
-            ["push", "rebase", "reset", "force_push", "destructive_cleanup", "non_ff_merge"]
-        ),
+        # Derive choices from the canonical APPROVAL_OP_TYPES constant so the
+        # CLI and the domain layer stay in sync automatically (DEC-LEASE-002).
+        choices=sorted(approvals_mod.VALID_OP_TYPES),
     )
     ap_grant.add_argument("--granted-by", dest="granted_by", default="user")
 
