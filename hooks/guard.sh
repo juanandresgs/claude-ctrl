@@ -133,30 +133,53 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
 fi
 
 # --- Check 3: WHO enforcement for permanent git operations ---
-# Routine local ops (commit, merge) are gated by evaluation_state (Check 10),
-# not by agent role — any role may land after evaluator clearance.
-# High-risk ops (push, merge --no-ff) still require Guardian role.
+# Migrated from marker-based role check to lease validate-op (Phase 2).
+# Lease validate_op() is now the sole authority for who may run git ops.
+# Markers remain active for observability but have no enforcement effect here.
+#
+# Logic:
+#   - Meta-repo bypass: ~/.claude config edits skip lease enforcement.
+#   - Active lease present: validate_op() is the sole authority.
+#     allowed=true  → proceed to later checks (Check 10, Check 13).
+#     allowed=false + op_class=high_risk → DENY (hard).
+#     allowed=false + op_class=routine_local → DENY (eval/lease gate).
+#   - No active lease + high_risk → DENY (no lease = no high-risk authority).
+#   - No active lease + routine_local → ALLOW (Check 10 owns readiness gate).
 #
 # @decision DEC-GUARD-003
-# @title WHO enforcement uses classifier — routine local ops skip role check
+# @title WHO enforcement uses lease validate_op — markers are observability only
 # @status accepted
-# @rationale evaluation_state=ready_for_guardian is sufficient authority for
-#   routine local landing (DEC-APPROVAL-001). Requiring Guardian role for
-#   commit/merge creates a marker race where concurrent sessions overwrite
-#   the active marker, blocking legitimate auto-land. The classifier
-#   (DEC-CLASSIFY-001) separates routine from high-risk. Check 10 gates
-#   routine ops on evaluation_state. Check 13 gates high-risk ops on
-#   approval tokens. WHO enforcement only adds value for push (remote ops).
+# @rationale Phase 2 execution contracts replace marker-based WHO detection.
+#   Markers are written at agent spawn but are racy in concurrent sessions.
+#   Leases are issued at dispatch time and carry explicit allowed_ops, making
+#   validate_op() a deterministic, non-racy authority. Routine local ops
+#   (commit, merge) without a lease remain allowed so the legacy path
+#   (pre-lease dispatch) continues to work — Check 10 owns their readiness
+#   gate. High-risk ops without a lease are denied: only a dispatched agent
+#   with an explicit lease containing high_risk in allowed_ops may run them.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
-    _WHO_CLASS=$(classify_git_op "$COMMAND")
-    if [[ "$_WHO_CLASS" != "routine_local" ]]; then
-        # High-risk (push, merge --no-ff) or unclassified: Guardian role required
-        CURRENT_ROLE=$(current_active_agent_role "$PROJECT_ROOT")
-        if ! is_guardian_role "$CURRENT_ROLE"; then
-            deny "Only the Guardian agent may run high-risk git operations (push, rebase, reset). Dispatch Guardian for these operations."
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        _WHO_CLASS=$(classify_git_op "$COMMAND")
+        _LEASE_JSON=$(rt_lease_current "$PROJECT_ROOT")
+        _LEASE_FOUND=$(printf '%s' "${_LEASE_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+
+        if [[ "$_LEASE_FOUND" == "yes" ]]; then
+            # Active lease exists: validate_op() is the sole authority.
+            _VOP=$(rt_lease_validate_op "$COMMAND" "$PROJECT_ROOT")
+            _VOP_ALLOWED=$(printf '%s' "${_VOP:-}" | jq -r '.allowed // false' 2>/dev/null || echo "false")
+            if [[ "$_VOP_ALLOWED" != "true" ]]; then
+                _VOP_REASON=$(printf '%s' "${_VOP:-}" | jq -r '.reason // "validate_op denied"' 2>/dev/null || echo "validate_op denied")
+                deny "Execution contract denied: $_VOP_REASON. Check lease allowed_ops or evaluation_state."
+            fi
+            # allowed=true: proceed to Check 10 (eval readiness) and Check 13 (approval tokens).
+        else
+            # No active lease.
+            if [[ "$_WHO_CLASS" == "high_risk" ]]; then
+                deny "No active dispatch lease for this worktree. High-risk git operations (push, rebase, reset) require an active lease. Dispatch an agent with cc-policy lease issue-for-dispatch."
+            fi
+            # routine_local without a lease: allow — Check 10 is the readiness authority.
         fi
     fi
-    # routine_local (commit, merge): skip WHO — Check 10 is the authority
 fi
 
 # --- Check 4: Main is sacred (no commits on main/master) ---

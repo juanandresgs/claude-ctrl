@@ -1,0 +1,481 @@
+"""Unit tests for runtime/core/leases.py
+
+@decision DEC-LEASE-001
+Title: SQLite-backed dispatch leases bind agent identity to worktree + allowed ops
+Status: accepted
+Rationale: These tests exercise all public functions (classify_git_op, issue,
+  claim, get_current, validate_op, release, revoke, expire_stale, summary,
+  render_startup_contract) against an in-memory SQLite database. They prove
+  the uniqueness invariants, lifecycle transitions, and composite validation
+  logic that guard.sh (Phase 2) and the orchestrator will rely on.
+
+  Compound-interaction test (test_full_lifecycle) exercises the real production
+  sequence: issue → claim → validate_op → release → validate returns no lease.
+"""
+
+import sqlite3
+import time
+
+import pytest
+
+from runtime.schemas import ensure_schema
+from runtime.core import leases
+
+
+# ---------------------------------------------------------------------------
+# Fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def conn():
+    """In-memory SQLite connection with full schema applied."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    ensure_schema(c)
+    yield c
+    c.close()
+
+
+# ---------------------------------------------------------------------------
+# classify_git_op
+# ---------------------------------------------------------------------------
+
+
+def test_classify_commit_is_routine_local():
+    assert leases.classify_git_op("git commit -m 'msg'") == "routine_local"
+
+
+def test_classify_merge_is_routine_local():
+    assert leases.classify_git_op("git merge feature/foo") == "routine_local"
+
+
+def test_classify_push_is_high_risk():
+    assert leases.classify_git_op("git push origin main") == "high_risk"
+
+
+def test_classify_rebase_is_high_risk():
+    assert leases.classify_git_op("git rebase main") == "high_risk"
+
+
+def test_classify_reset_is_high_risk():
+    assert leases.classify_git_op("git reset --hard HEAD~1") == "high_risk"
+
+
+def test_classify_merge_no_ff_is_high_risk():
+    assert leases.classify_git_op("git merge --no-ff feature/bar") == "high_risk"
+
+
+def test_classify_git_log_is_unclassified():
+    assert leases.classify_git_op("git log --oneline -10") == "unclassified"
+
+
+def test_classify_git_status_is_unclassified():
+    assert leases.classify_git_op("git status") == "unclassified"
+
+
+def test_classify_git_c_path_commit_is_routine_local():
+    """git -C /path/to/repo commit should still classify as routine_local."""
+    assert leases.classify_git_op("git -C /some/path commit -m 'msg'") == "routine_local"
+
+
+# ---------------------------------------------------------------------------
+# issue()
+# ---------------------------------------------------------------------------
+
+
+def test_issue_returns_lease_with_uuid_id(conn):
+    lease = leases.issue(conn, role="implementer")
+    assert lease is not None
+    assert isinstance(lease["lease_id"], str)
+    assert len(lease["lease_id"]) == 32  # uuid4().hex
+
+
+def test_issue_sets_expires_at_correctly(conn):
+    ttl = 3600
+    lease = leases.issue(conn, role="tester", ttl=ttl)
+    assert lease["expires_at"] == lease["issued_at"] + ttl
+
+
+def test_issue_default_allowed_ops(conn):
+    import json
+
+    lease = leases.issue(conn, role="implementer")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == ["routine_local"]
+
+
+def test_issue_default_blocked_ops_empty(conn):
+    import json
+
+    lease = leases.issue(conn, role="implementer")
+    blocked = json.loads(lease["blocked_ops_json"])
+    assert blocked == []
+
+
+def test_issue_status_is_active(conn):
+    lease = leases.issue(conn, role="implementer")
+    assert lease["status"] == "active"
+
+
+def test_issue_revokes_existing_active_for_same_worktree(conn):
+    """Uniqueness invariant: second issue for same worktree revokes first."""
+    wt = "/repo/feature-x"
+    lease1 = leases.issue(conn, role="implementer", worktree_path=wt)
+    lease2 = leases.issue(conn, role="tester", worktree_path=wt)
+
+    # First lease should now be revoked.
+    first = leases.get(conn, lease1["lease_id"])
+    assert first["status"] == "revoked"
+
+    # Second lease is active.
+    assert lease2["status"] == "active"
+
+
+def test_issue_two_different_worktrees_concurrent(conn):
+    """Two leases for different worktrees can coexist as active."""
+    lease_a = leases.issue(conn, role="implementer", worktree_path="/repo/feature-a")
+    lease_b = leases.issue(conn, role="implementer", worktree_path="/repo/feature-b")
+
+    assert leases.get(conn, lease_a["lease_id"])["status"] == "active"
+    assert leases.get(conn, lease_b["lease_id"])["status"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# claim()
+# ---------------------------------------------------------------------------
+
+
+def test_claim_sets_agent_id(conn):
+    lease = leases.issue(conn, role="implementer", worktree_path="/repo/wt")
+    claimed = leases.claim(conn, agent_id="agent-abc", worktree_path="/repo/wt")
+    assert claimed is not None
+    assert claimed["agent_id"] == "agent-abc"
+    assert claimed["lease_id"] == lease["lease_id"]
+
+
+def test_claim_returns_none_for_released_lease(conn):
+    lease = leases.issue(conn, role="implementer", worktree_path="/repo/wt")
+    leases.release(conn, lease["lease_id"])
+    result = leases.claim(conn, agent_id="agent-x", worktree_path="/repo/wt")
+    assert result is None
+
+
+def test_claim_returns_none_for_revoked_lease(conn):
+    lease = leases.issue(conn, role="implementer", worktree_path="/repo/wt")
+    leases.revoke(conn, lease["lease_id"])
+    result = leases.claim(conn, agent_id="agent-x", worktree_path="/repo/wt")
+    assert result is None
+
+
+def test_claim_returns_none_when_no_active_lease(conn):
+    result = leases.claim(conn, agent_id="agent-x", worktree_path="/repo/nonexistent")
+    assert result is None
+
+
+def test_claim_revokes_existing_active_lease_for_same_agent(conn):
+    """One-lease-per-agent invariant: claiming a new lease revokes the old one."""
+    lease_a = leases.issue(conn, role="implementer", worktree_path="/repo/wt-a")
+    leases.claim(conn, agent_id="agent-1", worktree_path="/repo/wt-a")
+
+    lease_b = leases.issue(conn, role="tester", worktree_path="/repo/wt-b")
+    # Claiming lease_b with agent-1 should revoke lease_a for that agent.
+    leases.claim(conn, agent_id="agent-1", lease_id=lease_b["lease_id"])
+
+    refreshed_a = leases.get(conn, lease_a["lease_id"])
+    assert refreshed_a["status"] == "revoked"
+
+
+def test_claim_by_lease_id_takes_priority(conn):
+    lease = leases.issue(conn, role="implementer")
+    claimed = leases.claim(conn, agent_id="agent-z", lease_id=lease["lease_id"])
+    assert claimed is not None
+    assert claimed["agent_id"] == "agent-z"
+
+
+# ---------------------------------------------------------------------------
+# get_current() resolution priority
+# ---------------------------------------------------------------------------
+
+
+def test_get_current_priority_lease_id_over_agent(conn):
+    lease1 = leases.issue(conn, role="implementer", worktree_path="/repo/wt1")
+    lease2 = leases.issue(conn, role="tester", worktree_path="/repo/wt2")
+    leases.claim(conn, "agent-x", lease_id=lease2["lease_id"])
+
+    # lease_id should win over agent_id.
+    result = leases.get_current(conn, lease_id=lease1["lease_id"], agent_id="agent-x")
+    assert result["lease_id"] == lease1["lease_id"]
+
+
+def test_get_current_priority_agent_over_worktree(conn):
+    leases.issue(conn, role="implementer", worktree_path="/repo/wt1")
+    lease2 = leases.issue(conn, role="tester", worktree_path="/repo/wt2")
+    leases.claim(conn, "agent-x", lease_id=lease2["lease_id"])
+
+    result = leases.get_current(conn, agent_id="agent-x", worktree_path="/repo/wt1")
+    assert result["lease_id"] == lease2["lease_id"]
+
+
+def test_get_current_priority_worktree_over_workflow(conn):
+    lease1 = leases.issue(conn, role="implementer", worktree_path="/repo/wt1", workflow_id="wf-1")
+    leases.issue(conn, role="tester", worktree_path="/repo/wt2", workflow_id="wf-2")
+
+    result = leases.get_current(conn, worktree_path="/repo/wt1", workflow_id="wf-2")
+    assert result["lease_id"] == lease1["lease_id"]
+
+
+def test_get_current_returns_none_for_non_active_lease(conn):
+    lease = leases.issue(conn, role="implementer", worktree_path="/repo/wt")
+    leases.release(conn, lease["lease_id"])
+    result = leases.get_current(conn, worktree_path="/repo/wt")
+    assert result is None
+
+
+def test_get_current_returns_none_when_nothing_found(conn):
+    result = leases.get_current(conn, worktree_path="/repo/ghost")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# validate_op()
+# ---------------------------------------------------------------------------
+
+
+def test_validate_op_allowed_with_lease_and_allowed_op(conn):
+    leases.issue(
+        conn,
+        role="implementer",
+        worktree_path="/repo/wt",
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+    )
+    result = leases.validate_op(conn, "git commit -m 'x'", worktree_path="/repo/wt")
+    assert result["op_class"] == "routine_local"
+    assert result["allowed"] is True
+
+
+def test_validate_op_denied_when_op_not_in_allowed_ops(conn):
+    leases.issue(
+        conn,
+        role="implementer",
+        worktree_path="/repo/wt",
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+    )
+    result = leases.validate_op(conn, "git push origin main", worktree_path="/repo/wt")
+    assert result["op_class"] == "high_risk"
+    assert result["allowed"] is False
+    assert "not in allowed_ops" in result["reason"]
+
+
+def test_validate_op_denied_when_no_lease(conn):
+    result = leases.validate_op(conn, "git commit -m 'x'", worktree_path="/repo/ghost")
+    assert result["allowed"] is False
+    assert result["op_class"] == "routine_local"  # op_class always populated
+    assert result["lease_id"] is None
+
+
+def test_validate_op_denied_when_lease_expired(conn):
+    """A lease whose expires_at is in the past should deny ops."""
+    past = int(time.time()) - 100
+    lease = leases.issue(
+        conn,
+        role="implementer",
+        worktree_path="/repo/wt",
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+        ttl=7200,
+    )
+    # Manually backdate expires_at to simulate expiry.
+    with conn:
+        conn.execute(
+            "UPDATE dispatch_leases SET expires_at = ? WHERE lease_id = ?",
+            (past, lease["lease_id"]),
+        )
+    result = leases.validate_op(conn, "git commit -m 'x'", worktree_path="/repo/wt")
+    assert result["allowed"] is False
+    assert "expired" in result["reason"]
+
+
+def test_validate_op_class_always_present_without_lease(conn):
+    """op_class must be in result even when there is no active lease."""
+    result = leases.validate_op(conn, "git rebase main", worktree_path="/repo/none")
+    assert "op_class" in result
+    assert result["op_class"] == "high_risk"
+    assert result["lease_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# release() / revoke()
+# ---------------------------------------------------------------------------
+
+
+def test_release_transitions_active_to_released(conn):
+    lease = leases.issue(conn, role="implementer")
+    result = leases.release(conn, lease["lease_id"])
+    assert result is True
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "released"
+    assert refreshed["released_at"] is not None
+
+
+def test_release_non_active_returns_false(conn):
+    lease = leases.issue(conn, role="implementer")
+    leases.release(conn, lease["lease_id"])
+    # Second release on already-released lease.
+    result = leases.release(conn, lease["lease_id"])
+    assert result is False
+
+
+def test_revoke_transitions_active_to_revoked(conn):
+    lease = leases.issue(conn, role="implementer")
+    result = leases.revoke(conn, lease["lease_id"])
+    assert result is True
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "revoked"
+
+
+# ---------------------------------------------------------------------------
+# expire_stale()
+# ---------------------------------------------------------------------------
+
+
+def test_expire_stale_transitions_past_ttl_leases(conn):
+    lease = leases.issue(conn, role="implementer", ttl=10)
+    future_now = int(time.time()) + 100
+    count = leases.expire_stale(conn, now=future_now)
+    assert count == 1
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "expired"
+
+
+def test_expire_stale_does_not_touch_future_leases(conn):
+    # TTL of 2 hours — far from expired.
+    lease = leases.issue(conn, role="implementer", ttl=7200)
+    count = leases.expire_stale(conn, now=int(time.time()))
+    assert count == 0
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "active"
+
+
+def test_expire_stale_does_not_touch_non_active_leases(conn):
+    lease = leases.issue(conn, role="implementer", ttl=10)
+    leases.release(conn, lease["lease_id"])  # already released
+    count = leases.expire_stale(conn, now=int(time.time()) + 100)
+    assert count == 0  # released lease not touched by expire_stale
+
+
+# ---------------------------------------------------------------------------
+# Full lifecycle (compound interaction)
+# ---------------------------------------------------------------------------
+
+
+def test_full_lifecycle(conn):
+    """Compound test: issue → claim → release → validate returns no active lease.
+
+    This exercises the real production sequence:
+      1. Orchestrator issues a lease at dispatch time.
+      2. Agent claims the lease on startup.
+      3. validate_op passes for allowed ops during the session.
+      4. Agent releases the lease on completion.
+      5. Subsequent validate_op finds no active lease (denied).
+    """
+    wt = "/repo/feature-lifecycle"
+
+    # Step 1: issue
+    lease = leases.issue(
+        conn,
+        role="implementer",
+        worktree_path=wt,
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+    )
+    assert lease["status"] == "active"
+
+    # Step 2: claim
+    claimed = leases.claim(conn, agent_id="agent-lc", worktree_path=wt)
+    assert claimed["agent_id"] == "agent-lc"
+
+    # Step 3: validate_op while active
+    v = leases.validate_op(conn, "git commit -m 'work'", worktree_path=wt)
+    assert v["allowed"] is True
+
+    # Step 4: release
+    leases.release(conn, lease["lease_id"])
+
+    # Step 5: validate after release — no active lease
+    v2 = leases.validate_op(conn, "git commit -m 'work'", worktree_path=wt)
+    assert v2["allowed"] is False
+    assert v2["lease_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# render_startup_contract()
+# ---------------------------------------------------------------------------
+
+
+def test_render_startup_contract_contains_expected_fields(conn):
+    lease = leases.issue(
+        conn,
+        role="implementer",
+        worktree_path="/repo/wt",
+        workflow_id="wf-123",
+        branch="feature/foo",
+        next_step="run tests",
+        allowed_ops=["routine_local"],
+    )
+    text = leases.render_startup_contract(lease)
+    assert f"LEASE_ID={lease['lease_id']}" in text
+    assert "Role: implementer" in text
+    assert "Workflow: wf-123" in text
+    assert "Worktree: /repo/wt" in text
+    assert "Branch: feature/foo" in text
+    assert "routine_local" in text
+    assert "Next step: run tests" in text
+    assert "Expires:" in text
+
+
+# ---------------------------------------------------------------------------
+# Concurrent worktrees — no collision
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_worktrees_no_collision(conn):
+    """Two leases for different worktrees are fully independent.
+
+    Each worktree resolves to its own active lease — validate_op on /repo/a
+    never bleeds into /repo/b and vice versa. Both leases allow routine_local
+    ops so this test isolates the worktree-resolution invariant without
+    entangling the approval-token path.
+    """
+    lease_a = leases.issue(
+        conn,
+        role="implementer",
+        worktree_path="/repo/a",
+        workflow_id="wf-a",
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+    )
+    lease_b = leases.issue(
+        conn,
+        role="tester",
+        worktree_path="/repo/b",
+        workflow_id="wf-b",
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+    )
+
+    # Both are active with no interference.
+    assert leases.get(conn, lease_a["lease_id"])["status"] == "active"
+    assert leases.get(conn, lease_b["lease_id"])["status"] == "active"
+
+    # validate_op on each worktree resolves to the correct lease independently.
+    va = leases.validate_op(conn, "git commit -m 'work on a'", worktree_path="/repo/a")
+    vb = leases.validate_op(conn, "git commit -m 'work on b'", worktree_path="/repo/b")
+
+    assert va["allowed"] is True
+    assert va["lease_id"] == lease_a["lease_id"]
+
+    assert vb["allowed"] is True
+    assert vb["lease_id"] == lease_b["lease_id"]

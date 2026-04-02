@@ -58,6 +58,22 @@ if [[ "$RESEARCH_EXISTS" == "true" ]]; then
     CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries | recent: $RESEARCH_RECENT_TOPICS")
 fi
 
+# --- Expire stale leases and show active lease (Phase 2) ---
+# Expire any TTL-exceeded leases so they do not block new dispatch.
+# Then display the active lease (if any) for situational awareness.
+rt_lease_expire_stale || true
+if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    _SESS_LEASE=$(rt_lease_current "$PROJECT_ROOT")
+    _SESS_LEASE_FOUND=$(printf '%s' "${_SESS_LEASE:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+    if [[ "$_SESS_LEASE_FOUND" == "yes" ]]; then
+        _SESS_LEASE_ID=$(printf '%s' "$_SESS_LEASE" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        _SESS_LEASE_ROLE=$(printf '%s' "$_SESS_LEASE" | jq -r '.role // empty' 2>/dev/null || true)
+        _SESS_LEASE_OPS=$(printf '%s' "$_SESS_LEASE" | jq -r '.allowed_ops_json // empty' 2>/dev/null || true)
+        CONTEXT_PARTS+=("Active lease: id=${_SESS_LEASE_ID} role=${_SESS_LEASE_ROLE} ops=${_SESS_LEASE_OPS}")
+    fi
+    unset _SESS_LEASE _SESS_LEASE_FOUND _SESS_LEASE_ID _SESS_LEASE_ROLE _SESS_LEASE_OPS
+fi
+
 # --- Stale marker advisory (TKT-023) ---
 # If a subagent marker has been active for >=300s at session start, warn the
 # incoming agent. The marker may belong to a crashed or abandoned subagent.
