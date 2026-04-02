@@ -479,3 +479,181 @@ def test_concurrent_worktrees_no_collision(conn):
 
     assert vb["allowed"] is True
     assert vb["lease_id"] == lease_b["lease_id"]
+
+
+# ---------------------------------------------------------------------------
+# admin_recovery classification (DEC-LEASE-002)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_merge_abort_is_admin_recovery():
+    assert leases.classify_git_op("git merge --abort") == "admin_recovery"
+
+
+def test_classify_reset_merge_is_admin_recovery():
+    assert leases.classify_git_op("git reset --merge") == "admin_recovery"
+
+
+def test_classify_reset_hard_is_still_high_risk():
+    """reset --hard predates admin_recovery and must remain high_risk."""
+    assert leases.classify_git_op("git reset --hard HEAD~1") == "high_risk"
+
+
+def test_classify_reset_hard_is_still_high_risk_no_ref():
+    assert leases.classify_git_op("git reset --hard") == "high_risk"
+
+
+def test_classify_merge_no_abort_is_routine_local():
+    """A plain merge (no --abort) stays routine_local."""
+    assert leases.classify_git_op("git merge feature/x") == "routine_local"
+
+
+def test_classify_merge_with_c_flag_and_abort():
+    """git -C /path merge --abort should also classify as admin_recovery."""
+    assert leases.classify_git_op("git -C /some/path merge --abort") == "admin_recovery"
+
+
+def test_classify_reset_merge_with_c_flag():
+    assert leases.classify_git_op("git -C /repo reset --merge") == "admin_recovery"
+
+
+# ---------------------------------------------------------------------------
+# validate_op — admin_recovery semantics (DEC-LEASE-002)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_op_admin_recovery_skips_eval_check(conn):
+    """Admin recovery with lease + approval does not require eval readiness.
+
+    This is the core invariant: merge --abort / reset --merge must not be
+    blocked by evaluation_state gate. The repo is in a mid-merge state and
+    evaluation_state is meaningless in that context.
+    """
+    import runtime.core.approvals as approvals
+
+    lease = leases.issue(
+        conn,
+        "guardian",
+        worktree_path="/wt",
+        allowed_ops=["routine_local", "high_risk", "admin_recovery"],
+        requires_eval=True,
+        workflow_id="wf-1",
+    )
+    assert lease is not None
+
+    # Do NOT set evaluation_state — it must not matter for admin_recovery.
+    # Grant the approval token that admin_recovery requires.
+    approvals.grant(conn, "wf-1", "admin_recovery")
+
+    result = leases.validate_op(conn, "git reset --merge", worktree_path="/wt")
+    assert result["op_class"] == "admin_recovery"
+    assert result["eval_ok"] is None  # eval check was skipped entirely
+    assert result["requires_approval"] is True
+    assert result["approval_ok"] is True
+    assert result["allowed"] is True
+
+
+def test_validate_op_merge_abort_skips_eval_check(conn):
+    """merge --abort variant of admin_recovery also skips eval."""
+    import runtime.core.approvals as approvals
+
+    leases.issue(
+        conn,
+        "guardian",
+        worktree_path="/wt2",
+        allowed_ops=["routine_local", "high_risk", "admin_recovery"],
+        requires_eval=True,
+        workflow_id="wf-2",
+    )
+    approvals.grant(conn, "wf-2", "admin_recovery")
+
+    result = leases.validate_op(conn, "git merge --abort", worktree_path="/wt2")
+    assert result["op_class"] == "admin_recovery"
+    assert result["eval_ok"] is None
+    assert result["allowed"] is True
+
+
+def test_validate_op_admin_recovery_denied_without_lease(conn):
+    """admin_recovery without a lease must be denied — lease gate always applies."""
+    result = leases.validate_op(conn, "git reset --merge", worktree_path="/wt-no-lease")
+    assert result["allowed"] is False
+    assert result["op_class"] == "admin_recovery"
+    assert result["lease_id"] is None
+    assert "no active lease" in result["reason"]
+
+
+def test_validate_op_admin_recovery_denied_without_approval(conn):
+    """admin_recovery with a lease but no approval token must be denied."""
+    leases.issue(
+        conn,
+        "guardian",
+        worktree_path="/wt3",
+        allowed_ops=["routine_local", "high_risk", "admin_recovery"],
+        workflow_id="wf-3",
+    )
+    # No approvals.grant() call — token missing.
+    result = leases.validate_op(conn, "git reset --merge", worktree_path="/wt3")
+    assert result["allowed"] is False
+    assert result["requires_approval"] is True
+    assert result["approval_ok"] is False
+
+
+def test_validate_op_admin_recovery_denied_when_not_in_allowed_ops(conn):
+    """admin_recovery op denied if lease does not include it in allowed_ops."""
+    import runtime.core.approvals as approvals
+
+    leases.issue(
+        conn,
+        "implementer",
+        worktree_path="/wt4",
+        allowed_ops=["routine_local"],  # admin_recovery NOT listed
+        workflow_id="wf-4",
+    )
+    approvals.grant(conn, "wf-4", "admin_recovery")
+
+    result = leases.validate_op(conn, "git merge --abort", worktree_path="/wt4")
+    assert result["allowed"] is False
+    assert result["op_class"] == "admin_recovery"
+    assert "not in allowed_ops" in result["reason"]
+
+
+def test_validate_op_routine_landing_still_requires_eval(conn):
+    """Introducing admin_recovery must not weaken the eval gate for routine_local.
+
+    This is the regression test: the admin_recovery exemption must be scoped
+    narrowly — routine commits must still require evaluation readiness.
+    """
+    leases.issue(
+        conn,
+        "implementer",
+        worktree_path="/wt5",
+        allowed_ops=["routine_local"],
+        requires_eval=True,
+        workflow_id="wf-5",
+    )
+    # No evaluation state set — eval_ok must be False, allowed must be False.
+    result = leases.validate_op(conn, "git commit -m test", worktree_path="/wt5")
+    assert result["op_class"] == "routine_local"
+    assert result["eval_ok"] is False
+    assert result["allowed"] is False
+    assert "ready_for_guardian" in result["reason"]
+
+
+def test_validate_op_high_risk_still_requires_eval_and_approval(conn):
+    """high_risk ops are unchanged by the admin_recovery introduction.
+
+    A push/rebase/reset --hard must still fail both eval and approval gates.
+    """
+    leases.issue(
+        conn,
+        "guardian",
+        worktree_path="/wt6",
+        allowed_ops=["routine_local", "high_risk"],
+        requires_eval=True,
+        workflow_id="wf-6",
+    )
+    # No eval state, no approval — push must be denied at eval gate first.
+    result = leases.validate_op(conn, "git push origin main", worktree_path="/wt6")
+    assert result["op_class"] == "high_risk"
+    assert result["eval_ok"] is False
+    assert result["allowed"] is False

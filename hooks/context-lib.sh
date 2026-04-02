@@ -508,7 +508,7 @@ get_workflow_binding() {
 
 # --- Git operation classifier (DEC-CLASSIFY-001) ---
 # classify_git_op <command>
-# Returns "routine_local", "high_risk", or "unclassified".
+# Returns "routine_local", "high_risk", "admin_recovery", or "unclassified".
 # Bash implementation for hook performance — avoids Python startup overhead.
 # Authority for risk levels: this function. guard.sh Check 13 reads it.
 #
@@ -517,15 +517,27 @@ get_workflow_binding() {
 # @status accepted
 # @rationale Hook performance requires avoiding Python startup for every
 #   command. The classifier is simple regex matching — bash is sufficient.
-#   routine_local: evaluation_state gates these (Check 10). high_risk: approval
-#   token required (Check 13). unclassified: not a git op of interest.
+#   routine_local:  evaluation_state gates these (Check 10). high_risk: approval
+#   token required (Check 13). admin_recovery: merge --abort and reset --merge
+#   require lease + approval but NOT evaluation readiness (DEC-LEASE-002).
+#   unclassified: not a git op of interest.
+#
+# Classification precedence (first match wins):
+#   admin_recovery: merge --abort, reset --merge
+#   high_risk:      push, rebase, reset, merge --no-ff
+#   routine_local:  commit, merge
+#   unclassified:   everything else
 classify_git_op() {
     local cmd="$1"
+    # Admin recovery: merge --abort (governed recovery, not a landing op)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--abort'; then echo "admin_recovery"; return; fi
+    # Admin recovery: reset --merge (backed-out merge recovery)
+    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b.*--merge'; then echo "admin_recovery"; return; fi
     # High-risk: push (any form)
     if echo "$cmd" | grep -qE '\bgit\b.*\bpush\b'; then echo "high_risk"; return; fi
     # High-risk: rebase
     if echo "$cmd" | grep -qE '\bgit\b.*\brebase\b'; then echo "high_risk"; return; fi
-    # High-risk: reset (any form)
+    # High-risk: reset (any form not already caught by admin_recovery above)
     if echo "$cmd" | grep -qE '\bgit\b.*\breset\b'; then echo "high_risk"; return; fi
     # High-risk: non-ff merge (explicit --no-ff)
     if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then echo "high_risk"; return; fi

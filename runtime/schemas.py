@@ -284,6 +284,9 @@ APPROVAL_OP_TYPES: frozenset[str] = frozenset(
         "force_push",
         "destructive_cleanup",
         "non_ff_merge",
+        # Admin recovery: merge --abort and reset --merge.
+        # These require an approval token but NOT evaluation readiness.
+        "admin_recovery",
     }
 )
 
