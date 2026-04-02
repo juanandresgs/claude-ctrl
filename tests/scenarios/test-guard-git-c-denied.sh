@@ -4,7 +4,7 @@
 # shared-protocols.md, so all security gates must handle both forms.
 #
 # Sub-tests:
-#   1. Non-guardian "git -C ... commit" → denied (Check 3 WHO)
+#   1. Non-guardian "git -C ... push" → denied (Check 3 WHO)
 #   2. "git -C ... commit" on main → denied (Check 4 main-is-sacred)
 #   3. "git -C ... commit" with failing tests → denied (Check 9 test gate)
 #   4. "git -C ... commit" without proof verified → denied (Check 10 proof gate)
@@ -25,6 +25,7 @@ RUNTIME_ROOT="$REPO_ROOT/runtime"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/.claude/state.db"
 
+# shellcheck disable=SC2329  # invoked indirectly via trap
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -71,11 +72,13 @@ check_deny() {
     fi
 }
 
-# --- Sub-test 1: Non-guardian git -C commit → Check 3 WHO deny ---
+# --- Sub-test 1: Non-guardian git -C push → Check 3 WHO deny ---
+# After DEC-GUARD-003, routine local ops (commit, merge) skip WHO enforcement.
+# Push is high_risk and still requires Guardian role.
 setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-who -q
 # No marker set → role is empty (non-guardian)
-CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
+CMD="git -C \"$TMP_DIR\" push origin feature/test-who"
 output=$(run_hook "$CMD")
 check_deny "sub-test 1 (WHO)" "$output" "Guardian"
 
