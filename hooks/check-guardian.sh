@@ -85,7 +85,14 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_EXECUTION=$(echo "$RESPONSE_TEXT" | grep -iE 'executing|done|merged|committed|completed|pushed|created branch|worktree created' || echo "")
 
     if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_EXECUTION" ]]; then
-        ISSUES+=("Agent ended with approval question but no execution confirmation — may need follow-up")
+        # Under auto-land policy (DEC-GUARD-AUTOLAND), approval questions are
+        # expected only for high-risk ops (push, rebase, reset, force, destructive).
+        # For local landing (commit, merge without push), an approval question
+        # without execution is a regression — Guardian should auto-land.
+        HAS_HIGH_RISK_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'push|rebase|reset|force|delet' || echo "")
+        if [[ -z "$HAS_HIGH_RISK_OP" ]]; then
+            ISSUES+=("Auto-land regression: Guardian asked for approval on a local landing instead of executing automatically (DEC-GUARD-AUTOLAND)")
+        fi
     fi
 fi
 

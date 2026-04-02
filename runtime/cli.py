@@ -44,6 +44,7 @@ import runtime.core.tokens as tokens_mod
 import runtime.core.todos as todos_mod
 import runtime.core.workflows as workflows_mod
 import runtime.core.bugs as bugs_mod
+import runtime.core.approvals as approvals_mod
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
 
@@ -404,6 +405,33 @@ def _handle_workflow(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown workflow action: {args.action}")
+
+
+def _handle_approval(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "grant":
+            row_id = approvals_mod.grant(
+                conn,
+                args.workflow_id,
+                args.op_type,
+                granted_by=getattr(args, "granted_by", "user") or "user",
+            )
+            return _ok({"id": row_id, "workflow_id": args.workflow_id, "op_type": args.op_type})
+        elif args.action == "check":
+            consumed = approvals_mod.check_and_consume(conn, args.workflow_id, args.op_type)
+            return _ok(
+                {"workflow_id": args.workflow_id, "op_type": args.op_type, "approved": consumed}
+            )
+        elif args.action == "list":
+            wf = getattr(args, "workflow_id", None)
+            rows = approvals_mod.list_pending(conn, workflow_id=wf)
+            return _ok({"items": rows, "count": len(rows)})
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown approval action: {args.action}")
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +833,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug_sub.add_parser("retry-failed", help="Retry all failed_to_file bugs")
 
+    # approval
+    ap_p = subparsers.add_parser("approval", help="One-shot approval tokens for high-risk git ops")
+    ap_sub = ap_p.add_subparsers(dest="action", required=True)
+
+    ap_grant = ap_sub.add_parser("grant", help="Grant one-shot approval for a high-risk op")
+    ap_grant.add_argument("workflow_id")
+    ap_grant.add_argument(
+        "op_type",
+        choices=sorted(
+            ["push", "rebase", "reset", "force_push", "destructive_cleanup", "non_ff_merge"]
+        ),
+    )
+    ap_grant.add_argument("--granted-by", dest="granted_by", default="user")
+
+    ap_check = ap_sub.add_parser("check", help="Check and consume an approval token")
+    ap_check.add_argument("workflow_id")
+    ap_check.add_argument("op_type")
+
+    ap_list = ap_sub.add_parser("list", help="List pending (unconsumed) approvals")
+    ap_list.add_argument("--workflow-id", dest="workflow_id", default=None)
+
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
     sc_sub = sc_p.add_subparsers(dest="action", required=True)
@@ -864,6 +913,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_sidecar(args)
     if args.domain == "bug":
         return _handle_bug(args)
+    if args.domain == "approval":
+        return _handle_approval(args)
 
     return _err(f"unknown domain: {args.domain}")
 

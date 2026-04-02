@@ -506,7 +506,36 @@ get_workflow_binding() {
     [[ -n "$WORKFLOW_WORKTREE" ]]
 }
 
+# --- Git operation classifier (DEC-CLASSIFY-001) ---
+# classify_git_op <command>
+# Returns "routine_local", "high_risk", or "unclassified".
+# Bash implementation for hook performance — avoids Python startup overhead.
+# Authority for risk levels: this function. guard.sh Check 13 reads it.
+#
+# @decision DEC-CLASSIFY-001
+# @title Bash classifier is the authority for git op risk levels
+# @status accepted
+# @rationale Hook performance requires avoiding Python startup for every
+#   command. The classifier is simple regex matching — bash is sufficient.
+#   routine_local: evaluation_state gates these (Check 10). high_risk: approval
+#   token required (Check 13). unclassified: not a git op of interest.
+classify_git_op() {
+    local cmd="$1"
+    # High-risk: push (any form)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bpush\b'; then echo "high_risk"; return; fi
+    # High-risk: rebase
+    if echo "$cmd" | grep -qE '\bgit\b.*\brebase\b'; then echo "high_risk"; return; fi
+    # High-risk: reset (any form)
+    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b'; then echo "high_risk"; return; fi
+    # High-risk: non-ff merge (explicit --no-ff)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then echo "high_risk"; return; fi
+    # Routine local: commit or merge (local-only, no --no-ff)
+    if echo "$cmd" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then echo "routine_local"; return; fi
+    # Default: unclassified (git log, git status, git diff, etc.)
+    echo "unclassified"
+}
+
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding
+export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op

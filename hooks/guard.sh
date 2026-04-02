@@ -359,5 +359,49 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
     fi
 fi
 
+# --- Check 13: High-risk operation approval gate (DEC-APPROVAL-001) ---
+# Uses classify_git_op() to determine risk level. Routine local ops (commit,
+# merge without --no-ff) are gated by evaluation_state (Check 10) — no approval
+# needed here. High-risk ops (push, rebase, reset, merge --no-ff) require a
+# one-shot approval token from the SQLite approvals table.
+#
+# Checks 5-6 remain hard denies for destructive variants (reset --hard,
+# push --force without lease, clean -f, branch -D) — they fire BEFORE this
+# check and are stricter (no token can override them).
+#
+# @decision DEC-GUARD-013
+# @title High-risk git ops require approval tokens (DEC-APPROVAL-001)
+# @status accepted
+# @rationale evaluation_state=ready_for_guardian is sufficient for routine
+#   local landing (commit, merge). High-risk ops that affect remote state or
+#   rewrite history need explicit user approval via a one-shot token. This is
+#   the mechanical enforcement that replaces "Guardian asks the user in prose."
+#   classify_git_op() in context-lib.sh is the authority for risk classification.
+if echo "$COMMAND" | grep -qE '\bgit\b'; then
+    _OP_CLASS=$(classify_git_op "$COMMAND")
+    if [[ "$_OP_CLASS" == "high_risk" ]]; then
+        # Determine the op_type for the approval lookup
+        _APPROVAL_OP=""
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b'; then
+            _APPROVAL_OP="push"
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\brebase\b'; then
+            _APPROVAL_OP="rebase"
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\breset\b'; then
+            _APPROVAL_OP="reset"
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then
+            _APPROVAL_OP="non_ff_merge"
+        fi
+
+        if [[ -n "$_APPROVAL_OP" ]]; then
+            _APPROVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
+            _APPROVAL_RESULT=$(rt_approval_check "$_APPROVAL_WF" "$_APPROVAL_OP" 2>/dev/null || echo "false")
+            if [[ "$_APPROVAL_RESULT" != "true" ]]; then
+                deny "High-risk operation '$_APPROVAL_OP' requires explicit approval. Grant via: cc-policy approval grant $_APPROVAL_WF $_APPROVAL_OP"
+            fi
+            # Token consumed — allow the operation to proceed
+        fi
+    fi
+fi
+
 # All checks passed
 exit 0

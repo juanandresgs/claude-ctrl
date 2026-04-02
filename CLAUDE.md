@@ -130,7 +130,7 @@ These are not mere technical rules — they are sacred practices that honor the 
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
 6. **No Implementation Without Plan** — MASTER_PLAN.md before first line of code. Plan produces GitHub issues. Issues drive implementation. MASTER_PLAN.md is a living project record.
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
-8. **Approval Gates** — Commits, merges, force pushes, and bulk destructive ops require explicit user approval and go through Guardian. 
+8. **Approval Gates** — Permanent git operations go through Guardian. Local landing (commit, merge) is automatic when `ready_for_guardian` with SHA match and passing tests. Push, rebase, reset, force ops, and destructive actions require explicit user approval.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues.
 10. **Evaluator Before Commit** — The evaluator runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for irreversible git actions or product signoff, not as fake proof of correctness.
 11. **Worktrees Mean Concurrency** — Never assume single-session or linear execution. All shared state mutations must be atomic via SQLite backend helpers.
