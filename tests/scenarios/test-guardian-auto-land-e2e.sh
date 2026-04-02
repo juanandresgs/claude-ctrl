@@ -71,6 +71,14 @@ _setup_passing_repo() {
         workflow bind "$WF_ID" "$TMP_DIR" "$branch" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+
+    # Dispatch lease (DEC-LEASE-002): Check 3 now requires a lease for high-risk
+    # ops. Issue with both routine_local and high_risk so push sub-cases reach
+    # Check 13 (approval gate) as the test intends.
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" --branch "$branch" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 }
 
 _teardown() {
@@ -306,7 +314,28 @@ run_sub_case_f() {
     _run_destructive_deny_check "reset-hard"  "git -C /tmp reset --hard HEAD~1"             "destructive"
     _run_destructive_deny_check "clean-f"     "git -C /tmp clean -f"                         "permanently deletes"
     _run_destructive_deny_check "branch-D"    "git -C /tmp branch -D some-branch"            "force-deletes"
-    _run_destructive_deny_check "push-force"  "git -C /tmp push origin feature/foo --force"  "force-with-lease"
+    # push-force: must use the real TMP_DIR (not /tmp) so Check 3 finds the
+    # lease from _setup_passing_repo and passes through to Check 5's force
+    # push safety check. Without a lease Check 3 denies high_risk first.
+    local pf_branch="feature/e2e-destructive-push-force"
+    _setup_passing_repo "$pf_branch"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        approval grant "$WF_ID" "push" >/dev/null 2>&1
+    local pf_cmd="git -C \"$TMP_DIR\" push origin $pf_branch --force"
+    local pf_out pf_dec pf_reason
+    pf_out=$(_run_guard "$pf_cmd")
+    pf_dec=$(_decision "$pf_out")
+    if [[ "$pf_dec" == "deny" ]]; then
+        pf_reason=$(_reason "$pf_out")
+        if printf '%s' "$pf_reason" | grep -qi "force-with-lease"; then
+            pass "F:push-force" "correctly hard-denied (reason matches 'force-with-lease')"
+        else
+            fail "F:push-force" "denied but reason missing 'force-with-lease': $pf_reason"
+        fi
+    else
+        fail "F:push-force" "destructive op NOT denied (decision=$pf_dec)"
+    fi
+    _teardown
 }
 
 # ─── Run all sub-cases ─────────────────────────────────────────────────────────

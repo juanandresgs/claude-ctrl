@@ -132,31 +132,46 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
     deny "Do not enter worktrees with bare cd. Use 'git -C \"$CD_TARGET\" <command>' for git, or '(cd \"$CD_TARGET\" && <command>)' in a subshell so the session cannot be bricked by later cleanup."
 fi
 
-# --- Check 3: WHO enforcement for permanent git operations ---
-# Routine local ops (commit, merge) are gated by evaluation_state (Check 10),
-# not by agent role — any role may land after evaluator clearance.
-# High-risk ops (push, merge --no-ff) still require Guardian role.
+# --- Check 3: Lease-based permission gate for git operations ---
+# Authority: dispatch lease (DEC-LEASE-001).
+# - Meta-repo: bypass (no lease required)
+# - Active lease: sole authority — validate_op decides
+# - No lease + routine_local: allow (Check 10 eval readiness is the authority)
+# - No lease + high_risk: deny (must have a lease for high-risk git ops)
 #
-# @decision DEC-GUARD-003
-# @title WHO enforcement uses classifier — routine local ops skip role check
+# @decision DEC-LEASE-002
+# @title Check 3 uses lease validate_op, not marker role
 # @status accepted
-# @rationale evaluation_state=ready_for_guardian is sufficient authority for
-#   routine local landing (DEC-APPROVAL-001). Requiring Guardian role for
-#   commit/merge creates a marker race where concurrent sessions overwrite
-#   the active marker, blocking legitimate auto-land. The classifier
-#   (DEC-CLASSIFY-001) separates routine from high-risk. Check 10 gates
-#   routine ops on evaluation_state. Check 13 gates high-risk ops on
-#   approval tokens. WHO enforcement only adds value for push (remote ops).
+# @rationale Markers are observability only for this path. The lease binds
+#   role + allowed_ops + worktree. validate_op in leases.py classifies the
+#   command (sole Python classifier for this path) and checks against the
+#   lease's allowed_ops. routine_local without a lease is allowed because
+#   Check 10 (evaluation_state) has always been the authority for routine
+#   local operations — Check 3 never gated those.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
-    _WHO_CLASS=$(classify_git_op "$COMMAND")
-    if [[ "$_WHO_CLASS" != "routine_local" ]]; then
-        # High-risk (push, merge --no-ff) or unclassified: Guardian role required
-        CURRENT_ROLE=$(current_active_agent_role "$PROJECT_ROOT")
-        if ! is_guardian_role "$CURRENT_ROLE"; then
-            deny "Only the Guardian agent may run high-risk git operations (push, rebase, reset). Dispatch Guardian for these operations."
+    _CHECK3_DIR=$(extract_git_target_dir "$COMMAND")
+    if is_claude_meta_repo "$_CHECK3_DIR"; then
+        : # Meta-repo — no lease required
+    else
+        # Lease validation — Python classifier is sole authority for this path
+        _LEASE_RESULT=$(rt_lease_validate_op "$COMMAND" "$_CHECK3_DIR")
+        _LEASE_FOUND=$(printf '%s' "${_LEASE_RESULT:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        if [[ -n "$_LEASE_FOUND" ]]; then
+            # Active lease exists — sole authority
+            _LEASE_ALLOWED=$(printf '%s' "$_LEASE_RESULT" | jq -r '.allowed // "false"' 2>/dev/null)
+            if [[ "$_LEASE_ALLOWED" != "true" ]]; then
+                _LEASE_REASON=$(printf '%s' "$_LEASE_RESULT" | jq -r '.reason // "lease denied"' 2>/dev/null)
+                deny "Lease check: $_LEASE_REASON"
+            fi
+        else
+            # No lease — deny high_risk, allow routine_local (Check 10 handles it)
+            _LEASE_OP_CLASS=$(printf '%s' "${_LEASE_RESULT:-}" | jq -r '.op_class // "unclassified"' 2>/dev/null || true)
+            if [[ "$_LEASE_OP_CLASS" != "routine_local" ]]; then
+                deny "No active lease for high-risk git operation on this worktree. Issue a lease via: cc-policy lease issue-for-dispatch <role> --worktree-path $_CHECK3_DIR ..."
+            fi
+            # routine_local without lease: allowed here, Check 10 gates readiness
         fi
     fi
-    # routine_local (commit, merge): skip WHO — Check 10 is the authority
 fi
 
 # --- Check 4: Main is sacred (no commits on main/master) ---

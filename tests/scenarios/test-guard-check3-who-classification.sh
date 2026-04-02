@@ -162,10 +162,10 @@ run_sub_case_b() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case C: Push by implementer role → denied by Check 3
+# Sub-case C: Push by implementer role, no lease → denied by Check 3
 #
-# Push is high_risk. Check 3 sees high_risk and enforces Guardian role.
-# Deny reason must mention "Guardian" and "push".
+# Push is high_risk. Check 3 (lease-based, DEC-LEASE-002) finds no active
+# lease for the worktree. No-lease + high_risk → deny with "No active lease".
 # ---------------------------------------------------------------------------
 run_sub_case_c() {
     local branch="feature/check3-push-implementer"
@@ -179,26 +179,23 @@ run_sub_case_c() {
     reason=$(_reason "$output")
 
     if [[ "$decision" != "deny" ]]; then
-        fail "C" "expected deny for push by implementer, got decision='$decision'"
+        fail "C" "expected deny for push by implementer (no lease), got decision='$decision'"
         return
     fi
-    if ! printf '%s' "$reason" | grep -qi "Guardian"; then
-        fail "C" "deny reason should mention 'Guardian', got: $reason"
+    if ! printf '%s' "$reason" | grep -qiE "lease|No active"; then
+        fail "C" "deny reason should mention 'lease' or 'No active', got: $reason"
         return
     fi
-    if ! printf '%s' "$reason" | grep -qi "push"; then
-        fail "C" "deny reason should mention 'push', got: $reason"
-        return
-    fi
-    pass "C" "push by implementer denied by Check 3 with Guardian+push message"
+    pass "C" "push by implementer denied by Check 3 (no lease for high-risk op)"
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case D: Push by guardian role, no approval token → reaches Check 13
+# Sub-case D: Push by guardian role, lease issued but no approval token → denied
 #
-# Check 3 passes (guardian role + high_risk is allowed). Check 13 fires because
-# no approval token exists. Deny reason must mention "approval" — NOT "Guardian
-# agent may run" (which would mean Check 3 fired, not Check 13).
+# Check 3 (lease-based, DEC-LEASE-002): a guardian lease with high_risk exists,
+# so validate_op checks pending approvals (read-only). None found → allowed=false,
+# reason mentions "approval". Deny must mention "approval" — NOT "No active lease"
+# (which would mean no lease was found by Check 3).
 # ---------------------------------------------------------------------------
 run_sub_case_d() {
     local branch="feature/check3-push-guardian-no-token"
@@ -208,6 +205,14 @@ run_sub_case_d() {
     # Set ready_for_guardian so Check 10 doesn't fire first
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
+
+    # Issue a guardian lease with high_risk so Check 3 passes to approval check
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$branch" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
     local cmd output decision reason
     cmd="git -C \"$TMP_DIR\" push origin $branch"
@@ -220,15 +225,15 @@ run_sub_case_d() {
         return
     fi
     if ! printf '%s' "$reason" | grep -qi "approval"; then
-        fail "D" "deny reason should mention 'approval' (Check 13), got: $reason"
+        fail "D" "deny reason should mention 'approval' (lease validate_op or Check 13), got: $reason"
         return
     fi
-    # Confirm it's Check 13 that fired, not Check 3
-    if printf '%s' "$reason" | grep -qi "Only the Guardian agent may run"; then
-        fail "D" "deny mentions 'Only the Guardian agent may run' — Check 3 fired instead of Check 13: $reason"
+    # Confirm it's NOT the no-lease path — lease was issued, so deny is approval-related
+    if printf '%s' "$reason" | grep -qi "No active lease"; then
+        fail "D" "deny mentions 'No active lease' — lease was not found despite being issued: $reason"
         return
     fi
-    pass "D" "push by guardian without token denied by Check 13 (not Check 3)"
+    pass "D" "push by guardian with high_risk lease but no approval token → denied (approval required)"
 }
 
 # ---------------------------------------------------------------------------
@@ -300,10 +305,11 @@ run_sub_case_e() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case F: Merge --no-ff by implementer role → denied by Check 3 (high_risk)
+# Sub-case F: Merge --no-ff by implementer role, no lease → denied by Check 3
 #
-# merge --no-ff is classified as high_risk. Check 3 enforces Guardian role.
-# Deny reason must mention "Guardian".
+# merge --no-ff is classified as high_risk. Check 3 (lease-based, DEC-LEASE-002)
+# finds no active lease for the worktree. No-lease + high_risk → deny with
+# "No active lease". The old "Guardian" role check is gone.
 # ---------------------------------------------------------------------------
 run_sub_case_f() {
     local branch="feature/check3-merge-no-ff"
@@ -317,14 +323,14 @@ run_sub_case_f() {
     reason=$(_reason "$output")
 
     if [[ "$decision" != "deny" ]]; then
-        fail "F" "expected deny for merge --no-ff by implementer, got decision='$decision'"
+        fail "F" "expected deny for merge --no-ff (no lease), got decision='$decision'"
         return
     fi
-    if ! printf '%s' "$reason" | grep -qi "Guardian"; then
-        fail "F" "deny reason should mention 'Guardian', got: $reason"
+    if ! printf '%s' "$reason" | grep -qiE "lease|No active"; then
+        fail "F" "deny reason should mention 'lease' or 'No active', got: $reason"
         return
     fi
-    pass "F" "merge --no-ff by implementer denied by Check 3 (high_risk)"
+    pass "F" "merge --no-ff denied by Check 3 (no lease for high-risk op)"
 }
 
 # ---------------------------------------------------------------------------

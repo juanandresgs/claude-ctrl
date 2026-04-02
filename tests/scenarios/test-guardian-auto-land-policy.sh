@@ -178,9 +178,57 @@ run_sub_case_b() {
         "force-deletes"
 
     # Check 5: git push --force without --force-with-lease
-    run_deny_check "push-force" \
-        "git -C /tmp push origin feature/foo --force" \
-        "force-with-lease"
+    # Inline test: needs a lease so Check 3 passes through to Check 5.
+    # run_deny_check uses /tmp paths which have no lease, causing Check 3 to
+    # deny first. This inline version uses the real TMP_DIR with a lease.
+    local PF_TMP="$REPO_ROOT/tmp/$TEST_NAME-B-push-force-$$"
+    local PF_DB="$PF_TMP/.claude/state.db"
+    local PF_BRANCH="feature/destructive-deny-push-force"
+    local PF_WF="feature-destructive-deny-push-force"
+    trap 'rm -rf "$PF_TMP"' EXIT
+    mkdir -p "$PF_TMP/.claude"
+    git -C "$PF_TMP" init -q
+    git -C "$PF_TMP" config user.email "t@t.com"
+    git -C "$PF_TMP" config user.name "T"
+    git -C "$PF_TMP" commit --allow-empty -m "init" -q
+    git -C "$PF_TMP" checkout -b "$PF_BRANCH" -q
+    local PF_HEAD
+    PF_HEAD=$(git -C "$PF_TMP" rev-parse HEAD)
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    echo "pass|0|$(date +%s)" > "$PF_TMP/.claude/.test-status"
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        evaluation set "$PF_WF" "ready_for_guardian" --head-sha "$PF_HEAD" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        workflow bind "$PF_WF" "$PF_TMP" "$PF_BRANCH" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        workflow scope-set "$PF_WF" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" --workflow-id "$PF_WF" \
+        --worktree-path "$PF_TMP" --branch "$PF_BRANCH" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        approval grant "$PF_WF" "push" >/dev/null 2>&1
+    local pf_cmd="git -C \"$PF_TMP\" push origin $PF_BRANCH --force"
+    local pf_payload pf_output pf_decision pf_reason
+    pf_payload=$(jq -n --arg t "Bash" --arg c "$pf_cmd" --arg w "$PF_TMP" \
+        '{tool_name:$t,tool_input:{command:$c},cwd:$w}')
+    pf_output=$(printf '%s' "$pf_payload" \
+        | CLAUDE_PROJECT_DIR="$PF_TMP" CLAUDE_POLICY_DB="$PF_DB" \
+          CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null) || true
+    pf_decision=$(printf '%s' "$pf_output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
+    if [[ "$pf_decision" != "deny" ]]; then
+        echo "FAIL: $TEST_NAME [B:push-force] — expected deny, got '$pf_decision'"
+        exit 1
+    fi
+    pf_reason=$(printf '%s' "$pf_output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)
+    if ! printf '%s' "$pf_reason" | grep -qi "force-with-lease"; then
+        echo "FAIL: $TEST_NAME [B:push-force] — deny reason missing 'force-with-lease': $pf_reason"
+        exit 1
+    fi
+    echo "PASS: $TEST_NAME [B:push-force] — correctly denied"
+    rm -rf "$PF_TMP"
+    trap - EXIT
 }
 
 # ─── Sub-case C: Governance text assertions ────────────────────────────────────

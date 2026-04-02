@@ -279,3 +279,50 @@ rt_approval_check() {
     result=$(cc_policy approval check "$1" "$2" 2>/dev/null) || { echo "false"; return 1; }
     printf '%s\n' "$result" | jq -r '.approved // false'
 }
+
+# ---------------------------------------------------------------------------
+# Dispatch lease wrappers (DEC-LEASE-001)
+# ---------------------------------------------------------------------------
+
+# rt_lease_validate_op <command> <worktree_path>
+# Returns raw JSON validation result from cc-policy lease validate-op.
+# Always includes op_class in the result even when no lease is found.
+# Suppresses errors and returns empty string on runtime failure.
+rt_lease_validate_op() {
+    _rt_ensure_schema
+    local args=("lease" "validate-op" "$1")
+    [[ -n "${2:-}" ]] && args+=("--worktree-path" "$2")
+    cc_policy "${args[@]}" 2>/dev/null || true
+}
+
+# rt_lease_current <worktree_path>
+# Returns raw JSON of the active lease for the given worktree, or {found: false}.
+# Suppresses errors and returns empty string on runtime failure.
+rt_lease_current() {
+    _rt_ensure_schema
+    local args=("lease" "current")
+    [[ -n "${1:-}" ]] && args+=("--worktree-path" "$1")
+    cc_policy "${args[@]}" 2>/dev/null || true
+}
+
+# rt_lease_claim <agent_id> <worktree_path>
+# Binds agent_id to the active lease for worktree_path.
+# Returns raw JSON of the claimed lease, or {found: false} when none found.
+rt_lease_claim() {
+    _rt_ensure_schema
+    cc_policy lease claim "$1" --worktree-path "$2" 2>/dev/null || true
+}
+
+# rt_lease_release <lease_id>
+# Transitions the lease active → released. Silent on completion.
+rt_lease_release() {
+    _rt_ensure_schema
+    cc_policy lease release "$1" >/dev/null 2>&1 || true
+}
+
+# rt_lease_expire_stale
+# Expires any active leases whose TTL has elapsed. Silent on completion.
+rt_lease_expire_stale() {
+    _rt_ensure_schema
+    cc_policy lease expire-stale >/dev/null 2>&1 || true
+}

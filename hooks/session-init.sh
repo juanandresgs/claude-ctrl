@@ -79,6 +79,19 @@ if [[ -f "$_RUNTIME_ROOT/cli.py" ]]; then
 fi
 unset _RUNTIME_ROOT _snap _active_agent _marker_age _age_min
 
+# --- Expire stale leases + show active lease ---
+_SESSION_RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
+if [[ -f "$_SESSION_RUNTIME_ROOT/cli.py" ]]; then
+    CLAUDE_RUNTIME_ROOT="$_SESSION_RUNTIME_ROOT" cc_policy lease expire-stale 2>/dev/null || true
+    _LEASE_SUM=$(rt_lease_current "$PROJECT_ROOT")
+    _LS_ROLE=$(printf '%s' "${_LEASE_SUM:-}" | jq -r '.role // empty' 2>/dev/null || true)
+    if [[ -n "$_LS_ROLE" ]]; then
+        _LS_NS=$(printf '%s' "$_LEASE_SUM" | jq -r '.next_step // empty' 2>/dev/null || true)
+        CONTEXT_PARTS+=("Active lease: role=$_LS_ROLE${_LS_NS:+ next=$_LS_NS}")
+    fi
+fi
+unset _SESSION_RUNTIME_ROOT _LEASE_SUM _LS_ROLE _LS_NS
+
 # --- Workflow evaluation state (TKT-024) ---
 # Shows evaluation_state as the readiness display. proof_state is deprecated
 # with zero enforcement effect and is no longer shown here.

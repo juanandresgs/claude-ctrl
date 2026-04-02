@@ -190,6 +190,49 @@ CREATE TABLE IF NOT EXISTS approvals (
 )
 """
 
+DISPATCH_LEASES_DDL = """
+CREATE TABLE IF NOT EXISTS dispatch_leases (
+    lease_id            TEXT    PRIMARY KEY,
+    agent_id            TEXT,
+    role                TEXT    NOT NULL,
+    workflow_id         TEXT,
+    worktree_path       TEXT,
+    branch              TEXT,
+    allowed_ops_json    TEXT    NOT NULL DEFAULT '["routine_local"]',
+    blocked_ops_json    TEXT    NOT NULL DEFAULT '[]',
+    requires_eval       INTEGER NOT NULL DEFAULT 1,
+    head_sha            TEXT,
+    approval_scope_json TEXT,
+    next_step           TEXT,
+    status              TEXT    NOT NULL DEFAULT 'active',
+    issued_at           INTEGER NOT NULL,
+    expires_at          INTEGER NOT NULL,
+    released_at         INTEGER,
+    metadata_json       TEXT
+)
+"""
+
+# Partial indexes for active lease lookups (WHERE status = 'active' on first three)
+IDX_LEASE_WORKTREE_ACTIVE = """
+CREATE INDEX IF NOT EXISTS idx_lease_worktree_active
+    ON dispatch_leases (worktree_path, status) WHERE status = 'active'
+"""
+
+IDX_LEASE_AGENT_ACTIVE = """
+CREATE INDEX IF NOT EXISTS idx_lease_agent_active
+    ON dispatch_leases (agent_id, status) WHERE status = 'active'
+"""
+
+IDX_LEASE_WORKFLOW_ACTIVE = """
+CREATE INDEX IF NOT EXISTS idx_lease_workflow_active
+    ON dispatch_leases (workflow_id, status) WHERE status = 'active'
+"""
+
+IDX_LEASE_STATUS = """
+CREATE INDEX IF NOT EXISTS idx_lease_status
+    ON dispatch_leases (status)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -207,6 +250,11 @@ ALL_DDL: list[str] = [
     APPROVALS_DDL,
     EVALUATION_STATE_DDL,
     BUGS_DDL,
+    DISPATCH_LEASES_DDL,
+    IDX_LEASE_WORKTREE_ACTIVE,
+    IDX_LEASE_AGENT_ACTIVE,
+    IDX_LEASE_WORKFLOW_ACTIVE,
+    IDX_LEASE_STATUS,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
@@ -237,6 +285,13 @@ APPROVAL_OP_TYPES: frozenset[str] = frozenset(
         "non_ff_merge",
     }
 )
+
+# Dispatch lease status values — enforced at the domain layer.
+# Terminal states: released, revoked, expired. No transitions back to active.
+LEASE_STATUSES: frozenset[str] = frozenset({"active", "released", "revoked", "expired"})
+
+# Default TTL for dispatch leases: 2 hours in seconds.
+DEFAULT_LEASE_TTL: int = 7200
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

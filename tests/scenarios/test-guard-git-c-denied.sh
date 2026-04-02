@@ -72,15 +72,14 @@ check_deny() {
     fi
 }
 
-# --- Sub-test 1: Non-guardian git -C push → Check 3 WHO deny ---
-# After DEC-GUARD-003, routine local ops (commit, merge) skip WHO enforcement.
-# Push is high_risk and still requires Guardian role.
+# --- Sub-test 1: No-lease git -C push → Check 3 lease deny ---
+# After DEC-LEASE-002, high_risk ops without a lease are denied.
+# Push is high_risk. No lease issued → denied with "No active lease" message.
 setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-who -q
-# No marker set → role is empty (non-guardian)
 CMD="git -C \"$TMP_DIR\" push origin feature/test-who"
 output=$(run_hook "$CMD")
-check_deny "sub-test 1 (WHO)" "$output" "Guardian"
+check_deny "sub-test 1 (lease)" "$output" "No active lease"
 
 # --- Sub-test 2: git -C commit on main → Check 4 main-is-sacred deny ---
 setup_repo

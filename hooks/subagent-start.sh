@@ -31,6 +31,18 @@ get_plan_status "$PROJECT_ROOT"
 # .subagent-tracker flat-file write removed.
 rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
 
+# --- Lease claim: bind this agent to its dispatch lease ---
+_CLAIM=$(cc_policy lease claim "agent-$$" --worktree-path "$PROJECT_ROOT" 2>/dev/null) || _CLAIM=""
+_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+if [[ -n "$_LEASE_ID" ]]; then
+    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.role // empty' 2>/dev/null || true)
+    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.allowed_ops_json // "[]"' 2>/dev/null || true)
+    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.next_step // empty' 2>/dev/null || true)
+    CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
+else
+    CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
+fi
+
 CTX_LINE="Context:"
 [[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"
 [[ "$GIT_DIRTY_COUNT" -gt 0 ]] && CTX_LINE="$CTX_LINE | $GIT_DIRTY_COUNT dirty"

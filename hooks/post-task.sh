@@ -46,6 +46,17 @@ AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
 rt_event_emit "agent_complete" "Agent $AGENT_TYPE completed" || true
 
 # ---------------------------------------------------------------------------
+# Release active lease for this worktree on agent completion
+# ---------------------------------------------------------------------------
+
+_PROJECT_ROOT=$(detect_project_root 2>/dev/null || echo "")
+if [[ -n "$_PROJECT_ROOT" ]]; then
+    _ACTIVE_LEASE=$(cc_policy lease current --worktree-path "$_PROJECT_ROOT" 2>/dev/null) || _ACTIVE_LEASE=""
+    _RELEASE_ID=$(printf '%s' "${_ACTIVE_LEASE:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+    [[ -n "$_RELEASE_ID" ]] && cc_policy lease release "$_RELEASE_ID" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # Evaluate-state writes (TKT-024)
 # ---------------------------------------------------------------------------
 
