@@ -281,48 +281,86 @@ rt_approval_check() {
 }
 
 # ---------------------------------------------------------------------------
-# Dispatch lease wrappers (DEC-LEASE-001)
+# Dispatch lease wrappers (Phase 2: execution contracts)
 # ---------------------------------------------------------------------------
+#
+# @decision DEC-LEASE-002
+# @title Lease wrappers isolate hooks from cc_policy JSON parsing for contracts
+# @status accepted
+# @rationale Phase 1 leases.py and completions.py provide SQLite-backed
+#   execution contracts. These shell wrappers follow the same pattern as the
+#   proof/eval/marker wrappers above: all error paths return safe JSON
+#   ({"found":false} or "{}") so callers never receive empty strings from
+#   failed pipeline reads. Wrappers suppress stderr so runtime unavailability
+#   does not interrupt hook output. The rt_lease_claim wrapper returns the
+#   full JSON from cc_policy lease claim — callers extract lease_id and fields
+#   with jq. rt_lease_validate_op returns the full validate-op JSON dict.
+#   rt_lease_expire_stale is fire-and-forget (no output needed).
 
-# rt_lease_validate_op <command> <worktree_path>
-# Returns raw JSON validation result from cc-policy lease validate-op.
-# Always includes op_class in the result even when no lease is found.
-# Suppresses errors and returns empty string on runtime failure.
+# rt_lease_validate_op <command> [worktree_path]
+# Returns full validate-op JSON dict, or '{}' on failure.
 rt_lease_validate_op() {
     _rt_ensure_schema
-    local args=("lease" "validate-op" "$1")
-    [[ -n "${2:-}" ]] && args+=("--worktree-path" "$2")
-    cc_policy "${args[@]}" 2>/dev/null || true
+    local command="${1:-}" worktree_path="${2:-}"
+    local args=("lease" "validate-op" "$command")
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{}'
 }
 
-# rt_lease_current <worktree_path>
-# Returns raw JSON of the active lease for the given worktree, or {found: false}.
-# Suppresses errors and returns empty string on runtime failure.
+# rt_lease_current [worktree_path]
+# Returns active lease JSON dict, or '{"found":false}' on failure.
 rt_lease_current() {
     _rt_ensure_schema
+    local worktree_path="${1:-}"
     local args=("lease" "current")
-    [[ -n "${1:-}" ]] && args+=("--worktree-path" "$1")
-    cc_policy "${args[@]}" 2>/dev/null || true
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }
 
-# rt_lease_claim <agent_id> <worktree_path>
-# Binds agent_id to the active lease for worktree_path.
-# Returns raw JSON of the claimed lease, or {found: false} when none found.
+# rt_lease_claim <agent_id> [worktree_path]
+# Claims an active lease for agent_id. Returns full claim JSON or '{"found":false}'.
 rt_lease_claim() {
     _rt_ensure_schema
-    cc_policy lease claim "$1" --worktree-path "$2" 2>/dev/null || true
+    local agent_id="${1:-}" worktree_path="${2:-}"
+    local args=("lease" "claim" "$agent_id")
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }
 
 # rt_lease_release <lease_id>
-# Transitions the lease active → released. Silent on completion.
+# Transitions active → released. Fire-and-forget; never blocks hook execution.
 rt_lease_release() {
     _rt_ensure_schema
-    cc_policy lease release "$1" >/dev/null 2>&1 || true
+    local lease_id="${1:-}"
+    [[ -n "$lease_id" ]] && cc_policy lease release "$lease_id" 2>/dev/null || true
 }
 
 # rt_lease_expire_stale
-# Expires any active leases whose TTL has elapsed. Silent on completion.
+# Expires all active leases past their TTL. Fire-and-forget.
 rt_lease_expire_stale() {
     _rt_ensure_schema
-    cc_policy lease expire-stale >/dev/null 2>&1 || true
+    cc_policy lease expire-stale 2>/dev/null || true
+}
+
+# rt_completion_submit <lease_id> <workflow_id> <role> <payload_json>
+# Validates and records a completion. Returns submit result JSON or '{"valid":false}'.
+rt_completion_submit() {
+    _rt_ensure_schema
+    local lease_id="${1:-}" workflow_id="${2:-}" role="${3:-}" payload="${4:-}"
+    cc_policy completion submit \
+        --lease-id "$lease_id" \
+        --workflow-id "$workflow_id" \
+        --role "$role" \
+        --payload "$payload" \
+        2>/dev/null || echo '{"valid":false}'
+}
+
+# rt_completion_latest [lease_id]
+# Returns most recent completion record or '{"found":false}'.
+rt_completion_latest() {
+    _rt_ensure_schema
+    local lease_id="${1:-}"
+    local args=("completion" "latest")
+    [[ -n "$lease_id" ]] && args+=("--lease-id" "$lease_id")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }

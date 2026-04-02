@@ -31,13 +31,18 @@ get_plan_status "$PROJECT_ROOT"
 # .subagent-tracker flat-file write removed.
 rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
 
-# --- Lease claim: bind this agent to its dispatch lease ---
-_CLAIM=$(cc_policy lease claim "agent-$$" --worktree-path "$PROJECT_ROOT" 2>/dev/null) || _CLAIM=""
-_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+# --- Lease claim: bind this agent to an active dispatch lease if one exists ---
+# Phase 2 (DEC-LEASE-002): At spawn time, attempt to claim any active lease
+# for this worktree. If found, inject the lease context so the agent knows
+# its role, allowed ops, and next step without re-inferring from environment.
+# If no lease exists, inject a warning — high-risk git ops will be denied by
+# guard.sh Check 3 (validate_op fallback path) when no lease is active.
+_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT")
+_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
 if [[ -n "$_LEASE_ID" ]]; then
-    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.role // empty' 2>/dev/null || true)
-    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.allowed_ops_json // "[]"' 2>/dev/null || true)
-    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.next_step // empty' 2>/dev/null || true)
+    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
+    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
+    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
     CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
 else
     CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")

@@ -132,44 +132,52 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
     deny "Do not enter worktrees with bare cd. Use 'git -C \"$CD_TARGET\" <command>' for git, or '(cd \"$CD_TARGET\" && <command>)' in a subshell so the session cannot be bricked by later cleanup."
 fi
 
-# --- Check 3: Lease-based permission gate for git operations ---
-# Authority: dispatch lease (DEC-LEASE-001).
-# - Meta-repo: bypass (no lease required)
-# - Active lease: sole authority — validate_op decides
-# - No lease + routine_local: allow (Check 10 eval readiness is the authority)
-# - No lease + high_risk: deny (must have a lease for high-risk git ops)
+# --- Check 3: WHO enforcement for permanent git operations ---
+# Migrated from marker-based role check to lease validate-op (Phase 2).
+# Lease validate_op() is now the sole authority for who may run git ops.
+# Markers remain active for observability but have no enforcement effect here.
 #
-# @decision DEC-LEASE-002
-# @title Check 3 uses lease validate_op, not marker role
+# Logic:
+#   - Meta-repo bypass: ~/.claude config edits skip lease enforcement.
+#   - Active lease present: validate_op() is the sole authority.
+#     allowed=true  → proceed to later checks (Check 10, Check 13).
+#     allowed=false + op_class=high_risk → DENY (hard).
+#     allowed=false + op_class=routine_local → DENY (eval/lease gate).
+#   - No active lease + high_risk → DENY (no lease = no high-risk authority).
+#   - No active lease + routine_local → ALLOW (Check 10 owns readiness gate).
+#
+# @decision DEC-GUARD-003
+# @title WHO enforcement uses lease validate_op — markers are observability only
 # @status accepted
-# @rationale Markers are observability only for this path. The lease binds
-#   role + allowed_ops + worktree. validate_op in leases.py classifies the
-#   command (sole Python classifier for this path) and checks against the
-#   lease's allowed_ops. routine_local without a lease is allowed because
-#   Check 10 (evaluation_state) has always been the authority for routine
-#   local operations — Check 3 never gated those.
-if _cmd_has_git_subcmd "$COMMAND" commit merge push; then
-    _CHECK3_DIR=$(extract_git_target_dir "$COMMAND")
-    if is_claude_meta_repo "$_CHECK3_DIR"; then
-        : # Meta-repo — no lease required
-    else
-        # Lease validation — Python classifier is sole authority for this path
-        _LEASE_RESULT=$(rt_lease_validate_op "$COMMAND" "$_CHECK3_DIR")
-        _LEASE_FOUND=$(printf '%s' "${_LEASE_RESULT:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
-        if [[ -n "$_LEASE_FOUND" ]]; then
-            # Active lease exists — sole authority
-            _LEASE_ALLOWED=$(printf '%s' "$_LEASE_RESULT" | jq -r '.allowed // "false"' 2>/dev/null)
-            if [[ "$_LEASE_ALLOWED" != "true" ]]; then
-                _LEASE_REASON=$(printf '%s' "$_LEASE_RESULT" | jq -r '.reason // "lease denied"' 2>/dev/null)
-                deny "Lease check: $_LEASE_REASON"
+# @rationale Phase 2 execution contracts replace marker-based WHO detection.
+#   Markers are written at agent spawn but are racy in concurrent sessions.
+#   Leases are issued at dispatch time and carry explicit allowed_ops, making
+#   validate_op() a deterministic, non-racy authority. Routine local ops
+#   (commit, merge) without a lease remain allowed so the legacy path
+#   (pre-lease dispatch) continues to work — Check 10 owns their readiness
+#   gate. High-risk ops without a lease are denied: only a dispatched agent
+#   with an explicit lease containing high_risk in allowed_ops may run them.
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        _WHO_CLASS=$(classify_git_op "$COMMAND")
+        _LEASE_JSON=$(rt_lease_current "$PROJECT_ROOT")
+        _LEASE_FOUND=$(printf '%s' "${_LEASE_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+
+        if [[ "$_LEASE_FOUND" == "yes" ]]; then
+            # Active lease exists: validate_op() is the sole authority.
+            _VOP=$(rt_lease_validate_op "$COMMAND" "$PROJECT_ROOT")
+            _VOP_ALLOWED=$(printf '%s' "${_VOP:-}" | jq -r '.allowed // false' 2>/dev/null || echo "false")
+            if [[ "$_VOP_ALLOWED" != "true" ]]; then
+                _VOP_REASON=$(printf '%s' "${_VOP:-}" | jq -r '.reason // "validate_op denied"' 2>/dev/null || echo "validate_op denied")
+                deny "Execution contract denied: $_VOP_REASON. Check lease allowed_ops or evaluation_state."
             fi
+            # allowed=true: proceed to Check 10 (eval readiness) and Check 13 (approval tokens).
         else
-            # No lease — deny high_risk, allow routine_local (Check 10 handles it)
-            _LEASE_OP_CLASS=$(printf '%s' "${_LEASE_RESULT:-}" | jq -r '.op_class // "unclassified"' 2>/dev/null || true)
-            if [[ "$_LEASE_OP_CLASS" != "routine_local" ]]; then
-                deny "No active lease for high-risk git operation on this worktree. Issue a lease via: cc-policy lease issue-for-dispatch <role> --worktree-path $_CHECK3_DIR ..."
+            # No active lease.
+            if [[ "$_WHO_CLASS" == "high_risk" ]]; then
+                deny "No active dispatch lease for this worktree. High-risk git operations (push, rebase, reset) require an active lease. Dispatch an agent with cc-policy lease issue-for-dispatch."
             fi
-            # routine_local without lease: allowed here, Check 10 gates readiness
+            # routine_local without a lease: allow — Check 10 is the readiness authority.
         fi
     fi
 fi
@@ -178,9 +186,8 @@ fi
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
-if _cmd_has_git_subcmd "$COMMAND" commit; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
-    _scope_db_to_target "$TARGET_DIR"
     if ! is_claude_meta_repo "$TARGET_DIR"; then
         CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
         if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
@@ -195,7 +202,7 @@ if _cmd_has_git_subcmd "$COMMAND" commit; then
 fi
 
 # --- Check 5: Force push handling ---
-if _cmd_has_git_subcmd "$COMMAND" push && echo "$COMMAND" | grep -qE '(-f|--force)\b'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b.*(-f|--force)\b'; then
     if echo "$COMMAND" | grep -qE '(origin|upstream)\s+(main|master)\b'; then
         deny "Cannot force push to main/master. This is a destructive action that rewrites shared history."
     fi
@@ -206,15 +213,15 @@ if _cmd_has_git_subcmd "$COMMAND" push && echo "$COMMAND" | grep -qE '(-f|--forc
 fi
 
 # --- Check 6: No destructive git commands (hard blocks) ---
-if _cmd_has_git_subcmd "$COMMAND" reset && echo "$COMMAND" | grep -qE '\-\-hard'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\breset\b.*--hard'; then
     deny "git reset --hard is destructive and discards uncommitted work. Use git stash or create a backup branch first."
 fi
 
-if _cmd_has_git_subcmd "$COMMAND" clean && echo "$COMMAND" | grep -qE '\-f'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bclean\b.*-f'; then
     deny "git clean -f permanently deletes untracked files. Use git clean -n (dry run) first to see what would be deleted."
 fi
 
-if _cmd_has_git_subcmd "$COMMAND" branch && echo "$COMMAND" | grep -qE '\-D\b'; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bbranch\b.*-D\b'; then
     deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
@@ -239,7 +246,7 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
 fi
 
 # --- Check 8: Test status gate for merge commands ---
-if _cmd_has_git_subcmd "$COMMAND" merge; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
@@ -261,9 +268,8 @@ if _cmd_has_git_subcmd "$COMMAND" merge; then
 fi
 
 # --- Check 9: Test status gate for commit commands ---
-if _cmd_has_git_subcmd "$COMMAND" commit; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
-    _scope_db_to_target "$PROJECT_ROOT"
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
@@ -298,16 +304,15 @@ fi
 #   prompt "verified" no longer affects Guardian eligibility (prompt-submit.sh
 #   no longer writes any readiness state). SHA match prevents a stale clearance
 #   from applying after subsequent source changes.
-if _cmd_has_git_subcmd "$COMMAND" commit merge; then
-    if _cmd_has_git_subcmd "$COMMAND" commit; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
+    if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
         _EVAL_DIR=$(extract_git_target_dir "$COMMAND")
     else
         _EVAL_DIR=$(detect_project_root)
     fi
-    _scope_db_to_target "$_EVAL_DIR"
     if ! is_claude_meta_repo "$_EVAL_DIR"; then
         # Resolve workflow_id — for merge, use the branch being merged.
-        if _cmd_has_git_subcmd "$COMMAND" merge; then
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
             _MERGE_REF=$(extract_merge_ref "$COMMAND")
             if [[ -n "$_MERGE_REF" ]]; then
                 _EVAL_WF=$(sanitize_token "$_MERGE_REF")
@@ -331,7 +336,7 @@ if _cmd_has_git_subcmd "$COMMAND" commit merge; then
         # main's HEAD — the evaluator cleared the feature branch, not main.
         _EVAL_STATE_JSON=$(read_evaluation_state "$_EVAL_DIR" "$_EVAL_WF")
         _STORED_SHA=$(printf '%s' "${_EVAL_STATE_JSON:-}" | jq -r '.head_sha // empty' 2>/dev/null || true)
-        if _cmd_has_git_subcmd "$COMMAND" merge && [[ -n "${_MERGE_REF:-}" ]]; then
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && [[ -n "${_MERGE_REF:-}" ]]; then
             _COMPARE_HEAD=$(git -C "$_EVAL_DIR" rev-parse "$_MERGE_REF" 2>/dev/null || true)
             _SHA_LABEL="merge-ref ($_MERGE_REF)"
         else
@@ -348,7 +353,7 @@ if _cmd_has_git_subcmd "$COMMAND" commit merge; then
 
         # After a merge passes the gate, reset evaluation to idle so the
         # next workflow cycle starts clean.
-        if _cmd_has_git_subcmd "$COMMAND" merge; then
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
             rt_eval_set "$_EVAL_WF" "idle" 2>/dev/null || true
         fi
     fi
@@ -366,13 +371,12 @@ fi
 #   required for a traceable commit. Meta-repo bypass applies (config edits
 #   by the orchestrator do not go through the implementer workflow path).
 #   This check only fires on git commit/merge, not on push or other git ops.
-if _cmd_has_git_subcmd "$COMMAND" commit merge; then
-    if _cmd_has_git_subcmd "$COMMAND" commit; then
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
+    if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
         _CHECK12_DIR=$(extract_git_target_dir "$COMMAND")
     else
         _CHECK12_DIR=$(detect_project_root)
     fi
-    _scope_db_to_target "$_CHECK12_DIR"
 
     if ! is_claude_meta_repo "$_CHECK12_DIR"; then
         _WF12_ID=$(current_workflow_id "$_CHECK12_DIR")
@@ -423,17 +427,18 @@ fi
 #   rewrite history need explicit user approval via a one-shot token. This is
 #   the mechanical enforcement that replaces "Guardian asks the user in prose."
 #   classify_git_op() in context-lib.sh is the authority for risk classification.
-if _cmd_has_git_subcmd "$COMMAND" commit merge push rebase reset; then
+if echo "$COMMAND" | grep -qE '\bgit\b'; then
     _OP_CLASS=$(classify_git_op "$COMMAND")
     if [[ "$_OP_CLASS" == "high_risk" ]]; then
+        # Determine the op_type for the approval lookup
         _APPROVAL_OP=""
-        if _cmd_has_git_subcmd "$COMMAND" push; then
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b'; then
             _APPROVAL_OP="push"
-        elif _cmd_has_git_subcmd "$COMMAND" rebase; then
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\brebase\b'; then
             _APPROVAL_OP="rebase"
-        elif _cmd_has_git_subcmd "$COMMAND" reset; then
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\breset\b'; then
             _APPROVAL_OP="reset"
-        elif _cmd_has_git_subcmd "$COMMAND" merge && echo "$COMMAND" | grep -qE '\-\-no-ff'; then
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then
             _APPROVAL_OP="non_ff_merge"
         fi
 

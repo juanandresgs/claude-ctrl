@@ -506,77 +506,36 @@ get_workflow_binding() {
     [[ -n "$WORKFLOW_WORKTREE" ]]
 }
 
-# --- Token-based git subcommand detection (DEC-GUARD-TOKENIZE) ---
-# _cmd_has_git_subcmd <command> <subcmd1> [subcmd2] ...
-# Returns 0 if command is a git invocation with one of the listed subcommands.
-# Token-walks: skips env assignments, finds git, skips global options (-C, -c,
-# --git-dir, --work-tree, --no-pager), matches only the first positional arg.
-# Does NOT false-positive on string literals, filenames, or variables.
-_cmd_has_git_subcmd() {
-    local cmd="$1"; shift
-    local in_git=false skip_next=false found_cmd=false
-    for token in $cmd; do
-        if ! $in_git && ! $found_cmd && [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-            continue
-        fi
-        if [[ "$token" == "&&" || "$token" == "||" || "$token" == "|" || "$token" == ";" ]]; then
-            in_git=false; skip_next=false; found_cmd=false; continue
-        fi
-        if $skip_next; then skip_next=false; continue; fi
-        if [[ "$token" == "git" ]]; then
-            in_git=true; found_cmd=true; continue
-        fi
-        found_cmd=true
-        if $in_git; then
-            case "$token" in
-                -C|-c|--git-dir|--work-tree|--namespace)
-                    skip_next=true; continue ;;
-                --git-dir=*|--work-tree=*|--namespace=*|-C*)
-                    continue ;;
-                --no-pager|--bare|--no-replace-objects)
-                    continue ;;
-                -*)
-                    continue ;;
-                *)
-                    local t; for t in "$@"; do
-                        [[ "$token" == "$t" ]] && return 0
-                    done
-                    return 1 ;;
-            esac
-        fi
-    done
-    return 1
-}
-
-# _scope_db_to_target <target_dir>
-# If target dir has .claude/state.db, export CLAUDE_POLICY_DB to use it.
-# Ensures guard.sh reads state from the TARGETED repo, not the session default.
-_scope_db_to_target() {
-    local target_dir="$1"
-    if [[ -n "$target_dir" && -f "$target_dir/.claude/state.db" ]]; then
-        export CLAUDE_POLICY_DB="$target_dir/.claude/state.db"
-    fi
-}
-
 # --- Git operation classifier (DEC-CLASSIFY-001) ---
 # classify_git_op <command>
 # Returns "routine_local", "high_risk", or "unclassified".
-# Uses _cmd_has_git_subcmd for token-based detection (DEC-GUARD-TOKENIZE).
+# Bash implementation for hook performance — avoids Python startup overhead.
+# Authority for risk levels: this function. guard.sh Check 13 reads it.
+#
+# @decision DEC-CLASSIFY-001
+# @title Bash classifier is the authority for git op risk levels
+# @status accepted
+# @rationale Hook performance requires avoiding Python startup for every
+#   command. The classifier is simple regex matching — bash is sufficient.
+#   routine_local: evaluation_state gates these (Check 10). high_risk: approval
+#   token required (Check 13). unclassified: not a git op of interest.
 classify_git_op() {
     local cmd="$1"
-    if _cmd_has_git_subcmd "$cmd" push; then echo "high_risk"; return; fi
-    if _cmd_has_git_subcmd "$cmd" rebase; then echo "high_risk"; return; fi
-    if _cmd_has_git_subcmd "$cmd" reset; then echo "high_risk"; return; fi
-    if _cmd_has_git_subcmd "$cmd" merge; then
-        if echo "$cmd" | grep -qE '\-\-no-ff'; then echo "high_risk"; return; fi
-        echo "routine_local"; return
-    fi
-    if _cmd_has_git_subcmd "$cmd" commit; then echo "routine_local"; return; fi
+    # High-risk: push (any form)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bpush\b'; then echo "high_risk"; return; fi
+    # High-risk: rebase
+    if echo "$cmd" | grep -qE '\bgit\b.*\brebase\b'; then echo "high_risk"; return; fi
+    # High-risk: reset (any form)
+    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b'; then echo "high_risk"; return; fi
+    # High-risk: non-ff merge (explicit --no-ff)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then echo "high_risk"; return; fi
+    # Routine local: commit or merge (local-only, no --no-ff)
+    if echo "$cmd" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then echo "routine_local"; return; fi
+    # Default: unclassified (git log, git status, git diff, etc.)
     echo "unclassified"
 }
 
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f _cmd_has_git_subcmd _scope_db_to_target
-export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale
+export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest
 export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op

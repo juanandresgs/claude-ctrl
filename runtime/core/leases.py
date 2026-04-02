@@ -1,31 +1,31 @@
-"""Dispatch lease domain module — execution contracts for agent operations.
+"""Dispatch lease lifecycle authority.
 
 @decision DEC-LEASE-001
-Title: Dispatch leases replace marker-based WHO enforcement for Check 3
+Title: SQLite-backed dispatch leases bind agent identity to worktree + allowed ops
 Status: accepted
-Rationale: The old Check 3 in guard.sh read the agent_markers table to
-  determine if the active agent had "guardian" role before allowing high-risk
-  git operations (push, rebase, reset, merge --no-ff). This created a race
-  condition: concurrent sessions overwrite the active marker, making role
-  determination indeterminate. Dispatch leases fix this by making permission
-  explicit and worktree-scoped. The orchestrator issues a lease before
-  dispatching an agent; the lease declares what operations are allowed
-  (allowed_ops_json); guard.sh validates operations against the active lease
-  for the worktree rather than reading global marker state.
-
-  Authority boundary:
-    - This module owns the dispatch_leases table exclusively.
-    - validate_op() calls evaluation.get() and approvals.list_pending() as
-      read-only dependencies — it does NOT write to those tables.
-    - classify_git_op() here is the sole classifier for the Check 3 path.
-      The bash classifier in context-lib.sh remains for Check 13 only.
-    - Markers remain for observability (set by subagent-start.sh) but are
-      NOT consulted by Check 3 after this migration.
+Rationale: Subagents today rediscover identity from ambient state (markers, CWD
+  inference). This produces wasted turns, partial completions treated as done,
+  and no deterministic enforcement. A runtime-issued lease ties the agent role,
+  worktree, workflow, allowed operations, and evaluation requirements into one
+  durable record at dispatch time. validate_op() then gates git operations
+  against the active lease rather than re-inferring from environment variables.
 
   Uniqueness invariants:
-    - At most one active lease per worktree_path (enforced by issue()).
-    - At most one active lease per agent_id (enforced by claim()).
-    - Both invariants enforced atomically in single transactions.
+    - One active lease per worktree_path: issuing a new one revokes the old.
+    - One active lease per agent_id: claiming revokes any other active lease
+      held by the same agent (agents do not hold multiple leases).
+
+  Lifecycle: active → released (normal completion) | revoked (superseded) |
+             expired (TTL elapsed, detected by expire_stale).
+
+  validate_op() never consumes approval tokens — it only peeks via list_pending.
+  guard.sh Check 13 owns actual token consumption. This separation ensures
+  validate_op is safe to call repeatedly without side effects.
+
+  classify_git_op() is the sole Python-side git-command classifier. It is the
+  migration target for the bash classifier in guard.sh Check 3. When hook
+  wiring lands (Phase 2), guard.sh Check 3 will call this via cc-policy
+  lease validate-op rather than inline bash regex.
 """
 
 from __future__ import annotations
@@ -38,46 +38,45 @@ import uuid
 from typing import Optional
 
 from runtime.schemas import DEFAULT_LEASE_TTL
-import runtime.core.evaluation as evaluation_mod
-import runtime.core.approvals as approvals_mod
 
 
 # ---------------------------------------------------------------------------
-# Git op classifier — sole authority for Check 3 path (DEC-LEASE-001)
+# Classifier
 # ---------------------------------------------------------------------------
 
 
 def classify_git_op(command: str) -> str:
-    """Classify a git command string into a risk tier.
+    """Classify a git command string into an operation class.
 
-    Python port of the bash classifier in context-lib.sh:522-536.
-    Must produce identical results for any command string.
+    Returns one of: "routine_local", "high_risk", "unclassified".
 
-    Returns:
-        "high_risk"      — push, rebase, reset, merge --no-ff
-        "routine_local"  — commit or merge (without --no-ff)
-        "unclassified"   — anything else (log, status, diff, etc.)
+    This is the sole classifier for the migrated Check 3 path. Word-boundary
+    matching prevents substring false positives (e.g. 'git remote' does not
+    match 'git reset').
 
-    This function is the sole classifier for the migrated Check 3 path.
-    The bash classifier in context-lib.sh is retained for Check 13 only.
-    Never return None — all inputs produce one of the three string values.
+    Classification precedence (first match wins):
+      high_risk:     push, rebase, reset, merge --no-ff
+      routine_local: commit, merge (without --no-ff)
+      unclassified:  everything else
     """
-    # High-risk: push (any form, including git -C /path push)
-    if re.search(r"\bgit\b.*\bpush\b", command):
+    # High-risk: push
+    if re.search(r"\bpush\b", command):
         return "high_risk"
     # High-risk: rebase
-    if re.search(r"\bgit\b.*\brebase\b", command):
+    if re.search(r"\brebase\b", command):
         return "high_risk"
-    # High-risk: reset (any form — --hard, --soft, etc.)
-    if re.search(r"\bgit\b.*\breset\b", command):
+    # High-risk: reset
+    if re.search(r"\breset\b", command):
         return "high_risk"
-    # High-risk: non-fast-forward merge (explicit --no-ff flag)
-    if re.search(r"\bgit\b.*\bmerge\b.*--no-ff", command):
+    # High-risk: merge --no-ff (must check before plain merge)
+    if re.search(r"\bmerge\b", command) and "--no-ff" in command:
         return "high_risk"
-    # Routine local: commit or merge (local-only, without --no-ff)
-    if re.search(r"\bgit\b.*\b(commit|merge)\b", command):
+    # Routine local: commit
+    if re.search(r"\bcommit\b", command):
         return "routine_local"
-    # Default: unclassified (log, status, diff, show, etc.)
+    # Routine local: merge (without --no-ff already handled above)
+    if re.search(r"\bmerge\b", command):
+        return "routine_local"
     return "unclassified"
 
 
@@ -86,37 +85,12 @@ def classify_git_op(command: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_json_col(value: Optional[str], default) -> object:
-    """Parse a JSON column value, falling back to default on error.
-
-    Follows the pattern from runtime/core/workflows.py get_scope() —
-    try json.loads, fall back to empty list (or provided default) on error.
-    """
-    if value is None:
-        return default
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
 def _row_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a sqlite3.Row to a plain dict with JSON columns parsed."""
-    d = dict(row)
-    d["allowed_ops"] = _parse_json_col(d.get("allowed_ops_json"), ["routine_local"])
-    d["blocked_ops"] = _parse_json_col(d.get("blocked_ops_json"), [])
-    d["approval_scope"] = _parse_json_col(d.get("approval_scope_json"), None)
-    d["metadata"] = _parse_json_col(d.get("metadata_json"), None)
-    return d
+    return dict(row)
 
 
-def _revoke_active_for_worktree(conn: sqlite3.Connection, worktree_path: str) -> None:
-    """Revoke any existing active lease for this worktree_path.
-
-    Called inside issue() before INSERT to enforce the uniqueness invariant
-    (at most one active lease per worktree_path). Caller holds the transaction.
-    """
-    now = int(time.time())
+def _revoke_active_for_worktree(conn: sqlite3.Connection, worktree_path: str, now: int) -> None:
+    """Revoke any active leases for worktree_path (called inside an open transaction)."""
     conn.execute(
         """UPDATE dispatch_leases
            SET status = 'revoked', released_at = ?
@@ -125,21 +99,25 @@ def _revoke_active_for_worktree(conn: sqlite3.Connection, worktree_path: str) ->
     )
 
 
-def _revoke_active_for_agent(
-    conn: sqlite3.Connection, agent_id: str, exclude_lease_id: str
-) -> None:
-    """Revoke any other active lease for this agent_id.
-
-    Called inside claim() to enforce agent uniqueness invariant
-    (at most one active lease per agent_id at a time). Caller holds the transaction.
-    """
-    now = int(time.time())
+def _revoke_active_for_agent(conn: sqlite3.Connection, agent_id: str, now: int) -> None:
+    """Revoke any active leases for agent_id (called inside an open transaction)."""
     conn.execute(
         """UPDATE dispatch_leases
            SET status = 'revoked', released_at = ?
-           WHERE agent_id = ? AND status = 'active' AND lease_id != ?""",
-        (now, agent_id, exclude_lease_id),
+           WHERE agent_id = ? AND status = 'active'""",
+        (now, agent_id),
     )
+
+
+def _fetch_active(conn: sqlite3.Connection, **filters) -> Optional[sqlite3.Row]:
+    """Fetch first active lease matching the given column=value filters."""
+    clauses = ["status = 'active'"]
+    params = []
+    for col, val in filters.items():
+        clauses.append(f"{col} = ?")
+        params.append(val)
+    sql = f"SELECT * FROM dispatch_leases WHERE {' AND '.join(clauses)} LIMIT 1"
+    return conn.execute(sql, params).fetchone()
 
 
 # ---------------------------------------------------------------------------
@@ -157,62 +135,58 @@ def issue(
     blocked_ops: Optional[list] = None,
     requires_eval: bool = True,
     head_sha: Optional[str] = None,
-    approval_scope: Optional[object] = None,
+    approval_scope: Optional[list] = None,
     next_step: Optional[str] = None,
     ttl: int = DEFAULT_LEASE_TTL,
-    metadata: Optional[object] = None,
+    metadata: Optional[dict] = None,
 ) -> dict:
-    """Mint a new dispatch lease and return the full lease dict.
+    """Issue a new dispatch lease for a role.
 
-    The lease_id is generated as a UUID4 hex string.
-    expires_at = now + ttl (default 7200 seconds = 2 hours).
-
-    CRITICAL: Before INSERT, any existing active lease for the same
-    worktree_path is revoked atomically in the same transaction.
-    This enforces the uniqueness invariant: at most one active lease
-    per worktree_path at any time (DEC-LEASE-001).
-
-    Raises ValueError for unknown role or invalid ttl.
+    If worktree_path is provided, any existing active lease for that path is
+    revoked within the same transaction (one-active-per-worktree invariant).
+    Returns the full lease row as a dict.
     """
-    if not role:
-        raise ValueError("role is required")
-    if ttl <= 0:
-        raise ValueError(f"ttl must be positive, got {ttl}")
-
     lease_id = uuid.uuid4().hex
     now = int(time.time())
     expires_at = now + ttl
 
-    _allowed = allowed_ops if allowed_ops is not None else ["routine_local"]
-    _blocked = blocked_ops if blocked_ops is not None else []
+    if allowed_ops is None:
+        allowed_ops = ["routine_local"]
+    if blocked_ops is None:
+        blocked_ops = []
+
+    allowed_ops_json = json.dumps(allowed_ops)
+    blocked_ops_json = json.dumps(blocked_ops)
+    approval_scope_json = json.dumps(approval_scope) if approval_scope is not None else None
+    metadata_json = json.dumps(metadata) if metadata is not None else None
 
     with conn:
-        # Revoke existing active lease for same worktree before inserting
+        # Enforce uniqueness: one active lease per worktree.
         if worktree_path:
-            _revoke_active_for_worktree(conn, worktree_path)
+            _revoke_active_for_worktree(conn, worktree_path, now)
 
         conn.execute(
-            """INSERT INTO dispatch_leases
-               (lease_id, agent_id, role, workflow_id, worktree_path, branch,
-                allowed_ops_json, blocked_ops_json, requires_eval, head_sha,
-                approval_scope_json, next_step, status, issued_at, expires_at,
-                released_at, metadata_json)
-               VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?)""",
+            """INSERT INTO dispatch_leases (
+                   lease_id, role, workflow_id, worktree_path, branch,
+                   allowed_ops_json, blocked_ops_json, requires_eval,
+                   head_sha, approval_scope_json, next_step,
+                   status, issued_at, expires_at, metadata_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
             (
                 lease_id,
                 role,
                 workflow_id,
                 worktree_path,
                 branch,
-                json.dumps(_allowed),
-                json.dumps(_blocked),
-                1 if requires_eval else 0,
+                allowed_ops_json,
+                blocked_ops_json,
+                int(requires_eval),
                 head_sha,
-                json.dumps(approval_scope) if approval_scope is not None else None,
+                approval_scope_json,
                 next_step,
                 now,
                 expires_at,
-                json.dumps(metadata) if metadata is not None else None,
+                metadata_json,
             ),
         )
 
@@ -225,55 +199,51 @@ def claim(
     lease_id: Optional[str] = None,
     worktree_path: Optional[str] = None,
 ) -> Optional[dict]:
-    """Bind an agent_id to a lease. Returns the claimed lease dict or None.
+    """Claim an active lease by associating agent_id with it.
 
-    Finds the active lease by lease_id (preferred) or worktree_path.
-    Sets agent_id on the matched lease.
-
-    Also revokes any OTHER active lease with the same agent_id (agent
-    uniqueness invariant: one agent = one execution context at a time).
-
-    Returns None when no matching active lease is found.
+    Lookup priority: lease_id > worktree_path.
+    Any other active lease held by agent_id is revoked (one-lease-per-agent).
+    Returns the claimed lease dict, or None if no active lease found.
     """
-    if not agent_id:
-        raise ValueError("agent_id is required")
+    now = int(time.time())
 
-    # Find the target lease
-    row = None
+    # Find target lease
+    target_row = None
     if lease_id:
         row = conn.execute(
-            """SELECT * FROM dispatch_leases
-               WHERE lease_id = ? AND status = 'active'""",
+            "SELECT * FROM dispatch_leases WHERE lease_id = ? AND status = 'active'",
             (lease_id,),
         ).fetchone()
+        target_row = row
     elif worktree_path:
-        row = conn.execute(
-            """SELECT * FROM dispatch_leases
-               WHERE worktree_path = ? AND status = 'active'""",
-            (worktree_path,),
-        ).fetchone()
+        target_row = _fetch_active(conn, worktree_path=worktree_path)
 
-    if row is None:
+    if target_row is None:
         return None
 
-    target_lease_id = row["lease_id"]
+    target_lease_id = target_row["lease_id"]
 
     with conn:
-        # Set agent_id on the target lease
+        # Revoke any other active lease for this agent (excluding the target).
         conn.execute(
-            """UPDATE dispatch_leases SET agent_id = ? WHERE lease_id = ?""",
+            """UPDATE dispatch_leases
+               SET status = 'revoked', released_at = ?
+               WHERE agent_id = ? AND status = 'active' AND lease_id != ?""",
+            (now, agent_id, target_lease_id),
+        )
+        # Associate agent_id with the target lease.
+        conn.execute(
+            "UPDATE dispatch_leases SET agent_id = ? WHERE lease_id = ?",
             (agent_id, target_lease_id),
         )
-        # Revoke any other active lease for this agent_id (agent uniqueness)
-        _revoke_active_for_agent(conn, agent_id, target_lease_id)
 
     return get(conn, target_lease_id)
 
 
 def get(conn: sqlite3.Connection, lease_id: str) -> Optional[dict]:
-    """Direct lookup by primary key. Returns lease dict or None."""
+    """Direct lookup by lease_id. Returns dict or None."""
     row = conn.execute(
-        """SELECT * FROM dispatch_leases WHERE lease_id = ?""",
+        "SELECT * FROM dispatch_leases WHERE lease_id = ?",
         (lease_id,),
     ).fetchone()
     return _row_to_dict(row) if row else None
@@ -286,39 +256,23 @@ def get_current(
     agent_id: Optional[str] = None,
     workflow_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """Resolve the current active lease. Resolution priority:
-    lease_id > agent_id > worktree_path > workflow_id.
+    """Resolve the active lease with priority: lease_id > agent_id > worktree_path > workflow_id.
 
-    Only returns status='active' leases. Returns None when no active
-    lease matches any of the provided identifiers.
+    Only returns status='active' leases. Returns None if no active lease found
+    for any of the supplied identifiers.
     """
     row = None
-
     if lease_id:
         row = conn.execute(
-            """SELECT * FROM dispatch_leases
-               WHERE lease_id = ? AND status = 'active'""",
+            "SELECT * FROM dispatch_leases WHERE lease_id = ? AND status = 'active'",
             (lease_id,),
         ).fetchone()
-    elif agent_id:
-        row = conn.execute(
-            """SELECT * FROM dispatch_leases
-               WHERE agent_id = ? AND status = 'active'""",
-            (agent_id,),
-        ).fetchone()
-    elif worktree_path:
-        row = conn.execute(
-            """SELECT * FROM dispatch_leases
-               WHERE worktree_path = ? AND status = 'active'""",
-            (worktree_path,),
-        ).fetchone()
-    elif workflow_id:
-        row = conn.execute(
-            """SELECT * FROM dispatch_leases
-               WHERE workflow_id = ? AND status = 'active'""",
-            (workflow_id,),
-        ).fetchone()
-
+    if row is None and agent_id:
+        row = _fetch_active(conn, agent_id=agent_id)
+    if row is None and worktree_path:
+        row = _fetch_active(conn, worktree_path=worktree_path)
+    if row is None and workflow_id:
+        row = _fetch_active(conn, workflow_id=workflow_id)
     return _row_to_dict(row) if row else None
 
 
@@ -330,34 +284,30 @@ def validate_op(
     agent_id: Optional[str] = None,
     workflow_id: Optional[str] = None,
 ) -> dict:
-    """Validate whether a git command is permitted under the active lease.
+    """Composite validation of a git command against the active lease.
 
-    ALWAYS classifies the command first (even when no lease exists) and
-    includes op_class in the result. This lets guard.sh make the
-    routine_local exception decision without a second classifier call.
+    Always returns a dict with the full validation surface. Does NOT consume
+    approval tokens — only peeks via list_pending. guard.sh Check 13 owns
+    token consumption.
 
-    Return contract:
-      {
-        "allowed": bool,
-        "reason": str,
-        "lease_id": str | None,
-        "role": str | None,
-        "workflow_id": str | None,
-        "op_class": "routine_local" | "high_risk" | "unclassified",
-        "requires_eval": bool,
-        "eval_ok": bool | None,
-        "requires_approval": bool,
-        "approval_ok": bool | None,
-      }
-
-    When no lease is found: allowed=False with op_class populated.
-    When lease found: sole authority — checks allowed_ops, blocked_ops,
-      worktree match, eval state (for routine_local), approvals (for high_risk).
+    Return keys:
+      allowed          bool  — True only when all applicable checks pass
+      reason           str   — human-readable explanation
+      lease_id         str|None
+      role             str|None
+      workflow_id      str|None
+      op_class         str   — always present: routine_local|high_risk|unclassified
+      requires_eval    bool
+      eval_ok          bool|None  — None when eval check not applicable
+      requires_approval bool
+      approval_ok      bool|None  — None when approval check not applicable
     """
-    # Step 1: classify regardless of lease existence
+    import runtime.core.evaluation as evaluation_mod
+    import runtime.core.approvals as approvals_mod
+
     op_class = classify_git_op(command)
 
-    base = {
+    result = {
         "allowed": False,
         "reason": "",
         "lease_id": None,
@@ -370,7 +320,7 @@ def validate_op(
         "approval_ok": None,
     }
 
-    # Step 2: find active lease
+    # Resolve active lease.
     lease = get_current(
         conn,
         lease_id=lease_id,
@@ -380,86 +330,82 @@ def validate_op(
     )
 
     if lease is None:
-        wt_desc = worktree_path or agent_id or workflow_id or lease_id or "unknown"
-        base["reason"] = f"no active lease for worktree {wt_desc}"
-        base["lease_id"] = None
-        return base
+        result["reason"] = "no active lease found"
+        return result
 
-    # Lease found — populate base fields
-    base["lease_id"] = lease["lease_id"]
-    base["role"] = lease["role"]
-    base["workflow_id"] = lease["workflow_id"]
-    base["requires_eval"] = bool(lease.get("requires_eval", 1))
+    # Check lease is not expired (get_current only returns status=active, but
+    # expire_stale may not have run yet — check expires_at defensively).
+    now = int(time.time())
+    if lease["expires_at"] < now:
+        result["reason"] = "lease has expired"
+        return result
 
-    # Step 3: worktree_path match check
-    # Only enforce when BOTH the lease has a worktree_path AND the caller provided one
-    lease_wt = lease.get("worktree_path")
-    if lease_wt and worktree_path and lease_wt != worktree_path:
-        base["reason"] = (
-            f"lease worktree_path '{lease_wt}' does not match "
-            f"requested worktree_path '{worktree_path}'"
-        )
-        return base
+    result["lease_id"] = lease["lease_id"]
+    result["role"] = lease["role"]
+    result["workflow_id"] = lease["workflow_id"]
+    result["requires_eval"] = bool(lease["requires_eval"])
 
-    # Step 4: op_class allowed/blocked check
-    allowed_ops = lease.get("allowed_ops", ["routine_local"])
-    blocked_ops = lease.get("blocked_ops", [])
+    # Deserialise allowed/blocked op lists.
+    try:
+        allowed_ops = json.loads(lease["allowed_ops_json"] or "[]")
+        blocked_ops = json.loads(lease["blocked_ops_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        allowed_ops = ["routine_local"]
+        blocked_ops = []
 
+    # Check op is permitted by the lease.
     if op_class in blocked_ops:
-        base["reason"] = f"op '{op_class}' is in blocked_ops for this lease"
-        return base
-
+        result["reason"] = f"op_class '{op_class}' is in blocked_ops"
+        return result
     if op_class not in allowed_ops:
-        base["reason"] = f"op '{op_class}' is not in allowed_ops {allowed_ops} for this lease"
-        return base
+        result["reason"] = f"op_class '{op_class}' not in allowed_ops {allowed_ops}"
+        return result
 
-    # Step 5: eval readiness check (for routine_local ops with requires_eval)
+    # Eval check (when requires_eval and op is not unclassified).
     eval_ok = None
-    if base["requires_eval"] and op_class == "routine_local":
-        lw = lease.get("workflow_id")
-        if lw:
-            eval_row = evaluation_mod.get(conn, lw)
-            if eval_row and eval_row.get("status") == "ready_for_guardian":
+    if lease["requires_eval"] and op_class != "unclassified":
+        wf_id = lease["workflow_id"]
+        if wf_id:
+            eval_state = evaluation_mod.get(conn, wf_id)
+            if (
+                eval_state is not None
+                and eval_state.get("status") == "ready_for_guardian"
+                and (lease["head_sha"] is None or eval_state.get("head_sha") == lease["head_sha"])
+            ):
                 eval_ok = True
             else:
                 eval_ok = False
-                eval_status = eval_row.get("status", "idle") if eval_row else "idle"
-                base["eval_ok"] = eval_ok
-                base["reason"] = f"evaluation_state is '{eval_status}', need 'ready_for_guardian'"
-                return base
         else:
-            # No workflow_id on lease — cannot check eval; treat as ok
+            # No workflow_id on lease — cannot check eval, treat as ok.
             eval_ok = True
-    base["eval_ok"] = eval_ok
 
-    # Step 6: approval check for high_risk ops (read-only — does NOT consume)
+    result["eval_ok"] = eval_ok
+
+    if eval_ok is False:
+        result["reason"] = "evaluation_state is not ready_for_guardian (or SHA mismatch)"
+        return result
+
+    # Approval check (high_risk ops only).
+    requires_approval = op_class == "high_risk"
+    result["requires_approval"] = requires_approval
     approval_ok = None
-    requires_approval = False
-    if op_class == "high_risk":
-        requires_approval = True
-        lw = lease.get("workflow_id")
-        if lw:
-            # Check for any pending approval for this workflow (read-only list)
-            pending = approvals_mod.list_pending(conn, lw)
-            approval_ok = len(pending) > 0
-        else:
-            # No workflow_id — cannot check approvals; treat as no approval
-            approval_ok = False
 
-        if not approval_ok:
-            base["requires_approval"] = requires_approval
-            base["approval_ok"] = approval_ok
-            base["reason"] = (
-                "high_risk op requires an unconsumed approval token "
-                "(cc-policy approval grant <workflow_id> <op_type>)"
-            )
-            return base
+    if requires_approval:
+        wf_id = lease["workflow_id"]
+        pending = approvals_mod.list_pending(conn, workflow_id=wf_id)
+        # Map op_class to the approval op_type we'd look for.
+        # high_risk ops may have different sub-types; for now we accept any pending token.
+        approval_ok = len(pending) > 0
 
-    base["requires_approval"] = requires_approval
-    base["approval_ok"] = approval_ok
-    base["allowed"] = True
-    base["reason"] = "allowed"
-    return base
+    result["approval_ok"] = approval_ok
+
+    if requires_approval and not approval_ok:
+        result["reason"] = "high_risk op requires an unconsumed approval token"
+        return result
+
+    result["allowed"] = True
+    result["reason"] = "ok"
+    return result
 
 
 def list_leases(
@@ -469,24 +415,23 @@ def list_leases(
     role: Optional[str] = None,
     worktree_path: Optional[str] = None,
 ) -> list[dict]:
-    """Return a filtered list of leases as dicts with parsed JSON columns."""
+    """List leases with optional filters, ordered by issued_at DESC."""
     clauses = []
     params = []
-
-    if status is not None:
+    if status:
         clauses.append("status = ?")
         params.append(status)
-    if workflow_id is not None:
+    if workflow_id:
         clauses.append("workflow_id = ?")
         params.append(workflow_id)
-    if role is not None:
+    if role:
         clauses.append("role = ?")
         params.append(role)
-    if worktree_path is not None:
+    if worktree_path:
         clauses.append("worktree_path = ?")
         params.append(worktree_path)
 
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
         f"SELECT * FROM dispatch_leases {where} ORDER BY issued_at DESC",
         params,
@@ -495,7 +440,7 @@ def list_leases(
 
 
 def release(conn: sqlite3.Connection, lease_id: str) -> bool:
-    """Transition lease from active → released. Returns True if transitioned."""
+    """Transition active → released. Returns True if updated, False otherwise."""
     now = int(time.time())
     with conn:
         cursor = conn.execute(
@@ -508,7 +453,7 @@ def release(conn: sqlite3.Connection, lease_id: str) -> bool:
 
 
 def revoke(conn: sqlite3.Connection, lease_id: str) -> bool:
-    """Transition lease from active → revoked. Returns True if transitioned."""
+    """Transition active → revoked. Returns True if updated, False otherwise."""
     now = int(time.time())
     with conn:
         cursor = conn.execute(
@@ -521,12 +466,9 @@ def revoke(conn: sqlite3.Connection, lease_id: str) -> bool:
 
 
 def expire_stale(conn: sqlite3.Connection, now: Optional[int] = None) -> int:
-    """Expire active leases whose expires_at is in the past.
+    """Transition all active leases past their expires_at to status='expired'.
 
-    Transitions active leases past their TTL to 'expired' status.
-    Returns the count of leases transitioned.
-    Called by session-init.sh on every session start to clean up
-    leases from crashed or abandoned agents.
+    Returns the count of leases that were expired.
     """
     if now is None:
         now = int(time.time())
@@ -545,79 +487,55 @@ def summary(
     worktree_path: Optional[str] = None,
     workflow_id: Optional[str] = None,
 ) -> dict:
-    """Return a compact read model of lease state.
+    """Compact read model: active_lease, recent_leases (last 5), has_active."""
+    active = get_current(conn, worktree_path=worktree_path, workflow_id=workflow_id)
 
-    Suitable for context injection and status display. Shows the active
-    lease (if any) plus counts by status for the given scope.
-    """
-    filters = {}
+    # Recent leases (last 5) filtered by supplied context.
+    clauses = []
+    params = []
     if worktree_path:
-        filters["worktree_path"] = worktree_path
+        clauses.append("worktree_path = ?")
+        params.append(worktree_path)
     if workflow_id:
-        filters["workflow_id"] = workflow_id
-
-    active = get_current(
-        conn,
-        worktree_path=worktree_path,
-        workflow_id=workflow_id,
-    )
-
-    # Count by status for the scope
-    all_leases = list_leases(conn, worktree_path=worktree_path, workflow_id=workflow_id)
-    counts: dict[str, int] = {}
-    for lz in all_leases:
-        s = lz.get("status", "unknown")
-        counts[s] = counts.get(s, 0) + 1
+        clauses.append("workflow_id = ?")
+        params.append(workflow_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    recent_rows = conn.execute(
+        f"SELECT * FROM dispatch_leases {where} ORDER BY issued_at DESC LIMIT 5",
+        params,
+    ).fetchall()
 
     return {
         "active_lease": active,
-        "counts_by_status": counts,
-        "worktree_path": worktree_path,
-        "workflow_id": workflow_id,
+        "recent_leases": [_row_to_dict(r) for r in recent_rows],
+        "has_active": active is not None,
     }
 
 
 def render_startup_contract(lease: dict) -> str:
-    """Render a human-readable startup contract text block from a lease dict.
+    """Render a human-readable text block from a lease dict.
 
-    The orchestrator pastes this into the agent prompt. Format mirrors
-    the plan's startup_contract field example for consistency.
+    Used by the CLI to print context for the agent at dispatch time.
     """
     import datetime
 
-    lines = [f"LEASE_ID={lease.get('lease_id', 'unknown')}"]
-    lines.append(f"Role: {lease.get('role', 'unknown')}")
+    expires_dt = datetime.datetime.fromtimestamp(
+        lease.get("expires_at", 0), tz=datetime.timezone.utc
+    ).isoformat()
 
-    wf = lease.get("workflow_id")
-    if wf:
-        lines.append(f"Workflow: {wf}")
+    try:
+        allowed_ops = json.loads(lease.get("allowed_ops_json") or "[]")
+        allowed_str = ", ".join(allowed_ops) if allowed_ops else "(none)"
+    except (json.JSONDecodeError, TypeError):
+        allowed_str = "(parse error)"
 
-    wt = lease.get("worktree_path")
-    if wt:
-        lines.append(f"Worktree: {wt}")
-
-    branch = lease.get("branch")
-    if branch:
-        lines.append(f"Branch: {branch}")
-
-    allowed = lease.get("allowed_ops", ["routine_local"])
-    if isinstance(allowed, list):
-        lines.append(f"Allowed ops: {', '.join(allowed)}")
-
-    blocked = lease.get("blocked_ops", [])
-    if blocked:
-        lines.append(f"Blocked ops: {', '.join(blocked)}")
-
-    ns = lease.get("next_step")
-    if ns:
-        lines.append(f"Next step: {ns}")
-
-    expires_at = lease.get("expires_at")
-    if expires_at:
-        try:
-            dt = datetime.datetime.fromtimestamp(expires_at, tz=datetime.timezone.utc)
-            lines.append(f"Expires: {dt.strftime('%Y-%m-%dT%H:%M:%SZ')}")
-        except (ValueError, OSError):
-            lines.append(f"Expires: {expires_at}")
-
-    return "\n".join(lines)
+    return (
+        f"LEASE_ID={lease.get('lease_id', '')}\n"
+        f"Role: {lease.get('role', '')}\n"
+        f"Workflow: {lease.get('workflow_id', '')}\n"
+        f"Worktree: {lease.get('worktree_path', '')}\n"
+        f"Branch: {lease.get('branch', '')}\n"
+        f"Allowed ops: {allowed_str}\n"
+        f"Next step: {lease.get('next_step', '')}\n"
+        f"Expires: {expires_dt}"
+    )

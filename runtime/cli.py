@@ -46,6 +46,7 @@ import runtime.core.workflows as workflows_mod
 import runtime.core.bugs as bugs_mod
 import runtime.core.approvals as approvals_mod
 import runtime.core.leases as leases_mod
+import runtime.core.completions as completions_mod
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
 
@@ -444,40 +445,35 @@ def _handle_lease(args) -> int:
     """Handle all ``cc-policy lease`` subcommands.
 
     Subcommands:
-      issue-for-dispatch <role> [options]  Mint lease + render startup contract
-      issue <role> [options]               Lower-level lease issuance (no contract)
-      claim <agent_id> [options]           Bind agent_id to lease
-      get <lease_id>                       Direct lookup by PK
-      current [options]                    Resolve active lease
-      validate-op <command> [options]      Composite validation
-      list [options]                       Filtered listing
-      release <lease_id>                   active → released
-      revoke <lease_id>                    active → revoked
-      expire-stale                         Expire TTL-elapsed active leases
-      summary [options]                    Compact read model
-
-    All output is JSON.
+      issue-for-dispatch <role>   Issue a new lease at dispatch time.
+      claim <agent_id>            Claim an active lease by agent_id.
+      get <lease_id>              Look up lease by ID.
+      current                     Resolve active lease by any identity field.
+      validate-op <command>       Composite validation of a git command.
+      list                        List leases with optional filters.
+      release <lease_id>          active → released.
+      revoke <lease_id>           active → revoked.
+      expire-stale                Expire all past-TTL active leases.
+      summary                     Compact read model for a worktree/workflow.
     """
     import json as _json
 
     conn = _get_conn()
     try:
-        action = args.action
-
-        if action in ("issue-for-dispatch", "issue"):
+        if args.action == "issue-for-dispatch":
+            allowed_ops = None
+            blocked_ops = None
+            metadata = None
             try:
-                allowed_ops = _json.loads(getattr(args, "allowed_ops", None) or '["routine_local"]')
-                blocked_ops = _json.loads(getattr(args, "blocked_ops", None) or "[]")
-                approval_scope = None
-                metadata = None
+                if getattr(args, "allowed_ops", None):
+                    allowed_ops = _json.loads(args.allowed_ops)
+                if getattr(args, "blocked_ops", None):
+                    blocked_ops = _json.loads(args.blocked_ops)
                 if getattr(args, "metadata", None):
                     metadata = _json.loads(args.metadata)
             except _json.JSONDecodeError as e:
                 return _err(f"invalid JSON argument: {e}")
-
-            requires_eval = not getattr(args, "no_requires_eval", False)
-            ttl = int(getattr(args, "ttl", leases_mod.DEFAULT_LEASE_TTL) or leases_mod.DEFAULT_LEASE_TTL)
-
+            requires_eval = not bool(getattr(args, "no_eval", False))
             lease = leases_mod.issue(
                 conn,
                 role=args.role,
@@ -488,50 +484,45 @@ def _handle_lease(args) -> int:
                 blocked_ops=blocked_ops,
                 requires_eval=requires_eval,
                 head_sha=getattr(args, "head_sha", None),
-                approval_scope=approval_scope,
                 next_step=getattr(args, "next_step", None),
-                ttl=ttl,
+                ttl=int(getattr(args, "ttl", 7200) or 7200),
                 metadata=metadata,
             )
+            startup_contract = leases_mod.render_startup_contract(lease)
+            return _ok({"lease": lease, "startup_contract": startup_contract})
 
-            payload = dict(lease)
-            if action == "issue-for-dispatch":
-                payload["startup_contract"] = leases_mod.render_startup_contract(lease)
-            return _ok(payload)
-
-        elif action == "claim":
-            result = leases_mod.claim(
+        elif args.action == "claim":
+            claimed = leases_mod.claim(
                 conn,
                 agent_id=args.agent_id,
                 lease_id=getattr(args, "lease_id", None),
                 worktree_path=getattr(args, "worktree_path", None),
             )
-            if result is None:
-                return _ok({"found": False, "lease_id": None})
-            result["found"] = True
-            return _ok(result)
+            if claimed is None:
+                return _ok({"found": False, "lease": None})
+            return _ok({"found": True, "lease": claimed})
 
-        elif action == "get":
-            result = leases_mod.get(conn, args.lease_id)
-            if result is None:
-                return _ok({"found": False, "lease_id": args.lease_id})
-            result["found"] = True
-            return _ok(result)
+        elif args.action == "get":
+            lease = leases_mod.get(conn, args.lease_id)
+            if lease is None:
+                return _ok({"found": False})
+            lease["found"] = True
+            return _ok(lease)
 
-        elif action == "current":
-            result = leases_mod.get_current(
+        elif args.action == "current":
+            lease = leases_mod.get_current(
                 conn,
                 lease_id=getattr(args, "lease_id", None),
                 worktree_path=getattr(args, "worktree_path", None),
                 agent_id=getattr(args, "agent_id", None),
                 workflow_id=getattr(args, "workflow_id", None),
             )
-            if result is None:
+            if lease is None:
                 return _ok({"found": False})
-            result["found"] = True
-            return _ok(result)
+            lease["found"] = True
+            return _ok(lease)
 
-        elif action == "validate-op":
+        elif args.action == "validate-op":
             result = leases_mod.validate_op(
                 conn,
                 command=args.command,
@@ -542,29 +533,29 @@ def _handle_lease(args) -> int:
             )
             return _ok(result)
 
-        elif action == "list":
-            items = leases_mod.list_leases(
+        elif args.action == "list":
+            rows = leases_mod.list_leases(
                 conn,
                 status=getattr(args, "status", None),
                 workflow_id=getattr(args, "workflow_id", None),
                 role=getattr(args, "role", None),
                 worktree_path=getattr(args, "worktree_path", None),
             )
-            return _ok({"items": items, "count": len(items)})
+            return _ok({"items": rows, "count": len(rows)})
 
-        elif action == "release":
+        elif args.action == "release":
             released = leases_mod.release(conn, args.lease_id)
-            return _ok({"released": released, "lease_id": args.lease_id})
+            return _ok({"released": released})
 
-        elif action == "revoke":
+        elif args.action == "revoke":
             revoked = leases_mod.revoke(conn, args.lease_id)
-            return _ok({"revoked": revoked, "lease_id": args.lease_id})
+            return _ok({"revoked": revoked})
 
-        elif action == "expire-stale":
+        elif args.action == "expire-stale":
             count = leases_mod.expire_stale(conn)
             return _ok({"expired_count": count})
 
-        elif action == "summary":
+        elif args.action == "summary":
             result = leases_mod.summary(
                 conn,
                 worktree_path=getattr(args, "worktree_path", None),
@@ -577,6 +568,64 @@ def _handle_lease(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown lease action: {args.action}")
+
+
+# ---------------------------------------------------------------------------
+# Completion handler
+# ---------------------------------------------------------------------------
+
+
+def _handle_completion(args) -> int:
+    """Handle all ``cc-policy completion`` subcommands.
+
+    Subcommands:
+      submit     Validate and record a role completion payload.
+      latest     Return the most recent completion record.
+      list       List completion records with optional filters.
+    """
+    import json as _json
+
+    conn = _get_conn()
+    try:
+        if args.action == "submit":
+            try:
+                payload = _json.loads(args.payload)
+            except _json.JSONDecodeError as e:
+                return _err(f"invalid JSON payload: {e}")
+            result = completions_mod.submit(
+                conn,
+                lease_id=args.lease_id,
+                workflow_id=args.workflow_id,
+                role=args.role,
+                payload=payload,
+            )
+            return _ok(result)
+
+        elif args.action == "latest":
+            record = completions_mod.latest(
+                conn,
+                lease_id=getattr(args, "lease_id", None),
+                workflow_id=getattr(args, "workflow_id", None),
+            )
+            if record is None:
+                return _ok({"found": False})
+            return _ok(record)
+
+        elif args.action == "list":
+            rows = completions_mod.list_completions(
+                conn,
+                lease_id=getattr(args, "lease_id", None),
+                workflow_id=getattr(args, "workflow_id", None),
+                role=getattr(args, "role", None),
+                valid_only=bool(getattr(args, "valid_only", False)),
+            )
+            return _ok({"items": rows, "count": len(rows)})
+
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown completion action: {args.action}")
 
 
 # ---------------------------------------------------------------------------
@@ -978,88 +1027,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug_sub.add_parser("retry-failed", help="Retry all failed_to_file bugs")
 
-    # lease
-    lease_p = subparsers.add_parser("lease", help="Dispatch lease issuance and validation")
-    lease_sub = lease_p.add_subparsers(dest="action", required=True)
-
-    # Shared options factory for issue/issue-for-dispatch
-    def _add_issue_args(p):
-        p.add_argument("role", help="Agent role (guardian, implementer, tester, ...)")
-        p.add_argument("--workflow-id", dest="workflow_id", default=None)
-        p.add_argument("--worktree-path", dest="worktree_path", default=None)
-        p.add_argument("--branch", default=None)
-        p.add_argument(
-            "--allowed-ops",
-            dest="allowed_ops",
-            default='["routine_local"]',
-            help='JSON array of allowed op classes (default: ["routine_local"])',
-        )
-        p.add_argument(
-            "--blocked-ops",
-            dest="blocked_ops",
-            default="[]",
-            help="JSON array of blocked op classes (default: [])",
-        )
-        p.add_argument(
-            "--no-requires-eval",
-            dest="no_requires_eval",
-            action="store_true",
-            default=False,
-            help="Disable eval readiness check for this lease",
-        )
-        p.add_argument("--head-sha", dest="head_sha", default=None)
-        p.add_argument("--next-step", dest="next_step", default=None)
-        p.add_argument("--ttl", type=int, default=7200, help="Lease TTL in seconds (default 7200)")
-        p.add_argument("--metadata", default=None, help="JSON metadata blob")
-
-    ifd = lease_sub.add_parser(
-        "issue-for-dispatch",
-        help="Issue lease and render startup contract for agent dispatch",
-    )
-    _add_issue_args(ifd)
-
-    iss = lease_sub.add_parser("issue", help="Issue a lease (lower-level, no startup contract)")
-    _add_issue_args(iss)
-
-    lclaim = lease_sub.add_parser("claim", help="Bind agent_id to a lease")
-    lclaim.add_argument("agent_id", help="Agent identifier (e.g. agent-$$)")
-    lclaim.add_argument("--lease-id", dest="lease_id", default=None)
-    lclaim.add_argument("--worktree-path", dest="worktree_path", default=None)
-
-    lget = lease_sub.add_parser("get", help="Direct lookup by lease_id")
-    lget.add_argument("lease_id")
-
-    lcur = lease_sub.add_parser("current", help="Resolve the active lease")
-    lcur.add_argument("--lease-id", dest="lease_id", default=None)
-    lcur.add_argument("--worktree-path", dest="worktree_path", default=None)
-    lcur.add_argument("--agent-id", dest="agent_id", default=None)
-    lcur.add_argument("--workflow-id", dest="workflow_id", default=None)
-
-    lvop = lease_sub.add_parser("validate-op", help="Validate a git command against active lease")
-    lvop.add_argument("command", help="The git command string to validate")
-    lvop.add_argument("--lease-id", dest="lease_id", default=None)
-    lvop.add_argument("--worktree-path", dest="worktree_path", default=None)
-    lvop.add_argument("--agent-id", dest="agent_id", default=None)
-    lvop.add_argument("--workflow-id", dest="workflow_id", default=None)
-
-    llist = lease_sub.add_parser("list", help="List leases with optional filters")
-    llist.add_argument("--status", default=None, choices=["active", "released", "revoked", "expired"])
-    llist.add_argument("--workflow-id", dest="workflow_id", default=None)
-    llist.add_argument("--role", default=None)
-    llist.add_argument("--worktree-path", dest="worktree_path", default=None)
-
-    lrel = lease_sub.add_parser("release", help="Transition lease active → released")
-    lrel.add_argument("lease_id")
-
-    lrev = lease_sub.add_parser("revoke", help="Transition lease active → revoked")
-    lrev.add_argument("lease_id")
-
-    lease_sub.add_parser("expire-stale", help="Expire active leases past their TTL")
-
-    lsum = lease_sub.add_parser("summary", help="Compact read model of lease state")
-    lsum.add_argument("--worktree-path", dest="worktree_path", default=None)
-    lsum.add_argument("--workflow-id", dest="workflow_id", default=None)
-
     # approval
     ap_p = subparsers.add_parser("approval", help="One-shot approval tokens for high-risk git ops")
     ap_sub = ap_p.add_subparsers(dest="action", required=True)
@@ -1080,6 +1047,94 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap_list = ap_sub.add_parser("list", help="List pending (unconsumed) approvals")
     ap_list.add_argument("--workflow-id", dest="workflow_id", default=None)
+
+    # lease
+    ls_p = subparsers.add_parser("lease", help="Dispatch lease lifecycle")
+    ls_sub = ls_p.add_subparsers(dest="action", required=True)
+
+    ls_issue = ls_sub.add_parser("issue-for-dispatch", help="Issue a new dispatch lease")
+    ls_issue.add_argument("role", help="Agent role (implementer, tester, guardian, planner)")
+    ls_issue.add_argument("--workflow-id", dest="workflow_id", default=None)
+    ls_issue.add_argument("--worktree-path", dest="worktree_path", default=None)
+    ls_issue.add_argument("--branch", default=None)
+    ls_issue.add_argument("--allowed-ops", dest="allowed_ops", default=None, help="JSON array")
+    ls_issue.add_argument("--blocked-ops", dest="blocked_ops", default=None, help="JSON array")
+    ls_issue.add_argument("--head-sha", dest="head_sha", default=None)
+    ls_issue.add_argument("--next-step", dest="next_step", default=None)
+    ls_issue.add_argument("--ttl", type=int, default=7200, help="Seconds (default 7200)")
+    ls_issue.add_argument("--metadata", default=None, help="JSON object")
+    ls_issue.add_argument(
+        "--no-eval",
+        dest="no_eval",
+        action="store_true",
+        default=False,
+        help="Set requires_eval=False",
+    )
+
+    ls_claim = ls_sub.add_parser("claim", help="Claim an active lease for an agent")
+    ls_claim.add_argument("agent_id")
+    ls_claim.add_argument("--lease-id", dest="lease_id", default=None)
+    ls_claim.add_argument("--worktree-path", dest="worktree_path", default=None)
+
+    ls_get = ls_sub.add_parser("get", help="Look up lease by lease_id")
+    ls_get.add_argument("lease_id")
+
+    ls_current = ls_sub.add_parser("current", help="Resolve active lease by identity fields")
+    ls_current.add_argument("--lease-id", dest="lease_id", default=None)
+    ls_current.add_argument("--worktree-path", dest="worktree_path", default=None)
+    ls_current.add_argument("--agent-id", dest="agent_id", default=None)
+    ls_current.add_argument("--workflow-id", dest="workflow_id", default=None)
+
+    ls_vop = ls_sub.add_parser("validate-op", help="Composite validation of a git command")
+    ls_vop.add_argument("command", help="Full git command string to validate")
+    ls_vop.add_argument("--lease-id", dest="lease_id", default=None)
+    ls_vop.add_argument("--worktree-path", dest="worktree_path", default=None)
+    ls_vop.add_argument("--agent-id", dest="agent_id", default=None)
+    ls_vop.add_argument("--workflow-id", dest="workflow_id", default=None)
+
+    ls_list = ls_sub.add_parser("list", help="List leases with optional filters")
+    ls_list.add_argument("--status", default=None)
+    ls_list.add_argument("--workflow-id", dest="workflow_id", default=None)
+    ls_list.add_argument("--role", default=None)
+    ls_list.add_argument("--worktree-path", dest="worktree_path", default=None)
+
+    ls_release = ls_sub.add_parser("release", help="Transition active lease to released")
+    ls_release.add_argument("lease_id")
+
+    ls_revoke = ls_sub.add_parser("revoke", help="Transition active lease to revoked")
+    ls_revoke.add_argument("lease_id")
+
+    ls_sub.add_parser("expire-stale", help="Expire all past-TTL active leases")
+
+    ls_summary = ls_sub.add_parser("summary", help="Compact read model for worktree/workflow")
+    ls_summary.add_argument("--worktree-path", dest="worktree_path", default=None)
+    ls_summary.add_argument("--workflow-id", dest="workflow_id", default=None)
+
+    # completion
+    co_p = subparsers.add_parser("completion", help="Completion records for role task endings")
+    co_sub = co_p.add_subparsers(dest="action", required=True)
+
+    co_submit = co_sub.add_parser("submit", help="Validate and record a completion payload")
+    co_submit.add_argument("--lease-id", dest="lease_id", required=True)
+    co_submit.add_argument("--workflow-id", dest="workflow_id", required=True)
+    co_submit.add_argument("--role", required=True)
+    co_submit.add_argument("--payload", required=True, help="JSON object with completion fields")
+
+    co_latest = co_sub.add_parser("latest", help="Return most recent completion record")
+    co_latest.add_argument("--lease-id", dest="lease_id", default=None)
+    co_latest.add_argument("--workflow-id", dest="workflow_id", default=None)
+
+    co_list = co_sub.add_parser("list", help="List completion records with optional filters")
+    co_list.add_argument("--lease-id", dest="lease_id", default=None)
+    co_list.add_argument("--workflow-id", dest="workflow_id", default=None)
+    co_list.add_argument("--role", default=None)
+    co_list.add_argument(
+        "--valid-only",
+        dest="valid_only",
+        action="store_true",
+        default=False,
+        help="Return only valid=1 records",
+    )
 
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
@@ -1144,6 +1199,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_approval(args)
     if args.domain == "lease":
         return _handle_lease(args)
+    if args.domain == "completion":
+        return _handle_completion(args)
 
     return _err(f"unknown domain: {args.domain}")
 
