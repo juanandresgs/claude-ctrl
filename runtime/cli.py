@@ -29,27 +29,26 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+import runtime.core.approvals as approvals_mod
+import runtime.core.bugs as bugs_mod
+import runtime.core.completions as completions_mod
+import runtime.core.dispatch as dispatch_mod
+import runtime.core.evaluation as evaluation_mod
+import runtime.core.events as events_mod
+import runtime.core.leases as leases_mod
+import runtime.core.markers as markers_mod
+import runtime.core.proof as proof_mod
+import runtime.core.statusline as statusline_mod
+import runtime.core.todos as todos_mod
+import runtime.core.tokens as tokens_mod
+import runtime.core.traces as traces_mod
+import runtime.core.workflows as workflows_mod
+import runtime.core.worktrees as worktrees_mod
 from runtime.core.config import default_db_path
 from runtime.core.db import connect
 from runtime.schemas import ensure_schema
-import runtime.core.proof as proof_mod
-import runtime.core.evaluation as evaluation_mod
-import runtime.core.markers as markers_mod
-import runtime.core.events as events_mod
-import runtime.core.worktrees as worktrees_mod
-import runtime.core.dispatch as dispatch_mod
-import runtime.core.statusline as statusline_mod
-import runtime.core.traces as traces_mod
-import runtime.core.tokens as tokens_mod
-import runtime.core.todos as todos_mod
-import runtime.core.workflows as workflows_mod
-import runtime.core.bugs as bugs_mod
-import runtime.core.approvals as approvals_mod
-import runtime.core.leases as leases_mod
-import runtime.core.completions as completions_mod
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -178,6 +177,10 @@ def _handle_marker(args) -> int:
         elif args.action == "list":
             rows = markers_mod.list_all(conn)
             return _ok({"items": rows, "count": len(rows)})
+
+        elif args.action == "expire-stale":
+            count = markers_mod.expire_stale(conn)
+            return _ok({"expired_count": count})
 
     finally:
         conn.close()
@@ -811,6 +814,77 @@ def _handle_sidecar(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# test-state: flat-file bridge for .claude/.test-status
+# ---------------------------------------------------------------------------
+
+
+def _handle_test_state(args) -> int:
+    """Read .claude/.test-status flat-file and return structured JSON.
+
+    This is a bridge layer: test-runner.sh continues writing the flat-file
+    (pipe-separated: status|fail_count|timestamp). Hooks that previously read
+    the file directly (guard.sh Checks 8/9, subagent-start.sh, check-guardian.sh)
+    now call this subcommand so the read surface is uniform JSON and the
+    internal format can evolve without touching every hook.
+
+    @decision DEC-STAB-A4-003
+    Title: test-state get reads flat-file and returns JSON (bridge layer)
+    Status: accepted
+    Rationale: test-runner.sh (out of scope for TKT-STAB-A4) continues writing
+      .claude/.test-status in pipe-separated format. Rather than changing the
+      writer, we interpose a thin CLI bridge that reads the file and returns
+      JSON. Hooks get a stable JSON API; the flat-file format is encapsulated
+      here. A future task can migrate to a SQLite-backed test_state table by
+      changing only this function without touching any hook.
+    """
+    if args.action != "get":
+        return _err(f"unknown test-state action: {args.action}")
+
+    project_root = getattr(args, "project_root", None)
+    if not project_root:
+        # Fall back to CLAUDE_PROJECT_DIR, then cwd git root
+        import os
+
+        project_root = os.environ.get("CLAUDE_PROJECT_DIR", "")
+        if not project_root:
+            import subprocess
+
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+            )
+            project_root = result.stdout.strip() if result.returncode == 0 else ""
+
+    if not project_root:
+        return _ok({"found": False, "status": "unknown", "fail_count": 0})
+
+    from pathlib import Path as _Path
+
+    ts_file = _Path(project_root) / ".claude" / ".test-status"
+    if not ts_file.exists():
+        return _ok({"found": False, "status": "unknown", "fail_count": 0})
+
+    try:
+        content = ts_file.read_text().strip()
+        parts = content.split("|")
+        status = parts[0] if parts else "unknown"
+        fail_count = int(parts[1]) if len(parts) > 1 else 0
+        updated_at = int(parts[2]) if len(parts) > 2 else 0
+        return _ok(
+            {
+                "found": True,
+                "status": status,
+                "fail_count": fail_count,
+                "updated_at": updated_at,
+            }
+        )
+    except Exception:
+        # Malformed file — treat as unknown
+        return _ok({"found": True, "status": "unknown", "fail_count": 0})
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -869,6 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
     md = marker_sub.add_parser("deactivate")
     md.add_argument("agent_id")
     marker_sub.add_parser("list")
+    marker_sub.add_parser("expire-stale")
 
     # event
     event_p = subparsers.add_parser("event", help="Audit event store")
@@ -1173,6 +1248,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=10, help="Maximum results to return (default 10)"
     )
 
+    # test-state: flat-file bridge (TKT-STAB-A4)
+    ts_p = subparsers.add_parser(
+        "test-state", help="Read .claude/.test-status flat-file as structured JSON"
+    )
+    ts_sub = ts_p.add_subparsers(dest="action", required=True)
+    ts_get = ts_sub.add_parser("get", help="Return test status JSON for a project root")
+    ts_get.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
+    )
+
     return parser
 
 
@@ -1225,6 +1313,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_lease(args)
     if args.domain == "completion":
         return _handle_completion(args)
+    if args.domain == "test-state":
+        return _handle_test_state(args)
 
     return _err(f"unknown domain: {args.domain}")
 

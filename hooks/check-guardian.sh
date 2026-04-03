@@ -135,24 +135,20 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
-# Check 5: Test status for git operations
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-if [[ -f "$TEST_STATUS_FILE" ]]; then
-    TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-    TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-    TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-    NOW=$(date +%s)
-    AGE=$(( NOW - TEST_TIME ))
-    if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 1800 ]]; then
-        HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|git merge|git commit' || echo "")
-        if [[ -n "$HAS_GIT_OP" ]]; then
-            ISSUES+=("CRITICAL: Tests failing ($TEST_FAILS) when git operations were performed")
-        else
-            ISSUES+=("Tests failing ($TEST_FAILS failures) — address before next git operation")
-        fi
-    fi
-else
+# Check 5: Test status for git operations (TKT-STAB-A4: migrated from flat-file read)
+_TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+_TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+_TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+_TS_FOUND=$(printf '%s' "${_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+if [[ "$_TS_FOUND" != "yes" ]]; then
     ISSUES+=("No test results found — verify tests were run before committing")
+elif [[ "$_TS_STATUS" == "fail" ]]; then
+    HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|git merge|git commit' || echo "")
+    if [[ -n "$HAS_GIT_OP" ]]; then
+        ISSUES+=("CRITICAL: Tests failing ($_TS_FAILS) when git operations were performed")
+    else
+        ISSUES+=("Tests failing ($_TS_FAILS failures) — address before next git operation")
+    fi
 fi
 
 # Check 6: Evaluation state for git operations (TKT-024)

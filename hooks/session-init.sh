@@ -61,7 +61,9 @@ fi
 # --- Expire stale leases and show active lease (Phase 2) ---
 # Expire any TTL-exceeded leases so they do not block new dispatch.
 # Then display the active lease (if any) for situational awareness.
-rt_lease_expire_stale || true
+rt_lease_expire_stale 2>/dev/null || true
+# Marker stale cleanup (TKT-STAB-A4): expire markers from crashed sessions.
+python3 -m runtime.cli marker expire-stale 2>/dev/null || true
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     _SESS_LEASE=$(rt_lease_current "$PROJECT_ROOT")
     _SESS_LEASE_FOUND=$(printf '%s' "${_SESS_LEASE:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")

@@ -132,6 +132,11 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
     deny "Do not enter worktrees with bare cd. Use 'git -C \"$CD_TARGET\" <command>' for git, or '(cd \"$CD_TARGET\" && <command>)' in a subshell so the session cannot be bricked by later cleanup."
 fi
 
+# --- Expire stale leases before lease validation (TKT-STAB-A4) ---
+# Run before Check 3 so expired leases are cleaned up before validate_op.
+# Silenced: if the runtime is unavailable, the lease gate falls back gracefully.
+rt_lease_expire_stale 2>/dev/null || true
+
 # --- Check 3: WHO enforcement for permanent git operations ---
 # Migrated from marker-based role check to lease validate-op (Phase 2).
 # Lease validate_op() is now the sole authority for who may run git ops.
@@ -244,47 +249,35 @@ fi
 
 # --- Check 8: Test status gate for merge commands ---
 # Admin recovery (merge --abort) is not a merge landing — skip the test gate.
+# Reads test status from runtime (TKT-STAB-A4: migrated from flat-file read).
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && \
    ! echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-        if [[ -f "$TEST_STATUS_FILE" ]]; then
-            TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-            TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-            TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-            NOW=$(date +%s)
-            AGE=$(( NOW - TEST_TIME ))
-            if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
-                deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before merging."
-            fi
-            if [[ "$TEST_RESULT" != "pass" ]]; then
-                deny "Cannot merge: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
-            fi
-        else
-            deny "Cannot merge: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before merging."
+        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+        _TS_FOUND=$(printf '%s' "${_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+        if [[ "$_TS_FOUND" != "yes" ]]; then
+            deny "Cannot merge: no test results found in runtime. Run the project's test suite first."
+        fi
+        if [[ "$_TS_STATUS" != "pass" && "$_TS_STATUS" != "pass_complete" ]]; then
+            deny "Cannot merge: test status is '$_TS_STATUS'. Tests must pass before merging."
         fi
     fi
 fi
 
 # --- Check 9: Test status gate for commit commands ---
+# Reads test status from runtime (TKT-STAB-A4: migrated from flat-file read).
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-        if [[ -f "$TEST_STATUS_FILE" ]]; then
-            TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-            TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-            TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-            NOW=$(date +%s)
-            AGE=$(( NOW - TEST_TIME ))
-            if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
-                deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before committing."
-            fi
-            if [[ "$TEST_RESULT" != "pass" ]]; then
-                deny "Cannot commit: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
-            fi
-        else
-            deny "Cannot commit: no test results found (.claude/.test-status missing). Run the project's test suite first. Tests must pass before committing."
+        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+        _TS_FOUND=$(printf '%s' "${_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+        if [[ "$_TS_FOUND" != "yes" ]]; then
+            deny "Cannot commit: no test results found in runtime. Run the project's test suite first."
+        fi
+        if [[ "$_TS_STATUS" != "pass" && "$_TS_STATUS" != "pass_complete" ]]; then
+            deny "Cannot commit: test status is '$_TS_STATUS'. Tests must pass before committing."
         fi
     fi
 fi

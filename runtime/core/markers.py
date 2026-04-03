@@ -30,18 +30,20 @@ def set_active(conn: sqlite3.Connection, agent_id: str, role: str) -> None:
 
     Any existing marker for this agent_id is replaced (PRIMARY KEY conflict).
     started_at is always reset to now on upsert so restarts are tracked.
+    status is set to 'active' on upsert.
     """
     now = int(time.time())
     with conn:
         conn.execute(
             """
-            INSERT INTO agent_markers (agent_id, role, started_at, stopped_at, is_active)
-            VALUES (?, ?, ?, NULL, 1)
+            INSERT INTO agent_markers (agent_id, role, started_at, stopped_at, is_active, status)
+            VALUES (?, ?, ?, NULL, 1, 'active')
             ON CONFLICT(agent_id) DO UPDATE SET
                 role       = excluded.role,
                 started_at = excluded.started_at,
                 stopped_at = NULL,
-                is_active  = 1
+                is_active  = 1,
+                status     = 'active'
             """,
             (agent_id, role, now),
         )
@@ -51,7 +53,7 @@ def get_active(conn: sqlite3.Connection) -> Optional[dict]:
     """Return the most recently started active marker, or None."""
     row = conn.execute(
         """
-        SELECT agent_id, role, started_at, stopped_at, is_active
+        SELECT agent_id, role, started_at, stopped_at, is_active, status
         FROM   agent_markers
         WHERE  is_active = 1
         ORDER  BY started_at DESC
@@ -90,7 +92,8 @@ def deactivate(conn: sqlite3.Connection, agent_id: str) -> None:
             """
             UPDATE agent_markers
             SET    stopped_at = ?,
-                   is_active  = 0
+                   is_active  = 0,
+                   status     = 'stopped'
             WHERE  agent_id   = ?
             """,
             (now, agent_id),
@@ -101,9 +104,45 @@ def list_all(conn: sqlite3.Connection) -> list[dict]:
     """Return all agent_markers rows ordered by started_at descending."""
     rows = conn.execute(
         """
-        SELECT agent_id, role, started_at, stopped_at, is_active
+        SELECT agent_id, role, started_at, stopped_at, is_active, status
         FROM   agent_markers
         ORDER  BY started_at DESC
         """
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
+
+
+def expire_stale(
+    conn: sqlite3.Connection,
+    ttl: int = 7200,
+    now: int | None = None,
+) -> int:
+    """Deactivate markers older than ttl seconds. Returns count expired.
+
+    Transitions status from 'active' to 'expired' and clears is_active for
+    any marker whose started_at is more than ttl seconds before now. This
+    prevents ghost markers from crashed sessions blocking new dispatch.
+
+    @decision DEC-STAB-A4-002
+    Title: expire_stale uses started_at age rather than a separate expires_at
+    Status: accepted
+    Rationale: agent_markers has no expires_at column (unlike dispatch_leases).
+      Using started_at + ttl as the expiry boundary avoids a schema migration
+      that would require altering existing rows. The 2-hour default TTL matches
+      DEFAULT_LEASE_TTL in schemas.py so marker and lease cleanup are aligned.
+    """
+    if now is None:
+        now = int(time.time())
+    cutoff = now - ttl
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE agent_markers
+            SET    status    = 'expired',
+                   is_active = 0
+            WHERE  status    = 'active'
+              AND  started_at < ?
+            """,
+            (cutoff,),
+        )
+    return cursor.rowcount

@@ -96,14 +96,12 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("WARNING: No scope manifest found for workflow_id '$_WF_ID'. Planner should set scope via 'cc-policy workflow scope-set' before commit. Guard.sh will deny commit without scope.")
         fi
 
-        # Inject test status
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-        if [[ -f "$TEST_STATUS_FILE" ]]; then
-            TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-            TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-            if [[ "$TS_RESULT" == "fail" ]]; then
-                CONTEXT_PARTS+=("WARNING: Tests currently FAILING ($TS_FAILS failures). Fix before proceeding.")
-            fi
+        # Inject test status (TKT-STAB-A4: migrated from flat-file read)
+        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+        _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+        if [[ "$_TS_STATUS" == "fail" ]]; then
+            CONTEXT_PARTS+=("WARNING: Tests currently FAILING ($_TS_FAILS failures). Fix before proceeding.")
         fi
         get_research_status "$PROJECT_ROOT"
         if [[ "$RESEARCH_EXISTS" == "true" ]]; then
@@ -131,14 +129,12 @@ case "$AGENT_TYPE" in
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
         CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Tester via EVAL_VERDICT trailer).")
-        # Inject test status
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-        if [[ -f "$TEST_STATUS_FILE" ]]; then
-            TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-            TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-            if [[ "$TS_RESULT" == "fail" ]]; then
-                CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($TS_FAILS failures). Do NOT commit/merge until tests pass.")
-            fi
+        # Inject test status (TKT-STAB-A4: migrated from flat-file read)
+        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+        _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+        if [[ "$_TS_STATUS" == "fail" ]]; then
+            CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($_TS_FAILS failures). Do NOT commit/merge until tests pass.")
         fi
         ;;
     Bash|Explore)

@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS agent_markers (
     role       TEXT    NOT NULL,
     started_at INTEGER NOT NULL,
     stopped_at INTEGER,
-    is_active  INTEGER NOT NULL DEFAULT 1
+    is_active  INTEGER NOT NULL DEFAULT 1,
+    status     TEXT    NOT NULL DEFAULT 'active'
 )
 """
 
