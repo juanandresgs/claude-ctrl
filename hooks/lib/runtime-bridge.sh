@@ -331,10 +331,12 @@ rt_lease_claim() {
 
 # rt_lease_release <lease_id>
 # Transitions active → released. Fire-and-forget; never blocks hook execution.
+# stdout suppressed: cc_policy outputs {"released":true} which would corrupt
+# hook stdout when called from post-task.sh (DEC-ROUTING-002).
 rt_lease_release() {
     _rt_ensure_schema
     local lease_id="${1:-}"
-    [[ -n "$lease_id" ]] && cc_policy lease release "$lease_id" 2>/dev/null || true
+    [[ -n "$lease_id" ]] && cc_policy lease release "$lease_id" >/dev/null 2>&1 || true
 }
 
 # rt_lease_expire_stale
@@ -365,4 +367,24 @@ rt_completion_latest() {
     local args=("completion" "latest")
     [[ -n "$lease_id" ]] && args+=("--lease-id" "$lease_id")
     cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
+}
+
+# rt_completion_route <role> <verdict>
+# Calls determine_next_role(role, verdict) via cc-policy and returns the JSON
+# result: {"next_role": "guardian"|"implementer"|"planner"|null, "status": "ok"}.
+# next_role is null for cycle-complete terminal states.
+# Returns '{"next_role":null}' on runtime failure so callers can detect terminal state.
+#
+# @decision DEC-ROUTING-001
+# @title rt_completion_route is the sole routing call site in bash
+# @status accepted
+# @rationale post-task.sh previously duplicated the routing table as a bash case
+#   statement, creating a dual-authority between bash and completions.py.
+#   This wrapper centralises the call to determine_next_role() so the routing
+#   table in completions.py is the single source of truth. Any future verdict
+#   additions only require changing completions.py, not both files.
+rt_completion_route() {
+    _rt_ensure_schema
+    local role="${1:-}" verdict="${2:-}"
+    cc_policy completion route "$role" "$verdict" 2>/dev/null || echo '{"next_role":null}'
 }

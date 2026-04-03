@@ -19,6 +19,7 @@ HOOK="$REPO_ROOT/hooks/post-task.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/state.db"
 
+# shellcheck disable=SC2329  # cleanup is invoked via trap EXIT
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -35,13 +36,17 @@ FAILURES=0
 
 # -----------------------------------------------------------------------
 # Helper: run post-task.sh with a given agent_type and return stdout
+# Use CLAUDE_RUNTIME_ROOT to point at the worktree's cli.py so the
+# 'completion route' subcommand (added in TKT-STAB-A2) is available.
 # -----------------------------------------------------------------------
+RUNTIME_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/runtime"
 run_hook() {
     local agent_type="$1"
     local payload
     payload=$(printf '{"hook_event_name":"SubagentStop","agent_type":"%s"}' "$agent_type")
     printf '%s' "$payload" \
-        | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" "$HOOK" 2>/dev/null
+        | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" \
+          CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------
@@ -75,30 +80,33 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# Test 3: tester completion → suggests guardian
+# Test 3: tester completion with NO active lease → PROCESS ERROR (TKT-STAB-A2)
+# The eval_state fallback has been removed. A tester without a lease must
+# produce a PROCESS ERROR, not silently route to guardian.
 # -----------------------------------------------------------------------
 output=$(run_hook "tester") || true
 if ! echo "$output" | jq '.' >/dev/null 2>&1; then
-    echo "  FAIL: tester — output is not valid JSON (got: $output)"
+    echo "  FAIL: tester (no lease) — output is not valid JSON (got: $output)"
     FAILURES=$((FAILURES + 1))
 else
     ctx=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty')
-    if [[ "$ctx" != *"guardian"* ]]; then
-        echo "  FAIL: tester — expected 'guardian' in additionalContext, got: $ctx"
+    if [[ "$ctx" != *"PROCESS ERROR"* ]]; then
+        echo "  FAIL: tester (no lease) — expected PROCESS ERROR in additionalContext, got: $ctx"
         FAILURES=$((FAILURES + 1))
     fi
 fi
 
 # -----------------------------------------------------------------------
-# Test 4: guardian completion → no suggestion (cycle complete, no JSON output)
+# Test 4: guardian completion with NO active lease → PROCESS ERROR (TKT-STAB-A2)
 # -----------------------------------------------------------------------
 output=$(run_hook "guardian") || true
-# guardian should produce no hookSpecificOutput JSON (empty stdout is correct)
-if [[ -n "$output" ]]; then
-    # If there is output, it must not contain a next-role suggestion
+if ! echo "$output" | jq '.' >/dev/null 2>&1; then
+    echo "  FAIL: guardian (no lease) — output is not valid JSON (got: $output)"
+    FAILURES=$((FAILURES + 1))
+else
     ctx=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
-    if [[ "$ctx" == *"dispatching"* ]]; then
-        echo "  FAIL: guardian — should not suggest next dispatch, got: $ctx"
+    if [[ "$ctx" != *"PROCESS ERROR"* ]]; then
+        echo "  FAIL: guardian (no lease) — expected PROCESS ERROR, got: $ctx"
         FAILURES=$((FAILURES + 1))
     fi
 fi
@@ -119,13 +127,7 @@ fi
 # Re-run planner so we can query the db
 run_hook "planner" >/dev/null 2>&1 || true
 
-RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
-if python3 "$RUNTIME_ROOT/cli.py" event query --type "agent_complete" 2>/dev/null \
-    | jq -e '.count > 0' >/dev/null 2>&1; then
-    # Great — but that queries the global db; use the test db instead
-    :
-fi
-
+# RUNTIME_ROOT already set above in run_hook block; use the worktree's cli.py.
 # Query test-scoped db directly
 event_count=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     event query --type "agent_complete" 2>/dev/null \
