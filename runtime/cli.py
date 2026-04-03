@@ -623,6 +623,15 @@ def _handle_completion(args) -> int:
             )
             return _ok({"items": rows, "count": len(rows)})
 
+        elif args.action == "route":
+            # Deterministic routing: (role, verdict) → next_role.
+            # Returns {"next_role": "guardian"|"implementer"|"planner"|null}.
+            # next_role is null for cycle-complete terminal states (e.g. guardian merged).
+            # This is the single authoritative routing call — post-task.sh must use this
+            # instead of duplicating the case statement (DEC-COMPLETION-001).
+            next_role = completions_mod.determine_next_role(args.role, args.verdict)
+            return _ok({"next_role": next_role})
+
     except ValueError as e:
         return _err(str(e))
     finally:
@@ -1143,6 +1152,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Return only valid=1 records",
     )
+
+    co_route = co_sub.add_parser(
+        "route",
+        help="Determine the next role given (role, verdict) using the canonical routing table",
+    )
+    co_route.add_argument("role", help="Completing role (tester, guardian, implementer, planner)")
+    co_route.add_argument("verdict", help="Verdict string from the completion record")
 
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
