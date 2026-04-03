@@ -54,8 +54,10 @@ is_source_file "$FILE_PATH" || exit 0
 # Skip test files, config files, vendor directories
 is_skippable_path "$FILE_PATH" && exit 0
 
-# Skip files in this config directory itself (meta-infrastructure)
-[[ "$FILE_PATH" =~ \.claude/hooks/ ]] && exit 0
+# Skip the project's own .claude config tree (meta-infrastructure).
+# Project-rooted check — not substring match (DEC-GUARD-SKIP-001).
+_DG_ROOT=$(detect_project_root 2>/dev/null || echo "")
+[[ -n "$_DG_ROOT" && "$FILE_PATH" == "$_DG_ROOT/.claude/"* ]] && exit 0
 
 deny() {
     local reason="$1"

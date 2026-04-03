@@ -28,9 +28,10 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Exit silently if no file path (not a file-targeted Write/Edit)
 [[ -z "$FILE_PATH" ]] && exit 0
 
-# Skip .claude/ directory — meta-infrastructure is self-governed, not subject
-# to governance markdown restrictions
-[[ "$FILE_PATH" =~ (^|/)\.claude/ ]] && exit 0
+# Skip the project's own .claude config tree (meta-infrastructure).
+# Project-rooted check — not substring match (DEC-GUARD-SKIP-001).
+_PG_ROOT=$(detect_project_root 2>/dev/null || echo "")
+[[ -n "$_PG_ROOT" && "$FILE_PATH" == "$_PG_ROOT/.claude/"* ]] && exit 0
 
 # --- Governance markdown classification ---
 #
