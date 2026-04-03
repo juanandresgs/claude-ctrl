@@ -200,8 +200,7 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
         CONTEXT+="\n- $issue"
         append_audit "$PROJECT_ROOT" "agent_tester" "$issue"
     done
-    mkdir -p "${PROJECT_ROOT}/.claude"
-    echo "tester|$(IFS=';'; echo "${ISSUES[*]}")" >> "${PROJECT_ROOT}/.claude/.agent-findings"
+    rt_event_emit "agent_finding" "tester: $(IFS='; '; echo "${ISSUES[*]}")" || true
 else
     CONTEXT="Tester validation: evaluation_state written as '$_EVAL_STATUS' (head_sha=${_EVAL_HEAD_SHA:-none})."
 fi

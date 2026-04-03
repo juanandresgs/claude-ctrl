@@ -175,11 +175,9 @@ else
     CONTEXT="Guardian validation: clean. Branch=$CURRENT_BRANCH, last commit: $LAST_COMMIT"
 fi
 
-# Persist findings for next-prompt injection
+# Persist findings via runtime event store
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-    mkdir -p "${PROJECT_ROOT}/.claude"
-    echo "guardian|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
+    rt_event_emit "agent_finding" "guardian: $(IFS='; '; echo "${ISSUES[*]}")" || true
     for issue in "${ISSUES[@]}"; do
         append_audit "$PROJECT_ROOT" "agent_guardian" "$issue"
     done

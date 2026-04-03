@@ -53,7 +53,7 @@ IMPL_HEAD_SHA: <sha|none>
 Every evaluator return message must end with:
 ```
 EVAL_VERDICT: needs_changes|ready_for_guardian|blocked_by_plan
-EVAL_TESTS_PASS: <pass_count>/<total_count>
+EVAL_TESTS_PASS: true|false
 EVAL_NEXT_ROLE: implementer|guardian|planner
 EVAL_HEAD_SHA: <sha>
 ```
@@ -63,6 +63,12 @@ sections — not narrative language.
 
 No lines may appear after the evaluator trailer. The trailer is the terminal
 output of the evaluator role.
+
+### Guardian Trailer
+```
+LANDING_RESULT: committed|merged|denied|skipped
+OPERATION_CLASS: routine_local|high_risk|admin_recovery
+```
 
 ## Debugging Discipline
 
