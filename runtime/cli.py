@@ -37,6 +37,7 @@ import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
 import runtime.core.leases as leases_mod
 import runtime.core.markers as markers_mod
+import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.proof as proof_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
@@ -814,6 +815,151 @@ def _handle_sidecar(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Policy engine handlers (PE-W1)
+# ---------------------------------------------------------------------------
+
+
+def _handle_evaluate(args) -> int:
+    """Handle ``cc-policy evaluate`` — read JSON from stdin, return PolicyDecision.
+
+    Input JSON (from stdin):
+      {"event_type": "PreToolUse", "tool_name": "Write",
+       "tool_input": {...}, "cwd": "/project",
+       "actor_role": "implementer", "actor_id": "agent-123"}
+
+    Output JSON:
+      {"status": "ok", "action": "allow"|"deny"|"feedback",
+       "reason": "...", "policy_name": "...",
+       "hookSpecificOutput": {...}}
+
+    hookSpecificOutput format matches Claude hook contract:
+      deny     → {"permissionDecision": "deny", "permissionDecisionReason": "...",
+                   "blockingHook": "<policy_name>"}
+      allow    → {"permissionDecision": "allow"}
+      feedback → {"additionalContext": "<reason>"}
+    """
+    import json as _json
+
+    raw = sys.stdin.read()
+    try:
+        payload = _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        return _err(f"invalid JSON on stdin: {e}")
+
+    event_type = payload.get("event_type", "")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+    cwd = payload.get("cwd", "")
+    actor_role = payload.get("actor_role", "")
+    actor_id = payload.get("actor_id", "")
+
+    conn = _get_conn()
+    try:
+        ctx = policy_engine_mod.build_context(
+            conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
+        )
+    finally:
+        conn.close()
+
+    request = policy_engine_mod.PolicyRequest(
+        event_type=event_type,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        context=ctx,
+        cwd=cwd,
+    )
+
+    decision = policy_engine_mod.default_registry().evaluate(request)
+
+    # Build hookSpecificOutput per Claude hook contract
+    if decision.action == "deny":
+        hook_output = {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": decision.reason,
+            "blockingHook": decision.policy_name,
+        }
+    elif decision.action == "feedback":
+        hook_output = {"additionalContext": decision.reason}
+    else:
+        hook_output = {"permissionDecision": "allow"}
+
+    return _ok(
+        {
+            "action": decision.action,
+            "reason": decision.reason,
+            "policy_name": decision.policy_name,
+            "hookSpecificOutput": hook_output,
+        }
+    )
+
+
+def _handle_policy(args) -> int:
+    """Handle ``cc-policy policy`` subcommands.
+
+    Subcommands:
+      list     — return registered policies as JSON array
+      explain  — read JSON from stdin, return full evaluation trace
+    """
+    import json as _json
+
+    if args.action == "list":
+        reg = policy_engine_mod.default_registry()
+        policies = [
+            {
+                "name": p.name,
+                "priority": p.priority,
+                "event_types": p.event_types,
+                "enabled": p.enabled,
+            }
+            for p in reg.list_policies()
+        ]
+        return _ok({"policies": policies, "count": len(policies)})
+
+    elif args.action == "explain":
+        raw = sys.stdin.read()
+        try:
+            payload = _json.loads(raw)
+        except _json.JSONDecodeError as e:
+            return _err(f"invalid JSON on stdin: {e}")
+
+        event_type = payload.get("event_type", "")
+        tool_name = payload.get("tool_name", "")
+        tool_input = payload.get("tool_input", {})
+        cwd = payload.get("cwd", "")
+        actor_role = payload.get("actor_role", "")
+        actor_id = payload.get("actor_id", "")
+
+        conn = _get_conn()
+        try:
+            ctx = policy_engine_mod.build_context(
+                conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
+            )
+        finally:
+            conn.close()
+
+        request = policy_engine_mod.PolicyRequest(
+            event_type=event_type,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            context=ctx,
+            cwd=cwd,
+        )
+
+        evals = policy_engine_mod.default_registry().explain(request)
+        trace = [
+            {
+                "policy_name": e.policy_name,
+                "result": e.result,
+                "reason": e.reason,
+            }
+            for e in evals
+        ]
+        return _ok({"trace": trace, "count": len(trace)})
+
+    return _err(f"unknown policy action: {args.action}")
+
+
+# ---------------------------------------------------------------------------
 # test-state: SQLite-backed authority (WS3 — replaces flat-file bridge)
 # ---------------------------------------------------------------------------
 
@@ -1251,6 +1397,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=10, help="Maximum results to return (default 10)"
     )
 
+    # evaluate — read JSON from stdin, return PolicyDecision
+    subparsers.add_parser(
+        "evaluate",
+        help="Evaluate a hook event against all registered policies (JSON on stdin)",
+    )
+
+    # policy — list and explain registered policies
+    pol_p = subparsers.add_parser("policy", help="Policy registry introspection")
+    pol_sub = pol_p.add_subparsers(dest="action", required=True)
+    pol_sub.add_parser("list", help="List all registered policies as JSON array")
+    pol_sub.add_parser(
+        "explain",
+        help="Run all policies without short-circuit and return full trace (JSON on stdin)",
+    )
+
     # test-state: flat-file bridge (TKT-STAB-A4)
     # test-state: SQLite-backed authority (WS3 — replaces flat-file bridge)
     ts_p = subparsers.add_parser(
@@ -1328,6 +1489,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_completion(args)
     if args.domain == "test-state":
         return _handle_test_state(args)
+    if args.domain == "evaluate":
+        return _handle_evaluate(args)
+    if args.domain == "policy":
+        return _handle_policy(args)
 
     return _err(f"unknown domain: {args.domain}")
 
