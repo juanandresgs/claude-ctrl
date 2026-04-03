@@ -247,7 +247,7 @@ assert_contains "tester post-task: suggests guardian" "$post" "guardian"
 # ---------------------------------------------------------------------------
 printf '\n-- Phase: guardian\n'
 set_role "guardian"
-printf 'pass|0|%s\n' "$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+policy test-state set pass --total 1 --passed 1 --project-root "$TMP_DIR" >/dev/null 2>&1
 # Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
 policy proof set "$WORKFLOW_ID" "verified" >/dev/null 2>&1
 # Workflow binding + scope required by Check 12

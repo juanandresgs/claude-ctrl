@@ -45,8 +45,12 @@ is_source_file "$FILE_PATH" || exit 0
 # Skip test files, config files, vendor directories
 is_skippable_path "$FILE_PATH" && exit 0
 
-# Skip the .claude config directory itself
-[[ "$FILE_PATH" =~ \.claude/ ]] && exit 0
+# Skip the .claude config directory itself.
+# Use project-rooted check (not substring match) — substring match exempts
+# ALL files whose absolute path contains ".claude/" (e.g. source files in
+# a repo cloned under ~/.claude). DEC-GUARD-SKIP-001.
+_SKIP_ROOT=$(detect_project_root 2>/dev/null || echo "")
+[[ -n "$_SKIP_ROOT" && "$FILE_PATH" == "$_SKIP_ROOT/.claude/"* ]] && exit 0
 
 # --- Fast-mode: skip small/scoped changes ---
 # Edit tool is inherently scoped (substring replacement) — skip plan check

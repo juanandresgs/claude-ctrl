@@ -87,16 +87,17 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
-# Check 4: Test status verification
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-if [[ -f "$TEST_STATUS_FILE" ]]; then
-    TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-    TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-    TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-    NOW=$(date +%s)
-    AGE=$(( NOW - TEST_TIME ))
-    if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 1800 ]]; then
-        ISSUES+=("Tests failing ($TEST_FAILS failures, ${AGE}s ago) — implementation not complete")
+# Check 4: Test status verification (WS3: reads SQLite test_state, not flat file)
+_CI_TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _CI_TS_JSON=""
+_CI_TS_FOUND=$(printf '%s' "${_CI_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+if [[ "$_CI_TS_FOUND" == "yes" ]]; then
+    _CI_TS_STATUS=$(printf '%s' "$_CI_TS_JSON" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+    _CI_TS_FAILS=$(printf '%s' "$_CI_TS_JSON" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+    _CI_TS_UPDATED=$(printf '%s' "$_CI_TS_JSON" | jq -r '.updated_at // 0' 2>/dev/null || echo "0")
+    _CI_NOW=$(date +%s)
+    _CI_AGE=$(( _CI_NOW - _CI_TS_UPDATED ))
+    if [[ "$_CI_TS_STATUS" == "fail" && "$_CI_AGE" -lt 1800 ]]; then
+        ISSUES+=("Tests failing ($_CI_TS_FAILS failures, ${_CI_AGE}s ago) — implementation not complete")
     fi
 else
     # No test results at all — warn (project may not have tests, so advisory)

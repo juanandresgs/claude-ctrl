@@ -75,12 +75,13 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     fi
 fi
 
-# --- Test status ---
-TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
-if [[ -f "$TEST_STATUS" ]]; then
-    TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
-    TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS")
-    CONTEXT_PARTS+=("Test status: ${TS_RESULT} (${TS_FAILS} failures)")
+# --- Test status (WS3: reads SQLite test_state, not flat file) ---
+_CP_TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _CP_TS_JSON=""
+_CP_TS_FOUND=$(printf '%s' "${_CP_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+if [[ "$_CP_TS_FOUND" == "yes" ]]; then
+    _CP_TS_STATUS=$(printf '%s' "$_CP_TS_JSON" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+    _CP_TS_FAILS=$(printf '%s' "$_CP_TS_JSON" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+    CONTEXT_PARTS+=("Test status: ${_CP_TS_STATUS} (${_CP_TS_FAILS} failures)")
 fi
 
 # --- Agent findings (unresolved issues from subagents, runtime event store) ---

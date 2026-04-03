@@ -130,7 +130,8 @@ run_git_op() {
     local db="$project_dir/.claude/state.db"
 
     if [[ "$role" == "guardian" ]]; then
-        printf 'pass|0|%s\n' "$(date +%s)" > "$project_dir/.claude/.test-status"
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
+            test-state set pass --total 1 --passed 1 --project-root "$project_dir" >/dev/null 2>&1
         # Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" proof set "$workflow_id" "verified" >/dev/null 2>&1
         # Workflow binding + scope required by Check 12

@@ -312,16 +312,22 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b' && [[ "$_IS_ADMIN_RE
         _EVAL_DIR=$(detect_project_root)
     fi
     if ! is_claude_meta_repo "$_EVAL_DIR"; then
-        # Resolve workflow_id — for merge, use the branch being merged.
-        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
-            _MERGE_REF=$(extract_merge_ref "$COMMAND")
-            if [[ -n "$_MERGE_REF" ]]; then
-                _EVAL_WF=$(sanitize_token "$_MERGE_REF")
+        # Resolve workflow_id — lease-first so the authorized workflow_id is
+        # used when a dispatch lease is active; branch-derived as fallback.
+        # DEC-EVAL-003: lease is the canonical identity source for Check 10.
+        _EVAL_LEASE_CTX=$(lease_context "$_EVAL_DIR")
+        _EVAL_LEASE_FOUND=$(printf '%s' "$_EVAL_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_EVAL_LEASE_FOUND" == "true" ]]; then
+            _EVAL_WF=$(printf '%s' "$_EVAL_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+            [[ -z "$_EVAL_WF" ]] && deny "Active lease has no workflow_id for Check 10."
+        else
+            # No lease — branch-derived fallback
+            if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
+                _MERGE_REF=$(extract_merge_ref "$COMMAND")
+                [[ -n "$_MERGE_REF" ]] && _EVAL_WF=$(sanitize_token "$_MERGE_REF") || _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
             else
                 _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
             fi
-        else
-            _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
         fi
 
         # Read evaluation_state from runtime

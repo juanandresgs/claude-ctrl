@@ -102,7 +102,7 @@ print(','.join(sorted(tables)))
 #   dispatch_leases — mandatory lease store (WS3/A3)
 #   evaluation_state — evaluator authority (TKT-024)
 #   workflow_bindings, workflow_scope — workflow scoping (TKT-022)
-EXPECTED="agent_markers,approvals,bugs,completion_records,dispatch_cycles,dispatch_leases,dispatch_queue,evaluation_state,events,proof_state,session_tokens,sqlite_sequence,todo_state,trace_manifest,traces,workflow_bindings,workflow_scope,worktrees"
+EXPECTED="agent_markers,approvals,bugs,completion_records,dispatch_cycles,dispatch_leases,dispatch_queue,evaluation_state,events,proof_state,session_tokens,sqlite_sequence,test_state,todo_state,trace_manifest,traces,workflow_bindings,workflow_scope,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))

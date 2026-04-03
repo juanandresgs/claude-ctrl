@@ -82,7 +82,8 @@ _setup_repo_no_lease() {
         marker set "agent-test" "$role" >/dev/null 2>&1
 
     # Test status = pass (ensures Check 10 won't be the first gate)
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --total 1 --passed 1 --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Workflow binding + scope (so Check 12 doesn't fire first)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

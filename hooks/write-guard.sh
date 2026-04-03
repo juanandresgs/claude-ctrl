@@ -41,8 +41,12 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 [[ -z "$FILE_PATH" ]] && exit 0
 
 # Skip .claude/ meta-infrastructure — hooks, agents, settings must remain
-# writable by the configuration layer without dispatch overhead
-[[ "$FILE_PATH" =~ \.claude/ ]] && exit 0
+# writable by the configuration layer without dispatch overhead.
+# Use project-rooted check (not substring match) — substring match exempts
+# ALL files whose absolute path contains ".claude/" (e.g. source files in
+# a repo cloned under ~/.claude). DEC-GUARD-SKIP-001.
+_SKIP_ROOT=$(detect_project_root 2>/dev/null || echo "")
+[[ -n "$_SKIP_ROOT" && "$FILE_PATH" == "$_SKIP_ROOT/.claude/"* ]] && exit 0
 
 # WHO enforcement applies only to source files. Non-source files (markdown,
 # JSON, YAML, config) are not governed here.

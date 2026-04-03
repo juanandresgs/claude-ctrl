@@ -194,12 +194,14 @@ else
     ISSUES+=("Tester returned no response text")
 fi
 
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-if [[ -f "$TEST_STATUS_FILE" ]]; then
-    TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-    TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-    if [[ "$TEST_RESULT" != "pass" ]]; then
-        ISSUES+=("Test status is '$TEST_RESULT' (${TEST_FAILS} failures) during tester handoff")
+# Read test status from runtime SQLite authority (WS3: flat file removed)
+_CT_TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _CT_TS_JSON=""
+_CT_TS_FOUND=$(printf '%s' "${_CT_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+if [[ "$_CT_TS_FOUND" == "yes" ]]; then
+    _CT_TS_STATUS=$(printf '%s' "$_CT_TS_JSON" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+    _CT_TS_FAILS=$(printf '%s' "$_CT_TS_JSON" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+    if [[ "$_CT_TS_STATUS" != "pass" && "$_CT_TS_STATUS" != "pass_complete" ]]; then
+        ISSUES+=("Test status is '$_CT_TS_STATUS' ($_CT_TS_FAILS failures) during tester handoff")
     fi
 else
     ISSUES+=("No test results found for tester review")
