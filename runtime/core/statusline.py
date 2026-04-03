@@ -14,7 +14,7 @@ Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() is the single read surface for the statusline HUD. It
   reads evaluation_state (TKT-024 primary), proof_state (deprecated),
-  agent_markers, worktrees, dispatch_cycles, dispatch_queue, and events in
+  agent_markers, worktrees, dispatch_cycles, completion_records, and events in
   one pass and returns a canonical dict. No writes happen here.
   All fields default to None/0/[] so the statusline never crashes on an empty
   or partially-populated DB. The broad exception handler at the bottom guards

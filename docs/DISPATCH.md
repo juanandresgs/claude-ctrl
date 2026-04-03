@@ -64,9 +64,9 @@ The following dispatch properties exist as prompt guidance in CLAUDE.md and
   blocks dispatching out of order.
 - **Orchestrator direct dispatch denial.** The orchestrator can still dispatch
   any agent type at any time. No hook prevents skipping the planner or tester.
-- **Typed runtime dispatch queue.** INIT-002 defines a future `cc-policy` command
-  and typed runtime for dispatch emission and queue handling (`TKT-009`). This
-  does not exist yet.
+- **Typed runtime dispatch queue.** `dispatch_queue` exists (INIT-002/TKT-009)
+  but is non-authoritative (DEC-WS6-001). Routing uses completion records via
+  `determine_next_role()`. The queue is retained for manual orchestration only.
 - **Plan section immutability.** MASTER_PLAN.md permanent sections (Identity,
   Architecture, Principles, Decision Log rows) are protected by prompt
   instructions only. `planctl.py` validates section presence but does not enforce

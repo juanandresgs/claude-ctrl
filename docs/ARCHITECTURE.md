@@ -64,10 +64,10 @@ Policy checks delegated to `hooks/lib/bash-policy.sh`, which calls
 - `hooks/check-planner.sh` / `check-implementer.sh` / `check-tester.sh` /
   `check-guardian.sh` -- Agent-specific validation checks. Each deactivates the
   runtime agent marker via `rt_marker_deactivate` (TKT-016).
-- `hooks/post-task.sh` -- Dispatch emission. Detects completing agent role,
-  enqueues next-phase dispatch entries into `dispatch_queue`, emits events.
-  Wired into SubagentStop for all agent types by TKT-016 (created by TKT-009,
-  wiring landed in TKT-016).
+- `hooks/post-task.sh` -- Completion routing (DEC-WS6-001). Detects completing
+  agent role, routes next role via completion records and `determine_next_role()`,
+  emits suggestion via hookSpecificOutput. Wired into SubagentStop for all agent
+  types by TKT-016.
 
 **SessionStart** (fires on session start, /clear, /compact, resume):
 
@@ -87,9 +87,10 @@ The typed runtime is the authoritative owner of shared workflow state:
 - **CLI:** `cc-policy` (571 lines). Implements `init`, `proof`, `dispatch`,
   `marker`, `statusline`, `worktree`, and `event` command groups. 42ms median
   latency.
-- **Schema:** 8 core tables (`proof_state`, `agent_markers`, `events`,
-  `worktrees`, `dispatch_cycles`, `dispatch_queue`, `test_state`,
-  `dispatch_leases`, `completion_records`) plus domain-specific tables
+- **Schema:** 10 core tables (`proof_state`, `agent_markers`, `events`,
+  `worktrees`, `dispatch_cycles`, `dispatch_queue` (non-authoritative),
+  `test_state`, `evaluation_state`, `dispatch_leases`, `completion_records`)
+  plus domain-specific tables
   for traces, todos, and tokens. SQLite in WAL mode.
 - **Bridge:** `hooks/lib/runtime-bridge.sh` (129 lines) provides shell
   wrappers (`rt_proof_get`, `rt_proof_set`, `rt_marker_set`,
