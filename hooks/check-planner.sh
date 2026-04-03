@@ -86,12 +86,11 @@ else
     CONTEXT="Planner validation: MASTER_PLAN.md looks good ($PHASE_COUNT phases defined)."
 fi
 
-# Persist findings for next-prompt injection
+# Persist findings via runtime event store (flat file .agent-findings removed).
+# Readers (prompt-submit.sh, compact-preserve.sh) query event query --type agent_finding.
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
-    FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-    mkdir -p "${PROJECT_ROOT}/.claude"
-    echo "planner|$(IFS=';'; echo "${ISSUES[*]}")" >> "$FINDINGS_FILE"
     for issue in "${ISSUES[@]}"; do
+        rt_event_emit "agent_finding" "planner|${issue}" || true
         append_audit "$PROJECT_ROOT" "agent_planner" "$issue"
     done
 fi

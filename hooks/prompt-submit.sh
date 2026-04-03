@@ -109,16 +109,25 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
     fi
 fi
 
-# --- Inject agent findings from previous subagent runs ---
-FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
+# --- Inject agent findings from previous subagent runs (runtime events) ---
+# @decision DEC-FINDINGS-001
+# @title Agent findings read from runtime event store, not flat file
+# @status accepted
+# @rationale .agent-findings flat file writers were migrated to rt_event_emit
+#   (agent_finding events) in A5. Readers must use the same authority: the
+#   runtime event store. Flat-file reads removed here to eliminate dual-authority.
+#   One-shot delivery semantics preserved by querying a bounded recent window
+#   (limit 5) rather than clearing a file — events are append-only in the store.
+FINDINGS_JSON=$(cc_policy event query --type "agent_finding" --limit 5 2>/dev/null || echo '{"items":[],"count":0}')
+FINDINGS_COUNT=$(printf '%s' "$FINDINGS_JSON" | jq -r '.count // 0' 2>/dev/null || echo "0")
+if [[ "$FINDINGS_COUNT" -gt 0 ]]; then
     CONTEXT_PARTS+=("Previous agent findings (unresolved):")
-    while IFS='|' read -r agent issues; do
-        [[ -z "$agent" ]] && continue
+    while IFS= read -r detail; do
+        [[ -z "$detail" ]] && continue
+        agent="${detail%%|*}"
+        issues="${detail#*|}"
         CONTEXT_PARTS+=("  ${agent}: ${issues}")
-    done < "$FINDINGS_FILE"
-    # Clear after injection (one-shot delivery)
-    rm -f "$FINDINGS_FILE"
+    done < <(printf '%s' "$FINDINGS_JSON" | jq -r '.items[]?.detail // empty' 2>/dev/null)
 fi
 
 # --- Auto-claim: detect issue references in action prompts ---

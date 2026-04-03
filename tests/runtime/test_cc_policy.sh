@@ -96,8 +96,13 @@ conn = sqlite3.connect(os.environ['CLAUDE_POLICY_DB'])
 tables = {r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()}
 print(','.join(sorted(tables)))
 " 2>/dev/null || echo "ERROR")
-# sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns
-EXPECTED="agent_markers,dispatch_cycles,dispatch_queue,events,proof_state,session_tokens,sqlite_sequence,todo_state,trace_manifest,traces,worktrees"
+# sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns.
+# Expected list updated to match current schema (WS1+WS2+WS3+WS4+WS5 additions):
+#   approvals, bugs, completion_records — lease/completion/bug tracking (WS1/WS2/WS3)
+#   dispatch_leases — mandatory lease store (WS3/A3)
+#   evaluation_state — evaluator authority (TKT-024)
+#   workflow_bindings, workflow_scope — workflow scoping (TKT-022)
+EXPECTED="agent_markers,approvals,bugs,completion_records,dispatch_cycles,dispatch_leases,dispatch_queue,evaluation_state,events,proof_state,session_tokens,sqlite_sequence,todo_state,trace_manifest,traces,workflow_bindings,workflow_scope,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))

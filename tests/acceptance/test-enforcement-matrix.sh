@@ -138,6 +138,19 @@ run_git_op() {
             workflow bind "$workflow_id" "$project_dir" "feature/enforce-test" >/dev/null 2>&1
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
             workflow scope-set "$workflow_id" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+        # A3: all git ops now require an active lease. Set evaluation_state=ready_for_guardian
+        # with the current HEAD SHA so Check 10 passes, then issue a guardian lease.
+        local head_sha
+        head_sha=$(git -C "$project_dir" rev-parse HEAD 2>/dev/null || echo "")
+        if [[ -n "$head_sha" ]]; then
+            CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
+                evaluation set "$workflow_id" "ready_for_guardian" --head-sha "$head_sha" >/dev/null 2>&1
+        fi
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
+            lease issue-for-dispatch "guardian" \
+            --worktree-path "$project_dir" \
+            --workflow-id "$workflow_id" \
+            --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
     fi
 
     # Use "git status" as the command; guard.sh only enforces WHO on
