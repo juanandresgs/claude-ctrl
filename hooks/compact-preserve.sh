@@ -83,13 +83,17 @@ if [[ -f "$TEST_STATUS" ]]; then
     CONTEXT_PARTS+=("Test status: ${TS_RESULT} (${TS_FAILS} failures)")
 fi
 
-# --- Agent findings (unresolved issues from subagents) ---
-FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"
-if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
+# --- Agent findings (unresolved issues from subagents, runtime event store) ---
+# @decision DEC-FINDINGS-001 (see prompt-submit.sh for full rationale)
+# Flat-file .agent-findings removed; query runtime event store instead.
+FINDINGS_JSON=$(cc_policy event query --type "agent_finding" --limit 5 2>/dev/null || echo '{"items":[],"count":0}')
+FINDINGS_COUNT=$(printf '%s' "$FINDINGS_JSON" | jq -r '.count // 0' 2>/dev/null || echo "0")
+if [[ "$FINDINGS_COUNT" -gt 0 ]]; then
     CONTEXT_PARTS+=("Unresolved agent findings:")
-    while IFS= read -r line; do
-        CONTEXT_PARTS+=("  $line")
-    done < "$FINDINGS_FILE"
+    while IFS= read -r detail; do
+        [[ -z "$detail" ]] && continue
+        CONTEXT_PARTS+=("  $detail")
+    done < <(printf '%s' "$FINDINGS_JSON" | jq -r '.items[]?.detail // empty' 2>/dev/null)
 fi
 
 # --- Audit trail (last 5) ---
