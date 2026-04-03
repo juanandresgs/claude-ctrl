@@ -143,23 +143,17 @@ fi
 #     allowed=true  → proceed to later checks (Check 10, Check 13).
 #     allowed=false + op_class=high_risk → DENY (hard).
 #     allowed=false + op_class=routine_local → DENY (eval/lease gate).
-#   - No active lease + high_risk → DENY (no lease = no high-risk authority).
-#   - No active lease + routine_local → ALLOW (Check 10 owns readiness gate).
+#   - No active lease → DENY (all git ops require a lease in enforced projects).
 #
 # @decision DEC-GUARD-003
-# @title WHO enforcement uses lease validate_op — markers are observability only
-# @status accepted
+# @title WHO enforcement uses lease validate_op — no unleased git ops in enforced projects
+# @status accepted (updated TKT-STAB-A3)
 # @rationale Phase 2 execution contracts replace marker-based WHO detection.
-#   Markers are written at agent spawn but are racy in concurrent sessions.
-#   Leases are issued at dispatch time and carry explicit allowed_ops, making
-#   validate_op() a deterministic, non-racy authority. Routine local ops
-#   (commit, merge) without a lease remain allowed so the legacy path
-#   (pre-lease dispatch) continues to work — Check 10 owns their readiness
-#   gate. High-risk ops without a lease are denied: only a dispatched agent
-#   with an explicit lease containing high_risk in allowed_ops may run them.
+#   All git operations in the enforced project now require an active lease.
+#   The legacy "routine_local without a lease → allow" path is removed.
+#   Meta-repo bypass is the sole exception.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        _WHO_CLASS=$(classify_git_op "$COMMAND")
         _LEASE_JSON=$(rt_lease_current "$PROJECT_ROOT")
         _LEASE_FOUND=$(printf '%s' "${_LEASE_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
 
@@ -173,11 +167,7 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
             fi
             # allowed=true: proceed to Check 10 (eval readiness) and Check 13 (approval tokens).
         else
-            # No active lease.
-            if [[ "$_WHO_CLASS" == "high_risk" ]]; then
-                deny "No active dispatch lease for this worktree. High-risk git operations (push, rebase, reset) require an active lease. Dispatch an agent with cc-policy lease issue-for-dispatch."
-            fi
-            # routine_local without a lease: allow — Check 10 is the readiness authority.
+            deny "No active dispatch lease for this worktree. All git operations in the enforced project require a lease. Dispatch via: cc-policy lease issue-for-dispatch --role <role> --worktree-path <path>"
         fi
     fi
 fi

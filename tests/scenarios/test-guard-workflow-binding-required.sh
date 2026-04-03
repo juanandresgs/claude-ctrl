@@ -55,6 +55,15 @@ echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
 
+# Satisfy Check 3 (TKT-STAB-A3): lease required for all git ops; issue one so
+# the deny comes from Check 12A (no binding), not Check 3 (no lease).
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    lease issue-for-dispatch "guardian" \
+    --workflow-id "$WF_ID" \
+    --worktree-path "$TMP_DIR" \
+    --branch "$BRANCH" \
+    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+
 COMMIT_CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test commit'"
 
 PAYLOAD=$(jq -n \

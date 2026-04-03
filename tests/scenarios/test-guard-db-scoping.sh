@@ -45,6 +45,14 @@ setup() {
     echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    # Lease (TKT-STAB-A3): Check 3 requires an active lease; issue one in project DB
+    # so Check 3 passes and the scoping of evaluation reads is what's under test.
+    CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$BRANCH" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 }
 
 run_guard() {

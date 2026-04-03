@@ -1,32 +1,27 @@
 #!/usr/bin/env bash
-# test-guard-check3-who-classification.sh — Proves Check 3 uses the classifier
-# to skip WHO enforcement for routine_local ops and still enforce for high-risk.
+# test-guard-check3-who-classification.sh — Proves Check 3 lease enforcement
+# gates all git ops (routine_local and high_risk) on an active dispatch lease.
 #
-# The marker race fix: before this change, Check 3 blanket-denied ALL git
-# commit/merge/push unless the active marker was "guardian". This forced
-# concurrent agents to coordinate marker state before any commit — creating a
-# race. The fix: commit/merge are routine_local (gated by Check 10), push is
-# high_risk (gated by Check 3 + Check 13). Non-guardian roles can commit/merge
-# once the evaluator clears the workflow.
+# Updated TKT-STAB-A3: The legacy "routine_local without a lease → allow" bypass
+# is removed. ALL git ops now require an active lease. Lease + eval state together
+# are the two-factor gate for commit/merge. The classifier still separates op
+# classes for allowed_ops matching inside validate_op().
 #
 # Sub-cases:
-#   A: Routine commit by implementer role + ready_for_guardian → allowed
-#   B: Routine commit by implementer role WITHOUT ready_for_guardian → denied by Check 10
-#   C: Push by implementer role → denied by Check 3
-#   D: Push by guardian role, no approval token → reaches Check 13 (denied with "approval")
-#   E: Merge by implementer role + ready_for_guardian → allowed
-#   F: Merge --no-ff by implementer role → denied by Check 3 (high_risk)
+#   A: Routine commit by implementer role + lease + ready_for_guardian → allowed
+#   B: Routine commit with lease but WITHOUT ready_for_guardian → denied by Check 10
+#   C: Push by implementer role, no lease → denied by Check 3
+#   D: Push by guardian role, lease but no approval token → denied (approval required)
+#   E: Merge by implementer role + lease + ready_for_guardian → allowed
+#   F: Merge --no-ff by implementer role, no lease → denied by Check 3 (high_risk)
 #
 # @decision DEC-GUARD-003
-# @title WHO enforcement uses classifier — routine local ops skip role check
-# @status accepted
-# @rationale evaluation_state=ready_for_guardian is sufficient authority for
-#   routine local landing (DEC-APPROVAL-001). Requiring Guardian role for
-#   commit/merge creates a marker race where concurrent sessions overwrite
-#   the active marker, blocking legitimate auto-land. The classifier
-#   (DEC-CLASSIFY-001) separates routine from high-risk. Check 10 gates
-#   routine ops on evaluation_state. Check 13 gates high-risk ops on
-#   approval tokens. WHO enforcement only adds value for push (remote ops).
+# @title WHO enforcement uses lease validate_op — no unleased git ops in enforced projects
+# @status accepted (updated TKT-STAB-A3)
+# @rationale All git operations in the enforced project now require an active lease.
+#   The legacy "routine_local without a lease → allow" path is removed.
+#   Lease validate_op() is the sole Check 3 authority; Check 10 gates eval readiness.
+#   Meta-repo bypass is the sole exception (not tested here).
 set -euo pipefail
 
 TEST_NAME="test-guard-check3-who-classification"
@@ -96,12 +91,13 @@ _setup_repo() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case A: Routine commit by implementer role + ready_for_guardian → allowed
+# Sub-case A: Routine commit by implementer role + active lease + ready_for_guardian → allowed
 #
-# Production sequence: implementer finishes work, evaluator clears the workflow,
-# implementer runs git commit. Check 3 classifies "commit" as routine_local and
-# skips WHO enforcement. Check 10 sees ready_for_guardian + matching SHA →
-# passes. Commit proceeds without requiring guardian marker.
+# Production sequence (TKT-STAB-A3): implementer finishes work, evaluator clears
+# the workflow, orchestrator issues a lease, implementer runs git commit.
+# Check 3 finds the active lease → validate_op() returns allowed=true (routine_local
+# in allowed_ops). Check 10 sees ready_for_guardian + matching SHA → passes.
+# Commit proceeds. Both lease and eval state are required.
 # ---------------------------------------------------------------------------
 run_sub_case_a() {
     local branch="feature/check3-commit-implementer"
@@ -112,23 +108,34 @@ run_sub_case_a() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
 
+    # Issue implementer lease (TKT-STAB-A3: lease now required for all git ops)
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "implementer" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$branch" \
+        --allowed-ops '["routine_local"]' >/dev/null 2>&1
+
     local cmd output decision
     cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'implementer commit'"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "A" "routine commit by implementer with ready_for_guardian allowed"
+        pass "A" "routine commit by implementer with lease + ready_for_guardian allowed"
     else
         fail "A" "unexpected deny: $(_reason "$output")"
     fi
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case B: Routine commit by implementer WITHOUT ready_for_guardian → denied by Check 10
+# Sub-case B: Routine commit by implementer WITH lease but WITHOUT ready_for_guardian → denied by Check 10
 #
-# Check 3 skips WHO enforcement (routine_local). Check 10 fires because
+# TKT-STAB-A3: Check 3 now requires a lease for all git ops. A lease is issued here
+# so Check 3 passes (validate_op allows routine_local). Check 10 then fires because
 # evaluation_state=needs_changes. Deny reason must mention "evaluation_state".
+# This proves the lease gate and the eval gate are separate: having a lease is not
+# sufficient — eval readiness is still required by Check 10.
 # ---------------------------------------------------------------------------
 run_sub_case_b() {
     local branch="feature/check3-commit-needs-changes"
@@ -138,6 +145,14 @@ run_sub_case_b() {
     # Explicitly set needs_changes — no ready_for_guardian
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "needs_changes" >/dev/null 2>&1
+
+    # Issue a lease so Check 3 passes — Check 10 becomes the active gate
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "implementer" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$branch" \
+        --allowed-ops '["routine_local"]' >/dev/null 2>&1
 
     local cmd output decision reason
     cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'premature commit'"
@@ -153,12 +168,12 @@ run_sub_case_b() {
         fail "B" "deny reason should mention 'evaluation_state', got: $reason"
         return
     fi
-    # Must NOT say "Guardian agent" — that would mean Check 3 fired instead of 10
+    # Must NOT say "Guardian agent" — that would mean old Check 3 role-check fired
     if printf '%s' "$reason" | grep -qi "Guardian agent"; then
-        fail "B" "deny reason mentions 'Guardian agent' — Check 3 fired instead of Check 10: $reason"
+        fail "B" "deny reason mentions 'Guardian agent' — old Check 3 role-check fired: $reason"
         return
     fi
-    pass "B" "commit without ready_for_guardian denied by Check 10 (not Check 3)"
+    pass "B" "commit with lease but without ready_for_guardian denied by Check 10"
 }
 
 # ---------------------------------------------------------------------------
@@ -237,11 +252,13 @@ run_sub_case_d() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case E: Merge by implementer role + ready_for_guardian → allowed
+# Sub-case E: Merge by implementer role + active lease + ready_for_guardian → allowed
 #
-# Plain merge (no --no-ff) is routine_local. Check 3 skips WHO enforcement.
-# Check 10 passes with ready_for_guardian + matching merge-ref SHA.
-# Uses separate main+feature branch setup to mirror a real merge scenario.
+# TKT-STAB-A3: plain merge (no --no-ff) is routine_local. Check 3 now requires
+# a lease for all git ops — a lease with routine_local in allowed_ops is issued.
+# validate_op() returns allowed=true. Check 10 passes with ready_for_guardian +
+# matching merge-ref SHA. Uses separate main+feature branch setup to mirror a
+# real merge scenario.
 # ---------------------------------------------------------------------------
 run_sub_case_e() {
     local base_branch="feature/check3-merge-implementer"
@@ -292,13 +309,21 @@ run_sub_case_e() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "main" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 
+    # Issue implementer lease (TKT-STAB-A3: lease now required for all git ops)
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "implementer" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$base_branch" \
+        --allowed-ops '["routine_local"]' >/dev/null 2>&1
+
     local cmd output decision
     cmd="git -C \"$TMP_DIR\" merge $base_branch"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "E" "plain merge by implementer with ready_for_guardian allowed"
+        pass "E" "plain merge by implementer with lease + ready_for_guardian allowed"
     else
         fail "E" "unexpected deny: $(_reason "$output")"
     fi

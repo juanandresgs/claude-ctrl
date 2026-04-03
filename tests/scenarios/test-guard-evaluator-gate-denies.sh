@@ -59,6 +59,15 @@ run_deny_check() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 
+    # Lease (TKT-STAB-A3): Check 3 requires an active lease; issue one so the
+    # deny comes from Check 10 (evaluation_state), not Check 3 (no lease).
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$BRANCH" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+
     CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
     PAYLOAD=$(jq -n --arg t "Bash" --arg c "$CMD" --arg w "$TMP_DIR" \
         '{tool_name:$t,tool_input:{command:$c},cwd:$w}')

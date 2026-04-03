@@ -118,6 +118,17 @@ run_sub_case() {
     # .test-status = pass (Check 9)
     echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 
+    # Lease (TKT-STAB-A3): Check 3 requires an active lease for all git ops.
+    # --no-eval disables the lease's own eval check so Check 10 (not validate_op
+    # inside Check 3) is the sole evaluation gating authority in all sub-cases.
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$BRANCH" \
+        --allowed-ops '["routine_local","high_risk"]' \
+        --no-eval >/dev/null 2>&1
+
     case "$sub_case" in
     # -----------------------------------------------------------------------
     # Sub-case A: Merge with correct SHA — must be allowed
