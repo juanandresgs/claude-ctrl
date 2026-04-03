@@ -109,7 +109,7 @@ after it.
 
 ```
 EVAL_VERDICT: needs_changes|ready_for_guardian|blocked_by_plan
-EVAL_TESTS_PASS: <pass_count>/<total_count>
+EVAL_TESTS_PASS: true|false
 EVAL_NEXT_ROLE: implementer|guardian|planner
 EVAL_HEAD_SHA: <sha>
 ```

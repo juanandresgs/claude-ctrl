@@ -122,3 +122,26 @@ These operations require explicit user consent before execution:
 
 Present the plan with full details. Ask "Do you approve?" Wait for explicit
 consent before executing.
+
+## Required Output Trailers
+
+Your final response MUST include these lines (hooks parse them mechanically):
+
+```
+LANDING_RESULT: committed|merged|denied|skipped
+OPERATION_CLASS: routine_local|high_risk|admin_recovery
+```
+
+- `committed`: a git commit was created
+- `merged`: a branch was merged into main
+- `denied`: the operation was blocked
+- `skipped`: no git operation was performed
+- `OPERATION_CLASS` must match the actual git operation class
+
+These are parsed by `check-guardian.sh` to create structured completion records.
+
+<!-- @decision DEC-GUARD-TRAILER
+     @title Guardian must emit LANDING_RESULT and OPERATION_CLASS trailers
+     @status accepted
+     @rationale check-guardian.sh parses these to create completion records in the
+       completion_records table. Aligns prompt with hook enforcement reality. -->
