@@ -79,11 +79,15 @@ case "$AGENT_TYPE" in
 
         # Bind workflow to runtime so guard.sh Check 12 and later roles can
         # discover the worktree path without inferring from CWD or git state.
-        # workflow_id is derived from the branch (current_workflow_id).
-        # After binding, check if scope exists for this workflow_id; if not
-        # but scope exists for a different workflow_id on the same worktree,
-        # emit a mismatch warning.
-        _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+        # WS1: if a lease was claimed, use the lease's workflow_id for the binding
+        # so that all subsequent hooks (check-tester, check-guardian, guard.sh)
+        # see the same workflow_id. Branch-derived id is the fallback only when
+        # no lease was claimed.
+        _WF_ID=""
+        if [[ -n "$_LEASE_ID" ]]; then
+            _WF_ID=$(printf '%s' "$_CLAIM" | jq -r '.lease.workflow_id // .workflow_id // empty' 2>/dev/null || true)
+        fi
+        [[ -z "$_WF_ID" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
         _WF_WORKTREE="$PROJECT_ROOT"
         _WF_BRANCH="${GIT_BRANCH:-unknown}"
         rt_workflow_bind "$_WF_ID" "$_WF_WORKTREE" "$_WF_BRANCH" || true

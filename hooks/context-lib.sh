@@ -506,6 +506,43 @@ get_workflow_binding() {
     [[ -n "$WORKFLOW_WORKTREE" ]]
 }
 
+# --- Lease identity helper (WS1) ---
+#
+# lease_context <worktree_path>
+# Returns JSON with lease_id, workflow_id, role, branch, head_sha, found.
+# If no active lease, returns {"found": false}.
+# This is the SOLE identity source for leased execution paths — all hooks
+# that route, submit completions, or reset eval state must derive workflow_id
+# from this function when a lease is active, not from current_workflow_id().
+#
+# @decision DEC-WS1-001
+# @title lease_context() is the canonical workflow identity source for leased paths
+# @status accepted
+# @rationale All hooks derived workflow_id from branch name via current_workflow_id()
+#   regardless of whether a lease was active. Because the orchestrator issues leases
+#   with an explicit workflow_id (which may differ from the branch-derived token),
+#   this caused completion records, eval_state writes, and approval lookups to use
+#   different workflow_ids than the lease that authorized the operation. WS1 fixes
+#   this by making lease_context() the authority: when a lease is active its
+#   workflow_id wins. Branch-derived id is only the fallback when no lease exists.
+lease_context() {
+    local wt="${1:-}"
+    [[ -n "$wt" ]] || wt=$(detect_project_root)
+    local result
+    result=$(rt_lease_current "$wt") || result=""
+    if [[ -z "$result" ]]; then
+        echo '{"found": false}'
+        return
+    fi
+    local found
+    found=$(printf '%s' "$result" | jq -r 'if .lease_id then "true" else "false" end' 2>/dev/null || echo "false")
+    if [[ "$found" == "true" ]]; then
+        printf '%s' "$result" | jq '{found: true, lease_id: .lease_id, workflow_id: .workflow_id, role: .role, branch: (.branch // ""), head_sha: (.head_sha // "")}'
+    else
+        echo '{"found": false}'
+    fi
+}
+
 # --- Git operation classifier (DEC-CLASSIFY-001) ---
 # classify_git_op <command>
 # Returns "routine_local", "high_risk", "admin_recovery", or "unclassified".
@@ -550,4 +587,4 @@ classify_git_op() {
 # Export for subshells
 export SOURCE_EXTENSIONS
 export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

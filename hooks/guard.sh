@@ -352,11 +352,10 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b' && [[ "$_IS_ADMIN_RE
             fi
         fi
 
-        # After a merge passes the gate, reset evaluation to idle so the
-        # next workflow cycle starts clean.
-        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
-            rt_eval_set "$_EVAL_WF" "idle" 2>/dev/null || true
-        fi
+        # WS2: Pre-merge eval reset REMOVED. Reset moved to check-guardian.sh
+        # which fires AFTER the guardian completes and verifies LANDING_RESULT.
+        # Resetting here (before merge runs) consumed readiness on denied merges.
+        # See DEC-WS2-001 in check-guardian.sh for full rationale.
     fi
 fi
 
@@ -380,7 +379,13 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
     fi
 
     if ! is_claude_meta_repo "$_CHECK12_DIR"; then
-        _WF12_ID=$(current_workflow_id "$_CHECK12_DIR")
+        # WS1: use lease workflow_id when a lease is active (same source as Check 10).
+        _WF12_LEASE_CTX=$(lease_context "$_CHECK12_DIR")
+        _WF12_LEASE_FOUND=$(printf '%s' "$_WF12_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_WF12_LEASE_FOUND" == "true" ]]; then
+            _WF12_ID=$(printf '%s' "$_WF12_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+        [[ -z "${_WF12_ID:-}" ]] && _WF12_ID=$(current_workflow_id "$_CHECK12_DIR")
 
         # Sub-check A: binding must exist
         _WF12_BINDING=$(rt_workflow_get "$_WF12_ID")
@@ -453,7 +458,15 @@ if echo "$COMMAND" | grep -qE '\bgit\b'; then
         fi
 
         if [[ -n "$_APPROVAL_OP" ]]; then
-            _APPROVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
+            # WS1: use lease workflow_id when a lease is active so approval
+            # tokens are looked up under the same workflow_id that was authorized.
+            _APPROVAL_WF=""
+            _APPROVAL_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+            _APPROVAL_LEASE_FOUND=$(printf '%s' "$_APPROVAL_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+            if [[ "$_APPROVAL_LEASE_FOUND" == "true" ]]; then
+                _APPROVAL_WF=$(printf '%s' "$_APPROVAL_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+            fi
+            [[ -z "$_APPROVAL_WF" ]] && _APPROVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
             _APPROVAL_RESULT=$(rt_approval_check "$_APPROVAL_WF" "$_APPROVAL_OP" 2>/dev/null || echo "false")
             if [[ "$_APPROVAL_RESULT" != "true" ]]; then
                 deny "Operation '$_APPROVAL_OP' (class: $_OP_CLASS) requires explicit approval. Grant via: cc-policy approval grant $_APPROVAL_WF $_APPROVAL_OP"

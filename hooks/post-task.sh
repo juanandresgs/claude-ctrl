@@ -63,12 +63,23 @@ rt_event_emit "agent_complete" "Agent $AGENT_TYPE completed" || true
 
 # ---------------------------------------------------------------------------
 # Resolve project root and workflow_id (used by all routing blocks below)
+#
+# WS1: lease_context() is the identity source for leased paths.
+# When a lease is active its workflow_id wins over the branch-derived one.
+# Branch-derived id is the fallback only when no lease exists.
 # ---------------------------------------------------------------------------
 
 _PROJECT_ROOT=$(detect_project_root 2>/dev/null || echo "")
 _WF_ID=""
+_ACTIVE_LEASE_ID=""
 if [[ -n "$_PROJECT_ROOT" ]]; then
-    _WF_ID=$(current_workflow_id "$_PROJECT_ROOT" 2>/dev/null || echo "")
+    _LEASE_CTX=$(lease_context "${_PROJECT_ROOT:-}")
+    _LEASE_FOUND=$(printf '%s' "$_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    if [[ "$_LEASE_FOUND" == "true" ]]; then
+        _WF_ID=$(printf '%s' "$_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        _ACTIVE_LEASE_ID=$(printf '%s' "$_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
+    fi
+    [[ -z "$_WF_ID" ]] && _WF_ID=$(current_workflow_id "$_PROJECT_ROOT" 2>/dev/null || echo "")
 fi
 
 # ---------------------------------------------------------------------------
@@ -108,9 +119,10 @@ case "$AGENT_TYPE" in
         _TESTER_NEXT_ROLE=""
 
         if [[ -n "$_WF_ID" ]]; then
-            # Read active lease BEFORE any release — this is the fix for DEC-ROUTING-002.
-            _TESTER_LEASE_JSON=$(rt_lease_current "${_PROJECT_ROOT:-}")
-            _TESTER_LEASE_ID=$(printf '%s' "${_TESTER_LEASE_JSON:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+            # WS1: Use _ACTIVE_LEASE_ID resolved from lease_context() above.
+            # lease_context() guarantees the lease ID matches the workflow_id
+            # used by _WF_ID — no secondary rt_lease_current call needed.
+            _TESTER_LEASE_ID="$_ACTIVE_LEASE_ID"
 
             if [[ -n "$_TESTER_LEASE_ID" ]]; then
                 _TESTER_COMP=$(rt_completion_latest "$_TESTER_LEASE_ID")
@@ -148,9 +160,8 @@ case "$AGENT_TYPE" in
         _GUARDIAN_NEXT_ROLE=""
 
         if [[ -n "$_WF_ID" ]]; then
-            # Read active lease BEFORE any release.
-            _GUARDIAN_LEASE_JSON=$(rt_lease_current "${_PROJECT_ROOT:-}")
-            _GUARDIAN_LEASE_ID=$(printf '%s' "${_GUARDIAN_LEASE_JSON:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+            # WS1: Use _ACTIVE_LEASE_ID resolved from lease_context() above.
+            _GUARDIAN_LEASE_ID="$_ACTIVE_LEASE_ID"
 
             if [[ -n "$_GUARDIAN_LEASE_ID" ]]; then
                 _GUARDIAN_COMP=$(rt_completion_latest "$_GUARDIAN_LEASE_ID")
