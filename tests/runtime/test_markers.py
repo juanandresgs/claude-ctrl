@@ -20,9 +20,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+import runtime.core.markers as markers
 from runtime.core.db import connect_memory
 from runtime.schemas import ensure_schema
-import runtime.core.markers as markers
 
 
 @pytest.fixture
@@ -94,3 +94,92 @@ def test_list_all_returns_all_markers(conn):
     assert len(rows) == 2
     ids = {r["agent_id"] for r in rows}
     assert ids == {"agent-1", "agent-2"}
+
+
+# ---------------------------------------------------------------------------
+# Schema migration tests — old-schema DB forward-compatibility
+# ---------------------------------------------------------------------------
+
+
+def _make_old_schema_conn():
+    """Create an in-memory DB with the pre-TKT-STAB-A4 agent_markers schema.
+
+    Replicates the schema installed in production DBs before the `status`
+    column was added: has is_active and workflow_id but lacks status.
+    """
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(":memory:")
+    conn.row_factory = _sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    # Old DDL: no status column, but has workflow_id (from an earlier migration)
+    conn.execute(
+        """
+        CREATE TABLE agent_markers (
+            agent_id    TEXT    PRIMARY KEY,
+            role        TEXT    NOT NULL,
+            started_at  INTEGER NOT NULL,
+            stopped_at  INTEGER,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            workflow_id TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def test_ensure_schema_adds_status_to_old_db():
+    """ensure_schema migrates an old DB that lacks the status column.
+
+    Production sequence: old DB exists without status column; ensure_schema
+    runs on startup; markers.expire_stale (which uses status) must then work.
+
+    This is the compound-interaction test covering the real migration path:
+      old schema → ensure_schema() → expire_stale() succeeds.
+    """
+    conn = _make_old_schema_conn()
+
+    # Confirm status column is absent before migration
+    try:
+        conn.execute("SELECT status FROM agent_markers LIMIT 0")
+        assert False, "Expected OperationalError — status should not exist yet"
+    except Exception as exc:
+        assert "no such column" in str(exc).lower()
+
+    # Run the migration
+    ensure_schema(conn)
+
+    # Now the status column must exist and expire_stale must not raise
+    conn.execute("SELECT status FROM agent_markers LIMIT 0")  # no exception
+
+    import time
+
+    now = int(time.time())
+    # Insert a row directly using old-style columns (no status) to simulate a
+    # row that existed before the migration — DEFAULT 'active' must fill it.
+    conn.execute(
+        "INSERT INTO agent_markers (agent_id, role, started_at, is_active)"
+        " VALUES ('old-agent', 'implementer', ?, 1)",
+        (now - 10800,),
+    )
+    conn.commit()
+
+    # expire_stale references status — must succeed on the migrated DB
+    count = markers.expire_stale(conn, ttl=7200, now=now)
+    assert count == 1, f"Expected 1 expired, got {count}"
+    assert markers.get_active(conn) is None
+
+
+def test_ensure_schema_idempotent_on_new_db():
+    """ensure_schema is a no-op for DBs that already have the status column."""
+    c = connect_memory()
+    ensure_schema(c)
+    # Second call must not raise
+    ensure_schema(c)
+    # Column exists exactly once — verify via pragma
+    cols = {row[1] for row in c.execute("PRAGMA table_info(agent_markers)").fetchall()}
+    assert "status" in cols
+    assert "workflow_id" in cols
+    c.close()

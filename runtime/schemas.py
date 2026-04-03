@@ -30,12 +30,13 @@ CREATE TABLE IF NOT EXISTS proof_state (
 
 AGENT_MARKERS_DDL = """
 CREATE TABLE IF NOT EXISTS agent_markers (
-    agent_id   TEXT    PRIMARY KEY,
-    role       TEXT    NOT NULL,
-    started_at INTEGER NOT NULL,
-    stopped_at INTEGER,
-    is_active  INTEGER NOT NULL DEFAULT 1,
-    status     TEXT    NOT NULL DEFAULT 'active'
+    agent_id    TEXT    PRIMARY KEY,
+    role        TEXT    NOT NULL,
+    started_at  INTEGER NOT NULL,
+    stopped_at  INTEGER,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    status      TEXT    NOT NULL DEFAULT 'active',
+    workflow_id TEXT
 )
 """
 
@@ -309,9 +310,41 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     is a no-op once the schema exists. All DDL runs in a single transaction
     so a partial failure leaves the database in its prior state.
     Indexes for dispatch_leases are applied after table creation.
+
+    ALTER TABLE migrations are applied after table creation so that existing
+    DBs that predate a column addition are brought forward automatically.
+
+    @decision DEC-RT-024
+    Title: ALTER TABLE migrations in ensure_schema for agent_markers evolution
+    Status: accepted
+    Rationale: CREATE TABLE IF NOT EXISTS is idempotent but never adds new
+      columns to an existing table. Old DBs created before the `status` column
+      was added to AGENT_MARKERS_DDL would fail every markers.py operation that
+      references `status`. The standard pattern for SQLite schema evolution is
+      to attempt ALTER TABLE ADD COLUMN and swallow the OperationalError when
+      the column already exists. This keeps ensure_schema as the single
+      migration authority without requiring a separate migration runner.
     """
     with conn:
         for ddl in ALL_DDL:
             conn.execute(ddl)
         for idx_ddl in DISPATCH_LEASES_INDEXES_DDL:
             conn.execute(idx_ddl)
+
+        # Migrate agent_markers: add status column if missing.
+        # Old DBs (pre-TKT-STAB-A4) have is_active but no status.
+        # Swallow OperationalError — it fires when the column already exists.
+        try:
+            conn.execute(
+                "ALTER TABLE agent_markers ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists — no-op
+
+        # Migrate agent_markers: add workflow_id column if missing.
+        # Some intermediate DBs have workflow_id from an earlier migration;
+        # newer fresh DBs get it from AGENT_MARKERS_DDL above.
+        try:
+            conn.execute("ALTER TABLE agent_markers ADD COLUMN workflow_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists — no-op
