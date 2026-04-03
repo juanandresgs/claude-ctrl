@@ -30,6 +30,19 @@ Rationale: After TKT-024 cutover, evaluation_state is the sole readiness
   primary readiness fields. proof_status is retained as a legacy field
   (proof_status_legacy) so existing consumers that read it do not crash,
   but it carries zero enforcement meaning.
+
+@decision DEC-WS6-001
+Title: dispatch_status derived from completion records, not dispatch_queue
+Status: accepted
+Rationale: WS6 removes dispatch_queue from the routing hot-path. post-task.sh
+  no longer enqueues into dispatch_queue; the queue was a write-only sink with
+  no live readers in the enforcement path. dispatch_status is now derived from
+  the latest completion record using determine_next_role(role, verdict) — the
+  single authoritative routing table in completions.py. dispatch_workflow,
+  dispatch_from_role, and dispatch_from_verdict are new fields that let the HUD
+  surface where the routing decision came from. dispatch_initiative and
+  dispatch_cycle_id remain (read from dispatch_cycles) for initiative-level
+  tracking, which is not routing state.
 """
 
 from __future__ import annotations
@@ -37,6 +50,8 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from runtime.core.completions import determine_next_role
+from runtime.core.completions import latest as comp_latest
 from runtime.core.markers import get_active_with_age
 
 
@@ -59,8 +74,15 @@ def snapshot(conn: sqlite3.Connection) -> dict:
       marker_age_seconds  — age in seconds of the active marker, or None
       worktree_count      — number of active (non-removed) worktrees
       worktrees           — list of {path, branch, ticket} for each active wt
-      dispatch_status     — role of the oldest pending dispatch queue item,
-                            or None when the queue is empty
+      dispatch_status     — next role derived from the latest completion record
+                            via determine_next_role(role, verdict), or None
+                            when no valid completion exists or cycle is done
+                            (DEC-WS6-001: no longer reads dispatch_queue)
+      dispatch_workflow   — workflow_id of the completion record that produced
+                            dispatch_status, or None
+      dispatch_from_role  — role of the agent that produced the completion
+                            record, or None
+      dispatch_from_verdict — verdict from that completion record, or None
       dispatch_initiative — initiative name of the current active cycle,
                             or None
       dispatch_cycle_id   — id of the current active cycle, or None
@@ -85,6 +107,9 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "worktree_count": 0,
         "worktrees": [],
         "dispatch_status": None,
+        "dispatch_workflow": None,
+        "dispatch_from_role": None,
+        "dispatch_from_verdict": None,
         "dispatch_initiative": None,
         "dispatch_cycle_id": None,
         "recent_event_count": 0,
@@ -159,27 +184,29 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             ORDER  BY created_at DESC
             """
         ).fetchall()
-        wt_list = [
-            {"path": r["path"], "branch": r["branch"], "ticket": r["ticket"]}
-            for r in rows
-        ]
+        wt_list = [{"path": r["path"], "branch": r["branch"], "ticket": r["ticket"]} for r in rows]
         result["worktree_count"] = len(wt_list)
         result["worktrees"] = wt_list
 
         # ------------------------------------------------------------------
-        # Dispatch — oldest pending queue item (next to be claimed) + active cycle
+        # Dispatch — derive next_role from latest completion record.
+        #
+        # @decision DEC-WS6-001: dispatch_queue is no longer the routing
+        # authority. post-task.sh stopped enqueuing into dispatch_queue —
+        # the queue was a write-only sink with no live readers in the
+        # enforcement path. Routing is now determined by
+        # determine_next_role(role, verdict) applied to the most recent
+        # completion record. dispatch_initiative and dispatch_cycle_id are
+        # retained from dispatch_cycles — that is initiative-level tracking,
+        # not routing state.
         # ------------------------------------------------------------------
-        row = conn.execute(
-            """
-            SELECT role
-            FROM   dispatch_queue
-            WHERE  status = 'pending'
-            ORDER  BY created_at ASC
-            LIMIT  1
-            """
-        ).fetchone()
-        if row:
-            result["dispatch_status"] = row["role"]
+        comp = comp_latest(conn)
+        if comp and comp.get("valid"):
+            _next = determine_next_role(comp["role"], comp.get("verdict", ""))
+            result["dispatch_status"] = _next  # None means cycle complete
+            result["dispatch_workflow"] = comp.get("workflow_id")
+            result["dispatch_from_role"] = comp["role"]
+            result["dispatch_from_verdict"] = comp.get("verdict", "")
 
         row = conn.execute(
             """
@@ -206,8 +233,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             """
         ).fetchall()
         evt_list = [
-            {"type": r["type"], "detail": r["detail"], "created_at": r["created_at"]}
-            for r in rows
+            {"type": r["type"], "detail": r["detail"], "created_at": r["created_at"]} for r in rows
         ]
         result["recent_event_count"] = len(evt_list)
         result["recent_events"] = evt_list

@@ -215,10 +215,11 @@ if [[ -n "${_DISPATCH_ERROR:-}" ]]; then
 }
 EOF
 elif [[ -n "$NEXT_ROLE" ]]; then
-    # Enqueue into the persistent dispatch queue; failure is non-fatal so a
-    # degraded runtime does not block the agent conversation.
-    _rt_ensure_schema
-    cc_policy dispatch enqueue "$NEXT_ROLE" >/dev/null 2>&1 || true
+    # @decision DEC-WS6-001
+    # dispatch_queue enqueue removed — routing is communicated via
+    # hookSpecificOutput suggestion. Lease/completion state is the sole
+    # routing authority. Queue was a write-only sink with no live readers
+    # in the enforcement path.
 
     # Include workflow_id in dispatch context so the orchestrator can pass it
     # to the next agent without re-deriving from CWD (DEC-WF-001).

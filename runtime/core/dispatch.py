@@ -4,6 +4,13 @@ Owns dispatch_queue and dispatch_cycles tables. The queue tracks individual
 role-based work items (pending -> active -> done/skipped). Cycles group a
 set of queue items under a named initiative.
 
+Note (DEC-WS6-001): The dispatch_queue is no longer written to or read from
+in the hot enforcement/routing path. Routing uses completion records via
+determine_next_role() in runtime.core.completions. The queue table and
+functions remain for backward compatibility and manual orchestration but are
+not authoritative. statusline.py no longer reads dispatch_queue for
+dispatch_status — it reads completion_records instead.
+
 @decision DEC-RT-001
 Title: Canonical SQLite schema for all shared workflow state
 Status: accepted
@@ -20,8 +27,6 @@ from __future__ import annotations
 import sqlite3
 import time
 from typing import Optional
-
-from runtime.schemas import DISPATCH_QUEUE_STATUSES
 
 
 def enqueue(

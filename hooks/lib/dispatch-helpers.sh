@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # dispatch-helpers.sh — Convenience wrappers for dispatch queue operations.
 #
+# DEPRECATED (DEC-WS6-001): dispatch_queue is no longer the routing authority.
+# Routing uses completion records via cc-policy completion route.
+# These helpers remain for manual orchestration only.
+#
 # @decision DEC-DISPATCH-001
 # @title Shell wrappers for dispatch queue operations
 # @status accepted

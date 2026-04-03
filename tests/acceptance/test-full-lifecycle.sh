@@ -290,16 +290,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 6: verify dispatch queue progression
+# Phase 6: verify routing via completion records (DEC-WS6-001)
 # ---------------------------------------------------------------------------
 printf '\n-- Verify dispatch queue and events\n'
 
-# After running each post-task, the queue should have been populated.
-# We ran planner->implementer->tester post-tasks, each enqueuing the next role.
-# Queue: implementer (from planner) + tester (from implementer) + guardian (from tester)
-queue_result=$(policy dispatch next)
-next_role=$(printf '%s' "$queue_result" | jq -r '.role // empty')
-assert_eq "dispatch queue: first item is implementer" "implementer" "$next_role"
+# DEC-WS6-001: dispatch_queue is no longer the routing authority.
+# post-task.sh no longer enqueues into dispatch_queue. Instead, routing is
+# derived from the latest completion record via determine_next_role().
+# The tester phase submitted a valid completion with verdict=ready_for_guardian,
+# so the latest completion record should show role=tester, verdict=ready_for_guardian.
+latest_comp=$(policy completion latest 2>/dev/null || echo '{}')
+comp_role=$(printf '%s' "$latest_comp" | jq -r '.role // empty')
+comp_verdict=$(printf '%s' "$latest_comp" | jq -r '.verdict // empty')
+# valid is stored as SQLite integer (1/0); jq emits it as a number
+comp_valid=$(printf '%s' "$latest_comp" | jq -r '.valid // 0')
+assert_eq "completion record: latest role is tester" "tester" "$comp_role"
+assert_eq "completion record: verdict is ready_for_guardian" "ready_for_guardian" "$comp_verdict"
+assert_eq "completion record: valid" "1" "$comp_valid"
 
 # ---------------------------------------------------------------------------
 # Phase 7: verify events recorded

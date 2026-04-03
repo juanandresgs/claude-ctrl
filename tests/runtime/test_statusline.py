@@ -20,6 +20,13 @@ Rationale: snapshot() reads proof_state, agent_markers, worktrees,
   scripts/statusline.sh has everything it needs for a richer HUD without
   calling multiple CLI subcommands. All fields have safe None/0 defaults so
   the statusline never crashes on an empty or partially-populated DB.
+
+@decision DEC-WS6-001
+Title: dispatch_status derived from completion records, not dispatch_queue
+Status: accepted
+Rationale: WS6 removes dispatch_queue from the routing hot-path. dispatch_status
+  is now derived from determine_next_role(latest_completion.role, verdict).
+  The queue table remains for backward compat but is not the routing authority.
 """
 
 from __future__ import annotations
@@ -32,19 +39,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from runtime.core.db import connect_memory
-from runtime.schemas import ensure_schema
-import runtime.core.proof as proof_mod
-import runtime.core.markers as markers_mod
-import runtime.core.worktrees as worktrees_mod
+import runtime.core.completions as completions_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.events as events_mod
+import runtime.core.markers as markers_mod
+import runtime.core.proof as proof_mod
 import runtime.core.statusline as statusline
-
+import runtime.core.worktrees as worktrees_mod
+from runtime.core.db import connect_memory
+from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def conn():
@@ -66,6 +74,9 @@ REQUIRED_KEYS = {
     "worktree_count",
     "worktrees",
     "dispatch_status",
+    "dispatch_workflow",
+    "dispatch_from_role",
+    "dispatch_from_verdict",
     "dispatch_initiative",
     "dispatch_cycle_id",
     "recent_event_count",
@@ -105,6 +116,7 @@ def test_snapshot_empty_db_safe_defaults(conn):
 # Proof state reflection
 # ---------------------------------------------------------------------------
 
+
 def test_snapshot_reflects_proof_status(conn):
     """Snapshot picks up the most recent non-idle proof status."""
     proof_mod.set_status(conn, "wf-active", "pending")
@@ -136,6 +148,7 @@ def test_snapshot_proof_idle_when_all_idle(conn):
 # Active agent reflection
 # ---------------------------------------------------------------------------
 
+
 def test_snapshot_reflects_active_agent(conn):
     """Snapshot surfaces active marker role and agent_id."""
     markers_mod.set_active(conn, "agent-007", "implementer")
@@ -156,6 +169,7 @@ def test_snapshot_no_active_agent_after_deactivate(conn):
 # ---------------------------------------------------------------------------
 # Worktree reflection
 # ---------------------------------------------------------------------------
+
 
 def test_snapshot_includes_worktree_details(conn):
     """Snapshot includes worktree list with path, branch, ticket fields."""
@@ -196,6 +210,7 @@ def test_snapshot_worktree_fields_have_correct_keys(conn):
 # Dispatch cycle reflection
 # ---------------------------------------------------------------------------
 
+
 def test_snapshot_reflects_active_dispatch_cycle(conn):
     """Snapshot surfaces dispatch_initiative, dispatch_cycle_id for active cycle."""
     cid = dispatch_mod.start_cycle(conn, "INIT-002")
@@ -204,24 +219,94 @@ def test_snapshot_reflects_active_dispatch_cycle(conn):
     assert snap["dispatch_cycle_id"] == cid
 
 
-def test_snapshot_dispatch_status_pending_queue_item(conn):
-    """Snapshot surfaces the oldest pending dispatch queue item role."""
-    dispatch_mod.enqueue(conn, "implementer", ticket="TKT-011")
+def test_snapshot_dispatch_status_from_completion_tester_ready(conn):
+    """dispatch_status is derived from completion records, not dispatch_queue.
+
+    DEC-WS6-001: A tester completion with verdict 'ready_for_guardian' must
+    produce dispatch_status == 'guardian'. The queue is not consulted.
+    """
+    completions_mod.submit(
+        conn,
+        lease_id="lease-001",
+        workflow_id="wf-ws6",
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "ready_for_guardian",
+            "EVAL_TESTS_PASS": "yes",
+            "EVAL_NEXT_ROLE": "guardian",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
+    snap = statusline.snapshot(conn)
+    assert snap["dispatch_status"] == "guardian"
+    assert snap["dispatch_workflow"] == "wf-ws6"
+    assert snap["dispatch_from_role"] == "tester"
+    assert snap["dispatch_from_verdict"] == "ready_for_guardian"
+
+
+def test_snapshot_dispatch_status_from_completion_tester_needs_changes(conn):
+    """Tester completion with 'needs_changes' routes back to implementer."""
+    completions_mod.submit(
+        conn,
+        lease_id="lease-002",
+        workflow_id="wf-ws6b",
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "needs_changes",
+            "EVAL_TESTS_PASS": "no",
+            "EVAL_NEXT_ROLE": "implementer",
+            "EVAL_HEAD_SHA": "def456",
+        },
+    )
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] == "implementer"
+    assert snap["dispatch_from_role"] == "tester"
+    assert snap["dispatch_from_verdict"] == "needs_changes"
 
 
-def test_snapshot_dispatch_status_none_when_empty(conn):
-    """No pending dispatch item => dispatch_status is None."""
+def test_snapshot_dispatch_status_none_when_no_completion(conn):
+    """No completion records => dispatch_status is None.
+
+    DEC-WS6-001: queue-based lookup is gone. Without a completion record,
+    all dispatch fields are None regardless of queue contents.
+    """
+    # Enqueue an item — must NOT influence dispatch_status
+    dispatch_mod.enqueue(conn, "implementer", ticket="TKT-011")
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] is None
+    assert snap["dispatch_workflow"] is None
+    assert snap["dispatch_from_role"] is None
+    assert snap["dispatch_from_verdict"] is None
     assert snap["dispatch_initiative"] is None
     assert snap["dispatch_cycle_id"] is None
+
+
+def test_snapshot_dispatch_status_invalid_completion_is_none(conn):
+    """An invalid (failed validation) completion record yields dispatch_status None.
+
+    Only valid completion records with a recognised routing path produce a
+    next_role. Invalid records are not authoritative for routing.
+    """
+    # Submit an invalid tester completion (missing required fields).
+    # submit() still inserts the record but valid=False.
+    completions_mod.submit(
+        conn,
+        lease_id="lease-bad",
+        workflow_id="wf-bad",
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "ready_for_guardian",
+            # missing EVAL_TESTS_PASS, EVAL_NEXT_ROLE, EVAL_HEAD_SHA
+        },
+    )
+    snap = statusline.snapshot(conn)
+    assert snap["dispatch_status"] is None
 
 
 # ---------------------------------------------------------------------------
 # Recent events reflection
 # ---------------------------------------------------------------------------
+
 
 def test_snapshot_recent_events_populated(conn):
     """snapshot() includes up to 5 most recent events with required fields."""
@@ -257,6 +342,7 @@ def test_snapshot_recent_event_has_required_fields(conn):
 # Snapshot timestamp
 # ---------------------------------------------------------------------------
 
+
 def test_snapshot_at_is_current_epoch(conn):
     """snapshot_at must be within 5 seconds of now."""
     before = int(time.time())
@@ -269,22 +355,39 @@ def test_snapshot_at_is_current_epoch(conn):
 # Compound interaction: full production state scenario
 # ---------------------------------------------------------------------------
 
+
 def test_snapshot_full_production_sequence(conn):
     """Exercises the complete production state sequence through snapshot().
 
-    Production path: orchestrator starts a cycle -> dispatcher enqueues an
-    implementer -> implementer marker is set -> worktree registered -> proof
-    set to pending -> events emitted. snapshot() must reflect all of these
-    in a single call.
+    Production path (DEC-WS6-001): tester submits a valid completion with
+    ready_for_guardian -> implementer marker is set -> worktree registered ->
+    dispatch cycle active -> proof set to pending -> events emitted.
+    snapshot() must reflect all of these in a single call, and dispatch_status
+    must be derived from the completion record (not the queue).
 
-    This is the compound-interaction test requirement: multiple domain modules
-    collaborate and snapshot() synthesizes them into one coherent projection.
+    This is the compound-interaction test: completions.py, markers.py,
+    worktrees.py, dispatch.py, proof.py, events.py, and statusline.py all
+    collaborate — snapshot() synthesizes them into one coherent projection.
     """
     # 1. Start a dispatch cycle
     cid = dispatch_mod.start_cycle(conn, "INIT-002")
 
-    # 2. Enqueue an implementer item
-    dispatch_mod.enqueue(conn, "implementer", ticket="TKT-011")
+    # 2. Submit a valid tester completion — this is now the routing authority
+    #    (DEC-WS6-001). The queue is NOT enqueued; dispatch_status is derived
+    #    from this record via determine_next_role("tester", "ready_for_guardian")
+    #    => "guardian".
+    completions_mod.submit(
+        conn,
+        lease_id="lease-tkt011",
+        workflow_id="TKT-011",
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "ready_for_guardian",
+            "EVAL_TESTS_PASS": "yes",
+            "EVAL_NEXT_ROLE": "guardian",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
 
     # 3. Set active agent marker
     markers_mod.set_active(conn, "agent-tkt011", "implementer")
@@ -310,7 +413,11 @@ def test_snapshot_full_production_sequence(conn):
     assert snap["worktree_count"] == 1
     assert snap["worktrees"][0]["path"] == "/wt/tkt-011"
     assert snap["worktrees"][0]["ticket"] == "TKT-011"
-    assert snap["dispatch_status"] == "implementer"
+    # dispatch_status comes from completion record, not queue (DEC-WS6-001)
+    assert snap["dispatch_status"] == "guardian"
+    assert snap["dispatch_workflow"] == "TKT-011"
+    assert snap["dispatch_from_role"] == "tester"
+    assert snap["dispatch_from_verdict"] == "ready_for_guardian"
     assert snap["dispatch_initiative"] == "INIT-002"
     assert snap["dispatch_cycle_id"] == cid
     assert snap["recent_event_count"] == 2
