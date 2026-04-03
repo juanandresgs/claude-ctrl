@@ -175,17 +175,39 @@ def test_cli_marker_expire_stale_returns_ok():
 
 
 # ---------------------------------------------------------------------------
-# 3. CLI: test-state get
+# 3. CLI: test-state get/set (WS3: SQLite authority — flat-file bridge retired)
 # ---------------------------------------------------------------------------
+# These tests were rewritten for WS3. The old bridge read .claude/.test-status;
+# the new implementation reads/writes the SQLite test_state table exclusively.
+# test_status_dir fixture kept for backward compat with fixture name; tests now
+# use it as a project_root dir and point at an isolated SQLite DB via env var.
 
 
-def test_cli_test_state_get_no_file(test_status_dir):
-    """test-state get returns found=false when .claude/.test-status is absent."""
-    rc, stdout, stderr = _run_cli(
+def _run_cli_with_db(*args, tmp_path):
+    """Run CLI with an isolated SQLite DB to avoid touching the project state.db."""
+    import os
+
+    db_path = tmp_path / "state.db"
+    env = os.environ.copy()
+    env["CLAUDE_POLICY_DB"] = str(db_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "runtime.cli"] + list(args),
+        capture_output=True,
+        text=True,
+        cwd=str(_PROJECT_ROOT),
+        env=env,
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def test_cli_test_state_get_no_record(test_status_dir):
+    """test-state get returns found=false when no SQLite row exists (WS3)."""
+    rc, stdout, stderr = _run_cli_with_db(
         "test-state",
         "get",
         "--project-root",
         str(test_status_dir),
+        tmp_path=test_status_dir,
     )
     assert rc == 0, f"Expected exit 0, got {rc}. stderr={stderr}"
     data = json.loads(stdout)
@@ -194,15 +216,24 @@ def test_cli_test_state_get_no_file(test_status_dir):
 
 
 def test_cli_test_state_get_pass(test_status_dir):
-    """test-state get returns status=pass when file shows pass."""
-    ts_file = test_status_dir / ".claude" / ".test-status"
-    ts_file.write_text(f"pass|0|{int(time.time())}\n")
+    """test-state set then get returns status=pass from SQLite (WS3)."""
+    # First write via set
+    rc0, _, err0 = _run_cli_with_db(
+        "test-state",
+        "set",
+        "pass",
+        "--project-root",
+        str(test_status_dir),
+        tmp_path=test_status_dir,
+    )
+    assert rc0 == 0, f"set failed: {err0}"
 
-    rc, stdout, stderr = _run_cli(
+    rc, stdout, stderr = _run_cli_with_db(
         "test-state",
         "get",
         "--project-root",
         str(test_status_dir),
+        tmp_path=test_status_dir,
     )
     assert rc == 0, f"Expected exit 0, got {rc}. stderr={stderr}"
     data = json.loads(stdout)
@@ -212,15 +243,25 @@ def test_cli_test_state_get_pass(test_status_dir):
 
 
 def test_cli_test_state_get_fail(test_status_dir):
-    """test-state get returns status=fail and fail_count when tests failed."""
-    ts_file = test_status_dir / ".claude" / ".test-status"
-    ts_file.write_text(f"fail|3|{int(time.time())}\n")
+    """test-state set fail then get returns status=fail from SQLite (WS3)."""
+    rc0, _, err0 = _run_cli_with_db(
+        "test-state",
+        "set",
+        "fail",
+        "--project-root",
+        str(test_status_dir),
+        "--failed",
+        "3",
+        tmp_path=test_status_dir,
+    )
+    assert rc0 == 0, f"set failed: {err0}"
 
-    rc, stdout, stderr = _run_cli(
+    rc, stdout, stderr = _run_cli_with_db(
         "test-state",
         "get",
         "--project-root",
         str(test_status_dir),
+        tmp_path=test_status_dir,
     )
     assert rc == 0, f"Expected exit 0, got {rc}. stderr={stderr}"
     data = json.loads(stdout)
@@ -229,20 +270,27 @@ def test_cli_test_state_get_fail(test_status_dir):
     assert data.get("fail_count") == 3
 
 
-def test_cli_test_state_get_malformed(test_status_dir):
-    """test-state get handles malformed file gracefully."""
-    ts_file = test_status_dir / ".claude" / ".test-status"
-    ts_file.write_text("not-valid\n")
+def test_cli_test_state_flat_file_not_read(test_status_dir):
+    """test-state get ignores .claude/.test-status flat file (WS3: bridge retired).
 
-    rc, stdout, stderr = _run_cli(
+    Even with a flat-file present, get returns found=False when no SQLite row exists.
+    """
+    claude_dir = test_status_dir / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    (claude_dir / ".test-status").write_text(f"pass|0|{int(time.time())}\n")
+
+    rc, stdout, _ = _run_cli_with_db(
         "test-state",
         "get",
         "--project-root",
         str(test_status_dir),
+        tmp_path=test_status_dir,
     )
     assert rc == 0
     data = json.loads(stdout)
-    assert "status" in data
+    assert data.get("found") is False, (
+        "WS3: test-state get must read SQLite only; flat-file must be ignored"
+    )
 
 
 # ---------------------------------------------------------------------------

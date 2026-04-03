@@ -164,8 +164,8 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
-# Check 5: Test status for git operations (TKT-STAB-A4: migrated from flat-file read)
-_TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+# Check 5: Test status for git operations (WS3: via rt_test_state_get from SQLite authority)
+_TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
 _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
 _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
 _TS_FOUND=$(printf '%s' "${_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")

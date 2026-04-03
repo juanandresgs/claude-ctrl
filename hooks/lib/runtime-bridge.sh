@@ -388,3 +388,63 @@ rt_completion_route() {
     local role="${1:-}" verdict="${2:-}"
     cc_policy completion route "$role" "$verdict" 2>/dev/null || echo '{"next_role":null}'
 }
+
+# ---------------------------------------------------------------------------
+# Test-state wrappers (WS3: SQLite authority, replaces flat-file bridge)
+# ---------------------------------------------------------------------------
+#
+# @decision DEC-WS3-002
+# @title rt_test_state_* wrappers route all test-state I/O through cc-policy
+# @status accepted
+# @rationale guard.sh Checks 8/9, subagent-start.sh, and check-guardian.sh
+#   previously called `python3 -m runtime.cli test-state get` which read the
+#   .claude/.test-status flat-file. WS3 replaces the flat-file read with a
+#   SQLite-backed test_state table. These wrappers follow the same pattern as
+#   rt_eval_get/set: they call cc_policy, suppress stderr, and return safe
+#   defaults on failure. Enforcement hooks call rt_test_state_get instead of
+#   invoking python3 directly, making the call site uniform and the internal
+#   storage swappable without touching hooks.
+
+# rt_test_state_get [project_root]
+# Returns the full JSON dict from cc-policy test-state get, or "" on failure.
+# Callers parse .status and .found with jq.
+rt_test_state_get() {
+    _rt_ensure_schema
+    local project_root="${1:-$(detect_project_root 2>/dev/null || echo "")}"
+    local args=("test-state" "get")
+    [[ -n "$project_root" ]] && args+=("--project-root" "$project_root")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false,"status":"unknown","fail_count":0}'
+}
+
+# rt_test_state_set <status> [project_root] [head_sha] [pass_count] [fail_count] [total]
+# Upserts test state in SQLite. Fire-and-forget for hook callers; exit code
+# propagated so callers can log failures if needed.
+rt_test_state_set() {
+    _rt_ensure_schema
+    local status="$1"
+    local project_root="${2:-$(detect_project_root 2>/dev/null || echo "")}"
+    local head_sha="${3:-}"
+    local pass_count="${4:-0}"
+    local fail_count="${5:-0}"
+    local total="${6:-0}"
+    local args=("test-state" "set" "$status")
+    [[ -n "$project_root" ]] && args+=("--project-root" "$project_root")
+    [[ -n "$head_sha" ]] && args+=("--head-sha" "$head_sha")
+    [[ "$pass_count" != "0" ]] && args+=("--passed" "$pass_count")
+    [[ "$fail_count" != "0" ]] && args+=("--failed" "$fail_count")
+    [[ "$total" != "0" ]] && args+=("--total" "$total")
+    cc_policy "${args[@]}" >/dev/null 2>&1
+}
+
+# rt_test_state_check_pass [project_root]
+# Returns exit code 0 (true) when status is pass or pass_complete, 1 otherwise.
+# Convenience wrapper for guard conditions that want a boolean branch.
+rt_test_state_check_pass() {
+    _rt_ensure_schema
+    local project_root="${1:-$(detect_project_root 2>/dev/null || echo "")}"
+    local result
+    result=$(rt_test_state_get "$project_root") || result=""
+    local status
+    status=$(printf '%s' "${result:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+    [[ "$status" == "pass" || "$status" == "pass_complete" ]]
+}

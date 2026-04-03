@@ -814,74 +814,77 @@ def _handle_sidecar(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# test-state: flat-file bridge for .claude/.test-status
+# test-state: SQLite-backed authority (WS3 — replaces flat-file bridge)
 # ---------------------------------------------------------------------------
 
+import runtime.core.test_state as ts_mod
 
-def _handle_test_state(args) -> int:
-    """Read .claude/.test-status flat-file and return structured JSON.
 
-    This is a bridge layer: test-runner.sh continues writing the flat-file
-    (pipe-separated: status|fail_count|timestamp). Hooks that previously read
-    the file directly (guard.sh Checks 8/9, subagent-start.sh, check-guardian.sh)
-    now call this subcommand so the read surface is uniform JSON and the
-    internal format can evolve without touching every hook.
-
-    @decision DEC-STAB-A4-003
-    Title: test-state get reads flat-file and returns JSON (bridge layer)
-    Status: accepted
-    Rationale: test-runner.sh (out of scope for TKT-STAB-A4) continues writing
-      .claude/.test-status in pipe-separated format. Rather than changing the
-      writer, we interpose a thin CLI bridge that reads the file and returns
-      JSON. Hooks get a stable JSON API; the flat-file format is encapsulated
-      here. A future task can migrate to a SQLite-backed test_state table by
-      changing only this function without touching any hook.
-    """
-    if args.action != "get":
-        return _err(f"unknown test-state action: {args.action}")
-
-    project_root = getattr(args, "project_root", None)
+def _resolve_project_root(args) -> str:
+    """Resolve project_root from args, env, or git root. Returns '' on failure."""
+    project_root = getattr(args, "project_root", None) or ""
     if not project_root:
-        # Fall back to CLAUDE_PROJECT_DIR, then cwd git root
         import os
 
         project_root = os.environ.get("CLAUDE_PROJECT_DIR", "")
-        if not project_root:
-            import subprocess
-
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-            )
-            project_root = result.stdout.strip() if result.returncode == 0 else ""
-
     if not project_root:
-        return _ok({"found": False, "status": "unknown", "fail_count": 0})
+        import subprocess
 
-    from pathlib import Path as _Path
-
-    ts_file = _Path(project_root) / ".claude" / ".test-status"
-    if not ts_file.exists():
-        return _ok({"found": False, "status": "unknown", "fail_count": 0})
-
-    try:
-        content = ts_file.read_text().strip()
-        parts = content.split("|")
-        status = parts[0] if parts else "unknown"
-        fail_count = int(parts[1]) if len(parts) > 1 else 0
-        updated_at = int(parts[2]) if len(parts) > 2 else 0
-        return _ok(
-            {
-                "found": True,
-                "status": status,
-                "fail_count": fail_count,
-                "updated_at": updated_at,
-            }
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
         )
-    except Exception:
-        # Malformed file — treat as unknown
-        return _ok({"found": True, "status": "unknown", "fail_count": 0})
+        project_root = result.stdout.strip() if result.returncode == 0 else ""
+    return project_root
+
+
+def _handle_test_state(args) -> int:
+    """Read/write test state via the SQLite test_state table.
+
+    Replaces the TKT-STAB-A4 flat-file bridge. The flat-file
+    .claude/.test-status is no longer read by this handler — test_state
+    is the canonical authority. test-runner.sh may still WRITE the flat-file
+    for backward compatibility (session-init.sh clears it), but no
+    enforcement hook reads it.
+
+    @decision DEC-WS3-001
+    Title: test-state subcommand reads/writes SQLite, not flat-file
+    Status: accepted
+    Rationale: DEC-STAB-A4-003 described the flat-file bridge as temporary.
+      WS3 completes the migration: _handle_test_state now delegates to
+      runtime.core.test_state which owns the test_state SQLite table.
+      get returns the row dict; set upserts it. The flat-file is not
+      consulted. Guard hooks updated in WS3 call rt_test_state_get (via
+      runtime-bridge.sh) which calls this CLI endpoint.
+    """
+    if args.action == "get":
+        project_root = _resolve_project_root(args)
+        if not project_root:
+            return _ok({"found": False, "status": "unknown", "fail_count": 0})
+        conn = _get_conn()
+        result = ts_mod.get_status(conn, project_root)
+        conn.close()
+        return _ok(result)
+
+    if args.action == "set":
+        project_root = _resolve_project_root(args)
+        if not project_root:
+            return _err("test-state set requires --project-root or CLAUDE_PROJECT_DIR")
+        conn = _get_conn()
+        ts_mod.set_status(
+            conn,
+            project_root,
+            args.status,
+            head_sha=getattr(args, "head_sha", None),
+            pass_count=getattr(args, "passed", 0) or 0,
+            fail_count=getattr(args, "failed", 0) or 0,
+            total_count=getattr(args, "total", 0) or 0,
+        )
+        conn.close()
+        return _ok({"project_root": project_root, "status": args.status})
+
+    return _err(f"unknown test-state action: {args.action}")
 
 
 # ---------------------------------------------------------------------------
@@ -1249,17 +1252,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # test-state: flat-file bridge (TKT-STAB-A4)
+    # test-state: SQLite-backed authority (WS3 — replaces flat-file bridge)
     ts_p = subparsers.add_parser(
-        "test-state", help="Read .claude/.test-status flat-file as structured JSON"
+        "test-state", help="Read/write test state from the SQLite test_state table"
     )
     ts_sub = ts_p.add_subparsers(dest="action", required=True)
-    ts_get = ts_sub.add_parser("get", help="Return test status JSON for a project root")
-    ts_get.add_argument(
-        "--project-root",
+
+    _ts_root_kwargs = dict(
         dest="project_root",
         default=None,
         help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
     )
+    ts_get = ts_sub.add_parser("get", help="Return test status JSON for a project root")
+    ts_get.add_argument("--project-root", **_ts_root_kwargs)
+
+    ts_set = ts_sub.add_parser("set", help="Write test status to the runtime table")
+    ts_set.add_argument("status", help="Status string: pass | fail | pass_complete | unknown")
+    ts_set.add_argument("--project-root", **_ts_root_kwargs)
+    ts_set.add_argument("--head-sha", dest="head_sha", default=None, help="Git HEAD SHA")
+    ts_set.add_argument("--passed", type=int, default=0, help="Number of passing tests")
+    ts_set.add_argument("--failed", type=int, default=0, help="Number of failing tests")
+    ts_set.add_argument("--total", type=int, default=0, help="Total test count")
 
     return parser
 

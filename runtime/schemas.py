@@ -239,6 +239,23 @@ CREATE TABLE IF NOT EXISTS completion_records (
 )
 """
 
+TEST_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS test_state (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_root TEXT    NOT NULL UNIQUE,
+    head_sha     TEXT,
+    status       TEXT    NOT NULL DEFAULT 'unknown',
+    pass_count   INTEGER NOT NULL DEFAULT 0,
+    fail_count   INTEGER NOT NULL DEFAULT 0,
+    total_count  INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL
+)
+"""
+
+TEST_STATE_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_test_state_project ON test_state (project_root)"
+)
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -258,6 +275,7 @@ ALL_DDL: list[str] = [
     BUGS_DDL,
     DISPATCH_LEASES_DDL,
     COMPLETION_RECORDS_DDL,
+    TEST_STATE_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
@@ -326,10 +344,37 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
       migration authority without requiring a separate migration runner.
     """
     with conn:
+        # Migrate test_state: the pre-WS3 schema used workflow_id as the PRIMARY KEY
+        # and had no project_root column. WS3 changes the primary key to project_root
+        # (UNIQUE). Since SQLite cannot ALTER a PRIMARY KEY, we drop and recreate the
+        # table when the old schema is detected. Data loss is acceptable: the old
+        # test_state rows used workflow_id as key and are incompatible with the new
+        # project_root-keyed rows. test-runner.sh will repopulate after the next run.
+        #
+        # @decision DEC-WS3-003
+        # Title: DROP old test_state when pre-WS3 schema is detected
+        # Status: accepted
+        # Rationale: The old test_state table (workflow_id PK) was never fully wired
+        #   into any enforcement hook — it was a stub from an earlier incomplete attempt.
+        #   WS3 is the first complete implementation. Dropping and recreating is safer
+        #   than a multi-step ALTER that would still leave the wrong primary key.
+        #   Existing rows carry no useful state; they will be repopulated by test-runner.sh.
+        try:
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(test_state)").fetchall()
+            }
+            if existing_columns and "project_root" not in existing_columns:
+                # Old schema detected — drop and let CREATE TABLE IF NOT EXISTS rebuild it.
+                conn.execute("DROP TABLE IF EXISTS test_state")
+                conn.execute("DROP INDEX IF EXISTS idx_test_state_project")
+        except sqlite3.OperationalError:
+            pass  # table does not exist yet — CREATE TABLE IF NOT EXISTS handles it
+
         for ddl in ALL_DDL:
             conn.execute(ddl)
         for idx_ddl in DISPATCH_LEASES_INDEXES_DDL:
             conn.execute(idx_ddl)
+        conn.execute(TEST_STATE_INDEX_DDL)
 
         # Migrate agent_markers: add status column if missing.
         # Old DBs (pre-TKT-STAB-A4) have is_active but no status.

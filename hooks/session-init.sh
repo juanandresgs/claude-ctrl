@@ -197,18 +197,19 @@ rm -f "$PROJECT_ROOT/.claude/.session-start-epoch"
 # .subagent-tracker rm removed (TKT-008): file no longer written.
 
 # --- Clear stale test status from previous session ---
-# .test-status is now a hard gate for commits (guard.sh Checks 6/7).
-# Stale passing results from a previous session must not satisfy the gate.
-# test-runner.sh will regenerate it after the first Write/Edit in this session.
-TEST_STATUS="${PROJECT_ROOT}/.claude/.test-status"
-if [[ -f "$TEST_STATUS" ]]; then
-    TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS")
-    TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS")
-    if [[ "$TS_RESULT" == "fail" ]]; then
-        CONTEXT_PARTS+=("WARNING: Last test run FAILED ($TS_FAILS failures). test-gate.sh will block source writes until tests pass.")
-    fi
-    rm -f "$TEST_STATUS"
+# Stale passing results from a previous session must not satisfy the guard gate.
+# WS3: read from SQLite (canonical), clear it, then also remove the flat-file
+# (backward compat — test-runner.sh will regenerate both after the first run).
+_TS_JSON=$(rt_test_state_get "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+_TS_RESULT=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+_TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+if [[ "$_TS_RESULT" == "fail" ]]; then
+    CONTEXT_PARTS+=("WARNING: Last test run FAILED ($_TS_FAILS failures). test-gate.sh will block source writes until tests pass.")
 fi
+# Reset SQLite test state so stale pass does not satisfy guard this session.
+rt_test_state_set "unknown" "$PROJECT_ROOT" >/dev/null 2>&1 || true
+# Also clear the flat-file (backward compat).
+rm -f "${PROJECT_ROOT}/.claude/.test-status"
 
 # --- Output as additionalContext ---
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then

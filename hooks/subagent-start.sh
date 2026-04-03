@@ -100,8 +100,8 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("WARNING: No scope manifest found for workflow_id '$_WF_ID'. Planner should set scope via 'cc-policy workflow scope-set' before commit. Guard.sh will deny commit without scope.")
         fi
 
-        # Inject test status (TKT-STAB-A4: migrated from flat-file read)
-        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        # Inject test status (WS3: via rt_test_state_get from SQLite authority)
+        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
         _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
         if [[ "$_TS_STATUS" == "fail" ]]; then
@@ -133,8 +133,8 @@ case "$AGENT_TYPE" in
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
         CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Tester via EVAL_VERDICT trailer).")
-        # Inject test status (TKT-STAB-A4: migrated from flat-file read)
-        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        # Inject test status (WS3: via rt_test_state_get from SQLite authority)
+        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
         _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
         if [[ "$_TS_STATUS" == "fail" ]]; then

@@ -249,11 +249,11 @@ fi
 
 # --- Check 8: Test status gate for merge commands ---
 # Admin recovery (merge --abort) is not a merge landing — skip the test gate.
-# Reads test status from runtime (TKT-STAB-A4: migrated from flat-file read).
+# Reads test status from runtime via rt_test_state_get (WS3: SQLite authority).
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && \
    ! echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
         _TS_FOUND=$(printf '%s' "${_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
         if [[ "$_TS_FOUND" != "yes" ]]; then
@@ -266,11 +266,11 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && \
 fi
 
 # --- Check 9: Test status gate for commit commands ---
-# Reads test status from runtime (TKT-STAB-A4: migrated from flat-file read).
+# Reads test status from runtime via rt_test_state_get (WS3: SQLite authority).
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        _TS_JSON=$(python3 -m runtime.cli test-state get --project-root "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
+        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
         _TS_FOUND=$(printf '%s' "${_TS_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
         if [[ "$_TS_FOUND" != "yes" ]]; then
