@@ -49,8 +49,46 @@ EVAL_INPUT=$(printf '%s' "$HOOK_INPUT" | jq \
     '. + {event_type: "Write", tool_name: (.tool_name // "Write"), actor_role: $role, actor_id: "", cwd: $root}')
 
 # Call the policy engine. cc_policy is defined in runtime-bridge.sh (sourced via context-lib.sh).
-RESULT=$(printf '%s' "$EVAL_INPUT" | cc_policy evaluate 2>/dev/null || true)
+#
+# Fail-closed contract (DEC-HOOK-003):
+#   - If cc_policy evaluate fails (non-zero exit), output is empty, or output is
+#     not valid JSON with hookSpecificOutput, emit a deny payload and exit 2.
+#   - Suppressing errors with "|| true" is explicitly forbidden here because this
+#     is a security-critical gate: failing open allows writes that should be blocked.
+# `|| true` here is intentional and safe: it prevents `set -e` from aborting
+# the script before we can inspect the exit code. We capture _EVAL_EXIT on
+# the same line so it always reflects cc_policy's actual exit code, then the
+# validity check below enforces the fail-closed invariant explicitly.
+_EVAL_EXIT=0
+RESULT=$(printf '%s' "$EVAL_INPUT" | cc_policy evaluate 2>&1) || _EVAL_EXIT=$?
 
-[[ -n "$RESULT" ]] && echo "$RESULT"
+# Validate: exit code must be 0, output must be non-empty, and must be parseable JSON
+# containing hookSpecificOutput (the Claude hook contract field).
+_VALID=false
+if [[ $_EVAL_EXIT -eq 0 && -n "$RESULT" ]]; then
+    if printf '%s' "$RESULT" | jq -e '.hookSpecificOutput' >/dev/null 2>&1; then
+        _VALID=true
+    fi
+fi
 
+if [[ "$_VALID" == "false" ]]; then
+    # Runtime unavailable or returned invalid output — deny the write.
+    # Emitting JSON to stdout signals Claude to use hookSpecificOutput.
+    # Non-zero exit (2) ensures the hook is treated as blocking.
+    printf '%s\n' "$(jq -n \
+        --arg reason "Policy engine unavailable or returned invalid output (exit=${_EVAL_EXIT}). Write blocked by fail-closed guard." \
+        '{
+            "action": "deny",
+            "reason": $reason,
+            "policy_name": "pre_write_adapter",
+            "hookSpecificOutput": {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": $reason,
+                "blockingHook": "pre_write_adapter"
+            }
+        }')"
+    exit 2
+fi
+
+echo "$RESULT"
 exit 0
