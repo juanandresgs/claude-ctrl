@@ -80,8 +80,9 @@ _setup_repo() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         marker set "agent-test" "$role" >/dev/null 2>&1
 
-    # Test status = pass
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    # Test status = pass (SQLite authority — Check 8/9 read via rt_test_state_get, not flat file)
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set "pass" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Workflow binding + scope
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -290,8 +291,9 @@ run_sub_case_e() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         marker set "agent-test" "implementer" >/dev/null 2>&1
 
-    # Test status = pass
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    # Test status = pass (SQLite authority — Check 8 reads via rt_test_state_get, not flat file)
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set "pass" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Evaluation_state: feature branch workflow cleared with feature SHA
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

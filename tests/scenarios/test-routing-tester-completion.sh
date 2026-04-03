@@ -133,16 +133,13 @@ else
     fail "lease released after hook fires — lease still active after post-task"
 fi
 
-# --- Verify dispatch queue has guardian enqueued ---
-NEXT_ROLE=$($CC dispatch next 2>/dev/null | jq -r '.role // empty' 2>/dev/null || true)
-if [[ "$NEXT_ROLE" == "guardian" ]]; then
-    pass "dispatch queue: guardian enqueued"
-else
-    fail "dispatch queue: guardian enqueued (got: '$NEXT_ROLE')"
-fi
+# --- Dispatch queue enqueue was removed in WS6 (TKT-024 convergence) ---
+# post-task.sh now communicates the next role via additionalContext only.
+# dispatch_queue enqueue is no longer written; cc-policy dispatch next returns empty.
+# The routing intent is captured in hook output above (verified by the guardian check).
 
 # --- Results ---
-TOTAL=8
+TOTAL=7
 echo ""
 echo "Results: $((TOTAL - FAILURES))/$TOTAL passed"
 if [[ "$FAILURES" -gt 0 ]]; then
