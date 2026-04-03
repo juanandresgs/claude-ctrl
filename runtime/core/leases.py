@@ -41,6 +41,26 @@ from runtime.schemas import DEFAULT_LEASE_TTL
 
 
 # ---------------------------------------------------------------------------
+# Role-safe defaults
+# ---------------------------------------------------------------------------
+
+# @decision DEC-LEASE-003
+# Title: ROLE_DEFAULTS is the single source of per-role allowed_ops and requires_eval defaults
+# Status: accepted
+# Rationale: Callers of issue() should not need to know what ops each role needs.
+#   ROLE_DEFAULTS encodes the role→ops mapping in one place. Unknown roles fall
+#   back to ["routine_local"] for safety. Explicit allowed_ops parameter overrides
+#   the defaults when the caller has a reason.
+
+ROLE_DEFAULTS: dict[str, dict] = {
+    "implementer": {"allowed_ops": ["routine_local"], "requires_eval": True},
+    "tester":      {"allowed_ops": [],                "requires_eval": False},
+    "guardian":    {"allowed_ops": ["routine_local", "high_risk", "admin_recovery"], "requires_eval": True},
+    "planner":     {"allowed_ops": [],                "requires_eval": False},
+}
+
+
+# ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
 
@@ -172,7 +192,8 @@ def issue(
     expires_at = now + ttl
 
     if allowed_ops is None:
-        allowed_ops = ["routine_local"]
+        _defaults = ROLE_DEFAULTS.get(role, {})
+        allowed_ops = _defaults.get("allowed_ops", ["routine_local"])
     if blocked_ops is None:
         blocked_ops = []
 
@@ -219,12 +240,17 @@ def claim(
     agent_id: str,
     lease_id: Optional[str] = None,
     worktree_path: Optional[str] = None,
+    expected_role: Optional[str] = None,
 ) -> Optional[dict]:
     """Claim an active lease by associating agent_id with it.
 
     Lookup priority: lease_id > worktree_path.
     Any other active lease held by agent_id is revoked (one-lease-per-agent).
     Returns the claimed lease dict, or None if no active lease found.
+
+    If expected_role is provided, the lease's role must match exactly. A
+    mismatch returns None — this prevents a tester from claiming a guardian
+    lease (DEC-LEASE-003).
     """
     now = int(time.time())
 
@@ -240,6 +266,10 @@ def claim(
         target_row = _fetch_active(conn, worktree_path=worktree_path)
 
     if target_row is None:
+        return None
+
+    # Verify role matches expectation when specified (DEC-LEASE-003).
+    if expected_role is not None and target_row["role"] != expected_role:
         return None
 
     target_lease_id = target_row["lease_id"]

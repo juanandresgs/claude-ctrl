@@ -317,13 +317,15 @@ rt_lease_current() {
     cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }
 
-# rt_lease_claim <agent_id> [worktree_path]
+# rt_lease_claim <agent_id> [worktree_path] [expected_role]
 # Claims an active lease for agent_id. Returns full claim JSON or '{"found":false}'.
+# If expected_role is provided, the lease role must match or claim returns {"claimed":false}.
 rt_lease_claim() {
     _rt_ensure_schema
-    local agent_id="${1:-}" worktree_path="${2:-}"
+    local agent_id="${1:-}" worktree_path="${2:-}" expected_role="${3:-}"
     local args=("lease" "claim" "$agent_id")
     [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    [[ -n "$expected_role" ]] && args+=("--expected-role" "$expected_role")
     cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }
 

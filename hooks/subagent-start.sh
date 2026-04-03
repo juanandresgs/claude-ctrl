@@ -37,7 +37,7 @@ rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
 # its role, allowed ops, and next step without re-inferring from environment.
 # If no lease exists, inject a warning — high-risk git ops will be denied by
 # guard.sh Check 3 (validate_op fallback path) when no lease is active.
-_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT")
+_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT" "$AGENT_TYPE")
 _LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
 if [[ -n "$_LEASE_ID" ]]; then
     _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)

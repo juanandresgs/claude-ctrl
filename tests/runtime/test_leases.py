@@ -657,3 +657,100 @@ def test_validate_op_high_risk_still_requires_eval_and_approval(conn):
     assert result["op_class"] == "high_risk"
     assert result["eval_ok"] is False
     assert result["allowed"] is False
+
+
+# ---------------------------------------------------------------------------
+# ROLE_DEFAULTS — per-role allowed_ops defaults (DEC-LEASE-003)
+# ---------------------------------------------------------------------------
+
+
+def test_role_safe_defaults_guardian(conn):
+    """issue(role='guardian') must include all three op classes without caller specifying."""
+    import json
+
+    lease = leases.issue(conn, role="guardian")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert "routine_local" in allowed
+    assert "high_risk" in allowed
+    assert "admin_recovery" in allowed
+
+
+def test_role_safe_defaults_tester(conn):
+    """issue(role='tester') must produce an empty allowed_ops list."""
+    import json
+
+    lease = leases.issue(conn, role="tester")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == []
+
+
+def test_role_safe_defaults_implementer(conn):
+    """issue(role='implementer') must produce ['routine_local'] — unchanged from old default."""
+    import json
+
+    lease = leases.issue(conn, role="implementer")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == ["routine_local"]
+
+
+def test_role_safe_defaults_planner(conn):
+    """issue(role='planner') must produce an empty allowed_ops list."""
+    import json
+
+    lease = leases.issue(conn, role="planner")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == []
+
+
+def test_role_safe_defaults_unknown_role(conn):
+    """issue(role='unknown') falls back to ['routine_local'] for safety."""
+    import json
+
+    lease = leases.issue(conn, role="unknown")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == ["routine_local"]
+
+
+def test_role_safe_defaults_explicit_override(conn):
+    """Explicit allowed_ops= overrides ROLE_DEFAULTS regardless of role."""
+    import json
+
+    lease = leases.issue(conn, role="tester", allowed_ops=["routine_local"])
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == ["routine_local"]
+
+
+# ---------------------------------------------------------------------------
+# claim() expected_role enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_claim_expected_role_match(conn):
+    """Claim with expected_role matching the lease role succeeds."""
+    leases.issue(conn, role="tester", worktree_path="/repo/wt-tester")
+    result = leases.claim(
+        conn, agent_id="agent-t", worktree_path="/repo/wt-tester", expected_role="tester"
+    )
+    assert result is not None
+    assert result["agent_id"] == "agent-t"
+    assert result["role"] == "tester"
+
+
+def test_claim_expected_role_mismatch(conn):
+    """Claim with expected_role not matching the lease role returns None.
+
+    This is the key safety invariant: a tester cannot claim a guardian lease.
+    """
+    leases.issue(conn, role="guardian", worktree_path="/repo/wt-guardian")
+    result = leases.claim(
+        conn, agent_id="agent-t", worktree_path="/repo/wt-guardian", expected_role="tester"
+    )
+    assert result is None
+
+
+def test_claim_no_expected_role(conn):
+    """Claim without expected_role succeeds regardless of lease role (backward compat)."""
+    leases.issue(conn, role="guardian", worktree_path="/repo/wt-g2")
+    result = leases.claim(conn, agent_id="agent-g", worktree_path="/repo/wt-g2")
+    assert result is not None
+    assert result["role"] == "guardian"

@@ -497,10 +497,12 @@ def _handle_lease(args) -> int:
                 agent_id=args.agent_id,
                 lease_id=getattr(args, "lease_id", None),
                 worktree_path=getattr(args, "worktree_path", None),
+                expected_role=getattr(args, "expected_role", None),
             )
             if claimed is None:
-                return _ok({"found": False, "lease": None})
-            return _ok({"found": True, "lease": claimed})
+                reason = "role_mismatch" if getattr(args, "expected_role", None) else "not_found"
+                return _ok({"claimed": False, "reason": reason})
+            return _ok({"claimed": True, "lease": claimed})
 
         elif args.action == "get":
             lease = leases_mod.get(conn, args.lease_id)
@@ -1075,6 +1077,12 @@ def build_parser() -> argparse.ArgumentParser:
     ls_claim.add_argument("agent_id")
     ls_claim.add_argument("--lease-id", dest="lease_id", default=None)
     ls_claim.add_argument("--worktree-path", dest="worktree_path", default=None)
+    ls_claim.add_argument(
+        "--expected-role",
+        dest="expected_role",
+        default=None,
+        help="If set, claim fails unless lease role matches (DEC-LEASE-003)",
+    )
 
     ls_get = ls_sub.add_parser("get", help="Look up lease by lease_id")
     ls_get.add_argument("lease_id")
