@@ -21,6 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from runtime.core.db import connect_memory
 from runtime.core.policy_engine import (
     PolicyContext,
     PolicyDecision,
@@ -29,8 +30,6 @@ from runtime.core.policy_engine import (
     build_context,
     default_registry,
 )
-
-from runtime.core.db import connect_memory
 from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
@@ -367,7 +366,7 @@ def test_build_context_has_project_root(conn, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# default_registry: empty in W1
+# default_registry: empty in W1, fail-closed on register_all errors
 # ---------------------------------------------------------------------------
 
 
@@ -381,3 +380,177 @@ def test_default_registry_empty_in_w1():
     reg = default_registry()
     policies = reg.list_policies()
     assert policies == []
+
+
+def test_default_registry_fail_closed_on_register_all_error(monkeypatch):
+    """If register_all raises, default_registry() must propagate — not swallow.
+
+    This guards against the fail-open regression: an ImportError or exception
+    in a policy module must crash the CLI, not silently return an empty registry
+    that allows everything. See DEC-PE-008.
+    """
+    import runtime.core.policies as _policies_pkg
+
+    def _bad_register_all(registry):
+        raise ImportError("synthetic: policy module has a broken import")
+
+    monkeypatch.setattr(_policies_pkg, "register_all", _bad_register_all)
+
+    with pytest.raises(ImportError, match="synthetic"):
+        default_registry()
+
+
+# ---------------------------------------------------------------------------
+# build_context: dispatch_phase is workflow-scoped
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_phase_is_workflow_scoped(conn, tmp_path):
+    """dispatch_phase must come from the correct workflow, not a concurrent one.
+
+    Two workflows each have a completion record. build_context() for workflow A
+    must read workflow A's phase, not workflow B's more-recent record — even
+    though workflow B's record has a more-recent created_at timestamp.
+
+    This is the compound-interaction test: it exercises the real production
+    sequence — two concurrent workflows writing completion records, then
+    context resolution for each — crossing the boundary between the
+    completion_records table and build_context()'s state resolution logic.
+
+    build_context() resolves workflow_id from the active lease; we insert
+    leases with distinct workflow_ids and distinct worktree_paths so the
+    function can find each via the worktree_path fallback.
+    """
+    import time
+
+    now = int(time.time())
+    tmp_a = tmp_path / "wt-a"
+    tmp_b = tmp_path / "wt-b"
+    tmp_a.mkdir()
+    tmp_b.mkdir()
+
+    # --- Leases: one per workflow, each with a distinct worktree_path ---
+    conn.execute(
+        """INSERT INTO dispatch_leases
+           (lease_id, agent_id, role, workflow_id, worktree_path, branch,
+            status, issued_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "lease-a",
+            "agent-a",
+            "guardian",
+            "workflow-A",
+            str(tmp_a),
+            "feature/a",
+            "active",
+            now,
+            now + 3600,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO dispatch_leases
+           (lease_id, agent_id, role, workflow_id, worktree_path, branch,
+            status, issued_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "lease-b",
+            "agent-b",
+            "implementer",
+            "workflow-B",
+            str(tmp_b),
+            "feature/b",
+            "active",
+            now,
+            now + 3600,
+        ),
+    )
+
+    # --- Completion records: B is newer overall, but scoped to its workflow ---
+    conn.execute(
+        """INSERT INTO completion_records
+           (lease_id, workflow_id, role, verdict, valid, payload_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("lease-a", "workflow-A", "tester", "ready_for_guardian", 1, "{}", now - 10),
+    )
+    conn.execute(
+        """INSERT INTO completion_records
+           (lease_id, workflow_id, role, verdict, valid, payload_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("lease-b", "workflow-B", "implementer", "complete", 1, "{}", now),
+    )
+    conn.commit()
+
+    # Context for workflow A: must get A's record (tester:ready_for_guardian),
+    # NOT workflow B's newer record (implementer:complete).
+    ctx_a = build_context(
+        conn,
+        cwd=str(tmp_a),
+        actor_role="guardian",
+        actor_id="agent-a",
+    )
+    assert ctx_a.dispatch_phase == "tester:ready_for_guardian", (
+        f"Expected workflow-A's phase but got: {ctx_a.dispatch_phase}"
+    )
+
+    # Context for workflow B: must get B's own record.
+    ctx_b = build_context(
+        conn,
+        cwd=str(tmp_b),
+        actor_role="implementer",
+        actor_id="agent-b",
+    )
+    assert ctx_b.dispatch_phase == "implementer:complete", (
+        f"Expected workflow-B's phase but got: {ctx_b.dispatch_phase}"
+    )
+
+
+def test_dispatch_phase_none_when_workflow_has_no_completions(conn, tmp_path):
+    """dispatch_phase is None when the resolved workflow has no completion records.
+
+    The workflow_id resolves from the active lease, but no completion rows exist
+    for that workflow. The result must be None — not a record from a different
+    workflow. This guards against the old global query that would return any
+    record in the table regardless of workflow.
+    """
+    import time
+
+    now = int(time.time())
+
+    # Insert a lease that gives us a known workflow_id
+    conn.execute(
+        """INSERT INTO dispatch_leases
+           (lease_id, agent_id, role, workflow_id, worktree_path, branch,
+            status, issued_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "lease-new",
+            "agent-new",
+            "implementer",
+            "workflow-NEW",
+            str(tmp_path),
+            "feature/new",
+            "active",
+            now,
+            now + 3600,
+        ),
+    )
+    # Insert a completion record for a DIFFERENT workflow (the global trap)
+    conn.execute(
+        """INSERT INTO completion_records
+           (lease_id, workflow_id, role, verdict, valid, payload_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("lease-other", "workflow-OTHER", "tester", "ready_for_guardian", 1, "{}", now),
+    )
+    conn.commit()
+
+    ctx = build_context(
+        conn,
+        cwd=str(tmp_path),
+        actor_role="implementer",
+        actor_id="agent-new",
+    )
+    # workflow-NEW has no completions → dispatch_phase must be None,
+    # not "tester:ready_for_guardian" from workflow-OTHER.
+    assert ctx.dispatch_phase is None, (
+        f"dispatch_phase leaked from a different workflow: {ctx.dispatch_phase}"
+    )

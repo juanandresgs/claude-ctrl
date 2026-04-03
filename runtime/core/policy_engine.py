@@ -462,12 +462,23 @@ def build_context(
         test_state = dict(row)
 
     # --- Dispatch phase from completions ---
+    # @decision DEC-PE-007
+    # Title: dispatch_phase is workflow-scoped, never global
+    # Status: accepted
+    # Rationale: Querying the global newest completion record causes workflow A to
+    #   pick up workflow B's completion phase in concurrent sessions. The completions
+    #   module already treats completion state as workflow-scoped (completions.py:latest
+    #   accepts workflow_id). We follow the same scoping here: only query when
+    #   workflow_id is known, and filter to that workflow_id. This is consistent with
+    #   how scope, eval_state, and lease are all resolved with workflow_id guards above.
     dispatch_phase: Optional[str] = None
-    row = conn.execute(
-        "SELECT role, verdict FROM completion_records ORDER BY created_at DESC LIMIT 1",
-    ).fetchone()
-    if row:
-        dispatch_phase = f"{row['role']}:{row['verdict']}"
+    if workflow_id:
+        row = conn.execute(
+            "SELECT role, verdict FROM completion_records WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
+        if row:
+            dispatch_phase = f"{row['role']}:{row['verdict']}"
 
     return PolicyContext(
         actor_role=resolved_role,
@@ -494,15 +505,29 @@ def build_context(
 def default_registry() -> PolicyRegistry:
     """Return a PolicyRegistry with all registered policies loaded.
 
-    In W1 this returns an empty registry — policies will be added in W2/W3.
     Importing runtime.core.policies populates the registry via register_all().
+    Any ImportError or exception from register_all() propagates immediately —
+    this function is fail-closed by design.
+
+    @decision DEC-PE-008
+    Title: default_registry() is fail-closed — import errors propagate
+    Status: accepted
+    Rationale: The original implementation silently swallowed ImportError and
+      returned an empty registry. Once W2/W3 move enforcement into Python, a
+      syntax error or bad import in any policy module would cause
+      cc-policy evaluate to silently allow everything (empty registry =
+      default allow). For an enforcement authority, that is the wrong failure
+      mode. The try/except was a W1 scaffold: at the time, runtime.core.policies
+      might not exist yet. The package now exists (policies/__init__.py is
+      committed). If register_all() fails in W2/W3 due to a bug in a policy
+      module, that error MUST crash the CLI with a clear traceback so the
+      operator can diagnose it. Fail-closed is non-negotiable for enforcement
+      infrastructure.
     """
     reg = PolicyRegistry()
-    # Import here to avoid circular imports; register_all() adds W2/W3 policies
-    try:
-        from runtime.core import policies as _policies_pkg
+    # Import here to avoid circular imports at module load time.
+    # register_all() adds policies wave by wave (W2 write-path, W3 bash-path).
+    from runtime.core import policies as _policies_pkg  # noqa: PLC0415
 
-        _policies_pkg.register_all(reg)
-    except ImportError:
-        pass
+    _policies_pkg.register_all(reg)
     return reg
