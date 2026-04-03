@@ -34,7 +34,7 @@ message), not advisory warnings.
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/guard.sh` | **WHO:** Only the `guardian` role may run `git commit`, `git merge`, or `git push`. **WHERE:** Cannot commit on `main`/`master` (except MASTER_PLAN.md-only commits). **SAFETY:** Denies `git reset --hard`, `git clean -f`, `git branch -D`, raw `--force` push (requires `--force-with-lease`), force push to main/master, worktree CWD hazards, `/tmp/` writes. **GATES:** Requires `.test-status` = pass and proof-of-work = verified before commit or merge. |
+| `hooks/guard.sh` | **WHO:** Only the `guardian` role may run `git commit`, `git merge`, or `git push`. **WHERE:** Cannot commit on `main`/`master` (except MASTER_PLAN.md-only commits). **SAFETY:** Denies `git reset --hard`, `git clean -f`, `git branch -D`, raw `--force` push (requires `--force-with-lease`), force push to main/master, worktree CWD hazards, `/tmp/` writes. **GATES:** Requires runtime `test_state` = pass and `evaluation_state` = `ready_for_guardian` (lease-first workflow_id resolution) before commit or merge. |
 
 ### SubagentStart (fires on every agent spawn)
 

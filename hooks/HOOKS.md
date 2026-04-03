@@ -183,13 +183,13 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **track.sh** | Write\|Edit | Records file changes to `.session-changes-$SESSION_ID`. Invalidates evaluation_state (ready_for_guardian→pending) when source files change after evaluator clearance — ensuring the evaluated HEAD and the committed HEAD are the same (TKT-024) |
 | **code-review.sh** | Write\|Edit | Fires on 20+ line source files (skips tests and config). Injects diff context and suggests `mcp__multi__codereview` for multi-model analysis. Falls back silently if Multi-MCP is unavailable |
 | **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structure on every write: phase Status fields (`planned`/`in-progress`/`completed`), Decision Log content for completed phases, original intent section preserved, DEC-COMPONENT-NNN ID format. Exit 2 = feedback loop with fix instructions |
-| **test-runner.sh** | Write\|Edit | **Async** — doesn't block Claude. Auto-detects test framework (pytest, vitest, jest, npm-test, cargo-test, go-test). 2s debounce lets rapid writes settle. 10s cooldown between runs. Lock file ensures single instance (kills previous run if superseded). Writes `.test-status` (`pass\|0\|timestamp` or `fail\|count\|timestamp`) consumed by test-gate.sh and guard.sh. Reports results via `systemMessage` |
+| **test-runner.sh** | Write\|Edit | **Async** — doesn't block Claude. Auto-detects test framework (pytest, vitest, jest, npm-test, cargo-test, go-test). 2s debounce lets rapid writes settle. 10s cooldown between runs. Lock file ensures single instance (kills previous run if superseded). Writes `test_state` SQLite table (via `rt_test_state_set`) as the primary enforcement authority. `.test-status` flat-file write has been removed (WS-DOC-CLEAN). Reports results via `systemMessage` |
 
 ### Session Lifecycle
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, evaluation state (TKT-024), todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
+| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, evaluation state (TKT-024), todo HUD, unresolved agent findings, preserved context from pre-compaction. Resets prompt count for first-prompt fallback. Note: stale `.test-status` clearing was removed when the flat file was eliminated (WS-DOC-CLEAN); runtime `test_state` is session-scoped by HEAD SHA. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
 | **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation. Note: proof verification on user "verified" reply was removed in TKT-024 — readiness is now set exclusively by check-tester.sh via evaluation_state |
 | **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
 | **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Cross-session flat files `.audit-log`, `.plan-drift`, and `.agent-findings` are no longer written or read (TKT-008/TKT-018/WS4); agent findings now flow through the runtime event store (`agent_finding` events) |
@@ -242,7 +242,7 @@ destructive git protection, and evidence gates.
 
 | Check | Requires | State Source | Exemption |
 |-------|----------|------------|-----------|
-| 8-9 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
+| 8-9 | `test_state` = `pass` | `test_state` SQLite table via `rt_test_state_get` (HEAD-SHA-aligned; format: `result|fail_count|timestamp|head_sha`) | `~/.claude` meta-repo (no test framework by design) |
 | 10 | `evaluation_state.status` = `ready_for_guardian` AND `head_sha` matches current HEAD | `evaluation_state` table via `read_evaluation_status` / `read_evaluation_state` (runtime SQLite) | `~/.claude` meta-repo |
 | 12 | workflow binding + scope | `workflow_bindings` + `workflow_scope` tables | `~/.claude` meta-repo |
 
@@ -376,7 +376,7 @@ Hooks communicate across events through state files in the project's `.claude/` 
 
 | File | Written By | Read By | Contents |
 |------|-----------|---------|----------|
-| `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
+| `.test-status` | ELIMINATED (WS-DOC-CLEAN) | ~~guard.sh, test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh~~ | Replaced by `test_state` SQLite table (`rt_test_state_set`/`rt_test_state_get`). All enforcement hooks now read from runtime. |
 | `.agent-findings` | ~~check-planner.sh, check-implementer.sh, check-tester.sh, check-guardian.sh~~ | ~~prompt-submit.sh, compact-preserve.sh~~ | ELIMINATED (WS4/A5): all writers migrated to `rt_event_emit "agent_finding"` and all readers migrated to `event query --type agent_finding`. File is no longer created or read. |
 | `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |
 | `.enforcement-gaps` | lint.sh | pre-write.sh (check_enforcement_gap), session-init.sh, prompt-submit.sh | `type\|ext\|tool\|first_epoch\|encounter_count` — one line per unique gap; NOT cleaned by session-end.sh (represents unresolved repo state, not session ephemeral data); self-healed by lint.sh when tool is installed |
@@ -390,6 +390,7 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | `.statusline-cache` | Statusline data cache | `cc-policy statusline snapshot` runtime projection | TKT-012/TKT-018 |
 | `.audit-log` | Audit trail file | `events` table via `rt_event_emit` (through `append_audit`) | TKT-008. Note: `compact-preserve.sh` still has a stale reader |
 | `.plan-drift` | Drift scoring data | Dead write: `surface.sh` still writes it, but `plan-check.sh` no longer reads it (uses commit-count heuristic) | TKT-018 (reader removed) |
+| `.test-status` | Test result evidence gate | `test_state` SQLite table via `rt_test_state_set`/`rt_test_state_get` | WS-DOC-CLEAN (flat-file write removed from test-runner.sh) |
 
 ---
 
@@ -439,6 +440,6 @@ python3 -m json.tool ../settings.json
 # Query audit trail (now in SQLite event store)
 cc-policy event query --type audit --limit 20
 
-# Check test gate status
-cat <project>/.claude/.test-status
+# Check test state (runtime authority)
+cc-policy test-state get <workflow-id>
 ```

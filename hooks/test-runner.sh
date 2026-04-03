@@ -193,26 +193,17 @@ rm -f "${LOCK_DIR}/.test-runner.out"
 # Write cooldown timestamp
 date +%s > "$LAST_RUN_FILE"
 
-# --- Write test status to SQLite (WS3: canonical authority) and flat-file ---
-# SQLite write comes first — it is the enforcement authority.
-# Flat-file write is retained for backward compatibility (session-init.sh clears it).
-# No enforcement hook reads the flat-file; only SQLite is authoritative.
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+# --- Write test status to SQLite (WS-DOC-CLEAN: sole authority) ---
+# SQLite is the only enforcement authority. Flat-file write removed (WS-DOC-CLEAN).
 HEAD_SHA=$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")
 if [[ "$TEST_EXIT" -ne 0 ]]; then
     FAIL_COUNT=$(echo "$TEST_OUTPUT" | grep -cE '(FAIL|FAILED|ERROR|fail)' || echo "1")
     [[ "$FAIL_COUNT" -eq 0 ]] && FAIL_COUNT=1
-    # SQLite write (authoritative — enforcement hooks read this)
     rt_test_state_set "fail" "$PROJECT_ROOT" "$HEAD_SHA" "0" "$FAIL_COUNT" "$FAIL_COUNT"
-    # Flat-file write (backward compat — session-init.sh clears it; not read by enforcement)
-    echo "fail|${FAIL_COUNT}|$(date +%s)" > "$TEST_STATUS_FILE"
     # Audit trail
     append_audit "$PROJECT_ROOT" "test_fail" "${RUNNER}: ${FAIL_COUNT} failures"
 else
-    # SQLite write (authoritative)
     rt_test_state_set "pass" "$PROJECT_ROOT" "$HEAD_SHA" "0" "0" "0"
-    # Flat-file write (backward compat)
-    echo "pass|0|$(date +%s)" > "$TEST_STATUS_FILE"
 fi
 
 # --- Report results ---

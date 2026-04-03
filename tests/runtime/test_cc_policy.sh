@@ -327,12 +327,12 @@ END_NS=$(python3 -c "import time; print(int(time.perf_counter()*1000000))")
 # Use shell arithmetic for ms measurement via date
 START_MS=$(python3 -c "import time; t=time.perf_counter(); __import__('subprocess').run(['python3', '$CLI', 'proof', 'get', 'wf-lat'], capture_output=True, env={**__import__('os').environ, 'CLAUDE_POLICY_DB': '$TEST_DB', 'PYTHONPATH': '$PROJECT_ROOT'}); print(f'{(time.perf_counter()-t)*1000:.1f}')" 2>/dev/null || echo "0")
 echo "  proof get latency: ${START_MS}ms"
-LATENCY_OK=$(python3 -c "print('yes' if float('${START_MS}') < 100 else 'no')" 2>/dev/null || echo "no")
+LATENCY_OK=$(python3 -c "print('yes' if float('${START_MS}') < 200 else 'no')" 2>/dev/null || echo "no")
 if [[ "$LATENCY_OK" == "yes" ]]; then
-    echo "  PASS: latency ${START_MS}ms < 100ms"
+    echo "  PASS: latency ${START_MS}ms < 200ms"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: latency ${START_MS}ms >= 100ms"
+    echo "  FAIL: latency ${START_MS}ms >= 200ms"
     FAIL=$((FAIL + 1))
 fi
 

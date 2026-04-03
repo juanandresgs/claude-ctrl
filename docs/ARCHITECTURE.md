@@ -50,8 +50,9 @@ Policy checks delegated to `hooks/lib/bash-policy.sh`, which calls
    - SAFETY: denies `git reset --hard`, `git clean -f`, `git branch -D`, raw
      `--force` push, force push to main/master, worktree CWD hazards, `/tmp/`
      writes.
-   - GATES: requires `.test-status` = pass and proof-of-work = verified before
-     commit or merge. Proof state reads from runtime via `rt_proof_get`.
+   - GATES: requires runtime `test_state` = pass (from `test_state` table via
+     `rt_test_state_get`) and `evaluation_state` = `ready_for_guardian` with
+     matching `head_sha` before commit or merge.
 
 **SubagentStart** (fires on every agent spawn):
 
@@ -86,8 +87,9 @@ The typed runtime is the authoritative owner of shared workflow state:
 - **CLI:** `cc-policy` (571 lines). Implements `init`, `proof`, `dispatch`,
   `marker`, `statusline`, `worktree`, and `event` command groups. 42ms median
   latency.
-- **Schema:** 6 core tables (`proof_state`, `agent_markers`, `events`,
-  `worktrees`, `dispatch_cycles`, `dispatch_queue`) plus domain-specific tables
+- **Schema:** 8 core tables (`proof_state`, `agent_markers`, `events`,
+  `worktrees`, `dispatch_cycles`, `dispatch_queue`, `test_state`,
+  `dispatch_leases`, `completion_records`) plus domain-specific tables
   for traces, todos, and tokens. SQLite in WAL mode.
 - **Bridge:** `hooks/lib/runtime-bridge.sh` (129 lines) provides shell
   wrappers (`rt_proof_get`, `rt_proof_set`, `rt_marker_set`,
@@ -130,10 +132,10 @@ are candidates for future runtime migration but remain operational:
 
 | File | Status | Written By | Read By |
 |------|--------|-----------|---------|
-| `.agent-findings` | Active | check-planner.sh, check-implementer.sh, check-tester.sh, check-guardian.sh | prompt-submit.sh, compact-preserve.sh |
+| `.agent-findings` | Removed (WS4) | ~~check-planner.sh, check-implementer.sh, check-tester.sh, check-guardian.sh~~ | ~~prompt-submit.sh, compact-preserve.sh~~ | Replaced by `rt_event_emit "agent_finding"` / runtime event store |
 | `.plan-drift` | Dead write | surface.sh | (no reader -- plan-check.sh removed its read in TKT-018) |
 | `.audit-log` | Dead | (append_audit routes through runtime) | compact-preserve.sh (stale reader) |
-| `.test-status` | Active | test-runner.sh | guard.sh, test-gate.sh, session-summary.sh, etc. |
+| `.test-status` | Removed (WS-DOC-CLEAN) | ~~test-runner.sh~~ | ~~guard.sh, test-gate.sh, session-summary.sh, etc.~~ | Replaced by `test_state` SQLite table via `rt_test_state_get` |
 | `.session-changes-*` | Active (session-scoped) | track.sh | surface.sh, session-summary.sh |
 
 Eliminated flat files (no longer written or read):
@@ -141,6 +143,8 @@ Eliminated flat files (no longer written or read):
 - `.proof-status-*` -- replaced by `proof_state` table
 - `.subagent-tracker` -- replaced by `agent_markers` table
 - `.statusline-cache` -- replaced by runtime statusline snapshot
+- `.test-status` -- replaced by `test_state` table via `rt_test_state_get` (WS-DOC-CLEAN)
+- `.agent-findings` -- replaced by `events` table via `rt_event_emit "agent_finding"` (WS4)
 
 ### Sidecars (Shadow Mode)
 
