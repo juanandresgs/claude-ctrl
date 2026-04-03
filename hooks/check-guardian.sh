@@ -63,9 +63,18 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
 fi
 
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    _GD_LEASE_RESULT=$(rt_lease_current "$PROJECT_ROOT")
-    _GD_LEASE_ID=$(printf '%s' "${_GD_LEASE_RESULT:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
-    _GD_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+    # WS1: use lease_context() to derive workflow_id from the active lease.
+    # When a lease is active its workflow_id is authoritative over branch-derived id.
+    _GD_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    if [[ "$_GD_LEASE_FOUND" == "true" ]]; then
+        _GD_LEASE_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        _GD_WF_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    else
+        _GD_LEASE_ID=""
+        _GD_WF_ID=""
+    fi
+    [[ -z "$_GD_WF_ID" ]] && _GD_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
 
     if [[ -n "$_GD_LEASE_ID" ]]; then
         _GD_PAYLOAD=$(jq -n \
@@ -79,6 +88,26 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             # Advisory only in v1 — the git operation already completed.
             ISSUES+=("COMPLETION CONTRACT (advisory): Guardian completion record INVALID. Missing: $_GD_CT_MISSING. Add LANDING_RESULT and OPERATION_CLASS trailers to guardian responses.")
         fi
+    fi
+
+    # WS2: Reset evaluation state to idle ONLY after confirmed landing.
+    # guard.sh used to reset eval BEFORE the merge ran (pre-merge), meaning
+    # a denied merge would consume the readiness clearance. Now the reset
+    # happens here, after the guardian completes, conditioned on LANDING_RESULT.
+    #
+    # @decision DEC-WS2-001
+    # @title Eval state reset moves from guard.sh (pre-merge) to check-guardian.sh (post-landing)
+    # @status accepted
+    # @rationale guard.sh:355 reset evaluation_state to idle before the merge
+    #   command executed. If the merge was subsequently denied (scope violation,
+    #   approval missing, etc.) the eval readiness was consumed with no landing.
+    #   The tester would need to re-run to re-issue ready_for_guardian. Fix:
+    #   remove the pre-merge reset from guard.sh; add a post-landing reset here
+    #   gated on LANDING_RESULT=committed|merged so only real landings consume
+    #   the clearance.
+    if [[ "$_GD_LANDING_RESULT" == "committed" || "$_GD_LANDING_RESULT" == "merged" ]]; then
+        rt_eval_set "$_GD_WF_ID" "idle" 2>/dev/null || true
+        rt_event_emit "eval_consumed" "Landing confirmed: $_GD_LANDING_RESULT for $_GD_WF_ID" || true
     fi
 fi
 

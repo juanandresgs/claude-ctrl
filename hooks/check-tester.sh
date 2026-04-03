@@ -112,9 +112,19 @@ fi
 # the eval_state write is not blocked when there is no lease to complete.
 _COMPLETION_BLOCKED=false
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    _LEASE_RESULT=$(rt_lease_current "$PROJECT_ROOT")
-    _CT_LEASE_ID=$(printf '%s' "${_LEASE_RESULT:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
-    _CT_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+    # WS1: use lease_context() to derive workflow_id from the active lease.
+    # When a lease exists its workflow_id is authoritative; branch-derived id
+    # is the fallback only when no lease is active.
+    _CT_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+    _CT_LEASE_FOUND=$(printf '%s' "$_CT_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    if [[ "$_CT_LEASE_FOUND" == "true" ]]; then
+        _CT_LEASE_ID=$(printf '%s' "$_CT_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        _CT_WF_ID=$(printf '%s' "$_CT_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    else
+        _CT_LEASE_ID=""
+        _CT_WF_ID=""
+    fi
+    [[ -z "$_CT_WF_ID" ]] && _CT_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
 
     if [[ -n "$_CT_LEASE_ID" ]]; then
         _CT_PAYLOAD=$(jq -n \
@@ -135,10 +145,11 @@ fi
 
 # Write evaluation_state (sole writer for verdicts)
 # Only proceed if completion contract was satisfied (or no lease exists = legacy fallback).
+# WS1: use the lease-derived _CT_WF_ID (set above) so the eval state is written
+# under the same workflow_id that the lease authorised — not the branch-derived one.
 if ! is_claude_meta_repo "$PROJECT_ROOT" && [[ "$_COMPLETION_BLOCKED" != "true" ]]; then
-    _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
-    write_evaluation_status "$PROJECT_ROOT" "$_EVAL_STATUS" "$_WF_ID" "$_EVAL_HEAD_SHA"
-    rt_event_emit "eval_verdict" "${_WF_ID}:${_EVAL_STATUS}" || true
+    write_evaluation_status "$PROJECT_ROOT" "$_EVAL_STATUS" "$_CT_WF_ID" "$_EVAL_HEAD_SHA"
+    rt_event_emit "eval_verdict" "${_CT_WF_ID}:${_EVAL_STATUS}" || true
 fi
 
 # ---------------------------------------------------------------------------

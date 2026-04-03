@@ -113,6 +113,13 @@ if echo "$HOOK_OUTPUT" | jq '.' >/dev/null 2>&1; then
     else
         pass "output contains no PROCESS ERROR"
     fi
+    # WS1: verify that the dispatch context uses the LEASE workflow_id (feature-test-wf),
+    # not the branch-derived one (which would be "git-repo" from the TMP_GIT repo name).
+    if [[ "$CTX" == *"workflow_id=$WF_ID"* ]]; then
+        pass "dispatch context uses lease workflow_id ($WF_ID)"
+    else
+        fail "dispatch context uses lease workflow_id — expected workflow_id=$WF_ID in: $CTX"
+    fi
 else
     fail "hook output is valid JSON (got: $HOOK_OUTPUT)"
 fi
@@ -135,7 +142,7 @@ else
 fi
 
 # --- Results ---
-TOTAL=7
+TOTAL=8
 echo ""
 echo "Results: $((TOTAL - FAILURES))/$TOTAL passed"
 if [[ "$FAILURES" -gt 0 ]]; then
