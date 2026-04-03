@@ -75,6 +75,51 @@ rt_proof_timestamp() {
 }
 
 # ---------------------------------------------------------------------------
+# Evaluation-state wrappers (TKT-024: sole readiness authority)
+# ---------------------------------------------------------------------------
+
+# rt_eval_get <workflow_id>
+# Prints the evaluation status string ("idle", "pending", "needs_changes",
+# "ready_for_guardian", "blocked_by_plan") or "idle" on failure.
+rt_eval_get() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy evaluation get "$1" 2>/dev/null) || return 1
+    printf '%s\n' "$result" | jq -r '.status // "idle"'
+}
+
+# rt_eval_set <workflow_id> <status> [head_sha] [blockers] [major] [minor]
+# Upserts evaluation state in SQLite. Suppresses output; callers check exit code.
+rt_eval_set() {
+    _rt_ensure_schema
+    local wf_id="$1" status="$2"
+    local head_sha="${3:-}" blockers="${4:-0}" major="${5:-0}" minor="${6:-0}"
+    local args=("evaluation" "set" "$wf_id" "$status")
+    [[ -n "$head_sha" ]] && args+=("--head-sha" "$head_sha")
+    [[ "${blockers:-0}" -gt 0 ]] && args+=("--blockers" "$blockers")
+    [[ "${major:-0}" -gt 0 ]]   && args+=("--major"    "$major")
+    [[ "${minor:-0}" -gt 0 ]]   && args+=("--minor"    "$minor")
+    cc_policy "${args[@]}" >/dev/null 2>&1
+}
+
+# rt_eval_list
+# Prints raw JSON list of all evaluation_state rows, or nothing on failure.
+rt_eval_list() {
+    _rt_ensure_schema
+    cc_policy evaluation list 2>/dev/null
+}
+
+# rt_eval_invalidate <workflow_id>
+# Resets status from ready_for_guardian → pending if currently ready.
+# Prints "true" when invalidated, "false" when no-op.
+rt_eval_invalidate() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy evaluation invalidate "$1" 2>/dev/null) || return 1
+    printf '%s\n' "$result" | jq -r '.invalidated // false'
+}
+
+# ---------------------------------------------------------------------------
 # Agent marker wrappers
 # ---------------------------------------------------------------------------
 
@@ -163,4 +208,161 @@ rt_workflow_scope_check() {
     local result
     result=$(cc_policy workflow scope-check "$1" --changed "$2" 2>/dev/null) || return 0
     printf '%s\n' "$result"
+}
+
+# ---------------------------------------------------------------------------
+# Bug pipeline wrapper
+# ---------------------------------------------------------------------------
+
+# rt_bug_file <bug_type> <title> [body] [scope] [source_component] [file_path] [evidence]
+#
+# Routes a discovered bug through the canonical filing pipeline:
+#   cc-policy bug file '{"bug_type":...}'
+#
+# Returns the JSON result dict from cc-policy (includes "disposition", "fingerprint",
+# "issue_url", "encounter_count"). On runtime unavailability returns a safe fallback
+# JSON with disposition="failed_to_file" so callers can log and continue.
+#
+# All arguments after <title> are optional and default to empty / "global".
+# Never blocks hook execution: errors are swallowed and reported via the fallback JSON.
+#
+# @decision DEC-BUGS-003
+# @title rt_bug_file routes all enforcement-gap filings through the canonical pipeline
+# @status accepted
+# @rationale The prior direct `todo.sh add` call in file_enforcement_gap_backlog()
+#   bypassed deduplication, audit-event emission, and SQLite persistence. Routing
+#   through cc-policy bug file ensures: (1) fingerprint dedup prevents duplicate
+#   GitHub issues across worktrees; (2) failed filings are retryable; (3) every
+#   disposition emits an auditable event. The shell wrapper is intentionally thin —
+#   no logic beyond JSON assembly and the cc-policy call lives here.
+rt_bug_file() {
+    _rt_ensure_schema
+    local bug_type="$1"
+    local title="$2"
+    local body="${3:-}"
+    local scope="${4:-global}"
+    local source_component="${5:-}"
+    local file_path="${6:-}"
+    local evidence="${7:-}"
+
+    # Build JSON payload using printf to avoid subshell quoting pitfalls.
+    # Single-quotes inside values are not escaped here — callers must not pass
+    # single-quote characters in these fields. For hook usage this is safe.
+    local json
+    json=$(printf '{"bug_type":"%s","title":"%s","body":"%s","scope":"%s","source_component":"%s","file_path":"%s","evidence":"%s","fixed_now":false}' \
+        "$bug_type" "$title" "$body" "$scope" "$source_component" "$file_path" "$evidence")
+
+    cc_policy bug file "$json" 2>/dev/null \
+        || echo '{"disposition":"failed_to_file","error":"runtime unavailable","fingerprint":"","issue_url":null,"encounter_count":0}'
+}
+
+# ---------------------------------------------------------------------------
+# Approval token wrappers (DEC-APPROVAL-001)
+# ---------------------------------------------------------------------------
+
+# rt_approval_grant <workflow_id> <op_type> [granted_by]
+# Silently creates a one-shot approval token in SQLite.
+# granted_by defaults to "user" when omitted.
+rt_approval_grant() {
+    _rt_ensure_schema
+    local args=("approval" "grant" "$1" "$2")
+    [[ -n "${3:-}" ]] && args+=("--granted-by" "$3")
+    cc_policy "${args[@]}" >/dev/null 2>&1
+}
+
+# rt_approval_check <workflow_id> <op_type>
+# Prints "true" if an unconsumed approval was found and consumed, "false" otherwise.
+# Returns exit code 1 on runtime failure (caller treats as false).
+rt_approval_check() {
+    _rt_ensure_schema
+    local result
+    result=$(cc_policy approval check "$1" "$2" 2>/dev/null) || { echo "false"; return 1; }
+    printf '%s\n' "$result" | jq -r '.approved // false'
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch lease wrappers (Phase 2: execution contracts)
+# ---------------------------------------------------------------------------
+#
+# @decision DEC-LEASE-002
+# @title Lease wrappers isolate hooks from cc_policy JSON parsing for contracts
+# @status accepted
+# @rationale Phase 1 leases.py and completions.py provide SQLite-backed
+#   execution contracts. These shell wrappers follow the same pattern as the
+#   proof/eval/marker wrappers above: all error paths return safe JSON
+#   ({"found":false} or "{}") so callers never receive empty strings from
+#   failed pipeline reads. Wrappers suppress stderr so runtime unavailability
+#   does not interrupt hook output. The rt_lease_claim wrapper returns the
+#   full JSON from cc_policy lease claim — callers extract lease_id and fields
+#   with jq. rt_lease_validate_op returns the full validate-op JSON dict.
+#   rt_lease_expire_stale is fire-and-forget (no output needed).
+
+# rt_lease_validate_op <command> [worktree_path]
+# Returns full validate-op JSON dict, or '{}' on failure.
+rt_lease_validate_op() {
+    _rt_ensure_schema
+    local command="${1:-}" worktree_path="${2:-}"
+    local args=("lease" "validate-op" "$command")
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{}'
+}
+
+# rt_lease_current [worktree_path]
+# Returns active lease JSON dict, or '{"found":false}' on failure.
+rt_lease_current() {
+    _rt_ensure_schema
+    local worktree_path="${1:-}"
+    local args=("lease" "current")
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
+}
+
+# rt_lease_claim <agent_id> [worktree_path] [expected_role]
+# Claims an active lease for agent_id. Returns full claim JSON or '{"found":false}'.
+# If expected_role is provided, the lease role must match or claim returns {"claimed":false}.
+rt_lease_claim() {
+    _rt_ensure_schema
+    local agent_id="${1:-}" worktree_path="${2:-}" expected_role="${3:-}"
+    local args=("lease" "claim" "$agent_id")
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    [[ -n "$expected_role" ]] && args+=("--expected-role" "$expected_role")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
+}
+
+# rt_lease_release <lease_id>
+# Transitions active → released. Fire-and-forget; never blocks hook execution.
+rt_lease_release() {
+    _rt_ensure_schema
+    local lease_id="${1:-}"
+    [[ -n "$lease_id" ]] && cc_policy lease release "$lease_id" 2>/dev/null || true
+}
+
+# rt_lease_expire_stale
+# Expires all active leases past their TTL. Fire-and-forget.
+rt_lease_expire_stale() {
+    _rt_ensure_schema
+    cc_policy lease expire-stale 2>/dev/null || true
+}
+
+# rt_completion_submit <lease_id> <workflow_id> <role> <payload_json>
+# Validates and records a completion. Returns submit result JSON or '{"valid":false}'.
+rt_completion_submit() {
+    _rt_ensure_schema
+    local lease_id="${1:-}" workflow_id="${2:-}" role="${3:-}" payload="${4:-}"
+    cc_policy completion submit \
+        --lease-id "$lease_id" \
+        --workflow-id "$workflow_id" \
+        --role "$role" \
+        --payload "$payload" \
+        2>/dev/null || echo '{"valid":false}'
+}
+
+# rt_completion_latest [lease_id]
+# Returns most recent completion record or '{"found":false}'.
+rt_completion_latest() {
+    _rt_ensure_schema
+    local lease_id="${1:-}"
+    local args=("completion" "latest")
+    [[ -n "$lease_id" ]] && args+=("--lease-id" "$lease_id")
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }

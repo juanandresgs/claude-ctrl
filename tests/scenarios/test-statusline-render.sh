@@ -165,34 +165,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 6: pending proof renders ⏳ proof in HUD
+# Test 6: pending eval renders ⏳ eval in HUD (TKT-024)
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 6: pending proof — HUD shows pending proof indicator"
+echo "-- 6: pending eval — HUD shows pending eval indicator"
 
-policy proof set "wf-sl-test" "pending" >/dev/null
+policy evaluation set "wf-sl-test" "pending" >/dev/null
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "proof"; then
-    echo "  PASS: proof indicator present for pending proof"
+if printf '%s' "$output" | grep -q "eval"; then
+    echo "  PASS: eval indicator present for pending evaluation"
 else
-    echo "  FAIL: proof indicator missing for pending state; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: eval indicator missing for pending state; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
 # ---------------------------------------------------------------------------
-# Test 7: verified proof renders ✓ proof in HUD
+# Test 7: ready_for_guardian eval renders ✓ eval in HUD (TKT-024)
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 7: verified proof — HUD shows verified proof indicator"
+echo "-- 7: ready eval — HUD shows ready eval indicator"
 
-policy proof set "wf-sl-test" "verified" >/dev/null
+policy evaluation set "wf-sl-test" "ready_for_guardian" --head-sha "abc123" >/dev/null
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "proof"; then
-    echo "  PASS: proof indicator present for verified proof"
+if printf '%s' "$output" | grep -q "eval"; then
+    echo "  PASS: eval indicator present for ready_for_guardian"
 else
-    echo "  FAIL: proof indicator missing for verified state; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: eval indicator missing for ready state; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -261,7 +261,7 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-for segment in "test-model" "$workspace_name" "tester" "worktree" "tks" "proof"; do
+for segment in "test-model" "$workspace_name" "tester" "worktree" "tks" "eval"; do
     if printf '%s' "$output" | grep -q "$segment"; then
         echo "  PASS: segment '$segment' present in compound HUD"
     else

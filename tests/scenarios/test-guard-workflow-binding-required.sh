@@ -51,8 +51,9 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-tes
 # Satisfy Check 9: test-status = pass
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
 
-# Satisfy Check 10: proof-of-work = verified (runtime only — flat file ignored since TKT-008)
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" proof set "$WF_ID" "verified" >/dev/null 2>&1
+# Satisfy Check 10: evaluation_state = ready_for_guardian (TKT-024: replaces proof_state)
+HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
 
 COMMIT_CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test commit'"
 

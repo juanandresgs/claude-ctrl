@@ -7,7 +7,7 @@ set -euo pipefail
 # This backports the minimum safety improvements needed for v2:
 #   - deny unsafe /tmp usage with project-local guidance
 #   - deny risky worktree removal / CWD patterns instead of rewriting commands
-#   - enforce WHO: only Guardian may commit / merge / push
+#   - enforce WHO: Guardian required for high-risk ops (push); routine ops gated by evaluation_state
 #   - use workflow-scoped proof state for commit / merge gates
 
 source "$(dirname "$0")/log.sh"
@@ -133,11 +133,52 @@ if [[ -n "$CD_TARGET" && "$CD_TARGET" == *".worktrees/"* ]]; then
 fi
 
 # --- Check 3: WHO enforcement for permanent git operations ---
-# Pattern handles "git -C /path commit" and "git commit" forms.
+# Migrated from marker-based role check to lease validate-op (Phase 2).
+# Lease validate_op() is now the sole authority for who may run git ops.
+# Markers remain active for observability but have no enforcement effect here.
+#
+# Logic:
+#   - Meta-repo bypass: ~/.claude config edits skip lease enforcement.
+#   - Active lease present: validate_op() is the sole authority.
+#     allowed=true  → proceed to later checks (Check 10, Check 13).
+#     allowed=false + op_class=high_risk → DENY (hard).
+#     allowed=false + op_class=routine_local → DENY (eval/lease gate).
+#   - No active lease + high_risk → DENY (no lease = no high-risk authority).
+#   - No active lease + routine_local → ALLOW (Check 10 owns readiness gate).
+#
+# @decision DEC-GUARD-003
+# @title WHO enforcement uses lease validate_op — markers are observability only
+# @status accepted
+# @rationale Phase 2 execution contracts replace marker-based WHO detection.
+#   Markers are written at agent spawn but are racy in concurrent sessions.
+#   Leases are issued at dispatch time and carry explicit allowed_ops, making
+#   validate_op() a deterministic, non-racy authority. Routine local ops
+#   (commit, merge) without a lease remain allowed so the legacy path
+#   (pre-lease dispatch) continues to work — Check 10 owns their readiness
+#   gate. High-risk ops without a lease are denied: only a dispatched agent
+#   with an explicit lease containing high_risk in allowed_ops may run them.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge|push)\b'; then
-    CURRENT_ROLE=$(current_active_agent_role "$PROJECT_ROOT")
-    if ! is_guardian_role "$CURRENT_ROLE"; then
-        deny "Only the Guardian agent may run git commit, merge, or push. Dispatch Guardian for permanent git operations."
+    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        _WHO_CLASS=$(classify_git_op "$COMMAND")
+        _LEASE_JSON=$(rt_lease_current "$PROJECT_ROOT")
+        _LEASE_FOUND=$(printf '%s' "${_LEASE_JSON:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+
+        if [[ "$_LEASE_FOUND" == "yes" ]]; then
+            # Active lease exists: validate_op() is the sole authority.
+            _VOP=$(rt_lease_validate_op "$COMMAND" "$PROJECT_ROOT")
+            _VOP_ALLOWED=$(printf '%s' "${_VOP:-}" | jq -r '.allowed // false' 2>/dev/null || echo "false")
+            if [[ "$_VOP_ALLOWED" != "true" ]]; then
+                _VOP_REASON=$(printf '%s' "${_VOP:-}" | jq -r '.reason // "validate_op denied"' 2>/dev/null || echo "validate_op denied")
+                deny "Execution contract denied: $_VOP_REASON. Check lease allowed_ops or evaluation_state."
+            fi
+            # allowed=true: proceed to Check 10 (eval readiness) and Check 13 (approval tokens).
+        else
+            # No active lease.
+            if [[ "$_WHO_CLASS" == "high_risk" ]]; then
+                deny "No active dispatch lease for this worktree. High-risk git operations (push, rebase, reset) require an active lease. Dispatch an agent with cc-policy lease issue-for-dispatch."
+            fi
+            # routine_local without a lease: allow — Check 10 is the readiness authority.
+        fi
     fi
 fi
 
@@ -145,16 +186,23 @@ fi
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
+#   - Merge commits (MERGE_HEAD exists): governed landing path for features.
+#     Check 3 (lease) and Check 10 (eval readiness) gate whether the merge
+#     should proceed; Check 4 only needs to allow the finalization commit.
 if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     if ! is_claude_meta_repo "$TARGET_DIR"; then
         CURRENT_BRANCH=$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
         if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-            STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
-            if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
-                :
+            if [[ -f "$TARGET_DIR/.git/MERGE_HEAD" ]]; then
+                :  # Merge commit — governed landing path
             else
-                deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
+                STAGED_FILES=$(git -C "$TARGET_DIR" diff --cached --name-only 2>/dev/null || echo "")
+                if [[ "$STAGED_FILES" == "MASTER_PLAN.md" ]]; then
+                    :
+                else
+                    deny "Cannot commit directly to $CURRENT_BRANCH. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add .worktrees/feature-name $CURRENT_BRANCH"
+                fi
             fi
         fi
     fi
@@ -205,7 +253,9 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
 fi
 
 # --- Check 8: Test status gate for merge commands ---
-if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
+# Admin recovery (merge --abort) is not a merge landing — skip the test gate.
+if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && \
+   ! echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
@@ -249,44 +299,80 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
     fi
 fi
 
-# --- Check 10: Proof-of-work verification gate ---
-# Requires workflow-scoped proof status = "verified" before commit/merge.
-if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
+# --- Check 10: Evaluator-state readiness gate (TKT-024) ---
+# Requires evaluation_state.status == "ready_for_guardian" AND
+# evaluation_state.head_sha matches the current HEAD SHA before commit/merge.
+# proof_state has zero enforcement effect after TKT-024 cutover.
+#
+# Admin recovery (merge --abort, reset --merge) is exempt from this gate.
+# These are governed recovery operations, not landing operations — there is no
+# feature to evaluate. They are still gated by Check 3 (lease) and Check 13
+# (approval token). See DEC-LEASE-002 for the full authority model.
+#
+# @decision DEC-EVAL-003
+# @title guard.sh Check 10 gates on evaluation_state, not proof_state
+# @status accepted
+# @rationale evaluation_state is written by check-tester.sh based on the
+#   evaluator's structured EVAL_* trailers. Only a tester-issued verdict of
+#   ready_for_guardian with a matching head_sha satisfies this gate. User
+#   prompt "verified" no longer affects Guardian eligibility (prompt-submit.sh
+#   no longer writes any readiness state). SHA match prevents a stale clearance
+#   from applying after subsequent source changes.
+_IS_ADMIN_RECOVERY=false
+if echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then _IS_ADMIN_RECOVERY=true; fi
+if echo "$COMMAND" | grep -qE '\breset\b.*--merge'; then _IS_ADMIN_RECOVERY=true; fi
+
+if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b' && [[ "$_IS_ADMIN_RECOVERY" != "true" ]]; then
     if echo "$COMMAND" | grep -qE '\bgit\b.*\bcommit\b'; then
-        PROOF_DIR=$(extract_git_target_dir "$COMMAND")
+        _EVAL_DIR=$(extract_git_target_dir "$COMMAND")
     else
-        PROOF_DIR=$(detect_project_root)
+        _EVAL_DIR=$(detect_project_root)
     fi
-    if ! is_claude_meta_repo "$PROOF_DIR"; then
-        # Read proof from runtime (not flat files).
-        # For merge: check proof of the branch being merged.
-        # For commit: check proof of the current branch.
+    if ! is_claude_meta_repo "$_EVAL_DIR"; then
+        # Resolve workflow_id — for merge, use the branch being merged.
         if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
             _MERGE_REF=$(extract_merge_ref "$COMMAND")
             if [[ -n "$_MERGE_REF" ]]; then
-                PROOF_STATUS=$(read_proof_status "$PROOF_DIR" "$(sanitize_token "$_MERGE_REF")")
+                _EVAL_WF=$(sanitize_token "$_MERGE_REF")
             else
-                PROOF_STATUS=$(read_proof_status "$PROOF_DIR")
+                _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
             fi
         else
-            PROOF_STATUS=$(read_proof_status "$PROOF_DIR")
+            _EVAL_WF=$(current_workflow_id "$_EVAL_DIR")
         fi
-        if [[ "$PROOF_STATUS" != "verified" ]]; then
-            _MERGE_REF_MSG=$(extract_merge_ref "$COMMAND")
-            if [[ -n "${_MERGE_REF_MSG:-}" ]]; then
-                deny "Cannot proceed: proof-of-work for workflow '$_MERGE_REF_MSG' is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
-            else
-                deny "Cannot proceed: proof-of-work is '$PROOF_STATUS'. The tester must present evidence and the user must reply 'verified' before Guardian can commit or merge."
+
+        # Read evaluation_state from runtime
+        _EVAL_STATUS=$(read_evaluation_status "$_EVAL_DIR" "$_EVAL_WF")
+
+        if [[ "$_EVAL_STATUS" != "ready_for_guardian" ]]; then
+            deny "Cannot proceed: evaluation_state for workflow '$_EVAL_WF' is '$_EVAL_STATUS'. The tester must emit EVAL_VERDICT=ready_for_guardian before local landing can proceed."
+        fi
+
+        # Verify head_sha matches the relevant HEAD (prevents stale clearance).
+        # For commit: compare against worktree HEAD (source changes invalidate).
+        # For merge: compare against the tip of the branch being merged, not
+        # main's HEAD — the evaluator cleared the feature branch, not main.
+        _EVAL_STATE_JSON=$(read_evaluation_state "$_EVAL_DIR" "$_EVAL_WF")
+        _STORED_SHA=$(printf '%s' "${_EVAL_STATE_JSON:-}" | jq -r '.head_sha // empty' 2>/dev/null || true)
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b' && [[ -n "${_MERGE_REF:-}" ]]; then
+            _COMPARE_HEAD=$(git -C "$_EVAL_DIR" rev-parse "$_MERGE_REF" 2>/dev/null || true)
+            _SHA_LABEL="merge-ref ($_MERGE_REF)"
+        else
+            _COMPARE_HEAD=$(git -C "$_EVAL_DIR" rev-parse HEAD 2>/dev/null || true)
+            _SHA_LABEL="HEAD"
+        fi
+        if [[ -n "$_STORED_SHA" && -n "$_COMPARE_HEAD" ]]; then
+            # Accept prefix match (short SHA vs full SHA)
+            if ! printf '%s' "$_COMPARE_HEAD" | grep -q "^${_STORED_SHA}" && \
+               ! printf '%s' "$_STORED_SHA" | grep -q "^${_COMPARE_HEAD}"; then
+                deny "Cannot proceed: evaluation_state head_sha '$_STORED_SHA' does not match $_SHA_LABEL '$_COMPARE_HEAD'. Source changes after evaluator clearance require a new tester pass."
             fi
         fi
 
-        # After a merge passes the verified gate, reset proof to idle so the
-        # next workflow cycle starts clean. Commits do not reset (they may be
-        # intermediate; the merge is the completion event).
-        # TKT-008: runtime-only write; no flat-file reset needed.
+        # After a merge passes the gate, reset evaluation to idle so the
+        # next workflow cycle starts clean.
         if echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b'; then
-            MERGE_WF=$(current_workflow_id "$PROOF_DIR")
-            rt_proof_set "$MERGE_WF" "idle" 2>/dev/null || true
+            rt_eval_set "$_EVAL_WF" "idle" 2>/dev/null || true
         fi
     fi
 fi
@@ -337,6 +423,59 @@ if echo "$COMMAND" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then
                 _WF12_VIOLS=$(printf '%s' "$_WF12_COMPLIANCE" | jq -r '[.violations[]? // empty] | join(", ")' 2>/dev/null || echo "")
                 deny "Scope violation for workflow '$_WF12_ID'. Unauthorized files changed: $_WF12_VIOLS"
             fi
+        fi
+    fi
+fi
+
+# --- Check 13: High-risk and admin_recovery operation approval gate ---
+# Uses classify_git_op() to determine risk level. Routine local ops (commit,
+# merge without --no-ff) are gated by evaluation_state (Check 10) — no approval
+# needed here. High-risk ops (push, rebase, reset, merge --no-ff) AND
+# admin_recovery ops (merge --abort, reset --merge) require a one-shot approval
+# token from the SQLite approvals table.
+#
+# admin_recovery ops are exempt from Check 10 (no eval readiness required) but
+# still require an approval token here — they are significant repo-state changes
+# that must be explicitly sanctioned. See DEC-LEASE-002 for the authority model.
+#
+# Checks 5-6 remain hard denies for destructive variants (reset --hard,
+# push --force without lease, clean -f, branch -D) — they fire BEFORE this
+# check and are stricter (no token can override them).
+#
+# @decision DEC-GUARD-013
+# @title High-risk git ops require approval tokens (DEC-APPROVAL-001)
+# @status accepted
+# @rationale evaluation_state=ready_for_guardian is sufficient for routine
+#   local landing (commit, merge). High-risk ops that affect remote state or
+#   rewrite history need explicit user approval via a one-shot token. This is
+#   the mechanical enforcement that replaces "Guardian asks the user in prose."
+#   classify_git_op() in context-lib.sh is the authority for risk classification.
+if echo "$COMMAND" | grep -qE '\bgit\b'; then
+    _OP_CLASS=$(classify_git_op "$COMMAND")
+    if [[ "$_OP_CLASS" == "high_risk" || "$_OP_CLASS" == "admin_recovery" ]]; then
+        # Determine the op_type for the approval lookup
+        _APPROVAL_OP=""
+        if echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b'; then
+            _APPROVAL_OP="push"
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\brebase\b'; then
+            _APPROVAL_OP="rebase"
+        elif echo "$COMMAND" | grep -qE '\bmerge\b.*--abort'; then
+            _APPROVAL_OP="admin_recovery"
+        elif echo "$COMMAND" | grep -qE '\breset\b.*--merge'; then
+            _APPROVAL_OP="admin_recovery"
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\breset\b'; then
+            _APPROVAL_OP="reset"
+        elif echo "$COMMAND" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then
+            _APPROVAL_OP="non_ff_merge"
+        fi
+
+        if [[ -n "$_APPROVAL_OP" ]]; then
+            _APPROVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
+            _APPROVAL_RESULT=$(rt_approval_check "$_APPROVAL_WF" "$_APPROVAL_OP" 2>/dev/null || echo "false")
+            if [[ "$_APPROVAL_RESULT" != "true" ]]; then
+                deny "Operation '$_APPROVAL_OP' (class: $_OP_CLASS) requires explicit approval. Grant via: cc-policy approval grant $_APPROVAL_WF $_APPROVAL_OP"
+            fi
+            # Token consumed — allow the operation to proceed
         fi
     fi
 fi

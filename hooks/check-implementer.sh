@@ -103,15 +103,26 @@ else
     ISSUES+=("No test results found — verify tests were run before declaring done")
 fi
 
-# Check 5: Verification handoff status
-PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
-if [[ "$PROOF_STATUS" == "verified" ]]; then
-    VERIFICATION_NOTE="Proof-of-work already verified for this workflow."
-elif [[ "$PROOF_STATUS" == "pending" ]]; then
-    VERIFICATION_NOTE="Proof-of-work is pending — Tester is the next required role before Guardian."
-else
-    VERIFICATION_NOTE="Proof-of-work is idle — dispatch Tester after implementation evidence is prepared."
-fi
+# Check 5: Evaluator-state handoff status (TKT-024)
+# Reports evaluation_state language instead of proof-era language.
+EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
+case "$EVAL_STATUS" in
+    ready_for_guardian)
+        VERIFICATION_NOTE="Evaluation state: ready_for_guardian — Guardian may proceed."
+        ;;
+    needs_changes)
+        VERIFICATION_NOTE="Evaluation state: needs_changes — Tester found issues. Address them before re-dispatching Tester."
+        ;;
+    blocked_by_plan)
+        VERIFICATION_NOTE="Evaluation state: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner to resolve."
+        ;;
+    pending)
+        VERIFICATION_NOTE="Evaluation state: pending — dispatch Tester to evaluate this implementation."
+        ;;
+    *)
+        VERIFICATION_NOTE="Evaluation state: idle — dispatch Tester after implementation evidence is prepared."
+        ;;
+esac
 
 # Check 6: Workflow scope compliance (advisory — guard.sh enforces the hard deny)
 # Get changed files relative to base branch (uses workflow binding if available).

@@ -58,6 +58,22 @@ if [[ "$RESEARCH_EXISTS" == "true" ]]; then
     CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries | recent: $RESEARCH_RECENT_TOPICS")
 fi
 
+# --- Expire stale leases and show active lease (Phase 2) ---
+# Expire any TTL-exceeded leases so they do not block new dispatch.
+# Then display the active lease (if any) for situational awareness.
+rt_lease_expire_stale || true
+if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    _SESS_LEASE=$(rt_lease_current "$PROJECT_ROOT")
+    _SESS_LEASE_FOUND=$(printf '%s' "${_SESS_LEASE:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+    if [[ "$_SESS_LEASE_FOUND" == "yes" ]]; then
+        _SESS_LEASE_ID=$(printf '%s' "$_SESS_LEASE" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        _SESS_LEASE_ROLE=$(printf '%s' "$_SESS_LEASE" | jq -r '.role // empty' 2>/dev/null || true)
+        _SESS_LEASE_OPS=$(printf '%s' "$_SESS_LEASE" | jq -r '.allowed_ops_json // empty' 2>/dev/null || true)
+        CONTEXT_PARTS+=("Active lease: id=${_SESS_LEASE_ID} role=${_SESS_LEASE_ROLE} ops=${_SESS_LEASE_OPS}")
+    fi
+    unset _SESS_LEASE _SESS_LEASE_FOUND _SESS_LEASE_ID _SESS_LEASE_ROLE _SESS_LEASE_OPS
+fi
+
 # --- Stale marker advisory (TKT-023) ---
 # If a subagent marker has been active for >=300s at session start, warn the
 # incoming agent. The marker may belong to a crashed or abandoned subagent.
@@ -79,17 +95,57 @@ if [[ -f "$_RUNTIME_ROOT/cli.py" ]]; then
 fi
 unset _RUNTIME_ROOT _snap _active_agent _marker_age _age_min
 
-# --- Workflow proof state ---
+# --- Expire stale leases + show active lease ---
+_SESSION_RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
+if [[ -f "$_SESSION_RUNTIME_ROOT/cli.py" ]]; then
+    CLAUDE_RUNTIME_ROOT="$_SESSION_RUNTIME_ROOT" cc_policy lease expire-stale 2>/dev/null || true
+    _LEASE_SUM=$(rt_lease_current "$PROJECT_ROOT")
+    _LS_ROLE=$(printf '%s' "${_LEASE_SUM:-}" | jq -r '.role // empty' 2>/dev/null || true)
+    if [[ -n "$_LS_ROLE" ]]; then
+        _LS_NS=$(printf '%s' "$_LEASE_SUM" | jq -r '.next_step // empty' 2>/dev/null || true)
+        CONTEXT_PARTS+=("Active lease: role=$_LS_ROLE${_LS_NS:+ next=$_LS_NS}")
+    fi
+fi
+unset _SESSION_RUNTIME_ROOT _LEASE_SUM _LS_ROLE _LS_NS
+
+# --- Workflow evaluation state (TKT-024) ---
+# Shows evaluation_state as the readiness display. proof_state is deprecated
+# with zero enforcement effect and is no longer shown here.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    if [[ "$(read_proof_status "$PROJECT_ROOT")" == "idle" ]]; then
-        write_proof_status "$PROJECT_ROOT" "idle"
-    fi
-    PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
-    if [[ "$PROOF_STATUS" == "pending" ]]; then
-        CONTEXT_PARTS+=("Proof: pending user verification for this workflow.")
-    elif [[ "$PROOF_STATUS" == "verified" ]]; then
-        CONTEXT_PARTS+=("Proof: already verified for this workflow. Any source edit will reset it to pending.")
-    fi
+    _SESS_EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
+    case "$_SESS_EVAL_STATUS" in
+        ready_for_guardian)
+            CONTEXT_PARTS+=("Evaluation: ready_for_guardian — Guardian may proceed to commit/merge.")
+            ;;
+        needs_changes)
+            CONTEXT_PARTS+=("Evaluation: needs_changes — Tester found issues. Implementer should address them.")
+            ;;
+        blocked_by_plan)
+            CONTEXT_PARTS+=("Evaluation: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner.")
+            ;;
+        pending)
+            CONTEXT_PARTS+=("Evaluation: pending — awaiting Tester evaluation.")
+            ;;
+        # idle: no output (background noise)
+    esac
+    unset _SESS_EVAL_STATUS
+fi
+
+# --- Enforcement gaps ---
+# Persist across sessions — surface any open gaps so the model knows
+# enforcement is degraded before it writes anything.
+GAPS_FILE="${PROJECT_ROOT}/.claude/.enforcement-gaps"
+if [[ -f "$GAPS_FILE" && -s "$GAPS_FILE" ]]; then
+    GAP_COUNT=0
+    while IFS='|' read -r gap_type ext tool _first _count; do
+        [[ -z "$gap_type" ]] && continue
+        GAP_COUNT=$(( GAP_COUNT + 1 ))
+        if [[ "$gap_type" == "unsupported" ]]; then
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files (unsupported). Writes to .${ext} source files are not being linted. Add a linter config to restore enforcement.")
+        else
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed (missing_dep). Install '${tool}' to restore lint enforcement.")
+        fi
+    done < "$GAPS_FILE"
 fi
 
 # --- Preserved context from pre-compaction ---

@@ -31,6 +31,23 @@ get_plan_status "$PROJECT_ROOT"
 # .subagent-tracker flat-file write removed.
 rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
 
+# --- Lease claim: bind this agent to an active dispatch lease if one exists ---
+# Phase 2 (DEC-LEASE-002): At spawn time, attempt to claim any active lease
+# for this worktree. If found, inject the lease context so the agent knows
+# its role, allowed ops, and next step without re-inferring from environment.
+# If no lease exists, inject a warning — high-risk git ops will be denied by
+# guard.sh Check 3 (validate_op fallback path) when no lease is active.
+_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT" "$AGENT_TYPE")
+_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
+if [[ -n "$_LEASE_ID" ]]; then
+    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
+    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
+    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
+    CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
+else
+    CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
+fi
+
 CTX_LINE="Context:"
 [[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"
 [[ "$GIT_DIRTY_COUNT" -gt 0 ]] && CTX_LINE="$CTX_LINE | $GIT_DIRTY_COUNT dirty"
@@ -95,15 +112,25 @@ case "$AGENT_TYPE" in
         CONTEXT_PARTS+=("HANDOFF: Implementers do not own proof-of-work anymore. Gather test output, capture how to run the feature, and hand off to Tester for independent verification before Guardian commits.")
         ;;
     tester)
+        # Inject current evaluation state so the tester knows the context.
+        # proof_state write removed (TKT-024): evaluation_state is the authority.
         if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-            write_proof_status "$PROJECT_ROOT" "pending"
+            _EVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
+            _EVAL_STATUS=$(rt_eval_get "$_EVAL_WF" 2>/dev/null || echo "idle")
+            CONTEXT_PARTS+=("Evaluation state: workflow=$_EVAL_WF status=$_EVAL_STATUS")
         fi
-        CONTEXT_PARTS+=("Role: Tester — you are the separation between builder and judge. Verify in the SAME worktree, do not modify source, surface exact evidence, and ask the user to reply 'verified' only after they have seen the feature working.")
-        CONTEXT_PARTS+=("Scope: Read the implementer's changes, run tests, perform at least one live or real-entry-point verification, and spot-check one adjacent or compound interaction. If the implementation is sound, return with concrete evidence and verification steps for the user.")
+        CONTEXT_PARTS+=("Role: Tester — you are the separation between builder and judge. Verify in the SAME worktree, do not modify source, surface exact evidence.")
+        CONTEXT_PARTS+=("Scope: Read the implementer's changes, run tests, perform at least one live or real-entry-point verification, and spot-check one adjacent or compound interaction.")
+        CONTEXT_PARTS+=("REQUIRED OUTPUT TRAILERS: Your final response MUST include these lines verbatim (replace values):")
+        CONTEXT_PARTS+=("  EVAL_VERDICT: ready_for_guardian|needs_changes|blocked_by_plan")
+        CONTEXT_PARTS+=("  EVAL_TESTS_PASS: true|false")
+        CONTEXT_PARTS+=("  EVAL_NEXT_ROLE: guardian|implementer|planner")
+        CONTEXT_PARTS+=("  EVAL_HEAD_SHA: <current HEAD git sha>")
+        CONTEXT_PARTS+=("These trailers are machine-parsed by check-tester.sh to set evaluation_state. Missing or invalid trailers fail-closed to needs_changes.")
         ;;
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
-        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and workflow proof state = verified.")
+        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Tester via EVAL_VERDICT trailer).")
         # Inject test status
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then

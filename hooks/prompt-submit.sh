@@ -22,17 +22,15 @@ PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
 SESSION_ID=$(canonical_session_id)
 
-# --- Proof verification confirmation ---
-# Tester asks the user to reply "verified". When that happens, record it
-# for the active workflow so Guardian can proceed later.
-if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    CURRENT_PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
-    if [[ "$CURRENT_PROOF_STATUS" == "pending" ]] && echo "$PROMPT" | grep -qiE '^[[:space:]]*(still[[:space:]]+)?verified[[:space:][:punct:]]*$'; then
-        write_proof_status "$PROJECT_ROOT" "verified"
-        append_audit "$PROJECT_ROOT" "proof_verified" "$(current_workflow_id "$PROJECT_ROOT")"
-        CONTEXT_PARTS+=("Proof-of-work recorded: user verified this workflow.")
-    fi
-fi
+# --- Proof verification removed (TKT-024) ---
+# User prompt "verified" no longer flips readiness state.
+# Guardian eligibility is now gated on evaluation_state == "ready_for_guardian"
+# written exclusively by check-tester.sh based on EVAL_* trailers.
+# @decision DEC-EVAL-004
+# @title prompt-submit.sh no longer writes any readiness state
+# @status accepted
+# @rationale Ceremony (user typing "verified") is not technical proof.
+#   evaluation_state, written by check-tester.sh, is the sole authority.
 
 # --- First-prompt mitigation for session-init bug (Issue #10373) ---
 PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${SESSION_ID}"
@@ -96,6 +94,18 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
         if [[ "$COVERAGE_PCT" -lt 30 || "$PLAN_SOURCE_CHURN_PCT" -ge 20 ]]; then
             CONTEXT_PARTS+=("Plan assessment: ${PLAN_SOURCE_CHURN_PCT}% source file churn since plan update. @decision coverage: $DECISION_FILE_COUNT/$TOTAL_SOURCE_COUNT source files (${COVERAGE_PCT}%). Review the plan and scan for @decision gaps before implementing.")
         fi
+    fi
+    # --- Enforcement gap surfacing (first-prompt path) ---
+    GAPS_FILE_PS="${PROJECT_ROOT}/.claude/.enforcement-gaps"
+    if [[ -f "$GAPS_FILE_PS" && -s "$GAPS_FILE_PS" ]]; then
+        while IFS='|' read -r gap_type ext tool _first _count; do
+            [[ -z "$gap_type" ]] && continue
+            if [[ "$gap_type" == "unsupported" ]]; then
+                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files. Writes to .${ext} source files are not linted.")
+            else
+                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed. Install it to restore enforcement.")
+            fi
+        done < "$GAPS_FILE_PS"
     fi
 fi
 

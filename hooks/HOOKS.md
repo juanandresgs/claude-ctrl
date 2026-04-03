@@ -118,9 +118,12 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | `current_workflow_id <root>` | Stable workflow ID (usually current branch) |
 | `file_mtime <path>` | Cross-platform file mtime helper |
 | `resolve_proof_file <root> [workflow]` | **DEPRECATED** — no live callers; flat-file path helper retained for backwards compat only |
-| `read_proof_status <root> [workflow]` | Proof status (`idle`, `pending`, `verified`) — reads from SQLite runtime |
-| `write_proof_status <root> <status> [workflow]` | Writes workflow-scoped proof status to SQLite runtime |
-| `resolve_proof_file_for_command <root> <command>` | **DEPRECATED** — no live callers; guard.sh Check 10 uses `read_proof_status` directly |
+| `read_proof_status <root> [workflow]` | **DEPRECATED (TKT-024)** — proof_state has zero enforcement effect; evaluation_state is the readiness authority |
+| `write_proof_status <root> <status> [workflow]` | **DEPRECATED (TKT-024)** — zero callers in hook chain after evaluator-state cutover |
+| `resolve_proof_file_for_command <root> <command>` | **DEPRECATED** — no live callers |
+| `read_evaluation_status <root> [workflow]` | Evaluation status (`idle`, `pending`, `needs_changes`, `ready_for_guardian`, `blocked_by_plan`) — sole readiness authority (TKT-024) |
+| `read_evaluation_state <root> [workflow]` | Full evaluation state JSON including head_sha |
+| `write_evaluation_status <root> <status> [wf] [sha]` | Upserts evaluation state — used by check-tester.sh (verdicts), post-task.sh (pending) |
 | `current_active_agent_role <root>` | Best-effort current subagent role |
 | `is_guardian_role <role>` | True only for Guardian |
 
@@ -163,20 +166,21 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 10 checks: denies unsafe `/tmp/` writes, bare `cd` into `.worktrees/`, non-Guardian commit/merge/push, commits on main, unsafe force push, destructive git, unsafe worktree removal; requires passing tests and workflow-scoped proof verification for commits and merges |
+| **guard.sh** | Bash | 12 checks: denies unsafe `/tmp/` writes, bare `cd` into worktrees, non-Guardian commit/merge/push, commits on main, unsafe force push, destructive git, unsafe worktree removal; requires passing tests, evaluation_state=ready_for_guardian with matching head_sha (TKT-024), and workflow binding+scope for commits and merges |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
 | **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files; Write = hard deny, Edit = advisory; warns on new root-level markdown files (Sacred Practice #9) |
 | **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; composite staleness scoring (source churn % + decision drift) warns then blocks when plan diverges from code; bypasses Edit tool, small writes (<20 lines), non-git dirs |
+| **pre-write.sh** (check_enforcement_gap) | Write\|Edit | Denies writes to source files whose extension has an unresolved enforcement gap with `encounter_count > 1` in `.enforcement-gaps`. Runs after branch-guard and write-guard, before plan checks — enforcement health is more fundamental than plan staleness |
 
 ### PostToolUse — Feedback After Execution
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **lint.sh** | Write\|Edit | Auto-detects project linter (ruff, black, prettier, eslint, etc.), runs on modified files. Exit 2 = feedback loop (Claude retries the fix automatically) |
-| **track.sh** | Write\|Edit | Records file changes to `.session-changes-$SESSION_ID`. Also invalidates workflow-scoped proof when verified source files change — ensuring the user always verifies the final state, not an intermediate one |
+| **lint.sh** | Write\|Edit | Auto-detects project linter per extension (ruff, black, shellcheck, etc.), runs on modified files. Exit 2 = feedback loop. If no linter exists for the extension (unsupported) or the binary is missing (missing_dep), records an enforcement gap in `.enforcement-gaps` and exits 2 — never silently exits 0 for an in-scope source type. Shell files always map to shellcheck with no config required |
+| **track.sh** | Write\|Edit | Records file changes to `.session-changes-$SESSION_ID`. Invalidates evaluation_state (ready_for_guardian→pending) when source files change after evaluator clearance — ensuring the evaluated HEAD and the committed HEAD are the same (TKT-024) |
 | **code-review.sh** | Write\|Edit | Fires on 20+ line source files (skips tests and config). Injects diff context and suggests `mcp__multi__codereview` for multi-model analysis. Falls back silently if Multi-MCP is unavailable |
 | **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structure on every write: phase Status fields (`planned`/`in-progress`/`completed`), Decision Log content for completed phases, original intent section preserved, DEC-COMPONENT-NNN ID format. Exit 2 = feedback loop with fix instructions |
 | **test-runner.sh** | Write\|Edit | **Async** — doesn't block Claude. Auto-detects test framework (pytest, vitest, jest, npm-test, cargo-test, go-test). 2s debounce lets rapid writes settle. 10s cooldown between runs. Lock file ensures single instance (kills previous run if superseded). Writes `.test-status` (`pass\|0\|timestamp` or `fail\|count\|timestamp`) consumed by test-gate.sh and guard.sh. Reports results via `systemMessage` |
@@ -185,8 +189,8 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, proof status, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Seeds workflow proof state to `idle` when missing. Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
-| **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation, and records proof as `verified` when Tester asked for it and the user replies `verified` |
+| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, evaluation state (TKT-024), todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
+| **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation. Note: proof verification on user "verified" reply was removed in TKT-024 — readiness is now set exclusively by check-tester.sh via evaluation_state |
 | **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
 | **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Cross-session flat files `.audit-log` and `.plan-drift` are no longer written or trimmed (TKT-008/TKT-018); `.agent-findings` is still written by check-*.sh and consumed by prompt-submit.sh |
 
@@ -208,12 +212,12 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Event / Matcher | What It Does |
 |------|-----------------|--------------|
-| **subagent-start.sh** | SubagentStart | Creates runtime agent marker via `rt_marker_set` (TKT-016). Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, and a Tester handoff reminder. **Tester** marks proof `pending` and gets evidence/verification instructions. **Guardian** gets plan update rules, test status, and git authority reminders. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
+| **subagent-start.sh** | SubagentStart | Creates runtime agent marker via `rt_marker_set` (TKT-016). Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, and a Tester handoff reminder. **Tester** gets evaluation state context and REQUIRED EVAL_* trailer instructions (TKT-024). **Guardian** gets plan update rules, test status, and evaluation_state authority reminders. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
 | **check-planner.sh** | SubagentStop (planner\|Plan) | Deactivates runtime agent marker via `rt_marker_deactivate` (TKT-016). 5 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
 | **check-implementer.sh** | SubagentStop (implementer) | Deactivates runtime agent marker (TKT-016). 5 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"), (5) verification handoff note so Tester is the next role. Advisory only. Persists findings |
-| **check-tester.sh** | SubagentStop (tester) | Deactivates runtime agent marker (TKT-016). 4 checks: (1) evidence surfaced, (2) explicit `verified` request was made to the user, (3) tests passed, (4) proof state is in `pending` or `verified`. Advisory only. Persists findings |
-| **check-guardian.sh** | SubagentStop (guardian) | Deactivates runtime agent marker (TKT-016). 6 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected), (6) proof status for completed git operations. Advisory only. Persists findings |
-| **post-task.sh** | SubagentStop (all types) | Dispatch emission (TKT-009, wired by TKT-016). Detects completing agent role, enqueues next-phase dispatch entries into `dispatch_queue`, emits events |
+| **check-tester.sh** | SubagentStop (tester) | Deactivates runtime agent marker (TKT-016). Sole writer of evaluation_state verdicts (TKT-024): parses EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers from tester output, writes evaluation_state. Fail-closed: missing or malformed trailers → needs_changes. Also: advisory evidence check, test status check. Persists findings |
+| **check-guardian.sh** | SubagentStop (guardian) | Deactivates runtime agent marker (TKT-016). 6 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected), (6) evaluation_state for completed git operations — Guardian should only operate when eval_status == ready_for_guardian (TKT-024). Advisory only. Persists findings |
+| **post-task.sh** | SubagentStop (all types) | Dispatch emission (TKT-009, wired by TKT-016). Sets evaluation_state=pending on implementer completion (TKT-024). Routes tester completion based on evaluator verdict: ready_for_guardian→guardian, needs_changes→implementer, blocked_by_plan→planner. Enqueues next-phase dispatch entries into `dispatch_queue`, emits events |
 
 ---
 
@@ -234,16 +238,17 @@ destructive git protection, and evidence gates.
 | 6 | `git reset --hard`, `git clean -f`, `git branch -D` | Destructive operations — suggests safe alternatives |
 | 7 | unsafe `git worktree remove` | Requires an explicit safe `cd` away from the target worktree |
 
-**Evidence gates** (require proof before commit/merge):
+**Evidence gates** (require evidence before commit/merge):
 
-| Check | Requires | State File | Exemption |
+| Check | Requires | State Source | Exemption |
 |-------|----------|------------|-----------|
 | 8-9 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
-| 10 | workflow proof = `verified` | `proof_state` table via `read_proof_status` (runtime SQLite); flat-file `.proof-status-*` is ignored | `~/.claude` meta-repo |
+| 10 | `evaluation_state.status` = `ready_for_guardian` AND `head_sha` matches current HEAD | `evaluation_state` table via `read_evaluation_status` / `read_evaluation_state` (runtime SQLite) | `~/.claude` meta-repo |
+| 12 | workflow binding + scope | `workflow_bindings` + `workflow_scope` tables | `~/.claude` meta-repo |
 
 Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
 
-Proof-of-work: the user must see the feature work before code is committed. Tester moves the workflow into `pending`, the user replies `verified`, and `track.sh` resets proof back to `pending` whenever verified source files change. Check 10 reads proof exclusively from the SQLite runtime (`proof_state` table via `read_proof_status`). Stale `.proof-status-*` flat files are ignored.
+Evaluator readiness (TKT-024): the Tester evaluates the implementation and emits EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers. `check-tester.sh` parses these and writes `evaluation_state`. Only `ready_for_guardian` with a matching `head_sha` passes Check 10. Source changes after evaluator clearance invalidate readiness via `track.sh` (ready_for_guardian→pending). `proof_state` has zero enforcement effect after TKT-024 cutover — stale proof cannot satisfy this gate.
 
 ---
 
@@ -295,7 +300,7 @@ Three patterns recur across the hook system:
 
 | Hook | Triggers exit 2 when |
 |------|---------------------|
-| **lint.sh** | Linter finds fixable issues in the written file |
+| **lint.sh** | Linter finds fixable issues in the written file; OR an enforcement gap is detected (unsupported extension or missing dependency) |
 | **plan-validate.sh** | MASTER_PLAN.md fails structural validation (missing Status fields, empty Decision Log, bad DEC-ID format) |
 | **forward-motion.sh** | Response ends with bare completion ("done") and no question, suggestion, or offer |
 
@@ -304,6 +309,51 @@ Three patterns recur across the hook system:
 | Hook | Corrective behavior |
 |------|--------------------|
 | **guard.sh** | Denies unsafe `/tmp/`, raw force push, and unsafe worktree removal with explicit replacement commands |
+
+---
+
+## Enforcement Coverage
+
+Every source file type in `SOURCE_EXTENSIONS` must have an active linter or the system must say so loudly. Silent non-enforcement is a policy violation, not a neutral skip.
+
+### Philosophy
+
+**Unsupported coverage** — a source extension in `SOURCE_EXTENSIONS` that has no configured linter profile — is a policy gap. The old behaviour was `exit 0` (silent pass). The new behaviour is `exit 2` with `additionalContext` explaining the gap, a persisted record in `.enforcement-gaps`, and a GitHub Issue filed on first encounter.
+
+**Missing enforcer dependency** — a linter profile is detected (e.g., shellcheck for `.sh`) but the binary is not on `PATH` — is a degraded enforcement state. Same treatment as unsupported.
+
+**Self-healing** — when lint.sh runs and the linter is now available for a previously-gapped extension, it removes the gap entry automatically. No manual cleanup needed.
+
+**No source write ends with "no enforcement ran and nobody was told."** If enforcement cannot run, the model is told, the gap is recorded, and writes are eventually blocked until the gap is resolved.
+
+### Four Signal Paths
+
+| Path | Mechanism | When | Effect |
+|------|-----------|------|--------|
+| **Immediate feedback** | `lint.sh` PostToolUse `additionalContext` + exit 2 | Every gap encounter | Model sees the gap in the same turn |
+| **Persisted gap state** | `.claude/.enforcement-gaps` | First + subsequent encounters | Survives session boundaries |
+| **Repeated-write deny** | `pre-write.sh` `check_enforcement_gap` PreToolUse `permissionDecision=deny` | When `encounter_count > 1` for the target file's extension | True deterministic block — write is rejected before it happens |
+| **Backlog/support record** | `scripts/todo.sh add --global` (GitHub Issue) | First encounter only, best-effort | Durable record visible outside Claude |
+
+### Gap State File Format
+
+`.claude/.enforcement-gaps` — one line per unique gap, keyed on `type|ext`:
+
+```
+type|ext|tool|first_epoch|encounter_count
+```
+
+- `type`: `unsupported` (no profile) or `missing_dep` (profile exists, binary missing)
+- `ext`: file extension without the dot (e.g., `java`, `sh`)
+- `tool`: linter name or `none`
+- `first_epoch`: Unix timestamp of first encounter
+- `encounter_count`: total encounters (incremented on each lint.sh run for this ext)
+
+The file is NOT cleaned by `session-end.sh`. It represents unresolved repo state. It IS cleaned when lint.sh runs successfully for the same extension (self-healing).
+
+### Shell File Enforcement
+
+Shell files (`.sh`, `.bash`, `.zsh`) now always map to `shellcheck` — no project config file is required. This is intentional: shell is the primary hook language for this system, so enforcement must be unconditional. If `shellcheck` is not installed, a `missing_dep` gap fires instead of silent pass.
 
 ---
 
@@ -329,12 +379,13 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
 | `.agent-findings` | check-planner.sh, check-implementer.sh, check-tester.sh, check-guardian.sh | prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery). Still active; not yet migrated to runtime |
 | `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |
+| `.enforcement-gaps` | lint.sh | pre-write.sh (check_enforcement_gap), session-init.sh, prompt-submit.sh | `type\|ext\|tool\|first_epoch\|encounter_count` — one line per unique gap; NOT cleaned by session-end.sh (represents unresolved repo state, not session ephemeral data); self-healed by lint.sh when tool is installed |
 
 **Eliminated flat files** (no longer written or read as state authority):
 
 | File | Former Role | Replacement | Removed By |
 |------|------------|-------------|-----------|
-| `.proof-status-<workflow>` | Proof state authority | `proof_state` table via `rt_proof_get`/`rt_proof_set` | TKT-007/TKT-018 |
+| `.proof-status-<workflow>` | Proof state authority | `evaluation_state` table (TKT-024); `proof_state` table retained but deprecated with zero enforcement effect | TKT-007/TKT-018/TKT-024 |
 | `.subagent-tracker` | Active agent role tracking | `agent_markers` table via `rt_marker_set`/`rt_marker_deactivate` | TKT-007/TKT-018 |
 | `.statusline-cache` | Statusline data cache | `cc-policy statusline snapshot` runtime projection | TKT-012/TKT-018 |
 | `.audit-log` | Audit trail file | `events` table via `rt_event_emit` (through `append_audit`) | TKT-008. Note: `compact-preserve.sh` still has a stale reader |

@@ -4,7 +4,7 @@
 # shared-protocols.md, so all security gates must handle both forms.
 #
 # Sub-tests:
-#   1. Non-guardian "git -C ... commit" → denied (Check 3 WHO)
+#   1. Non-guardian "git -C ... push" → denied (Check 3 WHO)
 #   2. "git -C ... commit" on main → denied (Check 4 main-is-sacred)
 #   3. "git -C ... commit" with failing tests → denied (Check 9 test gate)
 #   4. "git -C ... commit" without proof verified → denied (Check 10 proof gate)
@@ -25,6 +25,7 @@ RUNTIME_ROOT="$REPO_ROOT/runtime"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/.claude/state.db"
 
+# shellcheck disable=SC2329  # invoked indirectly via trap
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -71,13 +72,14 @@ check_deny() {
     fi
 }
 
-# --- Sub-test 1: Non-guardian git -C commit → Check 3 WHO deny ---
+# --- Sub-test 1: No-lease git -C push → Check 3 lease deny ---
+# After DEC-LEASE-002, high_risk ops without a lease are denied.
+# Push is high_risk. No lease issued → denied with "No active lease" message.
 setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-who -q
-# No marker set → role is empty (non-guardian)
-CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
+CMD="git -C \"$TMP_DIR\" push origin feature/test-who"
 output=$(run_hook "$CMD")
-check_deny "sub-test 1 (WHO)" "$output" "Guardian"
+check_deny "sub-test 1 (lease)" "$output" "No active lease"
 
 # --- Sub-test 2: git -C commit on main → Check 4 main-is-sacred deny ---
 setup_repo
@@ -97,15 +99,15 @@ CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
 check_deny "sub-test 3 (test gate)" "$output" "tests are failing\|test run did not pass"
 
-# --- Sub-test 4: git -C commit without proof verified → Check 10 proof gate deny ---
+# --- Sub-test 4: git -C commit without evaluation clearance → Check 10 eval gate deny ---
 setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-proof -q
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
-# No proof file → proof status is "idle"
+# No evaluation_state set → status is "idle"
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
-check_deny "sub-test 4 (proof gate)" "$output" "proof-of-work"
+check_deny "sub-test 4 (eval gate)" "$output" "evaluation_state"
 
 echo "PASS: $TEST_NAME (4 sub-tests)"
 exit 0

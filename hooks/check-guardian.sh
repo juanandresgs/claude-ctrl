@@ -43,6 +43,45 @@ ISSUES=()
 # Extract agent's response text first (needed for phase-boundary detection)
 RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
 
+# --- Completion contract submission (Phase 2: DEC-COMPLETION-001) ---
+# Parse LANDING_RESULT and OPERATION_CLASS from guardian response text.
+# Submit a structured completion record for the guardian role.
+# Advisory in v1: the commit already happened, so we record but do not block.
+# The purpose is to populate completion_records for routing decisions in
+# post-task.sh and for audit purposes.
+_GD_LANDING_RESULT=""
+_GD_OP_CLASS=""
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    _GD_LANDING_RESULT=$(printf '%s' "$RESPONSE_TEXT" \
+        | grep -oE '^LANDING_RESULT:[[:space:]]*[a-z_]+' \
+        | head -1 \
+        | sed 's/LANDING_RESULT:[[:space:]]*//' || true)
+    _GD_OP_CLASS=$(printf '%s' "$RESPONSE_TEXT" \
+        | grep -oE '^OPERATION_CLASS:[[:space:]]*[a-z_]+' \
+        | head -1 \
+        | sed 's/OPERATION_CLASS:[[:space:]]*//' || true)
+fi
+
+if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    _GD_LEASE_RESULT=$(rt_lease_current "$PROJECT_ROOT")
+    _GD_LEASE_ID=$(printf '%s' "${_GD_LEASE_RESULT:-}" | jq -r '.lease_id // empty' 2>/dev/null || true)
+    _GD_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+
+    if [[ -n "$_GD_LEASE_ID" ]]; then
+        _GD_PAYLOAD=$(jq -n \
+            --arg lr "${_GD_LANDING_RESULT:-}" \
+            --arg oc "${_GD_OP_CLASS:-}" \
+            '{LANDING_RESULT:$lr, OPERATION_CLASS:$oc}')
+        _GD_CT_RESULT=$(rt_completion_submit "$_GD_LEASE_ID" "$_GD_WF_ID" "guardian" "$_GD_PAYLOAD")
+        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
+        if [[ "$_GD_CT_VALID" != "true" ]]; then
+            _GD_CT_MISSING=$(printf '%s' "$_GD_CT_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
+            # Advisory only in v1 — the git operation already completed.
+            ISSUES+=("COMPLETION CONTRACT (advisory): Guardian completion record INVALID. Missing: $_GD_CT_MISSING. Add LANDING_RESULT and OPERATION_CLASS trailers to guardian responses.")
+        fi
+    fi
+fi
+
 # Detect if this was a phase-completing merge by looking for phase-completion language
 IS_PHASE_COMPLETING=""
 if [[ -n "$RESPONSE_TEXT" ]]; then
@@ -85,7 +124,14 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_EXECUTION=$(echo "$RESPONSE_TEXT" | grep -iE 'executing|done|merged|committed|completed|pushed|created branch|worktree created' || echo "")
 
     if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_EXECUTION" ]]; then
-        ISSUES+=("Agent ended with approval question but no execution confirmation — may need follow-up")
+        # Under auto-land policy (DEC-GUARD-AUTOLAND), approval questions are
+        # expected only for high-risk ops (push, rebase, reset, force, destructive).
+        # For local landing (commit, merge without push), an approval question
+        # without execution is a regression — Guardian should auto-land.
+        HAS_HIGH_RISK_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'push|rebase|reset|force|delet' || echo "")
+        if [[ -z "$HAS_HIGH_RISK_OP" ]]; then
+            ISSUES+=("Auto-land regression: Guardian asked for approval on a local landing instead of executing automatically (DEC-GUARD-AUTOLAND)")
+        fi
     fi
 fi
 
@@ -109,11 +155,13 @@ else
     ISSUES+=("No test results found — verify tests were run before committing")
 fi
 
-# Check 6: Proof status for git operations
-PROOF_STATUS=$(read_proof_status "$PROJECT_ROOT")
+# Check 6: Evaluation state for git operations (TKT-024)
+# Validates evaluation_state instead of proof_state. Guardian should only
+# operate when evaluation_state == "ready_for_guardian" (set by check-tester.sh).
+EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git merge|git commit|git push' || echo "")
-if [[ -n "$HAS_GIT_OP" && "$PROOF_STATUS" != "verified" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    ISSUES+=("Proof-of-work is '$PROOF_STATUS' after git operation — Guardian should only proceed after Tester evidence and explicit user verification")
+if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after Tester issues EVAL_VERDICT=ready_for_guardian")
 fi
 
 # Build context message

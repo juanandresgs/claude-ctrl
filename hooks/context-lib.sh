@@ -55,7 +55,7 @@ get_git_state() {
 
     # Fix #465: In a worktree .git is a FILE (gitdir pointer), not a directory.
     # Use git rev-parse to test git membership uniformly for both cases.
-    git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return
+    git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 
     GIT_BRANCH=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null) || GIT_BRANCH="unknown"
     GIT_DIRTY_COUNT=$(git -C "$root" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
@@ -299,6 +299,45 @@ write_proof_status() {
     rt_proof_set "$workflow_id" "$status" || true
 }
 
+# --- Evaluation state (TKT-024: sole readiness authority) ---
+
+# read_evaluation_status <root> [workflow_id]
+# Returns the evaluation status string for the workflow, or "idle" on failure.
+read_evaluation_status() {
+    local root="$1"
+    local workflow_id="${2:-}"
+    local status=""
+
+    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
+    status=$(rt_eval_get "$workflow_id" 2>/dev/null) || status=""
+    printf '%s\n' "${status:-idle}"
+}
+
+# read_evaluation_state <root> [workflow_id]
+# Returns the full evaluation state JSON, or empty string on failure.
+read_evaluation_state() {
+    local root="$1"
+    local workflow_id="${2:-}"
+
+    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
+    cc_policy evaluation get "$workflow_id" 2>/dev/null || true
+}
+
+# write_evaluation_status <root> <status> [workflow_id] [head_sha] [blockers] [major] [minor]
+# Upserts evaluation state. root kept for call-site symmetry with write_proof_status.
+write_evaluation_status() {
+    local root="$1"
+    local status="$2"
+    local workflow_id="${3:-}"
+    local head_sha="${4:-}"
+    local blockers="${5:-0}"
+    local major="${6:-0}"
+    local minor="${7:-0}"
+
+    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
+    rt_eval_set "$workflow_id" "$status" "$head_sha" "$blockers" "$major" "$minor" || true
+}
+
 find_worktree_for_branch() {
     local root="$1"
     local branch="$2"
@@ -388,6 +427,11 @@ is_claude_meta_repo() {
     local dir="$1"
     local repo_root
 
+    # Check CLAUDE_PROJECT_DIR first — symlinks cause git to resolve to the
+    # real path (e.g. ~/Code/foo) even when ~/.claude is the logical root.
+    if [[ "${CLAUDE_PROJECT_DIR:-}" == */.claude ]]; then
+        return 0
+    fi
     repo_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo "")
     [[ "$repo_root" == */.claude ]]
 }
@@ -462,7 +506,48 @@ get_workflow_binding() {
     [[ -n "$WORKFLOW_WORKTREE" ]]
 }
 
+# --- Git operation classifier (DEC-CLASSIFY-001) ---
+# classify_git_op <command>
+# Returns "routine_local", "high_risk", "admin_recovery", or "unclassified".
+# Bash implementation for hook performance — avoids Python startup overhead.
+# Authority for risk levels: this function. guard.sh Check 13 reads it.
+#
+# @decision DEC-CLASSIFY-001
+# @title Bash classifier is the authority for git op risk levels
+# @status accepted
+# @rationale Hook performance requires avoiding Python startup for every
+#   command. The classifier is simple regex matching — bash is sufficient.
+#   routine_local:  evaluation_state gates these (Check 10). high_risk: approval
+#   token required (Check 13). admin_recovery: merge --abort and reset --merge
+#   require lease + approval but NOT evaluation readiness (DEC-LEASE-002).
+#   unclassified: not a git op of interest.
+#
+# Classification precedence (first match wins):
+#   admin_recovery: merge --abort, reset --merge
+#   high_risk:      push, rebase, reset, merge --no-ff
+#   routine_local:  commit, merge
+#   unclassified:   everything else
+classify_git_op() {
+    local cmd="$1"
+    # Admin recovery: merge --abort (governed recovery, not a landing op)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--abort'; then echo "admin_recovery"; return; fi
+    # Admin recovery: reset --merge (backed-out merge recovery)
+    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b.*--merge'; then echo "admin_recovery"; return; fi
+    # High-risk: push (any form)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bpush\b'; then echo "high_risk"; return; fi
+    # High-risk: rebase
+    if echo "$cmd" | grep -qE '\bgit\b.*\brebase\b'; then echo "high_risk"; return; fi
+    # High-risk: reset (any form not already caught by admin_recovery above)
+    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b'; then echo "high_risk"; return; fi
+    # High-risk: non-ff merge (explicit --no-ff)
+    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then echo "high_risk"; return; fi
+    # Routine local: commit or merge (local-only, no --no-ff)
+    if echo "$cmd" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then echo "routine_local"; return; fi
+    # Default: unclassified (git log, git status, git diff, etc.)
+    echo "unclassified"
+}
+
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding
+export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op
