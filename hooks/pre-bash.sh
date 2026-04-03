@@ -1,42 +1,41 @@
 #!/usr/bin/env bash
-# Thin entrypoint consolidating all Bash policy checks.
-# PreToolUse hook — matcher: Bash
+# pre-bash.sh — Thin adapter that delegates all Bash pre-execution policy to
+# the Python policy engine (cc-policy evaluate). Replaces the former guard.sh
+# delegation now that all 13 guard checks live in runtime/core/policies/.
 #
 # @decision DEC-HOOK-004
-# @title Consolidated Bash entrypoint
-# @status accepted
-# @rationale settings.json currently wires guard.sh directly as the Bash
-#   PreToolUse hook. This entrypoint delegates to guard.sh via bash-policy.sh,
-#   making it the single settings.json entry for Bash policy and enabling
-#   future decomposition of guard.sh's 10 checks into discrete lib functions
-#   without rewiring settings.json each time.
-#
-# Policy chain (via check_git_guard -> guard.sh):
-#   1. /tmp safety           6. Destructive git block
-#   2. Worktree CWD safety   7. Worktree removal safety
-#   3. WHO for git ops       8. Test gate for commit/merge
-#   4. Main-is-sacred        9. Test gate (commit variant)
-#   5. Force-push safety    10. Proof gate for commit/merge
+# @title Consolidated Bash entrypoint — now a thin cc-policy evaluate adapter
+# @status accepted (updated PE-W3)
+# @rationale guard.sh's 13 inline checks have been migrated to Python policy
+#   modules registered in runtime/core/policies/. This hook now normalises the
+#   Claude hook JSON into a policy engine request and forwards the decision.
+#   guard.sh and hooks/lib/bash-policy.sh are deleted — this file is the sole
+#   authority for Bash pre-execution policy.
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=hooks/log.sh
 source "$HOOKS_DIR/log.sh"
-source "$HOOKS_DIR/lib/bash-policy.sh"
+# shellcheck source=hooks/context-lib.sh
+source "$HOOKS_DIR/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')
 [[ -z "$COMMAND" ]] && exit 0
 
-output=$(check_git_guard "$HOOK_INPUT")
+# Resolve actor context for the policy engine.
+ACTOR_ROLE=$(current_active_agent_role "$(detect_project_root)" 2>/dev/null || echo "")
 
-if [[ -n "$output" ]]; then
-    # Annotate deny with blockingHook so agents can diagnose which check fired.
-    # Fix #466: guard.sh runs 10 internal checks; without blockingHook agents
-    # see a generic denial and cannot determine which policy triggered it.
-    if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
-        output=$(echo "$output" | jq '.hookSpecificOutput.blockingHook = "guard.sh"')
-    fi
-    echo "$output"
+# Build evaluate payload — merge actor_role into the hook JSON.
+EVAL_INPUT=$(printf '%s' "$HOOK_INPUT" | jq \
+    --arg role "$ACTOR_ROLE" \
+    '. + {event_type: "PreToolUse", tool_name: "Bash", actor_role: $role, actor_id: ""}')
+
+# Call policy engine — single authority for all Bash decisions.
+RESULT=$(printf '%s' "$EVAL_INPUT" | cc_policy evaluate 2>/dev/null || true)
+
+if [[ -n "$RESULT" ]]; then
+    echo "$RESULT"
 fi
 
 exit 0

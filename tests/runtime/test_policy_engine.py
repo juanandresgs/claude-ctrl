@@ -375,11 +375,29 @@ def test_default_registry_is_registry():
     assert isinstance(reg, PolicyRegistry)
 
 
-def test_default_registry_empty_in_w1():
-    """W1: no policies registered. W2/W3 will add them."""
+def test_default_registry_has_policies_after_w3():
+    """PE-W3 registered 11 bash policy modules (12 entries — bash_test_gate
+    registers two checks). Verify the registry is populated and all entries
+    are enabled. This replaces the W1 placeholder that expected an empty list."""
     reg = default_registry()
     policies = reg.list_policies()
-    assert policies == []
+    names = {p.name for p in policies}
+    expected = {
+        "bash_tmp_safety",
+        "bash_worktree_cwd",
+        "bash_git_who",
+        "bash_force_push",
+        "bash_main_sacred",
+        "bash_destructive_git",
+        "bash_worktree_removal",
+        "bash_test_gate_merge",
+        "bash_test_gate_commit",
+        "bash_eval_readiness",
+        "bash_workflow_scope",
+        "bash_approval_gate",
+    }
+    assert expected.issubset(names), f"Missing policies: {expected - names}"
+    assert all(p.enabled for p in policies)
 
 
 def test_default_registry_fail_closed_on_register_all_error(monkeypatch):

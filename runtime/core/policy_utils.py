@@ -279,3 +279,55 @@ def current_workflow_id(project_root: str = "") -> str:
         pass
 
     return sanitize_token(os.path.basename(root))
+
+
+def resolve_path_from_base(base: str, candidate: str) -> str:
+    """Resolve a possibly-relative path against a base directory.
+
+    Matches: hooks/guard.sh lines 42-56 resolve_path_from_base()
+
+    If candidate is absolute, return it unchanged.
+    If candidate is relative, resolve it against base using os.path.realpath
+    so symlinks are resolved (equivalent to the shell's pwd -P).
+    Returns the candidate unchanged if resolution fails.
+    """
+    if os.path.isabs(candidate):
+        return candidate
+
+    try:
+        # Resolve base directory first, then join with the candidate's parent
+        # and re-attach the basename — mirrors the shell's cd/pwd -P approach.
+        parent = os.path.dirname(candidate) or "."
+        name = os.path.basename(candidate)
+        resolved_parent = os.path.realpath(os.path.join(base, parent))
+        return os.path.join(resolved_parent, name)
+    except (OSError, ValueError):
+        return candidate
+
+
+def extract_merge_ref(command: str) -> Optional[str]:
+    """Extract the first non-flag token after 'merge' in a git command.
+
+    Matches: hooks/guard.sh lines 66-82 extract_merge_ref()
+
+    Tokenises the command on whitespace, finds 'merge', then returns the
+    first following token that does not start with '-'. Returns None if
+    no such token is found.
+
+    Examples:
+      'git merge feature/my-branch'   → 'feature/my-branch'
+      'git merge --no-ff feature/foo' → 'feature/foo'
+      'git merge --abort'             → None
+      'git merge'                     → None
+    """
+    tokens = command.split()
+    saw_merge = False
+    for token in tokens:
+        if token == "merge":
+            saw_merge = True
+            continue
+        if saw_merge:
+            if token.startswith("-"):
+                continue
+            return token
+    return None

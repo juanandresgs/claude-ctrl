@@ -10,4 +10,5 @@ ignore = ["E501"]
 # cli.py and test files use sys.path.insert before imports (needed for module discovery)
 "runtime/cli.py" = ["E402"]
 "tests/runtime/test_*.py" = ["E402"]
+"tests/runtime/policies/*.py" = ["E402"]
 "sidecars/**/*.py" = ["E402"]

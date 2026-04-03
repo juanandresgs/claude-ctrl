@@ -858,18 +858,54 @@ def _handle_evaluate(args) -> int:
         ctx = policy_engine_mod.build_context(
             conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
         )
+
+        request = policy_engine_mod.PolicyRequest(
+            event_type=event_type,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            context=ctx,
+            cwd=cwd,
+        )
+
+        decision = policy_engine_mod.default_registry().evaluate(request)
+
+        # Apply stateful effects declared by policy functions.
+        # Policies are pure functions — they cannot perform DB writes.
+        # Effects are processed here, once, after the decision is reached.
+        #
+        # Supported effects:
+        #   expire_stale_leases: bool
+        #     → call leases_mod.expire_stale(conn) to flush timed-out leases.
+        #   check_and_consume_approval: {"workflow_id": str, "op_type": str}
+        #     → attempt to consume a one-shot approval token. If consumed,
+        #       override the deny decision to allow (the token grants the op).
+        #       If not consumed, leave the deny in place.
+        effects = decision.effects or {}
+
+        if effects.get("expire_stale_leases"):
+            try:
+                leases_mod.expire_stale(conn)
+            except Exception:
+                pass  # Non-fatal: stale cleanup is best-effort
+
+        approval_effect = effects.get("check_and_consume_approval")
+        if approval_effect and decision.action == "deny":
+            wf_id = approval_effect.get("workflow_id", "")
+            op_type = approval_effect.get("op_type", "")
+            if wf_id and op_type:
+                try:
+                    consumed = approvals_mod.check_and_consume(conn, wf_id, op_type)
+                    if consumed:
+                        # Token consumed — override the deny to allow.
+                        decision = policy_engine_mod.PolicyDecision(
+                            action="allow",
+                            reason=f"Approval token consumed for '{op_type}' on workflow '{wf_id}'.",
+                            policy_name=decision.policy_name,
+                        )
+                except Exception:
+                    pass  # Non-fatal: denial stands if consumption fails
     finally:
         conn.close()
-
-    request = policy_engine_mod.PolicyRequest(
-        event_type=event_type,
-        tool_name=tool_name,
-        tool_input=tool_input,
-        context=ctx,
-        cwd=cwd,
-    )
-
-    decision = policy_engine_mod.default_registry().evaluate(request)
 
     # Build hookSpecificOutput per Claude hook contract
     if decision.action == "deny":
