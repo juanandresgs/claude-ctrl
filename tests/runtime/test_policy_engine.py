@@ -375,22 +375,43 @@ def test_default_registry_is_registry():
     assert isinstance(reg, PolicyRegistry)
 
 
-def test_default_registry_has_w2_write_policies():
-    """W2: 7 write-path policies are registered in priority order."""
+def test_default_registry_has_all_policies():
+    """W2+W3: 19 policies registered (7 write + 12 bash) in priority order."""
     reg = default_registry()
     policies = reg.list_policies()
-    names = [p.name for p in policies]
-    assert "branch_guard" in names
-    assert "write_who" in names
-    assert "enforcement_gap" in names
-    assert "plan_guard" in names
-    assert "plan_exists" in names
-    assert "plan_immutability" in names
-    assert "decision_log" in names
-    assert len(policies) == 7
+    names = {p.name for p in policies}
+    # W2 write-path policies
+    w2_expected = {
+        "branch_guard",
+        "write_who",
+        "enforcement_gap",
+        "plan_guard",
+        "plan_exists",
+        "plan_immutability",
+        "decision_log",
+    }
+    # W3 bash-path policies
+    w3_expected = {
+        "bash_tmp_safety",
+        "bash_worktree_cwd",
+        "bash_git_who",
+        "bash_force_push",
+        "bash_main_sacred",
+        "bash_destructive_git",
+        "bash_worktree_removal",
+        "bash_test_gate_merge",
+        "bash_test_gate_commit",
+        "bash_eval_readiness",
+        "bash_workflow_scope",
+        "bash_approval_gate",
+    }
+    assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
+    assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
+    assert len(policies) == 19
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)
+    assert all(p.enabled for p in policies)
 
 
 def test_default_registry_fail_closed_on_register_all_error(monkeypatch):

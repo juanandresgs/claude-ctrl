@@ -1,0 +1,194 @@
+"""Unit tests for bash_git_who policy.
+
+Exercises lease-based WHO enforcement for git commit/merge/push (DEC-PE-W3-008).
+Production trigger: PreToolUse Bash hook — git commit, merge, or push when
+no valid active lease covers the operation class.
+
+Lease data is injected via PolicyContext — no DB I/O needed.
+
+@decision DEC-PE-W3-TEST-008
+@title Unit tests for bash_git_who policy
+@status accepted
+@rationale Verify all deny branches: no lease, expired lease, op_class in
+  blocked_ops, op_class not in allowed_ops. Also verify meta-repo bypass,
+  non-git-op skip, and the nominal allow path (valid lease, op in allowed_ops).
+  Lease dicts are constructed inline so tests remain hermetic.
+"""
+
+from __future__ import annotations
+
+import time
+
+from runtime.core.policies.bash_git_who import check
+from tests.runtime.policies.conftest import make_context, make_request
+
+
+def _future_expiry():
+    return int(time.time()) + 3600
+
+
+def _past_expiry():
+    return int(time.time()) - 1
+
+
+def _make_lease(
+    *,
+    allowed_ops=None,
+    blocked_ops=None,
+    expires_at=None,
+    workflow_id="feature-test",
+):
+    import json
+
+    return {
+        "workflow_id": workflow_id,
+        "expires_at": expires_at if expires_at is not None else _future_expiry(),
+        "allowed_ops_json": json.dumps(allowed_ops or ["routine_local"]),
+        "blocked_ops_json": json.dumps(blocked_ops or []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Deny: no lease
+# ---------------------------------------------------------------------------
+
+
+def test_no_lease_commit_denied():
+    ctx = make_context(lease=None)
+    req = make_request("git commit -m 'add feature'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "lease" in decision.reason.lower()
+    assert decision.policy_name == "bash_git_who"
+
+
+def test_no_lease_merge_denied():
+    ctx = make_context(lease=None)
+    req = make_request("git merge feature/foo", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+
+
+def test_no_lease_push_denied():
+    ctx = make_context(lease=None)
+    req = make_request("git push origin feature/bar", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    # Should signal stale lease expiry effect
+    assert decision.effects is not None
+    assert "expire_stale_leases" in decision.effects
+
+
+# ---------------------------------------------------------------------------
+# Deny: expired lease
+# ---------------------------------------------------------------------------
+
+
+def test_expired_lease_denied():
+    lease = _make_lease(expires_at=_past_expiry())
+    ctx = make_context(lease=lease)
+    req = make_request("git commit -m 'fix'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "expired" in decision.reason.lower()
+    assert decision.effects is not None
+    assert decision.effects.get("expire_stale_leases") is True
+
+
+# ---------------------------------------------------------------------------
+# Deny: op_class in blocked_ops
+# ---------------------------------------------------------------------------
+
+
+def test_op_in_blocked_ops_denied():
+    # classify_git_op("git push ...") returns "high_risk" — use the real op_class.
+    lease = _make_lease(
+        allowed_ops=["routine_local", "high_risk"],
+        blocked_ops=["high_risk"],
+    )
+    ctx = make_context(lease=lease)
+    req = make_request("git push origin feature/foo", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "blocked_ops" in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# Deny: op_class not in allowed_ops
+# ---------------------------------------------------------------------------
+
+
+def test_op_not_in_allowed_ops_denied():
+    lease = _make_lease(allowed_ops=["routine_local"])
+    ctx = make_context(lease=lease)
+    # push is classified as high_risk / push, not routine_local
+    req = make_request("git push origin feature/bar", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "allowed_ops" in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# Allow: valid lease, op in allowed_ops
+# ---------------------------------------------------------------------------
+
+
+def test_commit_with_valid_lease_allowed():
+    lease = _make_lease(allowed_ops=["routine_local"])
+    ctx = make_context(lease=lease)
+    req = make_request("git commit -m 'feat: add thing'", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_push_allowed_when_in_allowed_ops():
+    # classify_git_op("git push ...") returns "high_risk" — include that class.
+    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
+    ctx = make_context(lease=lease)
+    req = make_request("git push origin feature/done", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+# ---------------------------------------------------------------------------
+# Bypass: meta-repo
+# ---------------------------------------------------------------------------
+
+
+def test_meta_repo_commit_bypasses_who():
+    ctx = make_context(is_meta_repo=True, lease=None)
+    req = make_request("git commit -m 'config'", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+# ---------------------------------------------------------------------------
+# Skip: non-git-op commands
+# ---------------------------------------------------------------------------
+
+
+def test_git_status_skipped():
+    ctx = make_context(lease=None)
+    req = make_request("git status", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_empty_command_skipped():
+    ctx = make_context(lease=None)
+    req = make_request("", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_non_git_command_skipped():
+    ctx = make_context(lease=None)
+    req = make_request("ls -la", context=ctx)
+    decision = check(req)
+    assert decision is None

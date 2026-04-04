@@ -839,8 +839,13 @@ def _handle_evaluate(args) -> int:
       feedback → {"additionalContext": "<reason>"}
     """
     import json as _json
+    import os as _os
+    import subprocess as _subprocess
 
     raw = sys.stdin.read()
+    if not raw or not raw.strip():
+        return _err("evaluate: empty input — refusing to allow (fail-closed)")
+
     try:
         payload = _json.loads(raw)
     except _json.JSONDecodeError as e:
@@ -853,23 +858,94 @@ def _handle_evaluate(args) -> int:
     actor_role = payload.get("actor_role", "")
     actor_id = payload.get("actor_id", "")
 
+    # --- Target-aware context resolution (DEC-PE-W3-CTX-001) ---
+    # When the command targets a different repo than the session cwd (e.g.
+    # ``git -C /other-repo commit`` or ``cd /other-repo && git commit``),
+    # the hook extracts the target directory and passes it as ``target_cwd``.
+    # We resolve the git project root from target_cwd so that all downstream
+    # state lookups (lease, scope, eval_state, test_state) use the target
+    # repo's context, not the session repo's.
+    #
+    # Resolution order:
+    #   1. target_cwd present and is a real directory → resolve git root from it
+    #   2. target_cwd absent or not a directory → use cwd as before
+    resolved_project_root = ""
+    target_cwd = payload.get("target_cwd", "")
+    if target_cwd and _os.path.isdir(target_cwd):
+        try:
+            r = _subprocess.run(
+                ["git", "-C", target_cwd, "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0:
+                candidate = r.stdout.strip()
+                if candidate and _os.path.isdir(candidate):
+                    resolved_project_root = candidate
+        except Exception:
+            pass
+        # If git root resolution failed (non-git dir), use target_cwd directly
+        if not resolved_project_root:
+            resolved_project_root = target_cwd
+
     conn = _get_conn()
     try:
         ctx = policy_engine_mod.build_context(
-            conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
+            conn,
+            cwd=target_cwd if resolved_project_root else cwd,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            project_root=resolved_project_root,
         )
+
+        request = policy_engine_mod.PolicyRequest(
+            event_type=event_type,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            context=ctx,
+            cwd=cwd,
+        )
+
+        decision = policy_engine_mod.default_registry().evaluate(request)
+
+        # Apply stateful effects declared by policy functions.
+        # Policies are pure functions — they cannot perform DB writes.
+        # Effects are processed here, once, after the decision is reached.
+        #
+        # Supported effects:
+        #   expire_stale_leases: bool
+        #     → call leases_mod.expire_stale(conn) to flush timed-out leases.
+        #   check_and_consume_approval: {"workflow_id": str, "op_type": str}
+        #     → attempt to consume a one-shot approval token. If consumed,
+        #       override the deny decision to allow (the token grants the op).
+        #       If not consumed, leave the deny in place.
+        effects = decision.effects or {}
+
+        if effects.get("expire_stale_leases"):
+            try:
+                leases_mod.expire_stale(conn)
+            except Exception:
+                pass  # Non-fatal: stale cleanup is best-effort
+
+        approval_effect = effects.get("check_and_consume_approval")
+        if approval_effect and decision.action == "deny":
+            wf_id = approval_effect.get("workflow_id", "")
+            op_type = approval_effect.get("op_type", "")
+            if wf_id and op_type:
+                try:
+                    consumed = approvals_mod.check_and_consume(conn, wf_id, op_type)
+                    if consumed:
+                        # Token consumed — override the deny to allow.
+                        decision = policy_engine_mod.PolicyDecision(
+                            action="allow",
+                            reason=f"Approval token consumed for '{op_type}' on workflow '{wf_id}'.",
+                            policy_name=decision.policy_name,
+                        )
+                except Exception:
+                    pass  # Non-fatal: denial stands if consumption fails
     finally:
         conn.close()
-
-    request = policy_engine_mod.PolicyRequest(
-        event_type=event_type,
-        tool_name=tool_name,
-        tool_input=tool_input,
-        context=ctx,
-        cwd=cwd,
-    )
-
-    decision = policy_engine_mod.default_registry().evaluate(request)
 
     # Build hookSpecificOutput per Claude hook contract
     if decision.action == "deny":
