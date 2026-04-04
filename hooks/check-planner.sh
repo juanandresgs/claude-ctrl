@@ -9,7 +9,9 @@ set -euo pipefail
 # non-deterministic runtime and cascade risk. Every check here is a grep/stat
 # that completes in <1s. Status: accepted.
 
+# shellcheck source=hooks/log.sh
 source "$(dirname "$0")/log.sh"
+# shellcheck source=hooks/context-lib.sh
 source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
@@ -19,23 +21,26 @@ AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev
 PROJECT_ROOT=$(detect_project_root)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
+# ---------------------------------------------------------------------------
+# Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
+# ---------------------------------------------------------------------------
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_local_cc_policy() {
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+}
+
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
-# Deactivate runtime marker for this completing agent.
-# PE-W5: use ``cc-policy context role`` (lease → marker → env var resolution)
-# instead of ``cc_policy marker get-active`` (marker-only). This ensures the
-# same identity resolution path as the write/bash policy engine.
-# No-op when resolved role does not match the stopping agent type (guards
-# against clearing a concurrently active marker of a different role).
-#
-# Blocker PE-W5-B1 fix: resolve CLI relative to this hook's location so the
-# project's runtime/cli.py is used regardless of what is installed globally.
-_LOCAL_CLI="$(dirname "$0")/../runtime/cli.py"
-_ctx_json=$(python3 "$_LOCAL_CLI" context role 2>/dev/null) || _ctx_json=""
-_ctx_role=$(printf '%s' "$_ctx_json" | jq -r '.role // empty' 2>/dev/null || true)
-_ctx_agent_id=$(printf '%s' "$_ctx_json" | jq -r '.agent_id // empty' 2>/dev/null || true)
-if [[ -n "$AGENT_TYPE" && "$_ctx_role" == "$AGENT_TYPE" && -n "$_ctx_agent_id" ]]; then
-    rt_marker_deactivate "$_ctx_agent_id" 2>/dev/null || true
+# Deactivate runtime marker via lifecycle authority (DEC-LIFECYCLE-003).
+# cc-policy lifecycle on-stop is the single authority for role-matched
+# marker deactivation. It queries the active marker, matches its role to
+# AGENT_TYPE, and deactivates — all in Python. No bash-side query needed.
+if [[ -n "$AGENT_TYPE" ]]; then
+    _local_cc_policy lifecycle on-stop "$AGENT_TYPE" >/dev/null 2>&1 || true
 fi
 
 ISSUES=()

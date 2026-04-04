@@ -33,9 +33,11 @@ import runtime.core.approvals as approvals_mod
 import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
 import runtime.core.dispatch as dispatch_mod
+import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
 import runtime.core.leases as leases_mod
+import runtime.core.lifecycle as lifecycle_mod
 import runtime.core.markers as markers_mod
 import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.proof as proof_mod
@@ -276,9 +278,70 @@ def _handle_dispatch(args) -> int:
             result["found"] = True
             return _ok(result)
 
+        elif args.action == "process-stop":
+            # Read JSON from stdin: {"agent_type": "tester", "project_root": "/path"}
+            import json as _json
+
+            raw = sys.stdin.read()
+            if not raw or not raw.strip():
+                return _err("dispatch process-stop: empty input")
+            try:
+                payload = _json.loads(raw)
+            except _json.JSONDecodeError as e:
+                return _err(f"dispatch process-stop: invalid JSON: {e}")
+
+            agent_type = payload.get("agent_type", "")
+            project_root = payload.get("project_root", "")
+
+            if not agent_type:
+                return _err("dispatch process-stop: agent_type is required")
+
+            result = dispatch_engine_mod.process_agent_stop(conn, agent_type, project_root)
+
+            # Build hookSpecificOutput — same contract as PE-W2/W3.
+            suggestion = result.get("suggestion", "")
+            if suggestion:
+                hook_output = {"hookEventName": "SubagentStop", "additionalContext": suggestion}
+            else:
+                hook_output = {"hookEventName": "SubagentStop"}
+
+            return _ok(
+                {
+                    "next_role": result["next_role"],
+                    "workflow_id": result["workflow_id"],
+                    "error": result["error"],
+                    "hookSpecificOutput": hook_output,
+                }
+            )
+
+        elif args.action == "agent-start":
+            lifecycle_mod.on_agent_start(conn, args.agent_type, args.agent_id)
+            return _ok({"agent_id": args.agent_id, "agent_type": args.agent_type})
+
+        elif args.action == "agent-stop":
+            lifecycle_mod.on_agent_stop(conn, args.agent_type, args.agent_id)
+            return _ok({"agent_id": args.agent_id, "agent_type": args.agent_type})
+
     finally:
         conn.close()
     return _err(f"unknown dispatch action: {args.action}")
+
+
+def _handle_lifecycle(args) -> int:
+    """Handler for `cc-policy lifecycle` subcommands.
+
+    Currently exposes one action: on-stop, which resolves the active marker
+    by role and deactivates it. This is the single Python authority for marker
+    deactivation in SubagentStop hooks (DEC-LIFECYCLE-003).
+    """
+    conn = _get_conn()
+    try:
+        if args.action == "on-stop":
+            result = lifecycle_mod.on_stop_by_role(conn, args.agent_type)
+            return _ok(result)
+    finally:
+        conn.close()
+    return _err(f"unknown lifecycle action: {args.action}")
 
 
 def _handle_statusline(args) -> int:
@@ -1244,6 +1307,18 @@ def build_parser() -> argparse.ArgumentParser:
     wt_sub.add_parser("list")
 
     # dispatch
+    # lifecycle: agent marker lifecycle (single authority for on-stop by role)
+    lc_p = subparsers.add_parser("lifecycle", help="Agent marker lifecycle")
+    lc_sub = lc_p.add_subparsers(dest="action", required=True)
+    lc_onstop = lc_sub.add_parser(
+        "on-stop",
+        help="Deactivate the active marker whose role matches agent_type (DEC-LIFECYCLE-003)",
+    )
+    lc_onstop.add_argument(
+        "agent_type",
+        help="Role to match for deactivation (implementer, tester, guardian, planner)",
+    )
+
     dp_p = subparsers.add_parser("dispatch", help="Dispatch queue and cycles")
     dp_sub = dp_p.add_subparsers(dest="action", required=True)
     deq = dp_sub.add_parser("enqueue")
@@ -1257,6 +1332,21 @@ def build_parser() -> argparse.ArgumentParser:
     dcs = dp_sub.add_parser("cycle-start")
     dcs.add_argument("initiative")
     dp_sub.add_parser("cycle-current")
+
+    # process-stop: reads JSON from stdin, returns hookSpecificOutput
+    dp_sub.add_parser(
+        "process-stop",
+        help="Process an agent stop event (JSON on stdin). Returns hookSpecificOutput.",
+    )
+
+    # agent-start / agent-stop: marker lifecycle
+    das = dp_sub.add_parser("agent-start", help="Mark agent as active (set marker)")
+    das.add_argument("agent_type", help="Role (implementer, tester, guardian, planner)")
+    das.add_argument("agent_id", help="Unique agent identifier")
+
+    dae = dp_sub.add_parser("agent-stop", help="Deactivate agent marker")
+    dae.add_argument("agent_type", help="Role (for symmetry; not used in deactivation query)")
+    dae.add_argument("agent_id", help="Unique agent identifier")
 
     # statusline
     sl_p = subparsers.add_parser("statusline", help="Runtime-backed statusline snapshot")
@@ -1602,6 +1692,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_event(args)
     if args.domain == "worktree":
         return _handle_worktree(args)
+    if args.domain == "lifecycle":
+        return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
     if args.domain == "statusline":

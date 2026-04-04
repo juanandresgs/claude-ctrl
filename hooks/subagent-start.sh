@@ -12,7 +12,9 @@ set -euo pipefail
 #   - Agent-type-specific guidance
 #   - Tracks subagent spawn in runtime marker store (rt_marker_set)
 
+# shellcheck source=hooks/log.sh
 source "$(dirname "$0")/log.sh"
+# shellcheck source=hooks/context-lib.sh
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
@@ -25,11 +27,26 @@ CONTEXT_PARTS=()
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 
-# Track subagent spawn in runtime marker store (sole authority, TKT-008).
+# ---------------------------------------------------------------------------
+# Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
+# Must resolve here too so agent-start reaches the in-worktree CLI.
+# ---------------------------------------------------------------------------
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_local_cc_policy() {
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+}
+
+# Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
 # Using PID as the agent_id gives a stable per-process key that the
 # check-*.sh SubagentStop hooks can match when deactivating the marker.
-# .subagent-tracker flat-file write removed.
-rt_marker_set "agent-$$" "${AGENT_TYPE:-unknown}" || true
+# Calls dispatch agent-start (lifecycle.py) via local CLI resolution so
+# this reaches the in-worktree runtime in isolated worktrees before merge.
+# rt_marker_set direct call removed — lifecycle.py is the sole authority.
+_local_cc_policy dispatch agent-start "${AGENT_TYPE:-unknown}" "agent-$$" >/dev/null 2>&1 || true
 
 # --- Lease claim: bind this agent to an active dispatch lease if one exists ---
 # Phase 2 (DEC-LEASE-002): At spawn time, attempt to claim any active lease
