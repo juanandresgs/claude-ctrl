@@ -33,7 +33,6 @@ set -euo pipefail
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
-HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path or file doesn't exist
@@ -316,23 +315,38 @@ fi
 # =============================================================================
 
 if [[ "$LINTER" == "none" ]]; then
-    # Policy gap: an in-scope source extension with no linter profile.
+    # Operational: record the gap, file a bug, emit advisory context to the model.
+    # Do NOT exit 2 here — the enforcement DENY lives in the policy engine:
+    #   runtime/core/policies/write_enforcement_gap.py (DEC-PE-W2-003)
+    # That policy issues permissionDecision=deny on the NEXT Write/Edit when
+    # encounter_count > 1.  lint.sh is the gap detector; the policy engine is
+    # the enforcer.  Two-authority pattern eliminated per PE-W5 adapter migration.
+    #
+    # @decision DEC-LINT-002
+    # @title Enforcement-gap deny moved to policy engine (PE-W2)
+    # @status accepted
+    # @rationale lint.sh previously issued exit 2 on every gap detection, acting
+    #   as both detector and enforcer.  write_enforcement_gap.py (PE-W2) is now
+    #   the single enforcement authority.  lint.sh records state and emits
+    #   advisory feedback only; it no longer makes enforcement decisions.
     append_audit "$PROJECT_ROOT" "enforcement_gap" "unsupported|${FILE_EXT}|none|$FILE_PATH"
     record_enforcement_gap "unsupported" "$FILE_EXT" "none"
     file_enforcement_gap_backlog "unsupported" "$FILE_EXT" "none"
     GAP_COUNT=$(get_enforcement_gap_count "unsupported" "$FILE_EXT")
     emit_gap_context "unsupported" "$FILE_EXT" "none" "$GAP_COUNT"
-    exit 2
+    exit 0
 fi
 
 if ! check_linter_available "$LINTER"; then
     # Degraded state: profile detected but binary missing.
+    # Same adapter pattern: record gap, emit advisory, do NOT deny here.
+    # The policy engine denies on next Write/Edit when count > 1.
     append_audit "$PROJECT_ROOT" "enforcement_gap" "missing_dep|${FILE_EXT}|${LINTER}|$FILE_PATH"
     record_enforcement_gap "missing_dep" "$FILE_EXT" "$LINTER"
     file_enforcement_gap_backlog "missing_dep" "$FILE_EXT" "$LINTER"
     GAP_COUNT=$(get_enforcement_gap_count "missing_dep" "$FILE_EXT")
     emit_gap_context "missing_dep" "$FILE_EXT" "$LINTER" "$GAP_COUNT"
-    exit 2
+    exit 0
 fi
 
 # Linter available and no gap: self-heal any stale gap entries for this ext.
