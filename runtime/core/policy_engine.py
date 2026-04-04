@@ -330,6 +330,7 @@ def build_context(
     cwd: str,
     actor_role: str = "",
     actor_id: str = "",
+    project_root: str = "",
 ) -> PolicyContext:
     """Resolve all SQLite state into a PolicyContext in one shot.
 
@@ -344,8 +345,26 @@ def build_context(
 
     actor_role and actor_id are overrides — the caller (cli.py) passes them
     from the JSON payload. If not provided, they're inferred from the DB.
+
+    project_root — when provided, skips detect_project_root() entirely and
+      uses this value directly. Used by _handle_evaluate when the caller
+      supplies a target_cwd that differs from the session cwd (e.g. for
+      ``git -C /other-repo commit`` commands). This prevents session-repo
+      state from contaminating decisions scoped to a different repo.
+
+    @decision DEC-PE-W3-CTX-001
+    @title build_context accepts explicit project_root to prevent cross-repo contamination
+    @status accepted
+    @rationale The evaluate payload may carry a target_cwd that differs from
+      the session cwd (extracted from ``git -C <dir>`` or ``cd <dir> && git``
+      patterns). Without an explicit project_root override, detect_project_root()
+      would use CLAUDE_PROJECT_DIR (the session repo), causing lease, eval_state,
+      scope, and test_state to be read from the session repo instead of the
+      command target. Passing project_root bypasses the env var and the git
+      subprocess, giving the caller full control over which repo's state is used.
     """
-    project_root = detect_project_root(cwd)
+    if not project_root:
+        project_root = detect_project_root(cwd)
     is_meta = is_claude_meta_repo(project_root)
 
     # --- Resolve active lease ---

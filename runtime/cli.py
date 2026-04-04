@@ -839,8 +839,13 @@ def _handle_evaluate(args) -> int:
       feedback → {"additionalContext": "<reason>"}
     """
     import json as _json
+    import os as _os
+    import subprocess as _subprocess
 
     raw = sys.stdin.read()
+    if not raw or not raw.strip():
+        return _err("evaluate: empty input — refusing to allow (fail-closed)")
+
     try:
         payload = _json.loads(raw)
     except _json.JSONDecodeError as e:
@@ -853,10 +858,45 @@ def _handle_evaluate(args) -> int:
     actor_role = payload.get("actor_role", "")
     actor_id = payload.get("actor_id", "")
 
+    # --- Target-aware context resolution (DEC-PE-W3-CTX-001) ---
+    # When the command targets a different repo than the session cwd (e.g.
+    # ``git -C /other-repo commit`` or ``cd /other-repo && git commit``),
+    # the hook extracts the target directory and passes it as ``target_cwd``.
+    # We resolve the git project root from target_cwd so that all downstream
+    # state lookups (lease, scope, eval_state, test_state) use the target
+    # repo's context, not the session repo's.
+    #
+    # Resolution order:
+    #   1. target_cwd present and is a real directory → resolve git root from it
+    #   2. target_cwd absent or not a directory → use cwd as before
+    resolved_project_root = ""
+    target_cwd = payload.get("target_cwd", "")
+    if target_cwd and _os.path.isdir(target_cwd):
+        try:
+            r = _subprocess.run(
+                ["git", "-C", target_cwd, "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0:
+                candidate = r.stdout.strip()
+                if candidate and _os.path.isdir(candidate):
+                    resolved_project_root = candidate
+        except Exception:
+            pass
+        # If git root resolution failed (non-git dir), use target_cwd directly
+        if not resolved_project_root:
+            resolved_project_root = target_cwd
+
     conn = _get_conn()
     try:
         ctx = policy_engine_mod.build_context(
-            conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
+            conn,
+            cwd=target_cwd if resolved_project_root else cwd,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            project_root=resolved_project_root,
         )
 
         request = policy_engine_mod.PolicyRequest(
