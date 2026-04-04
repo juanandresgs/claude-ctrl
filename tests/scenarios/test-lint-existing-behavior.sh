@@ -63,7 +63,7 @@ if [[ "$CACHED_LINTER" != "ruff" ]]; then
 fi
 
 # If ruff is installed: expect exit 0 (lint passed) or exit 2 (lint errors — acceptable)
-# If ruff is NOT installed: expect exit 2 with ENFORCEMENT GAP / missing_dep
+# If ruff is NOT installed: expect exit 0 with ENFORCEMENT GAP / missing_dep (DEC-LINT-002)
 if command -v ruff &>/dev/null; then
     # ruff present — should not be a gap (exit 0 or 2 from lint results, not gap)
     if echo "$output" | grep -q "ENFORCEMENT GAP"; then
@@ -73,9 +73,9 @@ if command -v ruff &>/dev/null; then
     fi
     echo "PASS: $TEST_NAME (ruff installed, lint ran, cache correct)"
 else
-    # ruff absent — must be a missing_dep gap
-    if [[ "$exit_code" -ne 2 ]]; then
-        echo "FAIL: $TEST_NAME — expected exit 2 for missing ruff, got $exit_code"
+    # ruff absent — must be a missing_dep gap (DEC-LINT-002: exit 0 advisory, not exit 2)
+    if [[ "$exit_code" -ne 0 ]]; then
+        echo "FAIL: $TEST_NAME — expected exit 0 for missing ruff (DEC-LINT-002), got $exit_code"
         exit 1
     fi
     if ! echo "$output" | grep -q "missing_dep"; then
