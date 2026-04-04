@@ -19,23 +19,26 @@ AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev
 PROJECT_ROOT=$(detect_project_root)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
+# ---------------------------------------------------------------------------
+# Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
+# ---------------------------------------------------------------------------
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_local_cc_policy() {
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+}
+
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
-# Deactivate runtime marker for this completing agent.
-# SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs
-# in a different process so $$ does not match. We resolve by querying the
-# active marker and comparing its role to the stopping agent type, then
-# deactivating by the stored agent_id. No-op when role does not match (guards
-# against clearing a concurrently active marker of a different role).
+# Deactivate runtime marker via lifecycle authority (DEC-LIFECYCLE-003).
+# cc-policy lifecycle on-stop is the single authority for role-matched
+# marker deactivation. It queries the active marker, matches its role to
+# AGENT_TYPE, and deactivates — all in Python. No bash-side query needed.
 if [[ -n "$AGENT_TYPE" ]]; then
-    _active_json=$(cc_policy marker get-active 2>/dev/null) || _active_json=""
-    if [[ -n "$_active_json" ]]; then
-        _active_role=$(printf '%s' "$_active_json" | jq -r 'if .found then .role else empty end' 2>/dev/null)
-        _active_id=$(printf '%s' "$_active_json" | jq -r 'if .found then .agent_id else empty end' 2>/dev/null)
-        if [[ "$_active_role" == "$AGENT_TYPE" && -n "$_active_id" ]]; then
-            rt_marker_deactivate "$_active_id" 2>/dev/null || true
-        fi
-    fi
+    _local_cc_policy lifecycle on-stop "$AGENT_TYPE" >/dev/null 2>&1 || true
 fi
 
 ISSUES=()

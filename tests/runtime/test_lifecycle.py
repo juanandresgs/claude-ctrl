@@ -18,6 +18,16 @@ Rationale: subagent-start.sh and check-*.sh previously called rt_marker_set and
   commands resolve the CLI via $(dirname "$0")/../runtime/cli.py (relative to the
   hook file) so they always reach the in-worktree runtime. The shell-boundary tests
   in this file verify that path by invoking the CLI as a subprocess.
+
+@decision DEC-LIFECYCLE-003
+Title: on_stop_by_role / lifecycle on-stop is the single authority for role-matched deactivation
+Status: accepted
+Rationale: SubagentStop hooks run in a different process from SubagentStart so they
+  cannot use the original agent_id. They must query the active marker, match its role
+  to the stopping agent_type, and deactivate by the stored agent_id. Duplicating this
+  pattern in four check-*.sh hooks creates four places to get it wrong. Centralising
+  in on_stop_by_role (called via `cc-policy lifecycle on-stop <agent_type>`) gives
+  one implementation, one test surface, and one authority.
 """
 
 import json
@@ -29,7 +39,7 @@ import sys
 import pytest
 
 from runtime.core import markers
-from runtime.core.lifecycle import on_agent_start, on_agent_stop
+from runtime.core.lifecycle import on_agent_start, on_agent_stop, on_stop_by_role
 from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
@@ -210,3 +220,133 @@ def test_dispatch_process_stop_reachable_via_local_cli_path(db_path):
     assert hook_out.get("hookEventName") == "SubagentStop"
     # planner always routes to implementer
     assert data.get("next_role") == "implementer"
+
+
+# ---------------------------------------------------------------------------
+# on_stop_by_role unit tests (DEC-LIFECYCLE-003)
+# ---------------------------------------------------------------------------
+
+
+def test_on_stop_by_role_deactivates_matching_role(conn):
+    """on_stop_by_role deactivates the active marker when role matches."""
+    on_agent_start(conn, "tester", "agent-role-001")
+    result = on_stop_by_role(conn, "tester")
+    assert result["found"] is True
+    assert result["deactivated"] is True
+    assert result["agent_id"] == "agent-role-001"
+    assert result["role"] == "tester"
+    assert markers.get_active(conn) is None
+
+
+def test_on_stop_by_role_noop_when_no_active_marker(conn):
+    """on_stop_by_role returns found=False when no marker is active."""
+    result = on_stop_by_role(conn, "implementer")
+    assert result["found"] is False
+    assert result["deactivated"] is False
+    assert result["agent_id"] is None
+
+
+def test_on_stop_by_role_noop_when_role_mismatch(conn):
+    """on_stop_by_role does not deactivate when active role differs from agent_type."""
+    on_agent_start(conn, "guardian", "agent-guard-001")
+    result = on_stop_by_role(conn, "tester")  # wrong role
+    assert result["found"] is False
+    assert result["deactivated"] is False
+    # guardian marker is still active
+    active = markers.get_active(conn)
+    assert active is not None
+    assert active["agent_id"] == "agent-guard-001"
+
+
+def test_on_stop_by_role_all_four_roles(conn):
+    """on_stop_by_role works for every valid agent role."""
+    for role in ("implementer", "tester", "guardian", "planner"):
+        on_agent_start(conn, role, f"agent-{role}")
+        result = on_stop_by_role(conn, role)
+        assert result["found"] is True, f"role={role} should match"
+        assert result["deactivated"] is True
+        assert markers.get_active(conn) is None
+
+
+# ---------------------------------------------------------------------------
+# CLI lifecycle on-stop tests (DEC-LIFECYCLE-003 shell boundary)
+#
+# These cross the CLI subprocess boundary — the same path check-*.sh hooks
+# take after the fix. They serve as the compound-interaction proof that the
+# lifecycle on-stop command is reachable through the local CLI path.
+# ---------------------------------------------------------------------------
+
+
+def test_lifecycle_on_stop_via_cli_deactivates_marker(db_path):
+    """lifecycle on-stop deactivates the matching active marker via CLI subprocess."""
+    _cc("dispatch", "agent-start", "implementer", "agent-lc-001", db_path=db_path)
+
+    rc, data = _cc("lifecycle", "on-stop", "implementer", db_path=db_path)
+    assert rc == 0, f"non-zero exit: {data}"
+    assert data.get("status") == "ok"
+    assert data.get("found") is True
+    assert data.get("deactivated") is True
+    assert data.get("agent_id") == "agent-lc-001"
+
+    # Confirm marker is gone
+    rc2, active = _cc("marker", "get-active", db_path=db_path)
+    assert rc2 == 0
+    assert active.get("found") is False
+
+
+def test_lifecycle_on_stop_via_cli_noop_when_no_marker(db_path):
+    """lifecycle on-stop returns found=False when no active marker exists."""
+    rc, data = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    assert rc == 0, f"non-zero exit: {data}"
+    assert data.get("found") is False
+    assert data.get("deactivated") is False
+
+
+def test_lifecycle_on_stop_via_cli_noop_role_mismatch(db_path):
+    """lifecycle on-stop does not deactivate a marker with a different role."""
+    _cc("dispatch", "agent-start", "guardian", "agent-lc-guard", db_path=db_path)
+
+    rc, data = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    assert rc == 0, f"non-zero exit: {data}"
+    assert data.get("found") is False
+    assert data.get("deactivated") is False
+
+    # guardian marker is still active
+    rc2, active = _cc("marker", "get-active", db_path=db_path)
+    assert active.get("found") is True
+    assert active.get("role") == "guardian"
+
+
+def test_lifecycle_on_stop_compound_check_hook_sequence(db_path):
+    """Compound-interaction test: full SubagentStop hook sequence.
+
+    Exercises the exact production sequence a check-*.sh hook runs:
+      1. SubagentStart writes marker via dispatch agent-start
+      2. SubagentStop hook calls lifecycle on-stop <role>
+      3. Marker is gone; a second lifecycle on-stop is a no-op
+
+    This is the end-to-end proof that the lifecycle on-stop command
+    replaces the bash-side query-and-decide pattern in all four hooks.
+    """
+    # Step 1: start marker (as subagent-start.sh would)
+    _cc("dispatch", "agent-start", "tester", "agent-compound-001", db_path=db_path)
+
+    # Confirm active
+    _, active_before = _cc("marker", "get-active", db_path=db_path)
+    assert active_before.get("found") is True
+    assert active_before.get("role") == "tester"
+
+    # Step 2: check-tester.sh calls lifecycle on-stop (the new single authority)
+    rc, stop_result = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    assert rc == 0
+    assert stop_result.get("deactivated") is True
+
+    # Step 3: marker is cleared
+    _, active_after = _cc("marker", "get-active", db_path=db_path)
+    assert active_after.get("found") is False
+
+    # Step 4: idempotent — second call is a no-op, not an error
+    rc2, second = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    assert rc2 == 0
+    assert second.get("found") is False
+    assert second.get("deactivated") is False

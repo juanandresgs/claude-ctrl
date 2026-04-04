@@ -327,6 +327,23 @@ def _handle_dispatch(args) -> int:
     return _err(f"unknown dispatch action: {args.action}")
 
 
+def _handle_lifecycle(args) -> int:
+    """Handler for `cc-policy lifecycle` subcommands.
+
+    Currently exposes one action: on-stop, which resolves the active marker
+    by role and deactivates it. This is the single Python authority for marker
+    deactivation in SubagentStop hooks (DEC-LIFECYCLE-003).
+    """
+    conn = _get_conn()
+    try:
+        if args.action == "on-stop":
+            result = lifecycle_mod.on_stop_by_role(conn, args.agent_type)
+            return _ok(result)
+    finally:
+        conn.close()
+    return _err(f"unknown lifecycle action: {args.action}")
+
+
 def _handle_statusline(args) -> int:
     conn = _get_conn()
     try:
@@ -1240,6 +1257,18 @@ def build_parser() -> argparse.ArgumentParser:
     wt_sub.add_parser("list")
 
     # dispatch
+    # lifecycle: agent marker lifecycle (single authority for on-stop by role)
+    lc_p = subparsers.add_parser("lifecycle", help="Agent marker lifecycle")
+    lc_sub = lc_p.add_subparsers(dest="action", required=True)
+    lc_onstop = lc_sub.add_parser(
+        "on-stop",
+        help="Deactivate the active marker whose role matches agent_type (DEC-LIFECYCLE-003)",
+    )
+    lc_onstop.add_argument(
+        "agent_type",
+        help="Role to match for deactivation (implementer, tester, guardian, planner)",
+    )
+
     dp_p = subparsers.add_parser("dispatch", help="Dispatch queue and cycles")
     dp_sub = dp_p.add_subparsers(dest="action", required=True)
     deq = dp_sub.add_parser("enqueue")
@@ -1602,6 +1631,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_event(args)
     if args.domain == "worktree":
         return _handle_worktree(args)
+    if args.domain == "lifecycle":
+        return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
     if args.domain == "statusline":

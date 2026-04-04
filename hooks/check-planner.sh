@@ -35,24 +35,12 @@ _local_cc_policy() {
 
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
-# Deactivate runtime marker via lifecycle authority (DEC-LIFECYCLE-002).
-# SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs
-# in a different process so $$ does not match. We resolve by querying the
-# active marker and comparing its role to the stopping agent type, then
-# calling dispatch agent-stop by the stored agent_id. No-op when role does
-# not match (guards against clearing a concurrently active marker of a
-# different role).
-# Direct cc_policy marker calls replaced with _local_cc_policy dispatch
-# agent-stop so the in-worktree lifecycle.py is always reached.
+# Deactivate runtime marker via lifecycle authority (DEC-LIFECYCLE-003).
+# cc-policy lifecycle on-stop is the single authority for role-matched
+# marker deactivation. It queries the active marker, matches its role to
+# AGENT_TYPE, and deactivates — all in Python. No bash-side query needed.
 if [[ -n "$AGENT_TYPE" ]]; then
-    _active_json=$(_local_cc_policy marker get-active 2>/dev/null) || _active_json=""
-    if [[ -n "$_active_json" ]]; then
-        _active_role=$(printf '%s' "$_active_json" | jq -r 'if .found then .role else empty end' 2>/dev/null)
-        _active_id=$(printf '%s' "$_active_json" | jq -r 'if .found then .agent_id else empty end' 2>/dev/null)
-        if [[ "$_active_role" == "$AGENT_TYPE" && -n "$_active_id" ]]; then
-            _local_cc_policy dispatch agent-stop "$AGENT_TYPE" "$_active_id" >/dev/null 2>&1 || true
-        fi
-    fi
+    _local_cc_policy lifecycle on-stop "$AGENT_TYPE" >/dev/null 2>&1 || true
 fi
 
 ISSUES=()
