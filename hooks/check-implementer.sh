@@ -9,7 +9,9 @@ set -euo pipefail
 # non-deterministic runtime and cascade risk. Branch check is git rev-parse,
 # @decision check is grep. Both complete in <1s. Status: accepted.
 
+# shellcheck source=hooks/log.sh
 source "$(dirname "$0")/log.sh"
+# shellcheck source=hooks/context-lib.sh
 source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
@@ -18,21 +20,36 @@ AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev
 
 PROJECT_ROOT=$(detect_project_root)
 
+# ---------------------------------------------------------------------------
+# Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
+# ---------------------------------------------------------------------------
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_local_cc_policy() {
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+}
+
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
-# Deactivate runtime marker for this completing agent.
+# Deactivate runtime marker via lifecycle authority (DEC-LIFECYCLE-002).
 # SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs
 # in a different process so $$ does not match. We resolve by querying the
 # active marker and comparing its role to the stopping agent type, then
-# deactivating by the stored agent_id. No-op when role does not match (guards
-# against clearing a concurrently active marker of a different role).
+# calling dispatch agent-stop by the stored agent_id. No-op when role does
+# not match (guards against clearing a concurrently active marker of a
+# different role).
+# Direct cc_policy marker calls replaced with _local_cc_policy dispatch
+# agent-stop so the in-worktree lifecycle.py is always reached.
 if [[ -n "$AGENT_TYPE" ]]; then
-    _active_json=$(cc_policy marker get-active 2>/dev/null) || _active_json=""
+    _active_json=$(_local_cc_policy marker get-active 2>/dev/null) || _active_json=""
     if [[ -n "$_active_json" ]]; then
         _active_role=$(printf '%s' "$_active_json" | jq -r 'if .found then .role else empty end' 2>/dev/null)
         _active_id=$(printf '%s' "$_active_json" | jq -r 'if .found then .agent_id else empty end' 2>/dev/null)
         if [[ "$_active_role" == "$AGENT_TYPE" && -n "$_active_id" ]]; then
-            rt_marker_deactivate "$_active_id" 2>/dev/null || true
+            _local_cc_policy dispatch agent-stop "$AGENT_TYPE" "$_active_id" >/dev/null 2>&1 || true
         fi
     fi
 fi

@@ -52,6 +52,34 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 # ---------------------------------------------------------------------------
+# Local runtime resolution (DEC-BRIDGE-002)
+#
+# cc_policy() in runtime-bridge.sh resolves the CLI via CLAUDE_RUNTIME_ROOT,
+# which defaults to $HOME/.claude/runtime — the installed runtime, not this
+# worktree's runtime. New subcommands (dispatch process-stop, dispatch
+# agent-start, dispatch agent-stop) added in a feature branch are only
+# present in the worktree's runtime/cli.py, not in the installed copy.
+#
+# This local helper resolves the CLI relative to the hook file itself
+# (hooks/../runtime/cli.py) so it always reaches the in-worktree runtime,
+# both in isolated worktrees before merge and on main after merge.
+#
+# The existing cc_policy() function in runtime-bridge.sh is NOT modified —
+# it is used by many hooks for existing subcommands and works correctly for
+# those. Only calls to NEW subcommands use this local resolution.
+# ---------------------------------------------------------------------------
+
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+
+_local_cc_policy() {
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+}
+
+# ---------------------------------------------------------------------------
 # Read and validate hook input
 # ---------------------------------------------------------------------------
 
@@ -75,7 +103,7 @@ AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
 PROJECT_ROOT=$(detect_project_root 2>/dev/null || echo "")
 
 # ---------------------------------------------------------------------------
-# Delegate to Python runtime via cc-policy dispatch process-stop
+# Delegate to Python runtime via dispatch process-stop (local CLI resolution)
 # ---------------------------------------------------------------------------
 
 DISPATCH_INPUT=$(jq -n \
@@ -83,7 +111,7 @@ DISPATCH_INPUT=$(jq -n \
     --arg root "${PROJECT_ROOT:-}" \
     '{agent_type: $type, project_root: $root}')
 
-RESULT=$(printf '%s' "$DISPATCH_INPUT" | cc_policy dispatch process-stop 2>/dev/null) || RESULT=""
+RESULT=$(printf '%s' "$DISPATCH_INPUT" | _local_cc_policy dispatch process-stop 2>/dev/null) || RESULT=""
 
 # Fail-closed: if runtime unavailable or output malformed, surface error.
 if [[ -z "$RESULT" ]] || ! printf '%s' "$RESULT" | jq -e '.hookSpecificOutput' >/dev/null 2>&1; then
