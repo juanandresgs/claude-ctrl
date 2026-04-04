@@ -7,6 +7,8 @@ PE-W2 adds write-path policies (branch_guard, write_who, enforcement_gap,
 plan_guard, plan_exists, plan_immutability, decision_log).
 PE-W3 adds bash-path policies — all 13 checks from guard.sh migrated
 into 11 Python policy modules (test_gate shares one module for two checks).
+PE-W5 adds three write-gate policies ported from shell hooks (doc_gate,
+test_gate_pretool, mock_gate). Their shell hook counterparts become no-ops.
 
 @decision DEC-PE-006
 Title: policies/__init__.py is the sole aggregation point for policy registration
@@ -29,7 +31,7 @@ def register_all(registry: PolicyRegistry) -> None:
 
     Called by default_registry() in policy_engine.py.
 
-    Write-path priorities (PE-W2):
+    Write-path priorities (PE-W2 + PE-W5):
       100  branch_guard       -- block source writes on main/master
       200  write_who          -- only implementer may write source files
       250  enforcement_gap    -- deny persistent linter gaps
@@ -37,6 +39,9 @@ def register_all(registry: PolicyRegistry) -> None:
       400  plan_exists        -- MASTER_PLAN.md must exist + staleness gate
       500  plan_immutability  -- permanent sections may not be rewritten
       600  decision_log       -- decision log entries are append-only
+      650  test_gate_pretool  -- escalating gate: fail tests → block writes
+      700  doc_gate           -- header + @decision annotation enforcement
+      750  mock_gate          -- escalating gate: internal mocks in test files
 
     Bash-path priorities (PE-W3):
       100  bash_tmp_safety        -- deny /tmp writes
@@ -102,6 +107,30 @@ def register_all(registry: PolicyRegistry) -> None:
         decision_log,
         event_types=["Write", "Edit"],
         priority=600,
+    )
+
+    # PE-W5: write-gate policies (shell hook ports)
+    from runtime.core.policies.write_doc_gate import doc_gate
+    from runtime.core.policies.write_mock_gate import mock_gate
+    from runtime.core.policies.write_test_gate import check_test_gate_pretool
+
+    registry.register(
+        "test_gate_pretool",
+        check_test_gate_pretool,
+        event_types=["Write", "Edit"],
+        priority=650,
+    )
+    registry.register(
+        "doc_gate",
+        doc_gate,
+        event_types=["Write", "Edit"],
+        priority=700,
+    )
+    registry.register(
+        "mock_gate",
+        mock_gate,
+        event_types=["Write", "Edit"],
+        priority=750,
     )
 
     # PE-W3: bash-path policies (guard.sh migration)

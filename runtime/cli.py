@@ -969,6 +969,56 @@ def _handle_evaluate(args) -> int:
     )
 
 
+def _handle_context(args) -> int:
+    """Handle ``cc-policy context`` subcommands.
+
+    Subcommands:
+      role  — resolve the current actor role from lease → marker → env var
+              and return {"role": str, "agent_id": str, "workflow_id": str}.
+
+    This is the canonical identity resolution path for check-*.sh hooks.
+    All SubagentStop hooks should call ``cc-policy context role`` instead of
+    reading context-lib.sh current_active_agent_role() so they share the same
+    lease → marker → env var resolution order as the write/bash policy engine.
+
+    @decision DEC-PE-W5-004
+    Title: cc-policy context role is the canonical identity resolver for hooks
+    Status: accepted
+    Rationale: check-*.sh hooks previously called current_active_agent_role()
+      from context-lib.sh (marker-only lookup). PE-W5 introduces this CLI
+      endpoint so hooks use the same build_context() resolution path used by
+      the policy engine: lease → marker → env var. All SubagentStop hooks that
+      need actor role MUST call this endpoint, not the shell helper.
+    """
+    if args.action == "role":
+        import os as _os
+
+        cwd = _os.environ.get("CLAUDE_PROJECT_DIR", "") or _os.getcwd()
+        actor_role = _os.environ.get("CLAUDE_ACTOR_ROLE", "")
+        actor_id = _os.environ.get("CLAUDE_ACTOR_ID", "")
+
+        conn = _get_conn()
+        try:
+            ctx = policy_engine_mod.build_context(
+                conn,
+                cwd=cwd,
+                actor_role=actor_role,
+                actor_id=actor_id,
+            )
+        finally:
+            conn.close()
+
+        return _ok(
+            {
+                "role": ctx.actor_role or "",
+                "agent_id": ctx.actor_id or "",
+                "workflow_id": ctx.workflow_id or "",
+            }
+        )
+
+    return _err(f"unknown context action: {args.action}")
+
+
 def _handle_policy(args) -> int:
     """Handle ``cc-policy policy`` subcommands.
 
@@ -1479,6 +1529,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluate a hook event against all registered policies (JSON on stdin)",
     )
 
+    # context — canonical identity resolution for hooks
+    ctx_p = subparsers.add_parser("context", help="Resolve current actor identity from runtime")
+    ctx_sub = ctx_p.add_subparsers(dest="action", required=True)
+    ctx_sub.add_parser(
+        "role",
+        help=(
+            "Return {role, agent_id, workflow_id} resolved via lease -> marker -> env var. "
+            "Used by SubagentStop hooks to get the stopping agent's identity."
+        ),
+    )
+
     # policy — list and explain registered policies
     pol_p = subparsers.add_parser("policy", help="Policy registry introspection")
     pol_sub = pol_p.add_subparsers(dest="action", required=True)
@@ -1567,6 +1628,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_test_state(args)
     if args.domain == "evaluate":
         return _handle_evaluate(args)
+    if args.domain == "context":
+        return _handle_context(args)
     if args.domain == "policy":
         return _handle_policy(args)
 

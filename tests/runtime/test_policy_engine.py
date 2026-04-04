@@ -407,7 +407,7 @@ def test_default_registry_has_all_policies():
     }
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
-    assert len(policies) == 19
+    assert len(policies) == 22
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)

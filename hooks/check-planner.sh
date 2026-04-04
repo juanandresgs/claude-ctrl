@@ -22,20 +22,16 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
 # Deactivate runtime marker for this completing agent.
-# SubagentStart sets markers as "agent-$$" (current PID); SubagentStop runs
-# in a different process so $$ does not match. We resolve by querying the
-# active marker and comparing its role to the stopping agent type, then
-# deactivating by the stored agent_id. No-op when role does not match (guards
+# PE-W5: use ``cc-policy context role`` (lease → marker → env var resolution)
+# instead of ``cc_policy marker get-active`` (marker-only). This ensures the
+# same identity resolution path as the write/bash policy engine.
+# No-op when resolved role does not match the stopping agent type (guards
 # against clearing a concurrently active marker of a different role).
-if [[ -n "$AGENT_TYPE" ]]; then
-    _active_json=$(cc_policy marker get-active 2>/dev/null) || _active_json=""
-    if [[ -n "$_active_json" ]]; then
-        _active_role=$(printf '%s' "$_active_json" | jq -r 'if .found then .role else empty end' 2>/dev/null)
-        _active_id=$(printf '%s' "$_active_json" | jq -r 'if .found then .agent_id else empty end' 2>/dev/null)
-        if [[ "$_active_role" == "$AGENT_TYPE" && -n "$_active_id" ]]; then
-            rt_marker_deactivate "$_active_id" 2>/dev/null || true
-        fi
-    fi
+_ctx_json=$(cc-policy context role 2>/dev/null) || _ctx_json=""
+_ctx_role=$(printf '%s' "$_ctx_json" | jq -r '.role // empty' 2>/dev/null || true)
+_ctx_agent_id=$(printf '%s' "$_ctx_json" | jq -r '.agent_id // empty' 2>/dev/null || true)
+if [[ -n "$AGENT_TYPE" && "$_ctx_role" == "$AGENT_TYPE" && -n "$_ctx_agent_id" ]]; then
+    rt_marker_deactivate "$_ctx_agent_id" 2>/dev/null || true
 fi
 
 ISSUES=()

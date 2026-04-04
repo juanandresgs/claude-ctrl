@@ -1,0 +1,4 @@
+# SC1091: hooks source log.sh and context-lib.sh via dynamic $(dirname "$0") paths.
+# Shellcheck cannot follow these at static analysis time — disable the info finding
+# rather than add per-file directives to every hook.
+disable=SC1091
