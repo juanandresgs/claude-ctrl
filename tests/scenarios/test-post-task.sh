@@ -138,13 +138,16 @@ if [[ "$event_count" -lt 1 ]]; then
 fi
 
 # -----------------------------------------------------------------------
-# Test 7: dispatch queue populated — after planner, implementer is queued
+# Test 7: dispatch queue is NOT populated — DEC-WS6-001 removed queue writes
+# from the hot path. post-task.sh emits next-role via hookSpecificOutput
+# (additionalContext), not via dispatch_queue enqueue. The queue must remain
+# empty after a planner completion.
 # -----------------------------------------------------------------------
 queue_next=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     dispatch next 2>/dev/null \
     | jq -r '.role // empty' 2>/dev/null || echo "")
-if [[ "$queue_next" != "implementer" ]]; then
-    echo "  FAIL: dispatch queue — expected 'implementer' as next, got: '$queue_next'"
+if [[ -n "$queue_next" ]]; then
+    echo "  FAIL: dispatch queue — expected empty queue (DEC-WS6-001), got: '$queue_next'"
     FAILURES=$((FAILURES + 1))
 fi
 

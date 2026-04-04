@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # test-lint-unsupported-type.sh: Write a .java file in a project with no Java
-# linter config — lint.sh must emit an enforcement gap (exit 2, gap recorded).
+# linter config — lint.sh must emit an advisory enforcement gap (exit 0).
 #
 # @decision DEC-LINT-TEST-003
-# @title Unsupported-type gap scenario: .java with no linter config fires gap
+# @title Unsupported-type gap scenario: .java with no linter config fires advisory gap
 # @status accepted
-# @rationale Verifies that the "none -> exit 0" silent-pass path is gone.
-#   A .java file is in SOURCE_EXTENSIONS but has no linter profile in a
-#   blank project. lint.sh must exit 2, output must contain "ENFORCEMENT GAP"
-#   and "unsupported", and .enforcement-gaps must have an entry for java.
+# @rationale DEC-LINT-002: enforcement-gap deny moved to the policy engine
+#   (write_enforcement_gap.py). lint.sh is now the gap detector only — it records
+#   the gap, emits advisory additionalContext, and exits 0. Hard DENY for
+#   persistent gaps (encounter_count > 1) is issued by the policy engine on the
+#   next Write/Edit. Tests must verify exit 0 + gap recorded, NOT exit 2.
 set -euo pipefail
 
 TEST_NAME="test-lint-unsupported-type"
@@ -16,6 +17,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/lint.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 
+# shellcheck disable=SC2329  # cleanup is invoked via trap EXIT
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -44,9 +46,10 @@ exit_code=0
 # HOME override prevents real todo.sh from filing GitHub issues during tests
 output=$(printf '%s' "$PAYLOAD" | HOME="$TMP_DIR" CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>&1) || exit_code=$?
 
-# Must exit 2
-if [[ "$exit_code" -ne 2 ]]; then
-    echo "FAIL: $TEST_NAME — expected exit 2 for unsupported .java type, got $exit_code"
+# Must exit 0 — DEC-LINT-002: gap detection is advisory; hard DENY is in the
+# policy engine (write_enforcement_gap.py), not in lint.sh.
+if [[ "$exit_code" -ne 0 ]]; then
+    echo "FAIL: $TEST_NAME — expected exit 0 for unsupported .java type (advisory gap), got $exit_code"
     echo "  output: $output"
     exit 1
 fi

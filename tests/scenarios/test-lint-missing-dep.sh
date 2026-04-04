@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# test-lint-missing-dep.sh: Write a .sh file with shellcheck excluded from
-# PATH — lint.sh must emit a missing_dep enforcement gap (exit 2).
+# test-lint-missing-dep.sh: Write a .sh file with the linter binary removed
+# from PATH — lint.sh must emit an advisory missing_dep gap (exit 0).
 #
 # @decision DEC-LINT-TEST-004
-# @title Missing-dep gap scenario: shellcheck not on PATH fires gap
+# @title Missing-dep gap scenario: linter not on PATH fires advisory gap
 # @status accepted
-# @rationale Verifies the dependency-check path. detect_linter returns
-#   "shellcheck" for .sh files, but check_linter_available fails when
-#   shellcheck is not on PATH. lint.sh must exit 2 with "ENFORCEMENT GAP"
-#   and "missing_dep" in the output, and record the gap in .enforcement-gaps.
+# @rationale DEC-LINT-002: enforcement-gap deny moved to the policy engine
+#   (write_enforcement_gap.py). detect_linter returns "shellcheck" for .sh
+#   files, but check_linter_available fails when the binary is absent from
+#   PATH. lint.sh records the gap, emits advisory context, and exits 0.
+#   Hard DENY for persistent gaps lives in the policy engine, not lint.sh.
 set -euo pipefail
 
 TEST_NAME="test-lint-missing-dep"
@@ -16,6 +17,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/lint.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 
+# shellcheck disable=SC2329  # cleanup is invoked via trap EXIT
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -43,9 +45,10 @@ exit_code=0
 output=$(printf '%s' "$PAYLOAD" | \
     HOME="$TMP_DIR" PATH=/usr/bin:/bin CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>&1) || exit_code=$?
 
-# Must exit 2
-if [[ "$exit_code" -ne 2 ]]; then
-    echo "FAIL: $TEST_NAME — expected exit 2 for missing shellcheck dep, got $exit_code"
+# Must exit 0 — DEC-LINT-002: gap detection is advisory; hard DENY is in the
+# policy engine (write_enforcement_gap.py), not in lint.sh.
+if [[ "$exit_code" -ne 0 ]]; then
+    echo "FAIL: $TEST_NAME — expected exit 0 for missing dep (advisory gap), got $exit_code"
     echo "  output: $output"
     exit 1
 fi

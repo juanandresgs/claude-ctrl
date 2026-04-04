@@ -33,6 +33,7 @@ set -euo pipefail
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
+HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path or file doesn't exist
