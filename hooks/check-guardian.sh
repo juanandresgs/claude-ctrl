@@ -27,7 +27,11 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 # same identity resolution path as the write/bash policy engine.
 # No-op when resolved role does not match the stopping agent type (guards
 # against clearing a concurrently active marker of a different role).
-_ctx_json=$(cc-policy context role 2>/dev/null) || _ctx_json=""
+#
+# Blocker PE-W5-B1 fix: resolve CLI relative to this hook's location so the
+# project's runtime/cli.py is used regardless of what is installed globally.
+_LOCAL_CLI="$(dirname "$0")/../runtime/cli.py"
+_ctx_json=$(python3 "$_LOCAL_CLI" context role 2>/dev/null) || _ctx_json=""
 _ctx_role=$(printf '%s' "$_ctx_json" | jq -r '.role // empty' 2>/dev/null || true)
 _ctx_agent_id=$(printf '%s' "$_ctx_json" | jq -r '.agent_id // empty' 2>/dev/null || true)
 if [[ -n "$AGENT_TYPE" && "$_ctx_role" == "$AGENT_TYPE" && -n "$_ctx_agent_id" ]]; then

@@ -304,6 +304,15 @@ fi
 
 # =============================================================================
 # ENFORCEMENT GAP EVALUATION (replaces silent "none -> exit 0")
+#
+# PE-W5 scope note (Blocker PE-W5-B2):
+#   This hook is operational — it runs the linter, records enforcement gaps
+#   in .claude/.enforcement-gaps, and exits 2 to feed errors back to Claude.
+#   It does NOT issue permissionDecision=deny. The hard DENY for persistent
+#   gaps (encounter_count > 1) lives in the policy engine:
+#     runtime/core/policies/write_enforcement_gap.py (DEC-PE-W2-003)
+#   That policy is evaluated by pre-write.sh on every source Write/Edit.
+#   Do not add deny logic here — the policy engine is the single authority.
 # =============================================================================
 
 if [[ "$LINTER" == "none" ]]; then
