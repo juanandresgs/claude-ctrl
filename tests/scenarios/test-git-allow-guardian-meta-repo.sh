@@ -23,7 +23,7 @@ set -euo pipefail
 
 TEST_NAME="test-git-allow-guardian-meta-repo"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 # Repo path must end in /.claude for is_claude_meta_repo() to return true
 TMP_DIR="$(mktemp -d)/.claude"
 

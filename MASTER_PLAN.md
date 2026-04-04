@@ -1722,7 +1722,7 @@ Modified (15):
   handoff status with evaluator-era language (read evaluation_state instead of
   proof_state; report "evaluator pending" / "evaluator next" instead of
   "proof-of-work pending" / "Tester is the next required role")
-- `hooks/guard.sh` — Check 10: gate on eval_status + head_sha match
+- `bash_eval_readiness` policy — gate on eval_status + head_sha match (was guard.sh Check 10, migrated in INIT-PE)
 - `hooks/post-task.sh` — implementer sets eval pending; tester routes on
   verdict
 - `hooks/prompt-submit.sh` — remove proof verification on user "verified"
@@ -1894,12 +1894,13 @@ New (8):
   - `TKT-008`: Thin hook entrypoints. `hooks/pre-write.sh` consolidates the
     7-hook Write|Edit chain (branch-guard, write-guard, plan-guard, plan-check,
     test-gate, mock-gate, doc-gate) into a single entrypoint with policy
-    delegation to `hooks/lib/write-policy.sh`. `hooks/pre-bash.sh` consolidates
-    `guard.sh` into a single entrypoint with policy delegation to
-    `hooks/lib/bash-policy.sh`.
+    delegation to `hooks/lib/write-policy.sh` (superseded by INIT-PE: policy
+    engine now owns all enforcement; write-policy.sh, bash-policy.sh, guard.sh
+    deleted). `hooks/pre-bash.sh` consolidates `guard.sh` into a single
+    entrypoint (now a thin adapter calling `cc-policy evaluate`).
   - `TKT-009`: `hooks/post-task.sh` dispatch emission. Detects completing agent
-    role, enqueues next-phase dispatch entries into `dispatch_queue`, emits
-    events. Dispatch queue helpers in `hooks/lib/dispatch-helpers.sh`.
+    role, routes via completion records (DEC-WS6-001: dispatch_queue enqueue
+    removed). Dispatch queue helpers deleted in INIT-PE.
     (Note: `post-task.sh` was created by TKT-009 but was not wired into
     `settings.json` SubagentStop hooks until TKT-016 in Wave 3e.)
   - `TKT-011`: `runtime/core/statusline.py` with `snapshot()` function

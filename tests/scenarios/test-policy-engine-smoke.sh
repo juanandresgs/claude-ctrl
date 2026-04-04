@@ -65,7 +65,7 @@ LIST_OUT=$(python3 "$CLI" policy list 2>&1)
 check "policy list returns status ok"            "$LIST_OUT" '"status": "ok"'
 check "policy list returns policies key"         "$LIST_OUT" '"policies":'
 check "policy list returns count key"            "$LIST_OUT" '"count":'
-check "policy list count is 0 in W1"             "$LIST_OUT" '"count": 0'
+check "policy list count is 22 post-W5"          "$LIST_OUT" '"count": 22'
 
 # -----------------------------------------------------------------------
 # Test 3: cc-policy policy explain — trace structure
@@ -74,7 +74,7 @@ EXPLAIN_OUT=$(echo "$TRIVIAL_PAYLOAD" | python3 "$CLI" policy explain 2>&1)
 check "policy explain returns status ok"         "$EXPLAIN_OUT" '"status": "ok"'
 check "policy explain returns trace key"         "$EXPLAIN_OUT" '"trace":'
 check "policy explain returns count key"         "$EXPLAIN_OUT" '"count":'
-check "policy explain count is 0 in W1"          "$EXPLAIN_OUT" '"count": 0'
+check "policy explain count is 22 post-W5"       "$EXPLAIN_OUT" '"count": 22'
 
 # -----------------------------------------------------------------------
 # Summary

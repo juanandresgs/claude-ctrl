@@ -14,7 +14,7 @@ set -euo pipefail
 
 TEST_NAME="test-lease-concurrent-worktrees"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 PASS_COUNT=0
@@ -53,7 +53,8 @@ _make_repo() {
 
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$dir/.claude/.test-status"
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$wf_id" "ready_for_guardian" --head-sha "$head_sha" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \

@@ -115,7 +115,7 @@ fi
 #   gate than drift scoring. The commit-count heuristic (already present as the
 #   bootstrap fallback when no prior audit existed) is retained as the sole
 #   secondary signal alongside source-file churn %.
-#   get_drift_data() is now a no-op stub; DRIFT_LAST_AUDIT_EPOCH is always 0.
+#   get_drift_data() was deleted in PE-W6 (no live callers).
 get_plan_status "$PROJECT_ROOT"
 
 # Churn tier (primary signal, self-normalizing by project size)

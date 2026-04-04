@@ -21,7 +21,7 @@ set -euo pipefail
 
 TEST_NAME="test-guard-evaluator-gate-allows"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/.claude/state.db"
@@ -45,8 +45,9 @@ CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
-# Gate 2: test status = pass
-echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+# Gate 2: test status = pass via runtime (policy engine reads SQLite)
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
 # Gate 3: evaluation_state = ready_for_guardian with matching head_sha
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

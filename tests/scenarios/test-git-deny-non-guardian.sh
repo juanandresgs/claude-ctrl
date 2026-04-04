@@ -5,7 +5,7 @@ set -euo pipefail
 
 TEST_NAME="test-git-deny-non-guardian"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 
 cleanup() { rm -rf "$TMP_DIR"; }

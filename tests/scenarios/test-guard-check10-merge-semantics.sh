@@ -33,7 +33,7 @@ set -euo pipefail
 
 TEST_NAME="test-guard-check10-merge-semantics"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 # ---------------------------------------------------------------------------
@@ -115,8 +115,9 @@ run_sub_case() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
-    # .test-status = pass (Check 9)
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    # test-state = pass via runtime (policy engine reads SQLite)
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
     # Lease (TKT-STAB-A3): Check 3 requires an active lease for all git ops.
     # --no-eval disables the lease's own eval check so Check 10 (not validate_op
@@ -141,6 +142,17 @@ run_sub_case() {
     A)
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$FEATURE_SHA" >/dev/null 2>&1
+
+        # Test state: pass (policy engine reads from runtime SQLite)
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
+
+        # Dispatch lease: required for all git ops
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            lease issue-for-dispatch "guardian" \
+            --worktree-path "$TMP_DIR" \
+            --workflow-id "$WF_ID" \
+            --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
         # Check 10 binding: feature branch workflow
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -173,6 +185,17 @@ run_sub_case() {
         # Store the SHA of the current feature tip
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$FEATURE_SHA" >/dev/null 2>&1
+
+        # Test state: pass (required to reach eval readiness check)
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
+
+        # Dispatch lease: required for all git ops
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            lease issue-for-dispatch "guardian" \
+            --worktree-path "$TMP_DIR" \
+            --workflow-id "$WF_ID" \
+            --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
         # Add another commit to the feature branch (makes stored SHA stale)
         git -C "$TMP_DIR" checkout "$BRANCH" -q
@@ -211,6 +234,12 @@ run_sub_case() {
 
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            lease issue-for-dispatch "guardian" \
+            --worktree-path "$TMP_DIR" --workflow-id "$WF_ID" \
+            --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
@@ -235,6 +264,12 @@ run_sub_case() {
         # Store the old SHA
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$OLD_HEAD" >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            lease issue-for-dispatch "guardian" \
+            --worktree-path "$TMP_DIR" --workflow-id "$WF_ID" \
+            --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
         # Make a new commit so HEAD advances past the stored SHA
         git -C "$TMP_DIR" commit --allow-empty -m "new commit after eval" -q
@@ -260,6 +295,12 @@ run_sub_case() {
 
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             evaluation set "$WF_ID" "needs_changes" >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+            lease issue-for-dispatch "guardian" \
+            --worktree-path "$TMP_DIR" --workflow-id "$WF_ID" \
+            --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1

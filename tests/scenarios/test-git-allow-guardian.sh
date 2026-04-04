@@ -22,7 +22,7 @@ set -euo pipefail
 
 TEST_NAME="test-git-allow-guardian"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -38,8 +38,9 @@ git -C "$TMP_DIR" checkout -b feature/ready-to-merge -q
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
-# Gate 2: test status = pass (format: result|failures|epoch)
-echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+# Gate 2: test status = pass via runtime (policy engine reads SQLite, not flat file)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
 # Gate 3: evaluation_state = ready_for_guardian (TKT-024: replaces proof_state)
 # current_workflow_id uses sanitize_token on the branch name
@@ -54,6 +55,13 @@ CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py"
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
     workflow scope-set "$WORKFLOW_ID" \
     --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+
+# Gate 5: dispatch lease (policy engine requires active lease for all git ops)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    lease issue-for-dispatch "guardian" \
+    --worktree-path "$TMP_DIR" \
+    --workflow-id "$WORKFLOW_ID" \
+    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
 PAYLOAD=$(jq -n \
     --arg tool_name "Bash" \

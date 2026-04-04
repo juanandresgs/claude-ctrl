@@ -19,7 +19,7 @@ set -euo pipefail
 
 TEST_NAME="test-guard-evaluator-gate-denies"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 run_deny_check() {
@@ -43,7 +43,8 @@ run_deny_check() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
     # Set evaluation_state to a non-ready status
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

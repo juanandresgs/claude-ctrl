@@ -115,8 +115,9 @@ Adjacent components:
 - hooks/check-guardian.sh
 - hooks/branch-guard.sh
 - hooks/plan-check.sh
-- hooks/guard.sh
+- hooks/pre-bash.sh (thin adapter → cc-policy evaluate, replaces guard.sh)
 - hooks/context-lib.sh
+- runtime/core/policies/ (22 policy modules)
 - docs/DISPATCH.md
 - docs/ARCHITECTURE.md
 - docs/PLAN_DISCIPLINE.md
@@ -278,9 +279,8 @@ Adjacent components:
 - MASTER_PLAN.md
 
 Canonical authority:
-- The bootstrap hook kernel remains the live authority.
-- Git WHO enforcement in hooks/guard.sh is the existing model to mirror on the
-  write side.
+- The Python policy engine (cc-policy evaluate) is the live authority.
+- Git WHO enforcement is via the `bash_git_who` policy (lease-based).
 - Governance markdown rules are defined by MASTER_PLAN.md and docs/PLAN_DISCIPLINE.md.
 
 Removal targets:

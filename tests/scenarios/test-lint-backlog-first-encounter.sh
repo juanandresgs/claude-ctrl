@@ -70,9 +70,9 @@ output=$(printf '%s' "$PAYLOAD" | \
     CLAUDE_PROJECT_DIR="$TMP_DIR" \
     "$HOOK" 2>&1) || exit_code=$?
 
-# Must exit 2 (gap detected)
-if [[ "$exit_code" -ne 2 ]]; then
-    echo "FAIL: $TEST_NAME — expected exit 2, got $exit_code"
+# Must exit 0 (DEC-LINT-002: gap detection is advisory; deny is in the policy engine)
+if [[ "$exit_code" -ne 0 ]]; then
+    echo "FAIL: $TEST_NAME — expected exit 0 (DEC-LINT-002), got $exit_code"
     echo "  output: $output"
     exit 1
 fi
@@ -90,14 +90,9 @@ if [[ "$COUNT" -ne 1 ]]; then
     exit 1
 fi
 
-# Wait briefly for the background subshell to finish
-sleep 1
-
-# Verify the stub todo.sh was called (sentinel file exists)
-if [[ ! -f "$SENTINEL" ]]; then
-    echo "FAIL: $TEST_NAME — stub todo.sh was never invoked (backlog not attempted)"
-    exit 1
-fi
+# DEC-BUGS-003: bug filing migrated from todo.sh to rt_bug_file (runtime SQLite).
+# The old sentinel check is removed — gap file existence + correct count proves
+# the detection path ran. rt_bug_file is best-effort and suppresses errors.
 
 echo "PASS: $TEST_NAME"
 exit 0

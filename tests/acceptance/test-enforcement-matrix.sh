@@ -18,7 +18,7 @@
 # @status accepted
 # @rationale A regression in one role must not hide behind passing cells in
 #   another. Each row uses its own isolated temp project so state never leaks.
-#   Tests drive the real hook scripts (pre-write.sh, guard.sh) with synthetic
+#   Tests drive the real hook scripts (pre-write.sh, pre-bash.sh) with synthetic
 #   JSON payloads — identical to the production execution path.
 #
 # Usage:  bash tests/acceptance/test-enforcement-matrix.sh
@@ -28,13 +28,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PRE_WRITE="$REPO_ROOT/hooks/pre-write.sh"
-GUARD="$REPO_ROOT/hooks/guard.sh"
+GUARD="$REPO_ROOT/hooks/pre-bash.sh"
 TMP_BASE="$REPO_ROOT/tmp/enforce-matrix-$$"
 
 PASS=0
 FAIL=0
 FAILED_CASES=()
 
+# shellcheck disable=SC2329  # invoked via trap below
 cleanup() { rm -rf "$TMP_BASE"; }
 trap cleanup EXIT
 
@@ -122,8 +123,8 @@ run_governance_write() {
         | CLAUDE_PROJECT_DIR="$project_dir" "$PRE_WRITE" 2>/dev/null || true
 }
 
-# Guardian git allow: pre-set proof + test gates, then run guard.sh.
-# All other roles: gates absent so guard.sh denies at WHO check.
+# Guardian git allow: pre-set proof + test gates, then run policy engine via pre-bash.sh.
+# All other roles: gates absent so policy engine denies at WHO check.
 run_git_op() {
     local project_dir="$1" role="$2"
     local workflow_id="feature-enforce-test"
@@ -132,7 +133,7 @@ run_git_op() {
     if [[ "$role" == "guardian" ]]; then
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
             test-state set pass --total 1 --passed 1 --project-root "$project_dir" >/dev/null 2>&1
-        # Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
+        # Proof via runtime (flat file removed; eval_readiness policy gates on evaluation_state)
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" proof set "$workflow_id" "verified" >/dev/null 2>&1
         # Workflow binding + scope required by Check 12
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
@@ -154,9 +155,8 @@ run_git_op() {
             --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
     fi
 
-    # Use "git status" as the command; guard.sh only enforces WHO on
-    # commit/merge/push — but we need to test the commit gate specifically.
-    # Pass a commit command string; guard.sh pattern-matches on it.
+    # Use a commit command string; the bash_git_who policy enforces WHO on
+    # commit/merge/push via lease validation.
     local payload
     payload=$(jq -n \
         --arg cmd "git commit --allow-empty -m test" \

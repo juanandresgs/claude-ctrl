@@ -16,7 +16,7 @@ set -euo pipefail
 
 TEST_NAME="test-lease-auto-land-semantics"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 PASS_COUNT=0
@@ -61,7 +61,8 @@ run_sub_case_a() {
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
     # test-status = pass (Check 9)
-    echo "pass|0|$(date +%s)" > "$dir/.claude/.test-status"
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
 
     # evaluation_state = ready_for_guardian + SHA (Check 10)
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
@@ -96,7 +97,7 @@ run_sub_case_a() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case B: Missing lease only → commit still allowed (routine_local no-lease path)
+# Sub-case B: Missing lease → commit DENIED (all git ops require a lease post-INIT-PE)
 # ---------------------------------------------------------------------------
 run_sub_case_b() {
     local branch="feature/auto-land-no-lease"
@@ -113,7 +114,8 @@ run_sub_case_b() {
 
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$dir/.claude/.test-status"
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$wf_id" "ready_for_guardian" --head-sha "$head_sha" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
@@ -129,10 +131,10 @@ run_sub_case_b() {
 
     rm -rf "$dir"
 
-    if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "B" "no lease + routine_local commit + eval ready → allowed (Check 3 no-lease path)"
+    if [[ "$decision" == "deny" ]]; then
+        pass "B" "no lease → denied (all git ops require a lease post-INIT-PE)"
     else
-        fail "B" "unexpected deny: $(_reason "$output")"
+        fail "B" "expected deny for missing lease, got decision='$decision'"
     fi
 }
 

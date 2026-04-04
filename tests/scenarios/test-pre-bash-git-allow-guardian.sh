@@ -20,7 +20,8 @@ mkdir -p "$TMP_DIR/.claude"
 # Set guardian role via cc-policy (TKT-018: .subagent-tracker removed)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 # TKT-024: evaluation_state replaces proof_state as readiness authority
 HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" evaluation set "feature-ready" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
@@ -30,6 +31,11 @@ CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py"
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
     workflow scope-set "feature-ready" \
     --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+# Gate 6: dispatch lease (policy engine requires active lease for all git ops)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    lease issue-for-dispatch "guardian" \
+    --worktree-path "$TMP_DIR" --workflow-id "feature-ready" \
+    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m done"
 PAYLOAD=$(jq -n \
     --arg tool_name "Bash" \

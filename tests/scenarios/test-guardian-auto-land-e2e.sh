@@ -25,7 +25,7 @@ set -euo pipefail
 
 TEST_NAME="test-guardian-auto-land-e2e"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 CONTEXT_LIB="$REPO_ROOT/hooks/context-lib.sh"
 
@@ -60,7 +60,8 @@ _setup_passing_repo() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
     # Test status
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
     # Evaluation state
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

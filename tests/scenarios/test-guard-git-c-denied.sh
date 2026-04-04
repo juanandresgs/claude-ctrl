@@ -20,7 +20,7 @@ set -euo pipefail
 
 TEST_NAME="test-guard-git-c-denied"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/.claude/state.db"
@@ -92,7 +92,8 @@ check_deny "sub-test 1 (lease)" "$output" "lease"
 # guard.sh fires (any deny) for git -C commit on main.
 setup_repo
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
 # Any deny is acceptable: either Check 3 (no lease) or Check 4 (main-is-sacred)
@@ -105,7 +106,8 @@ git -C "$TMP_DIR" checkout -b feature/test-tests -q
 BRANCH_TESTS="feature/test-tests"
 WF_TESTS="feature-test-tests"
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-echo "fail|3|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    test-state set fail --project-root "$TMP_DIR" --failed 3 --total 3 >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     workflow bind "$WF_TESTS" "$TMP_DIR" "$BRANCH_TESTS" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -119,7 +121,7 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     --no-eval >/dev/null 2>&1
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
-check_deny "sub-test 3 (test gate)" "$output" "tests are failing\|test run did not pass"
+check_deny "sub-test 3 (test gate)" "$output" "test status is\|Tests must pass\|tests are failing\|test run did not pass"
 
 # --- Sub-test 4: git -C commit without evaluation clearance → Check 10 eval gate deny ---
 # A lease is issued (--no-eval) so Check 3 passes and Check 10 (no eval state) is the gate.
@@ -128,7 +130,8 @@ git -C "$TMP_DIR" checkout -b feature/test-proof -q
 BRANCH_PROOF="feature/test-proof"
 WF_PROOF="feature-test-proof"
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     workflow bind "$WF_PROOF" "$TMP_DIR" "$BRANCH_PROOF" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

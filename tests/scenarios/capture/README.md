@@ -96,18 +96,18 @@ parse:
 - `.agent_type` — same values as SubagentStart
 - `.response` — may or may not be present; needs verification
 
-**PreToolUse (Write)** — hooks/branch-guard.sh, plan-check.sh read:
+**PreToolUse (Write)** — hooks/pre-write.sh → cc-policy evaluate reads:
 - `.tool_name` — string: `"Write"`
 - `.tool_input.file_path` — absolute path string
 - `.tool_input.content` — full file content string
 
-**PreToolUse (Edit)** — hooks/branch-guard.sh reads:
+**PreToolUse (Edit)** — hooks/pre-write.sh → cc-policy evaluate reads:
 - `.tool_name` — string: `"Edit"`
 - `.tool_input.file_path` — absolute path string
 - `.tool_input.old_string` — the text being replaced
 - `.tool_input.new_string` — the replacement text
 
-**PreToolUse (Bash)** — hooks/guard.sh reads:
+**PreToolUse (Bash)** — hooks/pre-bash.sh reads:
 - `.tool_name` — string: `"Bash"`
 - `.tool_input.command` — the full shell command string
 - `.cwd` — current working directory (used for git target detection)

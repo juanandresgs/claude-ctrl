@@ -4,7 +4,7 @@
 #
 # Sub-cases:
 #   A: Lease with ["routine_local","high_risk"], eval ready → git commit allowed
-#   B: No lease (control) → git commit allowed (routine_local, Check 10 gates)
+#   B: No lease (control) → git commit denied (Check 3: all git ops require lease)
 #
 # @decision DEC-LEASE-002
 # @title Check 3 uses lease validate_op, not marker role
@@ -13,11 +13,13 @@
 #   sole authority. routine_local+high_risk allowed_ops means commit passes
 #   validate_op. Check 10 then gates on eval readiness. This test proves the
 #   full cooperative path: lease present + eval ready + test-status pass.
+#   Sub-case B is the control: without a lease, ALL git ops are denied by
+#   Check 3 (post-INIT-PE). The no-lease allow path is removed.
 set -euo pipefail
 
 TEST_NAME="test-lease-guardian-commit"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 PASS_COUNT=0
@@ -56,7 +58,8 @@ _setup_repo() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
@@ -97,26 +100,31 @@ run_sub_case_a() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case B: No lease, routine commit + eval ready → allowed (Check 3 passes,
-# Check 10 evaluates eval readiness)
+# Sub-case B: No lease, routine commit + eval ready → denied (Check 3: all
+# git ops require an active lease post-INIT-PE; no-lease allow path removed)
 # ---------------------------------------------------------------------------
 run_sub_case_b() {
     local branch="feature/lease-no-lease-commit"
     _setup_repo "$branch"
     trap '_teardown' RETURN
 
-    # No lease issued — routine_local path should be allowed by Check 3
+    # No lease issued — Check 3 must deny ALL git ops without an active lease
 
-    local cmd output decision
+    local cmd output decision reason
     cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'no-lease routine commit'"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
+    reason=$(_reason "$output")
 
-    if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "B" "no lease + routine_local commit + eval ready → allowed"
-    else
-        fail "B" "unexpected deny: $(_reason "$output")"
+    if [[ "$decision" != "deny" ]]; then
+        fail "B" "expected deny for no-lease commit, got decision='$decision'"
+        return
     fi
+    if ! printf '%s' "$reason" | grep -qiE "lease|No active"; then
+        fail "B" "deny reason should mention 'lease', got: $reason"
+        return
+    fi
+    pass "B" "no lease + routine_local commit → denied (No active dispatch lease)"
 }
 
 echo "=== $TEST_NAME: starting ==="

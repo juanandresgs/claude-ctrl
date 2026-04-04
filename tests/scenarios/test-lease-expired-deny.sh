@@ -4,7 +4,7 @@
 #
 # Sub-cases:
 #   A: Issue lease with ttl=1 (expires in 1s), sleep 2, expire-stale,
-#      then attempt commit → Check 3 allows (routine_local, no-lease path)
+#      then attempt commit → Check 3 denies (no active lease — ALL git ops require lease)
 #   B: Issue lease with ttl=1, sleep 2, expire-stale,
 #      then attempt push → Check 3 denies (high_risk, no-lease path)
 #
@@ -12,13 +12,13 @@
 # @title Dispatch leases replace marker-based WHO enforcement for Check 3
 # @status accepted
 # @rationale Expired leases are cleaned up by expire-stale. After expiry,
-#   validate_op finds no active lease. No-lease + routine_local → allowed
-#   by Check 3 (Check 10 is authority). No-lease + high_risk → denied.
+#   validate_op finds no active lease. Post-INIT-PE, ALL git ops (including
+#   routine_local) require an active lease. No-lease → denied by Check 3.
 set -euo pipefail
 
 TEST_NAME="test-lease-expired-deny"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 PASS_COUNT=0
@@ -56,7 +56,8 @@ _setup() {
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -69,7 +70,8 @@ _setup() {
 _teardown() { [[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"; TMP_DIR=""; }
 
 # ---------------------------------------------------------------------------
-# Sub-case A: Expired lease + routine_local commit → allowed (no-lease path)
+# Sub-case A: Expired lease + routine_local commit → denied (no active lease)
+# Post-INIT-PE: ALL git ops require an active lease; no-lease path is gone.
 # ---------------------------------------------------------------------------
 run_sub_case_a() {
     local branch="feature/expired-lease-commit"
@@ -91,16 +93,21 @@ run_sub_case_a() {
     # Expire stale leases
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" lease expire-stale >/dev/null 2>&1
 
-    local cmd output decision
+    local cmd output decision reason
     cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'after expired lease'"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
+    reason=$(_reason "$output")
 
-    if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "A" "expired lease + routine_local commit → allowed (no-lease path)"
-    else
-        fail "A" "unexpected deny: $(_reason "$output")"
+    if [[ "$decision" != "deny" ]]; then
+        fail "A" "expected deny for commit with expired lease, got decision='$decision'"
+        return
     fi
+    if ! printf '%s' "$reason" | grep -qiE "lease|No active"; then
+        fail "A" "deny reason should mention 'lease', got: $reason"
+        return
+    fi
+    pass "A" "expired lease + routine_local commit → denied (No active dispatch lease)"
 }
 
 # ---------------------------------------------------------------------------

@@ -22,25 +22,49 @@ message), not advisory warnings.
 
 ### PreToolUse Write|Edit chain (fires on every Write or Edit call)
 
-| Order | Hook | What it enforces |
-|-------|------|-----------------|
-| 1 | `hooks/branch-guard.sh` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
-| 2 | `hooks/write-guard.sh` | Only the `implementer` role may write source files. Orchestrator (empty role), planner, tester, and guardian are denied. Non-source files are not governed. |
-| 3 | `hooks/plan-guard.sh` | Only the `planner` (or `Plan`) role may write governance markdown (MASTER_PLAN.md, CLAUDE.md, `agents/*.md`, `docs/*.md`). `CLAUDE_PLAN_MIGRATION=1` env var overrides for permanent-section migrations. `.claude/` is exempt. |
-| 4 | `hooks/doc-gate.sh` | Source files must have a documentation header. Files 50+ lines must contain a `@decision` annotation. Warns against creating new root-level markdown files (Sacred Practice #9). |
-| 5 | `hooks/plan-check.sh` | Source files (Write of 20+ lines) cannot be written without MASTER_PLAN.md in the project root. Composite staleness check (source churn % + decision drift) can warn or deny when the plan is stale. Edit operations and small writes are exempt. |
+All write-path enforcement is handled by `hooks/pre-write.sh`, a thin adapter
+that calls `cc-policy evaluate`. The policy engine runs 10 registered Python
+policies in priority order (first deny wins):
+
+| Priority | Policy | What it enforces |
+|----------|--------|-----------------|
+| 100 | `branch_guard` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
+| 200 | `write_who` | Only the `implementer` role may write source files. |
+| 250 | `enforcement_gap` | Deny writes to extensions with unresolved linter gaps (count > 1). |
+| 300 | `plan_guard` | Only the `planner` role may write governance markdown. `CLAUDE_PLAN_MIGRATION=1` overrides. |
+| 400 | `plan_exists` | Source writes (20+ lines) require MASTER_PLAN.md. Staleness check. |
+| 500 | `plan_immutability` | Permanent MASTER_PLAN.md sections cannot be rewritten (via planctl.py). |
+| 600 | `decision_log` | Decision log entries are append-only (via planctl.py). |
+| 650 | `test_gate_pretool` | Escalating gate: warn then block on failing tests. |
+| 700 | `doc_gate` | Source files need headers; 50+ line files need @decision. |
+| 750 | `mock_gate` | Escalating gate: warn then block on internal mocks. |
 
 ### PreToolUse Bash chain (fires on every Bash call)
 
-| Hook | What it enforces |
-|------|-----------------|
-| `hooks/guard.sh` | **WHO:** Only the `guardian` role may run `git commit`, `git merge`, or `git push`. **WHERE:** Cannot commit on `main`/`master` (except MASTER_PLAN.md-only commits). **SAFETY:** Denies `git reset --hard`, `git clean -f`, `git branch -D`, raw `--force` push (requires `--force-with-lease`), force push to main/master, worktree CWD hazards, `/tmp/` writes. **GATES:** Requires runtime `test_state` = pass and `evaluation_state` = `ready_for_guardian` (lease-first workflow_id resolution) before commit or merge. |
+All bash-path enforcement is handled by `hooks/pre-bash.sh`, a thin adapter
+that calls `cc-policy evaluate`. The policy engine runs 12 registered Python
+policies in priority order:
+
+| Priority | Policy | What it enforces |
+|----------|--------|-----------------|
+| 100 | `bash_tmp_safety` | Deny /tmp writes (Sacred Practice #3). |
+| 200 | `bash_worktree_cwd` | Deny bare cd into .worktrees/. |
+| 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |
+| 400 | `bash_main_sacred` | Cannot commit on main/master. |
+| 500 | `bash_force_push` | Deny unsafe force push (require --force-with-lease). |
+| 600 | `bash_destructive_git` | Deny reset --hard, clean -f, branch -D. |
+| 700 | `bash_worktree_removal` | Safe worktree removal enforcement. |
+| 800 | `bash_test_gate_merge` | Test-pass gate for git merge. |
+| 850 | `bash_test_gate_commit` | Test-pass gate for git commit. |
+| 900 | `bash_eval_readiness` | Requires evaluation_state=ready_for_guardian + SHA match. |
+| 1000 | `bash_workflow_scope` | Workflow binding + scope compliance. |
+| 1100 | `bash_approval_gate` | One-shot approval for high-risk git ops. |
 
 ### SubagentStart (fires on every agent spawn)
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/subagent-start.sh` | Tracks active agent role in `.subagent-tracker`. Injects role-specific context (branch state, plan status, research status, test status, proof state). Does not deny — context injection only. |
+| `hooks/subagent-start.sh` | Registers agent via `cc-policy dispatch agent-start`. Injects role-specific context. Does not deny — context injection only. |
 
 ### SessionStart (fires on session start, /clear, /compact, resume)
 
@@ -67,12 +91,8 @@ The following dispatch properties exist as prompt guidance in CLAUDE.md and
 - **Typed runtime dispatch queue.** `dispatch_queue` exists (INIT-002/TKT-009)
   but is non-authoritative (DEC-WS6-001). Routing uses completion records via
   `determine_next_role()`. The queue is retained for manual orchestration only.
-- **Plan section immutability.** MASTER_PLAN.md permanent sections (Identity,
-  Architecture, Principles, Decision Log rows) are protected by prompt
-  instructions only. `planctl.py` validates section presence but does not enforce
-  immutability or append-only decision log semantics.
+- **Plan section immutability.** Now enforced by `plan_immutability` and
+  `decision_log` policies via planctl.py subprocess (INIT-PE/PE-W2).
 - **Orchestrator source-write prevention at dispatch level.** The orchestrator
-  cannot write source files (enforced by `write-guard.sh`), but this is
-  role-based write denial, not dispatch-level prevention. The orchestrator could
-  still attempt to write and receive a deny rather than being prevented from
-  trying.
+  cannot write source files (enforced by `write_who` policy), but this is
+  role-based write denial, not dispatch-level prevention.

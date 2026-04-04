@@ -157,7 +157,7 @@ if [[ -n "$_SCOPE_RESULT" ]]; then
     _COMPLIANT=$(printf '%s' "$_SCOPE_RESULT" | jq -r '.compliant // "true"' 2>/dev/null || echo "true")
     if [[ "$_COMPLIANT" == "false" ]]; then
         _VIOLATIONS=$(printf '%s' "$_SCOPE_RESULT" | jq -r '.violations[]? // empty' 2>/dev/null || echo "")
-        ISSUES+=("Workflow scope violations detected (advisory — guard.sh will enforce on commit):")
+        ISSUES+=("Workflow scope violations detected (advisory — policy engine will enforce on commit):")
         while IFS= read -r viol; do
             [[ -n "$viol" ]] && ISSUES+=("  $viol")
         done <<< "$_VIOLATIONS"
@@ -167,7 +167,7 @@ if [[ -n "$_SCOPE_RESULT" ]]; then
         ISSUES+=("Scope note: $_NOTE")
     fi
 elif [[ -z "$_BINDING_JSON" || "$_FOUND" != "yes" ]]; then
-    ISSUES+=("No workflow binding found for '$_WF_ID' — guard.sh will deny commit without binding.")
+    ISSUES+=("No workflow binding found for '$_WF_ID' — policy engine will deny commit without binding.")
 fi
 
 # Build context message

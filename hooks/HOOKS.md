@@ -109,7 +109,6 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | `get_git_state <root>` | `$GIT_BRANCH`, `$GIT_DIRTY_COUNT`, `$GIT_WORKTREES`, `$GIT_WT_COUNT` |
 | `get_plan_status <root>` | `$PLAN_EXISTS`, `$PLAN_PHASE`, `$PLAN_TOTAL_PHASES`, `$PLAN_COMPLETED_PHASES`, `$PLAN_IN_PROGRESS_PHASES`, `$PLAN_AGE_DAYS`, `$PLAN_COMMITS_SINCE`, `$PLAN_CHANGED_SOURCE_FILES`, `$PLAN_TOTAL_SOURCE_FILES`, `$PLAN_SOURCE_CHURN_PCT` |
 | `get_session_changes <root>` | `$SESSION_CHANGED_COUNT`, `$SESSION_FILE` |
-| `get_drift_data <root>` | `$DRIFT_UNPLANNED_COUNT`, `$DRIFT_UNIMPLEMENTED_COUNT`, `$DRIFT_MISSING_DECISIONS`, `$DRIFT_LAST_AUDIT_EPOCH` |
 | `get_research_status <root>` | `$RESEARCH_EXISTS`, `$RESEARCH_ENTRY_COUNT` |
 | `is_source_file <path>` | Tests against `$SOURCE_EXTENSIONS` regex |
 | `is_skippable_path <path>` | Tests for config/test/vendor/generated paths |
@@ -117,10 +116,8 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | `canonical_session_id` | Stable session ID for per-session files |
 | `current_workflow_id <root>` | Stable workflow ID (usually current branch) |
 | `file_mtime <path>` | Cross-platform file mtime helper |
-| `resolve_proof_file <root> [workflow]` | **DEPRECATED** — no live callers; flat-file path helper retained for backwards compat only |
-| `read_proof_status <root> [workflow]` | **DEPRECATED (TKT-024)** — proof_state has zero enforcement effect; evaluation_state is the readiness authority |
-| `write_proof_status <root> <status> [workflow]` | **DEPRECATED (TKT-024)** — zero callers in hook chain after evaluator-state cutover |
-| `resolve_proof_file_for_command <root> <command>` | **DEPRECATED** — no live callers |
+| `read_proof_status <root> [workflow]` | Proof status from runtime SQLite (`proof_state` table) — zero enforcement effect after TKT-024; evaluation_state is the readiness authority |
+| `write_proof_status <root> <status> [workflow]` | Upserts proof status to runtime SQLite — zero callers in hook chain after evaluator-state cutover |
 | `read_evaluation_status <root> [workflow]` | Evaluation status (`idle`, `pending`, `needs_changes`, `ready_for_guardian`, `blocked_by_plan`) — sole readiness authority (TKT-024) |
 | `read_evaluation_state <root> [workflow]` | Full evaluation state JSON including head_sha |
 | `write_evaluation_status <root> <status> [wf] [sha]` | Upserts evaluation state — used by check-tester.sh (verdicts), post-task.sh (pending) |
@@ -138,9 +135,10 @@ SessionStart    → session-init.sh (git state, plan status, worktree warnings)
                     ↓
 UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
-PreToolUse:Bash → guard.sh (sacred practice guardrails + WHO enforcement)
+PreToolUse:Bash → pre-bash.sh (thin adapter → cc-policy evaluate, 12 bash policies)
                    auto-review.sh (intelligent command auto-approval)
-PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
+PreToolUse:W/E  → pre-write.sh (thin adapter → cc-policy evaluate, 10 write policies)
+                   test-gate.sh, mock-gate.sh, doc-gate.sh (no-ops — policies run via engine)
                     ↓
 [Tool executes]
                     ↓
@@ -166,14 +164,12 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 12 checks: denies unsafe `/tmp/` writes, bare `cd` into worktrees, non-Guardian commit/merge/push, commits on main, unsafe force push, destructive git, unsafe worktree removal; requires passing tests, evaluation_state=ready_for_guardian with matching head_sha (TKT-024), and workflow binding+scope for commits and merges |
+| **pre-bash.sh** | Bash | Thin adapter: calls `cc-policy evaluate` which runs 12 bash policies (tmp_safety, worktree_cwd, git_who, main_sacred, force_push, destructive_git, worktree_removal, test_gate_merge, test_gate_commit, eval_readiness, workflow_scope, approval_gate). Fail-closed. Target-repo context resolution for `git -C` commands. |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
-| **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
-| **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
-| **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
-| **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files; Write = hard deny, Edit = advisory; warns on new root-level markdown files (Sacred Practice #9) |
-| **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; composite staleness scoring (source churn % + decision drift) warns then blocks when plan diverges from code; bypasses Edit tool, small writes (<20 lines), non-git dirs |
-| **pre-write.sh** (check_enforcement_gap) | Write\|Edit | Denies writes to source files whose extension has an unresolved enforcement gap with `encounter_count > 1` in `.enforcement-gaps`. Runs after branch-guard and write-guard, before plan checks — enforcement health is more fundamental than plan staleness |
+| **pre-write.sh** | Write\|Edit | Thin adapter: calls `cc-policy evaluate` which runs 10 write policies (branch_guard, write_who, enforcement_gap, plan_guard, plan_exists, plan_immutability, decision_log, test_gate_pretool, doc_gate, mock_gate). Fail-closed. |
+| **test-gate.sh** | Write\|Edit | No-op — policy runs via engine (test_gate_pretool) |
+| **mock-gate.sh** | Write\|Edit | No-op — policy runs via engine (mock_gate) |
+| **doc-gate.sh** | Write\|Edit | No-op — policy runs via engine (doc_gate) |
 
 ### PostToolUse — Feedback After Execution
 
@@ -221,10 +217,10 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ---
 
-## Key guard.sh Behaviors
+## Key Bash Policy Behaviors (formerly guard.sh)
 
-The most complex hook — 10 checks covering worktree safety, WHO enforcement,
-destructive git protection, and evidence gates.
+The bash-path policies (migrated from guard.sh in INIT-PE) cover worktree
+safety, WHO enforcement, destructive git protection, and evidence gates.
 
 **Hard blocks** (deny with explanation and a safe replacement when useful):
 
@@ -281,7 +277,7 @@ An 840-line policy engine that replaces the blunt "allow or ask" permission mode
 
 **Dangerous flag escalation:** `--force`, `--hard`, `--no-verify`, `-f` (on git) escalate any command to risky regardless of tier.
 
-**Interaction with guard.sh:** Guard runs first (sequential in settings.json). If guard denies, auto-review never executes. If guard allows/passes through, auto-review classifies. This means guard handles the hard security boundaries, auto-review handles the UX of permission prompts.
+**Interaction with pre-bash.sh:** The policy engine (via pre-bash.sh) runs first (sequential in settings.json). If a bash policy denies, auto-review never executes. If all policies pass, auto-review classifies. This means the policy engine handles the hard security boundaries, auto-review handles the UX of permission prompts.
 
 ---
 
@@ -293,14 +289,14 @@ Three patterns recur across the hook system:
 
 | Hook | Strike File | Warn | Block |
 |------|------------|------|-------|
-| **test-gate.sh** | `.test-gate-strikes` | First source write with failing tests | Second source write without fixing tests |
-| **mock-gate.sh** | `.mock-gate-strikes` | First internal mock detected | Second internal mock (external boundary mocks always allowed) |
+| **test_gate_pretool** (policy) | `.test-gate-strikes` | First source write with failing tests | Second source write without fixing tests |
+| **mock_gate** (policy) | `.mock-gate-strikes` | First internal mock detected | Second internal mock (external boundary mocks always allowed) |
 
 **Feedback loops** — exit code 2 tells Claude Code to retry the operation with the hook's output as guidance, rather than failing outright. The model gets a chance to fix the issue automatically.
 
 | Hook | Triggers exit 2 when |
 |------|---------------------|
-| **lint.sh** | Linter finds fixable issues in the written file; OR an enforcement gap is detected (unsupported extension or missing dependency) |
+| **lint.sh** | Linter finds fixable issues in the written file (enforcement-gap deny moved to policy engine per DEC-LINT-002) |
 | **plan-validate.sh** | MASTER_PLAN.md fails structural validation (missing Status fields, empty Decision Log, bad DEC-ID format) |
 | **forward-motion.sh** | Response ends with bare completion ("done") and no question, suggestion, or offer |
 
@@ -308,7 +304,7 @@ Three patterns recur across the hook system:
 
 | Hook | Corrective behavior |
 |------|--------------------|
-| **guard.sh** | Denies unsafe `/tmp/`, raw force push, and unsafe worktree removal with explicit replacement commands |
+| **bash policies** (via engine) | Denies unsafe `/tmp/`, raw force push, and unsafe worktree removal with explicit replacement commands |
 
 ---
 
@@ -432,7 +428,7 @@ Hook registration in `../settings.json` → `hooks` object:
 echo '{"tool_name":"Write","tool_input":{"file_path":"/test.ts"}}' | bash hooks/<name>.sh
 
 # PreToolUse:Bash hook
-echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/guard.sh
+echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/pre-bash.sh
 
 # Validate settings.json
 python3 -m json.tool ../settings.json

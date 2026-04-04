@@ -40,8 +40,9 @@ mkdir -p "$TMP_DIR/.claude"
 # MASTER_PLAN.md so check-planner does not fail on missing-plan check
 echo "# MASTER_PLAN.md" > "$TMP_DIR/MASTER_PLAN.md"
 
-# Seed a .test-status so check-implementer/guardian pass test-status checks
-echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+# Seed test-state via runtime so check-implementer/guardian pass test-status checks
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
 # Pre-provision schema in scoped test DB
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" schema ensure >/dev/null 2>&1

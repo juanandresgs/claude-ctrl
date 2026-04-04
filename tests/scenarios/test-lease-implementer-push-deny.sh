@@ -16,7 +16,7 @@ set -euo pipefail
 
 TEST_NAME="test-lease-implementer-push-deny"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 PASS_COUNT=0
@@ -60,7 +60,8 @@ run_sub_case_a() {
 
     CLAUDE_POLICY_DB="$test_db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$test_db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "implementer" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$tmp_dir/.claude/.test-status"
+    CLAUDE_POLICY_DB="$test_db" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$tmp_dir" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$test_db" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$wf_id" "ready_for_guardian" --head-sha "$head_sha" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$test_db" python3 "$RUNTIME_ROOT/cli.py" \

@@ -24,7 +24,7 @@ set -euo pipefail
 
 TEST_NAME="test-eval-not-consumed-on-deny"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-GUARD_HOOK="$REPO_ROOT/hooks/guard.sh"
+GUARD_HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 CHECK_GUARDIAN_HOOK="$REPO_ROOT/hooks/check-guardian.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/state.db"

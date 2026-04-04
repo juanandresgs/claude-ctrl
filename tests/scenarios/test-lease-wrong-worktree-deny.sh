@@ -14,7 +14,7 @@ set -euo pipefail
 
 TEST_NAME="test-lease-wrong-worktree-deny"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 PASS_COUNT=0
@@ -62,7 +62,8 @@ run_sub_case_a() {
 
     CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$dir_a/.claude/.test-status"
+    CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$dir_a" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$wf_a" "ready_for_guardian" --head-sha "$head_a" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" \
@@ -91,7 +92,8 @@ run_sub_case_a() {
         workflow bind "$wf_b" "$dir_b" "$branch_b" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$wf_b" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$dir_b/.claude/.test-status"
+    CLAUDE_POLICY_DB="$db_a" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$dir_b" --passed 1 --total 1 >/dev/null 2>&1
 
     # Attempt push in worktree B using db_a (lease is for dir_a, not dir_b)
     local cmd output decision reason

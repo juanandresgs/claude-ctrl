@@ -26,7 +26,7 @@ set -euo pipefail
 
 TEST_NAME="test-guardian-auto-land-policy"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 
 # ─── Sub-case A: Clean local commit is ALLOWED ────────────────────────────────
@@ -57,7 +57,8 @@ run_sub_case_a() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
 
     # Gate 2: test status = pass
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
     # Gate 3: evaluation_state = ready_for_guardian with matching head_sha
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -69,6 +70,12 @@ run_sub_case_a() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$WF_ID" \
         --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+
+    # Gate 5: dispatch lease (policy engine requires active lease for all git ops)
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --worktree-path "$TMP_DIR" --workflow-id "$WF_ID" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
     CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'auto-land test commit'"
     PAYLOAD=$(jq -n --arg t "Bash" --arg c "$CMD" --arg w "$TMP_DIR" \
@@ -123,7 +130,8 @@ run_deny_check() {
     # Set up all passing gates (same as sub-case A) to isolate the destructive-op check
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -196,7 +204,8 @@ run_sub_case_b() {
     PF_HEAD=$(git -C "$PF_TMP" rev-parse HEAD)
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$PF_TMP/.claude/.test-status"
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$PF_TMP" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$PF_WF" "ready_for_guardian" --head-sha "$PF_HEAD" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \

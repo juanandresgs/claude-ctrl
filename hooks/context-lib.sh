@@ -17,13 +17,9 @@
 #   runtime (cc-policy) is the sole authority for proof, markers, and audit
 #   events. Functions that previously dual-wrote to .proof-status-*,
 #   .subagent-tracker, .audit-log, or .statusline-cache now use runtime-only
-#   paths. Flat-file proof helpers below (resolve_proof_file,
+#   paths. Flat-file proof helpers (resolve_proof_file,
 #   read_proof_status_file, read_proof_timestamp_file,
-#   resolve_proof_file_for_command) are DEPRECATED — no live callers remain
-#   after guard.sh Check 10 migrated to runtime proof reads. Retained for
-#   backwards compatibility; deletion deferred to a cleanup pass.
-#   get_drift_data is retained as a no-op stub so callers in plan-check.sh
-#   compile without changes.
+#   resolve_proof_file_for_command) were deleted in PE-W6 (no live callers).
 #
 # Provides:
 #   get_git_state <project_root>     - Populates GIT_BRANCH, GIT_DIRTY_COUNT,
@@ -35,7 +31,6 @@
 #                                      PLAN_TOTAL_SOURCE_FILES,
 #                                      PLAN_SOURCE_CHURN_PCT
 #   get_session_changes <project_root> - Populates SESSION_CHANGED_COUNT
-#   get_drift_data <project_root>    - Stub: always returns zero counts (no .plan-drift file read)
 
 # Source the runtime bridge so rt_proof_*, rt_marker_*, rt_event_* are available.
 # __CONTEXT_LIB_DIR is resolved once here; sourcing hooks set $0 differently so
@@ -141,18 +136,6 @@ get_session_changes() {
     fi
 }
 
-# --- Plan drift data — stub (TKT-008: .plan-drift file removed) ---
-# The .plan-drift flat file is no longer written or read. plan-check.sh uses
-# the commit-count heuristic exclusively when DRIFT_LAST_AUDIT_EPOCH == 0.
-# This stub keeps callers compiling without changes.
-get_drift_data() {
-    # root="$1" — ignored, no file to read
-    DRIFT_UNPLANNED_COUNT=0
-    DRIFT_UNIMPLEMENTED_COUNT=0
-    DRIFT_MISSING_DECISIONS=0
-    DRIFT_LAST_AUDIT_EPOCH=0
-}
-
 # --- Research log status ---
 get_research_status() {
     local root="$1"
@@ -232,35 +215,6 @@ file_mtime() {
 }
 
 # --- Proof-of-work state ---
-# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
-resolve_proof_file() {
-    local root="$1"
-    local workflow_id="${2:-}"
-
-    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
-    printf '%s\n' "$root/.claude/.proof-status-${workflow_id}"
-}
-
-# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
-read_proof_status_file() {
-    local proof_file="$1"
-    if [[ -f "$proof_file" ]]; then
-        cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "idle"
-    else
-        echo "idle"
-    fi
-}
-
-# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
-read_proof_timestamp_file() {
-    local proof_file="$1"
-    if [[ -f "$proof_file" ]]; then
-        cut -d'|' -f2 "$proof_file" 2>/dev/null || echo "0"
-    else
-        echo "0"
-    fi
-}
-
 read_proof_status() {
     local root="$1"
     local workflow_id="${2:-}"
@@ -365,39 +319,6 @@ find_worktree_for_branch() {
     done < <(git -C "$root" worktree list --porcelain 2>/dev/null || true)
 
     return 1
-}
-
-# DEPRECATED: no live callers. Guard.sh Check 10 now uses read_proof_status (runtime).
-# For merges performed from main, prefer the source branch's worktree proof file.
-resolve_proof_file_for_command() {
-    local root="$1"
-    local command="$2"
-    local merge_ref=""
-    local merge_worktree=""
-    local saw_merge=false
-    local token=""
-
-    for token in $command; do
-        if [[ "$token" == "merge" ]]; then
-            saw_merge=true
-            continue
-        fi
-        if [[ "$saw_merge" == "true" ]]; then
-            [[ "$token" == -* ]] && continue
-            merge_ref="$token"
-            break
-        fi
-    done
-
-    if [[ -n "$merge_ref" ]]; then
-        merge_worktree=$(find_worktree_for_branch "$root" "$merge_ref" 2>/dev/null || true)
-        if [[ -n "$merge_worktree" ]]; then
-            resolve_proof_file "$merge_worktree" "$(sanitize_token "$merge_ref")"
-            return 0
-        fi
-    fi
-
-    resolve_proof_file "$root"
 }
 
 # --- Role detection ---
@@ -587,4 +508,4 @@ classify_git_op() {
 # Export for subshells
 export SOURCE_EXTENSIONS
 export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime resolve_proof_file read_proof_status_file read_proof_timestamp_file read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch resolve_proof_file_for_command current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

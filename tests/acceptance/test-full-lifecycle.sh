@@ -44,7 +44,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PRE_WRITE="$REPO_ROOT/hooks/pre-write.sh"
-GUARD="$REPO_ROOT/hooks/guard.sh"
+GUARD="$REPO_ROOT/hooks/pre-bash.sh"
 POST_TASK="$REPO_ROOT/hooks/post-task.sh"
 CLI="$REPO_ROOT/runtime/cli.py"
 TMP_DIR="$REPO_ROOT/tmp/lifecycle-$$"

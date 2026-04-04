@@ -16,7 +16,7 @@ set -euo pipefail
 
 TEST_NAME="test-guard-db-scoping"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/guard.sh"
+HOOK="$REPO_ROOT/hooks/pre-bash.sh"
 RUNTIME_ROOT="$REPO_ROOT/runtime"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 PROJECT_DB="$TMP_DIR/.claude/state.db"
@@ -42,7 +42,8 @@ setup() {
 
     # Common gates in project DB: guardian role, test-status, workflow binding + scope
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
-    echo "pass|0|$(date +%s)" > "$TMP_DIR/.claude/.test-status"
+    CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
     # Lease (TKT-STAB-A3): Check 3 requires an active lease; issue one in project DB
