@@ -375,11 +375,22 @@ def test_default_registry_is_registry():
     assert isinstance(reg, PolicyRegistry)
 
 
-def test_default_registry_empty_in_w1():
-    """W1: no policies registered. W2/W3 will add them."""
+def test_default_registry_has_w2_write_policies():
+    """W2: 7 write-path policies are registered in priority order."""
     reg = default_registry()
     policies = reg.list_policies()
-    assert policies == []
+    names = [p.name for p in policies]
+    assert "branch_guard" in names
+    assert "write_who" in names
+    assert "enforcement_gap" in names
+    assert "plan_guard" in names
+    assert "plan_exists" in names
+    assert "plan_immutability" in names
+    assert "decision_log" in names
+    assert len(policies) == 7
+    # Priority order must be ascending
+    priorities = [p.priority for p in policies]
+    assert priorities == sorted(priorities)
 
 
 def test_default_registry_fail_closed_on_register_all_error(monkeypatch):
