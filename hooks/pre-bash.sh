@@ -81,25 +81,32 @@ EVAL_INPUT=$(printf '%s' "$HOOK_INPUT" | jq \
 RESULT=$(printf '%s' "$EVAL_INPUT" | cc_policy evaluate 2>/tmp/pre-bash-eval-err$$) \
     || RESULT=""
 
-# Validate result: must be non-empty and contain an "action" field.
-if [[ -z "$RESULT" ]] || ! printf '%s' "$RESULT" | jq -e '.action' >/dev/null 2>&1; then
-    # Engine failed or returned invalid output — emit deny (fail-closed).
+# Validate result: must be non-empty, have an "action" field, AND have a
+# "hookSpecificOutput" object.  Checking only ".action" was insufficient —
+# the hook would silently strip the wrapper and emit the bare inner object,
+# violating the PreToolUse stdout contract defined in hooks/HOOKS.md.
+if [[ -z "$RESULT" ]] \
+    || ! printf '%s' "$RESULT" | jq -e '.action' >/dev/null 2>&1 \
+    || ! printf '%s' "$RESULT" | jq -e '.hookSpecificOutput | objects' >/dev/null 2>&1; then
+    # Engine failed or returned invalid/unwrapped output — emit deny (fail-closed).
+    # The deny itself is wrapped in the required PreToolUse hookSpecificOutput envelope.
     _ERR=$(cat /tmp/pre-bash-eval-err$$ 2>/dev/null || echo "cc_policy evaluate returned empty or invalid output")
     rm -f /tmp/pre-bash-eval-err$$
     printf '%s\n' "$(jq -n \
         --arg reason "Policy engine unavailable or returned invalid output. Denying as fail-safe. Detail: $_ERR" \
-        '{permissionDecision: "deny", permissionDecisionReason: $reason, blockingHook: "pre-bash-fail-closed"}')"
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny",
+          permissionDecisionReason: $reason, blockingHook: "pre-bash-fail-closed"}}')"
     exit 0
 fi
 
 rm -f /tmp/pre-bash-eval-err$$
 
-# Extract the hookSpecificOutput block if present; fall back to full result.
-_HSO=$(printf '%s' "$RESULT" | jq '.hookSpecificOutput // empty' 2>/dev/null || echo "")
-if [[ -n "$_HSO" ]]; then
-    printf '%s\n' "$_HSO"
-else
-    printf '%s\n' "$RESULT"
-fi
+# Pass through the full engine output unchanged.
+# cc_policy evaluate already emits the correct PreToolUse wrapper:
+#   { "action": "...", "hookSpecificOutput": { "permissionDecision": "...", ... } }
+# Extracting and re-printing the inner .hookSpecificOutput would strip the wrapper
+# and violate the hook contract.  Pass the full JSON — Claude Code reads the
+# top-level "hookSpecificOutput" key directly from the hook's stdout.
+printf '%s\n' "$RESULT"
 
 exit 0
