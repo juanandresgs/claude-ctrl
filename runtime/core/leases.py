@@ -39,7 +39,6 @@ from typing import Optional
 
 from runtime.schemas import DEFAULT_LEASE_TTL
 
-
 # ---------------------------------------------------------------------------
 # Role-safe defaults
 # ---------------------------------------------------------------------------
@@ -54,15 +53,36 @@ from runtime.schemas import DEFAULT_LEASE_TTL
 
 ROLE_DEFAULTS: dict[str, dict] = {
     "implementer": {"allowed_ops": ["routine_local"], "requires_eval": True},
-    "tester":      {"allowed_ops": [],                "requires_eval": False},
-    "guardian":    {"allowed_ops": ["routine_local", "high_risk", "admin_recovery"], "requires_eval": True},
-    "planner":     {"allowed_ops": [],                "requires_eval": False},
+    "tester": {"allowed_ops": [], "requires_eval": False},
+    "guardian": {
+        "allowed_ops": ["routine_local", "high_risk", "admin_recovery"],
+        "requires_eval": True,
+    },
+    "planner": {"allowed_ops": [], "requires_eval": False},
 }
 
 
 # ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
+
+
+def _strip_git_paths(command: str) -> str:
+    """Strip path arguments from git commands to prevent false subcommand matches.
+
+    Removes:
+      - git -C <path> → git
+      - cd <path> && → (empty)
+      - Quoted paths after -C
+
+    This prevents paths like '/path/feature-rebase-w1' from matching
+    subcommand patterns like \\brebase\\b.
+    """
+    # Strip: git -C "/path/..." or git -C '/path/...' or git -C /path/...
+    result = re.sub(r'\bgit\s+-C\s+("([^"]+)"|\'([^\']+)\'|(\S+))', "git", command)
+    # Strip: cd "/path" && or cd '/path' && or cd /path &&
+    result = re.sub(r'\bcd\s+("([^"]+)"|\'([^\']+)\'|(\S+))\s*&&\s*', "", result)
+    return result
 
 
 def classify_git_op(command: str) -> str:
@@ -73,7 +93,9 @@ def classify_git_op(command: str) -> str:
 
     This is the sole classifier for the migrated Check 3 path. Word-boundary
     matching prevents substring false positives (e.g. 'git remote' does not
-    match 'git reset').
+    match 'git reset'). Path arguments are stripped first to prevent false
+    matches on path components (e.g. '/path/feature-rebase-w1' should not
+    trigger the rebase classifier).
 
     Classification precedence (first match wins):
       admin_recovery: merge --abort, reset --merge (governed recovery, not landing)
@@ -94,29 +116,32 @@ def classify_git_op(command: str) -> str:
       class is checked BEFORE the generic reset/merge patterns so the specific
       variants win over the broader classification.
     """
+    # Strip path arguments to prevent false subcommand matches
+    cmd = _strip_git_paths(command)
+
     # Admin recovery: merge --abort (governed recovery, not a landing operation)
-    if re.search(r"\bmerge\b.*--abort", command):
+    if re.search(r"\bmerge\b.*--abort", cmd):
         return "admin_recovery"
     # Admin recovery: reset --merge (backed-out merge recovery)
-    if re.search(r"\breset\b.*--merge", command):
+    if re.search(r"\breset\b.*--merge", cmd):
         return "admin_recovery"
     # High-risk: push
-    if re.search(r"\bpush\b", command):
+    if re.search(r"\bpush\b", cmd):
         return "high_risk"
     # High-risk: rebase
-    if re.search(r"\brebase\b", command):
+    if re.search(r"\brebase\b", cmd):
         return "high_risk"
     # High-risk: reset (any form not already caught by admin_recovery above)
-    if re.search(r"\breset\b", command):
+    if re.search(r"\breset\b", cmd):
         return "high_risk"
     # High-risk: merge --no-ff (must check before plain merge)
-    if re.search(r"\bmerge\b", command) and "--no-ff" in command:
+    if re.search(r"\bmerge\b", cmd) and "--no-ff" in cmd:
         return "high_risk"
     # Routine local: commit
-    if re.search(r"\bcommit\b", command):
+    if re.search(r"\bcommit\b", cmd):
         return "routine_local"
     # Routine local: merge (without --no-ff already handled above)
-    if re.search(r"\bmerge\b", command):
+    if re.search(r"\bmerge\b", cmd):
         return "routine_local"
     return "unclassified"
 
@@ -353,8 +378,8 @@ def validate_op(
       requires_approval bool
       approval_ok      bool|None  — None when approval check not applicable
     """
-    import runtime.core.evaluation as evaluation_mod
     import runtime.core.approvals as approvals_mod
+    import runtime.core.evaluation as evaluation_mod
 
     op_class = classify_git_op(command)
 
