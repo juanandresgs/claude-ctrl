@@ -114,10 +114,12 @@ def process_agent_stop(
     result["workflow_id"] = workflow_id
 
     # Emit stop audit event — type depends on whether check-* hooks flagged an
-    # interruption. Placed AFTER lease resolution so workflow_id is available
-    # for the correlation key match in _detect_interrupted (DEC-STOP-ASSESS-002).
+    # interruption. Placed AFTER lease resolution so the active lease is queryable
+    # by _resolve_stop_assessment_wf_id inside _detect_interrupted (DEC-STOP-ASSESS-002).
+    # project_root is passed (not workflow_id) so _detect_interrupted can perform
+    # its own lease-first resolution to match check-implementer.sh's key (DEC-STOP-ASSESS-004).
     try:
-        is_interrupted, _interrupt_reason = _detect_interrupted(conn, normalised, workflow_id)
+        is_interrupted, _interrupt_reason = _detect_interrupted(conn, normalised, project_root)
         stop_event_type = "agent_stopped" if is_interrupted else "agent_complete"
         stop_detail = f"Agent {agent_type} {'stopped (appears interrupted)' if is_interrupted else 'completed'}"
         evt_id = events.emit(conn, type=stop_event_type, detail=stop_detail)
@@ -205,10 +207,51 @@ def process_agent_stop(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_stop_assessment_wf_id(
+    conn: sqlite3.Connection,
+    project_root: str,
+) -> str:
+    """Resolve workflow_id for stop-assessment event matching.
+
+    Uses the same lease-first, branch-fallback resolution as
+    check-implementer.sh Check 7 (DEC-STOP-ASSESS-004), so both sides
+    produce the same correlation key when an active lease exists.
+
+    This is intentionally separate from _resolve_lease_context() so the
+    stop-assessment lookup can be called without affecting lease routing,
+    eval-state writes, or result["workflow_id"].
+
+    Args:
+        conn:         Open SQLite connection.
+        project_root: Filesystem path to the project root.
+
+    Returns:
+        workflow_id string — from active lease if present, otherwise
+        branch-derived via policy_utils.current_workflow_id(). Empty string
+        if both sources fail.
+    """
+    # Lease first (WS1 invariant — mirrors lease_context() in context-lib.sh:449)
+    try:
+        lease = leases.get_current(conn, worktree_path=project_root)
+        if lease and lease.get("status") == "active":
+            wf_id = lease.get("workflow_id") or ""
+            if wf_id:
+                return wf_id
+    except Exception:
+        pass
+    # Branch-derived fallback (mirrors current_workflow_id() in context-lib.sh:214)
+    try:
+        from runtime.core import policy_utils
+
+        return policy_utils.current_workflow_id(project_root)
+    except Exception:
+        return ""
+
+
 def _detect_interrupted(
     conn: sqlite3.Connection,
     agent_type: str,
-    workflow_id: str,
+    project_root: str,
 ) -> tuple[bool, str]:
     """Check if check-* hooks flagged this agent stop as interrupted.
 
@@ -216,10 +259,15 @@ def _detect_interrupted(
     on both agent_type and workflow_id for concurrency safety — two implementer
     stops on different workflows in the same window must not collide.
 
+    The workflow_id is resolved via _resolve_stop_assessment_wf_id() which uses
+    the same lease-first, branch-fallback order as check-implementer.sh Check 7
+    (DEC-STOP-ASSESS-004), ensuring the correlation keys match.
+
     Args:
-        conn:        Open SQLite connection.
-        agent_type:  Normalised role string (e.g. 'implementer').
-        workflow_id: Workflow correlation key (empty string if not resolvable).
+        conn:         Open SQLite connection.
+        agent_type:   Normalised role string (e.g. 'implementer').
+        project_root: Filesystem path to the project root. Used to resolve the
+                      workflow_id via lease-first, branch-derived fallback.
 
     Returns:
         (is_interrupted, reason) — is_interrupted is False when no matching
@@ -227,6 +275,7 @@ def _detect_interrupted(
         Assessment lookup is advisory; never raises.
     """
     try:
+        assess_wf_id = _resolve_stop_assessment_wf_id(conn, project_root)
         recent = events.query(
             conn,
             type="stop_assessment",
@@ -237,7 +286,7 @@ def _detect_interrupted(
             detail = assess.get("detail") or ""
             # Match on both agent_type and workflow_id so concurrent stops on
             # different workflows do not collide (DEC-STOP-ASSESS-002).
-            if detail.startswith(f"{agent_type}|{workflow_id}|appears_interrupted"):
+            if detail.startswith(f"{agent_type}|{assess_wf_id}|appears_interrupted"):
                 parts = detail.split("|", 3)
                 reason = parts[3] if len(parts) > 3 else ""
                 return True, reason

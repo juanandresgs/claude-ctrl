@@ -176,9 +176,12 @@ fi
 # narration AND the full response lacks any test-completion evidence, the agent
 # was likely interrupted mid-task rather than finishing cleanly.
 #
-# The correlation key uses workflow_id (already resolved as _WF_ID above) so
-# concurrent implementer stops on different workflows do not collide in the 30s
-# event window that dispatch_engine uses when matching stop_assessment events.
+# The correlation key must match the workflow_id that dispatch_engine resolves via
+# _resolve_lease_context() (lease-first, branch-derived fallback).  Using only the
+# branch-derived _WF_ID here caused a mismatch when an active lease carries a
+# different workflow_id — dispatch_engine would query for "agent_type|lease-wf-id|"
+# but the event was written with "agent_type|branch-wf-id|", so _detect_interrupted
+# never returned True in production.  Fix: mirror the same resolution order here.
 #
 # @decision DEC-STOP-ASSESS-001
 # Title: Heuristic mid-task detection via future-tense trailing signal
@@ -189,7 +192,26 @@ fi
 #   "I need to") without any test-completion evidence is the narrowest reliable
 #   proxy for an interrupted stop. Cross-checking against test evidence avoids
 #   false positives from agents that plan a next step before confirming tests pass.
-_ASSESS_WF_ID="$_WF_ID"
+#
+# @decision DEC-STOP-ASSESS-004
+# Title: _ASSESS_WF_ID uses lease-first resolution to match dispatch_engine
+# Status: accepted
+# Rationale: dispatch_engine._resolve_lease_context() returns the lease workflow_id
+#   when an active lease exists, and falls back to branch-derived only when no lease
+#   is found. check-implementer.sh must emit the stop_assessment event with the same
+#   key so _detect_interrupted() matches. lease_context() (context-lib.sh:449) is the
+#   canonical bash-side authority for this resolution — it calls rt_lease_current and
+#   returns JSON with .found and .workflow_id. Branch-derived _WF_ID remains the
+#   fallback when no lease is active, preserving backward compatibility.
+# Resolve assessment workflow_id: lease first (WS1 invariant), branch-derived fallback.
+# Must match dispatch_engine._resolve_stop_assessment_wf_id() resolution order.
+_ASSESS_WF_ID=""
+_ASSESS_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+_ASSESS_LEASE_FOUND=$(printf '%s' "$_ASSESS_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+if [[ "$_ASSESS_LEASE_FOUND" == "true" ]]; then
+    _ASSESS_WF_ID=$(printf '%s' "$_ASSESS_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+fi
+[[ -z "$_ASSESS_WF_ID" ]] && _ASSESS_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
 _INTERRUPTED=false
 _INTERRUPT_REASON=""
 if [[ -n "$RESPONSE_TEXT" ]]; then
