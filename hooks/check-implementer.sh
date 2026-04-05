@@ -170,6 +170,59 @@ elif [[ -z "$_BINDING_JSON" || "$_FOUND" != "yes" ]]; then
     ISSUES+=("No workflow binding found for '$_WF_ID' — policy engine will deny commit without binding.")
 fi
 
+# Check 7: Mid-task interruption detection (additive, advisory).
+#
+# Heuristic: if the last ~500 chars of the response contain future-tense action
+# narration AND the full response lacks any test-completion evidence, the agent
+# was likely interrupted mid-task rather than finishing cleanly.
+#
+# The correlation key uses workflow_id (already resolved as _WF_ID above) so
+# concurrent implementer stops on different workflows do not collide in the 30s
+# event window that dispatch_engine uses when matching stop_assessment events.
+#
+# @decision DEC-STOP-ASSESS-001
+# Title: Heuristic mid-task detection via future-tense trailing signal
+# Status: accepted
+# Rationale: Claude Code's Agent tool always returns status=completed regardless
+#   of whether the subagent finished its task. The only signal available at hook
+#   time is the response text. Future-tense narration in the tail ("Let me", "I'll",
+#   "I need to") without any test-completion evidence is the narrowest reliable
+#   proxy for an interrupted stop. Cross-checking against test evidence avoids
+#   false positives from agents that plan a next step before confirming tests pass.
+_ASSESS_WF_ID="$_WF_ID"
+_INTERRUPTED=false
+_INTERRUPT_REASON=""
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    # Extract last ~500 chars for the trailing-signal check.
+    _TAIL=$(printf '%s' "$RESPONSE_TEXT" | tail -c 500 2>/dev/null || echo "")
+
+    # Future-tense trailing patterns indicating planned-but-not-started actions.
+    _FUTURE=$(printf '%s' "$_TAIL" \
+        | grep -iE "Let me|I'll|I need to|Next I|Now I'll|I'm going to|checking if|About to" \
+        || echo "")
+
+    if [[ -n "$_FUTURE" ]]; then
+        # Cross-check: look for test completion evidence anywhere in the full response.
+        _TEST_EVIDENCE=$(printf '%s' "$RESPONSE_TEXT" \
+            | grep -iE "PASS:|FAIL:|tests pass|all.*tests|test.*complete|exit code 0" \
+            || echo "")
+        if [[ -z "$_TEST_EVIDENCE" ]]; then
+            _INTERRUPTED=true
+            # Capture first matching phrase for the human-readable reason.
+            _MATCHED=$(printf '%s' "$_FUTURE" | head -n 1 | sed 's/^[[:space:]]*//')
+            _INTERRUPT_REASON="trailing future-tense signal without test evidence: $_MATCHED"
+        fi
+    fi
+fi
+
+if [[ "$_INTERRUPTED" == "true" ]]; then
+    ISSUES+=("Agent appears interrupted mid-task — $_INTERRUPT_REASON")
+    # Emit structured stop_assessment event for dispatch_engine to consume.
+    # Format: <agent_type>|<workflow_id>|appears_interrupted|<human reason>
+    rt_event_emit "stop_assessment" \
+        "${AGENT_TYPE}|${_ASSESS_WF_ID}|appears_interrupted|${_INTERRUPT_REASON}" || true
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then

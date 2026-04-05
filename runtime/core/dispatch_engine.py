@@ -30,11 +30,24 @@ Rationale: post-task.sh contained ~200 lines of routing logic in bash including
   the implementer role (post-task.sh was the sole writer for this transition).
   Tester and guardian do not write eval_state here; check-tester.sh owns the
   ready_for_guardian write.
+
+@decision DEC-STOP-ASSESS-002
+Title: agent_complete vs agent_stopped gating via stop_assessment event
+Status: accepted
+Rationale: Claude Code's Agent tool returns status=completed on any subagent stop,
+  regardless of whether the agent actually finished. check-implementer.sh emits a
+  stop_assessment event when it detects future-tense trailing patterns without test
+  evidence (DEC-STOP-ASSESS-001). dispatch_engine reads that event within a 30-second
+  window and gates the stop event type: agent_stopped when interrupted, agent_complete
+  otherwise. The assessment is advisory — errors in the lookup never block routing.
+  The emission is placed AFTER lease context resolution so workflow_id is available
+  for the correlation key match, preventing false positives from concurrent stops.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import time
 from typing import Optional
 
 from runtime.core import completions, evaluation, events, leases
@@ -91,13 +104,6 @@ def process_agent_stop(
     if normalised not in _known_types:
         return result
 
-    # Emit agent_complete audit event.
-    try:
-        evt_id = events.emit(conn, type="agent_complete", detail=f"Agent {agent_type} completed")
-        result["events"].append({"type": "agent_complete", "id": evt_id})
-    except Exception:
-        pass  # Audit emission is best-effort; never block routing.
-
     # ---------------------------------------------------------------------------
     # Resolve workflow_id and active lease from the project root.
     #
@@ -106,6 +112,18 @@ def process_agent_stop(
     # ---------------------------------------------------------------------------
     workflow_id, active_lease_id = _resolve_lease_context(conn, project_root)
     result["workflow_id"] = workflow_id
+
+    # Emit stop audit event — type depends on whether check-* hooks flagged an
+    # interruption. Placed AFTER lease resolution so workflow_id is available
+    # for the correlation key match in _detect_interrupted (DEC-STOP-ASSESS-002).
+    try:
+        is_interrupted, _interrupt_reason = _detect_interrupted(conn, normalised, workflow_id)
+        stop_event_type = "agent_stopped" if is_interrupted else "agent_complete"
+        stop_detail = f"Agent {agent_type} {'stopped (appears interrupted)' if is_interrupted else 'completed'}"
+        evt_id = events.emit(conn, type=stop_event_type, detail=stop_detail)
+        result["events"].append({"type": stop_event_type, "id": evt_id})
+    except Exception:
+        pass  # Audit emission is best-effort; never block routing.
 
     # ---------------------------------------------------------------------------
     # Role-specific routing
@@ -166,12 +184,66 @@ def process_agent_stop(
             pass
         result["suggestion"] = ""
 
+    # Append interruption warning to suggestion when check-* hooks flagged an
+    # interrupted stop. Advisory only — does not change routing.
+    try:
+        if is_interrupted:
+            warning = (
+                f"\nWARNING: Agent appears interrupted mid-task"
+                f"{': ' + _interrupt_reason if _interrupt_reason else ''}. "
+                "Response lacks completion confirmation. Consider resuming via SendMessage."
+            )
+            result["suggestion"] = (result["suggestion"] or "") + warning
+    except NameError:
+        pass  # is_interrupted not set if emit block raised before assignment.
+
     return result
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _detect_interrupted(
+    conn: sqlite3.Connection,
+    agent_type: str,
+    workflow_id: str,
+) -> tuple[bool, str]:
+    """Check if check-* hooks flagged this agent stop as interrupted.
+
+    Queries recent stop_assessment events within a 30-second window and matches
+    on both agent_type and workflow_id for concurrency safety — two implementer
+    stops on different workflows in the same window must not collide.
+
+    Args:
+        conn:        Open SQLite connection.
+        agent_type:  Normalised role string (e.g. 'implementer').
+        workflow_id: Workflow correlation key (empty string if not resolvable).
+
+    Returns:
+        (is_interrupted, reason) — is_interrupted is False when no matching
+        assessment event is found or when any error occurs during lookup.
+        Assessment lookup is advisory; never raises.
+    """
+    try:
+        recent = events.query(
+            conn,
+            type="stop_assessment",
+            since=int(time.time()) - 30,
+            limit=5,
+        )
+        for assess in recent:
+            detail = assess.get("detail") or ""
+            # Match on both agent_type and workflow_id so concurrent stops on
+            # different workflows do not collide (DEC-STOP-ASSESS-002).
+            if detail.startswith(f"{agent_type}|{workflow_id}|appears_interrupted"):
+                parts = detail.split("|", 3)
+                reason = parts[3] if len(parts) > 3 else ""
+                return True, reason
+    except Exception:
+        pass  # Assessment lookup is advisory; never block routing.
+    return False, ""
 
 
 def _resolve_lease_context(

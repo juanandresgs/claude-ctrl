@@ -54,6 +54,7 @@ PASS=0
 FAIL=0
 FAILED_CASES=()
 
+# shellcheck disable=SC2329  # cleanup is invoked via trap EXIT
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -312,6 +313,14 @@ assert_eq "completion record: valid" "1" "$comp_valid"
 
 # ---------------------------------------------------------------------------
 # Phase 7: verify events recorded
+#
+# NOTE (DEC-STOP-ASSESS-002): This lifecycle test drives canned synthetic hook
+# payloads through post-task.sh. check-implementer.sh runs during the lifecycle
+# but the synthetic implementer response text does not contain future-tense
+# trailing patterns, so no stop_assessment events are emitted.
+# dispatch_engine._detect_interrupted finds no match and emits agent_complete
+# for every role. The >=3 assertion remains correct after the stop-assessment
+# gate was introduced — clean lifecycle completions always produce agent_complete.
 # ---------------------------------------------------------------------------
 events=$(policy event query --type "agent_complete")
 event_count=$(printf '%s' "$events" | jq -r '.count // 0')

@@ -128,7 +128,13 @@ fi
 run_hook "planner" >/dev/null 2>&1 || true
 
 # RUNTIME_ROOT already set above in run_hook block; use the worktree's cli.py.
-# Query test-scoped db directly
+# Query test-scoped db directly.
+#
+# NOTE (DEC-STOP-ASSESS-002): Synthetic planner completions in this test do not
+# run check-implementer.sh, so no stop_assessment events are written to the DB.
+# dispatch_engine._detect_interrupted finds no matching event and emits
+# agent_complete (not agent_stopped). The assertion below remains correct
+# after the stop-assessment gate was introduced.
 event_count=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     event query --type "agent_complete" 2>/dev/null \
     | jq -r '.count // 0' 2>/dev/null || echo "0")
