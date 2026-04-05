@@ -314,6 +314,163 @@ else
     fail "Case C: no WARNING in suggestion (got: $CASE_C_SUGGESTION)"
 fi
 
+# ===========================================================================
+# Case D: Future-tense body WITH test evidence — false-positive suppression
+#
+# The response contains "Let me verify" (future-tense trailing signal) but
+# ALSO contains "PASS: 5 tests passed" (test completion evidence). Check 7 in
+# check-implementer.sh cross-checks for test evidence before emitting
+# stop_assessment — so when evidence is present, no stop_assessment fires and
+# the agent is treated as cleanly complete.
+# ===========================================================================
+printf '\n-- Case D: future-tense body WITH test evidence (false-positive suppression) --\n'
+
+CASE_D_DIR="$TMP_DIR/case-d-git"
+CASE_D_DB="$TMP_DIR/case-d.db"
+mkdir -p "$CASE_D_DIR"
+
+git -C "$CASE_D_DIR" init -q 2>/dev/null
+git -C "$CASE_D_DIR" checkout -b feature/stop-assess-test-d -q 2>/dev/null || true
+git -C "$CASE_D_DIR" config user.email "test@test.com" 2>/dev/null
+git -C "$CASE_D_DIR" config user.name "Test" 2>/dev/null
+
+CLAUDE_POLICY_DB="$CASE_D_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
+
+# Response has "Let me verify" (future-tense tail) BUT also has test evidence.
+# Check 7 must suppress the stop_assessment because evidence is present.
+FP_RESPONSE="I started by checking the code. Let me verify the implementation.
+PASS: 5 tests passed, 0 failed. All checks green."
+
+CASE_D_OUT=$(run_hook_chain "$CASE_D_DIR" "$CASE_D_DB" "$FP_RESPONSE")
+
+# Assert: no stop_assessment event (test evidence suppresses false positive)
+ASSESS_D_COUNT=$(count_events "$CASE_D_DB" "stop_assessment")
+if [[ "$ASSESS_D_COUNT" -eq 0 ]]; then
+    pass "Case D: no stop_assessment event (test evidence suppresses false positive, count=0)"
+else
+    fail "Case D: no stop_assessment event — expected 0, got $ASSESS_D_COUNT"
+fi
+
+# Assert: agent_complete emitted (clean path taken)
+COMPLETE_D_COUNT=$(count_events "$CASE_D_DB" "agent_complete")
+if [[ "$COMPLETE_D_COUNT" -ge 1 ]]; then
+    pass "Case D: agent_complete emitted (count=$COMPLETE_D_COUNT)"
+else
+    fail "Case D: agent_complete emitted — expected >=1, got $COMPLETE_D_COUNT"
+fi
+
+# Assert: agent_stopped NOT emitted
+STOPPED_D_COUNT=$(count_events "$CASE_D_DB" "agent_stopped")
+if [[ "$STOPPED_D_COUNT" -eq 0 ]]; then
+    pass "Case D: agent_stopped NOT emitted (count=0)"
+else
+    fail "Case D: agent_stopped NOT emitted — expected 0, got $STOPPED_D_COUNT"
+fi
+
+# Assert: no WARNING in suggestion
+CASE_D_SUGGESTION=$(printf '%s' "$CASE_D_OUT" \
+    | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
+if [[ "$CASE_D_SUGGESTION" != *"WARNING: Agent appears interrupted"* ]]; then
+    pass "Case D: no WARNING in suggestion (false positive suppressed)"
+else
+    fail "Case D: no WARNING in suggestion (got: $CASE_D_SUGGESTION)"
+fi
+
+# ===========================================================================
+# Case E: Clean completion, no future-tense
+#
+# Response contains only clean completion language — no future-tense trailing
+# signal at all. No stop_assessment should fire, agent_complete should emit.
+# ===========================================================================
+printf '\n-- Case E: clean completion, no future-tense --\n'
+
+CASE_E_DIR="$TMP_DIR/case-e-git"
+CASE_E_DB="$TMP_DIR/case-e.db"
+mkdir -p "$CASE_E_DIR"
+
+git -C "$CASE_E_DIR" init -q 2>/dev/null
+git -C "$CASE_E_DIR" checkout -b feature/stop-assess-test-e -q 2>/dev/null || true
+git -C "$CASE_E_DIR" config user.email "test@test.com" 2>/dev/null
+git -C "$CASE_E_DIR" config user.name "Test" 2>/dev/null
+
+CLAUDE_POLICY_DB="$CASE_E_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
+
+CLEAN_E_RESPONSE="Implementation complete. All tests pass. Ready for tester review."
+
+CASE_E_OUT=$(run_hook_chain "$CASE_E_DIR" "$CASE_E_DB" "$CLEAN_E_RESPONSE")
+
+# Assert: no stop_assessment event
+ASSESS_E_COUNT=$(count_events "$CASE_E_DB" "stop_assessment")
+if [[ "$ASSESS_E_COUNT" -eq 0 ]]; then
+    pass "Case E: no stop_assessment event (clean completion, count=0)"
+else
+    fail "Case E: no stop_assessment event — expected 0, got $ASSESS_E_COUNT"
+fi
+
+# Assert: agent_complete emitted
+COMPLETE_E_COUNT=$(count_events "$CASE_E_DB" "agent_complete")
+if [[ "$COMPLETE_E_COUNT" -ge 1 ]]; then
+    pass "Case E: agent_complete emitted (count=$COMPLETE_E_COUNT)"
+else
+    fail "Case E: agent_complete emitted — expected >=1, got $COMPLETE_E_COUNT"
+fi
+
+# Assert: no WARNING in suggestion
+CASE_E_SUGGESTION=$(printf '%s' "$CASE_E_OUT" \
+    | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
+if [[ "$CASE_E_SUGGESTION" != *"WARNING: Agent appears interrupted"* ]]; then
+    pass "Case E: no WARNING in suggestion"
+else
+    fail "Case E: no WARNING in suggestion (got: $CASE_E_SUGGESTION)"
+fi
+
+# ===========================================================================
+# Case F: Very short response "Done."
+#
+# A minimal one-word completion. No future-tense signal, no test evidence.
+# The heuristic requires future-tense trailing signal to fire — absence of
+# future-tense means no stop_assessment even without explicit test evidence.
+# ===========================================================================
+printf '\n-- Case F: very short response "Done." --\n'
+
+CASE_F_DIR="$TMP_DIR/case-f-git"
+CASE_F_DB="$TMP_DIR/case-f.db"
+mkdir -p "$CASE_F_DIR"
+
+git -C "$CASE_F_DIR" init -q 2>/dev/null
+git -C "$CASE_F_DIR" checkout -b feature/stop-assess-test-f -q 2>/dev/null || true
+git -C "$CASE_F_DIR" config user.email "test@test.com" 2>/dev/null
+git -C "$CASE_F_DIR" config user.name "Test" 2>/dev/null
+
+CLAUDE_POLICY_DB="$CASE_F_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
+
+CASE_F_OUT=$(run_hook_chain "$CASE_F_DIR" "$CASE_F_DB" "Done.")
+
+# Assert: no stop_assessment event
+ASSESS_F_COUNT=$(count_events "$CASE_F_DB" "stop_assessment")
+if [[ "$ASSESS_F_COUNT" -eq 0 ]]; then
+    pass "Case F: no stop_assessment event (short response, no future-tense, count=0)"
+else
+    fail "Case F: no stop_assessment event — expected 0, got $ASSESS_F_COUNT"
+fi
+
+# Assert: agent_complete emitted
+COMPLETE_F_COUNT=$(count_events "$CASE_F_DB" "agent_complete")
+if [[ "$COMPLETE_F_COUNT" -ge 1 ]]; then
+    pass "Case F: agent_complete emitted (count=$COMPLETE_F_COUNT)"
+else
+    fail "Case F: agent_complete emitted — expected >=1, got $COMPLETE_F_COUNT"
+fi
+
+# Assert: no WARNING in suggestion
+CASE_F_SUGGESTION=$(printf '%s' "$CASE_F_OUT" \
+    | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
+if [[ "$CASE_F_SUGGESTION" != *"WARNING: Agent appears interrupted"* ]]; then
+    pass "Case F: no WARNING in suggestion"
+else
+    fail "Case F: no WARNING in suggestion (got: $CASE_F_SUGGESTION)"
+fi
+
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
