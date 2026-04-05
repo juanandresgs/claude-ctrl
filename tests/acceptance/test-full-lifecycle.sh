@@ -162,7 +162,9 @@ assert_eq() {
 
 SOURCE_PAYLOAD=$(jq -n \
     --arg fp "$TMP_DIR/src/impl.py" \
-    '{tool_name:"Write",tool_input:{file_path:$fp,content:"x=1"}}')
+    --arg content "# impl.py — stub for testing the implementer source-write allow path.
+x = 1" \
+    '{tool_name:"Write",tool_input:{file_path:$fp,content:$content}}')
 GOV_PAYLOAD=$(jq -n \
     --arg fp "$TMP_DIR/MASTER_PLAN.md" \
     '{tool_name:"Write",tool_input:{file_path:$fp,content:"# Plan v2"}}')

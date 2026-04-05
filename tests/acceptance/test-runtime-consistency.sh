@@ -138,7 +138,27 @@ printf '\n-- 4: statusline snapshot reflects populated runtime state\n'
 # Add a worktree and a dispatch cycle so snapshot has non-default values
 policy worktree register "/tmp/rt-wt-a" "feature/rt-a" --ticket "TKT-014" >/dev/null
 cycle_json=$(policy dispatch cycle-start "INIT-RT-TEST")
-policy dispatch enqueue "guardian" >/dev/null
+
+# DEC-WS6-001: dispatch_status is derived from the latest completion record via
+# determine_next_role(role, verdict), not from dispatch_queue. Issue a tester
+# lease and submit a completion with verdict=ready_for_guardian so the snapshot
+# returns dispatch_status=guardian.
+RT_WORKFLOW="wf-rt-dispatch-test"
+policy workflow bind "$RT_WORKFLOW" "$TMP_DIR" "feature/rt-test" >/dev/null 2>&1 || true
+policy workflow scope-set "$RT_WORKFLOW" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1 || true
+TESTER_LEASE_OUT=$(policy lease issue-for-dispatch "tester" \
+    --worktree-path "$TMP_DIR" \
+    --workflow-id "$RT_WORKFLOW" \
+    --allowed-ops '["routine_local"]' 2>/dev/null || echo '{}')
+TESTER_LEASE_ID=$(printf '%s' "$TESTER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
+if [[ -n "$TESTER_LEASE_ID" ]]; then
+    COMP_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"true","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"abc123"}'
+    policy completion submit \
+        --lease-id "$TESTER_LEASE_ID" \
+        --workflow-id "$RT_WORKFLOW" \
+        --role "tester" \
+        --payload "$COMP_PAYLOAD" >/dev/null 2>&1 || true
+fi
 
 snap=$(policy statusline snapshot)
 

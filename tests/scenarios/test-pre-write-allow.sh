@@ -27,7 +27,8 @@ TARGET_FILE="$TMP_DIR/src/app.ts"
 PAYLOAD=$(jq -n \
     --arg tool_name "Write" \
     --arg file_path "$TARGET_FILE" \
-    --arg content "export const x = 1;" \
+    --arg content "// app.ts — stub export for testing the implementer allow path.
+export const x = 1;" \
     '{tool_name: $tool_name, tool_input: {file_path: $file_path, content: $content}}')
 
 output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>/dev/null) || {

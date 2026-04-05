@@ -108,7 +108,9 @@ run_source_write() {
     local payload
     payload=$(jq -n \
         --arg fp "$project_dir/src/app.py" \
-        '{tool_name:"Write",tool_input:{file_path:$fp,content:"x=1"}}')
+        --arg content "# app.py — stub for testing the implementer source-write allow path.
+x = 1" \
+        '{tool_name:"Write",tool_input:{file_path:$fp,content:$content}}')
     printf '%s' "$payload" \
         | CLAUDE_PROJECT_DIR="$project_dir" "$PRE_WRITE" 2>/dev/null || true
 }
