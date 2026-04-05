@@ -125,9 +125,11 @@ is_safe() {
 # Split compound command into segments on &&, ||, ;
 # Pipe chains are treated as a single unit analyzed left-to-right.
 # Quote-aware: semicolons inside single or double quotes are preserved.
+# Multi-line commands are collapsed to a single line first so that quote
+# tracking is not reset at newline boundaries (e.g. python3 -c "...\n...").
 decompose_command() {
     local cmd="$1"
-    echo "$cmd" | awk '
+    printf '%s' "$cmd" | tr '\n' ' ' | awk '
     {
         n = length($0); sq = 0; dq = 0; start = 1
         for (i = 1; i <= n; i++) {
