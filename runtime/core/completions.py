@@ -1,17 +1,20 @@
 """Completion record authority for agent task endings.
 
 @decision DEC-COMPLETION-001
-Title: Structured completion records gate role-transition routing (v1: tester + guardian)
+Title: Structured completion records gate role-transition routing (v2: tester + guardian + implementer)
 Status: accepted
 Rationale: Subagents currently signal completion via freeform prose trailers
   (EVAL_VERDICT, IMPL_STATUS, etc.). These are parsed by grep in shell hooks,
   making them fragile and unverifiable. Completion records replace the grep path
-  with a structured SQLite insert at task end. The evaluator (tester) and
-  guardian produce validated records; the routing layer reads verdict + valid
-  to determine the next role.
+  with a structured SQLite insert at task end. The evaluator (tester),
+  guardian, and implementer produce validated records; the routing layer reads
+  verdict + valid to determine the next role.
 
-  v1 scope: tester and guardian only. Implementer/planner schemas are deferred
-  until check-implementer.sh and check-planner.sh hooks exist to enforce them.
+  v2 scope: tester, guardian, and implementer. The implementer schema activates
+  the IMPL_STATUS/IMPL_HEAD_SHA contract so dispatch_engine can prefer a
+  structured completion record over the heuristic stop-assessment signal.
+  Planner schema is deferred until check-planner.sh hook exists to enforce it.
+
   The ROLE_SCHEMAS constant is the single source of truth for which roles have
   active validation. Callers must not hard-code role lists — import from here.
 
@@ -30,12 +33,11 @@ import sqlite3
 import time
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
 # Role schemas — v1 enforced roles only
 # ---------------------------------------------------------------------------
 
-# v1 enforced roles — these schemas are active validation targets.
+# v2 enforced roles — these schemas are active validation targets.
 ROLE_SCHEMAS: dict = {
     "tester": {
         "required": ["EVAL_VERDICT", "EVAL_TESTS_PASS", "EVAL_NEXT_ROLE", "EVAL_HEAD_SHA"],
@@ -47,17 +49,16 @@ ROLE_SCHEMAS: dict = {
         "valid_verdicts": frozenset({"committed", "merged", "denied", "skipped"}),
         "verdict_field": "LANDING_RESULT",
     },
+    "implementer": {
+        "required": ["IMPL_STATUS", "IMPL_HEAD_SHA"],
+        "valid_verdicts": frozenset({"complete", "partial", "blocked"}),
+        "verdict_field": "IMPL_STATUS",
+    },
 }
 
-# Future schemas — NOT active in v1. Defined here for documentation only.
-# When check-implementer.sh and check-planner.sh hooks exist, move these
-# into ROLE_SCHEMAS to activate enforcement.
+# Future schemas — NOT active yet. Defined here for documentation only.
+# When check-planner.sh hook exists, move planner into ROLE_SCHEMAS.
 # _FUTURE_SCHEMAS = {
-#     "implementer": {
-#         "required": ["IMPL_STATUS", "IMPL_HEAD_SHA"],
-#         "valid_verdicts": frozenset({"complete", "partial", "blocked"}),
-#         "verdict_field": "IMPL_STATUS",
-#     },
 #     "planner": {
 #         "required": ["PLAN_STATUS"],
 #         "valid_verdicts": frozenset({"complete", "needs_input", "blocked"}),
@@ -275,5 +276,11 @@ def determine_next_role(role: str, verdict: str) -> Optional[str]:
         ("guardian", "merged"): None,
         ("guardian", "denied"): "implementer",
         ("guardian", "skipped"): "implementer",
+        # Implementer routing is always → tester regardless of verdict.
+        # The contract affects stop quality (agent_complete vs agent_stopped),
+        # not routing destination (DEC-IMPL-CONTRACT-001).
+        ("implementer", "complete"): "tester",
+        ("implementer", "partial"): "tester",
+        ("implementer", "blocked"): "tester",
     }
     return _routing.get((role, verdict))

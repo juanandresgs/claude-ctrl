@@ -1,12 +1,12 @@
 """Unit tests for runtime/core/completions.py
 
 @decision DEC-COMPLETION-001
-Title: Structured completion records gate role-transition routing (v1: tester + guardian)
+Title: Structured completion records gate role-transition routing (v2: tester + guardian + implementer)
 Status: accepted
 Rationale: These tests exercise validate_payload (pure), submit (DB insert),
   latest, list_completions, and determine_next_role against an in-memory SQLite
-  database. They prove the v1 enforcement scope (tester + guardian only) and the
-  routing table that orchestrators and hooks will rely on.
+  database. They prove the v2 enforcement scope (tester + guardian + implementer)
+  and the routing table that orchestrators and hooks will rely on.
 
   Compound-interaction test (test_full_tester_completion_lifecycle) exercises
   the real production sequence: lease issue → submit valid completion →
@@ -17,9 +17,8 @@ import sqlite3
 
 import pytest
 
-from runtime.schemas import ensure_schema
 from runtime.core import completions, leases
-
+from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
 # Fixture
@@ -145,7 +144,8 @@ def test_validate_guardian_invalid_verdict():
 
 
 def test_validate_unknown_role_returns_role_not_enforced():
-    result = completions.validate_payload("implementer", {"IMPL_STATUS": "complete"})
+    # planner is still unenforced (schema deferred until check-planner.sh exists)
+    result = completions.validate_payload("planner", {"PLAN_STATUS": "complete"})
     assert result["valid"] is False
     assert "role_not_enforced" in result["missing_fields"]
 
@@ -302,6 +302,70 @@ def test_determine_next_role_unknown_role_is_none():
 
 def test_determine_next_role_unknown_verdict_is_none():
     assert completions.determine_next_role("tester", "unknown_verdict") is None
+
+
+def test_determine_next_role_implementer_complete():
+    assert completions.determine_next_role("implementer", "complete") == "tester"
+
+
+def test_determine_next_role_implementer_partial():
+    assert completions.determine_next_role("implementer", "partial") == "tester"
+
+
+def test_determine_next_role_implementer_blocked():
+    assert completions.determine_next_role("implementer", "blocked") == "tester"
+
+
+# ---------------------------------------------------------------------------
+# validate_payload — implementer
+# ---------------------------------------------------------------------------
+
+
+def test_validate_implementer_all_required_valid():
+    result = completions.validate_payload(
+        "implementer",
+        {"IMPL_STATUS": "complete", "IMPL_HEAD_SHA": "abc123"},
+    )
+    assert result["valid"] is True
+    assert result["verdict"] == "complete"
+
+
+def test_validate_implementer_missing_impl_status():
+    result = completions.validate_payload("implementer", {"IMPL_HEAD_SHA": "abc123"})
+    assert result["valid"] is False
+    assert "IMPL_STATUS" in result["missing_fields"]
+
+
+def test_validate_implementer_missing_head_sha():
+    result = completions.validate_payload("implementer", {"IMPL_STATUS": "complete"})
+    assert result["valid"] is False
+    assert "IMPL_HEAD_SHA" in result["missing_fields"]
+
+
+def test_validate_implementer_invalid_verdict():
+    result = completions.validate_payload(
+        "implementer",
+        {"IMPL_STATUS": "dunno", "IMPL_HEAD_SHA": "abc123"},
+    )
+    assert result["valid"] is False
+
+
+def test_validate_implementer_partial():
+    result = completions.validate_payload(
+        "implementer",
+        {"IMPL_STATUS": "partial", "IMPL_HEAD_SHA": "abc123"},
+    )
+    assert result["valid"] is True
+    assert result["verdict"] == "partial"
+
+
+def test_validate_implementer_blocked():
+    result = completions.validate_payload(
+        "implementer",
+        {"IMPL_STATUS": "blocked", "IMPL_HEAD_SHA": "abc123"},
+    )
+    assert result["valid"] is True
+    assert result["verdict"] == "blocked"
 
 
 # ---------------------------------------------------------------------------

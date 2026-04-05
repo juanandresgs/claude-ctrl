@@ -262,6 +262,65 @@ if [[ "$_INTERRUPTED" == "true" ]]; then
         "${AGENT_TYPE}|${_ASSESS_WF_ID}|appears_interrupted|${_INTERRUPT_REASON}" || true
 fi
 
+# Check 8: Implementer completion contract (DEC-IMPL-CONTRACT-001)
+# Parse IMPL_STATUS and IMPL_HEAD_SHA trailers from the response text.
+# When present, submit a structured completion record so dispatch_engine
+# can prefer the contract over the heuristic for agent_complete vs agent_stopped.
+# Missing trailers = backward-compatible heuristic fallback (NOT a hard failure).
+# Malformed trailers = invalid contract evidence (NOT silently trusted).
+#
+# @decision DEC-IMPL-CONTRACT-002
+# @title check-implementer.sh Check 8 parses and submits IMPL_STATUS/IMPL_HEAD_SHA
+# @status accepted
+# @rationale The completion contract (DEC-IMPL-CONTRACT-001) requires a structured
+#   record in SQLite so dispatch_engine can read it in process_agent_stop(). This
+#   check performs the bash-side parse using the same trailer pattern as check-tester.sh
+#   and submits via _local_cc_policy completion submit. Lease-first workflow identity
+#   (reusing _ASSESS_LEASE_CTX from Check 7) ensures the record is filed under the
+#   same workflow_id the dispatch engine resolves. When no active lease is found the
+#   record cannot be submitted; the heuristic from Check 7 remains the fallback.
+_IMPL_CONTRACT_NOTE=""
+_IMPL_STATUS=""
+_IMPL_HEAD_SHA=""
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    _IMPL_STATUS=$(printf '%s' "$RESPONSE_TEXT" | grep -oE 'IMPL_STATUS:[[:space:]]*[^[:space:]]+' | tail -1 | sed 's/IMPL_STATUS:[[:space:]]*//' || echo "")
+    _IMPL_HEAD_SHA=$(printf '%s' "$RESPONSE_TEXT" | grep -oE 'IMPL_HEAD_SHA:[[:space:]]*[^[:space:]]+' | tail -1 | sed 's/IMPL_HEAD_SHA:[[:space:]]*//' || echo "")
+fi
+
+if [[ -n "$_IMPL_STATUS" ]]; then
+    # Build payload JSON
+    _IMPL_PAYLOAD=$(jq -n \
+        --arg status "$_IMPL_STATUS" \
+        --arg sha "${_IMPL_HEAD_SHA:-}" \
+        '{IMPL_STATUS: $status, IMPL_HEAD_SHA: $sha}')
+
+    # Resolve lease_id and workflow_id for submission (lease-first, reuse existing)
+    _IMPL_LEASE_ID=""
+    _IMPL_WF_ID=""
+    if [[ "$_ASSESS_LEASE_FOUND" == "true" ]]; then
+        _IMPL_LEASE_ID=$(printf '%s' "$_ASSESS_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        _IMPL_WF_ID="$_ASSESS_WF_ID"
+    fi
+    [[ -z "$_IMPL_WF_ID" ]] && _IMPL_WF_ID="$_WF_ID"
+
+    if [[ -n "$_IMPL_LEASE_ID" && -n "$_IMPL_WF_ID" ]]; then
+        _SUBMIT_OUT=$(_local_cc_policy completion submit \
+            --lease-id "$_IMPL_LEASE_ID" \
+            --workflow-id "$_IMPL_WF_ID" \
+            --role "implementer" \
+            --payload "$_IMPL_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
+        _SUBMIT_VALID=$(printf '%s' "$_SUBMIT_OUT" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
+        if [[ "$_SUBMIT_VALID" == "true" ]]; then
+            _IMPL_CONTRACT_NOTE="Implementer contract: IMPL_STATUS=$_IMPL_STATUS (valid, submitted)"
+        else
+            ISSUES+=("Implementer contract trailers present but invalid (IMPL_STATUS=$_IMPL_STATUS)")
+        fi
+    else
+        # No lease — trailers present but cannot submit. Advisory only.
+        _IMPL_CONTRACT_NOTE="Implementer contract: IMPL_STATUS=$_IMPL_STATUS (no active lease, not submitted)"
+    fi
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
@@ -276,6 +335,9 @@ else
     CONTEXT="Implementer validation: branch=$CURRENT_BRANCH, @decision coverage OK."
 fi
 CONTEXT+="\n$VERIFICATION_NOTE"
+if [[ -n "$_IMPL_CONTRACT_NOTE" ]]; then
+    CONTEXT+="\n$_IMPL_CONTRACT_NOTE"
+fi
 
 # Emit findings to runtime event store (TKT-008: .agent-findings flat file removed).
 # Events are queryable via cc-policy and surface through the runtime event log.

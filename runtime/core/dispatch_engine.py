@@ -42,6 +42,21 @@ Rationale: Claude Code's Agent tool returns status=completed on any subagent sto
   otherwise. The assessment is advisory — errors in the lookup never block routing.
   The emission is placed AFTER lease context resolution so workflow_id is available
   for the correlation key match, preventing false positives from concurrent stops.
+
+@decision DEC-IMPL-CONTRACT-001
+Title: Implementer completion contract overrides stop-assessment heuristic
+Status: accepted
+Rationale: The heuristic (DEC-STOP-ASSESS-001) detects interrupted implementers
+  via future-tense trailing signals — a narrow proxy. When IMPL_STATUS and
+  IMPL_HEAD_SHA trailers are present and valid, the structured contract is
+  authoritative for agent_complete vs agent_stopped. The heuristic is fallback
+  only when no valid completion record exists. Routing (implementer → tester)
+  is unchanged — the contract affects stop quality, not routing.
+
+  Implementation: stop-event emission is deferred past the implementer role block
+  so the contract lookup can override is_interrupted before the event is written.
+  For all other roles the behaviour is unchanged (heuristic computed and emitted
+  in the same pass as before).
 """
 
 from __future__ import annotations
@@ -113,19 +128,18 @@ def process_agent_stop(
     workflow_id, active_lease_id = _resolve_lease_context(conn, project_root)
     result["workflow_id"] = workflow_id
 
-    # Emit stop audit event — type depends on whether check-* hooks flagged an
-    # interruption. Placed AFTER lease resolution so the active lease is queryable
-    # by _resolve_stop_assessment_wf_id inside _detect_interrupted (DEC-STOP-ASSESS-002).
-    # project_root is passed (not workflow_id) so _detect_interrupted can perform
-    # its own lease-first resolution to match check-implementer.sh's key (DEC-STOP-ASSESS-004).
+    # Compute heuristic interruption signal BEFORE role blocks, but defer
+    # stop-event emission until AFTER the implementer contract check.
+    # For all non-implementer roles the deferred emission is equivalent to the
+    # old immediate-emission behaviour (DEC-STOP-ASSESS-002).
+    # For the implementer role, a valid completion contract overrides the
+    # heuristic result before the event is written (DEC-IMPL-CONTRACT-001).
+    is_interrupted = False
+    _interrupt_reason = ""
     try:
         is_interrupted, _interrupt_reason = _detect_interrupted(conn, normalised, project_root)
-        stop_event_type = "agent_stopped" if is_interrupted else "agent_complete"
-        stop_detail = f"Agent {agent_type} {'stopped (appears interrupted)' if is_interrupted else 'completed'}"
-        evt_id = events.emit(conn, type=stop_event_type, detail=stop_detail)
-        result["events"].append({"type": stop_event_type, "id": evt_id})
     except Exception:
-        pass  # Audit emission is best-effort; never block routing.
+        pass  # Heuristic is advisory; never block routing.
 
     # ---------------------------------------------------------------------------
     # Role-specific routing
@@ -146,6 +160,36 @@ def process_agent_stop(
             except Exception:
                 pass  # Best-effort; routing is not gated on eval write.
 
+        # Check for structured completion contract (DEC-IMPL-CONTRACT-001).
+        # When present and valid, trust IMPL_STATUS over the stop-assessment
+        # heuristic. When absent or invalid, the heuristic from above still
+        # applies. Routing (→ tester) is unchanged in all cases.
+        if active_lease_id:
+            try:
+                impl_comp = completions.latest(conn, lease_id=active_lease_id)
+                if impl_comp and impl_comp.get("role") == "implementer":
+                    comp_valid = impl_comp.get("valid")
+                    if comp_valid == 1 or comp_valid is True:
+                        # Valid contract — override the heuristic.
+                        impl_status = impl_comp.get("verdict", "")
+                        is_interrupted = impl_status != "complete"
+                        _interrupt_reason = (
+                            f"contract: IMPL_STATUS={impl_status}" if is_interrupted else ""
+                        )
+                    else:
+                        # Present but invalid — emit advisory, heuristic stands.
+                        try:
+                            events.emit(
+                                conn,
+                                type="impl_contract_invalid",
+                                detail=f"Implementer completion invalid for {workflow_id}",
+                            )
+                            result["events"].append({"type": "impl_contract_invalid"})
+                        except Exception:
+                            pass
+            except Exception:
+                pass  # Contract lookup is best-effort; never block routing.
+
     elif normalised == "tester":
         next_role, error = _route_from_completion(
             conn,
@@ -165,6 +209,19 @@ def process_agent_stop(
         )
         result["next_role"] = next_role
         result["error"] = error
+
+    # ---------------------------------------------------------------------------
+    # Emit stop audit event (deferred so implementer contract can override
+    # is_interrupted before the event is written — DEC-IMPL-CONTRACT-001).
+    # For all other roles this is equivalent to the original immediate emission.
+    # ---------------------------------------------------------------------------
+    try:
+        stop_event_type = "agent_stopped" if is_interrupted else "agent_complete"
+        stop_detail = f"Agent {agent_type} {'stopped (appears interrupted)' if is_interrupted else 'completed'}"
+        evt_id = events.emit(conn, type=stop_event_type, detail=stop_detail)
+        result["events"].append({"type": stop_event_type, "id": evt_id})
+    except Exception:
+        pass  # Audit emission is best-effort; never block routing.
 
     # ---------------------------------------------------------------------------
     # Build suggestion for hookSpecificOutput additionalContext

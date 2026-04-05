@@ -323,6 +323,88 @@ def test_suggestion_empty_when_cycle_complete(conn, project_root):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# implementer completion contract (DEC-IMPL-CONTRACT-001)
+# ---------------------------------------------------------------------------
+
+
+def _submit_valid_implementer_completion(conn, lease_id, workflow_id, status="complete"):
+    return completions.submit(
+        conn,
+        lease_id=lease_id,
+        workflow_id=workflow_id,
+        role="implementer",
+        payload={
+            "IMPL_STATUS": status,
+            "IMPL_HEAD_SHA": "abc123",
+        },
+    )
+
+
+def test_implementer_valid_contract_emits_agent_complete(conn, project_root):
+    """Valid IMPL_STATUS=complete contract → agent_complete event, routing unchanged."""
+    wf_id = "wf-impl-contract-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "tester"
+    assert result["error"] is None
+    complete_events = [e for e in result["events"] if e["type"] == "agent_complete"]
+    assert len(complete_events) >= 1
+
+
+def test_implementer_partial_contract_emits_agent_stopped(conn, project_root):
+    """Valid IMPL_STATUS=partial contract → agent_stopped event, routing still → tester."""
+    wf_id = "wf-impl-contract-002"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="partial")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "tester"
+    stopped_events = [e for e in result["events"] if e["type"] == "agent_stopped"]
+    assert len(stopped_events) >= 1
+
+
+def test_implementer_blocked_contract_emits_agent_stopped(conn, project_root):
+    """Valid IMPL_STATUS=blocked contract → agent_stopped event, routing still → tester."""
+    wf_id = "wf-impl-contract-003"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "tester"
+    stopped_events = [e for e in result["events"] if e["type"] == "agent_stopped"]
+    assert len(stopped_events) >= 1
+
+
+def test_implementer_invalid_contract_not_trusted(conn, project_root):
+    """Malformed IMPL_STATUS emits impl_contract_invalid and does not override heuristic."""
+    wf_id = "wf-impl-contract-004"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    # Submit with bogus IMPL_STATUS — will be stored valid=0
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="implementer",
+        payload={"IMPL_STATUS": "bogus_status", "IMPL_HEAD_SHA": "abc123"},
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "tester"  # routing unchanged
+    invalid_events = [e for e in result["events"] if e["type"] == "impl_contract_invalid"]
+    assert len(invalid_events) >= 1
+
+
+def test_implementer_contract_uses_lease_workflow_id(conn, project_root):
+    """Contract is read under the lease workflow_id, result carries that id."""
+    wf_id = "wf-impl-lease-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["workflow_id"] == wf_id
+    assert result["next_role"] == "tester"
+    complete_events = [e for e in result["events"] if e["type"] == "agent_complete"]
+    assert len(complete_events) >= 1
+
+
 def test_full_tester_to_guardian_production_sequence(conn, project_root):
     """Compound-interaction test exercising the real production path:
 
