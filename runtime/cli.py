@@ -951,6 +951,13 @@ def _handle_evaluate(args) -> int:
         # If git root resolution failed (non-git dir), use target_cwd directly
         if not resolved_project_root:
             resolved_project_root = target_cwd
+    # DEC-CONV-001: normalize so all DB lookups use the canonical realpath form.
+    # build_context also normalizes, but applying it here ensures the value
+    # logged or passed to other callsites is already canonical.
+    if resolved_project_root:
+        from runtime.core.policy_utils import normalize_path as _normalize_path
+
+        resolved_project_root = _normalize_path(resolved_project_root)
 
     conn = _get_conn()
     try:
@@ -1156,11 +1163,18 @@ import runtime.core.test_state as ts_mod
 
 
 def _resolve_project_root(args) -> str:
-    """Resolve project_root from args, env, or git root. Returns '' on failure."""
+    """Resolve project_root from args, env, or git root. Returns '' on failure.
+
+    All resolved paths are normalized via normalize_path() (DEC-CONV-001) so
+    the returned value is always a canonical realpath form suitable for use
+    as a SQLite key in test_state and other tables.
+    """
+    import os
+
+    from runtime.core.policy_utils import normalize_path
+
     project_root = getattr(args, "project_root", None) or ""
     if not project_root:
-        import os
-
         project_root = os.environ.get("CLAUDE_PROJECT_DIR", "")
     if not project_root:
         import subprocess
@@ -1171,7 +1185,7 @@ def _resolve_project_root(args) -> str:
             text=True,
         )
         project_root = result.stdout.strip() if result.returncode == 0 else ""
-    return project_root
+    return normalize_path(project_root) if project_root else ""
 
 
 def _handle_test_state(args) -> int:

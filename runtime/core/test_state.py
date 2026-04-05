@@ -19,6 +19,16 @@ Rationale: WS3 retires the .claude/.test-status flat-file as a READ authority.
   The module follows the same interface pattern as runtime.core.proof and
   runtime.core.evaluation: conn is passed in by the caller (cli.py) so
   the module is independently testable without subprocess overhead.
+
+@decision DEC-CONV-001
+Title: normalize_path() applied at every test_state persist/query boundary
+Status: accepted
+Rationale: test_state rows are keyed by project_root string equality. On macOS
+  the same directory may be referenced as /tmp/x (symlink) or /private/tmp/x
+  (realpath). Without normalization a row written with one form is invisible
+  when queried with the other. Applying normalize_path() to project_root in
+  set_status, get_status, and check_pass guarantees all rows share the same
+  canonical key regardless of how the caller obtained the path.
 """
 
 from __future__ import annotations
@@ -26,6 +36,8 @@ from __future__ import annotations
 import sqlite3
 import time
 from typing import Optional
+
+from runtime.core.policy_utils import normalize_path
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -47,9 +59,13 @@ def set_status(
     overwrite all fields so callers never accumulate history here — that is
     the responsibility of the audit trail (events table).
 
+    project_root is normalized via normalize_path() (DEC-CONV-001) before
+    being stored so all rows use the canonical realpath form.
+
     No status validation: test-runner.sh may emit any status string; callers
     that care about validity (check_pass) use explicit comparisons.
     """
+    canonical_root = normalize_path(project_root)
     now = int(time.time())
     with conn:
         conn.execute(
@@ -65,7 +81,7 @@ def set_status(
                 total_count = excluded.total_count,
                 updated_at  = excluded.updated_at
             """,
-            (project_root, head_sha, status, pass_count, fail_count, total_count, now),
+            (canonical_root, head_sha, status, pass_count, fail_count, total_count, now),
         )
 
 
@@ -78,14 +94,18 @@ def get_status(conn: sqlite3.Connection, project_root: str) -> dict:
 
     Returns found=False with safe defaults when no row exists — callers
     can check `result["found"]` without branching on None.
+
+    project_root is normalized via normalize_path() (DEC-CONV-001) before
+    querying so the lookup key always matches the stored canonical form.
     """
+    canonical_root = normalize_path(project_root)
     row = conn.execute(
         """
         SELECT project_root, head_sha, status, pass_count, fail_count, total_count, updated_at
         FROM test_state
         WHERE project_root = ?
         """,
-        (project_root,),
+        (canonical_root,),
     ).fetchone()
 
     if row is None:
@@ -123,6 +143,8 @@ def check_pass(
 
     Returns False when no row exists (safe-fail: absence of evidence is
     not evidence of passing).
+
+    project_root normalization is delegated to get_status() (DEC-CONV-001).
     """
     state = get_status(conn, project_root)
     if not state["found"]:

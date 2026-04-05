@@ -37,6 +37,7 @@ import time
 import uuid
 from typing import Optional
 
+from runtime.core.policy_utils import normalize_path  # DEC-CONV-001
 from runtime.schemas import DEFAULT_LEASE_TTL
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,15 @@ def issue(
     If worktree_path is provided, any existing active lease for that path is
     revoked within the same transaction (one-active-per-worktree invariant).
     Returns the full lease row as a dict.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) before
+    being stored. build_context() looks up active leases by worktree_path;
+    if the stored path uses a different form (symlink vs realpath) than the
+    lookup key the lease becomes invisible.
     """
+    # DEC-CONV-001: normalize worktree_path to canonical realpath form.
+    canonical_worktree = normalize_path(worktree_path) if worktree_path else worktree_path
+
     lease_id = uuid.uuid4().hex
     now = int(time.time())
     expires_at = now + ttl
@@ -229,8 +238,8 @@ def issue(
 
     with conn:
         # Enforce uniqueness: one active lease per worktree.
-        if worktree_path:
-            _revoke_active_for_worktree(conn, worktree_path, now)
+        if canonical_worktree:
+            _revoke_active_for_worktree(conn, canonical_worktree, now)
 
         conn.execute(
             """INSERT INTO dispatch_leases (
@@ -243,7 +252,7 @@ def issue(
                 lease_id,
                 role,
                 workflow_id,
-                worktree_path,
+                canonical_worktree,
                 branch,
                 allowed_ops_json,
                 blocked_ops_json,
