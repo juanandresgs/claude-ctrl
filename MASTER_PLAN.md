@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-03-27 (INIT-004 TKT-024 final revision — check-implementer added, proof writes enumerated, statusline tightened)
+Last updated: 2026-04-05 (INIT-REBASE completed; INIT-PE postmortem added; acceptance baseline updated to 969 passed, 0 failed)
 
 ## Identity
 
@@ -1875,6 +1875,79 @@ New (8):
 - DEPRECATED: `proof_state` — zero enforcement effect after cutover
 
 ## Completed Initiatives
+
+### INIT-REBASE: Test Suite Rebaseline (completed 2026-04-05)
+
+- **Status:** completed (2026-04-05)
+- **Goal:** Rebaseline the acceptance and scenario test suites after INIT-PE
+  delivered the Python policy engine. Stale shell-era test expectations had
+  accumulated across multiple waves; this initiative reconciled them and
+  established a clean numeric baseline for future enforcement regressions.
+- **Delivered:**
+  - **REBASE-W1:** Full scenario + runtime suite rebaseline. All stale
+    `guard.sh`, `write-policy.sh`, `bash-policy.sh`, `plan-policy.sh`, and
+    `dispatch-helpers.sh` references removed from executable test lines.
+    Flat-file `.test-status` write expectations purged. Result:
+    `969 passed, 0 failed`.
+  - **REBASE-W2:** Lint gate (`tests/lint-test-patterns.sh`) added to catch
+    stale patterns before they re-accumulate. Verified clean against the
+    full suite.
+- **Acceptance baseline:** `969 passed, 0 failed`
+- **Exit criteria met:** Zero stale pattern warnings from lint gate. Runtime
+  suite (`python3 -m pytest tests/runtime/ -q`) reports `969 passed, 0 failed`.
+  Scenario suite clean against real hooks.
+
+### INIT-PE: Python Policy Engine Migration (completed 2026-04-03)
+
+- **Status:** completed (2026-04-03)
+- **Goal:** Replace the shell-based policy layer (`hooks/lib/write-policy.sh`,
+  `hooks/lib/bash-policy.sh`, `hooks/lib/plan-policy.sh`,
+  `hooks/lib/dispatch-helpers.sh`, `hooks/guard.sh`) with a Python policy
+  engine (`cc-policy evaluate`) that is typed, testable, and maintains a
+  single enforcement authority in the runtime domain. The shell scripts were
+  superseded in full; no shell fallback was retained.
+- **Delivered:**
+  - Python policy engine with `cc-policy evaluate` as the sole enforcement
+    entry point for all pre-bash and pre-write policy decisions.
+  - `hooks/pre-bash.sh` and `hooks/pre-write.sh` become thin adapters that
+    call `cc-policy evaluate` and relay the decision; all policy logic moved
+    into Python.
+  - `hooks/lib/write-policy.sh`, `hooks/lib/bash-policy.sh`,
+    `hooks/lib/plan-policy.sh`, `hooks/lib/dispatch-helpers.sh`, and
+    `hooks/guard.sh` deleted. Zero shell policy logic remains on the
+    enforcement hot path.
+  - `bash_eval_readiness` policy migrated into the Python engine (was
+    guard.sh Check 10).
+  - Dispatch queue helpers deleted; completion records replace enqueue flow
+    (DEC-WS6-001).
+- **Exit criteria met:** `cc-policy evaluate` is the sole policy authority.
+  All deleted shell lib files are absent from the repo. Acceptance suite green
+  after rebaseline.
+
+#### Postmortem
+
+**What happened:** INIT-PE was a 6-wave policy engine migration. Each wave
+went through independent evaluator review. Multiple revision rounds were
+needed due to fail-open adapters, stale tests, and bridge integration bugs.
+
+**Root causes of drift:**
+- Docs lagged code: shell-era expectations persisted after Python migration
+- Review briefs overstated readiness before acceptance parity was checked
+- Multiple truth surfaces coexisted: old shell expectations, new runtime
+  behavior, partially updated tests
+- Migrations added new authority without removing old tests/docs
+
+**Architectural pivots causing most drift:**
+- DEC-WS6-001: completion records replaced dispatch_queue
+- DEC-LINT-002: lint.sh deny moved to Python policy engine
+- Lease-first model: all git ops require a lease
+- Runtime-only state: flat-file .test-status replaced by SQLite
+
+**Lessons for future initiatives:**
+- Remove old authority AND reconcile tests/docs in the same commit
+- Acceptance suite must be green before declaring a wave ready
+- Independent evaluators catch real bugs — keep using them
+- Test reconciliation is migration scope, not cleanup
 
 ### INIT-002: Runtime MVP and Thin Hook Cutover (completed 2026-03-24)
 

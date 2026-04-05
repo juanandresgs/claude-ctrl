@@ -53,7 +53,9 @@ $CC event emit  "test_event" --source "test-sidecar-shadow.sh" \
                              --detail "setup event for sidecar test" >/dev/null 2>&1
 $CC worktree register "/tmp/wt-sidecar-test" "feature/tkt-015" \
                       --ticket "TKT-015" >/dev/null 2>&1
-$CC dispatch enqueue "tester" --ticket "TKT-015" >/dev/null 2>&1
+# DEC-WS6-001: dispatch_queue enqueue removed (non-authoritative). Sidecar
+# test does not depend on dispatch state; this line was setup noise.
+$CC dispatch cycle-start "TKT-015" >/dev/null 2>&1
 $CC trace start "$SESSION_ID" --role "implementer" --ticket "TKT-015" >/dev/null 2>&1
 $CC trace manifest "$SESSION_ID" file_write \
     --path "sidecars/observatory/observe.py" \
