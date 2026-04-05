@@ -446,3 +446,103 @@ def test_compound_path_alias_full_production_sequence(tmp_path):
         assert canonical_git == os.path.realpath(git_root)
 
     conn_obj.close()
+
+
+# ---------------------------------------------------------------------------
+# 6. Lease query-side path normalization (W-CONV-1 regression)
+# ---------------------------------------------------------------------------
+
+
+def test_lease_get_current_raw_path_finds_normalized_lease(tmp_path):
+    """Issue a lease with raw/symlink path; get_current via raw path must find it.
+
+    W-CONV-1 regression: issue() normalizes worktree_path on the WRITE side.
+    Before this fix, get_current() passed the raw (un-normalized) path to the
+    SQL WHERE clause, causing a miss because the stored value is canonical.
+
+    Production sequence:
+      1. Orchestrator calls issue() with raw path → stored as normalized realpath
+      2. Shell caller (detect_project_root / lease_context) passes raw path to
+         get_current() → must match the stored canonical form → returns lease
+      3. get_current() with the realpath form must also return the same lease
+    """
+    from runtime.core import leases
+    from runtime.core.db import connect_memory
+    from runtime.schemas import ensure_schema
+
+    conn_obj = connect_memory()
+    ensure_schema(conn_obj)
+
+    real_dir = tmp_path / "worktree"
+    real_dir.mkdir()
+    link = tmp_path / "wt_link"
+    link.symlink_to(real_dir)
+
+    raw_path = str(link)  # symlink form (what shell might pass)
+    canonical_path = os.path.realpath(raw_path)  # normalized form (what issue() stores)
+
+    # Step 1: issue with raw path — stored internally as canonical_path
+    lease = leases.issue(conn_obj, role="implementer", worktree_path=raw_path)
+    assert lease is not None
+    assert lease["worktree_path"] == canonical_path, (
+        f"issue() should normalize: stored={lease['worktree_path']!r}, "
+        f"expected canonical={canonical_path!r}"
+    )
+
+    # Step 2: query via raw path — must find the lease (the W-CONV-1 bug repro)
+    found_via_raw = leases.get_current(conn_obj, worktree_path=raw_path)
+    assert found_via_raw is not None, (
+        f"get_current(worktree_path={raw_path!r}) returned None — "
+        f"query-side normalization missing (W-CONV-1 regression)"
+    )
+    assert found_via_raw["lease_id"] == lease["lease_id"]
+
+    # Step 3: query via canonical path — must also find the same lease
+    found_via_canonical = leases.get_current(conn_obj, worktree_path=canonical_path)
+    assert found_via_canonical is not None, (
+        f"get_current(worktree_path={canonical_path!r}) returned None — unexpected"
+    )
+    assert found_via_canonical["lease_id"] == lease["lease_id"]
+
+    conn_obj.close()
+
+
+def test_lease_validate_op_raw_path_finds_lease(tmp_path):
+    """validate_op called with a raw symlink path must find the active lease.
+
+    validate_op delegates to get_current for lease resolution. This test
+    confirms the normalization chain reaches the SQL boundary end-to-end:
+    issue(raw) → store(canonical) → validate_op(raw) → get_current(raw) →
+    _fetch_active(canonical) → lease found → op allowed.
+    """
+    from runtime.core import leases
+    from runtime.core.db import connect_memory
+    from runtime.schemas import ensure_schema
+
+    conn_obj = connect_memory()
+    ensure_schema(conn_obj)
+
+    real_dir = tmp_path / "wt2"
+    real_dir.mkdir()
+    link = tmp_path / "wt2_link"
+    link.symlink_to(real_dir)
+
+    raw_path = str(link)
+
+    leases.issue(
+        conn_obj,
+        role="implementer",
+        worktree_path=raw_path,
+        allowed_ops=["routine_local"],
+        requires_eval=False,
+    )
+
+    # validate_op with raw path must find the lease and allow the operation
+    result = leases.validate_op(conn_obj, "git commit -m 'test'", worktree_path=raw_path)
+    assert result["allowed"] is True, (
+        f"validate_op denied with raw path {raw_path!r}: {result['reason']} — "
+        f"W-CONV-1 normalization not propagating through validate_op"
+    )
+    assert result["op_class"] == "routine_local"
+
+    conn_obj.close()
