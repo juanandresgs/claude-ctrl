@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-05 (INIT-REBASE completed; INIT-PE postmortem added; acceptance baseline updated to 969 passed, 0 failed)
+Last updated: 2026-04-05 (INIT-REBASE completed; INIT-PE postmortem added; acceptance baseline updated to 970 passed, 0 failed)
 
 ## Identity
 
@@ -1888,14 +1888,15 @@ New (8):
     `guard.sh`, `write-policy.sh`, `bash-policy.sh`, `plan-policy.sh`, and
     `dispatch-helpers.sh` references removed from executable test lines.
     Flat-file `.test-status` write expectations purged. Result:
-    `969 passed, 0 failed`.
+    `970 passed, 0 failed`.
   - **REBASE-W2:** Lint gate (`tests/lint-test-patterns.sh`) added to catch
     stale patterns before they re-accumulate. Verified clean against the
     full suite.
-- **Acceptance baseline:** `969 passed, 0 failed`
+- **Acceptance baseline:** `970 passed, 0 failed`
 - **Exit criteria met:** Zero stale pattern warnings from lint gate. Runtime
-  suite (`python3 -m pytest tests/runtime/ -q`) reports `969 passed, 0 failed`.
-  Scenario suite clean against real hooks.
+  suite (`python3 -m pytest tests/runtime/ -q`) reports `822 passed, 1 xpassed`.
+  Full acceptance (`bash tests/acceptance/run-acceptance.sh`) reports
+  `970 passed, 0 failed`. Scenario suite clean against real hooks.
 
 ### INIT-PE: Python Policy Engine Migration (completed 2026-04-03)
 
