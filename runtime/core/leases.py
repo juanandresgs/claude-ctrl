@@ -37,6 +37,7 @@ import time
 import uuid
 from typing import Optional
 
+from runtime.core.policy_utils import normalize_path  # DEC-CONV-001
 from runtime.schemas import DEFAULT_LEASE_TTL
 
 # ---------------------------------------------------------------------------
@@ -176,10 +177,18 @@ def _revoke_active_for_agent(conn: sqlite3.Connection, agent_id: str, now: int) 
 
 
 def _fetch_active(conn: sqlite3.Connection, **filters) -> Optional[sqlite3.Row]:
-    """Fetch first active lease matching the given column=value filters."""
+    """Fetch first active lease matching the given column=value filters.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) before
+    the SQL WHERE comparison, so raw symlink paths match normalized stored values.
+    """
     clauses = ["status = 'active'"]
     params = []
     for col, val in filters.items():
+        # DEC-CONV-001: normalize worktree_path at every query boundary so that
+        # raw paths (e.g. /var/... on macOS) match stored canonical realpaths.
+        if col == "worktree_path" and val is not None:
+            val = normalize_path(val)
         clauses.append(f"{col} = ?")
         params.append(val)
     sql = f"SELECT * FROM dispatch_leases WHERE {' AND '.join(clauses)} LIMIT 1"
@@ -211,7 +220,15 @@ def issue(
     If worktree_path is provided, any existing active lease for that path is
     revoked within the same transaction (one-active-per-worktree invariant).
     Returns the full lease row as a dict.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) before
+    being stored. build_context() looks up active leases by worktree_path;
+    if the stored path uses a different form (symlink vs realpath) than the
+    lookup key the lease becomes invisible.
     """
+    # DEC-CONV-001: normalize worktree_path to canonical realpath form.
+    canonical_worktree = normalize_path(worktree_path) if worktree_path else worktree_path
+
     lease_id = uuid.uuid4().hex
     now = int(time.time())
     expires_at = now + ttl
@@ -229,8 +246,8 @@ def issue(
 
     with conn:
         # Enforce uniqueness: one active lease per worktree.
-        if worktree_path:
-            _revoke_active_for_worktree(conn, worktree_path, now)
+        if canonical_worktree:
+            _revoke_active_for_worktree(conn, canonical_worktree, now)
 
         conn.execute(
             """INSERT INTO dispatch_leases (
@@ -243,7 +260,7 @@ def issue(
                 lease_id,
                 role,
                 workflow_id,
-                worktree_path,
+                canonical_worktree,
                 branch,
                 allowed_ops_json,
                 blocked_ops_json,
@@ -280,6 +297,10 @@ def claim(
     now = int(time.time())
 
     # Find target lease
+    # DEC-CONV-001: normalize worktree_path at query boundary so symlink paths
+    # match stored canonical realpaths.
+    canonical_worktree = normalize_path(worktree_path) if worktree_path else worktree_path
+
     target_row = None
     if lease_id:
         row = conn.execute(
@@ -287,8 +308,8 @@ def claim(
             (lease_id,),
         ).fetchone()
         target_row = row
-    elif worktree_path:
-        target_row = _fetch_active(conn, worktree_path=worktree_path)
+    elif canonical_worktree:
+        target_row = _fetch_active(conn, worktree_path=canonical_worktree)
 
     if target_row is None:
         return None
@@ -336,7 +357,14 @@ def get_current(
 
     Only returns status='active' leases. Returns None if no active lease found
     for any of the supplied identifiers.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) before the
+    SQL WHERE comparison so that raw symlink paths (e.g. /var/... on macOS) match
+    the canonical realpaths stored by issue().
     """
+    # DEC-CONV-001: normalize worktree_path at every query boundary.
+    canonical_worktree = normalize_path(worktree_path) if worktree_path else worktree_path
+
     row = None
     if lease_id:
         row = conn.execute(
@@ -345,8 +373,8 @@ def get_current(
         ).fetchone()
     if row is None and agent_id:
         row = _fetch_active(conn, agent_id=agent_id)
-    if row is None and worktree_path:
-        row = _fetch_active(conn, worktree_path=worktree_path)
+    if row is None and canonical_worktree:
+        row = _fetch_active(conn, worktree_path=canonical_worktree)
     if row is None and workflow_id:
         row = _fetch_active(conn, workflow_id=workflow_id)
     return _row_to_dict(row) if row else None
@@ -498,7 +526,14 @@ def list_leases(
     role: Optional[str] = None,
     worktree_path: Optional[str] = None,
 ) -> list[dict]:
-    """List leases with optional filters, ordered by issued_at DESC."""
+    """List leases with optional filters, ordered by issued_at DESC.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) before
+    the SQL WHERE comparison so raw symlink paths match stored canonical realpaths.
+    """
+    # DEC-CONV-001: normalize worktree_path at query boundary.
+    canonical_worktree = normalize_path(worktree_path) if worktree_path else worktree_path
+
     clauses = []
     params = []
     if status:
@@ -510,9 +545,9 @@ def list_leases(
     if role:
         clauses.append("role = ?")
         params.append(role)
-    if worktree_path:
+    if canonical_worktree:
         clauses.append("worktree_path = ?")
-        params.append(worktree_path)
+        params.append(canonical_worktree)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
@@ -570,15 +605,22 @@ def summary(
     worktree_path: Optional[str] = None,
     workflow_id: Optional[str] = None,
 ) -> dict:
-    """Compact read model: active_lease, recent_leases (last 5), has_active."""
-    active = get_current(conn, worktree_path=worktree_path, workflow_id=workflow_id)
+    """Compact read model: active_lease, recent_leases (last 5), has_active.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) before
+    any SQL filtering so raw symlink paths match stored canonical realpaths.
+    """
+    # DEC-CONV-001: normalize worktree_path at query boundary.
+    canonical_worktree = normalize_path(worktree_path) if worktree_path else worktree_path
+
+    active = get_current(conn, worktree_path=canonical_worktree, workflow_id=workflow_id)
 
     # Recent leases (last 5) filtered by supplied context.
     clauses = []
     params = []
-    if worktree_path:
+    if canonical_worktree:
         clauses.append("worktree_path = ?")
-        params.append(worktree_path)
+        params.append(canonical_worktree)
     if workflow_id:
         clauses.append("workflow_id = ?")
         params.append(workflow_id)

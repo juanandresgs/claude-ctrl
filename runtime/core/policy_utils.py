@@ -17,6 +17,18 @@ Rationale: Policies run in Python (via the PolicyRegistry). They need the
   Python (rather than shelling out) eliminates subprocess overhead on
   every hook call and makes the logic unit-testable without bash. Each
   function cites its shell source so future maintainers can verify parity.
+
+@decision DEC-CONV-001
+Title: normalize_path() is the single canonical path normalizer for project_root/worktree_path
+Status: accepted
+Rationale: On macOS /tmp is a symlink to /private/tmp and /var/folders resolves
+  to /private/var/folders. Git always resolves symlinks when returning
+  rev-parse --show-toplevel. Without normalization a path written via
+  os.getcwd() or CLAUDE_PROJECT_DIR may differ from the git-resolved form,
+  causing DB row misses on every cross-boundary lookup. normalize_path() uses
+  os.path.realpath() — the same mechanism git uses — applied at every persist
+  and query boundary for project_root and worktree_path. No ad-hoc inline
+  normalization exists elsewhere; all callers must funnel through this function.
 """
 
 from __future__ import annotations
@@ -26,6 +38,36 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Path identity normalization
+# W-CONV-1: canonical path normalizer — applied at every DB persist/query boundary
+# ---------------------------------------------------------------------------
+
+
+def normalize_path(path: str) -> str:
+    """Canonicalize a filesystem path by resolving symlinks and aliases.
+
+    Uses os.path.realpath() which:
+      - Resolves symlinks (e.g. /tmp → /private/tmp on macOS)
+      - Resolves path aliases (e.g. /var/folders → /private/var/folders)
+      - Collapses redundant separators and . / .. components
+
+    This is the sole normalizer for project_root and worktree_path.
+    No module may persist or query by a raw path — always call this first.
+
+    Matches the behavior of git rev-parse --show-toplevel, which also
+    resolves symlinks before returning the repo root.
+
+    Called at every persist and query boundary for:
+      - test_state.set_status / get_status / check_pass
+      - workflows.bind_workflow / get_binding
+      - leases.issue / get_current (worktree_path)
+      - policy_engine.build_context (project_root)
+      - cli.py _resolve_project_root / _handle_evaluate
+    """
+    return os.path.realpath(path)
+
 
 # ---------------------------------------------------------------------------
 # Source extension set
@@ -154,10 +196,14 @@ def detect_project_root(cwd: str = "") -> str:
       1. CLAUDE_PROJECT_DIR env var (if set and is a directory)
       2. git rev-parse --show-toplevel from cwd (or CWD if empty)
       3. HOME as last resort
+
+    All return values are normalized via normalize_path() (DEC-CONV-001) so
+    the caller always receives a canonical realpath form, regardless of whether
+    git, the env var, or HOME was used to resolve it.
     """
     claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
     if claude_project_dir and os.path.isdir(claude_project_dir):
-        return claude_project_dir
+        return normalize_path(claude_project_dir)
 
     effective_cwd = cwd or os.getcwd()
     if os.path.isdir(effective_cwd):
@@ -171,11 +217,11 @@ def detect_project_root(cwd: str = "") -> str:
             if result.returncode == 0:
                 root = result.stdout.strip()
                 if root and os.path.isdir(root):
-                    return root
+                    return normalize_path(root)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
-    return os.environ.get("HOME", "/")
+    return normalize_path(os.environ.get("HOME", "/"))
 
 
 def extract_git_target_dir(command: str, cwd: str = "") -> str:

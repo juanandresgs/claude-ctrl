@@ -58,6 +58,7 @@ from runtime.core.policy_utils import (
     current_workflow_id,
     detect_project_root,
     is_claude_meta_repo,
+    normalize_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -365,6 +366,11 @@ def build_context(
     """
     if not project_root:
         project_root = detect_project_root(cwd)
+    # Normalize regardless of source — detect_project_root already normalizes
+    # its own return value, but an explicitly-supplied project_root may be raw
+    # (e.g. from CLAUDE_PROJECT_DIR or a symlinked worktree path in the hook
+    # payload). DEC-CONV-001: always apply normalize_path at every boundary.
+    project_root = normalize_path(project_root)
     is_meta = is_claude_meta_repo(project_root)
 
     # --- Resolve active lease ---

@@ -40,6 +40,8 @@ import sqlite3
 import time
 from typing import Optional
 
+from runtime.core.policy_utils import normalize_path
+
 
 def bind_workflow(
     conn: sqlite3.Connection,
@@ -54,7 +56,13 @@ def bind_workflow(
 
     Safe to call multiple times — subsequent calls update worktree_path,
     branch, and other fields while preserving created_at on conflict.
+
+    worktree_path is normalized via normalize_path() (DEC-CONV-001) so the
+    stored value is always the canonical realpath form. build_context() looks
+    up leases by worktree_path; storing a non-canonical path would cause a
+    miss when the lookup key is the git-resolved realpath.
     """
+    canonical_worktree = normalize_path(worktree_path)
     now = int(time.time())
     with conn:
         conn.execute(
@@ -71,7 +79,7 @@ def bind_workflow(
                 initiative    = excluded.initiative,
                 updated_at    = excluded.updated_at
             """,
-            (workflow_id, worktree_path, branch, base_branch, ticket, initiative, now, now),
+            (workflow_id, canonical_worktree, branch, base_branch, ticket, initiative, now, now),
         )
 
 
@@ -104,8 +112,7 @@ def set_scope(
     """
     if get_binding(conn, workflow_id) is None:
         raise ValueError(
-            f"workflow_id '{workflow_id}' not found in workflow_bindings. "
-            "Call bind_workflow first."
+            f"workflow_id '{workflow_id}' not found in workflow_bindings. Call bind_workflow first."
         )
     now = int(time.time())
     with conn:
