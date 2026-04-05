@@ -50,7 +50,26 @@ rm -f "$TMPFILE"
 #   invalidate_if_ready() is a targeted atomic update — it only fires when
 #   status is exactly ready_for_guardian, so pending/idle writes are no-ops.
 if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
-    _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+    # WS1: use lease_context() to derive workflow_id from the active lease.
+    # When a lease is active its workflow_id is authoritative over branch-derived id.
+    # This ensures invalidation targets the same workflow_id the tester cleared,
+    # not the branch-derived id which may differ when a lease is active.
+    #
+    # @decision DEC-WS1-TRACK-001
+    # @title track.sh uses lease-first identity for eval invalidation
+    # @status accepted
+    # @rationale Without this fix, a source write fires rt_eval_invalidate against
+    #   the branch-derived workflow_id (e.g. "feature-my-branch") while the tester
+    #   clearance lives under the lease workflow_id (e.g. "wf-abc123"). The
+    #   invalidation is a no-op against the wrong id, so the stale ready_for_guardian
+    #   state persists and Guardian can merge un-evaluated code. Lease-first identity
+    #   (matching the pattern in check-guardian.sh and check-tester.sh) closes this.
+    _TK_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+    _TK_LEASE_FOUND=$(printf '%s' "$_TK_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    if [[ "$_TK_LEASE_FOUND" == "true" ]]; then
+        _WF_ID=$(printf '%s' "$_TK_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    fi
+    [[ -z "${_WF_ID:-}" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
     _INVALIDATED=$(rt_eval_invalidate "$_WF_ID" 2>/dev/null || echo "false")
     if [[ "$_INVALIDATED" == "true" ]]; then
         append_audit "$PROJECT_ROOT" "eval_reset" "$FILE_PATH"

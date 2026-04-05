@@ -163,10 +163,38 @@ analyze_segment() {
     segment=$(echo "$segment" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "$segment" ]] && return 0
 
-    # Handle pipes: each part of the pipe must be safe
-    if echo "$segment" | grep -qF '|'; then
-        local pipe_parts
-        pipe_parts=$(echo "$segment" | sed 's/\s*|\s*/\n/g')
+    # Handle pipes: split on unquoted single | (|| already handled by decompose_command)
+    # Uses a quote-aware awk parser to avoid splitting | inside single or double quotes.
+    # Example: echo 'a|b' must NOT be split; cat foo | grep bar MUST be split.
+    #
+    # @decision DEC-AUTOREVIEW-PIPE-001
+    # @title analyze_segment uses quote-aware awk parser for pipe splitting
+    # @status accepted
+    # @rationale The previous sed 's/\s*|\s*/\n/g' split was not quote-aware.
+    #   A command like echo 'a|b' would be split into ["echo 'a", "b'"] causing
+    #   false positives. The awk parser tracks sq/dq state and only splits on
+    #   unquoted single-pipe characters (not || which decompose_command already
+    #   handles at the compound-operator level before analyze_segment is called).
+    local pipe_parts
+    pipe_parts=$(printf '%s' "$segment" | awk '
+    {
+        n = length($0); sq = 0; dq = 0; start = 1
+        for (i = 1; i <= n; i++) {
+            c = substr($0, i, 1)
+            if (c == "\047" && !dq) sq = !sq
+            else if (c == "\"" && !sq) dq = !dq
+            else if (!sq && !dq && c == "|" && substr($0, i+1, 1) != "|") {
+                # Also check previous char is not | (for || at boundary)
+                if (i > 1 && substr($0, i-1, 1) == "|") continue
+                print substr($0, start, i - start)
+                start = i + 1
+            }
+        }
+        if (start <= n) print substr($0, start)
+    }')
+    local pipe_count
+    pipe_count=$(printf '%s\n' "$pipe_parts" | wc -l)
+    if [[ "$pipe_count" -gt 1 ]]; then
         while IFS= read -r part; do
             [[ -z "$part" ]] && continue
             if ! analyze_single_command "$part" "$depth"; then
