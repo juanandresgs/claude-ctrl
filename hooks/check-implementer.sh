@@ -132,7 +132,24 @@ esac
 
 # Check 6: Workflow scope compliance (advisory — guard.sh enforces the hard deny)
 # Get changed files relative to base branch (uses workflow binding if available).
-_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+# WS1: use lease_context() to derive workflow_id from the active lease so the
+# scope check targets the same binding the implementer was dispatched under.
+#
+# @decision DEC-WS1-CI-001
+# @title check-implementer.sh Check 6 uses lease-first identity for scope lookup
+# @status accepted
+# @rationale current_workflow_id() derives from the branch name. When a lease is
+#   active with an explicit workflow_id (e.g. "wf-abc123") and the branch is named
+#   differently (e.g. "feature/my-branch" → "feature-my-branch"), the scope binding
+#   is stored under the lease workflow_id but the check queries the branch-derived id
+#   — returning no binding and emitting a false "no workflow binding" warning. Lease-
+#   first resolution (mirroring check-guardian.sh:69-80) fixes the mismatch.
+_CI_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+_CI_LEASE_FOUND=$(printf '%s' "$_CI_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+if [[ "$_CI_LEASE_FOUND" == "true" ]]; then
+    _WF_ID=$(printf '%s' "$_CI_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+fi
+[[ -z "${_WF_ID:-}" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
 _CHANGED_FILES_JSON="[]"
 _BASE_BRANCH="main"
 
