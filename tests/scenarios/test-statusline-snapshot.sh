@@ -153,17 +153,16 @@ assert_eq "worktree_count drops to 1 after remove" "$snap" ".worktree_count" "1"
 # Test 5: dispatch_initiative and dispatch_cycle_id reflect active cycle
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 5: dispatch fields reflect active cycle and pending queue item"
+echo "-- 5: dispatch fields reflect active cycle (DEC-WS6-001: queue non-authoritative)"
 
 cycle_json=$(policy dispatch cycle-start "INIT-002")
 cycle_id=$(printf '%s' "$cycle_json" | jq -r '.id')
 
-policy dispatch enqueue "implementer" --ticket "TKT-011" >/dev/null
-
+# DEC-WS6-001: dispatch_queue enqueue removed from hot path. dispatch_status
+# now derives from completion records. Test only verifies cycle fields.
 snap=$(policy statusline snapshot)
 assert_eq "dispatch_initiative is INIT-002"  "$snap" ".dispatch_initiative" "INIT-002"
 assert_eq "dispatch_cycle_id matches"        "$snap" ".dispatch_cycle_id"   "$cycle_id"
-assert_eq "dispatch_status is implementer"   "$snap" ".dispatch_status"     "implementer"
 
 # ---------------------------------------------------------------------------
 # Test 6: recent_events list populated
