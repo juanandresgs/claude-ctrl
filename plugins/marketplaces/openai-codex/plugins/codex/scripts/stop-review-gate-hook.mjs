@@ -611,16 +611,33 @@ function main() {
   const workflowId = input.workflow_id || "";
 
   if (isSubagentStop) {
+    const agentType = String(input.agent_type || "unknown").toLowerCase();
+    const provider = review.provider || "unknown";
+
+    // Write verdict to events table for dispatch_engine
     const verdict = review.ok || review.infraFailure ? "ALLOW" : "BLOCK";
     const reason = review.infraFailure
       ? `infra failure: ${review.reason}`
       : review.reason || (review.ok ? "work looks good" : "review found issues");
     emitCodexReviewEventSync(cwd, workflowId, verdict, reason);
-    const provider = review.provider || "unknown";
-    const contextNote = review.ok
-      ? `Review gate (${provider}, SubagentStop/${input.agent_type}): ALLOW`
-      : `Review gate (${provider}, SubagentStop/${input.agent_type}): BLOCK — ${reason}`;
-    emitDecision({ additionalContext: contextNote });
+
+    // Infra failure → don't block the chain
+    if (review.infraFailure) {
+      emitDecision({ additionalContext: `Review gate (${provider}, SubagentStop/${agentType}): infra failure — allowing dispatch. ${review.reason}` });
+      return;
+    }
+
+    // PASS → let AUTO_DISPATCH proceed
+    if (review.ok) {
+      emitDecision({ additionalContext: `Review gate (${provider}, SubagentStop/${agentType}): PASS` });
+      return;
+    }
+
+    // CONTINUE → block dispatch, recommend re-dispatching the same subagent
+    emitDecision({
+      decision: "block",
+      reason: `[${provider}] Review found issues with ${agentType}'s work. Re-dispatch ${agentType} to address:\n\n${review.reason}`
+    });
     return;
   }
 
