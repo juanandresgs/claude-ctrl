@@ -1,7 +1,8 @@
 """Unit tests for runtime.core.markers.
 
 Tests the agent_markers table domain module using an in-memory SQLite
-database. Covers set_active/get_active/deactivate/list_all round-trips.
+database. Covers set_active/get_active/deactivate/list_all round-trips,
+scoped queries (W-CONV-2), and schema migrations.
 
 @decision DEC-RT-001
 Title: Canonical SQLite schema for all shared workflow state
@@ -9,6 +10,15 @@ Status: accepted
 Rationale: agent_markers replaces the .subagent-tracker flat file.
   Tests confirm the is_active flag and stopped_at timestamp are managed
   correctly through the full lifecycle: set -> get-active -> deactivate.
+
+@decision DEC-CONV-002
+Title: Marker authority scoped by project_root and workflow_id
+Status: accepted
+Rationale: W-CONV-2 adds project_root + workflow_id scoping to set_active()
+  and get_active(). Tests confirm scoped queries return only the matching
+  project/workflow marker, unscoped queries remain backward-compatible, and
+  lightweight role markers are rejected at the shell layer (verified via
+  integration path in test-marker-lifecycle.sh).
 """
 
 from __future__ import annotations
@@ -97,6 +107,185 @@ def test_list_all_returns_all_markers(conn):
 
 
 # ---------------------------------------------------------------------------
+# W-CONV-2: project_root + workflow_id scoping tests
+# ---------------------------------------------------------------------------
+
+
+def test_set_active_stores_project_root_and_workflow_id(conn):
+    """set_active() persists project_root and workflow_id when provided."""
+    markers.set_active(
+        conn,
+        "agent-1",
+        "implementer",
+        project_root="/repo/project-a",
+        workflow_id="wf-001",
+    )
+    row = markers.get_active(conn)
+    assert row is not None
+    assert row["project_root"] == "/repo/project-a"
+    assert row["workflow_id"] == "wf-001"
+
+
+def test_get_active_scoped_by_project_root_returns_match(conn):
+    """get_active(project_root=X) returns only the marker for project X."""
+    markers.set_active(
+        conn, "agent-a", "tester", project_root="/repo/project-a", workflow_id="wf-a"
+    )
+    markers.set_active(
+        conn, "agent-b", "implementer", project_root="/repo/project-b", workflow_id="wf-b"
+    )
+    # Backdate agent-b so agent-a is newer in started_at; ensures scoping is
+    # filtering, not just ordering.
+    conn.execute("UPDATE agent_markers SET started_at = started_at - 10 WHERE agent_id = 'agent-b'")
+    conn.commit()
+
+    row = markers.get_active(conn, project_root="/repo/project-a")
+    assert row is not None
+    assert row["agent_id"] == "agent-a"
+    assert row["role"] == "tester"
+
+
+def test_get_active_scoped_by_project_root_no_match_returns_none(conn):
+    """get_active(project_root=X) returns None when no marker for X."""
+    markers.set_active(conn, "agent-a", "tester", project_root="/repo/project-a")
+    row = markers.get_active(conn, project_root="/repo/project-other")
+    assert row is None
+
+
+def test_get_active_scoped_by_workflow_id(conn):
+    """get_active(workflow_id=W) returns the marker for workflow W."""
+    markers.set_active(
+        conn, "agent-a", "tester", project_root="/repo/project-a", workflow_id="wf-a"
+    )
+    markers.set_active(
+        conn, "agent-b", "implementer", project_root="/repo/project-a", workflow_id="wf-b"
+    )
+    conn.execute("UPDATE agent_markers SET started_at = started_at - 10 WHERE agent_id = 'agent-a'")
+    conn.commit()
+
+    row = markers.get_active(conn, project_root="/repo/project-a", workflow_id="wf-a")
+    assert row is not None
+    assert row["agent_id"] == "agent-a"
+
+
+def test_get_active_scoped_no_match_returns_none_not_global(conn):
+    """get_active with scoping params returns None if no match — no global fallback.
+
+    This is the critical invariant: when scoping params are supplied, a
+    non-matching marker in another project must NOT be returned.
+    """
+    # An unscoped marker exists in the DB
+    markers.set_active(conn, "agent-global", "implementer")
+    # Scoped query for a specific project must not return the unscoped marker
+    row = markers.get_active(conn, project_root="/repo/some-project")
+    assert row is None
+
+
+def test_get_active_without_params_returns_newest_active(conn):
+    """Unscoped get_active() returns the newest active marker (backward compat).
+
+    This preserves the behavior relied on by statusline.py which calls
+    get_active_with_age(conn) without scoping params.
+    """
+    markers.set_active(conn, "agent-1", "implementer")
+    markers.set_active(conn, "agent-2", "tester")
+    conn.execute("UPDATE agent_markers SET started_at = started_at - 10 WHERE agent_id = 'agent-1'")
+    conn.commit()
+    row = markers.get_active(conn)
+    assert row is not None
+    assert row["agent_id"] == "agent-2"
+
+
+def test_tester_wf_a_vs_implementer_wf_b_cross_project_isolation(conn):
+    """Compound interaction: two workflows in same project are independently queryable.
+
+    Production sequence: Tester active for workflow-A, Implementer active for
+    workflow-B (parallel work in same repo). get_active(project_root=X,
+    workflow_id=wf-A) returns tester; get_active(project_root=X,
+    workflow_id=wf-B) returns implementer.
+    """
+    project = "/repo/shared-project"
+    markers.set_active(conn, "agent-tester", "tester", project_root=project, workflow_id="wf-A")
+    markers.set_active(conn, "agent-impl", "implementer", project_root=project, workflow_id="wf-B")
+    # Ensure tester is newer so unscoped query would return tester
+    conn.execute(
+        "UPDATE agent_markers SET started_at = started_at - 5 WHERE agent_id = 'agent-impl'"
+    )
+    conn.commit()
+
+    tester_row = markers.get_active(conn, project_root=project, workflow_id="wf-A")
+    assert tester_row is not None
+    assert tester_row["agent_id"] == "agent-tester"
+    assert tester_row["role"] == "tester"
+
+    impl_row = markers.get_active(conn, project_root=project, workflow_id="wf-B")
+    assert impl_row is not None
+    assert impl_row["agent_id"] == "agent-impl"
+    assert impl_row["role"] == "implementer"
+
+
+def test_project_root_column_in_schema(conn):
+    """project_root column exists in agent_markers after ensure_schema."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_markers)").fetchall()}
+    assert "project_root" in cols
+
+
+def test_cleanup_migration_deactivates_lightweight_roles(conn):
+    """ensure_schema cleanup step deactivates existing ghost markers for lightweight roles.
+
+    Simulates accumulated Explore/Bash/unknown markers from before W-CONV-2.
+    After ensure_schema runs again on the same DB, those markers must be
+    deactivated (is_active=0, status='stopped').
+    """
+    import time as _time
+
+    now = int(_time.time())
+    # Manually insert lightweight role markers (bypassing set_active so we can
+    # use the pre-W-CONV-2 path with is_active=1)
+    conn.execute(
+        "INSERT INTO agent_markers (agent_id, role, started_at, is_active, status)"
+        " VALUES ('explore-1', 'Explore', ?, 1, 'active')",
+        (now - 100,),
+    )
+    conn.execute(
+        "INSERT INTO agent_markers (agent_id, role, started_at, is_active, status)"
+        " VALUES ('bash-1', 'Bash', ?, 1, 'active')",
+        (now - 200,),
+    )
+    conn.execute(
+        "INSERT INTO agent_markers (agent_id, role, started_at, is_active, status)"
+        " VALUES ('unknown-1', 'unknown', ?, 1, 'active')",
+        (now - 300,),
+    )
+    # A dispatch-significant marker that MUST remain active
+    conn.execute(
+        "INSERT INTO agent_markers (agent_id, role, started_at, is_active, status)"
+        " VALUES ('impl-1', 'implementer', ?, 1, 'active')",
+        (now - 50,),
+    )
+    conn.commit()
+
+    # Run ensure_schema again on the already-migrated DB — cleanup step fires
+    ensure_schema(conn)
+
+    # Lightweight markers must be deactivated
+    for agent_id in ("explore-1", "bash-1", "unknown-1"):
+        row = conn.execute(
+            "SELECT is_active, status FROM agent_markers WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["is_active"] == 0, f"{agent_id} should be deactivated"
+        assert row["status"] == "stopped", f"{agent_id} status should be 'stopped'"
+
+    # Dispatch-significant marker must remain active
+    impl_row = conn.execute(
+        "SELECT is_active FROM agent_markers WHERE agent_id = 'impl-1'"
+    ).fetchone()
+    assert impl_row["is_active"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Schema migration tests — old-schema DB forward-compatibility
 # ---------------------------------------------------------------------------
 
@@ -178,8 +367,9 @@ def test_ensure_schema_idempotent_on_new_db():
     ensure_schema(c)
     # Second call must not raise
     ensure_schema(c)
-    # Column exists exactly once — verify via pragma
+    # Columns exist exactly once — verify via pragma
     cols = {row[1] for row in c.execute("PRAGMA table_info(agent_markers)").fetchall()}
     assert "status" in cols
     assert "workflow_id" in cols
+    assert "project_root" in cols
     c.close()

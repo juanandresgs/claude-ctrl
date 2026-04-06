@@ -12,6 +12,33 @@ Rationale: agent_markers replaces .subagent-tracker flat-file coordination.
   scanning all rows. deactivate() sets stopped_at and clears is_active in
   a single transaction so there is never a window where a marker is
   stopped but still appears active.
+
+@decision DEC-CONV-002
+Title: Marker authority scoped by project_root and workflow_id (W-CONV-2)
+Status: accepted
+Rationale: Before W-CONV-2, get_active() returned the globally newest active
+  marker with no project or workflow scoping. Explore/Bash/general-purpose
+  agents also created markers, so the "newest active" could be a lightweight
+  agent that was never deactivated, silently overriding the real
+  implementer/tester/guardian role in build_context().
+
+  Three changes fix this:
+  1. set_active() now accepts optional project_root and workflow_id and
+     persists them to the new project_root column added by the schemas.py
+     migration. Callers that do not pass these (lifecycle.py before W-CONV-2
+     callers, statusline) continue to work — the columns default to NULL.
+  2. get_active() accepts optional project_root and workflow_id. When either
+     is provided the SQL WHERE clause is narrowed to only rows that match.
+     If scoping params are given and no row matches, None is returned — there
+     is no global fallback when scoping is requested.
+  3. get_active() without params retains the original unscoped behaviour
+     (newest active globally) for backward compatibility with statusline.py
+     which does not have a per-project context.
+
+  The subagent-start.sh filter (change 4 in DEC-CONV-002) prevents
+  lightweight agents from ever writing markers in the first place, but the
+  cleanup migration in schemas.py handles accumulated ghost markers from
+  before the filter was deployed.
 """
 
 from __future__ import annotations
@@ -25,35 +52,102 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return dict(row)
 
 
-def set_active(conn: sqlite3.Connection, agent_id: str, role: str) -> None:
+def set_active(
+    conn: sqlite3.Connection,
+    agent_id: str,
+    role: str,
+    project_root: str | None = None,
+    workflow_id: str | None = None,
+) -> None:
     """Upsert an active marker for agent_id with the given role.
 
     Any existing marker for this agent_id is replaced (PRIMARY KEY conflict).
     started_at is always reset to now on upsert so restarts are tracked.
     status is set to 'active' on upsert.
+
+    Args:
+        conn:         Open SQLite connection with schema applied.
+        agent_id:     Unique agent identifier (e.g. session UUID or pid).
+        role:         Role string (implementer, tester, guardian, planner).
+        project_root: Optional canonical project root path (normalize_path applied
+                      by caller before passing). Stored in the project_root column
+                      so get_active(project_root=X) can filter to this project.
+        workflow_id:  Optional workflow identifier matching workflow_bindings.
+                      Stored alongside project_root for fine-grained scoping.
     """
     now = int(time.time())
     with conn:
         conn.execute(
             """
-            INSERT INTO agent_markers (agent_id, role, started_at, stopped_at, is_active, status)
-            VALUES (?, ?, ?, NULL, 1, 'active')
+            INSERT INTO agent_markers
+                (agent_id, role, started_at, stopped_at, is_active, status,
+                 project_root, workflow_id)
+            VALUES (?, ?, ?, NULL, 1, 'active', ?, ?)
             ON CONFLICT(agent_id) DO UPDATE SET
-                role       = excluded.role,
-                started_at = excluded.started_at,
-                stopped_at = NULL,
-                is_active  = 1,
-                status     = 'active'
+                role         = excluded.role,
+                started_at   = excluded.started_at,
+                stopped_at   = NULL,
+                is_active    = 1,
+                status       = 'active',
+                project_root = excluded.project_root,
+                workflow_id  = excluded.workflow_id
             """,
-            (agent_id, role, now),
+            (agent_id, role, now, project_root, workflow_id),
         )
 
 
-def get_active(conn: sqlite3.Connection) -> Optional[dict]:
-    """Return the most recently started active marker, or None."""
+def get_active(
+    conn: sqlite3.Connection,
+    project_root: str | None = None,
+    workflow_id: str | None = None,
+) -> Optional[dict]:
+    """Return the most recently started active marker, or None.
+
+    When project_root and/or workflow_id are provided the query is scoped
+    to only rows that match those values. If no matching row exists, None
+    is returned — there is no global fallback when scoping params are given.
+
+    When called with no params the original unscoped behaviour is preserved:
+    the globally newest active marker is returned. This keeps backward
+    compatibility for statusline.py which calls get_active_with_age(conn)
+    without a project context.
+
+    Args:
+        conn:         Open SQLite connection with schema applied.
+        project_root: Optional canonical project root to scope the query.
+        workflow_id:  Optional workflow_id to further scope within a project.
+    """
+    if project_root is not None or workflow_id is not None:
+        # Scoped query — build WHERE clauses dynamically for the provided params.
+        # Only include workflow_id predicate when both are given; if only
+        # workflow_id is given (unusual) scope by that alone.
+        clauses = ["is_active = 1"]
+        params: list = []
+        if project_root is not None:
+            clauses.append("project_root = ?")
+            params.append(project_root)
+        if workflow_id is not None:
+            clauses.append("workflow_id = ?")
+            params.append(workflow_id)
+        where = " AND ".join(clauses)
+        row = conn.execute(
+            f"""
+            SELECT agent_id, role, started_at, stopped_at, is_active, status,
+                   project_root, workflow_id
+            FROM   agent_markers
+            WHERE  {where}
+            ORDER  BY started_at DESC
+            LIMIT  1
+            """,
+            params,
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+
+    # Unscoped: return globally newest active marker (backward compat).
     row = conn.execute(
         """
-        SELECT agent_id, role, started_at, stopped_at, is_active, status
+        SELECT agent_id, role, started_at, stopped_at, is_active, status,
+               project_root, workflow_id
         FROM   agent_markers
         WHERE  is_active = 1
         ORDER  BY started_at DESC
@@ -67,6 +161,9 @@ def get_active_with_age(conn: sqlite3.Connection) -> Optional[dict]:
     """Return the active marker with computed age_seconds field.
 
     age_seconds = current_time - started_at. Returns None if no active marker.
+
+    Called unscoped by statusline.py — backward-compatible with the no-params
+    signature of get_active().
 
     @decision DEC-RT-023
     @title get_active_with_age computes marker age at read time
@@ -104,7 +201,8 @@ def list_all(conn: sqlite3.Connection) -> list[dict]:
     """Return all agent_markers rows ordered by started_at descending."""
     rows = conn.execute(
         """
-        SELECT agent_id, role, started_at, stopped_at, is_active, status
+        SELECT agent_id, role, started_at, stopped_at, is_active, status,
+               project_root, workflow_id
         FROM   agent_markers
         ORDER  BY started_at DESC
         """

@@ -26,18 +26,34 @@ import sqlite3
 from runtime.core import markers
 
 
-def on_agent_start(conn: sqlite3.Connection, agent_type: str, agent_id: str) -> None:
+def on_agent_start(
+    conn: sqlite3.Connection,
+    agent_type: str,
+    agent_id: str,
+    project_root: str | None = None,
+    workflow_id: str | None = None,
+) -> None:
     """Mark agent_id as active with the given role.
 
     Calls markers.set_active(), which upserts on conflict so a re-start
     correctly resets started_at and clears any previous stopped_at.
 
+    W-CONV-2: project_root and workflow_id are now forwarded to set_active()
+    so that get_active(project_root=X) can scope marker queries to a single
+    project. Callers that do not supply these continue to work — the columns
+    default to NULL and the unscoped get_active() path remains available.
+
     Args:
-        conn:       Open SQLite connection with schema applied.
-        agent_type: Role string (implementer, tester, guardian, planner).
-        agent_id:   Unique agent identifier (e.g. session UUID or pid).
+        conn:         Open SQLite connection with schema applied.
+        agent_type:   Role string (implementer, tester, guardian, planner).
+        agent_id:     Unique agent identifier (e.g. session UUID or pid).
+        project_root: Optional canonical project root (normalize_path applied
+                      by caller). Stored in agent_markers.project_root.
+        workflow_id:  Optional workflow identifier. Stored in agent_markers.
     """
-    markers.set_active(conn, agent_id, agent_type)
+    markers.set_active(
+        conn, agent_id, agent_type, project_root=project_root, workflow_id=workflow_id
+    )
 
 
 def on_agent_stop(conn: sqlite3.Connection, agent_type: str, agent_id: str) -> None:

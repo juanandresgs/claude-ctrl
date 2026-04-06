@@ -81,6 +81,20 @@ def db(tmp_path):
     return str(tmp_path / "test-state.db")
 
 
+@pytest.fixture
+def project_dir(tmp_path):
+    """Provide a stable project directory for scoped marker tests.
+
+    W-CONV-2 (DEC-CONV-002) scoped marker queries by project_root. Tests that
+    exercise ``context role`` must set markers with ``--project-root`` matching
+    the ``CLAUDE_PROJECT_DIR`` env var that ``context role`` uses to derive its
+    own project_root via detect_project_root(). This fixture returns the
+    realpath of tmp_path so normalize_path() produces the same canonical form
+    in both the marker-set and context-role code paths.
+    """
+    return str(tmp_path.resolve())
+
+
 # ---------------------------------------------------------------------------
 # 1. Local CLI: context role returns correct JSON shape
 # ---------------------------------------------------------------------------
@@ -98,13 +112,18 @@ class TestContextRoleCommand:
         # Must have a 'role' field (may be empty/null but must exist)
         assert "role" in out, f"Missing 'role' field in: {out}"
 
-    def test_context_role_with_active_marker_returns_role(self, db):
+    def test_context_role_with_active_marker_returns_role(self, db, project_dir):
         """When a marker is active, context role must resolve the role from it."""
-        # Set an active marker
-        code, _ = run_cli_json(["marker", "set", "agent-test-001", "implementer"], db)
+        # Set an active marker with project_root so scoped query matches
+        code, _ = run_cli_json(
+            ["marker", "set", "agent-test-001", "implementer", "--project-root", project_dir],
+            db,
+        )
         assert code == 0
 
-        code, out = run_cli_json(["context", "role"], db)
+        code, out = run_cli_json(
+            ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
+        )
         assert code == 0, f"context role failed: {out}"
         # With an active marker, role should resolve to "implementer"
         assert out.get("role") == "implementer", f"Expected role=implementer, got: {out}"
@@ -112,24 +131,34 @@ class TestContextRoleCommand:
             f"Expected agent_id=agent-test-001, got: {out}"
         )
 
-    def test_context_role_with_guardian_marker(self, db):
+    def test_context_role_with_guardian_marker(self, db, project_dir):
         """context role resolves 'guardian' marker correctly."""
-        run_cli_json(["marker", "set", "agent-gd-001", "guardian"], db)
-        code, out = run_cli_json(["context", "role"], db)
+        run_cli_json(
+            ["marker", "set", "agent-gd-001", "guardian", "--project-root", project_dir], db
+        )
+        code, out = run_cli_json(
+            ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
+        )
         assert code == 0
         assert out.get("role") == "guardian"
 
-    def test_context_role_with_tester_marker(self, db):
+    def test_context_role_with_tester_marker(self, db, project_dir):
         """context role resolves 'tester' marker correctly."""
-        run_cli_json(["marker", "set", "agent-ts-001", "tester"], db)
-        code, out = run_cli_json(["context", "role"], db)
+        run_cli_json(["marker", "set", "agent-ts-001", "tester", "--project-root", project_dir], db)
+        code, out = run_cli_json(
+            ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
+        )
         assert code == 0
         assert out.get("role") == "tester"
 
-    def test_context_role_with_planner_marker(self, db):
+    def test_context_role_with_planner_marker(self, db, project_dir):
         """context role resolves 'planner' marker correctly."""
-        run_cli_json(["marker", "set", "agent-pl-001", "planner"], db)
-        code, out = run_cli_json(["context", "role"], db)
+        run_cli_json(
+            ["marker", "set", "agent-pl-001", "planner", "--project-root", project_dir], db
+        )
+        code, out = run_cli_json(
+            ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
+        )
         assert code == 0
         assert out.get("role") == "planner"
 
@@ -270,14 +299,18 @@ class TestContextRoleProductionSequence:
     We test this through the CLI (not mocks) to verify the full chain works.
     """
 
-    def test_full_subagent_stop_sequence_implementer(self, db):
+    def test_full_subagent_stop_sequence_implementer(self, db, project_dir):
         """Simulates check-implementer.sh marker deactivation via context role."""
-        # Step 1: An implementer is dispatched — marker set
-        code, _ = run_cli_json(["marker", "set", "impl-agent-42", "implementer"], db)
+        _env = {"CLAUDE_PROJECT_DIR": project_dir}
+        # Step 1: An implementer is dispatched — marker set with project_root
+        code, _ = run_cli_json(
+            ["marker", "set", "impl-agent-42", "implementer", "--project-root", project_dir],
+            db,
+        )
         assert code == 0
 
         # Step 2: SubagentStop fires — hook calls context role
-        code, ctx_out = run_cli_json(["context", "role"], db)
+        code, ctx_out = run_cli_json(["context", "role"], db, extra_env=_env)
         assert code == 0
         assert ctx_out.get("role") == "implementer"
         agent_id = ctx_out.get("agent_id")
@@ -292,11 +325,14 @@ class TestContextRoleProductionSequence:
         assert code == 0
         assert active_out.get("found") is False, "Marker should be inactive after deactivation"
 
-    def test_full_subagent_stop_sequence_guardian(self, db):
+    def test_full_subagent_stop_sequence_guardian(self, db, project_dir):
         """Simulates check-guardian.sh marker deactivation via context role."""
-        run_cli_json(["marker", "set", "gd-agent-07", "guardian"], db)
+        _env = {"CLAUDE_PROJECT_DIR": project_dir}
+        run_cli_json(
+            ["marker", "set", "gd-agent-07", "guardian", "--project-root", project_dir], db
+        )
 
-        code, ctx_out = run_cli_json(["context", "role"], db)
+        code, ctx_out = run_cli_json(["context", "role"], db, extra_env=_env)
         assert code == 0
         assert ctx_out.get("role") == "guardian"
         agent_id = ctx_out.get("agent_id")
