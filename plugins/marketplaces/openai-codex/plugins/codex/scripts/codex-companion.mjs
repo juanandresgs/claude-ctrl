@@ -68,7 +68,7 @@ const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
-const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const STOP_REVIEW_TASK_MARKER = "Review Claude Code's work in this session and determine whether it is";
 
 function printUsage() {
   console.log(
@@ -436,8 +436,8 @@ async function executeTaskRun(request) {
     resumeLast: request.resumeLast
   });
 
-  let resumeThreadId = null;
-  if (request.resumeLast) {
+  let resumeThreadId = request.resumeThreadId ?? null;
+  if (!resumeThreadId && request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -570,7 +570,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, resumeThreadId, jobId }) {
   return {
     cwd,
     model,
@@ -578,6 +578,7 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
+    resumeThreadId,
     jobId
   };
 }
@@ -600,7 +601,7 @@ function requireTaskRequest(prompt, resumeLast) {
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile,
-    stderr: !options.json
+    stderr: !options.json || options.progress
   });
   const execution = await runTrackedJob(job, () => runner(progress), { logFile });
   outputResult(options.json ? execution.payload : execution.rendered, options.json);
@@ -703,8 +704,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-thread"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "progress"],
     aliasMap: {
       m: "model"
     }
@@ -717,9 +718,10 @@ async function handleTask(argv) {
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
+  const resumeThreadId = options["resume-thread"] || null;
   const fresh = Boolean(options.fresh);
-  if (resumeLast && fresh) {
-    throw new Error("Choose either --resume/--resume-last or --fresh.");
+  if ((resumeLast || resumeThreadId) && fresh) {
+    throw new Error("Choose either --resume/--resume-last/--resume-thread or --fresh.");
   }
   const write = Boolean(options.write);
   const taskMetadata = buildTaskRunMetadata({
@@ -739,6 +741,7 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
+      resumeThreadId,
       jobId: job.id
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
@@ -757,10 +760,11 @@ async function handleTask(argv) {
         prompt,
         write,
         resumeLast,
+        resumeThreadId,
         jobId: job.id,
         onProgress: progress
       }),
-    { json: options.json }
+    { json: options.json, progress: options.progress }
   );
 }
 

@@ -16,7 +16,9 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
-const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const STOP_GATE_TITLE = "Codex Stop Gate Review";
+
+// ── Helpers ──────────────────────────────────────────────────────────
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -45,7 +47,9 @@ function filterJobsForCurrentSession(jobs, input = {}) {
   return jobs.filter((job) => job.sessionId === sessionId);
 }
 
-function readFileHead(filePath, maxLines = 324) {
+// ── Context gathering ────────────────────────────────────────────────
+
+function readFileHead(filePath, maxLines) {
   try {
     const content = fs.readFileSync(filePath, "utf8");
     const lines = content.split("\n");
@@ -53,6 +57,47 @@ function readFileHead(filePath, maxLines = 324) {
       return content;
     }
     return lines.slice(0, maxLines).join("\n") + "\n... (truncated — full file available via file read)";
+  } catch {
+    return "";
+  }
+}
+
+function extractInitiativeSummary(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    const lines = content.split("\n");
+    const summaries = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^### INIT-/.test(line)) {
+        if (/\(completed\b/.test(line)) {
+          i++;
+          continue;
+        }
+        const block = [line];
+        i++;
+        while (i < lines.length && !lines[i].startsWith("### ")) {
+          const trimmed = lines[i].trimStart();
+          if (trimmed.startsWith("- **Status:**") || trimmed.startsWith("- **Goal:**")) {
+            block.push(lines[i]);
+            i++;
+            while (i < lines.length && /^\s{2,}/.test(lines[i]) && !lines[i].trimStart().startsWith("- **")) {
+              block.push(lines[i]);
+              i++;
+            }
+          } else {
+            i++;
+          }
+        }
+        if (block.length > 1) {
+          summaries.push(block.join("\n"));
+        }
+      } else {
+        i++;
+      }
+    }
+    return summaries.length > 0 ? summaries.join("\n\n") : "";
   } catch {
     return "";
   }
@@ -68,14 +113,22 @@ function getRecentGitLog(cwd) {
 
 function gatherProjectContext(cwd) {
   const sections = [];
+  const planPath = path.join(cwd, "MASTER_PLAN.md");
 
-  const masterPlan = readFileHead(path.join(cwd, "MASTER_PLAN.md"), 77);
+  const masterPlan = readFileHead(planPath, 77);
   if (masterPlan) {
     sections.push("## MASTER_PLAN.md — Identity, Architecture, Principles\n" + masterPlan);
   }
 
+  const initiatives = extractInitiativeSummary(planPath);
+  if (initiatives) {
+    sections.push("## Active Initiatives (name, status, goal only)\n" + initiatives);
+  }
+
   return sections.join("\n\n---\n\n") || "No project context files found.";
 }
+
+// ── Prompt assembly ──────────────────────────────────────────────────
 
 function buildStopReviewPrompt(cwd, input = {}) {
   const lastAssistantMessage = String(input.last_assistant_message ?? "").trim();
@@ -92,109 +145,155 @@ function buildStopReviewPrompt(cwd, input = {}) {
   });
 }
 
+// ── Setup check ──────────────────────────────────────────────────────
+
 function buildSetupNote(cwd) {
   const authStatus = getCodexLoginStatus(cwd);
   if (authStatus.available && authStatus.loggedIn) {
     return null;
   }
-
   const detail = authStatus.detail ? ` ${authStatus.detail}.` : "";
   return `Codex is not set up for the review gate.${detail} Run /codex:setup and, if needed, !codex login.`;
 }
+
+// ── Thread reuse ─────────────────────────────────────────────────────
+
+function findPriorStopGateThread(workspaceRoot, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const prior = jobs.find(
+    (job) =>
+      job.title === STOP_GATE_TITLE &&
+      job.sessionId === sessionId &&
+      job.threadId &&
+      job.status !== "queued" &&
+      job.status !== "running"
+  );
+  return prior?.threadId ?? null;
+}
+
+// ── Output parser ────────────────────────────────────────────────────
 
 function parseStopReviewOutput(rawOutput) {
   const text = String(rawOutput ?? "").trim();
   if (!text) {
     return {
       ok: false,
-      reason:
-        "The stop-time Codex review task returned no final output. Run /codex:review --wait manually or bypass the gate."
+      infraFailure: true,
+      reason: "Codex review returned no output."
     };
   }
 
-  // Support both legacy "ALLOW:/BLOCK:" (first-line) and new "VERDICT: ALLOW/BLOCK" (last-line) formats
   const lines = text.split(/\r?\n/);
 
-  // Scan from the end for the verdict line (new format)
+  // Scan from the end for the verdict line
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
-    if (line.startsWith("VERDICT: ALLOW") || line.startsWith("VERDICT:ALLOW")) {
+
+    if (line.startsWith("VERDICT: PASS") || line.startsWith("VERDICT:PASS")) {
       const findings = lines.slice(0, i).join("\n").trim();
       return { ok: true, reason: findings || null };
     }
-    if (line.startsWith("VERDICT: BLOCK") || line.startsWith("VERDICT:BLOCK")) {
+
+    if (line.startsWith("VERDICT: CONTINUE") || line.startsWith("VERDICT:CONTINUE")) {
       const findings = lines.slice(0, i).join("\n").trim();
-      const verdictReason = line.replace(/^VERDICT:\s*BLOCK[\s—-]*/, "").trim();
+      const verdictSummary = line.replace(/^VERDICT:\s*CONTINUE[\s—-]*/, "").trim();
       const fullReason = findings
-        ? `${findings}\n\n${verdictReason}`
-        : verdictReason || text;
+        ? `${findings}\n\nNext: ${verdictSummary}`
+        : verdictSummary || text;
       return {
         ok: false,
-        reason: `Codex stop-time review found issues:\n\n${fullReason}`
+        reason: `Codex review — work is not yet complete:\n\n${fullReason}`
       };
     }
   }
 
-  // Legacy first-line format fallback
+  // Legacy format fallback
   const firstLine = lines[0].trim();
   if (firstLine.startsWith("ALLOW:")) {
     return { ok: true, reason: null };
   }
   if (firstLine.startsWith("BLOCK:")) {
-    const reason = firstLine.slice("BLOCK:".length).trim() || text;
     return {
       ok: false,
-      reason: `Codex stop-time review found issues that still need fixes before ending the session: ${reason}`
+      reason: `Codex review:\n\n${firstLine.slice("BLOCK:".length).trim() || text}`
     };
   }
 
+  // No recognized verdict — treat as infra failure (allow stop with warning)
   return {
     ok: false,
-    reason:
-      "The stop-time Codex review task returned an unexpected answer. Run /codex:review --wait manually or bypass the gate."
+    infraFailure: true,
+    reason: `Codex review returned no recognizable verdict. Full output:\n\n${text}`
   };
 }
 
-function runStopReview(cwd, input = {}) {
+// ── Codex invocation ─────────────────────────────────────────────────
+
+function invokeCodexTask(cwd, args, childEnv, { resuming = false } = {}) {
   const scriptPath = path.join(SCRIPT_DIR, "codex-companion.mjs");
-  const prompt = buildStopReviewPrompt(cwd, input);
-  const childEnv = {
-    ...process.env,
-    ...(input.session_id ? { [SESSION_ID_ENV]: input.session_id } : {})
-  };
-  const result = spawnSync(process.execPath, [scriptPath, "task", "--json", prompt], {
+
+  // Bookend: announce the review start
+  logNote(resuming
+    ? "[review-gate] Resuming Codex review thread..."
+    : "[review-gate] Starting Codex review...");
+
+  // Stream stderr to terminal in real time (progress lines from Codex),
+  // capture stdout for JSON result parsing.
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
     cwd,
     env: childEnv,
     encoding: "utf8",
-    timeout: STOP_REVIEW_TIMEOUT_MS
+    timeout: STOP_REVIEW_TIMEOUT_MS,
+    stdio: ["pipe", "pipe", process.stderr]
   });
 
   if (result.error?.code === "ETIMEDOUT") {
+    logNote("[review-gate] Timed out after 15 minutes.");
     return {
       ok: false,
-      reason:
-        "The stop-time Codex review task timed out after 15 minutes. Run /codex:review --wait manually or bypass the gate."
+      infraFailure: true,
+      reason: "Codex review timed out after 15 minutes.",
+      threadId: null
     };
   }
 
   if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim();
+    // stderr already streamed to terminal; stdout may have error detail
+    const detail = String(result.stdout || "").trim();
+    logNote(`[review-gate] Codex process exited with status ${result.status}.`);
     return {
       ok: false,
-      reason: detail
-        ? `The stop-time Codex review task failed: ${detail}`
-        : "The stop-time Codex review task failed. Run /codex:review --wait manually or bypass the gate."
+      infraFailure: true,
+      exitDetail: detail,
+      threadId: null
     };
   }
 
   try {
     const payload = JSON.parse(result.stdout);
-    return parseStopReviewOutput(payload?.rawOutput);
+    const parsed = parseStopReviewOutput(payload?.rawOutput);
+    parsed.threadId = payload?.threadId ?? null;
+
+    // Bookend: announce the verdict
+    if (parsed.ok) {
+      logNote("[review-gate] VERDICT: PASS");
+    } else if (parsed.infraFailure) {
+      logNote("[review-gate] No recognizable verdict — allowing stop.");
+    } else {
+      logNote("[review-gate] VERDICT: CONTINUE — findings fed back to Claude.");
+    }
+
+    return parsed;
   } catch {
+    logNote("[review-gate] Failed to parse Codex output.");
     return {
       ok: false,
-      reason:
-        "The stop-time Codex review task returned invalid JSON. Run /codex:review --wait manually or bypass the gate."
+      infraFailure: true,
+      reason: "Codex review returned invalid JSON.",
+      threadId: null
     };
   }
 }
@@ -231,6 +330,40 @@ function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
   }
 }
 
+function runStopReview(cwd, input = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV] || null;
+  const prompt = buildStopReviewPrompt(cwd, input);
+  const childEnv = {
+    ...process.env,
+    ...(sessionId ? { [SESSION_ID_ENV]: sessionId } : {})
+  };
+
+  // Resume prior stop-gate thread if one exists for this session
+  const priorThreadId = findPriorStopGateThread(workspaceRoot, sessionId);
+
+  if (priorThreadId) {
+    const result = invokeCodexTask(cwd, ["task", "--json", "--progress", "--resume-thread", priorThreadId, prompt], childEnv, { resuming: true });
+    if (result.ok !== undefined && !result.exitDetail) {
+      return result;
+    }
+    // Resume failed — fall through to fresh
+    logNote("[review-gate] Prior thread could not be resumed — starting fresh.");
+  }
+
+  // Fresh thread
+  const result = invokeCodexTask(cwd, ["task", "--json", "--progress", prompt], childEnv);
+  if (result.exitDetail) {
+    return {
+      ok: false,
+      infraFailure: true,
+      reason: `Codex review failed: ${result.exitDetail}`,
+      threadId: null
+    };
+  }
+  return result;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 function main() {
@@ -262,6 +395,8 @@ function main() {
     if (!isSubagentStop) {
       logNote(setupNote);
       logNote(runningTaskNote);
+      // Surface to user via additionalContext so it's visible in the session
+      emitDecision({ additionalContext: `Review gate: ${setupNote}` });
     }
     return;
   }
@@ -272,8 +407,11 @@ function main() {
   if (isSubagentStop) {
     // SubagentStop path: write verdict to events table, emit only informational
     // additionalContext. Do NOT emit decision:block — dispatch_engine owns routing.
-    const verdict = review.ok ? "ALLOW" : "BLOCK";
-    const reason = review.reason || (review.ok ? "work looks good" : "review found issues");
+    // Infrastructure failures → ALLOW (don't block routing on infra issues).
+    const verdict = review.ok || review.infraFailure ? "ALLOW" : "BLOCK";
+    const reason = review.infraFailure
+      ? `infra failure: ${review.reason}`
+      : review.reason || (review.ok ? "work looks good" : "review found issues");
     emitCodexReviewEventSync(cwd, workflowId, verdict, reason);
     // Informational only — orchestrator sees this in additionalContext
     const contextNote = review.ok
@@ -283,17 +421,28 @@ function main() {
     return;
   }
 
-  // Stop event path: existing behavior — block if review failed.
+  // Stop event path.
+  // Infrastructure failures (timeout, process crash, bad JSON) → allow with warning.
+  // Review findings (CONTINUE verdict) → block so Claude acts on them.
+  if (!review.ok && review.infraFailure) {
+    const msg = `Codex review unavailable — allowing stop. ${review.reason}`;
+    logNote(msg);
+    logNote(runningTaskNote);
+    emitDecision({ additionalContext: `Review gate: ${msg}` });
+    return;
+  }
+
   if (!review.ok) {
     emitDecision({
       decision: "block",
-      reason: runningTaskNote ? `${runningTaskNote} ${review.reason}` : review.reason
+      reason: runningTaskNote ? `${runningTaskNote}\n\n${review.reason}` : review.reason
     });
     return;
   }
 
+  // PASS — both models agree work is complete
   if (review.reason) {
-    logNote(`Codex review (ALLOW):\n${review.reason}`);
+    logNote(`Codex review (PASS):\n${review.reason}`);
   }
   logNote(runningTaskNote);
 }
