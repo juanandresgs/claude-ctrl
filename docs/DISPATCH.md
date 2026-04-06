@@ -78,21 +78,39 @@ policies in priority order:
 |------|-----------------|
 | `hooks/prompt-submit.sh` | Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. Note: prompt-driven proof verification ("verified" reply) was removed in TKT-024 — readiness is now set exclusively by `check-tester.sh` via `evaluation_state`. |
 
-## Not Yet Enforced
+## Auto-Dispatch (Live)
 
-The following dispatch properties exist as prompt guidance in CLAUDE.md and
-`agents/*.md` but are **not mechanically enforced by any hook or gate**:
+Automatic role sequencing is live. After each agent stop, `dispatch_engine.py`
+determines the next role from completion records and emits `AUTO_DISPATCH: <role>`
+on stdout when a clean transition is ready. `post-task.sh` passes this signal
+through to the SubagentStop hook output. The orchestrator reads `AUTO_DISPATCH:`
+directives and chains the next role immediately without asking the user.
 
-- **Automatic role sequencing.** The planner-to-implementer-to-tester-to-guardian
-  flow is a convention the orchestrator follows from prompt instructions. No hook
-  blocks dispatching out of order.
+The canonical planner → implementer → tester → guardian flow chains
+automatically when:
+
+- The stopping agent emits valid structured trailers (e.g. `EVAL_VERDICT`,
+  `IMPL_STATUS`).
+- No `BLOCKED` or `ERROR` signal is present in hook output.
+- The `AUTO_DISPATCH:` directive names a valid next role.
+
+The orchestrator stops the chain only when hook output contains `BLOCKED`,
+`ERROR`, or `PROCESS ERROR`, or when Guardian needs user approval for high-risk
+ops (push, rebase, force) — gated by `bash_approval_gate` policy.
+
+The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in the
+`settings.json` SubagentStop chain and may emit `VERDICT: BLOCK` to halt the
+chain for human review.
+
+### Properties that remain prompt-level (not mechanically blocked)
+
 - **Orchestrator direct dispatch denial.** The orchestrator can still dispatch
   any agent type at any time. No hook prevents skipping the planner or tester.
+  Role sequencing is driven by `AUTO_DISPATCH:` signal compliance, not a hard
+  block on out-of-order dispatch.
 - **Typed runtime dispatch queue.** `dispatch_queue` exists (INIT-002/TKT-009)
   but is non-authoritative (DEC-WS6-001). Routing uses completion records via
   `determine_next_role()`. The queue is retained for manual orchestration only.
-- **Plan section immutability.** Now enforced by `plan_immutability` and
-  `decision_log` policies via planctl.py subprocess (INIT-PE/PE-W2).
 - **Orchestrator source-write prevention at dispatch level.** The orchestrator
   cannot write source files (enforced by `write_who` policy), but this is
   role-based write denial, not dispatch-level prevention.

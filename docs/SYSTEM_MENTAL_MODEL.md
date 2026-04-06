@@ -56,14 +56,22 @@ These are no longer authoritative:
      SessionStart        SubagentStart       PreToolUse             SubagentStop
          |                    |             / Write/Edit \               |
          |                    |            /              \              |
-  session-init.sh      subagent-start.sh  test-gate.sh   pre-write.sh   |
+  session-init.sh      subagent-start.sh  pre-bash.sh    pre-write.sh   |
          |                    |                |              |          |
          |                    |                |              |          |
-         |                    |                |     --------------------+----------------------
-         |                    |                |     |         |          |          |         |
-         |                    |                | write-guard  branch-guard plan-guard plan-check
+         |                    |                |     cc-policy evaluate (10 write-path policies)
+         |                    |                |       branch_guard, write_who, plan_guard,
+         |                    |                |       plan_exists, plan_immutability,
+         |                    |                |       decision_log, test_gate_pretool,
+         |                    |                |       doc_gate, mock_gate, enforcement_gap
          |                    |                |
-         |                    |                +--> runtime test_state check
+         |                    |                +--> cc-policy evaluate (12 bash-path policies)
+         |                    |                       bash_tmp_safety, bash_worktree_cwd,
+         |                    |                       bash_git_who, bash_main_sacred,
+         |                    |                       bash_force_push, bash_destructive_git,
+         |                    |                       bash_worktree_removal, bash_test_gate_merge,
+         |                    |                       bash_test_gate_commit, bash_eval_readiness,
+         |                    |                       bash_workflow_scope, bash_approval_gate
          |                    |
          |                    +--> lease claim
          |                    +--> active marker set
@@ -73,12 +81,8 @@ These are no longer authoritative:
          |                                             PostToolUse
          |                                        / Write/Edit/Bash \
          |                                       /                  \
-         |                                  track.sh  test-runner.sh  guard.sh
-         |                                      |           |             |
-         |                                      |           |             |
-         |                                      |           |             +--> lease op validation
-         |                                      |           |             +--> evaluation_state gate
-         |                                      |           |             +--> scope / approval checks
+         |                                  track.sh  test-runner.sh
+         |                                      |           |
          |                                      |           |
          |                                      |           +--> writes runtime test_state
          |                                      |
@@ -100,7 +104,7 @@ All hook runtime access goes through:
 
 hooks/context-lib.sh
     -> hooks/lib/runtime-bridge.sh
-        -> runtime/cli.py
+        -> runtime/cli.py (cc-policy)
             -> runtime/core/*
                 -> SQLite runtime DB
 
@@ -184,14 +188,13 @@ post-task
 Guardian
     |
     | only role allowed to commit / merge / push
-    | guard.sh enforces:
-    |   - valid active lease
-    |   - allowed operation class
-    |   - passing test_state
-    |   - evaluation_state == ready_for_guardian
-    |   - evaluation_state.head_sha matches current HEAD
-    |   - workflow binding and scope
-    |   - approval token for high-risk ops
+    | pre-bash.sh -> cc-policy evaluate enforces:
+    |   - valid active lease (bash_git_who)
+    |   - passing test_state (bash_test_gate_commit, bash_test_gate_merge)
+    |   - evaluation_state == ready_for_guardian + SHA match (bash_eval_readiness)
+    |   - workflow binding and scope (bash_workflow_scope)
+    |   - approval token for high-risk ops (bash_approval_gate)
+    |   - no force push without --force-with-lease (bash_force_push)
     v
 landing succeeds
     |
