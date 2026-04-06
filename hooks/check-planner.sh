@@ -21,6 +21,9 @@ AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev
 PROJECT_ROOT=$(detect_project_root)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
+# Record hook start time for observatory duration metric.
+_HOOK_START_AT=$(date +%s)
+
 # ---------------------------------------------------------------------------
 # Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
 # ---------------------------------------------------------------------------
@@ -99,6 +102,11 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
         append_audit "$PROJECT_ROOT" "agent_planner" "$issue"
     done
 fi
+
+# Observatory: emit agent duration metric (W-OBS-2).
+# _HOOK_START_AT is set near the top of this hook after PROJECT_ROOT is resolved.
+_obs_duration=$(( $(date +%s) - _HOOK_START_AT ))
+rt_obs_metric agent_duration_s "$_obs_duration" "{}" "" "planner" || true
 
 # Output as additionalContext
 ESCAPED=$(echo -e "$CONTEXT" | jq -Rs .)

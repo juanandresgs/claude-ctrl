@@ -130,4 +130,37 @@ fi
 # Echo the hookSpecificOutput wrapper produced by the runtime.
 printf '%s' "$RESULT" | jq '{hookSpecificOutput: .hookSpecificOutput}'
 
+# Observatory: emit review_verdict metric from the most recent codex_stop_review event (W-OBS-2).
+# Queries the event store for the latest codex_stop_review event and parses VERDICT from its
+# detail string (format: "VERDICT: ALLOW — ..." or "VERDICT: BLOCK — ...").
+# Non-fatal: || true ensures metric emission never prevents the hook from exiting cleanly.
+_review_raw=$(_local_cc_policy event query --type codex_stop_review --limit 1 2>/dev/null || echo "")
+_review_event=$(printf '%s' "$_review_raw" \
+    | jq -r 'if type == "array" then .[0].detail // "" else "" end' 2>/dev/null || echo "")
+_review_created=$(printf '%s' "$_review_raw" \
+    | jq -r 'if type == "array" then .[0].created_at // "" else "" end' 2>/dev/null || echo "")
+if [[ -n "$_review_event" ]]; then
+    _review_verdict=$(printf '%s' "$_review_event" \
+        | grep -oE 'VERDICT: (ALLOW|BLOCK)' | head -1 | awk '{print $2}' || echo "")
+    if [[ -n "$_review_verdict" ]]; then
+        _review_value=0
+        [[ "$_review_verdict" == "ALLOW" ]] && _review_value=1
+        rt_obs_metric review_verdict "$_review_value" \
+            "{\"provider\":\"codex\",\"verdict\":\"${_review_verdict}\"}" \
+            "" "${AGENT_TYPE:-}" || true
+        # EC-11: emit review_duration_s from event created_at to now
+        if [[ -n "$_review_created" && "$_review_created" =~ ^[0-9]+$ ]]; then
+            _review_duration=$(( $(date +%s) - _review_created ))
+            rt_obs_metric review_duration_s "$_review_duration" \
+                "{\"provider\":\"codex\"}" "" "${AGENT_TYPE:-}" || true
+        fi
+    fi
+    # EC-12: emit review_infra_failure when event detail contains "infra failure"
+    if printf '%s' "$_review_event" | grep -qi "infra.failure\|infra_failure\|INFRA_FAILURE"; then
+        rt_obs_metric review_infra_failure 1 \
+            "{\"provider\":\"codex\",\"error_type\":\"infra_failure\"}" \
+            "" "${AGENT_TYPE:-}" || true
+    fi
+fi
+
 exit 0

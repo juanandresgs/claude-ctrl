@@ -66,8 +66,27 @@ detect_project_root() {
     echo "${HOME:-/}"
 }
 
+# obs_hook_failure <hook_name> <exit_code>
+# Observatory helper: emit a hook_failure metric (W-OBS-2).
+# Called explicitly by hooks that detect a non-zero exit in their own error traps.
+# Not called automatically — a trap here would fire on every sourcing hook's exit,
+# producing false positives for normal zero exits. Hooks that want failure telemetry
+# set their own trap and call this function.
+# rt_obs_metric is defined in runtime-bridge.sh (sourced via context-lib.sh).
+# Guard: if rt_obs_metric is not yet defined (e.g. log.sh sourced before context-lib.sh),
+# the call is skipped silently so log.sh never disrupts hook startup.
+obs_hook_failure() {
+    local hook_name="${1:-unknown}"
+    local exit_code="${2:-1}"
+    if declare -f rt_obs_metric >/dev/null 2>&1; then
+        rt_obs_metric hook_failure 1 \
+            "{\"hook\":\"${hook_name}\",\"exit_code\":${exit_code}}" \
+            "" "" || true
+    fi
+}
+
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root
+export -f log_json log_info read_input get_field detect_project_root obs_hook_failure
 
 # Auto-export CLAUDE_PROJECT_DIR so downstream cc_policy calls scope to
 # project DB. HOME guard prevents non-project contexts from scoping incorrectly.

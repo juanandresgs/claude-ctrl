@@ -29,6 +29,9 @@ AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 PROJECT_ROOT=$(detect_project_root)
 
+# Record hook start time for observatory duration metric.
+_HOOK_START_AT=$(date +%s)
+
 # ---------------------------------------------------------------------------
 # Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
 # ---------------------------------------------------------------------------
@@ -220,6 +223,15 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
 else
     CONTEXT="Tester validation: evaluation_state written as '$_EVAL_STATUS' (head_sha=${_EVAL_HEAD_SHA:-none})."
 fi
+
+# Observatory: emit agent duration and eval verdict metrics (W-OBS-2).
+# _HOOK_START_AT is set near the top of this hook after PROJECT_ROOT is resolved.
+# _EVAL_STATUS is the verdict written to evaluation_state (fail-closed default: needs_changes).
+_obs_duration=$(( $(date +%s) - _HOOK_START_AT ))
+rt_obs_metric agent_duration_s "$_obs_duration" \
+    "{\"verdict\":\"${_EVAL_STATUS:-unknown}\"}" "" "tester" || true
+rt_obs_metric eval_verdict 1 \
+    "{\"verdict\":\"${_EVAL_STATUS:-unknown}\"}" "" "tester" || true
 
 ESCAPED=$(echo -e "$CONTEXT" | jq -Rs .)
 cat <<EOF

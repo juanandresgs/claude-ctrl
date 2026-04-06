@@ -182,6 +182,9 @@ run_tests() {
     esac
 }
 
+# Record test start time for observatory duration metric.
+_TEST_START_AT=$(date +%s)
+
 # Run tests in a subshell and capture PID for targeted cleanup
 run_tests "$RUNNER" "$PROJECT_ROOT" "$FILE_PATH" > "${LOCK_DIR}/.test-runner.out" 2>&1 &
 TEST_PID=$!
@@ -203,11 +206,24 @@ if [[ "$TEST_EXIT" -ne 0 ]]; then
     # Audit trail
     append_audit "$PROJECT_ROOT" "test_fail" "${RUNNER}: ${FAIL_COUNT} failures"
 else
+    FAIL_COUNT=0
     rt_test_state_set "pass" "$PROJECT_ROOT" "$HEAD_SHA" "0" "0" "0"
 fi
 
+# Observatory: emit test_result metric (W-OBS-2).
+# value = wall-clock duration of the test run in seconds.
+# labels carry status (pass/fail), runner, and failure count.
+# FAIL_COUNT is set in both branches above; _test_status mirrors TEST_EXIT.
+_test_duration=$(( $(date +%s) - _TEST_START_AT ))
+_test_status="pass"
+[[ "$TEST_EXIT" -ne 0 ]] && _test_status="fail"
+rt_obs_metric test_result "$_test_duration" \
+    "{\"status\":\"${_test_status}\",\"runner\":\"${RUNNER}\",\"fail\":${FAIL_COUNT}}" \
+    "" "" || true
+
 # --- Report results ---
 if [[ "$TEST_EXIT" -ne 0 ]]; then
+    # shellcheck disable=SC2028
     ESCAPED=$(echo "Test failures detected ($RUNNER):\n$TEST_OUTPUT" | jq -Rs .)
     cat <<EOF
 {
