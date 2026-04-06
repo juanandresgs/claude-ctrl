@@ -2281,11 +2281,14 @@ W-CONV-1 (Path Identity)
     │                   │
     │                   ├──→ W-CONV-4 (Readiness Surface)  ─┐
     │                   │                                    ├──→ W-CONV-6 (Dead Surface Deletion)
-    │                   └──→ W-CONV-5 (Completion Contracts)─┘
+    │                   └──→ W-CONV-5 (Completion Contracts)─┤
+    │                              │                         │
+    │                              └──→ W-CONV-7 (Orch Trust)┘
 ```
 
 W-CONV-4 and W-CONV-5 can execute in parallel after W-CONV-3.
 W-CONV-6 requires both W-CONV-4 and W-CONV-5.
+W-CONV-7 depends on W-CONV-5 only (prompt/docs, no code).
 
 #### Required retest set (every packet)
 
@@ -2620,6 +2623,40 @@ scope for this initiative — tracked as a separate follow-up issue.
 
 **Expected state authorities touched:**
 - None (removing dead code paths, not changing live authorities)
+
+#### W-CONV-7: Orchestrator Trusts Implementer Completion Contracts
+
+- **Status:** not started
+- **Issue:** #16
+- **Depends on:** W-CONV-5 (completion contract must be live so there is a
+  structured signal to trust)
+
+**Problem:** W-CONV-5 fixed the hook/runtime path — `dispatch_engine.py`
+correctly emits `agent_complete` (not `agent_stopped`) when `IMPL_STATUS=complete`.
+But the orchestrator reads the raw implementer response text independently
+and may decide "this looks cut off" based on narrative heuristics, spawning
+an unnecessary continuation agent. Observed: screenshot showing "Implementer
+got cut off during the final breadth check. Let me continue it." after an
+implementer that was actually Done (67 tool uses, 7m 38s).
+
+This leaves two authorities for the same operational fact:
+1. Structured completion contract / runtime completion record
+2. Orchestrator narrative heuristic over raw agent prose
+
+**Approach:** Prompt/docs only. Add explicit orchestrator rules:
+1. `IMPL_STATUS=complete` is terminal — do not spawn continuation
+2. Continuation only when: `IMPL_STATUS=blocked`, contract missing/invalid,
+   hook indicates `agent_stopped`, or user explicitly asks
+3. When raw prose and structured signals conflict, structured signals win;
+   report uncertainty rather than silently spawning continuation
+
+**Scope Manifest:**
+- *Allowed:* `CLAUDE.md`, `docs/DISPATCH.md`, `agents/*.md`
+- *Required:* `CLAUDE.md` (orchestrator prompt rules)
+- *Forbidden:* All hook/runtime/source files (no code changes)
+
+**Expected state authorities touched:**
+- None (prompt/docs only)
 
 ### INIT-CDX: Codex Plugin Concurrency and Dead Task Handling
 
