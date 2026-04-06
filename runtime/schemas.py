@@ -256,6 +256,67 @@ TEST_STATE_INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_test_state_project ON test_state (project_root)"
 )
 
+# ---------------------------------------------------------------------------
+# Observatory DDL (W-OBS-1)
+# ---------------------------------------------------------------------------
+
+OBS_METRICS_DDL = """
+CREATE TABLE IF NOT EXISTS obs_metrics (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    metric_name TEXT    NOT NULL,
+    value       REAL    NOT NULL,
+    role        TEXT,
+    labels_json TEXT,
+    session_id  TEXT,
+    created_at  INTEGER NOT NULL
+)
+"""
+
+OBS_METRICS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_obs_metrics_name_time
+       ON obs_metrics (metric_name, created_at)""",
+    """CREATE INDEX IF NOT EXISTS idx_obs_metrics_role
+       ON obs_metrics (role) WHERE role IS NOT NULL""",
+]
+
+OBS_SUGGESTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS obs_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id       TEXT,
+    category        TEXT    NOT NULL,
+    title           TEXT    NOT NULL,
+    body            TEXT,
+    target_metric   TEXT,
+    baseline_value  REAL,
+    status          TEXT    NOT NULL DEFAULT 'proposed',
+    reject_reason   TEXT,
+    disposition_at  INTEGER,
+    measure_after   INTEGER,
+    measured_value  REAL,
+    effective       INTEGER,
+    defer_reassess_after INTEGER,
+    source_session  TEXT,
+    created_at      INTEGER NOT NULL
+)
+"""
+
+OBS_SUGGESTIONS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_obs_suggestions_status
+       ON obs_suggestions (status)""",
+    """CREATE INDEX IF NOT EXISTS idx_obs_suggestions_signal
+       ON obs_suggestions (signal_id) WHERE signal_id IS NOT NULL""",
+]
+
+OBS_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS obs_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at           INTEGER NOT NULL,
+    metrics_snapshot TEXT,
+    trace_count      INTEGER,
+    suggestion_count INTEGER
+)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -276,6 +337,9 @@ ALL_DDL: list[str] = [
     DISPATCH_LEASES_DDL,
     COMPLETION_RECORDS_DDL,
     TEST_STATE_DDL,
+    OBS_METRICS_DDL,
+    OBS_SUGGESTIONS_DDL,
+    OBS_RUNS_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
@@ -375,6 +439,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         for idx_ddl in DISPATCH_LEASES_INDEXES_DDL:
             conn.execute(idx_ddl)
         conn.execute(TEST_STATE_INDEX_DDL)
+        for idx_ddl in OBS_METRICS_INDEXES_DDL:
+            conn.execute(idx_ddl)
+        for idx_ddl in OBS_SUGGESTIONS_INDEXES_DDL:
+            conn.execute(idx_ddl)
 
         # Migrate agent_markers: add status column if missing.
         # Old DBs (pre-TKT-STAB-A4) have is_active but no status.

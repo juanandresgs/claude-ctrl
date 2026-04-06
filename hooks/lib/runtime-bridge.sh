@@ -418,3 +418,54 @@ rt_test_state_check_pass() {
     status=$(printf '%s' "${result:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
     [[ "$status" == "pass" || "$status" == "pass_complete" ]]
 }
+
+# ---------------------------------------------------------------------------
+# Observatory wrappers (W-OBS-1)
+# ---------------------------------------------------------------------------
+
+# rt_obs_metric <name> <value> [labels_json] [session_id] [role]
+# Emit a single metric to obs_metrics. Silent on success; suppresses errors.
+# Example: rt_obs_metric agent_duration_s 42.0 '{"phase":"impl"}' '' implementer
+#
+# @decision DEC-BRIDGE-002
+# @title rt_obs_metric is the sole shell entry point for metric emission
+# @status accepted
+# @rationale Hook scripts must not build cc_policy obs emit calls inline.
+#   All observatory metric writes go through this wrapper so error suppression,
+#   arg handling, and future instrumentation changes stay in one place.
+rt_obs_metric() {
+    _rt_ensure_schema
+    local name="$1" value="$2" labels="${3:-}" session_id="${4:-}" role="${5:-}"
+    local args=("obs" "emit" "$name" "$value")
+    [[ -n "$labels" ]] && args+=(--labels "$labels")
+    [[ -n "$session_id" ]] && args+=(--session-id "$session_id")
+    [[ -n "$role" ]] && args+=(--role "$role")
+    cc_policy "${args[@]}" >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# Observatory batch accumulator (W-OBS-1)
+# ---------------------------------------------------------------------------
+
+# Internal accumulator array for batch metric emission.
+# Use _obs_accum to queue metrics, then rt_obs_metric_batch to flush.
+_OBS_BATCH=()
+
+# _obs_accum <name> <value> [labels_json] [role]
+# Append one metric to the pending batch.  Does not flush.
+_obs_accum() {
+    local lj="${3:-null}"
+    local role="${4:-}"
+    _OBS_BATCH+=("$(printf '{"name":"%s","value":%s,"labels":%s,"role":"%s"}' "$1" "$2" "$lj" "$role")")
+}
+
+# rt_obs_metric_batch
+# Flush all accumulated metrics in a single cc_policy obs emit-batch call.
+# Clears _OBS_BATCH after the flush.  No-op when the batch is empty.
+rt_obs_metric_batch() {
+    [[ ${#_OBS_BATCH[@]} -eq 0 ]] && return 0
+    _rt_ensure_schema
+    printf '[%s]' "$(IFS=,; echo "${_OBS_BATCH[*]}")" \
+        | cc_policy obs emit-batch >/dev/null 2>&1 || true
+    _OBS_BATCH=()
+}
