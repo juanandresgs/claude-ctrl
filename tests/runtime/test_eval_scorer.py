@@ -26,9 +26,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-import runtime.core.eval_scorer as scorer
-
 import runtime.core.eval_metrics as eval_metrics
+import runtime.core.eval_scorer as scorer
 from runtime.core.db import connect_memory
 from runtime.eval_schemas import ensure_eval_schema
 
@@ -587,6 +586,34 @@ def test_score_scenario_empty_output():
     assert result["verdict_actual"] is None
     assert result["verdict_correct"] == 0
     assert result["total_score"] == 0.0
+
+
+def test_extract_confidence_from_real_tester_format():
+    r"""Regression: _extract_confidence_level must parse the canonical tester.md bold format.
+
+    The canonical format emitted by agents/tester.md is:
+        **Confidence Level:** **High** — all items met.
+
+    The regex previously used [:\s]+ which does not include '*', so it failed
+    to consume the ':** **' separator between "Level" and "High". The fix
+    adds '*' to the character class ([:\s*]+) so the full bold sequence is
+    consumed correctly.
+    """
+    # Direct invocation of the private helper with the exact canonical string
+    canonical_line = "**Confidence Level:** **High** — all contract items met."
+    result = scorer._extract_confidence_level(canonical_line)
+    assert result == "High", (
+        f"Expected 'High' but got {result!r}. "
+        "The [:\\s*]+ character class fix may be missing or incorrect."
+    )
+
+    # Also verify via score_scenario using SAMPLE_EVALUATOR_OUTPUT which contains
+    # the same canonical bold format — confidence_actual must be non-None.
+    scored = scorer.score_scenario(SAMPLE_EVALUATOR_OUTPUT, GROUND_TRUTH_FULL, SCORING_WEIGHTS_FULL)
+    assert scored["confidence_actual"] == "High", (
+        f"score_scenario returned confidence_actual={scored['confidence_actual']!r}; "
+        "expected 'High'. SAMPLE_EVALUATOR_OUTPUT contains '**Confidence Level:** **High**'."
+    )
 
 
 # ---------------------------------------------------------------------------

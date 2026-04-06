@@ -465,9 +465,13 @@ def _extract_confidence_level(raw_output: str) -> Optional[str]:
     if not raw_output:
         return None
 
-    # Match "Confidence Level:" followed optionally by bold markers and the value
+    # Match "Confidence Level:" followed optionally by bold markers and the value.
+    # [:\s*]+ consumes the full ":** **" sequence emitted by the canonical tester.md
+    # bold format: **Confidence Level:** **High** — the * characters between colon
+    # and the level word must be included in the character class or the regex
+    # stalls between the closing ** of "Level:**" and the opening ** of "**High**".
     pattern = re.compile(
-        r"confidence\s+level[:\s]+\*{0,2}(High|Medium|Low)\*{0,2}",
+        r"confidence\s+level[:\s*]+\*{0,2}(High|Medium|Low)\*{0,2}",
         re.IGNORECASE,
     )
     match = pattern.search(raw_output)
