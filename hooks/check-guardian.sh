@@ -149,6 +149,31 @@ CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null 
 LAST_COMMIT=$(git -C "$PROJECT_ROOT" log --oneline -1 2>/dev/null || echo "none")
 
 # Check 4: Approval-loop detection — agent should not end with unanswered question
+#
+# INVESTIGATION NOTE (#145 — approval provenance):
+#   This check examines the GUARDIAN'S OWN response text (RESPONSE_TEXT is
+#   extracted from SubagentStop input — what the guardian said, not user input).
+#   HAS_APPROVAL_QUESTION detects whether the guardian asked a question like
+#   "do you approve?" or "shall I proceed?".  It does NOT detect the user's
+#   response, and is NOT confused by the word "Approved" appearing in assistant
+#   output.  The check correctly detects an approval-loop REGRESSION: Guardian
+#   requesting user permission for a local landing that should auto-execute
+#   under DEC-GUARD-AUTOLAND.
+#
+#   The approvals table `granted_by` field (schemas.py:188) has a default of
+#   'user'. rt_approval_grant() is defined in runtime-bridge.sh and exported,
+#   but has ZERO callers in the hook layer — grants only flow through the CLI
+#   (`cc-policy approval grant`), which is invoked interactively by the user.
+#   No hook writes a fake approval; the provenance concern in #145 is NOT
+#   present in the running code.
+#
+#   @decision DEC-GUARD-CHECK4
+#   @title Check 4 is not-a-bug — it detects auto-land regressions, not fake approvals
+#   @status accepted
+#   @rationale RESPONSE_TEXT is the guardian's output, not user input. Approval
+#     provenance (granted_by) is clean: the only grant path is the user running
+#     `cc-policy approval grant` explicitly. No code path produces a synthetic
+#     approval. Issue #145 is closed as not-a-bug.
 if [[ -n "$RESPONSE_TEXT" ]]; then
     # Check if response ends with an approval question
     HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue|merge)|ready to (merge|commit|proceed)\?' || echo "")

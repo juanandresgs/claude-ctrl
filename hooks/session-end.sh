@@ -27,12 +27,30 @@ if [[ -x "$TODO_SCRIPT" ]]; then
     "$TODO_SCRIPT" unclaim --session="$(canonical_session_id)" 2>/dev/null || true
 fi
 
-# --- Kill lingering async test-runner processes ---
-# test-runner.sh runs async (PostToolUse). If it's still running when the session
-# ends, its output will never be consumed. Kill it to prevent orphaned processes.
-if pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
-    pkill -f "test-runner\\.sh" 2>/dev/null || true
-    log_info "SESSION-END" "Killed lingering test-runner process(es)"
+# --- Kill THIS session's async test-runner process (scoped by lock file) ---
+# test-runner.sh runs async (PostToolUse) and writes its PID to
+# $PROJECT_ROOT/.claude/.test-runner.lock so that only this session's process
+# is killed, not test-runners belonging to concurrent sessions in other
+# project worktrees (#132-134: blanket pkill -f was cross-session unsafe).
+#
+# @decision DEC-SESEND-001
+# @title Kill test-runner via lock file PID, not blanket pkill
+# @status accepted
+# @rationale pgrep/pkill -f "test-runner.sh" matches ALL test-runner processes
+#   across every concurrently active session. For multi-worktree setups one
+#   session ending would kill another project's test-runner. Scoping the kill
+#   to the lock file PID (which is project-root-specific) makes the operation
+#   safe under concurrent worktree usage. Fixes #132-134.
+_TR_LOCK="$PROJECT_ROOT/.claude/.test-runner.lock"
+if [[ -f "$_TR_LOCK" ]]; then
+    _TR_PID=$(cat "$_TR_LOCK" 2>/dev/null || echo "")
+    if [[ -n "$_TR_PID" ]] && kill -0 "$_TR_PID" 2>/dev/null; then
+        # Kill child processes first, then the runner itself
+        pkill -P "$_TR_PID" 2>/dev/null || true
+        kill "$_TR_PID" 2>/dev/null || true
+        log_info "SESSION-END" "Killed test-runner PID $_TR_PID for $PROJECT_ROOT"
+    fi
+    rm -f "$_TR_LOCK"
 fi
 
 # --- Clean up session-scoped files (these don't persist) ---

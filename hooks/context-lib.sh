@@ -403,13 +403,34 @@ is_claude_meta_repo() {
     local dir="$1"
     local repo_root
 
-    # Check CLAUDE_PROJECT_DIR first — symlinks cause git to resolve to the
-    # real path (e.g. ~/Code/foo) even when ~/.claude is the logical root.
+    # Check 1: CLAUDE_PROJECT_DIR env var — symlinks cause git to resolve to
+    # the real path (e.g. ~/Code/foo) even when ~/.claude is the logical root.
     if [[ "${CLAUDE_PROJECT_DIR:-}" == */.claude ]]; then
         return 0
     fi
+
+    # Check 2: git toplevel — works for the main checkout of the meta-repo.
     repo_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo "")
-    [[ "$repo_root" == */.claude ]]
+    if [[ "$repo_root" == */.claude ]]; then
+        return 0
+    fi
+
+    # Check 3: git common dir — works for worktrees of the meta-repo.
+    # For a worktree of ~/.claude, --git-common-dir returns the shared .git
+    # directory, e.g. /Users/foo/.claude/.git.  The worktree's own toplevel
+    # is something like ~/.claude/.worktrees/feature-foo and does NOT end in
+    # /.claude, so Check 2 would miss it.  --git-common-dir does not.
+    #
+    # @decision DEC-META-001
+    # @title Use --git-common-dir to detect meta-repo worktrees
+    # @status accepted
+    # @rationale git --show-toplevel returns the worktree root, not the shared
+    #   repo root. For ~/.claude worktrees the path ends in feature-foo, not
+    #   /.claude. --git-common-dir always returns the shared .git path which
+    #   DOES end in /.claude/.git, catching the worktree case. Fixes #163/#143.
+    local common_dir
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || echo "")
+    [[ "$common_dir" == */.claude/.git ]]
 }
 
 # --- Statusline cache writer removed (TKT-008) ---
