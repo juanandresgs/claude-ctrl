@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-06 (INIT-GUARD-WT R2: HIGH-1 carrier fix, HIGH-2 fail-closed, race-safety TOCTOU fix)
+Last updated: 2026-04-06 (INIT-GUARD-WT R3: planner lease decoupled, enriched AUTO_DISPATCH contract, provision order reversed)
 
 ## Identity
 
@@ -532,35 +532,35 @@ into the new mainline.
 - `2026-04-06 — DEC-GUARD-WT-005` `isolation: "worktree"` on Agent tool calls
   is forbidden. No runtime enforcement possible (harness controls isolation
   before hooks fire). CLAUDE.md prompt constraint is sufficient.
-- `2026-04-06 — DEC-GUARD-WT-006` **Guardian provisioning lease (REVISED:
-  fail-closed).** Guardian needs its own lease to anchor completion record
-  submission. dispatch_engine issues a Guardian lease at PROJECT_ROOT when
-  processing planner stop. This is mandatory, not best-effort: the planner
-  always holds a lease at PROJECT_ROOT (issued by orchestrator, claimed by
-  subagent-start.sh), so `_resolve_lease_context` always finds workflow_id.
-  If workflow_id is missing or lease issuance fails, dispatch_engine returns
-  PROCESS ERROR (same fail-closed pattern as tester/guardian with no lease).
-  check-guardian.sh reads this lease to submit the completion record. The
-  implementer lease (issued by `cc-policy worktree provision`) is a separate
-  lease at the worktree_path. Two leases coexist briefly:
-  guardian@PROJECT_ROOT and implementer@worktree_path. Guardian's lease is
-  released by dispatch_engine when processing guardian stop.
+- `2026-04-06 — DEC-GUARD-WT-006` **Guardian provisioning lease (REVISED R2:
+  fail-closed, REVISED R3: moved to W-GWT-2).** Guardian needs its own
+  lease to anchor completion record submission. **R3:** Lease issuance moves
+  from dispatch_engine (W-GWT-1) to the provision CLI (W-GWT-2). The R2
+  design assumed the planner always holds a lease at PROJECT_ROOT — this is
+  wrong (subagent-start.sh claims, does not issue; existing tests model
+  planner stops with no lease). The provision CLI issues the Guardian lease
+  at PROJECT_ROOT as part of the provision sequence: filesystem first, then
+  register, then Guardian lease, then implementer lease, then workflow
+  binding. workflow_id at planner stop is best-effort (lease -> branch
+  fallback -> orchestrator context). dispatch_engine returns to pure routing
+  (no lease writes). check-guardian.sh reads the Guardian lease to submit the
+  completion record. Guardian's lease is released by dispatch_engine when
+  processing guardian stop.
 - `2026-04-06 — DEC-GUARD-WT-007` **Structured guardian_mode dispatch field.**
   dispatch_engine includes `guardian_mode` in the suggestion text as a
   structured prefix: `AUTO_DISPATCH: guardian (mode=provision,
   workflow_id=W, feature_name=X)`. This is parsed by the orchestrator and
   included in Guardian's dispatch context. Eliminates implicit mode detection.
-- `2026-04-06 — DEC-GUARD-WT-008` **Provision-if-absent idempotency (REVISED:
-  no list_active pre-check, partial-failure cleanup).** The `cc-policy worktree
-  provision` CLI command calls `worktrees.register()` directly (no
-  `list_active()` pre-check -- that created a TOCTOU window). `register()`'s
-  `ON CONFLICT(path) DO UPDATE` is the sole concurrency guard. If the row
-  already existed, returns `already_exists=true` so Guardian skips `git
-  worktree add`. On fresh registration, issues the implementer lease and
-  workflow binding. If lease or binding issuance fails after successful
-  register, the provision CLI calls `worktrees.remove()` to roll back --
-  preventing orphaned worktree entries. The `git worktree add` itself is a
-  natural guard (fails if the path already exists on disk).
+- `2026-04-06 — DEC-GUARD-WT-008` **Provision-if-absent idempotency (REVISED R2:
+  no list_active pre-check, REVISED R3: filesystem-first order).** Provision
+  sequence reversed: filesystem first (`git worktree add`), then DB
+  (`register`, `leases.issue`, `bind_workflow`). Already-exists detection via
+  filesystem check (does the path exist on disk?), not via `register()` return
+  value parsing. If `git worktree add` fails, nothing to clean up (no DB state
+  written). If DB writes fail after filesystem creation, cleanup:
+  `git worktree remove` + `worktrees.remove()`. No `list_active()` pre-check
+  (TOCTOU). `register()`'s `ON CONFLICT(path) DO UPDATE` remains the DB-level
+  idempotency guard.
 
 ## Active Initiatives
 
@@ -6593,8 +6593,11 @@ and reviewed by the user (gate: approve).
 
 ### INIT-GUARD-WT: Guardian as Sole Worktree Lifecycle Authority
 
-- **Status:** planned (revised 2026-04-06 R2: HIGH-1 suggestion-text carrier,
-  HIGH-2 fail-closed guardian lease, race-safety TOCTOU/partial-failure fix.
+- **Status:** planned (revised 2026-04-06 R3: planner lease decoupled from
+  guardian lease issuance, enriched AUTO_DISPATCH orchestrator contract,
+  provision order reversed (filesystem before DB).
+  R2: HIGH-1 suggestion-text carrier, HIGH-2 fail-closed guardian lease,
+  race-safety TOCTOU/partial-failure fix.
   R1: HIGH-1 cli.py carrier, HIGH-2 guardian lease, MEDIUM-3 rework path,
   MEDIUM-4 guardian_mode, race-safety idempotency)
 - **Goal:** Make Guardian the sole authority for worktree creation, assignment,
@@ -6716,44 +6719,56 @@ and reviewed by the user (gate: approve).
   controls isolation before hooks fire. CLAUDE.md prompt constraint is
   sufficient.
 
-- `DEC-GUARD-WT-006` **Guardian provisioning lease (NEW, REVISED:
-  fail-closed).** Guardian needs its own lease to anchor its completion
-  record submission in check-guardian.sh. The problem: check-guardian.sh
-  (line 68-79) uses `lease_context(PROJECT_ROOT)` to find the active
-  lease for completion record submission. After provisioning, the only
-  lease Guardian issued is an implementer lease at the worktree_path, not
-  at PROJECT_ROOT. Guardian has no lease to submit its completion against.
+- `DEC-GUARD-WT-006` **Guardian provisioning lease (NEW, REVISED R2:
+  fail-closed, REVISED R3: moved to W-GWT-2 provision CLI).**
+  Guardian needs its own lease to anchor its completion record submission
+  in check-guardian.sh. The problem: check-guardian.sh (line 68-79) uses
+  `lease_context(PROJECT_ROOT)` to find the active lease for completion
+  record submission. After provisioning, the only lease Guardian issued
+  is an implementer lease at the worktree_path, not at PROJECT_ROOT.
+  Guardian has no lease to submit its completion against.
 
-  **Solution:** The planner -> guardian routing path in dispatch_engine
-  must issue a Guardian lease at PROJECT_ROOT before the Guardian agent
-  starts. This is done in the dispatch_engine planner block: after setting
-  `next_role = "guardian"`, issue a lease with `role="guardian",
-  worktree_path=project_root, workflow_id=workflow_id`. This lease
-  coexists with the implementer lease (at a different worktree_path) that
-  Guardian creates during provisioning. check-guardian.sh finds Guardian's
-  lease via the existing `lease_context(PROJECT_ROOT)` path. After
-  Guardian stops, dispatch_engine releases the Guardian lease in
+  **R3 revision — planner lease is a claim, not an issue.** The R2
+  design assumed the planner always holds a lease at PROJECT_ROOT
+  (issued by the orchestrator, claimed by subagent-start.sh line 82).
+  This is wrong: subagent-start.sh CLAIMS an existing lease — it does
+  not issue one. If no lease was issued before the planner was dispatched
+  (which is the case in existing tests: test-auto-dispatch-signal.sh L86,
+  test-full-lifecycle.sh L7), the planner has no lease. Making
+  dispatch_engine fail-closed on missing workflow_id at planner stop
+  would break all planner stops that lack a pre-issued lease.
+
+  **Solution (R3):** Guardian lease issuance moves from dispatch_engine
+  (W-GWT-1) to the `cc-policy worktree provision` CLI (W-GWT-2). The
+  provision CLI already runs inside the Guardian agent and already
+  issues the implementer lease. It now also issues the Guardian lease
+  at PROJECT_ROOT as part of the same provision sequence. The sequence
+  becomes: (1) git worktree add (filesystem), (2) worktrees.register(),
+  (3) leases.issue() for Guardian at PROJECT_ROOT, (4) leases.issue()
+  for implementer at worktree_path, (5) workflows.bind_workflow(). The
+  Guardian lease is available to check-guardian.sh immediately after
+  the provision CLI returns.
+
+  **workflow_id derivation at planner stop:** dispatch_engine does NOT
+  require workflow_id at planner stop. It is best-effort: if an active
+  lease exists at PROJECT_ROOT, use its workflow_id. Otherwise, derive
+  from branch via `policy_utils.current_workflow_id()` (same fallback
+  dispatch_engine already uses for stop-assessment). If neither yields
+  a workflow_id, the suggestion text omits it — the orchestrator
+  already has the workflow_id from the plan and includes it in the
+  Guardian dispatch context. The provision CLI receives workflow_id as
+  a CLI argument, not from the planner's lease chain.
+
+  **dispatch_engine purity restored:** The R2 "controlled exception"
+  that allowed dispatch_engine to issue leases is no longer needed.
+  dispatch_engine returns to being a pure routing engine that reads
+  but never writes leases. Lease issuance happens in the provision
+  CLI (runtime side effect in the Guardian agent, not in dispatch_engine).
+
+  check-guardian.sh finds Guardian's lease via the existing
+  `lease_context(PROJECT_ROOT)` path. After Guardian stops,
+  dispatch_engine releases the Guardian lease in
   `_route_from_completion()` as it does for all roles.
-
-  **Fail-closed, not best-effort (HIGH-2 fix).** The planner always holds
-  a lease at PROJECT_ROOT (issued by the orchestrator before dispatch,
-  claimed by subagent-start.sh line 82). When dispatch_engine processes
-  the planner stop, `_resolve_lease_context` finds this lease and
-  extracts workflow_id. Therefore workflow_id is always available for
-  guardian lease issuance. If workflow_id is missing or lease issuance
-  throws, dispatch_engine returns PROCESS ERROR and sets next_role=None
-  (same fail-closed pattern as tester/guardian with no active lease in
-  `_route_from_completion`). A guardian without a lease cannot submit
-  its completion record, so proceeding would silently break the cycle.
-
-  **Exception to dispatch_engine purity:** This is a controlled exception.
-  Lease issuance is not a git side effect -- it is an internal state write.
-  dispatch_engine already reads leases; writing one for the purpose of
-  enabling the completion contract is analogous to writing events (which it
-  already does). The alternative (having the orchestrator issue the lease)
-  would require the orchestrator to call `cc-policy lease issue` before
-  dispatching Guardian, which adds fragile shell-level coordination and
-  breaks auto-dispatch.
 
 - `DEC-GUARD-WT-007` **Structured guardian_mode dispatch field (NEW).**
   When dispatch_engine routes `planner -> guardian`, the suggestion text
@@ -6776,44 +6791,56 @@ and reviewed by the user (gate: approve).
   planner -> guardian -> implementer chain (not planner -> implementer
   directly).
 
-- `DEC-GUARD-WT-008` **Provision-if-absent idempotency (NEW, REVISED:
-  no TOCTOU, partial-failure cleanup).** The `cc-policy worktree
-  provision` CLI command uses `worktrees.register()` directly as the
-  sole concurrency guard. No `list_active()` pre-check -- that would
-  create a TOCTOU window where two concurrent provisions both see "not
-  found" and race. `register()`'s `ON CONFLICT(path) DO UPDATE` makes
-  the insert idempotent at the SQLite write-lock level.
+- `DEC-GUARD-WT-008` **Provision-if-absent idempotency (NEW, REVISED R2:
+  no TOCTOU, REVISED R3: filesystem-first order).** The `cc-policy
+  worktree provision` CLI command creates the filesystem worktree BEFORE
+  any DB writes. No `list_active()` pre-check -- that would create a
+  TOCTOU window where two concurrent provisions both see "not found" and
+  race.
 
-  The provision sequence is:
-  1. `worktrees.register(conn, path, branch, ticket=workflow_id)` --
-     ON CONFLICT updates (idempotent). Detect already-existed via
-     `conn.total_changes` delta or post-INSERT SELECT.
-  2. If already_exists: return `{"already_exists": true}` so Guardian
-     skips `git worktree add`.
-  3. Guardian runs `git worktree add` (bash side) -- if path exists on
-     disk, git fails (natural filesystem guard).
-  4. `leases.issue(conn, ...)` -- implementer lease at worktree_path.
-  5. `workflows.bind_workflow(conn, ...)` -- workflow binding.
+  **Already-exists detection (R3):** Check the filesystem BEFORE
+  `git worktree add`: does `.worktrees/feature-<name>` exist on disk?
+  If yes, it is a re-provision — skip `git worktree add`, just ensure
+  DB state is correct (register + leases + binding). This is simpler
+  and more reliable than parsing SQLite side effects from register().
 
-  **Partial-failure cleanup:** If steps 4 or 5 fail after step 1
-  succeeded, the provision CLI calls `worktrees.remove(conn, path)` to
-  roll back the registration. This prevents orphaned worktree entries
-  that have no corresponding lease. The cleanup itself is wrapped in
-  try/except so a cleanup failure does not mask the original error.
-  The lease issuance uses the one-active-per-worktree invariant
-  (revokes any existing lease for the same path).
+  The provision sequence is (R3):
+  1. Filesystem check: does `<project_root>/.worktrees/feature-<name>`
+     exist? If yes, skip step 2 (re-provision path).
+  2. `git worktree add .worktrees/feature-<name> -b feature/<name>` --
+     filesystem first. If it fails, nothing to clean up.
+  3. `worktrees.register(conn, path, branch, ticket=workflow_id)` --
+     ON CONFLICT updates (idempotent). DB records filesystem reality.
+  4. `leases.issue(conn, role="guardian", worktree_path=project_root,
+     workflow_id=workflow_id)` -- Guardian lease at PROJECT_ROOT
+     (DEC-GUARD-WT-006 R3: moved here from dispatch_engine).
+  5. `leases.issue(conn, role="implementer", worktree_path=path,
+     workflow_id=workflow_id)` -- implementer lease at worktree_path.
+  6. `workflows.bind_workflow(conn, ...)` -- workflow binding.
+
+  **Partial-failure cleanup (R3):** If steps 3-6 fail after step 2
+  succeeded, cleanup: `git worktree remove .worktrees/feature-<name>`.
+  This is simpler than the R2 approach (which cleaned up DB state after
+  register succeeded) because there is no stale DB state to clean —
+  the DB was never written. If step 3 succeeds but steps 4-6 fail,
+  the provision CLI calls `worktrees.remove(conn, path)` to roll back
+  the registration AND `git worktree remove` to clean the filesystem.
+  The cleanup itself is wrapped in try/except so a cleanup failure
+  does not mask the original error.
 
 #### Work Items
 
 ##### W-GWT-1: Routing Table, Dispatch Engine, and WORKTREE_PATH Carrier
 
 - **Weight:** L (upgraded from M: now includes cli.py serialization,
-  guardian lease issuance, guardian_mode field, and rework-path enrichment)
+  guardian_mode field, rework-path enrichment, and rework-path suggestion
+  encoding. R3: guardian lease issuance moved to W-GWT-2)
 - **Gate:** review
 - **Deps:** none
 - **Integration:** `runtime/core/completions.py` (routing table),
-  `runtime/core/dispatch_engine.py` (planner routing block, guardian lease,
-  worktree_path enrichment, rework-path enrichment, guardian_mode field),
+  `runtime/core/dispatch_engine.py` (planner routing block, worktree_path
+  enrichment, rework-path enrichment, guardian_mode field, rework suggestion
+  encoding — NO guardian lease issuance, moved to W-GWT-2 per R3),
   `runtime/cli.py` (worktree_path + guardian_mode serialization),
   `tests/runtime/test_completions.py`, `tests/runtime/test_dispatch_engine.py`
 
@@ -6837,34 +6864,22 @@ and reviewed by the user (gate: approve).
    if normalised == "planner":
        result["next_role"] = "guardian"
        result["guardian_mode"] = "provision"
-       # DEC-GUARD-WT-006: Issue guardian lease at project_root so
-       # check-guardian.sh can anchor the completion record.
-       # Fail-closed: planner always holds a lease at project_root
-       # (issued by orchestrator, claimed by subagent-start.sh).
-       # _resolve_lease_context finds it, so workflow_id is always
-       # available here. If it's missing, something is deeply wrong
-       # and we must not proceed with a guardian that can't submit
-       # its completion record.
-       if not project_root or not workflow_id:
-           result["next_role"] = None
-           result["error"] = (
-               "PROCESS ERROR: Planner completed but no workflow_id "
-               "could be resolved from active lease at project_root. "
-               "Cannot issue guardian lease for provisioning."
-           )
-       else:
+       # DEC-GUARD-WT-006 R3: No guardian lease issued here.
+       # The provision CLI (W-GWT-2) issues the guardian lease
+       # at PROJECT_ROOT as part of the provision sequence.
+       # workflow_id is best-effort: if the planner had a lease,
+       # _resolve_lease_context already found it. If not, try
+       # branch-derived fallback. Either way, workflow_id flows
+       # to the orchestrator via suggestion text, and the
+       # orchestrator passes it to the Guardian dispatch context.
+       if not workflow_id:
            try:
-               leases.issue(conn, role="guardian",
-                   worktree_path=project_root,
-                   workflow_id=workflow_id)
-           except Exception as exc:
-               result["next_role"] = None
-               result["guardian_mode"] = ""
-               result["error"] = (
-                   f"PROCESS ERROR: Failed to issue guardian lease "
-                   f"at {project_root}: {exc}. Cannot proceed with "
-                   f"provisioning."
-               )
+               from runtime.core import policy_utils
+               workflow_id = policy_utils.current_workflow_id(
+                   project_root)
+               result["workflow_id"] = workflow_id
+           except Exception:
+               pass  # Orchestrator provides workflow_id to Guardian
    ```
 
 3. **dispatch_engine.py** guardian routing block: After
@@ -6883,22 +6898,36 @@ and reviewed by the user (gate: approve).
      binding["worktree_path"]`
    - This is the rework-path worktree resolution (DEC-GUARD-WT-004)
 
-5. **dispatch_engine.py** suggestion builder: When
-   `result["guardian_mode"] == "provision"`, include structured prefix:
-   `AUTO_DISPATCH: guardian (mode=provision, workflow_id=<W>,
-   feature_name=<F>)`
+5. **dispatch_engine.py** suggestion builder: The enriched AUTO_DISPATCH
+   format is `AUTO_DISPATCH: <role> (key=value, key=value)`. The
+   parenthetical metadata is contextual information the orchestrator
+   passes to the next agent's dispatch context. The orchestrator reads
+   this as text — no programmatic parser needed. Three cases:
 
-   **When the previous role was guardian with provisioned verdict** (i.e.,
-   `next_role == "implementer"` and `result.get("worktree_path")`), the
-   suggestion must encode `worktree_path` in the AUTO_DISPATCH line:
-   `AUTO_DISPATCH: implementer (worktree_path=<path>, workflow_id=<W>)`
-   This is how worktree_path reaches the orchestrator: the suggestion
-   becomes `additionalContext` in `hookSpecificOutput`, which is the ONLY
-   thing the orchestrator reads. post-task.sh strips the cli.py result to
-   `hookSpecificOutput` only — no other field propagates. The orchestrator
-   already parses `AUTO_DISPATCH:` directives, so encoding metadata as
-   parenthetical key=value pairs extends the existing pattern without
-   requiring post-task.sh changes.
+   a. **Planner -> guardian (provision):** When
+      `result["guardian_mode"] == "provision"`, emit:
+      `AUTO_DISPATCH: guardian (mode=provision, workflow_id=<W>,
+      feature_name=<F>)`
+
+   b. **Guardian (provisioned) -> implementer:** When the previous role
+      was guardian with provisioned verdict (i.e., `next_role ==
+      "implementer"` and `result.get("worktree_path")`), emit:
+      `AUTO_DISPATCH: implementer (worktree_path=<path>,
+      workflow_id=<W>)`
+
+   c. **Tester (needs_changes) -> implementer (rework):** When
+      `next_role == "implementer"` and `result.get("worktree_path")`
+      was enriched from workflow_bindings (change 4), emit:
+      `AUTO_DISPATCH: implementer (worktree_path=<path>,
+      workflow_id=<W>)`
+      This ensures the rework path also encodes worktree_path in the
+      suggestion text, not just the guardian-provisioned path.
+
+   The suggestion text is how metadata reaches the orchestrator:
+   post-task.sh strips the cli.py result to `hookSpecificOutput` only —
+   no other field propagates. The `AUTO_DISPATCH: <role> (key=value)`
+   format extends the existing pattern without requiring post-task.sh
+   changes.
 
 6. **cli.py** `_handle_dispatch()` process-stop output (line 312-331):
    Add `worktree_path` and `guardian_mode` to the serialized result dict:
@@ -6951,14 +6980,16 @@ and reviewed by the user (gate: approve).
 **Required tests:**
 - `test_planner_routes_to_guardian`: planner stop produces
   `next_role="guardian"` (replaces existing planner->implementer test)
-- `test_planner_issues_guardian_lease`: planner stop issues a guardian
-  lease at project_root with matching workflow_id (DEC-GUARD-WT-006)
-- `test_planner_no_workflow_id_returns_process_error`: planner stop
-  with no resolvable workflow_id (no active lease) returns PROCESS ERROR
-  and next_role=None (fail-closed, DEC-GUARD-WT-006 revised)
-- `test_planner_lease_issue_failure_returns_process_error`: when
-  leases.issue() throws during planner stop, returns PROCESS ERROR and
-  next_role=None (fail-closed, not swallowed)
+- `test_planner_no_lease_still_routes_to_guardian`: planner stop with
+  no active lease at project_root still routes to guardian (not
+  PROCESS ERROR). workflow_id is best-effort — may be empty.
+  (DEC-GUARD-WT-006 R3: planner lease is not required)
+- `test_planner_with_lease_resolves_workflow_id`: planner stop with an
+  active lease at project_root resolves workflow_id from that lease and
+  includes it in the suggestion text
+- `test_planner_no_lease_uses_branch_fallback`: planner stop with no
+  active lease falls back to branch-derived workflow_id via
+  policy_utils.current_workflow_id()
 - `test_planner_sets_guardian_mode_provision`: planner stop sets
   `guardian_mode="provision"` in dispatch result
 - `test_guardian_provisioned_routes_to_implementer`: guardian with
@@ -6976,6 +7007,11 @@ and reviewed by the user (gate: approve).
 - `test_tester_needs_changes_no_binding_no_crash`: tester needs_changes
   without a workflow_binding returns result without worktree_path (no
   error)
+- `test_tester_needs_changes_suggestion_encodes_worktree_path`: when
+  tester needs_changes has a workflow_binding with worktree_path, the
+  suggestion text contains
+  `AUTO_DISPATCH: implementer (worktree_path=<path>, workflow_id=<W>)`
+  — rework path also carries worktree_path to orchestrator (Gap 2 fix)
 - `test_cli_serializes_worktree_path_and_guardian_mode`: cli.py
   process-stop output includes worktree_path and guardian_mode keys
 - `test_check_guardian_parses_worktree_path`: check-guardian.sh
@@ -6994,8 +7030,8 @@ and reviewed by the user (gate: approve).
 **Required real-path checks:**
 - `process_agent_stop(conn, "planner", project_root)` returns
   `{"next_role": "guardian", "auto_dispatch": True,
-  "guardian_mode": "provision"}` and a guardian lease exists at
-  project_root
+  "guardian_mode": "provision"}` with NO guardian lease issued (lease
+  issuance happens in W-GWT-2 provision CLI, not here)
 - Round-trip: planner stop -> guardian provision completion (with
   WORKTREE_PATH in payload) -> process_agent_stop(conn, "guardian", ...)
   returns `{"next_role": "implementer", "worktree_path": "<path>"}` AND
@@ -7008,9 +7044,9 @@ and reviewed by the user (gate: approve).
 **Required authority invariants:**
 - completions.py `determine_next_role()` remains the sole routing table
   authority (DEC-COMPLETION-001)
-- dispatch_engine remains pure with respect to git (no git side effects,
-  no worktree creation). Lease issuance is an internal state write, not a
-  git side effect (DEC-GUARD-WT-006).
+- dispatch_engine remains pure (no git side effects, no worktree creation,
+  no lease writes). DEC-GUARD-WT-006 R3 restores full purity — the R2
+  lease-write exception is eliminated.
 - Lease release timing unchanged (DEC-ROUTING-002)
 
 **Required integration points:**
@@ -7026,13 +7062,12 @@ and reviewed by the user (gate: approve).
   guardian(provisioned)->implementer transitions
 - check-guardian.sh WORKTREE_PATH parsing is compatible with existing
   LANDING_RESULT and OPERATION_CLASS parsing (same grep pattern style)
-- Guardian lease at PROJECT_ROOT coexists with the planner's lease.
-  The planner's lease (issued by orchestrator, claimed by
-  subagent-start.sh) is still active when dispatch_engine processes
-  the planner stop. leases.issue() for guardian revokes any existing
-  lease at PROJECT_ROOT (one-active-per-worktree invariant), which
-  effectively releases the planner lease as a side effect. This is
-  correct: the planner is done, the guardian inherits PROJECT_ROOT.
+- No guardian lease is issued at planner stop (DEC-GUARD-WT-006 R3).
+  The planner may or may not have a lease at PROJECT_ROOT (it claims
+  one if available but does not issue). If a planner lease exists, it
+  is released by dispatch_engine's normal lease release path (or left
+  for the provision CLI to supersede). The guardian lease is issued by
+  the provision CLI (W-GWT-2) during the guardian agent's execution.
 
 **Forbidden shortcuts:**
 - Do not split the routing table into multiple functions
@@ -7043,13 +7078,14 @@ and reviewed by the user (gate: approve).
 **Ready-for-guardian definition:**
 All new and existing routing tests pass. `process_agent_stop` produces
 correct next_role, auto_dispatch, worktree_path, and guardian_mode for
-all planner, guardian, and tester scenarios. Guardian lease issuance on
-planner stop is fail-closed (PROCESS ERROR if workflow_id missing or
-lease issue throws). Planner stop with no active lease returns PROCESS
-ERROR, not a silent fallback. Guardian provisioned suggestion text
-encodes worktree_path in AUTO_DISPATCH line (sole carrier to
-orchestrator). check-guardian.sh parses WORKTREE_PATH. cli.py serializes
-all new fields. No existing test regressions.
+all planner, guardian, and tester scenarios. Planner stop with no active
+lease still routes to guardian (best-effort workflow_id, not fail-closed).
+Planner stop with active lease resolves workflow_id from lease. Guardian
+provisioned suggestion text encodes worktree_path in AUTO_DISPATCH line
+(sole carrier to orchestrator). Tester needs_changes suggestion text also
+encodes worktree_path from workflow_bindings. check-guardian.sh parses
+WORKTREE_PATH. cli.py serializes all new fields. dispatch_engine issues
+no leases (pure routing). No existing test regressions.
 
 ###### Scope Manifest for W-GWT-1
 
@@ -7090,13 +7126,14 @@ all new fields. No existing test regressions.
 - MODIFIED: `completions.py` routing table (read authority for role
   transitions)
 - MODIFIED: `dispatch_engine.py` planner routing block (write to dispatch
-  result dict, write guardian lease via leases.issue())
+  result dict only — no lease writes, DEC-GUARD-WT-006 R3)
 - MODIFIED: `dispatch_engine.py` tester routing block (read from
   workflow_bindings)
 - MODIFIED: `cli.py` dispatch serialization (adds worktree_path,
   guardian_mode to output)
 - MODIFIED: `check-guardian.sh` payload construction (adds WORKTREE_PATH)
-- WRITE: `dispatch_leases` table (guardian lease issued on planner stop)
+- UNCHANGED: `dispatch_leases` table (no lease writes in W-GWT-1;
+  guardian lease moved to W-GWT-2 provision CLI per DEC-GUARD-WT-006 R3)
 - READ: `workflow_bindings` table (rework path enrichment)
 - READ: `completion_records` table (worktree_path extraction)
 - UNCHANGED: worktrees table, evaluation_state, workflow_scope
@@ -7117,35 +7154,42 @@ all new fields. No existing test regressions.
    - Takes `--workflow-id`, `--feature-name`, `--project-root`, `--branch`
      (optional, defaults to `main`)
    - Computes `worktree_path = <project_root>/.worktrees/feature-<name>`
-   - **No list_active() pre-check** (DEC-GUARD-WT-008 revised). The
-     previous design queried `worktrees.list_active(conn)` before
-     registering, creating a TOCTOU window where two concurrent
-     provisions could both see "not found" and race. Instead:
-   - Calls `worktrees.register(conn, path, branch_name,
-     ticket=workflow_id)` directly. The `ON CONFLICT(path) DO UPDATE`
-     in register() makes this idempotent -- if the path is already
-     registered, the row is updated rather than duplicated. If the
-     register call updated an existing row (detectable via
-     `conn.total_changes` delta or a SELECT after INSERT), return
-     `{"already_exists": true, "worktree_path": path, ...}` so
-     Guardian knows to skip `git worktree add`.
-   - On fresh registration (not already_exists):
-     - Calls `leases.issue(conn, role="implementer",
-       worktree_path=path, workflow_id=workflow_id, branch=branch_name)`
-     - Calls `workflows.bind_workflow(conn, workflow_id=workflow_id,
-       worktree_path=path, branch=branch_name)` to create the workflow
-       binding at provision time (DEC-GUARD-WT-004 revised: binding
-       creation moves here from subagent-start.sh)
-   - **Partial-failure cleanup (DEC-GUARD-WT-008 revised):** If
-     register() succeeds but leases.issue() or workflows.bind_workflow()
-     fails, call `worktrees.remove(conn, path)` to roll back the
-     registration. This prevents orphaned worktree entries without a
-     corresponding lease. The cleanup is wrapped in try/except so a
-     cleanup failure does not mask the original error.
+
+   **Already-exists detection (DEC-GUARD-WT-008 R3):** Check the
+   filesystem BEFORE any git or DB operations: does
+   `<project_root>/.worktrees/feature-<name>` exist on disk? If yes,
+   it is a re-provision — skip `git worktree add`, just ensure DB
+   state is correct. Return `{"already_exists": true, ...}`.
+
+   **Fresh provision sequence (DEC-GUARD-WT-008 R3, filesystem-first):**
+   1. `git worktree add .worktrees/feature-<name> -b feature/<name>` —
+      the CLI runs this via subprocess. If it fails, return error
+      immediately — nothing to clean up.
+   2. `worktrees.register(conn, path, branch_name, ticket=workflow_id)`
+      — DB records filesystem reality. `ON CONFLICT(path) DO UPDATE`
+      makes this idempotent.
+   3. `leases.issue(conn, role="guardian", worktree_path=project_root,
+      workflow_id=workflow_id)` — Guardian lease at PROJECT_ROOT so
+      check-guardian.sh can anchor the completion record
+      (DEC-GUARD-WT-006 R3: moved here from dispatch_engine).
+   4. `leases.issue(conn, role="implementer", worktree_path=path,
+      workflow_id=workflow_id, branch=branch_name)` — implementer
+      lease at worktree_path.
+   5. `workflows.bind_workflow(conn, workflow_id=workflow_id,
+      worktree_path=path, branch=branch_name)` — workflow binding at
+      provision time (DEC-GUARD-WT-004 revised).
+
+   **Partial-failure cleanup (DEC-GUARD-WT-008 R3):** If steps 2-5
+   fail after step 1 succeeded, cleanup: `git worktree remove
+   <worktree_path>` (subprocess). If step 2 succeeds but steps 3-5
+   fail, also call `worktrees.remove(conn, path)` to roll back the
+   registration. The cleanup is wrapped in try/except so a cleanup
+   failure does not mask the original error.
+
    - Returns `{"worktree_path": path, "branch": branch_name,
-     "lease_id": lease_id, "workflow_id": workflow_id,
-     "already_exists": false}`
-   - Does NOT run `git worktree add` (Guardian does that via bash)
+     "guardian_lease_id": guardian_lease_id,
+     "implementer_lease_id": implementer_lease_id,
+     "workflow_id": workflow_id, "already_exists": false}`
 
 2. **agents/guardian.md**: Add a `## Worktree Provisioning` section
    describing the provision mode:
@@ -7153,10 +7197,12 @@ all new fields. No existing test regressions.
      `guardian_mode=provision` in dispatch context
    - The structured dispatch includes `workflow_id` and `feature_name`
    - Run `cc-policy worktree provision --workflow-id <wf> --feature-name
-     <name> --project-root <root>` first to check for existing worktree
-   - If `already_exists=false`: run `git worktree add
-     .worktrees/feature-<name> -b feature/<name> main`
-   - If `already_exists=true`: skip `git worktree add` (idempotent)
+     <name> --project-root <root>` — this single CLI call handles:
+     filesystem creation (`git worktree add`), DB registration,
+     Guardian lease at PROJECT_ROOT, implementer lease at worktree_path,
+     and workflow binding (DEC-GUARD-WT-008 R3)
+   - If `already_exists=true`: filesystem and DB state already correct,
+     Guardian just emits trailers
    - Emit `LANDING_RESULT: provisioned`, `OPERATION_CLASS: routine_local`,
      and `WORKTREE_PATH: <path>` trailers
    - Auto-land: provisioning is always auto (no user approval needed)
@@ -7176,23 +7222,34 @@ all new fields. No existing test regressions.
 
 **Required tests:**
 - `test_worktree_provision_cli`: `cc-policy worktree provision`
-  registers worktree, issues implementer lease, and creates workflow
-  binding atomically
-- `test_worktree_provision_returns_lease`: provision result includes
-  valid lease_id, worktree_path, workflow_id
+  creates worktree on filesystem, registers in DB, issues Guardian lease
+  at PROJECT_ROOT, issues implementer lease at worktree_path, and creates
+  workflow binding
+- `test_worktree_provision_returns_leases`: provision result includes
+  valid guardian_lease_id, implementer_lease_id, worktree_path,
+  workflow_id
+- `test_worktree_provision_guardian_lease_at_project_root`: after
+  provision, an active Guardian lease exists at PROJECT_ROOT with the
+  correct workflow_id (DEC-GUARD-WT-006 R3: this is how
+  check-guardian.sh anchors the completion record)
 - `test_worktree_provision_creates_binding`: after provision,
   `workflows.get_binding(conn, workflow_id)` returns a binding with the
   correct worktree_path and branch
 - `test_worktree_provision_idempotent`: calling provision twice for the
   same path returns `already_exists=true` on the second call without
-  creating a duplicate lease or binding (uses ON CONFLICT, not
-  list_active pre-check)
-- `test_worktree_provision_partial_failure_cleanup`: when register()
-  succeeds but leases.issue() raises, worktrees.remove() is called to
-  roll back the registration -- no orphaned worktree entry remains
-- `test_worktree_provision_no_toctou`: provision uses register()
-  directly without list_active() pre-check (verify by inspecting that
-  list_active is NOT called during provision)
+  creating a duplicate lease or binding. Filesystem check (path exists
+  on disk) detects already-exists, not register() return value.
+- `test_worktree_provision_filesystem_first`: provision creates the
+  filesystem worktree BEFORE any DB writes. If git worktree add fails,
+  no DB state is written. (DEC-GUARD-WT-008 R3)
+- `test_worktree_provision_partial_failure_cleanup`: when git worktree
+  add succeeds but register() or leases.issue() raises, git worktree
+  remove is called to clean up the filesystem -- no orphaned worktree
+  remains. If register() succeeds but leases.issue() raises,
+  worktrees.remove() is also called.
+- `test_worktree_provision_no_toctou`: provision does not call
+  list_active() as a pre-check (verify by inspecting that list_active
+  is NOT called during provision)
 - `test_guardian_provisioned_verdict_valid`: completion record with
   `LANDING_RESULT=provisioned` validates as valid=True
 - `test_provision_does_not_reset_eval`: check-guardian.sh with
@@ -7203,11 +7260,13 @@ all new fields. No existing test regressions.
 **Required real-path checks:**
 - Run `cc-policy worktree provision --workflow-id test-wf
   --feature-name test-feat --project-root /tmp/test-proj` and verify:
+  - `.worktrees/feature-test-feat` exists on the filesystem
   - worktrees table has an entry at the computed path
-  - dispatch_leases table has an active implementer lease at the path
+  - dispatch_leases table has an active Guardian lease at PROJECT_ROOT
+  - dispatch_leases table has an active implementer lease at worktree
   - workflow_bindings table has a binding for workflow_id=test-wf
 - Run provision again with same args, verify `already_exists=true` and
-  no duplicate rows in any table
+  no duplicate rows in any table (filesystem check detects existing path)
 
 **Required authority invariants:**
 - worktrees.py `register()` remains the sole worktree registry writer
@@ -7222,23 +7281,24 @@ all new fields. No existing test regressions.
   dispatch_engine's rework-path enrichment (W-GWT-1 change 4)
 
 **Forbidden shortcuts:**
-- Do not put `git worktree add` in the CLI -- Guardian runs git commands
-  directly
 - Do not create a separate provisioning module -- use existing
   worktrees.py + leases.py + workflows.py
 - Do not modify leases.py, worktrees.py, or workflows.py APIs (the
   existing signatures are sufficient)
 - Do not use `worktrees.list_active()` as a pre-check before
-  `register()` -- this creates a TOCTOU race. Use `register()`'s
-  ON CONFLICT as the sole concurrency guard (DEC-GUARD-WT-008 revised)
+  `register()` -- this creates a TOCTOU race (DEC-GUARD-WT-008 revised)
+- Do not register in DB before filesystem creation -- filesystem is
+  the source of truth (DEC-GUARD-WT-008 R3)
 
 **Ready-for-guardian definition:**
-CLI provision subcommand works without list_active() pre-check (register
-ON CONFLICT as sole guard). Provision is idempotent. Partial failure
-(register succeeds, lease fails) triggers worktrees.remove() rollback --
-no orphaned entries. Guardian prompt includes provision mode instructions
-with structured field references. Workflow binding exists after
-provision. All existing tests pass.
+CLI provision subcommand creates filesystem worktree BEFORE any DB writes
+(DEC-GUARD-WT-008 R3). Provision is idempotent (filesystem check for
+already-exists). Partial failure (git succeeds, DB fails) triggers
+git worktree remove cleanup — no orphaned filesystem or DB state.
+Guardian lease at PROJECT_ROOT is issued by provision CLI
+(DEC-GUARD-WT-006 R3). Guardian prompt includes provision mode
+instructions. Workflow binding exists after provision. All existing
+tests pass.
 
 ###### Scope Manifest for W-GWT-2
 
@@ -7265,8 +7325,10 @@ provision. All existing tests pass.
 
 **Expected state authorities touched:**
 - WRITE: `worktrees` table (via register)
-- WRITE: `dispatch_leases` table (via issue)
+- WRITE: `dispatch_leases` table (via issue — Guardian lease at
+  PROJECT_ROOT + implementer lease at worktree_path, DEC-GUARD-WT-006 R3)
 - WRITE: `workflow_bindings` table (via bind_workflow)
+- WRITE: filesystem (git worktree add via subprocess, DEC-GUARD-WT-008 R3)
 - UNCHANGED: `evaluation_state`, `workflow_scope`, `completion_records`
 
 ##### W-GWT-3: Implementer/Hook Cleanup and Documentation
@@ -7326,6 +7388,14 @@ provision. All existing tests pass.
      (merge) lifecycle
    - Guardian as sole worktree lifecycle authority
    - Structured `guardian_mode` field in dispatch context
+   - **Enriched AUTO_DISPATCH format (Gap 2 fix):** Update the
+     "Auto-Dispatch" section (line ~107) to specify the enriched format:
+     `AUTO_DISPATCH: <role> (key=value, key=value)`. The parenthetical
+     metadata is contextual information the orchestrator passes to the
+     next agent's dispatch prompt. The orchestrator reads this as text —
+     no programmatic parser needed. Examples:
+     `AUTO_DISPATCH: guardian (mode=provision, workflow_id=W, feature_name=F)`
+     `AUTO_DISPATCH: implementer (worktree_path=/path, workflow_id=W)`
 
 **Tests:**
 - Scenario test: subagent-start.sh for implementer with active lease
@@ -7350,6 +7420,9 @@ provision. All existing tests pass.
   message references Guardian, not self-provisioning
 - `test_claude_md_dispatch_chain`: CLAUDE.md describes planner ->
   guardian -> implementer chain, not planner -> implementer directly
+- `test_claude_md_enriched_auto_dispatch`: CLAUDE.md describes the
+  enriched `AUTO_DISPATCH: <role> (key=value, key=value)` format with
+  examples showing worktree_path and workflow_id metadata
 
 **Required real-path checks:**
 - Run subagent-start.sh with implementer agent_type and an active
@@ -7424,7 +7497,7 @@ scenario tests pass.
 #### Wave Decomposition
 
 ```
-Wave 1: W-GWT-1  (routing table + dispatch engine + carrier chain + guardian lease -- foundation)
+Wave 1: W-GWT-1  (routing table + dispatch engine + carrier chain + suggestion encoding -- foundation)
 Wave 2: W-GWT-2  (Guardian provision CLI + prompt + workflow binding -- requires routing)
 Wave 3: W-GWT-3  (implementer cleanup + hook update + docs -- requires provision working)
 ```
@@ -7437,10 +7510,11 @@ Wave 3: W-GWT-3  (implementer cleanup + hook update + docs -- requires provision
 | Finding | Severity | Resolution | Work Item |
 |---------|----------|------------|-----------|
 | HIGH-1: WORKTREE_PATH has no end-to-end carrier | HIGH | cli.py serialization + check-guardian.sh parsing + suggestion-text encoding of worktree_path in AUTO_DISPATCH line (sole carrier to orchestrator) | W-GWT-1 |
-| HIGH-2: No valid Guardian completion anchor | HIGH | DEC-GUARD-WT-006 revised: Guardian lease issued at PROJECT_ROOT on planner stop, fail-closed (PROCESS ERROR if workflow_id missing or lease issue fails). Planner lease at PROJECT_ROOT guarantees workflow_id availability. | W-GWT-1 |
+| HIGH-2: No valid Guardian completion anchor | HIGH | DEC-GUARD-WT-006 R3: Guardian lease issued by provision CLI (W-GWT-2), not dispatch_engine. Planner lease is a claim, not an issue — fail-closed at planner stop would break existing tests. workflow_id at planner stop is best-effort (lease -> branch fallback). | W-GWT-2 |
 | MEDIUM-3: Rework path not in work items | MEDIUM | DEC-GUARD-WT-004 revised: rework enrichment + binding at provision time | W-GWT-1, W-GWT-2 |
 | MEDIUM-4: Mode-from-context too implicit | MEDIUM | DEC-GUARD-WT-007: structured guardian_mode field + docs update | W-GWT-1, W-GWT-3 |
-| Race safety | ADDITIONAL | DEC-GUARD-WT-008 revised: no list_active() pre-check (TOCTOU), register() ON CONFLICT as sole guard, partial-failure cleanup via worktrees.remove() | W-GWT-2 |
+| Gap 2: No orchestrator parser for enriched AUTO_DISPATCH | MEDIUM | CLAUDE.md updated (W-GWT-3) to specify enriched format: `AUTO_DISPATCH: <role> (key=value, ...)`. Rework path (tester -> implementer) suggestion builder also encodes worktree_path (W-GWT-1 change 5c). | W-GWT-1, W-GWT-3 |
+| Race safety | ADDITIONAL | DEC-GUARD-WT-008 R3: filesystem-first provision order, no list_active() pre-check (TOCTOU), filesystem check for already-exists detection, git worktree remove cleanup on partial failure | W-GWT-2 |
 
 **File-level change summary:**
 
