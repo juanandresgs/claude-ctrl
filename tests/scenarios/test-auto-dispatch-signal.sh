@@ -104,10 +104,11 @@ else
     fail "planner: suggestion prefixed AUTO_DISPATCH: (got: $CTX)"
 fi
 
-if [[ "$CTX" == *"implementer"* ]]; then
-    pass "planner: suggestion mentions implementer"
+# W-GWT-1: planner now routes to guardian (not implementer directly)
+if [[ "$CTX" == *"guardian"* ]]; then
+    pass "planner: suggestion mentions guardian (W-GWT-1)"
 else
-    fail "planner: suggestion mentions implementer (got: $CTX)"
+    fail "planner: suggestion mentions guardian (got: $CTX)"
 fi
 
 # ==========================================================================

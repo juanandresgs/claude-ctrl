@@ -218,8 +218,8 @@ def test_dispatch_process_stop_reachable_via_local_cli_path(db_path):
     assert "hookSpecificOutput" in data, f"missing hookSpecificOutput in: {data}"
     hook_out = data["hookSpecificOutput"]
     assert hook_out.get("hookEventName") == "SubagentStop"
-    # planner always routes to implementer
-    assert data.get("next_role") == "implementer"
+    # W-GWT-1: planner now routes to guardian (not implementer directly)
+    assert data.get("next_role") == "guardian"
 
 
 # ---------------------------------------------------------------------------

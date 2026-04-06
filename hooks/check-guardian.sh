@@ -57,6 +57,7 @@ RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.assistant_response // .response
 # post-task.sh and for audit purposes.
 _GD_LANDING_RESULT=""
 _GD_OP_CLASS=""
+_GD_WORKTREE_PATH=""
 if [[ -n "$RESPONSE_TEXT" ]]; then
     _GD_LANDING_RESULT=$(printf '%s' "$RESPONSE_TEXT" \
         | grep -oE '^LANDING_RESULT:[[:space:]]*[a-z_]+' \
@@ -66,6 +67,15 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
         | grep -oE '^OPERATION_CLASS:[[:space:]]*[a-z_]+' \
         | head -1 \
         | sed 's/OPERATION_CLASS:[[:space:]]*//' || true)
+    # W-GWT-1 (DEC-GUARD-WT-003): Parse WORKTREE_PATH from provisioning responses.
+    # Guardian emits "WORKTREE_PATH: /path/to/.worktrees/feature-name" when it
+    # completes worktree provisioning (LANDING_RESULT: provisioned). The path is
+    # stored in the completion record payload so dispatch_engine can extract and
+    # propagate it via result["worktree_path"] for the AUTO_DISPATCH carrier chain.
+    _GD_WORKTREE_PATH=$(printf '%s' "$RESPONSE_TEXT" \
+        | grep -oE '^WORKTREE_PATH:[[:space:]]*[^[:space:]]+' \
+        | head -1 \
+        | sed 's/WORKTREE_PATH:[[:space:]]*//' || true)
 fi
 
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
@@ -83,10 +93,15 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     [[ -z "$_GD_WF_ID" ]] && _GD_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
 
     if [[ -n "$_GD_LEASE_ID" ]]; then
+        # W-GWT-1 (DEC-GUARD-WT-003): Include WORKTREE_PATH in payload when present.
+        # dispatch_engine._route_from_guardian_completion() reads WORKTREE_PATH from
+        # payload_json when verdict is "provisioned" to populate result["worktree_path"].
         _GD_PAYLOAD=$(jq -n \
             --arg lr "${_GD_LANDING_RESULT:-}" \
             --arg oc "${_GD_OP_CLASS:-}" \
-            '{LANDING_RESULT:$lr, OPERATION_CLASS:$oc}')
+            --arg wt "${_GD_WORKTREE_PATH:-}" \
+            'if $wt != "" then {LANDING_RESULT:$lr, OPERATION_CLASS:$oc, WORKTREE_PATH:$wt}
+             else {LANDING_RESULT:$lr, OPERATION_CLASS:$oc} end')
         _GD_CT_RESULT=$(rt_completion_submit "$_GD_LEASE_ID" "$_GD_WF_ID" "guardian" "$_GD_PAYLOAD")
         _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
         if [[ "$_GD_CT_VALID" != "true" ]]; then
