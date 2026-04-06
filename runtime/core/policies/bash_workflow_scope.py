@@ -31,7 +31,6 @@ from typing import Optional
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
-    extract_git_target_dir,
     extract_merge_ref,
     sanitize_token,
 )
@@ -152,10 +151,12 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         )
 
     # Sub-check C: changed files must comply with scope.
-    if _COMMIT_RE.search(command):
-        target_dir = extract_git_target_dir(command, request.cwd or "")
-    else:
-        target_dir = request.context.project_root or request.cwd or ""
+    # Fix #175: on the commit path, use project_root already resolved by
+    # cli.py from target_cwd. The if/else distinction between commit and merge
+    # is no longer needed — both paths resolve to the same source of truth.
+    # Merge path is preserved as-is (project_root or cwd) since it was already
+    # correct; the commit path now matches it rather than re-parsing the command.
+    target_dir = request.context.project_root or request.cwd or ""
 
     base_branch = request.context.binding.get("base_branch", "main") or "main"
     changed_files = _get_changed_files(target_dir, base_branch)

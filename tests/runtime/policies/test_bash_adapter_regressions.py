@@ -408,3 +408,160 @@ class TestTargetExtractionEndToEnd:
         )
         assert code == 0
         assert out.get("action") in ("allow", "deny", "feedback"), f"unexpected action: {out}"
+
+
+# ---------------------------------------------------------------------------
+# Fix #175: PolicyRequest.cwd must be effective_cwd (target), not session cwd
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveCwdPropagation:
+    """Verify that PolicyRequest.cwd is set to target_cwd (effective_cwd),
+    not the session cwd, when target_cwd is present in the evaluate payload.
+
+    This tests the specific fix in cli.py _handle_evaluate():
+        effective_cwd = target_cwd if resolved_project_root else cwd
+        request = PolicyRequest(..., cwd=effective_cwd)
+
+    Verification strategy: build_context() uses effective_cwd to resolve
+    project_root and scoped state. When we seed eval_state for the TARGET
+    workflow (derived from target_cwd's project root) but NOT for the session
+    workflow, a policy that reads eval_state must see the target state —
+    proving context was scoped to target_cwd, not session cwd.
+
+    Additionally: when effective_cwd is set correctly, bash_main_sacred's
+    fallback path (request.context.project_root or request.cwd) resolves
+    to the target directory, not the session directory.
+
+    Production sequence:
+      pre-bash.sh extracts target_dir from command
+      -> passes target_cwd in JSON payload to cc-policy evaluate
+      -> _handle_evaluate() sets effective_cwd = target_cwd
+      -> PolicyRequest.cwd = effective_cwd  ← this test verifies
+      -> build_context(cwd=effective_cwd) → project_root scoped to target
+      -> all policy checks use target context, not session context
+    """
+
+    def test_policy_request_cwd_is_target_not_session(self, db, tmp_path):
+        """When target_cwd differs from cwd, request.cwd must be target_cwd.
+
+        Verified by seeding eval_state for the TARGET workflow only, then
+        confirming the policy engine uses the target context (sees the eval
+        state) rather than the session context (which has no eval state).
+
+        If request.cwd were the session cwd (the bug), the engine would use
+        the session workflow's context and miss the target eval state, causing
+        a different deny reason. With the fix, the target eval state is found.
+        """
+        import sqlite3
+
+        target = str(tmp_path)
+
+        # Bootstrap schema in the test DB
+        _run_cli_raw(["schema", "ensure"], "", db)
+
+        # Determine the workflow_id that build_context would derive for target_cwd.
+        # Since tmp_path is not a git repo, current_workflow_id falls back to
+        # the basename of the directory.
+        import os
+
+        from runtime.core.policy_utils import sanitize_token
+
+        target_wf_id = sanitize_token(os.path.basename(target))
+
+        # Seed eval_state for the TARGET workflow — ready_for_guardian.
+        # Also seed binding + scope so bash_workflow_scope doesn't deny first.
+        # Use the proper runtime helpers (not raw SQL) to match exact schema.
+
+        from runtime.core import workflows as wf_mod
+        from runtime.schemas import ensure_schema as _ensure_schema
+
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        try:
+            _ensure_schema(conn)
+            wf_mod.bind_workflow(conn, target_wf_id, target, "feature/test", "main")
+            wf_mod.set_scope(conn, target_wf_id, [], [], [], [])
+            conn.execute(
+                "INSERT OR REPLACE INTO evaluation_state "
+                "(workflow_id, status, head_sha, blockers, major, minor, updated_at) "
+                "VALUES (?, 'ready_for_guardian', '', 0, 0, 0, strftime('%s','now'))",
+                (target_wf_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Session cwd has NO eval_state — so if the engine used session cwd,
+        # it would emit a deny with "not_found" or "unknown".
+        # With the fix (effective_cwd = target_cwd), it uses the target workflow
+        # which has eval_state = ready_for_guardian, passing the eval gate.
+
+        session_cwd = "/nonexistent-session-repo-xyzzy-175"
+        payload = {
+            "event_type": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {target} commit -m 'test'"},
+            "cwd": session_cwd,
+            "target_cwd": target,
+            "actor_role": "guardian",
+            "actor_id": "agent-test",
+        }
+        code, out = _run_evaluate(
+            payload,
+            db,
+            extra_env={"CLAUDE_PROJECT_DIR": target},
+        )
+        assert code == 0, f"evaluate should exit 0; got {code}: {out}"
+
+        # The eval gate (bash_eval_readiness) must NOT deny with session context.
+        # If cwd were session_cwd (bug), eval_state would be "not_found" → deny
+        # citing evaluation_state. With the fix, target eval state is found.
+        if out.get("action") == "deny":
+            reason = out.get("reason", "")
+            # A deny due to no-lease or main-sacred is acceptable (those are
+            # other gates). A deny citing evaluation_state "not_found" would
+            # prove the bug is NOT fixed (session context leaked).
+            assert "not_found" not in reason, (
+                f"Deny cites 'not_found' eval_state — session context leaked into "
+                f"target evaluation. effective_cwd was not propagated to request.cwd. "
+                f"Full reason: {reason!r}"
+            )
+
+    def test_build_context_uses_effective_cwd_directly(self, tmp_path):
+        """Unit-level: build_context with project_root=target scopes workflow to target.
+
+        This is the Python-layer proof that effective_cwd (passed as project_root
+        override) causes context.project_root to equal the target, meaning
+        all downstream state (eval_state, binding, scope) is loaded for the
+        target workflow, not the session workflow.
+
+        Complements test_policy_request_cwd_is_target_not_session by verifying
+        the build_context() half of the fix independently of the CLI dispatch.
+        """
+        conn = connect_memory()
+        ensure_schema(conn)
+        try:
+            session_root = str(_WORKTREE)
+            target_root = str(tmp_path)
+
+            ctx_with_target = build_context(
+                conn,
+                cwd=session_root,  # session cwd (old bug: this was used)
+                actor_role="guardian",
+                actor_id="agent-test",
+                project_root=target_root,  # effective_cwd fix: override with target
+            )
+            # context must be scoped to target, not session
+            assert ctx_with_target.project_root == target_root, (
+                f"project_root should be target={target_root!r}; "
+                f"got {ctx_with_target.project_root!r}"
+            )
+            # workflow_id must be derived from target (not from session branch)
+            ctx_session = build_context(conn, cwd=session_root, actor_role="guardian", actor_id="")
+            assert ctx_with_target.workflow_id != ctx_session.workflow_id, (
+                "target context workflow_id must differ from session workflow_id; "
+                "session context leaked into target evaluation"
+            )
+        finally:
+            conn.close()
