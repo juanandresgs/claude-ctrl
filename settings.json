@@ -197,11 +197,6 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
-          },
-          {
-            "type": "command",
             "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
@@ -214,11 +209,6 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/check-implementer.sh",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
           },
           {
             "type": "command",
@@ -237,11 +227,6 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
-          },
-          {
-            "type": "command",
             "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
@@ -254,11 +239,6 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/check-guardian.sh",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
           },
           {
             "type": "command",
