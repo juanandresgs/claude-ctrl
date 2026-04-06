@@ -34,6 +34,10 @@ import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
+import runtime.core.eval_metrics as eval_metrics_mod
+import runtime.core.eval_report as eval_report_mod
+import runtime.core.eval_runner as eval_runner_mod
+import runtime.core.eval_scorer as eval_scorer_mod
 import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
 import runtime.core.leases as leases_mod
@@ -49,6 +53,7 @@ import runtime.core.workflows as workflows_mod
 import runtime.core.worktrees as worktrees_mod
 from runtime.core.config import default_db_path
 from runtime.core.db import connect
+from runtime.eval_schemas import ensure_eval_schema  # noqa: F401 — imported for eval_metrics
 from runtime.schemas import ensure_schema
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
@@ -1276,6 +1281,238 @@ def _handle_test_state(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Behavioral Evaluation Framework handler
+# ---------------------------------------------------------------------------
+
+
+def _get_eval_conn():
+    """Open eval_results.db using the project-root convention.
+
+    eval_results.db lives in <project_root>/.claude/ alongside state.db, but
+    is a separate file managed exclusively by eval_metrics. This helper
+    matches the get_eval_conn() signature in eval_metrics but derives the
+    project root from _PROJECT_ROOT (the directory containing runtime/).
+
+    @decision DEC-EVAL-CLI-001
+    Title: _get_eval_conn() derives project_root from _PROJECT_ROOT
+    Status: accepted
+    Rationale: eval_metrics.get_eval_conn(project_dir) expects the project
+      root (parent of .claude/). _PROJECT_ROOT = Path(__file__).parent.parent
+      is the canonical project root for all CLI invocations. This is the same
+      path used by default_db_path() for state.db, so both databases land in
+      the same .claude/ directory. Callers never need to pass --db-path for
+      eval subcommands.
+    """
+    return eval_metrics_mod.get_eval_conn(_PROJECT_ROOT)
+
+
+def _handle_eval(args) -> int:
+    """Handle all ``cc-policy eval`` subcommands.
+
+    Subcommands:
+      run [--category CAT] [--mode MODE] [--live]
+            [--scenarios-dir DIR] [--fixtures-dir DIR]
+          Discover and run scenarios. Outputs JSON with run_id and summary.
+
+      report [--run-id ID] [--last N] [--json]
+          Generate a human-readable (or JSON) report. Defaults to most
+          recent run. Text output goes to stdout.
+
+      list [--category CAT] [--mode MODE]
+          List available scenarios as a JSON array.
+
+      score --run-id ID
+          Re-score a previous run from eval_outputs.
+
+    Authority invariants (DEC-EVAL-CLI-001):
+      - These commands NEVER write to state.db.
+      - ``run`` and ``score`` write to eval_results.db via eval_metrics.
+      - ``report`` and ``list`` are read-only.
+    """
+    if args.action == "run":
+        scenarios_dir_raw = getattr(args, "scenarios_dir", None)
+        fixtures_dir_raw = getattr(args, "fixtures_dir", None)
+
+        scenarios_dir = (
+            Path(scenarios_dir_raw) if scenarios_dir_raw else _PROJECT_ROOT / "evals" / "scenarios"
+        )
+        fixtures_dir = (
+            Path(fixtures_dir_raw) if fixtures_dir_raw else _PROJECT_ROOT / "evals" / "fixtures"
+        )
+        project_tmp = _PROJECT_ROOT / "tmp"
+        project_tmp.mkdir(parents=True, exist_ok=True)
+
+        category = getattr(args, "category", None) or None
+        live_flag = getattr(args, "live", False)
+        mode_arg = getattr(args, "mode", None) or None
+
+        # --live flag overrides --mode
+        if live_flag:
+            mode_arg = "live"
+
+        if not scenarios_dir.is_dir():
+            return _err(f"eval run: scenarios-dir not found: {scenarios_dir}")
+        if not fixtures_dir.is_dir():
+            return _err(f"eval run: fixtures-dir not found: {fixtures_dir}")
+
+        eval_conn = _get_eval_conn()
+        try:
+            run_id = eval_runner_mod.run_all(
+                scenarios_dir=scenarios_dir,
+                fixtures_dir=fixtures_dir,
+                eval_conn=eval_conn,
+                project_tmp=project_tmp,
+                repo_root=_PROJECT_ROOT,
+                category=category,
+                mode=mode_arg,
+            )
+
+            run = eval_metrics_mod.get_run(eval_conn, run_id)
+            return _ok(
+                {
+                    "run_id": run_id,
+                    "scenario_count": run.get("scenario_count", 0),
+                    "pass_count": run.get("pass_count", 0),
+                    "fail_count": run.get("fail_count", 0),
+                    "error_count": run.get("error_count", 0),
+                    "mode": run.get("mode", "deterministic"),
+                }
+            )
+        except Exception as exc:
+            return _err(f"eval run error: {exc}")
+        finally:
+            eval_conn.close()
+
+    elif args.action == "report":
+        run_id = getattr(args, "run_id", None) or None
+        as_json = getattr(args, "as_json", False)
+
+        eval_conn = _get_eval_conn()
+        try:
+            if as_json:
+                report_data = eval_report_mod.generate_json_report(eval_conn, run_id=run_id)
+                return _ok(report_data)
+            else:
+                report_text = eval_report_mod.generate_report(eval_conn, run_id=run_id)
+                print(report_text)
+                return 0
+        except Exception as exc:
+            return _err(f"eval report error: {exc}")
+        finally:
+            eval_conn.close()
+
+    elif args.action == "list":
+        scenarios_dir_raw = getattr(args, "scenarios_dir", None)
+        fixtures_dir_raw = getattr(args, "fixtures_dir", None)
+
+        scenarios_dir = (
+            Path(scenarios_dir_raw) if scenarios_dir_raw else _PROJECT_ROOT / "evals" / "scenarios"
+        )
+
+        category = getattr(args, "category", None) or None
+        mode_arg = getattr(args, "mode", None) or None
+
+        if not scenarios_dir.is_dir():
+            return _err(f"eval list: scenarios-dir not found: {scenarios_dir}")
+
+        try:
+            scenarios = eval_runner_mod.discover_scenarios(
+                scenarios_dir, category=category, mode=mode_arg
+            )
+            # Return a lightweight projection — callers don't need full YAML
+            items = [
+                {
+                    "name": s.get("name"),
+                    "category": s.get("category"),
+                    "mode": s.get("mode"),
+                    "fixture": s.get("fixture"),
+                    "description": s.get("description", ""),
+                }
+                for s in scenarios
+            ]
+            return _ok({"items": items, "count": len(items)})
+        except Exception as exc:
+            return _err(f"eval list error: {exc}")
+
+    elif args.action == "score":
+        run_id = getattr(args, "run_id", None)
+        if not run_id:
+            return _err("eval score: --run-id is required")
+
+        eval_conn = _get_eval_conn()
+        try:
+            run = eval_metrics_mod.get_run(eval_conn, run_id)
+            if run is None:
+                return _err(f"eval score: run_id '{run_id}' not found")
+
+            # Fetch all outputs for this run and re-score via eval_scorer
+            rows = eval_conn.execute(
+                "SELECT scenario_id, raw_output FROM eval_outputs WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+
+            if not rows:
+                return _err(f"eval score: no outputs found for run_id '{run_id}'")
+
+            # Get existing scores to retrieve ground_truth and category
+            existing_scores = eval_metrics_mod.get_scores(eval_conn, run_id)
+            score_map = {s["scenario_id"]: s for s in existing_scores}
+
+            rescored = 0
+            for row in rows:
+                scenario_id = row[0]
+                raw_output = row[1]
+                existing = score_map.get(scenario_id, {})
+                category = existing.get("category", "gate")
+                verdict_expected = existing.get("verdict_expected", "")
+                confidence_expected = existing.get("confidence_expected")
+
+                ground_truth = {
+                    "expected_verdict": verdict_expected,
+                    "expected_confidence": confidence_expected,
+                }
+                scoring_weights: dict = {}
+
+                result = eval_scorer_mod.score_scenario(raw_output, ground_truth, scoring_weights)
+                eval_metrics_mod.record_score(
+                    eval_conn,
+                    run_id=run_id,
+                    scenario_id=scenario_id,
+                    category=category,
+                    verdict_expected=verdict_expected,
+                    verdict_actual=result.get("verdict_actual"),
+                    verdict_correct=result.get("verdict_correct", 0),
+                    defect_recall=result.get("defect_recall"),
+                    evidence_score=result.get("evidence_score"),
+                    false_positive_count=result.get("false_positive_count", 0),
+                    confidence_expected=confidence_expected,
+                    confidence_actual=result.get("confidence_actual"),
+                    duration_ms=result.get("duration_ms"),
+                    error_message=result.get("error_message"),
+                )
+                rescored += 1
+
+            eval_metrics_mod.finalize_run(eval_conn, run_id)
+            updated_run = eval_metrics_mod.get_run(eval_conn, run_id)
+            return _ok(
+                {
+                    "run_id": run_id,
+                    "rescored": rescored,
+                    "scenario_count": updated_run.get("scenario_count", 0),
+                    "pass_count": updated_run.get("pass_count", 0),
+                    "fail_count": updated_run.get("fail_count", 0),
+                    "error_count": updated_run.get("error_count", 0),
+                }
+            )
+        except Exception as exc:
+            return _err(f"eval score error: {exc}")
+        finally:
+            eval_conn.close()
+
+    return _err(f"unknown eval action: {args.action}")
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -1741,6 +1978,86 @@ def build_parser() -> argparse.ArgumentParser:
     ts_set.add_argument("--failed", type=int, default=0, help="Number of failing tests")
     ts_set.add_argument("--total", type=int, default=0, help="Total test count")
 
+    # eval — Behavioral Evaluation Framework CLI
+    ev_p = subparsers.add_parser("eval", help="Behavioral Evaluation Framework")
+    ev_sub = ev_p.add_subparsers(dest="action", required=True)
+
+    # eval run
+    ev_run = ev_sub.add_parser("run", help="Discover and run eval scenarios")
+    ev_run.add_argument(
+        "--category",
+        default=None,
+        help="Filter by category: gate | judgment | adversarial",
+    )
+    ev_run.add_argument(
+        "--mode",
+        default=None,
+        help="Execution mode: deterministic | live (default: deterministic)",
+    )
+    ev_run.add_argument(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Shorthand for --mode live",
+    )
+    ev_run.add_argument(
+        "--scenarios-dir",
+        dest="scenarios_dir",
+        default=None,
+        help="Path to scenarios directory (default: <repo_root>/evals/scenarios)",
+    )
+    ev_run.add_argument(
+        "--fixtures-dir",
+        dest="fixtures_dir",
+        default=None,
+        help="Path to fixtures directory (default: <repo_root>/evals/fixtures)",
+    )
+
+    # eval report
+    ev_report = ev_sub.add_parser("report", help="Generate a report for an eval run")
+    ev_report.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="UUID of the run to report on (default: most recent)",
+    )
+    ev_report.add_argument(
+        "--last",
+        type=int,
+        default=1,
+        help="Number of recent runs to include (reserved, currently unused)",
+    )
+    ev_report.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        default=False,
+        help="Output machine-readable JSON instead of text",
+    )
+
+    # eval list
+    ev_list = ev_sub.add_parser("list", help="List available eval scenarios")
+    ev_list.add_argument(
+        "--category",
+        default=None,
+        help="Filter by category: gate | judgment | adversarial",
+    )
+    ev_list.add_argument(
+        "--mode",
+        default=None,
+        help="Filter by mode: deterministic | live",
+    )
+    ev_list.add_argument(
+        "--scenarios-dir",
+        dest="scenarios_dir",
+        default=None,
+        help="Path to scenarios directory (default: <repo_root>/evals/scenarios)",
+    )
+
+    # eval score
+    ev_score = ev_sub.add_parser("score", help="Re-score a previous eval run from stored outputs")
+    ev_score.add_argument("--run-id", dest="run_id", required=True, help="UUID of the run to score")
+
     return parser
 
 
@@ -1797,6 +2114,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_completion(args)
     if args.domain == "test-state":
         return _handle_test_state(args)
+    if args.domain == "eval":
+        return _handle_eval(args)
     if args.domain == "evaluate":
         return _handle_evaluate(args)
     if args.domain == "context":
