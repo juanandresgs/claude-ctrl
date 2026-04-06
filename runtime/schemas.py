@@ -393,3 +393,46 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE agent_markers ADD COLUMN workflow_id TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists — no-op
+
+        # Migrate agent_markers: add project_root column if missing.
+        # W-CONV-2 (DEC-CONV-002) scopes marker queries by project_root so that
+        # markers from one project do not contaminate actor-role inference in
+        # another. Old DBs (pre-W-CONV-2) lack this column; ALTER TABLE adds it
+        # with NULL default so all existing rows remain valid (unscoped).
+        #
+        # @decision DEC-CONV-002
+        # Title: project_root added to agent_markers for per-project scoping
+        # Status: accepted
+        # Rationale: get_active() without project_root uses unscoped fallback
+        #   (backward compat for statusline.py). get_active(project_root=X) must
+        #   filter to markers written with that root — this column is the predicate.
+        try:
+            conn.execute("ALTER TABLE agent_markers ADD COLUMN project_root TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists — no-op
+
+        # Cleanup migration (W-CONV-2): deactivate any active markers whose role
+        # is NOT a dispatch-significant role. Explore, Bash, and general-purpose
+        # agents accumulated ghost markers before the subagent-start.sh filter
+        # was added. Running this on startup ensures stale lightweight markers
+        # cannot pollute actor-role inference in build_context().
+        #
+        # @decision DEC-CONV-002
+        # Title: One-time cleanup of lightweight-role ghost markers
+        # Status: accepted
+        # Rationale: Accumulated Explore/Bash/unknown markers with is_active=1
+        #   were returned by get_active() as the "newest active" marker, silently
+        #   overriding the real implementer/tester/guardian role. The cleanup
+        #   runs every time ensure_schema() is called (idempotent: rows already
+        #   stopped are not touched). Dispatch-significant roles are whitelisted;
+        #   everything else is deactivated with status='stopped'.
+        conn.execute(
+            """
+            UPDATE agent_markers
+            SET    is_active  = 0,
+                   status     = 'stopped',
+                   stopped_at = COALESCE(stopped_at, CAST(strftime('%s', 'now') AS INTEGER))
+            WHERE  is_active  = 1
+              AND  role NOT IN ('planner', 'implementer', 'tester', 'guardian')
+            """
+        )

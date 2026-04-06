@@ -163,7 +163,20 @@ def _handle_marker(args) -> int:
     conn = _get_conn()
     try:
         if args.action == "set":
-            markers_mod.set_active(conn, args.agent_id, args.role)
+            # W-CONV-2: accept optional --project-root and --workflow-id so the
+            # test-marker-lifecycle.sh helper and production callers can write
+            # scoped markers via `cc-policy marker set`.
+            from runtime.core.policy_utils import normalize_path as _norm_path
+
+            _pr = getattr(args, "project_root", None) or ""
+            _wf = getattr(args, "workflow_id", None) or ""
+            markers_mod.set_active(
+                conn,
+                args.agent_id,
+                args.role,
+                project_root=_norm_path(_pr) if _pr else None,
+                workflow_id=_wf if _wf else None,
+            )
             return _ok({"agent_id": args.agent_id, "role": args.role})
 
         elif args.action == "get-active":
@@ -315,7 +328,20 @@ def _handle_dispatch(args) -> int:
             )
 
         elif args.action == "agent-start":
-            lifecycle_mod.on_agent_start(conn, args.agent_type, args.agent_id)
+            # W-CONV-2: forward project_root and workflow_id so the marker is
+            # scoped to this project. Both are optional — callers that do not
+            # supply them get NULL columns and unscoped get_active() still works.
+            from runtime.core.policy_utils import normalize_path as _norm_path
+
+            _pr = getattr(args, "project_root", None) or ""
+            _wf = getattr(args, "workflow_id", None) or ""
+            lifecycle_mod.on_agent_start(
+                conn,
+                args.agent_type,
+                args.agent_id,
+                project_root=_norm_path(_pr) if _pr else None,
+                workflow_id=_wf if _wf else None,
+            )
             return _ok({"agent_id": args.agent_id, "agent_type": args.agent_type})
 
         elif args.action == "agent-stop":
@@ -1291,6 +1317,19 @@ def build_parser() -> argparse.ArgumentParser:
     ms = marker_sub.add_parser("set")
     ms.add_argument("agent_id")
     ms.add_argument("role")
+    # W-CONV-2: optional scoping params for project_root and workflow_id
+    ms.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Canonical project root path (normalize_path applied before storage)",
+    )
+    ms.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        default=None,
+        help="Workflow ID to associate with this marker",
+    )
     marker_sub.add_parser("get-active")
     md = marker_sub.add_parser("deactivate")
     md.add_argument("agent_id")
@@ -1357,6 +1396,19 @@ def build_parser() -> argparse.ArgumentParser:
     das = dp_sub.add_parser("agent-start", help="Mark agent as active (set marker)")
     das.add_argument("agent_type", help="Role (implementer, tester, guardian, planner)")
     das.add_argument("agent_id", help="Unique agent identifier")
+    # W-CONV-2: optional scoping so subagent-start.sh can write project-scoped markers
+    das.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Canonical project root path; stored in agent_markers.project_root",
+    )
+    das.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        default=None,
+        help="Workflow ID to associate with this marker",
+    )
 
     dae = dp_sub.add_parser("agent-stop", help="Deactivate agent marker")
     dae.add_argument("agent_type", help="Role (for symmetry; not used in deactivation query)")

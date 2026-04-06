@@ -46,7 +46,32 @@ _local_cc_policy() {
 # Calls dispatch agent-start (lifecycle.py) via local CLI resolution so
 # this reaches the in-worktree runtime in isolated worktrees before merge.
 # rt_marker_set direct call removed — lifecycle.py is the sole authority.
-_local_cc_policy dispatch agent-start "${AGENT_TYPE:-unknown}" "agent-$$" >/dev/null 2>&1 || true
+#
+# W-CONV-2 (DEC-CONV-002): Only dispatch-significant roles write markers.
+# Explore, Bash, and general-purpose agents are lightweight coordinators
+# that have no SubagentStop check-*.sh hook to deactivate their marker, so
+# any marker they write accumulates indefinitely as a ghost marker and
+# contaminates actor-role inference in build_context(). The filter below
+# prevents that by skipping agent-start entirely for non-dispatch roles.
+# The schemas.py cleanup migration handles markers that already accumulated.
+_IS_DISPATCH_ROLE=false
+case "${AGENT_TYPE:-}" in
+    planner|Plan|implementer|tester|guardian)
+        _IS_DISPATCH_ROLE=true
+        ;;
+esac
+
+if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
+    # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
+    # workflow_id is derived from the current branch via current_workflow_id()
+    # so the marker is queryable via get_active(project_root=X, workflow_id=W).
+    _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
+    _local_cc_policy dispatch agent-start \
+        "${AGENT_TYPE:-unknown}" "agent-$$" \
+        --project-root "$PROJECT_ROOT" \
+        ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
+        >/dev/null 2>&1 || true
+fi
 
 # --- Lease claim: bind this agent to an active dispatch lease if one exists ---
 # Phase 2 (DEC-LEASE-002): At spawn time, attempt to claim any active lease

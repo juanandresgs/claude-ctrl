@@ -403,14 +403,22 @@ def build_context(
             resolved_id = lease.get("agent_id", "")
 
     if not resolved_role or not resolved_id:
-        marker_row = conn.execute(
-            "SELECT agent_id, role FROM agent_markers WHERE is_active = 1 ORDER BY started_at DESC LIMIT 1",
-        ).fetchone()
-        if marker_row:
+        # W-CONV-2 (DEC-CONV-002): use scoped marker query so that ghost
+        # markers from Explore/Bash agents (which no longer create markers
+        # after the subagent-start.sh filter) and markers from other projects
+        # do not contaminate actor-role inference. project_root is already
+        # normalized above via normalize_path(). Unscoped fallback (no
+        # project_root) is intentionally removed here — if no marker matches
+        # this project, resolved_role stays empty and the downstream lease /
+        # env-var path handles it.
+        from runtime.core.markers import get_active as _get_active_marker
+
+        _marker = _get_active_marker(conn, project_root=project_root)
+        if _marker:
             if not resolved_role:
-                resolved_role = marker_row["role"] or ""
+                resolved_role = _marker.get("role") or ""
             if not resolved_id:
-                resolved_id = marker_row["agent_id"] or ""
+                resolved_id = _marker.get("agent_id") or ""
 
     # --- Workflow ID ---
     workflow_id = ""
