@@ -16,6 +16,7 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
+const POLICY_DIR = path.resolve(ROOT_DIR, "policies");
 const STOP_GATE_TITLE = "Codex Stop Gate Review";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -145,15 +146,26 @@ function buildStopReviewPrompt(cwd, input = {}) {
   });
 }
 
-// ── Setup check ──────────────────────────────────────────────────────
+// ── Availability checks ─────────────────────────────────────────────
 
-function buildSetupNote(cwd) {
-  const authStatus = getCodexLoginStatus(cwd);
-  if (authStatus.available && authStatus.loggedIn) {
-    return null;
+function isCodexReady(cwd) {
+  const status = getCodexLoginStatus(cwd);
+  return status.available && status.loggedIn;
+}
+
+function isGeminiReady() {
+  try {
+    const result = spawnSync("gemini", ["--version"], { encoding: "utf8", timeout: 5000 });
+    if (result.status !== 0) {
+      return false;
+    }
+    // Check OAuth creds exist
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const credsPath = path.join(home, ".gemini", "oauth_creds.json");
+    return fs.existsSync(credsPath);
+  } catch {
+    return false;
   }
-  const detail = authStatus.detail ? ` ${authStatus.detail}.` : "";
-  return `Codex is not set up for the review gate.${detail} Run /codex:setup and, if needed, !codex login.`;
 }
 
 // ── Thread reuse ─────────────────────────────────────────────────────
@@ -174,6 +186,41 @@ function findPriorStopGateThread(workspaceRoot, sessionId) {
   return prior?.threadId ?? null;
 }
 
+// Gemini session-id persistence: stored per-session in the plugin state dir.
+function getGeminiSessionFile(workspaceRoot, sessionId) {
+  const stateDir = path.join(workspaceRoot, ".codex-plugin-state");
+  return path.join(stateDir, `gemini-stop-gate-${sessionId}.json`);
+}
+
+function findPriorGeminiSession(workspaceRoot, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+  try {
+    const filePath = getGeminiSessionFile(workspaceRoot, sessionId);
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return data.geminiSessionId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function savePriorGeminiSession(workspaceRoot, sessionId, geminiSessionId) {
+  if (!sessionId || !geminiSessionId) {
+    return;
+  }
+  try {
+    const filePath = getGeminiSessionFile(workspaceRoot, sessionId);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify({ geminiSessionId, updatedAt: new Date().toISOString() }));
+  } catch {
+    // Best effort
+  }
+}
+
 // ── Output parser ────────────────────────────────────────────────────
 
 function parseStopReviewOutput(rawOutput) {
@@ -182,7 +229,7 @@ function parseStopReviewOutput(rawOutput) {
     return {
       ok: false,
       infraFailure: true,
-      reason: "Codex review returned no output."
+      reason: "Review returned no output."
     };
   }
 
@@ -205,7 +252,7 @@ function parseStopReviewOutput(rawOutput) {
         : verdictSummary || text;
       return {
         ok: false,
-        reason: `Codex review — work is not yet complete:\n\n${fullReason}`
+        reason: `Review — work is not yet complete:\n\n${fullReason}`
       };
     }
   }
@@ -218,7 +265,7 @@ function parseStopReviewOutput(rawOutput) {
   if (firstLine.startsWith("BLOCK:")) {
     return {
       ok: false,
-      reason: `Codex review:\n\n${firstLine.slice("BLOCK:".length).trim() || text}`
+      reason: `Review:\n\n${firstLine.slice("BLOCK:".length).trim() || text}`
     };
   }
 
@@ -226,7 +273,7 @@ function parseStopReviewOutput(rawOutput) {
   return {
     ok: false,
     infraFailure: true,
-    reason: `Codex review returned no recognizable verdict. Full output:\n\n${text}`
+    reason: `Review returned no recognizable verdict. Full output:\n\n${text}`
   };
 }
 
@@ -235,13 +282,10 @@ function parseStopReviewOutput(rawOutput) {
 function invokeCodexTask(cwd, args, childEnv, { resuming = false } = {}) {
   const scriptPath = path.join(SCRIPT_DIR, "codex-companion.mjs");
 
-  // Bookend: announce the review start
   logNote(resuming
-    ? "[review-gate] Resuming Codex review thread..."
-    : "[review-gate] Starting Codex review...");
+    ? "[review-gate:codex] Resuming review thread..."
+    : "[review-gate:codex] Starting review...");
 
-  // Stream stderr to terminal in real time (progress lines from Codex),
-  // capture stdout for JSON result parsing.
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     cwd,
     env: childEnv,
@@ -251,51 +295,186 @@ function invokeCodexTask(cwd, args, childEnv, { resuming = false } = {}) {
   });
 
   if (result.error?.code === "ETIMEDOUT") {
-    logNote("[review-gate] Timed out after 15 minutes.");
-    return {
-      ok: false,
-      infraFailure: true,
-      reason: "Codex review timed out after 15 minutes.",
-      threadId: null
-    };
+    logNote("[review-gate:codex] Timed out.");
+    return { ok: false, infraFailure: true, reason: "Codex review timed out.", threadId: null };
   }
 
   if (result.status !== 0) {
-    // stderr already streamed to terminal; stdout may have error detail
     const detail = String(result.stdout || "").trim();
-    logNote(`[review-gate] Codex process exited with status ${result.status}.`);
-    return {
-      ok: false,
-      infraFailure: true,
-      exitDetail: detail,
-      threadId: null
-    };
+    logNote(`[review-gate:codex] Process exited with status ${result.status}.`);
+    return { ok: false, infraFailure: true, exitDetail: detail, threadId: null };
   }
 
   try {
     const payload = JSON.parse(result.stdout);
     const parsed = parseStopReviewOutput(payload?.rawOutput);
     parsed.threadId = payload?.threadId ?? null;
+    parsed.provider = "codex";
 
-    // Bookend: announce the verdict
     if (parsed.ok) {
-      logNote("[review-gate] VERDICT: PASS");
+      logNote("[review-gate:codex] VERDICT: PASS");
     } else if (parsed.infraFailure) {
-      logNote("[review-gate] No recognizable verdict — allowing stop.");
+      logNote("[review-gate:codex] No recognizable verdict.");
     } else {
-      logNote("[review-gate] VERDICT: CONTINUE — findings fed back to Claude.");
+      logNote("[review-gate:codex] VERDICT: CONTINUE");
     }
 
     return parsed;
   } catch {
-    logNote("[review-gate] Failed to parse Codex output.");
+    logNote("[review-gate:codex] Failed to parse output.");
+    return { ok: false, infraFailure: true, reason: "Codex returned invalid JSON.", threadId: null };
+  }
+}
+
+function runCodexReview(cwd, input = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV] || null;
+  const prompt = buildStopReviewPrompt(cwd, input);
+  const childEnv = {
+    ...process.env,
+    ...(sessionId ? { [SESSION_ID_ENV]: sessionId } : {})
+  };
+
+  const priorThreadId = findPriorStopGateThread(workspaceRoot, sessionId);
+
+  if (priorThreadId) {
+    const result = invokeCodexTask(cwd, ["task", "--json", "--progress", "--resume-thread", priorThreadId, prompt], childEnv, { resuming: true });
+    if (result.ok !== undefined && !result.exitDetail) {
+      return result;
+    }
+    logNote("[review-gate:codex] Prior thread could not be resumed — starting fresh.");
+  }
+
+  const result = invokeCodexTask(cwd, ["task", "--json", "--progress", prompt], childEnv);
+  if (result.exitDetail) {
+    return { ok: false, infraFailure: true, reason: `Codex review failed: ${result.exitDetail}`, threadId: null };
+  }
+  return result;
+}
+
+// ── Gemini invocation ────────────────────────────────────────────────
+
+function invokeGeminiTask(cwd, prompt, { resumeSessionId = null } = {}) {
+  logNote(resumeSessionId
+    ? `[review-gate:gemini] Resuming session ${resumeSessionId.slice(0, 8)}...`
+    : "[review-gate:gemini] Starting review...");
+
+  const policyPath = path.join(POLICY_DIR, "stop-gate-readonly.toml");
+  const args = [
+    "-p", prompt,
+    "--approval-mode", "plan",
+    "--output-format", "json",
+    "--yolo"  // suppress interactive confirmation for allowed tools
+  ];
+
+  // Add policy if it exists
+  if (fs.existsSync(policyPath)) {
+    args.push("--policy", policyPath);
+  }
+
+  // Resume prior session
+  if (resumeSessionId) {
+    args.push("--resume", resumeSessionId);
+  }
+
+  const result = spawnSync("gemini", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: STOP_REVIEW_TIMEOUT_MS,
+    stdio: ["pipe", "pipe", process.stderr]
+  });
+
+  if (result.error?.code === "ETIMEDOUT") {
+    logNote("[review-gate:gemini] Timed out.");
+    return { ok: false, infraFailure: true, reason: "Gemini review timed out.", geminiSessionId: null };
+  }
+
+  if (result.status !== 0) {
+    logNote(`[review-gate:gemini] Process exited with status ${result.status}.`);
+    return { ok: false, infraFailure: true, reason: "Gemini review process failed.", geminiSessionId: null };
+  }
+
+  try {
+    const payload = JSON.parse(result.stdout);
+    const parsed = parseStopReviewOutput(payload?.response);
+    parsed.geminiSessionId = payload?.session_id ?? null;
+    parsed.provider = "gemini";
+
+    if (parsed.ok) {
+      logNote("[review-gate:gemini] VERDICT: PASS");
+    } else if (parsed.infraFailure) {
+      logNote("[review-gate:gemini] No recognizable verdict.");
+    } else {
+      logNote("[review-gate:gemini] VERDICT: CONTINUE");
+    }
+
+    return parsed;
+  } catch {
+    logNote("[review-gate:gemini] Failed to parse output.");
+    return { ok: false, infraFailure: true, reason: "Gemini returned invalid JSON.", geminiSessionId: null };
+  }
+}
+
+function runGeminiReview(cwd, input = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV] || null;
+  const prompt = buildStopReviewPrompt(cwd, input);
+
+  const priorGeminiSession = findPriorGeminiSession(workspaceRoot, sessionId);
+
+  if (priorGeminiSession) {
+    const result = invokeGeminiTask(cwd, prompt, { resumeSessionId: priorGeminiSession });
+    if (result.ok !== undefined && !result.infraFailure) {
+      if (result.geminiSessionId) {
+        savePriorGeminiSession(workspaceRoot, sessionId, result.geminiSessionId);
+      }
+      return result;
+    }
+    logNote("[review-gate:gemini] Prior session could not be resumed — starting fresh.");
+  }
+
+  const result = invokeGeminiTask(cwd, prompt);
+  if (result.geminiSessionId) {
+    savePriorGeminiSession(workspaceRoot, sessionId, result.geminiSessionId);
+  }
+  return result;
+}
+
+// ── Review orchestrator (Codex → Gemini → allow) ────────────────────
+
+function runStopReview(cwd, input = {}) {
+  const codexReady = isCodexReady(cwd);
+  const geminiReady = isGeminiReady();
+
+  if (!codexReady && !geminiReady) {
+    logNote("[review-gate] Neither Codex nor Gemini available.");
     return {
       ok: false,
       infraFailure: true,
-      reason: "Codex review returned invalid JSON.",
-      threadId: null
+      reason: "No reviewer available (Codex and Gemini both unavailable)."
     };
   }
+
+  // Primary: Codex
+  if (codexReady) {
+    const result = runCodexReview(cwd, input);
+    if (!result.infraFailure) {
+      return result;
+    }
+    logNote("[review-gate] Codex failed — trying Gemini fallback...");
+  }
+
+  // Fallback: Gemini
+  if (geminiReady) {
+    return runGeminiReview(cwd, input);
+  }
+
+  // Should not reach here, but handle gracefully
+  return {
+    ok: false,
+    infraFailure: true,
+    reason: "No reviewer could complete the review."
+  };
 }
 
 // ── SubagentStop verdict emitter ─────────────────────────────────────
@@ -316,7 +495,6 @@ function invokeCodexTask(cwd, args, childEnv, { resuming = false } = {}) {
 //   only. Errors during emission are suppressed — the gate is advisory.
 
 function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
-  // Synchronous variant — stops-review hook runs synchronously.
   const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
   const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
   try {
@@ -330,40 +508,6 @@ function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
   }
 }
 
-function runStopReview(cwd, input = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const sessionId = input.session_id || process.env[SESSION_ID_ENV] || null;
-  const prompt = buildStopReviewPrompt(cwd, input);
-  const childEnv = {
-    ...process.env,
-    ...(sessionId ? { [SESSION_ID_ENV]: sessionId } : {})
-  };
-
-  // Resume prior stop-gate thread if one exists for this session
-  const priorThreadId = findPriorStopGateThread(workspaceRoot, sessionId);
-
-  if (priorThreadId) {
-    const result = invokeCodexTask(cwd, ["task", "--json", "--progress", "--resume-thread", priorThreadId, prompt], childEnv, { resuming: true });
-    if (result.ok !== undefined && !result.exitDetail) {
-      return result;
-    }
-    // Resume failed — fall through to fresh
-    logNote("[review-gate] Prior thread could not be resumed — starting fresh.");
-  }
-
-  // Fresh thread
-  const result = invokeCodexTask(cwd, ["task", "--json", "--progress", prompt], childEnv);
-  if (result.exitDetail) {
-    return {
-      ok: false,
-      infraFailure: true,
-      reason: `Codex review failed: ${result.exitDetail}`,
-      threadId: null
-    };
-  }
-  return result;
-}
-
 // ── Main ─────────────────────────────────────────────────────────────
 
 function main() {
@@ -372,8 +516,6 @@ function main() {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
 
-  // Detect SubagentStop vs Stop: SubagentStop input has agent_type field.
-  // When agent_type is present, we are in the SubagentStop hook chain.
   const isSubagentStop = Boolean(input.agent_type);
 
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), input));
@@ -384,65 +526,54 @@ function main() {
 
   if (!config.stopReviewGate) {
     if (!isSubagentStop) {
-      // On Stop, always log the running task note even when gate is off.
       logNote(runningTaskNote);
     }
     return;
   }
 
-  const setupNote = buildSetupNote(cwd);
-  if (setupNote) {
-    if (!isSubagentStop) {
-      logNote(setupNote);
-      logNote(runningTaskNote);
-      // Surface to user via additionalContext so it's visible in the session
-      emitDecision({ additionalContext: `Review gate: ${setupNote}` });
-    }
-    return;
-  }
+  // Skip setup check — runStopReview handles provider availability internally.
 
   const review = runStopReview(cwd, input);
   const workflowId = input.workflow_id || "";
 
   if (isSubagentStop) {
-    // SubagentStop path: write verdict to events table, emit only informational
-    // additionalContext. Do NOT emit decision:block — dispatch_engine owns routing.
-    // Infrastructure failures → ALLOW (don't block routing on infra issues).
     const verdict = review.ok || review.infraFailure ? "ALLOW" : "BLOCK";
     const reason = review.infraFailure
       ? `infra failure: ${review.reason}`
       : review.reason || (review.ok ? "work looks good" : "review found issues");
     emitCodexReviewEventSync(cwd, workflowId, verdict, reason);
-    // Informational only — orchestrator sees this in additionalContext
+    const provider = review.provider || "unknown";
     const contextNote = review.ok
-      ? `Codex gate (SubagentStop/${input.agent_type}): ALLOW`
-      : `Codex gate (SubagentStop/${input.agent_type}): BLOCK — ${reason}`;
+      ? `Review gate (${provider}, SubagentStop/${input.agent_type}): ALLOW`
+      : `Review gate (${provider}, SubagentStop/${input.agent_type}): BLOCK — ${reason}`;
     emitDecision({ additionalContext: contextNote });
     return;
   }
 
-  // Stop event path.
-  // Infrastructure failures (timeout, process crash, bad JSON) → allow with warning.
-  // Review findings (CONTINUE verdict) → block so Claude acts on them.
+  // Infrastructure failures → allow with warning
   if (!review.ok && review.infraFailure) {
-    const msg = `Codex review unavailable — allowing stop. ${review.reason}`;
+    const msg = `Review gate unavailable — allowing stop. ${review.reason}`;
     logNote(msg);
     logNote(runningTaskNote);
     emitDecision({ additionalContext: `Review gate: ${msg}` });
     return;
   }
 
+  // CONTINUE → block, feed findings to Claude
   if (!review.ok) {
+    const provider = review.provider || "reviewer";
     emitDecision({
       decision: "block",
-      reason: runningTaskNote ? `${runningTaskNote}\n\n${review.reason}` : review.reason
+      reason: runningTaskNote
+        ? `${runningTaskNote}\n\n[${provider}] ${review.reason}`
+        : `[${provider}] ${review.reason}`
     });
     return;
   }
 
-  // PASS — both models agree work is complete
+  // PASS — both models agree
   if (review.reason) {
-    logNote(`Codex review (PASS):\n${review.reason}`);
+    logNote(`Review gate (${review.provider || "reviewer"}) PASS:\n${review.reason}`);
   }
   logNote(runningTaskNote);
 }
