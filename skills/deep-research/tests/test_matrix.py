@@ -24,20 +24,21 @@ from typing import Set
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from lib.matrix import (
-    Topic,
-    MatchedTopic,
+from lib.matrix import (  # noqa: E402
+    STOP_WORDS,
     ComparisonMatrix,
+    MatchedTopic,
+    Topic,
+    _extract_body_keywords,
+    _extract_urls,  # noqa: F401 — used in TestExtractUrlsResolvedUrl
+    _jaccard_similarity,
+    _jaccard_similarity_sets,
+    _normalize_heading,
+    build_matrix,
     extract_topics,
     match_topics,
-    build_matrix,
-    _normalize_heading,
-    _jaccard_similarity,
-    _extract_body_keywords,
-    _jaccard_similarity_sets,
-    STOP_WORDS,
 )
-from lib.render import ProviderResult
+from lib.render import ProviderResult  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -45,6 +46,7 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_fixture(name: str) -> dict:
     with open(FIXTURES_DIR / name) as f:
@@ -65,6 +67,7 @@ def _provider_result(provider: str, report: str, citations=None) -> ProviderResu
 # ---------------------------------------------------------------------------
 # _normalize_heading
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeHeading(unittest.TestCase):
     """Unit tests for internal heading normalizer."""
@@ -102,6 +105,7 @@ class TestNormalizeHeading(unittest.TestCase):
 # _jaccard_similarity
 # ---------------------------------------------------------------------------
 
+
 class TestJaccardSimilarity(unittest.TestCase):
     """Unit tests for Jaccard word-set similarity."""
 
@@ -124,12 +128,13 @@ class TestJaccardSimilarity(unittest.TestCase):
 
     def test_subset(self):
         # {"a","b"} ⊆ {"a","b","c"} → 2/3
-        self.assertAlmostEqual(_jaccard_similarity("a b", "a b c"), 2/3, places=5)
+        self.assertAlmostEqual(_jaccard_similarity("a b", "a b c"), 2 / 3, places=5)
 
 
 # ---------------------------------------------------------------------------
 # extract_topics
 # ---------------------------------------------------------------------------
+
 
 class TestExtractTopics(unittest.TestCase):
     """Topic extraction from markdown text."""
@@ -246,6 +251,7 @@ Content here.
 # match_topics
 # ---------------------------------------------------------------------------
 
+
 class TestMatchTopics(unittest.TestCase):
     """Cross-provider topic matching."""
 
@@ -325,7 +331,11 @@ class TestMatchTopics(unittest.TestCase):
         }
         matched = match_topics(topics)
         # Find the Key Findings topic
-        findings = next(m for m in matched if "findings" in m.canonical_name or "key findings" in m.canonical_name)
+        findings = next(
+            m
+            for m in matched
+            if "findings" in m.canonical_name or "key findings" in m.canonical_name
+        )
         self.assertEqual(findings.coverage.get("perplexity"), "absent")
 
     def test_single_provider_all_unique(self):
@@ -362,6 +372,7 @@ class TestMatchTopics(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Agreement classification
 # ---------------------------------------------------------------------------
+
 
 class TestAgreementClassification(unittest.TestCase):
     """Verify consensus/majority/unique agreement levels."""
@@ -417,6 +428,7 @@ class TestAgreementClassification(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # build_matrix and citation overlap
 # ---------------------------------------------------------------------------
+
 
 class TestBuildMatrix(unittest.TestCase):
     """Integration tests for build_matrix() with ProviderResult instances."""
@@ -490,18 +502,30 @@ their findings are synthesized here.
 
     def setUp(self):
         self.results = [
-            _provider_result("openai", self.OPENAI_REPORT, citations=[
-                {"url": "https://example.com/shared"},
-                {"url": "https://openai-only.com/paper"},
-            ]),
-            _provider_result("perplexity", self.PERPLEXITY_REPORT, citations=[
-                {"url": "https://example.com/shared"},
-                {"url": "https://perplexity-only.com/doc"},
-            ]),
-            _provider_result("gemini", self.GEMINI_REPORT, citations=[
-                {"url": "https://example.com/shared"},
-                {"url": "https://gemini-only.com/report"},
-            ]),
+            _provider_result(
+                "openai",
+                self.OPENAI_REPORT,
+                citations=[
+                    {"url": "https://example.com/shared"},
+                    {"url": "https://openai-only.com/paper"},
+                ],
+            ),
+            _provider_result(
+                "perplexity",
+                self.PERPLEXITY_REPORT,
+                citations=[
+                    {"url": "https://example.com/shared"},
+                    {"url": "https://perplexity-only.com/doc"},
+                ],
+            ),
+            _provider_result(
+                "gemini",
+                self.GEMINI_REPORT,
+                citations=[
+                    {"url": "https://example.com/shared"},
+                    {"url": "https://gemini-only.com/report"},
+                ],
+            ),
         ]
         self.matrix = build_matrix(self.results)
 
@@ -522,7 +546,9 @@ their findings are synthesized here.
     def test_citation_overlap_detects_shared_url(self):
         shared = "https://example.com/shared"
         self.assertIn(shared, self.matrix.citation_overlap)
-        self.assertEqual(set(self.matrix.citation_overlap[shared]), {"openai", "perplexity", "gemini"})
+        self.assertEqual(
+            set(self.matrix.citation_overlap[shared]), {"openai", "perplexity", "gemini"}
+        )
 
     def test_citation_overlap_excludes_unique_urls(self):
         unique = "https://openai-only.com/paper"
@@ -542,6 +568,7 @@ their findings are synthesized here.
 
     def test_to_dict_produces_json_serializable_output(self):
         import json
+
         d = self.matrix.to_dict()
         # Should not raise
         serialized = json.dumps(d)
@@ -596,6 +623,7 @@ their findings are synthesized here.
 # Fixture integration test
 # ---------------------------------------------------------------------------
 
+
 class TestFixtureIntegration(unittest.TestCase):
     """Run build_matrix against the real sample fixture files."""
 
@@ -632,7 +660,11 @@ class TestFixtureIntegration(unittest.TestCase):
         valid_levels = {"detailed", "mentioned", "absent"}
         for t in matrix.topics:
             for provider, level in t.coverage.items():
-                self.assertIn(level, valid_levels, f"Invalid coverage level '{level}' for provider '{provider}' in topic '{t.canonical_name}'")
+                self.assertIn(
+                    level,
+                    valid_levels,
+                    f"Invalid coverage level '{level}' for provider '{provider}' in topic '{t.canonical_name}'",
+                )
 
     def test_fixture_stats_sanity(self):
         results = [
@@ -649,6 +681,7 @@ class TestFixtureIntegration(unittest.TestCase):
 
     def test_fixture_serializes_to_json(self):
         import json
+
         results = [
             self._load_provider_result("openai_sample.json"),
             self._load_provider_result("perplexity_sample.json"),
@@ -663,6 +696,7 @@ class TestFixtureIntegration(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # _extract_body_keywords
 # ---------------------------------------------------------------------------
+
 
 class TestExtractBodyKeywords(unittest.TestCase):
     """Unit tests for stop-word filtered keyword extraction."""
@@ -714,6 +748,7 @@ class TestExtractBodyKeywords(unittest.TestCase):
 # _jaccard_similarity_sets
 # ---------------------------------------------------------------------------
 
+
 class TestJaccardSimilaritySets(unittest.TestCase):
     """Unit tests for set-based Jaccard similarity."""
 
@@ -743,6 +778,7 @@ class TestJaccardSimilaritySets(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # match_method tracking (exact, heading-fuzzy, unmatched)
 # ---------------------------------------------------------------------------
+
 
 class TestMatchMethodTracking(unittest.TestCase):
     """Tests for match_method metadata on MatchedTopic instances."""
@@ -779,14 +815,18 @@ class TestMatchMethodTracking(unittest.TestCase):
         # Jaccard on heading words: {apt,group,connections} ∩ {apt,group,connections,analysis}
         # = 3/4 = 0.75 >= 0.60 → heading-fuzzy
         topics = {
-            "openai": [self._make_topic(
-                "APT Group Connections Overview",
-                {"apt", "threat", "actor", "infrastructure"},
-            )],
-            "gemini": [self._make_topic(
-                "APT Group Connections Analysis",
-                {"apt", "threat", "actor", "infrastructure"},
-            )],
+            "openai": [
+                self._make_topic(
+                    "APT Group Connections Overview",
+                    {"apt", "threat", "actor", "infrastructure"},
+                )
+            ],
+            "gemini": [
+                self._make_topic(
+                    "APT Group Connections Analysis",
+                    {"apt", "threat", "actor", "infrastructure"},
+                )
+            ],
         }
         matched = match_topics(topics)
         self.assertEqual(len(matched), 1)
@@ -795,7 +835,9 @@ class TestMatchMethodTracking(unittest.TestCase):
     def test_unmatched_method_label_when_no_match(self):
         """Completely disjoint topics produce match_method='unmatched'."""
         topics = {
-            "openai": [self._make_topic("Quantum Computing", {"qubit", "superposition", "entanglement"})],
+            "openai": [
+                self._make_topic("Quantum Computing", {"qubit", "superposition", "entanglement"})
+            ],
             "gemini": [self._make_topic("Regulatory Compliance", {"regulation", "gdpr", "audit"})],
         }
         matched = match_topics(topics)
@@ -855,8 +897,7 @@ class TestMatchMethodTracking(unittest.TestCase):
         d = matrix.to_dict()
         for topic_entry in d["topics"]:
             self.assertIn("match_method", topic_entry)
-            self.assertIn(topic_entry["match_method"],
-                          {"exact", "heading-fuzzy", "unmatched"})
+            self.assertIn(topic_entry["match_method"], {"exact", "heading-fuzzy", "unmatched"})
 
     def test_to_dict_includes_unmatched_hints(self):
         """to_dict() must include unmatched_hints at top level."""
@@ -872,8 +913,13 @@ class TestMatchMethodTracking(unittest.TestCase):
     def test_unmatched_hints_have_required_keys(self):
         """Each unmatched_hint entry must have provider, heading, top_keywords."""
         results = [
-            _provider_result("openai", "# Unique Topic Alpha\n\nSome specialized content with unique terminology.\n"),
-            _provider_result("gemini", "# Totally Different Beta\n\nEntirely unrelated subject matter.\n"),
+            _provider_result(
+                "openai",
+                "# Unique Topic Alpha\n\nSome specialized content with unique terminology.\n",
+            ),
+            _provider_result(
+                "gemini", "# Totally Different Beta\n\nEntirely unrelated subject matter.\n"
+            ),
         ]
         matrix = build_matrix(results)
         for hint in matrix.unmatched_hints:
@@ -886,6 +932,7 @@ class TestMatchMethodTracking(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Body keyword extraction with real reports
 # ---------------------------------------------------------------------------
+
 
 class TestBodyKeywordsInReports(unittest.TestCase):
     """Tests verifying body_keywords population via extract_topics."""
@@ -915,8 +962,12 @@ class TestBodyKeywordsInReports(unittest.TestCase):
     def test_unmatched_topics_appear_in_unmatched_hints_with_body_keywords(self):
         """Unmatched topics surface their body keywords in unmatched_hints."""
         results = [
-            _provider_result("openai", "# Company Overview\n\nI-SOON contractor Shanghai government.\n"),
-            _provider_result("gemini", "# Company Background\n\nI-SOON contractor Shanghai government.\n"),
+            _provider_result(
+                "openai", "# Company Overview\n\nI-SOON contractor Shanghai government.\n"
+            ),
+            _provider_result(
+                "gemini", "# Company Background\n\nI-SOON contractor Shanghai government.\n"
+            ),
         ]
         matrix = build_matrix(results)
         # Both topics are unmatched (heading Jaccard = 1/3 < 0.60)
@@ -925,6 +976,99 @@ class TestBodyKeywordsInReports(unittest.TestCase):
             self.assertIsInstance(hint["top_keywords"], list)
             # "isoon" and "contractor" should be in top_keywords
             self.assertTrue(len(hint["top_keywords"]) > 0)
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: _extract_urls should prefer resolved_url over url (Bug 2)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractUrlsResolvedUrl(unittest.TestCase):
+    """Tests for _extract_urls() resolved_url preference (Bug 2 fix).
+
+    validate_citations() stores Gemini grounding redirects under resolved_url.
+    _extract_urls() must use resolved_url when present so that Gemini citations
+    and OpenAI/Perplexity citations to the same final destination are counted
+    as overlapping rather than distinct URLs.
+    """
+
+    def test_plain_url_dict_returned(self):
+        """Dict citation with only 'url' returns that url."""
+        citations = [{"url": "https://example.com/page"}]
+        result = _extract_urls(citations)
+        self.assertEqual(result, {"https://example.com/page"})
+
+    def test_resolved_url_preferred_over_url(self):
+        """When resolved_url is present it must be used instead of url."""
+        citations = [
+            {
+                "url": "https://redirect.gemini.internal/abc",
+                "resolved_url": "https://example.com/page",
+            }
+        ]
+        result = _extract_urls(citations)
+        # BUG 2: before fix this returns {"https://redirect.gemini.internal/abc"}
+        self.assertIn("https://example.com/page", result)
+        self.assertNotIn("https://redirect.gemini.internal/abc", result)
+
+    def test_resolved_url_empty_string_falls_back_to_url(self):
+        """Empty resolved_url must fall back to url."""
+        citations = [{"url": "https://example.com/page", "resolved_url": ""}]
+        result = _extract_urls(citations)
+        self.assertEqual(result, {"https://example.com/page"})
+
+    def test_resolved_url_none_falls_back_to_url(self):
+        """None resolved_url must fall back to url."""
+        citations = [{"url": "https://example.com/page", "resolved_url": None}]
+        result = _extract_urls(citations)
+        self.assertEqual(result, {"https://example.com/page"})
+
+    def test_bare_string_citation_unchanged(self):
+        """Bare string citations (not dicts) are returned as-is."""
+        citations = ["https://example.com/bare"]
+        result = _extract_urls(citations)
+        self.assertEqual(result, {"https://example.com/bare"})
+
+    def test_mixed_resolved_and_plain(self):
+        """Mix of resolved and plain dict citations handled correctly."""
+        citations = [
+            {"url": "https://redirect.gemini.internal/x", "resolved_url": "https://final.com/doc"},
+            {"url": "https://plain.com/page"},
+        ]
+        result = _extract_urls(citations)
+        self.assertIn("https://final.com/doc", result)
+        self.assertIn("https://plain.com/page", result)
+        self.assertNotIn("https://redirect.gemini.internal/x", result)
+
+    def test_citation_overlap_uses_resolved_url_for_cross_provider_match(self):
+        """End-to-end: Gemini resolved_url matches OpenAI url in citation_overlap.
+
+        This is the production sequence: OpenAI cites the final URL directly;
+        Gemini's citation has a redirect under 'url' and the resolved destination
+        under 'resolved_url'. build_matrix() must detect them as the same source.
+        """
+        openai_citations = [{"url": "https://final.com/shared-source"}]
+        gemini_citations = [
+            {
+                "url": "https://gemini-redirect.internal/abc",
+                "resolved_url": "https://final.com/shared-source",
+            }
+        ]
+        results = [
+            _provider_result("openai", "# Topic\n\nContent.\n", citations=openai_citations),
+            _provider_result("gemini", "# Topic\n\nContent.\n", citations=gemini_citations),
+        ]
+        matrix = build_matrix(results)
+        # BUG 2: before fix, citation_overlap is empty because the URLs differ
+        self.assertIn(
+            "https://final.com/shared-source",
+            matrix.citation_overlap,
+            "resolved_url must be used so Gemini and OpenAI citations to the same page overlap",
+        )
+        self.assertEqual(
+            set(matrix.citation_overlap["https://final.com/shared-source"]),
+            {"openai", "gemini"},
+        )
 
 
 if __name__ == "__main__":

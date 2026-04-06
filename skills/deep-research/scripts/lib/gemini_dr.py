@@ -31,7 +31,7 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from . import http
-from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError, ProviderAPIError
+from .errors import ProviderAPIError, ProviderTimeoutError
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 AGENT = "deep-research-pro-preview-12-2025"
@@ -83,11 +83,18 @@ def _get_poll_interval(elapsed: float) -> float:
         return 30.0
 
 
-def _poll_response_fallback(api_key: str, interaction_id: str) -> Dict[str, Any]:
+def _poll_response_fallback(
+    api_key: str, interaction_id: str, timeout: int = MAX_TIMEOUT_SECONDS
+) -> Dict[str, Any]:
     """Poll for a completed interaction (fallback when streaming unavailable).
 
     Uses adaptive polling: 5s for first 2 min, 15s for next 8 min, 30s after that.
-    Total timeout: 1800s (30 minutes).
+
+    Args:
+        api_key: Gemini API key.
+        interaction_id: ID of the background interaction to poll.
+        timeout: Per-call ceiling in seconds (default: MAX_TIMEOUT_SECONDS).
+            Callers pass args.timeout so the --timeout flag is respected.
 
     Returns:
         Completed interaction response dict.
@@ -102,8 +109,8 @@ def _poll_response_fallback(api_key: str, interaction_id: str) -> Dict[str, Any]
     while True:
         elapsed = time.time() - start_time
 
-        if elapsed >= MAX_TIMEOUT_SECONDS:
-            raise ProviderTimeoutError("gemini", MAX_TIMEOUT_SECONDS, elapsed)
+        if elapsed >= timeout:
+            raise ProviderTimeoutError("gemini", timeout, elapsed)
 
         resp = http.get(
             f"{BASE_URL}/interactions/{interaction_id}",
@@ -125,7 +132,9 @@ def _poll_response_fallback(api_key: str, interaction_id: str) -> Dict[str, Any]
         else:
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
-            sys.stderr.write(f"  [Gemini] Status: {status} ({minutes}m {seconds:02d}s, poll {poll_count})\n")
+            sys.stderr.write(
+                f"  [Gemini] Status: {status} ({minutes}m {seconds:02d}s, poll {poll_count})\n"
+            )
             sys.stderr.flush()
 
             interval = _get_poll_interval(elapsed)
@@ -148,7 +157,7 @@ def _format_thinking_line(elapsed: float, summary_text: str) -> str:
     # Truncate summary to ~80 chars
     max_len = 80
     if len(summary_text) > max_len:
-        summary_text = summary_text[:max_len - 3] + "..."
+        summary_text = summary_text[: max_len - 3] + "..."
 
     return f"  [Gemini] {minutes}m {seconds:02d}s - {summary_text}"
 
@@ -220,7 +229,7 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
 
             # Handle different event types
             if event_type == "interaction.start":
-                sys.stderr.write(f"  [Gemini] 0m 00s - Starting research...\n")
+                sys.stderr.write("  [Gemini] 0m 00s - Starting research...\n")
                 sys.stderr.flush()
 
             elif event_type == "content.delta":
@@ -245,7 +254,7 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
                 seconds = int(elapsed) % 60
                 sys.stderr.write(f"  [Gemini] {minutes}m {seconds:02d}s - Complete\n")
                 sys.stderr.flush()
-                return ''.join(report_parts)
+                return "".join(report_parts)
 
             elif event_type == "error":
                 error_msg = data.get("message", "Unknown error")
@@ -299,22 +308,27 @@ def _extract_report(response: Dict[str, Any]) -> Tuple[str, List[Any]]:
             report = result.get("text", result.get("content", ""))
 
     # Extract citations from structured sources if present
-    sources = response.get("sources", response.get("groundingMetadata", {}).get("webSearchQueries", []))
+    sources = response.get(
+        "sources", response.get("groundingMetadata", {}).get("webSearchQueries", [])
+    )
     if isinstance(sources, list):
         for src in sources:
             if isinstance(src, str):
                 citations.append({"url": src})
             elif isinstance(src, dict):
-                citations.append({
-                    "url": src.get("url", src.get("uri", "")),
-                    "title": src.get("title", ""),
-                })
+                citations.append(
+                    {
+                        "url": src.get("url", src.get("uri", "")),
+                        "title": src.get("title", ""),
+                    }
+                )
 
     # Fallback: extract inline URLs from report text (Gemini embeds grounding
     # redirect URLs directly in the markdown)
     if not citations and report:
         import re
-        urls = re.findall(r'https?://[^\s\)>\]]+', report)
+
+        urls = re.findall(r"https?://[^\s\)>\]]+", report)
         seen = set()
         for url in urls:
             if url not in seen:
@@ -324,7 +338,9 @@ def _extract_report(response: Dict[str, Any]) -> Tuple[str, List[Any]]:
     return report, citations
 
 
-def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
+def research(
+    api_key: str, topic: str, timeout: int = MAX_TIMEOUT_SECONDS
+) -> Tuple[str, List[Any], str]:
     """Run Gemini deep research on a topic.
 
     Primary mode: SSE streaming with thinking summaries.
@@ -333,6 +349,8 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
     Args:
         api_key: Gemini API key
         topic: Research topic/question
+        timeout: Per-call ceiling in seconds (default: MAX_TIMEOUT_SECONDS).
+            Pass args.timeout from the CLI so --timeout is respected.
 
     Returns:
         Tuple of (report_text, citations, model_used)
@@ -361,7 +379,7 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
     except http.HTTPError as e:
         # If it's a connection error (not an API error), fall back to polling
         if e.status_code is None or e.status_code >= 500:
-            sys.stderr.write(f"  [Gemini] SSE streaming unavailable, falling back to polling\n")
+            sys.stderr.write("  [Gemini] SSE streaming unavailable, falling back to polling\n")
             sys.stderr.flush()
             http.log(f"SSE error: {e}, falling back to polling")
             # Fall through to polling
@@ -386,7 +404,7 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
             http.log("Failed to fetch citations from completed interaction")
             return report, [], AGENT
 
-    # Fallback: poll for completion
-    completed = _poll_response_fallback(api_key, interaction_id)
+    # Fallback: poll for completion — forward caller-supplied timeout
+    completed = _poll_response_fallback(api_key, interaction_id, timeout=timeout)
     report, citations = _extract_report(completed)
     return report, citations, AGENT

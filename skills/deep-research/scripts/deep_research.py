@@ -31,13 +31,11 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import env, http
-from lib.render import ProviderResult, render_json, render_compact
-from lib import openai_dr, perplexity_dr, gemini_dr
-from lib.errors import ProviderError
-from lib.validate import validate_citations
-from lib.matrix import build_matrix
-
+from lib import env, gemini_dr, http, openai_dr, perplexity_dr  # noqa: E402
+from lib.errors import ProviderError  # noqa: E402
+from lib.matrix import build_matrix  # noqa: E402
+from lib.render import ProviderResult, render_compact, render_json  # noqa: E402
+from lib.validate import validate_citations  # noqa: E402
 
 PROVIDER_MODULES = {
     "openai": openai_dr,
@@ -61,13 +59,16 @@ def load_fixture(name: str) -> dict:
     return {}
 
 
-def run_provider(provider: str, api_key: str, topic: str) -> ProviderResult:
+def run_provider(provider: str, api_key: str, topic: str, timeout: int = 1800) -> ProviderResult:
     """Run a single provider's deep research.
 
     Args:
         provider: Provider name ('openai', 'perplexity', 'gemini')
         api_key: API key for the provider
         topic: Research topic
+        timeout: Per-provider ceiling in seconds forwarded from --timeout
+            (default: 1800). Each provider's research() uses this as its
+            hard ceiling rather than its own module-level constant.
 
     Returns:
         ProviderResult with success/failure and report data
@@ -75,7 +76,7 @@ def run_provider(provider: str, api_key: str, topic: str) -> ProviderResult:
     start = time.time()
     try:
         module = PROVIDER_MODULES[provider]
-        report, citations, model = module.research(api_key, topic)
+        report, citations, model = module.research(api_key, topic, timeout=timeout)
         elapsed = time.time() - start
         return ProviderResult(
             provider=provider,
@@ -121,49 +122,61 @@ def run_mock(providers: list) -> list:
     for provider in providers:
         fixture = load_fixture(fixture_map.get(provider, ""))
         if fixture:
-            results.append(ProviderResult(
-                provider=provider,
-                success=fixture.get("success", True),
-                report=fixture.get("report", ""),
-                citations=fixture.get("citations", []),
-                model=fixture.get("model", f"mock-{provider}"),
-                elapsed_seconds=fixture.get("elapsed_seconds", 0.0),
-                error=fixture.get("error"),
-            ))
+            results.append(
+                ProviderResult(
+                    provider=provider,
+                    success=fixture.get("success", True),
+                    report=fixture.get("report", ""),
+                    citations=fixture.get("citations", []),
+                    model=fixture.get("model", f"mock-{provider}"),
+                    elapsed_seconds=fixture.get("elapsed_seconds", 0.0),
+                    error=fixture.get("error"),
+                )
+            )
         else:
-            results.append(ProviderResult(
-                provider=provider,
-                success=False,
-                error=f"Fixture not found: {fixture_map.get(provider, 'unknown')}",
-            ))
+            results.append(
+                ProviderResult(
+                    provider=provider,
+                    success=False,
+                    error=f"Fixture not found: {fixture_map.get(provider, 'unknown')}",
+                )
+            )
 
     return results
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Query multiple deep research models in parallel"
-    )
+    parser = argparse.ArgumentParser(description="Query multiple deep research models in parallel")
     parser.add_argument("topic", nargs="?", help="Topic to research")
     parser.add_argument("--mock", action="store_true", help="Use fixtures")
     parser.add_argument(
-        "--emit", choices=["compact", "json"], default="json",
+        "--emit",
+        choices=["compact", "json"],
+        default="json",
         help="Output mode (default: json)",
     )
     parser.add_argument(
-        "--timeout", type=int, default=1800,
+        "--timeout",
+        type=int,
+        default=1800,
         help="Max wait per provider in seconds (default: 1800)",
     )
     parser.add_argument(
-        "--debug", action="store_true",
+        "--debug",
+        action="store_true",
         help="Enable verbose debug logging",
     )
     parser.add_argument(
-        "--output-dir", type=str, default=None,
+        "--output-dir",
+        type=str,
+        default=None,
         help="Write raw_results.json to this directory instead of stdout",
     )
     parser.add_argument(
-        "--validate", type=int, choices=[0, 1, 2, 3], default=0,
+        "--validate",
+        type=int,
+        choices=[0, 1, 2, 3],
+        default=0,
         help="Citation validation depth: 0=none, 1=liveness, 2=relevance, 3=cross-ref (default: 0)",
     )
 
@@ -200,7 +213,7 @@ def main():
             print(f"Error: {error_output['error']}", file=sys.stderr)
         sys.exit(1)
 
-    sys.stderr.write(f"Deep Research: \"{args.topic}\"\n")
+    sys.stderr.write(f'Deep Research: "{args.topic}"\n')
     sys.stderr.write(f"Providers: {', '.join(available)} ({len(available)} active)\n")
     sys.stderr.flush()
 
@@ -216,7 +229,7 @@ def main():
             futures = {}
             for provider in available:
                 api_key = config[PROVIDER_KEY_MAP[provider]]
-                future = executor.submit(run_provider, provider, api_key, args.topic)
+                future = executor.submit(run_provider, provider, api_key, args.topic, args.timeout)
                 futures[future] = provider
 
             for future in as_completed(futures, timeout=args.timeout + 120):
@@ -225,14 +238,18 @@ def main():
                     result = future.result()
                     results.append(result)
                     status = "OK" if result.success else "FAIL"
-                    sys.stderr.write(f"  [{provider.upper()}] {status} ({result.elapsed_seconds:.1f}s)\n")
+                    sys.stderr.write(
+                        f"  [{provider.upper()}] {status} ({result.elapsed_seconds:.1f}s)\n"
+                    )
                     sys.stderr.flush()
                 except Exception as e:
-                    results.append(ProviderResult(
-                        provider=provider,
-                        success=False,
-                        error=f"{type(e).__name__}: {e}",
-                    ))
+                    results.append(
+                        ProviderResult(
+                            provider=provider,
+                            success=False,
+                            error=f"{type(e).__name__}: {e}",
+                        )
+                    )
                     sys.stderr.write(f"  [{provider.upper()}] FAIL: {e}\n")
                     sys.stderr.flush()
 

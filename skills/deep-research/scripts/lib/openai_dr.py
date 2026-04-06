@@ -12,10 +12,10 @@ Uses the Responses API (not Chat Completions) as required by deep research model
 
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from . import http
-from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError, ProviderAPIError
+from .errors import ProviderAPIError, ProviderTimeoutError
 
 BASE_URL = "https://api.openai.com/v1"
 PRIMARY_MODEL = "o3-deep-research-2025-06-26"
@@ -68,8 +68,16 @@ def _submit_request(api_key: str, topic: str, model: str) -> Dict[str, Any]:
     )
 
 
-def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
+def _poll_response(
+    api_key: str, response_id: str, timeout: int = MAX_POLL_SECONDS
+) -> Dict[str, Any]:
     """Poll for a completed response.
+
+    Args:
+        api_key: OpenAI API key.
+        response_id: ID of the background response to poll.
+        timeout: Per-call ceiling in seconds (default: MAX_POLL_SECONDS).
+            Callers pass args.timeout so the --timeout flag is respected.
 
     Returns:
         Completed response dict.
@@ -83,9 +91,9 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
     while True:
         elapsed = time.time() - start_time
 
-        # Check hard timeout ceiling
-        if elapsed >= MAX_POLL_SECONDS:
-            raise ProviderTimeoutError("openai", MAX_POLL_SECONDS, elapsed)
+        # Check caller-supplied timeout ceiling (not hard-coded constant)
+        if elapsed >= timeout:
+            raise ProviderTimeoutError("openai", timeout, elapsed)
 
         poll_count += 1
         resp = http.get(
@@ -103,13 +111,17 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
             msg = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
             raise ProviderAPIError("openai", 0, msg, elapsed)
         elif status == "incomplete":
-            raise ProviderAPIError("openai", 0, "returned incomplete (may have hit output limit)", elapsed)
+            raise ProviderAPIError(
+                "openai", 0, "returned incomplete (may have hit output limit)", elapsed
+            )
         elif status == "cancelled":
             raise ProviderAPIError("openai", 0, "was cancelled", elapsed)
         elif status in ("queued", "in_progress", "searching"):
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
-            sys.stderr.write(f"  [OpenAI] Status: {status} ({minutes}m {seconds}s, poll {poll_count})\n")
+            sys.stderr.write(
+                f"  [OpenAI] Status: {status} ({minutes}m {seconds}s, poll {poll_count})\n"
+            )
             sys.stderr.flush()
             interval = _get_poll_interval(elapsed)
             time.sleep(interval)
@@ -117,7 +129,9 @@ def _poll_response(api_key: str, response_id: str) -> Dict[str, Any]:
             # Unknown status, keep polling
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
-            sys.stderr.write(f"  [OpenAI] Unknown status: {status} ({minutes}m {seconds}s, poll {poll_count})\n")
+            sys.stderr.write(
+                f"  [OpenAI] Unknown status: {status} ({minutes}m {seconds}s, poll {poll_count})\n"
+            )
             sys.stderr.flush()
             interval = _get_poll_interval(elapsed)
             time.sleep(interval)
@@ -142,20 +156,26 @@ def _extract_report(response: Dict[str, Any]) -> Tuple[str, List[Any]]:
                     annotations = block.get("annotations", [])
                     for ann in annotations:
                         if ann.get("type") == "url_citation":
-                            citations.append({
-                                "url": ann.get("url", ""),
-                                "title": ann.get("title", ""),
-                            })
+                            citations.append(
+                                {
+                                    "url": ann.get("url", ""),
+                                    "title": ann.get("title", ""),
+                                }
+                            )
 
     return report, citations
 
 
-def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
+def research(
+    api_key: str, topic: str, timeout: int = MAX_POLL_SECONDS
+) -> Tuple[str, List[Any], str]:
     """Run OpenAI deep research on a topic.
 
     Args:
         api_key: OpenAI API key
         topic: Research topic/question
+        timeout: Per-call ceiling in seconds (default: MAX_POLL_SECONDS).
+            Pass args.timeout from the CLI so --timeout is respected.
 
     Returns:
         Tuple of (report_text, citations, model_used)
@@ -187,7 +207,7 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
         report, citations = _extract_report(resp)
         return report, citations, model
 
-    # Poll for completion
-    completed = _poll_response(api_key, response_id)
+    # Poll for completion — forward caller-supplied timeout, not hard-coded constant
+    completed = _poll_response(api_key, response_id, timeout=timeout)
     report, citations = _extract_report(completed)
     return report, citations, model

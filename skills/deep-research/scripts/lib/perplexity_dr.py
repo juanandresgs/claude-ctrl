@@ -11,7 +11,6 @@ Uses the standard Chat Completions API format.
 from typing import Any, Dict, List, Tuple
 
 from . import http
-from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError, ProviderAPIError
 
 BASE_URL = "https://api.perplexity.ai"
 MODEL = "sonar-deep-research"
@@ -25,12 +24,16 @@ def _headers(api_key: str) -> Dict[str, str]:
     }
 
 
-def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
+def research(
+    api_key: str, topic: str, timeout: int = REQUEST_TIMEOUT
+) -> Tuple[str, List[Any], str]:
     """Run Perplexity deep research on a topic.
 
     Args:
         api_key: Perplexity API key
         topic: Research topic/question
+        timeout: Per-call ceiling in seconds (default: REQUEST_TIMEOUT).
+            Pass args.timeout from the CLI so --timeout is respected.
 
     Returns:
         Tuple of (report_text, citations, model_used)
@@ -47,7 +50,7 @@ def research(api_key: str, topic: str) -> Tuple[str, List[Any], str]:
         f"{BASE_URL}/chat/completions",
         json_data=payload,
         headers=_headers(api_key),
-        timeout=REQUEST_TIMEOUT,
+        timeout=timeout,
     )
 
     report = ""
