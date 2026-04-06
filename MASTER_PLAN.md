@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-06 (W-CDX-3 revised per Codex review findings: connect-phase retry, clean-close detection, replay safety)
+Last updated: 2026-04-06 (INIT-GUARD-WT R2: HIGH-1 carrier fix, HIGH-2 fail-closed, race-safety TOCTOU fix)
 
 ## Identity
 
@@ -423,6 +423,37 @@ into the new mainline.
   accepted suggestions are measured against the metric they claimed to improve.
   If the metric did not improve within N sessions, the suggestion is flagged
   as ineffective.
+- `2026-04-06 — DEC-OBS-006` First-class `role` column in obs_metrics.
+  The most common query filter is by agent role. Storing role only in
+  labels_json forces a full JSON scan on every role-based query. Adding
+  `role TEXT` as an indexed column (nullable, populated at emission time)
+  gives O(log n) filtering. Role is extracted from labels if present, or
+  passed explicitly. labels_json no longer duplicates the role field.
+- `2026-04-06 — DEC-OBS-007` Batch emission pattern for hot-path hooks.
+  `|| true` and `>/dev/null 2>&1` suppress errors but do not make subprocess
+  calls non-blocking -- the hook still waits ~42ms per call. For hot-path
+  hooks (track.sh fires on every file write), this is designed from the start:
+  accumulate metrics in a shell array during hook execution, flush once at
+  hook exit via `rt_obs_metric_batch` -> `cc-policy obs emit-batch` (single
+  subprocess, single transaction). For single hot-path metrics, `& disown`
+  makes the call truly async.
+- `2026-04-06 — DEC-OBS-008` Suggestion lifecycle enrichment for professional
+  use. `signal_id` enables duplicate detection and suggestion chaining.
+  `reject_reason` preserves rationale for future pattern detection.
+  `defer_reassess_after` controls re-surfacing cadence (default 5 sessions).
+  `batch_accept(conn, category)` accepts all proposed suggestions in a
+  category at once.
+- `2026-04-06 — DEC-OBS-009` Analysis run history via `obs_runs` table.
+  Each `summary()` invocation records a run with metric snapshots and counts.
+  This enables convergence tracking to compare current metrics against
+  metrics-at-time-of-suggestion without re-querying historical data, and
+  supports incremental analysis (only process metrics since last run).
+- `2026-04-06 — DEC-OBS-010` Stop-gate review metrics emitted from first-
+  party hooks, not the plugin. `post-task.sh` reads `codex_stop_review`
+  events from the events table and emits `review_verdict`,
+  `review_duration_s`, and `review_infra_failure` metrics. This isolates
+  metric emission from plugin internals and keeps all emission in the
+  existing hook chain.
 
 ### Behavioral evaluation decisions
 
@@ -467,6 +498,69 @@ into the new mainline.
   is presented to the tester agent, and the tester's verdict is scored. This
   eliminates the combinatorial explosion of testing the full 4-agent chain and
   focuses on the judgment gap that actually exists (Layer 2).
+
+### Guardian worktree authority decisions
+
+- `2026-04-06 — DEC-GUARD-WT-001` Guardian mode signaling via completion
+  verdict, not routing table branching. Guardian determines its mode (provision
+  vs merge) from dispatch context, not from a separate routing key. Planner
+  routes to Guardian. Guardian emits `LANDING_RESULT: provisioned` for
+  worktree creation, which routes to implementer.
+- `2026-04-06 — DEC-GUARD-WT-002` Worktree provisioning is a runtime function,
+  not a dispatch_engine side effect. dispatch_engine remains pure (no git side
+  effects). `cc-policy worktree provision` wraps registration + lease issuance.
+  Guardian runs `git worktree add` directly via bash. Uses register()'s ON
+  CONFLICT as sole concurrency guard (no list_active pre-check). See
+  DEC-GUARD-WT-008 (revised).
+- `2026-04-06 — DEC-GUARD-WT-003` Worktree path injection via dispatch result
+  enrichment. Guardian's completion record includes WORKTREE_PATH in payload.
+  dispatch_engine reads it from completion record and includes it in result.
+  **REVISED 2026-04-06 R1**: cli.py must serialize `worktree_path` in output.
+  **REVISED 2026-04-06 R2**: The critical carrier to the orchestrator is the
+  suggestion text, not the cli.py JSON field. post-task.sh strips the result to
+  `hookSpecificOutput` only. The suggestion builder must encode worktree_path in
+  the AUTO_DISPATCH line: `AUTO_DISPATCH: implementer (worktree_path=<path>,
+  workflow_id=<W>)`. Full carrier chain:
+  completion_record.payload_json.WORKTREE_PATH -> dispatch_engine result ->
+  suggestion text -> hookSpecificOutput.additionalContext -> orchestrator.
+- `2026-04-06 — DEC-GUARD-WT-004` Worktree reuse on rework cycles.
+  `(tester, needs_changes) -> implementer` does not re-provision. dispatch_engine
+  reads existing worktree_path from workflow_bindings table via
+  workflows.get_binding(). **REVISED 2026-04-06**: Workflow binding creation
+  moves from subagent-start.sh to Guardian provisioning (W-GWT-2) so the
+  binding exists when dispatch_engine needs it for rework routing.
+- `2026-04-06 — DEC-GUARD-WT-005` `isolation: "worktree"` on Agent tool calls
+  is forbidden. No runtime enforcement possible (harness controls isolation
+  before hooks fire). CLAUDE.md prompt constraint is sufficient.
+- `2026-04-06 — DEC-GUARD-WT-006` **Guardian provisioning lease (REVISED:
+  fail-closed).** Guardian needs its own lease to anchor completion record
+  submission. dispatch_engine issues a Guardian lease at PROJECT_ROOT when
+  processing planner stop. This is mandatory, not best-effort: the planner
+  always holds a lease at PROJECT_ROOT (issued by orchestrator, claimed by
+  subagent-start.sh), so `_resolve_lease_context` always finds workflow_id.
+  If workflow_id is missing or lease issuance fails, dispatch_engine returns
+  PROCESS ERROR (same fail-closed pattern as tester/guardian with no lease).
+  check-guardian.sh reads this lease to submit the completion record. The
+  implementer lease (issued by `cc-policy worktree provision`) is a separate
+  lease at the worktree_path. Two leases coexist briefly:
+  guardian@PROJECT_ROOT and implementer@worktree_path. Guardian's lease is
+  released by dispatch_engine when processing guardian stop.
+- `2026-04-06 — DEC-GUARD-WT-007` **Structured guardian_mode dispatch field.**
+  dispatch_engine includes `guardian_mode` in the suggestion text as a
+  structured prefix: `AUTO_DISPATCH: guardian (mode=provision,
+  workflow_id=W, feature_name=X)`. This is parsed by the orchestrator and
+  included in Guardian's dispatch context. Eliminates implicit mode detection.
+- `2026-04-06 — DEC-GUARD-WT-008` **Provision-if-absent idempotency (REVISED:
+  no list_active pre-check, partial-failure cleanup).** The `cc-policy worktree
+  provision` CLI command calls `worktrees.register()` directly (no
+  `list_active()` pre-check -- that created a TOCTOU window). `register()`'s
+  `ON CONFLICT(path) DO UPDATE` is the sole concurrency guard. If the row
+  already existed, returns `already_exists=true` so Guardian skips `git
+  worktree add`. On fresh registration, issues the implementer lease and
+  workflow binding. If lease or binding issuance fails after successful
+  register, the provision CLI calls `worktrees.remove()` to roll back --
+  preventing orphaned worktree entries. The `git worktree add` itself is a
+  natural guard (fails if the path already exists on disk).
 
 ## Active Initiatives
 
@@ -2349,7 +2443,7 @@ Case F: Very short response (edge case)
 
 ### INIT-CONV: Identity Convergence
 
-- **Status:** in progress
+- **Status:** complete (all 6 waves landed, 2026-04-05/06)
 - **Blocked by:** none (independent of INIT-003/004/PE/REBASE/TESTGAP)
 - **Problem:** Storage authority is singular (SQLite), but identity authority
   is not. Three dimensions — path, agent, workflow — derive values through
@@ -2716,7 +2810,7 @@ signal.
 
 #### W-CONV-6: Dead Surface Deletion
 
-- **Status:** not started
+- **Status:** complete (merged 2026-04-06)
 - **Issue:** #7
 - **Depends on:** W-CONV-4 (readiness surface proven), W-CONV-5 (completion
   contracts proven)
@@ -4379,22 +4473,31 @@ SQL queries, not jq pipelines.
 
 ```
 Hooks (emission)          Runtime (storage)         Observatory (analysis)
-  subagent-start.sh  --+
   check-*.sh         --+                          +-- obs_analyze()
   test-runner.sh     --+-- rt_obs_metric() --> obs_metrics  --+
-  auto-review.sh     --+                          |   obs_suggest()
-  track.sh           --+                          |   obs_converge()
-  session-end.sh     --+                          +-- SKILL.md (LLM)
+  pre-write.sh       --+   (or batch flush)       |   obs_suggest()
+  pre-bash.sh        --+                          |   obs_converge()
+  track.sh           --+                          +-- SKILL.md (LLM)
+  session-end.sh     --+                               |
+  post-task.sh       --+                          obs_suggestions
+  log.sh             --+                          (lifecycle mgmt)
                                                        |
-                                                  obs_suggestions
-                                                  (lifecycle mgmt)
+                                                  obs_runs
+                                                  (analysis history)
 ```
+
+Note: `subagent-start.sh` is not an emission source (it produces context,
+not metrics). `auto-review.sh` is not an emission source (its classification
+data is consumed by `pre-bash.sh`). `post-task.sh` emits stop-gate review
+metrics (review_verdict, review_duration_s, review_infra_failure) by reading
+`codex_stop_review` events from the events table after the stop-review-gate
+plugin fires.
 
 **What hooks emit (additive, not new hooks):**
 
 | Metric Name | Source Hook | Data | Frequency |
 |---|---|---|---|
-| `agent_duration_s` | `check-*.sh` (via post-task.sh) | role, duration seconds, verdict | Every agent stop |
+| `agent_duration_s` | `check-*.sh` | role, duration seconds, verdict | Every agent stop |
 | `test_result` | `test-runner.sh` | pass/fail/skip counts, duration | Every test run |
 | `guard_denial` | `pre-write.sh`, `pre-bash.sh` | policy name, reason | Every denial |
 | `eval_verdict` | `check-tester.sh` | verdict, blockers/major/minor | Every evaluator run |
@@ -4402,6 +4505,9 @@ Hooks (emission)          Runtime (storage)         Observatory (analysis)
 | `files_changed` | `track.sh` | count | Every file write |
 | `hook_failure` | `log.sh` (error handler) | hook name, exit code | Every hook failure |
 | `session_summary` | `session-end.sh` | prompts, duration, agents spawned | Every session end |
+| `review_verdict` | `post-task.sh` | provider, agent_role, verdict (pass/continue/infra_failure) | Every SubagentStop with review |
+| `review_duration_s` | `post-task.sh` | provider, agent_role, duration seconds | Every SubagentStop with review |
+| `review_infra_failure` | `post-task.sh` | provider, error_type (timeout/parse/unavailable) | Every review infra failure |
 
 **Metric schema (obs_metrics):**
 
@@ -4410,18 +4516,26 @@ CREATE TABLE IF NOT EXISTS obs_metrics (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     metric_name TEXT    NOT NULL,
     value       REAL    NOT NULL,
+    role        TEXT,
     labels_json TEXT,
     session_id  TEXT,
     created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_obs_metrics_name_time
     ON obs_metrics (metric_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_obs_metrics_role
+    ON obs_metrics (role, metric_name, created_at);
 ```
 
 - `metric_name`: one of the defined metric names above
 - `value`: numeric value (duration in seconds, count, 0/1 for boolean)
-- `labels_json`: JSON object with dimension keys for filtering (e.g.,
-  `{"role": "implementer", "verdict": "complete"}`)
+- `role`: first-class dimension for the most common filter path (nullable;
+  e.g., `implementer`, `tester`, `guardian`, `planner`). Extracted from
+  labels at emission time to avoid full JSON scan on every role-based query.
+  (DEC-OBS-006)
+- `labels_json`: JSON object with additional dimension keys for filtering
+  (e.g., `{"verdict": "complete", "policy": "scope_check"}`). Role is NOT
+  duplicated here -- use the `role` column for role filtering.
 - `session_id`: links to the traces table for session context
 - `created_at`: epoch timestamp for time series queries
 
@@ -4429,29 +4543,43 @@ CREATE INDEX IF NOT EXISTS idx_obs_metrics_name_time
 
 ```sql
 CREATE TABLE IF NOT EXISTS obs_suggestions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    category        TEXT    NOT NULL,
-    title           TEXT    NOT NULL,
-    body            TEXT,
-    target_metric   TEXT,
-    baseline_value  REAL,
-    status          TEXT    NOT NULL DEFAULT 'proposed',
-    disposition_at  INTEGER,
-    measure_after   INTEGER,
-    measured_value  REAL,
-    effective       INTEGER,
-    source_session  TEXT,
-    created_at      INTEGER NOT NULL
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id            TEXT,
+    category             TEXT    NOT NULL,
+    title                TEXT    NOT NULL,
+    body                 TEXT,
+    target_metric        TEXT,
+    baseline_value       REAL,
+    status               TEXT    NOT NULL DEFAULT 'proposed',
+    disposition_at       INTEGER,
+    reject_reason        TEXT,
+    defer_reassess_after INTEGER,
+    measure_after        INTEGER,
+    measured_value       REAL,
+    effective            INTEGER,
+    source_session       TEXT,
+    created_at           INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_obs_suggestions_status
     ON obs_suggestions (status);
+CREATE INDEX IF NOT EXISTS idx_obs_suggestions_signal
+    ON obs_suggestions (signal_id);
 ```
 
+- `signal_id`: optional stable identifier for the underlying signal (e.g.,
+  `repeated_denial:scope_check`) so the system can detect re-proposals of
+  the same issue and link suggestion chains. (DEC-OBS-008)
 - `category`: pattern type (e.g., `repeated_denial`, `slow_agent`,
   `test_regression`, `stale_marker`, `evaluation_churn`)
 - `target_metric`: which metric this suggestion claims to improve
 - `baseline_value`: the metric's value at suggestion time (for convergence)
 - `status`: `proposed`, `accepted`, `rejected`, `deferred`, `measured`
+- `reject_reason`: free-text rationale when status is `rejected` (why it
+  was declined; aids future pattern detection to avoid re-proposing similar
+  suggestions)
+- `defer_reassess_after`: number of sessions before a deferred suggestion is
+  re-surfaced. Default: 5 sessions. When the defer count expires, status
+  reverts to `proposed`.
 - `measure_after`: epoch after which convergence should be checked
 - `measured_value`: the metric's value at convergence check time
 - `effective`: convergence result (1 = improved, 0 = no change, -1 = regressed)
@@ -4465,6 +4593,29 @@ proposed --> accepted --> measured (effective=1: fix worked)
     +--> rejected
     +--> deferred --> proposed (re-surface after N sessions)
 ```
+
+**Analysis run history (obs_runs):**
+
+```sql
+CREATE TABLE IF NOT EXISTS obs_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at           INTEGER NOT NULL,
+    metrics_snapshot TEXT,
+    trace_count      INTEGER,
+    suggestion_count INTEGER
+);
+```
+
+- `ran_at`: epoch timestamp of the analysis run
+- `metrics_snapshot`: JSON summary of key metrics at run time (enables
+  convergence comparison between runs without re-querying historical data)
+- `trace_count`: number of trace entries at analysis time
+- `suggestion_count`: number of active suggestions at analysis time
+
+Each `obs_analyze()` or `cc-policy obs summary` invocation records a run.
+`latest_run()` returns the most recent snapshot. Convergence tracking can
+compare current metrics to the metrics-at-time-of-suggestion by referencing
+the run that was active when the suggestion was created. (DEC-OBS-009)
 
 **Convergence tracking:**
 
@@ -4481,35 +4632,70 @@ N days). When the convergence check runs:
 
 The `runtime/core/observatory.py` domain module provides:
 
-- `emit_metric(conn, name, value, labels, session_id)` -- insert a metric row
-- `query_metrics(conn, name, since, until, labels_filter)` -- time series
+- `emit_metric(conn, name, value, labels, session_id, role=None)` -- insert
+  a metric row. If `role` is provided, it is stored in the first-class `role`
+  column (indexed). If `role` is None but labels contains a "role" key, the
+  value is extracted and stored in the `role` column automatically.
+- `emit_batch(conn, metrics_list)` -- insert multiple metric rows in a single
+  transaction. Each element is a dict with keys matching `emit_metric` args.
+  Used by the shell batch-flush pattern to avoid per-metric subprocess cost.
+  (DEC-OBS-007)
+- `query_metrics(conn, name, since, until, labels_filter, role=None)` -- time
+  series. When `role` is specified, uses the indexed `role` column instead of
+  JSON scan on labels_json.
 - `compute_trend(conn, name, window_hours)` -- moving average with slope
 - `detect_anomalies(conn, name, threshold_sigma)` -- values beyond N sigma
 - `agent_performance(conn, role, window_hours)` -- duration/verdict stats
+  (uses indexed `role` column)
 - `denial_hotspots(conn, window_hours)` -- most-denied policies
 - `test_health(conn, window_hours)` -- pass rate trend
-- `suggest(conn, category, title, body, target_metric, baseline)` -- create
+- `suggest(conn, category, title, body, target_metric, baseline,
+  signal_id=None)` -- create suggestion with optional stable signal_id
 - `accept_suggestion(conn, id, measure_after)` -- accept with measurement window
-- `reject_suggestion(conn, id)` -- reject
-- `defer_suggestion(conn, id)` -- defer
+- `reject_suggestion(conn, id, reason=None)` -- reject with optional reason
+- `defer_suggestion(conn, id, reassess_after=5)` -- defer with session count
+  before re-surfacing (default 5 sessions)
+- `batch_accept(conn, category)` -- accept all proposed suggestions in a
+  category at once, setting measure_after to default window. Returns count
+  of accepted suggestions. (DEC-OBS-008)
 - `check_convergence(conn)` -- measure all accepted suggestions past their window
-- `summary(conn, window_hours)` -- full observatory report dict
+- `record_run(conn, metrics_snapshot, trace_count, suggestion_count)` -- record
+  an analysis run in obs_runs. Called automatically by summary().
+- `latest_run(conn)` -- return the most recent obs_runs row
+- `obs_cleanup(conn, metric_ttl_days=30, suggestion_ttl_days=90)` -- delete
+  obs_metrics rows older than metric_ttl_days and obs_suggestions in terminal
+  states (measured, rejected) older than suggestion_ttl_days
+- `status(conn)` -- quick health check without LLM: pending suggestion count,
+  acceptance rate, last analysis timestamp, total metric count. Used by
+  `cc-policy obs status`.
+- `summary(conn, window_hours)` -- full observatory report dict. Records an
+  obs_runs entry on each invocation.
 
 #### Wave Plan
 
 ```
 W-OBS-1 (Schema + Domain + CLI)
-    +--> W-OBS-2 (Hook Emission)
+  [obs_metrics (with role column), obs_suggestions (with signal_id),
+   obs_runs, emit_batch, batch_accept, obs status, obs cleanup]
+    +--> W-OBS-2 (Hook Emission + Review Metrics)
+           [batch/async emission, post-task.sh review metrics]
               +--> W-OBS-3 (Analysis + SKILL.md)
+                     [LEFT JOIN cross-analysis, review gate health,
+                      pattern detection, SKILL.md with Review Gate Health]
                         +--> W-OBS-4 (Integration Tests + Sidecar Upgrade)
 ```
 
-W-OBS-1 must land first (tables and API exist). W-OBS-2 depends on W-OBS-1
-(emission needs the domain module). W-OBS-3 depends on W-OBS-2 (analysis
-needs data). W-OBS-4 depends on W-OBS-3 (integration tests exercise the full
-pipeline).
+W-OBS-1 must land first (tables, API, batch primitives exist). W-OBS-2
+depends on W-OBS-1 (emission needs the domain module and batch API). W-OBS-3
+depends on W-OBS-2 (analysis needs data). W-OBS-4 depends on W-OBS-3
+(integration tests exercise the full pipeline).
 
 Critical path: W-OBS-1 -> W-OBS-2 -> W-OBS-3 -> W-OBS-4. Max width: 1.
+
+Note: SKILL.md drafting can begin during W-OBS-2 (defining trigger, flow
+outline, presentation structure with placeholder analysis calls) and be
+finalized in W-OBS-3. This does not change the critical path but allows
+parallel work within the linear dependency chain.
 
 ##### W-OBS-1: Schema, Domain Module, and CLI
 
@@ -4520,53 +4706,97 @@ Critical path: W-OBS-1 -> W-OBS-2 -> W-OBS-3 -> W-OBS-4. Max width: 1.
 **Implementer scope:**
 
 - `runtime/schemas.py` -- add `OBS_METRICS_DDL`, `OBS_METRICS_INDEX_DDL`,
-  `OBS_SUGGESTIONS_DDL`, `OBS_SUGGESTIONS_INDEX_DDL` constants and add them
-  to `ALL_DDL`.
+  `OBS_METRICS_ROLE_INDEX_DDL`, `OBS_SUGGESTIONS_DDL`,
+  `OBS_SUGGESTIONS_INDEX_DDL`, `OBS_SUGGESTIONS_SIGNAL_INDEX_DDL`,
+  `OBS_RUNS_DDL` constants and add them to `ALL_DDL`.
 - `runtime/core/observatory.py` -- NEW: domain module with all functions
   listed in the "Analysis functions" section above. Each function takes a
   `sqlite3.Connection` as first argument (consistent with all other domain
-  modules). Pure SQL queries, no subprocess calls.
+  modules). Pure SQL queries, no subprocess calls. Includes `emit_batch()`
+  for bulk insertion (single transaction) and `status()` for quick health
+  check.
 - `runtime/cli.py` -- add `obs` domain with actions:
-  - `cc-policy obs emit <name> <value> [--labels '...'] [--session-id '...']`
-  - `cc-policy obs query <name> [--since N] [--until N] [--labels '...'] [--limit N]`
+  - `cc-policy obs emit <name> <value> [--labels '...'] [--session-id '...'] [--role '...']`
+  - `cc-policy obs emit-batch` (reads JSON array from stdin, each element has
+    name/value/labels/session_id/role keys; calls `emit_batch()` in one
+    transaction)
+  - `cc-policy obs query <name> [--since N] [--until N] [--labels '...'] [--role '...'] [--limit N]`
   - `cc-policy obs trend <name> [--window-hours N]`
   - `cc-policy obs anomalies <name> [--threshold N]`
   - `cc-policy obs agent-perf <role> [--window-hours N]`
   - `cc-policy obs denial-hotspots [--window-hours N]`
   - `cc-policy obs test-health [--window-hours N]`
-  - `cc-policy obs suggest <category> <title> [--body '...'] [--target-metric '...'] [--baseline N]`
+  - `cc-policy obs suggest <category> <title> [--body '...'] [--target-metric '...'] [--baseline N] [--signal-id '...']`
   - `cc-policy obs accept <id> [--measure-after N]`
-  - `cc-policy obs reject <id>`
-  - `cc-policy obs defer <id>`
+  - `cc-policy obs reject <id> [--reason '...']`
+  - `cc-policy obs defer <id> [--reassess-after N]`
+  - `cc-policy obs batch-accept <category>`
   - `cc-policy obs converge`
+  - `cc-policy obs status` (quick health: pending count, acceptance rate, last
+    analysis, total metrics -- no LLM needed)
   - `cc-policy obs summary [--window-hours N]`
-- `hooks/lib/runtime-bridge.sh` -- add `rt_obs_metric()` shell wrapper:
-  `rt_obs_metric <name> <value> [labels_json] [session_id]` calling
-  `cc_policy obs emit "$1" "$2" --labels "${3:-}" --session-id "${4:-}"`
-  with `>/dev/null 2>&1` for fire-and-forget semantics.
-  Export via the existing export block.
-- `hooks/context-lib.sh` -- add `rt_obs_metric` to the export list.
+- `hooks/lib/runtime-bridge.sh` -- add two shell wrappers:
+  - `rt_obs_metric <name> <value> [labels_json] [session_id] [role]` -- single
+    metric emission. For hot-path hooks (track.sh, pre-write.sh, pre-bash.sh),
+    use `& disown` pattern to make truly async. For non-hot-path hooks, use
+    synchronous call with `|| true`.
+  - `rt_obs_metric_batch` -- flush accumulated `_OBS_BATCH` array via a single
+    `cc-policy obs emit-batch` call. Hooks accumulate metrics in `_OBS_BATCH`
+    shell array during execution and call `rt_obs_metric_batch` once at hook
+    exit. Pattern:
+    ```
+    _OBS_BATCH=()
+    _obs_accum() { _OBS_BATCH+=("$(printf '{"name":"%s","value":%s,"labels":%s,"role":"%s"}' "$1" "$2" "${3:-null}" "${4:-}")"); }
+    rt_obs_metric_batch() {
+      [[ ${#_OBS_BATCH[@]} -eq 0 ]] && return 0
+      printf '[%s]' "$(IFS=,; echo "${_OBS_BATCH[*]}")" | cc_policy obs emit-batch >/dev/null 2>&1 || true
+      _OBS_BATCH=()
+    }
+    ```
+  Export both via the existing export block.
+  Note: the `rt_obs_metric` wrapper definition lives in `runtime-bridge.sh`;
+  the export statement is in `context-lib.sh` at the end-of-file export block.
+- `hooks/context-lib.sh` -- add `rt_obs_metric`, `rt_obs_metric_batch`,
+  `_obs_accum` to the export list.
+- `tests/runtime/test_cc_policy.sh` -- update the hard-coded table inventory
+  at the EXPECTED variable (currently line ~105) to include `obs_metrics`,
+  `obs_runs`, `obs_suggestions` in the sorted alphabetical list.
 - `tests/runtime/test_observatory.py` -- NEW: unit tests covering:
-  - emit_metric round-trip (emit, query, verify)
+  - emit_metric round-trip (emit, query, verify) including role column
+  - emit_batch with multiple metrics in one call
+  - query_metrics with role filter uses indexed column
   - compute_trend with synthetic data
   - detect_anomalies with synthetic outlier
-  - suggest/accept/reject/defer lifecycle
+  - suggest/accept/reject/defer lifecycle with signal_id, reject_reason,
+    defer_reassess_after
+  - batch_accept by category
   - check_convergence with improved/unchanged/regressed scenarios
-  - summary output structure
-  - agent_performance query
-  - denial_hotspots query
-  - test_health query
+  - record_run and latest_run round-trip
+  - obs_cleanup removes old metrics and terminal suggestions
+  - status returns expected keys
+  - summary output structure and obs_runs recording
 
 **Tester scope:**
 
-- `obs_metrics` and `obs_suggestions` tables exist after `ensure_schema()`
-- `emit_metric` writes a row; `query_metrics` reads it back with correct values
+- `obs_metrics`, `obs_suggestions`, and `obs_runs` tables exist after
+  `ensure_schema()`
+- `emit_metric` writes a row with `role` column populated; `query_metrics`
+  reads it back with correct values including role filter
+- `emit_batch` writes multiple rows in a single transaction
 - `compute_trend` returns slope and average
 - `detect_anomalies` returns outliers beyond threshold
-- `suggest` -> `accept` -> `check_convergence` lifecycle produces measured status
-- CLI `cc-policy obs emit/query/suggest/accept/reject/defer/converge/summary`
-  all produce valid JSON output
+- `suggest` -> `accept` -> `check_convergence` lifecycle produces measured
+  status; signal_id, reject_reason, defer_reassess_after columns populated
+- `batch_accept` accepts all proposed suggestions in a category
+- `record_run` and `latest_run` round-trip correctly
+- `obs_cleanup` removes old data from obs_metrics and terminal suggestions
+- `status` returns pending count, acceptance rate, last analysis, total metrics
+- CLI `cc-policy obs emit/emit-batch/query/suggest/accept/reject/defer/
+  batch-accept/converge/status/summary` all produce valid JSON output
 - `rt_obs_metric` shell wrapper calls `cc-policy obs emit` successfully
+- `rt_obs_metric_batch` flushes accumulated batch successfully
+- `tests/runtime/test_cc_policy.sh` table inventory check passes with new
+  obs tables included
 - No writes to any existing table (obs tables only)
 - All existing tests pass
 
@@ -4575,43 +4805,75 @@ Critical path: W-OBS-1 -> W-OBS-2 -> W-OBS-3 -> W-OBS-4. Max width: 1.
 **Required tests:**
 
 1. `tests/runtime/test_observatory.py` exists and passes with 0 failures
-2. `emit_metric` + `query_metrics` round-trip returns matching data
-3. `compute_trend` with 10+ data points returns dict with `slope` and `average`
-4. `detect_anomalies` with injected outlier returns the outlier
-5. Full suggestion lifecycle: propose -> accept -> measure -> converge
-6. `check_convergence` correctly classifies improved (effective=1),
+2. `emit_metric` + `query_metrics` round-trip: emitted row has correct
+   `metric_name`, `value`, `role`, `labels_json`, `session_id`, `created_at`.
+   Query by name returns the row. Query with `role` filter returns only
+   matching rows and uses the indexed `role` column (verify via EXPLAIN
+   QUERY PLAN or by asserting correct results with role filter).
+3. `emit_batch` with 5+ metrics: all rows persisted in a single transaction;
+   row count matches input list length; each row has correct values
+4. `compute_trend` with 10+ data points returns dict with `slope` and `average`
+5. `detect_anomalies` with injected outlier returns the outlier row (not just
+   a truthy value -- verify the returned row's value matches the injected
+   outlier)
+6. Full suggestion lifecycle: propose (with signal_id) -> accept
+   (with measure_after) -> measure -> converge. Verify each status transition
+   and that signal_id, reject_reason, defer_reassess_after columns are
+   correctly populated at each stage.
+7. `batch_accept` with 3+ proposed suggestions in a category: all transition
+   to `accepted`; suggestions in other categories remain `proposed`
+8. `check_convergence` correctly classifies improved (effective=1),
    unchanged (effective=0), and regressed (effective=-1) metrics
-7. `summary` returns dict with keys: `metrics_24h`, `active_suggestions`,
-   `recent_anomalies`, `convergence_results`, `agent_performance`,
-   `denial_hotspots`, `test_health`
+9. `record_run` inserts a row; `latest_run` returns it with correct
+   metrics_snapshot JSON and counts
+10. `obs_cleanup` deletes metrics older than TTL and suggestions in terminal
+    states older than TTL; preserves recent data
+11. `status` returns dict with keys: `pending_count`, `acceptance_rate`,
+    `last_analysis_at`, `total_metrics`
+12. `summary` returns dict with keys: `metrics_24h`, `active_suggestions`,
+    `recent_anomalies`, `convergence_results`, `agent_performance`,
+    `denial_hotspots`, `test_health`; also records an obs_runs entry
+    (verify obs_runs row count increments)
 
 **Required real-path checks:**
 
-8. `cc-policy obs emit test_metric 42.0 --labels '{"key":"val"}'` writes a row
-   to `obs_metrics`
-9. `cc-policy obs query test_metric` returns the row from check 8
-10. `cc-policy obs suggest test_cat "Test Title"` creates an obs_suggestions row
-11. `cc-policy obs summary` returns valid JSON without error
-12. `rt_obs_metric test_metric 42.0 '{"key":"val"}'` in a bash context
-    succeeds without error
+13. `cc-policy obs emit test_metric 42.0 --labels '{"key":"val"}' --role tester`
+    writes a row to `obs_metrics` with `role='tester'` in the role column
+14. `cc-policy obs query test_metric --role tester` returns the row from check 13
+15. `echo '[{"name":"m1","value":1.0},{"name":"m2","value":2.0}]' | cc-policy obs emit-batch`
+    writes 2 rows to `obs_metrics`
+16. `cc-policy obs suggest test_cat "Test Title" --signal-id "test:sig1"` creates
+    an obs_suggestions row with signal_id populated
+17. `cc-policy obs status` returns valid JSON with pending_count and total_metrics
+18. `cc-policy obs summary` returns valid JSON with the expected report structure
+    and creates an obs_runs row
+19. `rt_obs_metric test_metric 42.0 '{"key":"val"}' '' tester` in a bash context
+    persists a row with role=tester in obs_metrics (verify via SELECT, not just
+    exit code)
+20. `tests/runtime/test_cc_policy.sh` passes with the updated table inventory
+    including obs_metrics, obs_runs, obs_suggestions
 
 **Required authority invariants:**
 
 - `obs_metrics` is the sole store for observatory metrics (no JSONL, no flat
   files)
 - `obs_suggestions` is the sole store for suggestion lifecycle (no flat files)
+- `obs_runs` is the sole store for analysis run history
 - No reads or writes to any existing table (events, traces, completion_records,
   etc.) from the observatory domain module in this wave -- analysis queries
   that join across tables come in W-OBS-3
-- `ensure_schema()` creates both new tables idempotently
+- `ensure_schema()` creates all three new tables idempotently
 
 **Required integration points:**
 
 - `runtime/schemas.py` `ALL_DDL` list includes the new DDL constants
+  (metrics, metrics indexes, suggestions, suggestions indexes, runs)
 - `runtime/cli.py` obs domain registered alongside existing domains
-- `hooks/lib/runtime-bridge.sh` exports `rt_obs_metric` alongside existing
-  `rt_*` functions
-- `hooks/context-lib.sh` export list includes `rt_obs_metric`
+- `hooks/lib/runtime-bridge.sh` exports `rt_obs_metric` and
+  `rt_obs_metric_batch` alongside existing `rt_*` functions
+- `hooks/context-lib.sh` export list includes `rt_obs_metric`,
+  `rt_obs_metric_batch`, `_obs_accum`
+- `tests/runtime/test_cc_policy.sh` table inventory includes the 3 new tables
 
 **Forbidden shortcuts:**
 
@@ -4621,10 +4883,12 @@ Critical path: W-OBS-1 -> W-OBS-2 -> W-OBS-3 -> W-OBS-4. Max width: 1.
 - Do not modify `settings.json`
 - Do not modify any hook logic (emission is W-OBS-2)
 - Do not add JSONL or flat-file output
+- Do not omit the `role` column from obs_metrics (it is required for indexed
+  filtering -- DEC-OBS-006)
 
 **Ready-for-guardian definition:**
 
-All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+All 20 checks pass. Authority invariants hold. No forbidden shortcuts taken.
 `git diff --stat` shows only files in the Scope Manifest.
 
 ###### Scope Manifest for W-OBS-1
@@ -4634,11 +4898,15 @@ All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
 - `runtime/schemas.py` (modify: add DDL constants)
 - `runtime/core/observatory.py` (new: domain module)
 - `runtime/cli.py` (modify: add obs domain)
-- `hooks/lib/runtime-bridge.sh` (modify: add rt_obs_metric wrapper)
-- `hooks/context-lib.sh` (modify: add rt_obs_metric to export list)
+- `hooks/lib/runtime-bridge.sh` (modify: add rt_obs_metric and
+  rt_obs_metric_batch wrappers)
+- `hooks/context-lib.sh` (modify: add rt_obs_metric, rt_obs_metric_batch,
+  _obs_accum to export list)
 - `tests/runtime/test_observatory.py` (new: unit tests)
+- `tests/runtime/test_cc_policy.sh` (modify: update hard-coded table inventory
+  at EXPECTED variable to include obs_metrics, obs_runs, obs_suggestions)
 
-**Required files/directories:** All 6 of the above must be created or modified.
+**Required files/directories:** All 7 of the above must be created or modified.
 
 **Forbidden touch points:**
 
@@ -4654,11 +4922,16 @@ All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
 **Expected state authorities touched:**
 
 - NEW: `obs_metrics` table -- sole authority for observatory time series
+  (includes indexed `role` column)
 - NEW: `obs_suggestions` table -- sole authority for suggestion lifecycle
+  (includes signal_id, reject_reason, defer_reassess_after columns)
+- NEW: `obs_runs` table -- sole authority for analysis run history
 - MODIFIED: `runtime/schemas.py` ALL_DDL -- new entries appended
 - MODIFIED: `runtime/cli.py` -- new domain handler registered
-- MODIFIED: `hooks/lib/runtime-bridge.sh` -- new shell wrapper added
+- MODIFIED: `hooks/lib/runtime-bridge.sh` -- new shell wrappers added
+  (rt_obs_metric, rt_obs_metric_batch, _obs_accum)
 - MODIFIED: `hooks/context-lib.sh` -- export list extended
+- MODIFIED: `tests/runtime/test_cc_policy.sh` -- table inventory updated
 - UNCHANGED: all existing tables, hooks, policies, sidecars
 
 ##### W-OBS-2: Hook Emission
@@ -4669,35 +4942,65 @@ All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
 
 **Implementer scope:**
 
-Each hook below gains a small addition (1-3 lines) calling `rt_obs_metric`.
-No hook logic is changed; emission is appended after existing processing.
+Each hook below gains a small addition calling `rt_obs_metric` (individual
+emission) or `_obs_accum` + `rt_obs_metric_batch` (batch pattern). No hook
+logic is changed; emission is appended after existing processing.
+
+**Emission pattern selection:**
+- Hot-path hooks (track.sh, pre-write.sh, pre-bash.sh): use batch pattern
+  (`_obs_accum` during hook, `rt_obs_metric_batch` at hook exit trap) to
+  avoid per-metric subprocess cost. If only one metric is emitted, use
+  `rt_obs_metric ... & disown` for truly async fire-and-forget.
+- Non-hot-path hooks (check-*.sh, test-runner.sh, session-end.sh, log.sh,
+  post-task.sh): use `rt_obs_metric ... || true` (synchronous, error-
+  suppressed). These hooks are not latency-sensitive.
+
+**Per-hook changes:**
 
 - `hooks/check-implementer.sh` -- after completion record submission, emit
-  `agent_duration_s` metric with labels `{"role":"implementer","verdict":"..."}`.
-  Duration computed from marker `started_at` to current epoch.
+  `agent_duration_s` metric with role=`implementer` and labels
+  `{"verdict":"..."}`. Duration computed from marker `started_at` to current
+  epoch.
 - `hooks/check-tester.sh` -- after evaluation state write, emit
-  `agent_duration_s` with labels `{"role":"tester","verdict":"..."}` and
-  `eval_verdict` with labels `{"verdict":"...","blockers":N,"major":N,"minor":N}`.
+  `agent_duration_s` with role=`tester` and labels `{"verdict":"..."}`, and
+  `eval_verdict` with role=`tester` and labels
+  `{"verdict":"...","blockers":N,"major":N,"minor":N}`.
 - `hooks/check-guardian.sh` -- after landing result, emit `agent_duration_s`
-  with labels `{"role":"guardian","verdict":"..."}` and `commit_outcome` with
-  labels `{"result":"...","operation_class":"..."}`.
+  with role=`guardian` and labels `{"verdict":"..."}`, and `commit_outcome`
+  with role=`guardian` and labels `{"result":"...","operation_class":"..."}`.
 - `hooks/check-planner.sh` -- after planner checks, emit `agent_duration_s`
-  with labels `{"role":"planner"}`.
+  with role=`planner`.
 - `hooks/test-runner.sh` -- after test completion, emit `test_result` with
   labels `{"status":"...","pass":N,"fail":N,"skip":N}` and value = duration
   seconds.
-- `hooks/pre-write.sh` -- when policy denies (exit with deny JSON), emit
-  `guard_denial` with value 1 and labels `{"policy":"...","hook":"pre-write"}`.
-- `hooks/pre-bash.sh` -- when policy denies, emit `guard_denial` with value 1
-  and labels `{"policy":"...","hook":"pre-bash"}`.
-- `hooks/track.sh` -- after file tracking, emit `files_changed` with value =
-  count of files.
+- `hooks/pre-write.sh` -- when policy denies (exit with deny JSON), use
+  `_obs_accum guard_denial 1 '{"policy":"...","hook":"pre-write"}'` and flush
+  via `rt_obs_metric_batch` in the exit trap.
+- `hooks/pre-bash.sh` -- when policy denies, use `_obs_accum guard_denial 1
+  '{"policy":"...","hook":"pre-bash"}'` and flush via `rt_obs_metric_batch`
+  in the exit trap.
+- `hooks/track.sh` -- after file tracking, use `rt_obs_metric files_changed
+  $count '' '' '' & disown` for async emission (track.sh is the highest-
+  frequency hook; one metric per invocation does not justify batch overhead).
 - `hooks/session-end.sh` -- emit `session_summary` with value = session
   duration seconds and labels `{"prompt_count":N,"agents_spawned":N}`.
 - `hooks/log.sh` -- in the error handler (if one exists or add a minimal trap),
   emit `hook_failure` with value 1 and labels `{"hook":"...","exit_code":N}`.
   This is best-effort; if the runtime is unavailable, the failure itself should
   not cascade.
+- `hooks/post-task.sh` -- after the stop-review-gate plugin fires (detected
+  by checking for a `codex_stop_review` event in the events table for the
+  current session), emit:
+  - `review_verdict` with value 1 (pass) or 0 (continue), role = agent role
+    from event, labels `{"provider":"codex|gemini","verdict":"pass|continue|
+    infra_failure"}`
+  - `review_duration_s` with value = review duration seconds, role = agent
+    role, labels `{"provider":"..."}`
+  - `review_infra_failure` (only if infraFailure=true in event) with value 1,
+    labels `{"provider":"...","error_type":"timeout|parse|unavailable"}`
+  All three use `|| true` suppression. Event fields are read from the events
+  table, NOT from the plugin script directly -- this isolates emission from
+  plugin internals.
 
 **Tester scope:**
 
@@ -4705,40 +5008,58 @@ No hook logic is changed; emission is appended after existing processing.
 - Metric values are numerically correct (duration matches actual elapsed,
   counts match actual counts)
 - Labels JSON is valid and contains the expected keys
+- The `role` column is populated for role-bearing metrics (agent_duration_s,
+  eval_verdict, commit_outcome, review_verdict, review_duration_s)
+- Hot-path hooks (track.sh, pre-write.sh, pre-bash.sh) use batch pattern or
+  `& disown` -- no synchronous subprocess wait on the critical path
+- Non-hot-path hooks use `|| true` suppression
 - Emission failures do not prevent the hook from completing its primary function
-  (all rt_obs_metric calls have `|| true` or equivalent error suppression)
 - No hook behavior changes (deny/allow decisions unchanged; output unchanged)
 - All existing tests pass
 - At least one new metric row appears in `obs_metrics` for each emission point
   after a representative hook execution
+- After a SubagentStop with a `codex_stop_review` event, obs_metrics contains
+  `review_verdict` and `review_duration_s` rows with correct provider and
+  verdict labels
 
 ###### Evaluation Contract for W-OBS-2
 
 **Required tests:**
 
 1. After running check-implementer.sh with a mock agent stop, `obs_metrics`
-   contains an `agent_duration_s` row with `role=implementer`
+   contains an `agent_duration_s` row with `role='implementer'` in the role
+   column (SELECT where role='implementer', not JSON scan)
 2. After running check-tester.sh with a valid eval trailer, `obs_metrics`
-   contains `agent_duration_s` (role=tester) and `eval_verdict` rows
+   contains `agent_duration_s` (role='tester') and `eval_verdict` rows
 3. After running check-guardian.sh with a landing result, `obs_metrics`
-   contains `commit_outcome` row
+   contains `commit_outcome` row with role='guardian'
 4. After running test-runner.sh, `obs_metrics` contains `test_result` row
 5. After a pre-write.sh denial, `obs_metrics` contains `guard_denial` row
-   with `hook=pre-write`
+   with labels containing `hook=pre-write` (emitted via batch pattern or
+   `& disown`, not synchronous subprocess)
 6. After a pre-bash.sh denial, `obs_metrics` contains `guard_denial` row
-   with `hook=pre-bash`
+   with labels containing `hook=pre-bash` (emitted via batch pattern)
 7. After track.sh fires, `obs_metrics` contains `files_changed` row
+   (emitted via `& disown`, verified by waiting briefly then querying)
 8. After session-end.sh fires, `obs_metrics` contains `session_summary` row
-9. All emission calls include `|| true` or equivalent so hook primary
-   function is not impacted by emission failure
+9. Hot-path hooks (track.sh, pre-write.sh, pre-bash.sh) use `& disown` or
+   batch flush pattern -- verified by inspecting the hook source for the
+   pattern, NOT by `|| true` alone (which does not make calls async)
 10. No existing test regressions
+11. After a post-task.sh run following a SubagentStop with a
+    `codex_stop_review` event seeded in the events table, `obs_metrics`
+    contains `review_verdict` and `review_duration_s` rows with correct
+    provider and verdict in labels
+12. After a post-task.sh run with an infraFailure codex_stop_review event,
+    `obs_metrics` contains a `review_infra_failure` row
 
 **Required real-path checks:**
 
-11. Run a representative hook sequence (session-init -> subagent-start ->
+13. Run a representative hook sequence (session-init -> subagent-start ->
     check-implementer -> check-tester -> check-guardian -> session-end) and
     verify obs_metrics has rows for each expected metric
-12. `cc-policy obs query agent_duration_s` returns the rows from check 11
+14. `cc-policy obs query agent_duration_s --role implementer` returns the
+    implementer row from check 13
 
 **Required authority invariants:**
 
@@ -4746,14 +5067,20 @@ No hook logic is changed; emission is appended after existing processing.
 - No hook output format is changed by emission
 - `obs_metrics` is the only table written by emission (no new event types
   in the events table for metrics)
-- rt_obs_metric calls are fire-and-forget (non-blocking on hook completion)
+- Hot-path emission is truly non-blocking (subprocess is backgrounded or
+  batched, not just error-suppressed)
+- Review metric emission reads from the events table, not from plugin scripts
+  directly
 
 **Required integration points:**
 
 - Each emission site is in the same function/block where the relevant data is
   computed (e.g., duration is computed where the marker is read, not
   re-computed elsewhere)
-- context-lib.sh sources and exports rt_obs_metric so all hooks have access
+- context-lib.sh sources and exports rt_obs_metric, rt_obs_metric_batch,
+  _obs_accum so all hooks have access
+- post-task.sh reads codex_stop_review events via rt_event_emit or direct
+  SQL query on the events table
 
 **Forbidden shortcuts:**
 
@@ -4761,13 +5088,17 @@ No hook logic is changed; emission is appended after existing processing.
 - Do not change hook deny/allow logic
 - Do not change hook output JSON structure
 - Do not emit metrics to the events table (use obs_metrics)
-- Do not add synchronous waits for metric emission
+- Do not use `|| true` alone as the non-blocking mechanism for hot-path hooks
+  (it suppresses errors but does not prevent subprocess wait -- use `& disown`
+  or batch pattern)
+- Do not read review data from the plugin script file or its state.json --
+  read from the events table only
 
 **Ready-for-guardian definition:**
 
-All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
-Emission is non-blocking. `git diff --stat` shows only files in the Scope
-Manifest.
+All 14 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+Hot-path emission is non-blocking. `git diff --stat` shows only files in the
+Scope Manifest.
 
 ###### Scope Manifest for W-OBS-2
 
@@ -4778,15 +5109,23 @@ Manifest.
 - `hooks/check-guardian.sh` (modify: add agent_duration_s + commit_outcome)
 - `hooks/check-planner.sh` (modify: add agent_duration_s emission)
 - `hooks/test-runner.sh` (modify: add test_result emission)
-- `hooks/pre-write.sh` (modify: add guard_denial emission on deny path)
-- `hooks/pre-bash.sh` (modify: add guard_denial emission on deny path)
-- `hooks/track.sh` (modify: add files_changed emission)
+- `hooks/pre-write.sh` (modify: add guard_denial batch emission on deny path)
+- `hooks/pre-bash.sh` (modify: add guard_denial batch emission on deny path)
+- `hooks/track.sh` (modify: add files_changed async emission via `& disown`)
 - `hooks/session-end.sh` (modify: add session_summary emission)
 - `hooks/log.sh` (modify: add hook_failure emission in error handler)
+- `hooks/post-task.sh` (modify: add review_verdict, review_duration_s,
+  review_infra_failure emission after stop-review-gate events)
 - `tests/scenarios/test-obs-emission.sh` (new: verify metrics appear after
-  representative hook sequence)
+  representative hook sequence, including review metrics)
 
-**Required files/directories:** All 11 of the above.
+**Required files/directories:** All 12 of the above.
+
+Note: `hooks/subagent-start.sh` is NOT modified in this wave. It produces
+context (additionalContext JSON), not metrics. It appears in the system's
+data flow but is not an emission source. Similarly, `hooks/auto-review.sh`
+is not an emission source -- its classification data flows through
+`pre-bash.sh`.
 
 **Forbidden touch points:**
 
@@ -4799,13 +5138,20 @@ Manifest.
 - `MASTER_PLAN.md` (except for this planning amendment)
 - `hooks/lib/runtime-bridge.sh` (rt_obs_metric already added in W-OBS-1)
 - `hooks/context-lib.sh` (export already added in W-OBS-1)
+- `hooks/subagent-start.sh` (not an emission source)
+- `hooks/auto-review.sh` (not an emission source)
+- `plugins/` (review metrics are emitted from post-task.sh, not from the
+  stop-review-gate plugin)
 
 **Expected state authorities touched:**
 
-- MODIFIED: `obs_metrics` table (new rows written by hooks)
-- MODIFIED: 10 hook files (small emission additions)
-- UNCHANGED: all existing tables, all hook deny/allow decisions, all hook
-  output formats, settings.json
+- MODIFIED: `obs_metrics` table (new rows written by hooks, including review
+  metrics from post-task.sh)
+- MODIFIED: 11 hook files (small emission additions)
+- READ-ONLY: `events` table (post-task.sh reads codex_stop_review events to
+  emit review metrics -- does not write new event types)
+- UNCHANGED: all existing tables (except obs_metrics writes), all hook
+  deny/allow decisions, all hook output formats, settings.json
 
 ##### W-OBS-3: Analysis Queries, Convergence Tracking, and SKILL.md
 
@@ -4820,16 +5166,31 @@ Manifest.
   - `cross_analysis(conn, window_hours)` -- joins obs_metrics with traces,
     completion_records, evaluation_state, and agent_markers to produce a
     comprehensive operational picture. This is the SQL equivalent of the pro
-    fork's 540-line analyze.sh.
+    fork's 540-line analyze.sh. **CRITICAL: all joins to non-obs tables MUST
+    use LEFT JOIN.** obs_metrics is the primary data source; other tables
+    (traces, completion_records, evaluation_state, agent_markers) are
+    enrichment sources that may have zero rows. The analysis MUST be
+    null-tolerant: when enrichment tables are empty, cross_analysis returns
+    the obs_metrics-only view with NULL enrichment fields, not an empty
+    result. This is the ground truth: obs_metrics is populated by W-OBS-2
+    hooks; other tables populate naturally as the system runs and must not
+    be required for a useful analysis.
+  - `cross_analysis` also correlates `review_verdict` metrics with
+    `eval_verdict` metrics to measure stop-gate predictive accuracy: when
+    the review gate says CONTINUE but the evaluator says `ready_for_guardian`,
+    the review gate was wrong (false negative). When the review gate says
+    PASS but the evaluator finds blockers, the review gate was too lenient.
   - `pattern_detection(conn, window_hours)` -- identifies recurring patterns:
     - Same policy denied 3+ times in a window (repeated denial)
     - Agent duration trending upward (slow agent)
     - Test pass rate declining (test regression)
     - Multiple needs_changes verdicts for the same workflow (evaluation churn)
     - Stale markers persisting across sessions (stale marker)
+    - Review infra failure rate >20% in window (review quality) -- triggers
+      suggestion about provider availability or prompt template
   - `generate_report(conn, window_hours)` -- produces a structured dict that
     the SKILL.md can present: metrics summary, trend analysis, detected
-    patterns, active suggestions, convergence results.
+    patterns, active suggestions, convergence results, review gate health.
 - `skills/observatory/SKILL.md` -- NEW: the LLM synthesis skill. Defines:
   - **Trigger:** User invokes `/observatory` or asks about system health,
     patterns, improvement opportunities.
@@ -4844,7 +5205,13 @@ Manifest.
        changed/regressed]."
   - **Presentation:** Structured sections: Health Summary, Active Patterns,
     Trend Analysis, Suggestions (proposed/accepted/measured), Convergence
-    Results.
+    Results, Review Gate Health (infra failure rate, predictive accuracy vs
+    evaluator verdicts, provider breakdown).
+
+Note: The SKILL.md can be drafted during W-OBS-2 and finalized in W-OBS-3
+once analysis functions are available. The draft should define the skill
+trigger, flow outline, and presentation structure using placeholder analysis
+calls. Finalization adds the actual `cc-policy obs summary` integration.
 - `skills/observatory/instructions.md` -- NEW: supporting instructions for the
   skill, including example outputs and convergence interpretation guidance.
 - `tests/runtime/test_observatory_analysis.py` -- NEW: unit tests for
@@ -4867,39 +5234,51 @@ Manifest.
 1. `tests/runtime/test_observatory_analysis.py` exists and passes
 2. `cross_analysis` with populated traces + completion_records + obs_metrics
    returns a dict with keys: `agent_stats`, `test_health`, `denial_patterns`,
-   `evaluation_trends`, `convergence_status`
-3. `pattern_detection` identifies injected repeated_denial pattern
+   `evaluation_trends`, `convergence_status`, `review_gate_health`
+3. `cross_analysis` with obs_metrics populated but traces, completion_records,
+   evaluation_state, and agent_markers ALL EMPTY (0 rows) returns a valid
+   dict with obs_metrics-only data and NULL/empty enrichment fields -- NOT
+   an empty result. This is the null-tolerance test: the system must produce
+   useful output from obs_metrics alone.
+4. `pattern_detection` identifies injected repeated_denial pattern
    (same policy denied 3+ times)
-4. `pattern_detection` identifies injected slow_agent pattern
+5. `pattern_detection` identifies injected slow_agent pattern
    (duration trend increasing)
-5. `generate_report` includes `metrics_summary`, `trends`, `patterns`,
-   `suggestions`, `convergence`
-6. `cc-policy obs summary --window-hours 24` returns valid JSON with report
+6. `pattern_detection` identifies injected review_quality pattern
+   (review_infra_failure rate >20% in window)
+7. `generate_report` includes `metrics_summary`, `trends`, `patterns`,
+   `suggestions`, `convergence`, `review_gate_health`
+8. `cc-policy obs summary --window-hours 24` returns valid JSON with report
    structure
-7. SKILL.md exists at `skills/observatory/SKILL.md` with valid trigger and
-   flow sections
+9. SKILL.md exists at `skills/observatory/SKILL.md` with valid trigger and
+   flow sections, including a "Review Gate Health" section
 
 **Required real-path checks:**
 
-8. With real data from W-OBS-2 hooks, `cc-policy obs summary` returns a
-   non-empty report
-9. `cc-policy obs suggest repeated_denial "Policy X denied too often"
-   --target-metric guard_denial` creates a suggestion; `cc-policy obs accept 1
-   --measure-after 86400` accepts it; `cc-policy obs converge` checks it
+10. With real data from W-OBS-2 hooks, `cc-policy obs summary` returns a
+    non-empty report
+11. With ONLY obs_metrics populated (no traces, no completion_records),
+    `cc-policy obs summary` still returns a valid report (not empty or error)
+12. `cc-policy obs suggest repeated_denial "Policy X denied too often"
+    --target-metric guard_denial` creates a suggestion; `cc-policy obs accept 1
+    --measure-after 86400` accepts it; `cc-policy obs converge` checks it
 
 **Required authority invariants:**
 
 - Analysis queries are read-only against existing tables (traces,
   completion_records, evaluation_state, agent_markers, events)
-- Only obs_suggestions is written by suggest/accept/reject/defer/converge
+- All joins to non-obs tables use LEFT JOIN (obs_metrics is primary; other
+  tables are enrichment)
+- Only obs_suggestions and obs_runs are written by analysis functions
 - No analysis function modifies obs_metrics (that is the hook emission domain)
 
 **Required integration points:**
 
 - `observatory.py` imports from `runtime.core.traces`, `runtime.core.events`,
   `runtime.core.completions`, `runtime.core.test_state` for query functions
-  only (read-only joins)
+  only (read-only LEFT JOINs)
 - SKILL.md references `cc-policy obs` CLI commands
+- Review gate health correlates review_verdict with eval_verdict metrics
 
 **Forbidden shortcuts:**
 
@@ -4909,11 +5288,20 @@ Manifest.
 - Do not write a bash pipeline. All analysis is Python/SQL.
 - Do not create a separate analysis database or JSONL output.
 - Do not modify hook files (emission was W-OBS-2).
+- Do not use INNER JOIN on non-obs tables. All cross-table joins MUST be
+  LEFT JOIN from obs_metrics. Empty prerequisite tables must not produce
+  empty analysis results.
+- Do not require non-empty prerequisite tables (traces, completion_records,
+  evaluation_state, agent_markers) for analysis to succeed. These tables
+  populate naturally as the system runs; analysis degrades gracefully when
+  they are empty.
+- Do not add a backfill step for prerequisite tables.
 
 **Ready-for-guardian definition:**
 
-All 9 checks pass. Authority invariants hold. No forbidden shortcuts taken.
-`git diff --stat` shows only files in the Scope Manifest.
+All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+Null-tolerance verified (check 3 and 11). `git diff --stat` shows only files
+in the Scope Manifest.
 
 ###### Scope Manifest for W-OBS-3
 
@@ -5041,18 +5429,24 @@ All 6 checks pass. Authority invariants hold. Sidecar is read-only. `git diff
 
 | State Domain | Current Authority | INIT-OBS Change | Work Item |
 |---|---|---|---|
-| Observatory time series | **NONE** | `obs_metrics` table (single authority) | W-OBS-1 |
-| Suggestion lifecycle | **NONE** | `obs_suggestions` table (single authority) | W-OBS-1 |
-| Observatory metric emission | **NONE** | Hooks emit via `rt_obs_metric()` | W-OBS-2 |
-| Cross-table analysis | **NONE** (basic sidecar health check only) | `observatory.py` SQL-based analysis | W-OBS-3 |
+| Observatory time series | **NONE** | `obs_metrics` table (single authority, indexed `role` column) | W-OBS-1 |
+| Suggestion lifecycle | **NONE** | `obs_suggestions` table (single authority, with signal_id) | W-OBS-1 |
+| Analysis run history | **NONE** | `obs_runs` table (single authority) | W-OBS-1 |
+| Observatory metric emission | **NONE** | Hooks emit via `rt_obs_metric()` / `rt_obs_metric_batch()` | W-OBS-2 |
+| Review gate metrics | **NONE** | `post-task.sh` emits review_verdict, review_duration_s, review_infra_failure | W-OBS-2 |
+| Cross-table analysis | **NONE** (basic sidecar health check only) | `observatory.py` SQL-based analysis (LEFT JOIN) | W-OBS-3 |
 | LLM synthesis | **NONE** | `skills/observatory/SKILL.md` skill | W-OBS-3 |
 | Observatory sidecar | Basic health counts (`observe.py`) | Full analysis report via domain module | W-OBS-4 |
-| Existing traces tables | `traces` + `trace_manifest` (DEC-TRACE-001) | READ-ONLY by analysis | W-OBS-3 |
-| Existing events table | `events` (DEC-RT-001) | READ-ONLY by analysis | W-OBS-3 |
-| Existing completion_records | `completion_records` | READ-ONLY by analysis | W-OBS-3 |
-| Existing evaluation_state | `evaluation_state` | READ-ONLY by analysis | W-OBS-3 |
-| Existing agent_markers | `agent_markers` | READ-ONLY by analysis | W-OBS-3 |
-| Existing test_state | `test_state` | READ-ONLY by analysis | W-OBS-3 |
+| Existing traces tables | `traces` + `trace_manifest` (DEC-TRACE-001) | READ-ONLY by analysis (LEFT JOIN) | W-OBS-3 |
+| Existing events table | `events` (DEC-RT-001) | READ-ONLY by W-OBS-2 (post-task.sh reads codex_stop_review) and W-OBS-3 analysis | W-OBS-2, W-OBS-3 |
+| Existing completion_records | `completion_records` | READ-ONLY by analysis (LEFT JOIN, may be empty) | W-OBS-3 |
+| Existing evaluation_state | `evaluation_state` | READ-ONLY by analysis (LEFT JOIN, may be empty) | W-OBS-3 |
+| Existing agent_markers | `agent_markers` | READ-ONLY by analysis (LEFT JOIN) | W-OBS-3 |
+| Existing test_state | `test_state` | READ-ONLY by analysis (LEFT JOIN) | W-OBS-3 |
+| Existing proof_state | `proof_state` | READ-ONLY by existing `observe.py` sidecar (legacy) | W-OBS-4 |
+| Existing worktrees | `worktrees` | READ-ONLY by existing `observe.py` sidecar | W-OBS-4 |
+| Existing dispatch_queue | `dispatch_queue` | READ-ONLY by existing `observe.py` sidecar | W-OBS-4 |
+| Session change tracking | `.session-changes-$SESSION_ID` flat file (written by track.sh) | READ-ONLY by W-OBS-2 `files_changed` metric emission (reads count from this file) | W-OBS-2 |
 
 #### Known Risks for INIT-OBS
 
@@ -5063,11 +5457,19 @@ All 6 checks pass. Authority invariants hold. Sidecar is read-only. `git diff
    calls. Index on `(metric_name, created_at)` keeps queries fast.
 
 2. **Emission latency impact on hooks.** Each `rt_obs_metric` call invokes
-   `cc-policy obs emit` as a subprocess. Mitigation: calls are
-   fire-and-forget with `|| true` and `>/dev/null 2>&1`. The cc-policy CLI
-   latency is ~42ms median (measured in INIT-002). If this proves too slow
-   for hot-path hooks, batch emission can be added later (emit to a shell
-   variable, flush at hook exit). This is an optimization, not a design change.
+   `cc-policy obs emit` as a subprocess (~42ms median, measured in INIT-002).
+   `|| true` and `>/dev/null 2>&1` suppress errors but do NOT make calls
+   non-blocking -- the hook still waits for the subprocess to complete.
+   For hot-path hooks (track.sh fires on every file write), this is
+   unacceptable. Mitigation (designed from the start, not deferred):
+   - Hot-path hooks use `& disown` for single-metric async emission, or the
+     batch pattern: accumulate metrics in `_OBS_BATCH` shell array during
+     hook execution, flush once at hook exit via `rt_obs_metric_batch`
+     (single `cc-policy obs emit-batch` subprocess). (DEC-OBS-007)
+   - Non-hot-path hooks (check-*.sh, session-end.sh) use synchronous
+     `rt_obs_metric ... || true` since they are not latency-sensitive.
+   - The `emit_batch()` Python function inserts all metrics in a single
+     transaction, amortizing both subprocess and SQLite overhead.
 
 3. **Cross-table analysis coupling.** W-OBS-3 analysis queries join across 6+
    tables. If any table schema changes in another initiative, analysis queries
@@ -5095,6 +5497,46 @@ All 6 checks pass. Authority invariants hold. Sidecar is read-only. `git diff
    `proof_count`, etc.) are preserved. New keys are added alongside, not
    replacing.
 
+7. **Schema evolution: no migration strategy for obs tables.** The obs tables
+   have no `user_version` or migration mechanism. If the schema needs to
+   change after initial deployment (e.g., adding a column), there is no
+   automated path. Mitigation: W-OBS-1 must set `PRAGMA user_version` for
+   the obs tables (or use a version row in a metadata table). Future schema
+   changes check the version and apply ALTER TABLE as needed. This is low
+   urgency for v1 (tables are new and can be rebuilt) but must be addressed
+   before v2 schema changes.
+
+8. **Concurrent write loss from missing busy_timeout.** WAL mode is enabled
+   on state.db, but if no `busy_timeout` is set, simultaneous hook emissions
+   (e.g., two hooks firing concurrently in different subagents) can fail with
+   SQLITE_BUSY. The `|| true` suppression would silently discard the metric.
+   Mitigation: `emit_metric()` and `emit_batch()` must set
+   `conn.execute("PRAGMA busy_timeout = 3000")` (3 seconds) before writing.
+   This is consistent with the existing runtime convention. W-OBS-1
+   implementer should verify that the connection passed to observatory
+   functions already has busy_timeout set (as it should via the standard
+   runtime connection setup), and add it explicitly if not.
+
+9. **Bootstrap skew: cc_policy() targets installed runtime, not repo runtime.**
+   The `cc_policy()` shell function targets `$HOME/.claude/runtime/cli.py`.
+   If the installed runtime is older than the repo runtime (e.g., after a
+   `git pull` but before re-installing), `cc-policy obs emit` calls will
+   fail silently because the older cli.py does not have the `obs` domain.
+   Mitigation: emission uses `|| true` / `& disown`, so failures are
+   non-fatal. The implementer should document that `cc-policy obs emit` is
+   only available after the W-OBS-1 code is installed (i.e., the runtime is
+   updated). This is the same bootstrap issue that affects all `cc-policy`
+   commands and is not unique to the observatory.
+
+10. **Stop-gate plugin dependency.** The stop-review-gate is a plugin
+    (openai-codex marketplace), not first-party code. Plugin updates could
+    change the event format (field names, JSON structure) of
+    `codex_stop_review` events. Mitigation: review metric emission in
+    `post-task.sh` reads from the `events` table, not from the plugin script
+    directly. Event schema changes are detectable by checking for expected
+    fields before emission (if `verdict` field is missing, skip emission with
+    a warning, do not crash). The plugin's event format is effectively a
+    contract; breaking changes should be caught in review.
 
 
 ### INIT-EVAL: Behavioral Evaluation Framework
@@ -6148,6 +6590,871 @@ and reviewed by the user (gate: approve).
 - NEW: 15 YAML scenario files (data, not code)
 - NEW: ~12 fixture directories (data, not code)
 - UNCHANGED: all state.db tables, all eval_results.db tables
+
+### INIT-GUARD-WT: Guardian as Sole Worktree Lifecycle Authority
+
+- **Status:** planned (revised 2026-04-06 R2: HIGH-1 suggestion-text carrier,
+  HIGH-2 fail-closed guardian lease, race-safety TOCTOU/partial-failure fix.
+  R1: HIGH-1 cli.py carrier, HIGH-2 guardian lease, MEDIUM-3 rework path,
+  MEDIUM-4 guardian_mode, race-safety idempotency)
+- **Goal:** Make Guardian the sole authority for worktree creation, assignment,
+  and cleanup. No other agent may create or remove worktrees. This eliminates
+  the current split authority where implementers self-provision worktrees
+  (agents/implementer.md line 43), subagent-start.sh contradicts with `../`
+  paths (line 118), and Guardian already handles merge and cleanup. Unifying
+  worktree lifecycle under Guardian makes provisioning auditable, ensures
+  consistent `.worktrees/` placement, and enables the lease system to bind
+  workflow identity to worktree path at creation time rather than after the
+  fact.
+- **Current truth:** Implementers create their own worktrees on first action.
+  subagent-start.sh line 117-118 injects a "CRITICAL FIRST ACTION" message
+  telling implementers to run `git worktree add ../...`, which contradicts the
+  `.worktrees/` convention in implementer.md line 43. Guardian already handles
+  merge and cleanup (guardian.md lines 53-54). The `worktrees.py` registry
+  module exists but registration is ad-hoc. The dispatch_engine routing table
+  maps `("planner", _) -> "implementer"` directly, bypassing Guardian for
+  worktree provisioning. The lease system (leases.py) already supports issuing
+  leases with worktree_path and workflow_id, but requires the path to exist
+  before issuance. `write_branch.py` line 113 already says "invoke the
+  Guardian agent to create an isolated worktree" in its denial message.
+- **Scope:** Routing table change, Guardian mode signaling, worktree
+  provisioning runtime function, WORKTREE_PATH end-to-end carrier through
+  cli.py, Guardian provisioning lease, rework-path worktree resolution,
+  structured guardian_mode dispatch field, provision-if-absent idempotency,
+  workflow binding creation at provision time, prompt updates (guardian.md,
+  implementer.md), subagent-start.sh cleanup, dispatch_engine planner routing,
+  CLAUDE.md dispatch documentation update.
+- **Exit:** Planner completion routes through Guardian for worktree
+  provisioning. Guardian receives a structured dispatch with `guardian_mode`,
+  `workflow_id`, and `feature_name`. Guardian creates `.worktrees/feature-<name>`,
+  registers it, issues an implementer lease, creates a workflow binding, and
+  emits `LANDING_RESULT: provisioned`. Its own completion record is anchored to
+  a Guardian lease at PROJECT_ROOT. The dispatch result propagates
+  `worktree_path` end-to-end through dispatch_engine -> cli.py ->
+  hookSpecificOutput -> orchestrator. Implementer receives the path in
+  dispatch context and never creates worktrees. On rework cycles
+  (tester -> needs_changes -> implementer), dispatch_engine reads
+  worktree_path from workflow_bindings. Tester and guardian reuse the same
+  worktree. No agent other than Guardian runs `git worktree add` or
+  `git worktree remove`. Concurrent provision attempts for the same workflow
+  are idempotent. All existing tests continue to pass.
+- **Dependencies:** INIT-PE (policy engine must be live), INIT-CONV (lease
+  identity must be converged)
+
+#### Design Decisions
+
+- `DEC-GUARD-WT-001` **Guardian mode signaling via completion verdict, not
+  routing table branching.** The routing table in completions.py maps
+  `(role, verdict) -> next_role`. Adding `planner -> guardian` would require
+  Guardian to know it is in "provision mode" vs "merge mode." Rather than
+  encoding mode into the routing table (which would require a new verdict
+  enum or a separate routing key), Guardian determines its mode from the
+  **structured dispatch field** `guardian_mode` (DEC-GUARD-WT-007). The
+  routing change is: `("planner", _) -> "guardian"` replaces the current
+  hard-coded `result["next_role"] = "implementer"` in dispatch_engine.py
+  line 151. Guardian's completion record uses `LANDING_RESULT: provisioned`
+  (new verdict) with `OPERATION_CLASS: routine_local`, and the routing
+  table maps `("guardian", "provisioned") -> "implementer"`.
+
+- `DEC-GUARD-WT-002` **Worktree provisioning is a runtime function, not a
+  dispatch_engine side effect.** dispatch_engine must remain a pure routing
+  decision engine (no git side effects). The actual `git worktree add` and
+  `worktrees.register()` + `leases.issue()` calls happen inside the Guardian
+  agent, which has bash access. A new `cc-policy worktree provision` CLI
+  subcommand wraps the reservation + registration + implementer lease
+  issuance + workflow binding atomically so the Guardian does not need to
+  call multiple CLI commands. The git worktree creation itself is a bash
+  command the Guardian executes between reservation and final registration.
+  See DEC-GUARD-WT-008 for the reserve-before-add pattern.
+
+- `DEC-GUARD-WT-003` **Worktree path injection via dispatch result
+  enrichment (REVISED).** When Guardian completes provisioning, its
+  completion record includes `WORKTREE_PATH` in the payload. The full
+  carrier chain is:
+  1. Guardian emits `WORKTREE_PATH: <path>` trailer in response text.
+  2. check-guardian.sh parses `WORKTREE_PATH` (new, alongside existing
+     `LANDING_RESULT` and `OPERATION_CLASS` parsing) and includes it in
+     the completion record payload.
+  3. dispatch_engine `_route_from_completion()` extracts `WORKTREE_PATH`
+     from `payload_json` when verdict is `provisioned` and sets
+     `result["worktree_path"]`.
+  4. cli.py `_handle_dispatch()` serializes `worktree_path` in the
+     result dict (same pattern as `auto_dispatch`).
+  5. hookSpecificOutput `additionalContext` includes the path in the
+     suggestion text for the orchestrator.
+
+  **Changes from original plan:** cli.py must add `worktree_path` to the
+  serialized output (was forbidden in original W-GWT-1 scope).
+  check-guardian.sh must parse `WORKTREE_PATH` (was not in any scope).
+
+- `DEC-GUARD-WT-004` **Worktree reuse on rework cycles (REVISED).** When
+  `("tester", "needs_changes") -> "implementer"`, the worktree already
+  exists. The routing does not go through Guardian again. dispatch_engine
+  reads the existing worktree_path from `workflow_bindings` table via
+  `workflows.get_binding(workflow_id)` and includes it in the result so
+  the orchestrator can pass it to the implementer's dispatch context.
+
+  **Changes from original plan:** Workflow binding creation moves from
+  subagent-start.sh (line 135) to Guardian provisioning (W-GWT-2) via the
+  `cc-policy worktree provision` CLI. This ensures the binding exists
+  before dispatch_engine needs it for rework routing. subagent-start.sh
+  retains its binding call as an idempotent update (safe to call twice, the
+  INSERT OR REPLACE handles it), but Guardian provisioning is the primary
+  writer.
+
+- `DEC-GUARD-WT-005` **`isolation: "worktree"` on Agent tool calls is
+  forbidden.** The Claude Code Agent tool parameter `isolation: "worktree"`
+  creates worktrees in /tmp, bypassing all hooks and registry. This must
+  never be used. No runtime enforcement is possible since the harness
+  controls isolation before hooks fire. CLAUDE.md prompt constraint is
+  sufficient.
+
+- `DEC-GUARD-WT-006` **Guardian provisioning lease (NEW, REVISED:
+  fail-closed).** Guardian needs its own lease to anchor its completion
+  record submission in check-guardian.sh. The problem: check-guardian.sh
+  (line 68-79) uses `lease_context(PROJECT_ROOT)` to find the active
+  lease for completion record submission. After provisioning, the only
+  lease Guardian issued is an implementer lease at the worktree_path, not
+  at PROJECT_ROOT. Guardian has no lease to submit its completion against.
+
+  **Solution:** The planner -> guardian routing path in dispatch_engine
+  must issue a Guardian lease at PROJECT_ROOT before the Guardian agent
+  starts. This is done in the dispatch_engine planner block: after setting
+  `next_role = "guardian"`, issue a lease with `role="guardian",
+  worktree_path=project_root, workflow_id=workflow_id`. This lease
+  coexists with the implementer lease (at a different worktree_path) that
+  Guardian creates during provisioning. check-guardian.sh finds Guardian's
+  lease via the existing `lease_context(PROJECT_ROOT)` path. After
+  Guardian stops, dispatch_engine releases the Guardian lease in
+  `_route_from_completion()` as it does for all roles.
+
+  **Fail-closed, not best-effort (HIGH-2 fix).** The planner always holds
+  a lease at PROJECT_ROOT (issued by the orchestrator before dispatch,
+  claimed by subagent-start.sh line 82). When dispatch_engine processes
+  the planner stop, `_resolve_lease_context` finds this lease and
+  extracts workflow_id. Therefore workflow_id is always available for
+  guardian lease issuance. If workflow_id is missing or lease issuance
+  throws, dispatch_engine returns PROCESS ERROR and sets next_role=None
+  (same fail-closed pattern as tester/guardian with no active lease in
+  `_route_from_completion`). A guardian without a lease cannot submit
+  its completion record, so proceeding would silently break the cycle.
+
+  **Exception to dispatch_engine purity:** This is a controlled exception.
+  Lease issuance is not a git side effect -- it is an internal state write.
+  dispatch_engine already reads leases; writing one for the purpose of
+  enabling the completion contract is analogous to writing events (which it
+  already does). The alternative (having the orchestrator issue the lease)
+  would require the orchestrator to call `cc-policy lease issue` before
+  dispatching Guardian, which adds fragile shell-level coordination and
+  breaks auto-dispatch.
+
+- `DEC-GUARD-WT-007` **Structured guardian_mode dispatch field (NEW).**
+  When dispatch_engine routes `planner -> guardian`, the suggestion text
+  includes a structured prefix:
+  `AUTO_DISPATCH: guardian (mode=provision, workflow_id=<W>,
+  feature_name=<F>)`
+  where `feature_name` is extracted from the workflow_id (which follows
+  the pattern `W-<INITIATIVE>-<N>` or from a planner completion record
+  field if available). This structured prefix is parseable by the
+  orchestrator and eliminates the need for Guardian to infer its mode
+  from ambient context.
+
+  The `guardian_mode` field is also added to the dispatch result dict
+  so cli.py can serialize it. Values: `"provision"` (after planner) or
+  `"merge"` (after tester ready_for_guardian). The merge path does not
+  need feature_name since the worktree already exists.
+
+  **Documentation update required:** CLAUDE.md dispatch rules and
+  agents/guardian.md must describe the
+  planner -> guardian -> implementer chain (not planner -> implementer
+  directly).
+
+- `DEC-GUARD-WT-008` **Provision-if-absent idempotency (NEW, REVISED:
+  no TOCTOU, partial-failure cleanup).** The `cc-policy worktree
+  provision` CLI command uses `worktrees.register()` directly as the
+  sole concurrency guard. No `list_active()` pre-check -- that would
+  create a TOCTOU window where two concurrent provisions both see "not
+  found" and race. `register()`'s `ON CONFLICT(path) DO UPDATE` makes
+  the insert idempotent at the SQLite write-lock level.
+
+  The provision sequence is:
+  1. `worktrees.register(conn, path, branch, ticket=workflow_id)` --
+     ON CONFLICT updates (idempotent). Detect already-existed via
+     `conn.total_changes` delta or post-INSERT SELECT.
+  2. If already_exists: return `{"already_exists": true}` so Guardian
+     skips `git worktree add`.
+  3. Guardian runs `git worktree add` (bash side) -- if path exists on
+     disk, git fails (natural filesystem guard).
+  4. `leases.issue(conn, ...)` -- implementer lease at worktree_path.
+  5. `workflows.bind_workflow(conn, ...)` -- workflow binding.
+
+  **Partial-failure cleanup:** If steps 4 or 5 fail after step 1
+  succeeded, the provision CLI calls `worktrees.remove(conn, path)` to
+  roll back the registration. This prevents orphaned worktree entries
+  that have no corresponding lease. The cleanup itself is wrapped in
+  try/except so a cleanup failure does not mask the original error.
+  The lease issuance uses the one-active-per-worktree invariant
+  (revokes any existing lease for the same path).
+
+#### Work Items
+
+##### W-GWT-1: Routing Table, Dispatch Engine, and WORKTREE_PATH Carrier
+
+- **Weight:** L (upgraded from M: now includes cli.py serialization,
+  guardian lease issuance, guardian_mode field, and rework-path enrichment)
+- **Gate:** review
+- **Deps:** none
+- **Integration:** `runtime/core/completions.py` (routing table),
+  `runtime/core/dispatch_engine.py` (planner routing block, guardian lease,
+  worktree_path enrichment, rework-path enrichment, guardian_mode field),
+  `runtime/cli.py` (worktree_path + guardian_mode serialization),
+  `tests/runtime/test_completions.py`, `tests/runtime/test_dispatch_engine.py`
+
+**Changes:**
+
+1. **completions.py** `determine_next_role()`: Add routing entries:
+   - `("guardian", "provisioned") -> "implementer"`
+   - Existing `("guardian", "committed") -> None` and
+     `("guardian", "merged") -> None` unchanged.
+   - `ROLE_SCHEMAS["guardian"]["valid_verdicts"]`: Add `"provisioned"` to
+     the frozenset.
+
+2. **dispatch_engine.py** `process_agent_stop()`: Change the planner
+   routing block (line 151) from:
+   ```python
+   if normalised == "planner":
+       result["next_role"] = "implementer"
+   ```
+   to:
+   ```python
+   if normalised == "planner":
+       result["next_role"] = "guardian"
+       result["guardian_mode"] = "provision"
+       # DEC-GUARD-WT-006: Issue guardian lease at project_root so
+       # check-guardian.sh can anchor the completion record.
+       # Fail-closed: planner always holds a lease at project_root
+       # (issued by orchestrator, claimed by subagent-start.sh).
+       # _resolve_lease_context finds it, so workflow_id is always
+       # available here. If it's missing, something is deeply wrong
+       # and we must not proceed with a guardian that can't submit
+       # its completion record.
+       if not project_root or not workflow_id:
+           result["next_role"] = None
+           result["error"] = (
+               "PROCESS ERROR: Planner completed but no workflow_id "
+               "could be resolved from active lease at project_root. "
+               "Cannot issue guardian lease for provisioning."
+           )
+       else:
+           try:
+               leases.issue(conn, role="guardian",
+                   worktree_path=project_root,
+                   workflow_id=workflow_id)
+           except Exception as exc:
+               result["next_role"] = None
+               result["guardian_mode"] = ""
+               result["error"] = (
+                   f"PROCESS ERROR: Failed to issue guardian lease "
+                   f"at {project_root}: {exc}. Cannot proceed with "
+                   f"provisioning."
+               )
+   ```
+
+3. **dispatch_engine.py** guardian routing block: After
+   `_route_from_completion()` returns for guardian, when verdict is
+   `provisioned` and `next_role == "implementer"`:
+   - Extract `WORKTREE_PATH` from the completion record's `payload_json`
+   - Set `result["worktree_path"] = extracted_path`
+   - Set `result["guardian_mode"] = "provision"` (for the suggestion)
+
+4. **dispatch_engine.py** tester routing block: After
+   `_route_from_completion()` returns for tester, when verdict is
+   `needs_changes` and `next_role == "implementer"`:
+   - Import `runtime.core.workflows` and call
+     `workflows.get_binding(conn, workflow_id)`
+   - If binding found, set `result["worktree_path"] =
+     binding["worktree_path"]`
+   - This is the rework-path worktree resolution (DEC-GUARD-WT-004)
+
+5. **dispatch_engine.py** suggestion builder: When
+   `result["guardian_mode"] == "provision"`, include structured prefix:
+   `AUTO_DISPATCH: guardian (mode=provision, workflow_id=<W>,
+   feature_name=<F>)`
+
+   **When the previous role was guardian with provisioned verdict** (i.e.,
+   `next_role == "implementer"` and `result.get("worktree_path")`), the
+   suggestion must encode `worktree_path` in the AUTO_DISPATCH line:
+   `AUTO_DISPATCH: implementer (worktree_path=<path>, workflow_id=<W>)`
+   This is how worktree_path reaches the orchestrator: the suggestion
+   becomes `additionalContext` in `hookSpecificOutput`, which is the ONLY
+   thing the orchestrator reads. post-task.sh strips the cli.py result to
+   `hookSpecificOutput` only — no other field propagates. The orchestrator
+   already parses `AUTO_DISPATCH:` directives, so encoding metadata as
+   parenthetical key=value pairs extends the existing pattern without
+   requiring post-task.sh changes.
+
+6. **cli.py** `_handle_dispatch()` process-stop output (line 312-331):
+   Add `worktree_path` and `guardian_mode` to the serialized result dict:
+   ```python
+   return _ok({
+       "next_role": result["next_role"],
+       "workflow_id": result["workflow_id"],
+       "auto_dispatch": result.get("auto_dispatch", False),
+       "worktree_path": result.get("worktree_path", ""),
+       "guardian_mode": result.get("guardian_mode", ""),
+       "codex_blocked": result.get("codex_blocked", False),
+       "codex_reason": result.get("codex_reason", ""),
+       "error": result["error"],
+       "hookSpecificOutput": hook_output,
+   })
+   ```
+
+7. **check-guardian.sh** (lines 55-66): Add `WORKTREE_PATH` parsing
+   alongside existing `LANDING_RESULT` and `OPERATION_CLASS`:
+   ```bash
+   _GD_WORKTREE_PATH=""
+   if [[ -n "$RESPONSE_TEXT" ]]; then
+       _GD_WORKTREE_PATH=$(printf '%s' "$RESPONSE_TEXT" \
+           | grep -oE '^WORKTREE_PATH:[[:space:]]*/[^ ]+' \
+           | head -1 \
+           | sed 's/WORKTREE_PATH:[[:space:]]*//' || true)
+   fi
+   ```
+   Include `WORKTREE_PATH` in the completion record payload:
+   ```bash
+   _GD_PAYLOAD=$(jq -n \
+       --arg lr "${_GD_LANDING_RESULT:-}" \
+       --arg oc "${_GD_OP_CLASS:-}" \
+       --arg wp "${_GD_WORKTREE_PATH:-}" \
+       '{LANDING_RESULT:$lr, OPERATION_CLASS:$oc, WORKTREE_PATH:$wp}')
+   ```
+
+8. **Tests:** Update existing tests that assert planner -> implementer
+   routing. Add tests for:
+   - Guardian provisioned -> implementer routing
+   - worktree_path enrichment in dispatch result (from completion record)
+   - worktree_path enrichment in rework path (from workflow_bindings)
+   - Guardian lease issuance on planner -> guardian transition
+   - guardian_mode field in dispatch result and suggestion text
+   - cli.py serializes worktree_path and guardian_mode
+   - check-guardian.sh parses WORKTREE_PATH and includes it in payload
+
+###### Evaluation Contract for W-GWT-1
+
+**Required tests:**
+- `test_planner_routes_to_guardian`: planner stop produces
+  `next_role="guardian"` (replaces existing planner->implementer test)
+- `test_planner_issues_guardian_lease`: planner stop issues a guardian
+  lease at project_root with matching workflow_id (DEC-GUARD-WT-006)
+- `test_planner_no_workflow_id_returns_process_error`: planner stop
+  with no resolvable workflow_id (no active lease) returns PROCESS ERROR
+  and next_role=None (fail-closed, DEC-GUARD-WT-006 revised)
+- `test_planner_lease_issue_failure_returns_process_error`: when
+  leases.issue() throws during planner stop, returns PROCESS ERROR and
+  next_role=None (fail-closed, not swallowed)
+- `test_planner_sets_guardian_mode_provision`: planner stop sets
+  `guardian_mode="provision"` in dispatch result
+- `test_guardian_provisioned_routes_to_implementer`: guardian with
+  `LANDING_RESULT=provisioned` routes to implementer
+- `test_guardian_provisioned_enriches_worktree_path`: dispatch result
+  includes `worktree_path` from completion record payload when verdict
+  is provisioned
+- `test_guardian_merge_routing_unchanged`: `committed` and `merged`
+  still route to None
+- `test_guardian_denied_routing_unchanged`: `denied` still routes to
+  implementer
+- `test_tester_needs_changes_enriches_worktree_path`: tester
+  needs_changes result includes worktree_path from workflow_bindings
+  when binding exists
+- `test_tester_needs_changes_no_binding_no_crash`: tester needs_changes
+  without a workflow_binding returns result without worktree_path (no
+  error)
+- `test_cli_serializes_worktree_path_and_guardian_mode`: cli.py
+  process-stop output includes worktree_path and guardian_mode keys
+- `test_check_guardian_parses_worktree_path`: check-guardian.sh
+  extracts WORKTREE_PATH from response text and includes it in
+  completion payload
+- `test_guardian_provisioned_suggestion_encodes_worktree_path`: when
+  guardian completes with provisioned verdict and worktree_path is set,
+  the suggestion text contains
+  `AUTO_DISPATCH: implementer (worktree_path=<path>, workflow_id=<W>)`
+  — this is the only mechanism by which worktree_path reaches the
+  orchestrator (HIGH-1 carrier fix)
+- All existing dispatch_engine and completions tests pass without
+  modification (except the planner->implementer assertion which must
+  change to planner->guardian)
+
+**Required real-path checks:**
+- `process_agent_stop(conn, "planner", project_root)` returns
+  `{"next_role": "guardian", "auto_dispatch": True,
+  "guardian_mode": "provision"}` and a guardian lease exists at
+  project_root
+- Round-trip: planner stop -> guardian provision completion (with
+  WORKTREE_PATH in payload) -> process_agent_stop(conn, "guardian", ...)
+  returns `{"next_role": "implementer", "worktree_path": "<path>"}` AND
+  the suggestion field contains
+  `AUTO_DISPATCH: implementer (worktree_path=<path>, workflow_id=<W>)`
+- Rework round-trip: create workflow_binding -> tester needs_changes
+  completion -> process_agent_stop(conn, "tester", ...) returns
+  `{"next_role": "implementer", "worktree_path": "<binding_path>"}`
+
+**Required authority invariants:**
+- completions.py `determine_next_role()` remains the sole routing table
+  authority (DEC-COMPLETION-001)
+- dispatch_engine remains pure with respect to git (no git side effects,
+  no worktree creation). Lease issuance is an internal state write, not a
+  git side effect (DEC-GUARD-WT-006).
+- Lease release timing unchanged (DEC-ROUTING-002)
+
+**Required integration points:**
+- post-task.sh thin adapter still works (dispatches to process-stop).
+  post-task.sh emits hookSpecificOutput which now may contain
+  worktree_path and guardian_mode in the additionalContext suggestion.
+  The suggestion text is the sole carrier of worktree_path to the
+  orchestrator — post-task.sh strips the cli.py result to
+  hookSpecificOutput only, so any field not encoded in the suggestion
+  is lost. The `AUTO_DISPATCH: <role> (key=value, ...)` format is
+  the established pattern.
+- Auto-dispatch flag is True for planner->guardian and
+  guardian(provisioned)->implementer transitions
+- check-guardian.sh WORKTREE_PATH parsing is compatible with existing
+  LANDING_RESULT and OPERATION_CLASS parsing (same grep pattern style)
+- Guardian lease at PROJECT_ROOT coexists with the planner's lease.
+  The planner's lease (issued by orchestrator, claimed by
+  subagent-start.sh) is still active when dispatch_engine processes
+  the planner stop. leases.issue() for guardian revokes any existing
+  lease at PROJECT_ROOT (one-active-per-worktree invariant), which
+  effectively releases the planner lease as a side effect. This is
+  correct: the planner is done, the guardian inherits PROJECT_ROOT.
+
+**Forbidden shortcuts:**
+- Do not split the routing table into multiple functions
+- Do not add git side effects to dispatch_engine
+- Do not hardcode worktree_path in dispatch_engine -- it must come from
+  completion records (for provisioning) or workflow_bindings (for rework)
+
+**Ready-for-guardian definition:**
+All new and existing routing tests pass. `process_agent_stop` produces
+correct next_role, auto_dispatch, worktree_path, and guardian_mode for
+all planner, guardian, and tester scenarios. Guardian lease issuance on
+planner stop is fail-closed (PROCESS ERROR if workflow_id missing or
+lease issue throws). Planner stop with no active lease returns PROCESS
+ERROR, not a silent fallback. Guardian provisioned suggestion text
+encodes worktree_path in AUTO_DISPATCH line (sole carrier to
+orchestrator). check-guardian.sh parses WORKTREE_PATH. cli.py serializes
+all new fields. No existing test regressions.
+
+###### Scope Manifest for W-GWT-1
+
+**Allowed files/directories:**
+- `runtime/core/completions.py` (modify routing table and valid_verdicts)
+- `runtime/core/dispatch_engine.py` (modify planner block, add guardian
+  lease issuance, add worktree_path enrichment for both provisioning and
+  rework paths, add guardian_mode field, update suggestion builder)
+- `runtime/cli.py` (add worktree_path and guardian_mode to process-stop
+  serialization in _handle_dispatch)
+- `hooks/check-guardian.sh` (add WORKTREE_PATH parsing and payload
+  inclusion)
+- `tests/runtime/test_completions.py` (update/add tests)
+- `tests/runtime/test_dispatch_engine.py` (update/add tests)
+- `tests/test_cli_dispatch.py` (new or extend existing: serialization
+  tests)
+- `tests/scenarios/test-check-guardian-worktree-path.sh` (new:
+  WORKTREE_PATH parsing test)
+
+**Required files/directories:**
+- `runtime/core/completions.py` (routing table must change)
+- `runtime/core/dispatch_engine.py` (planner block, guardian lease,
+  worktree_path enrichment, guardian_mode must change)
+- `runtime/cli.py` (serialization must add worktree_path and
+  guardian_mode)
+- `hooks/check-guardian.sh` (WORKTREE_PATH parsing must be added)
+- At least one test file must be modified to cover new routing
+
+**Forbidden touch points:**
+- `hooks/post-task.sh` (thin adapter, no changes needed -- it already
+  passes through hookSpecificOutput from cli.py)
+- `hooks/subagent-start.sh` (changed in W-GWT-3)
+- `agents/guardian.md` (changed in W-GWT-2)
+- `agents/implementer.md` (changed in W-GWT-3)
+- `runtime/core/worktrees.py` (changed in W-GWT-2)
+
+**Expected state authorities touched:**
+- MODIFIED: `completions.py` routing table (read authority for role
+  transitions)
+- MODIFIED: `dispatch_engine.py` planner routing block (write to dispatch
+  result dict, write guardian lease via leases.issue())
+- MODIFIED: `dispatch_engine.py` tester routing block (read from
+  workflow_bindings)
+- MODIFIED: `cli.py` dispatch serialization (adds worktree_path,
+  guardian_mode to output)
+- MODIFIED: `check-guardian.sh` payload construction (adds WORKTREE_PATH)
+- WRITE: `dispatch_leases` table (guardian lease issued on planner stop)
+- READ: `workflow_bindings` table (rework path enrichment)
+- READ: `completion_records` table (worktree_path extraction)
+- UNCHANGED: worktrees table, evaluation_state, workflow_scope
+
+##### W-GWT-2: Guardian Worktree Provisioning (CLI + Prompt + Workflow Binding)
+
+- **Weight:** L
+- **Gate:** approve (user must approve Guardian prompt changes)
+- **Deps:** W-GWT-1 (routing must send planner -> guardian first)
+- **Integration:** `runtime/cli.py` (new worktree provision subcommand),
+  `runtime/core/worktrees.py` (register), `runtime/core/leases.py` (issue),
+  `runtime/core/workflows.py` (bind_workflow -- binding at provision time),
+  `agents/guardian.md` (provision mode instructions)
+
+**Changes:**
+
+1. **runtime/cli.py** `_handle_worktree()`: Add `provision` action that:
+   - Takes `--workflow-id`, `--feature-name`, `--project-root`, `--branch`
+     (optional, defaults to `main`)
+   - Computes `worktree_path = <project_root>/.worktrees/feature-<name>`
+   - **No list_active() pre-check** (DEC-GUARD-WT-008 revised). The
+     previous design queried `worktrees.list_active(conn)` before
+     registering, creating a TOCTOU window where two concurrent
+     provisions could both see "not found" and race. Instead:
+   - Calls `worktrees.register(conn, path, branch_name,
+     ticket=workflow_id)` directly. The `ON CONFLICT(path) DO UPDATE`
+     in register() makes this idempotent -- if the path is already
+     registered, the row is updated rather than duplicated. If the
+     register call updated an existing row (detectable via
+     `conn.total_changes` delta or a SELECT after INSERT), return
+     `{"already_exists": true, "worktree_path": path, ...}` so
+     Guardian knows to skip `git worktree add`.
+   - On fresh registration (not already_exists):
+     - Calls `leases.issue(conn, role="implementer",
+       worktree_path=path, workflow_id=workflow_id, branch=branch_name)`
+     - Calls `workflows.bind_workflow(conn, workflow_id=workflow_id,
+       worktree_path=path, branch=branch_name)` to create the workflow
+       binding at provision time (DEC-GUARD-WT-004 revised: binding
+       creation moves here from subagent-start.sh)
+   - **Partial-failure cleanup (DEC-GUARD-WT-008 revised):** If
+     register() succeeds but leases.issue() or workflows.bind_workflow()
+     fails, call `worktrees.remove(conn, path)` to roll back the
+     registration. This prevents orphaned worktree entries without a
+     corresponding lease. The cleanup is wrapped in try/except so a
+     cleanup failure does not mask the original error.
+   - Returns `{"worktree_path": path, "branch": branch_name,
+     "lease_id": lease_id, "workflow_id": workflow_id,
+     "already_exists": false}`
+   - Does NOT run `git worktree add` (Guardian does that via bash)
+
+2. **agents/guardian.md**: Add a `## Worktree Provisioning` section
+   describing the provision mode:
+   - Guardian is dispatched after planner with `next_role=guardian` and
+     `guardian_mode=provision` in dispatch context
+   - The structured dispatch includes `workflow_id` and `feature_name`
+   - Run `cc-policy worktree provision --workflow-id <wf> --feature-name
+     <name> --project-root <root>` first to check for existing worktree
+   - If `already_exists=false`: run `git worktree add
+     .worktrees/feature-<name> -b feature/<name> main`
+   - If `already_exists=true`: skip `git worktree add` (idempotent)
+   - Emit `LANDING_RESULT: provisioned`, `OPERATION_CLASS: routine_local`,
+     and `WORKTREE_PATH: <path>` trailers
+   - Auto-land: provisioning is always auto (no user approval needed)
+
+3. **runtime/core/worktrees.py**: No schema change needed. The existing
+   `register()` function suffices. The `ticket` field stores workflow_id.
+
+**Tests:**
+- CLI integration test for `cc-policy worktree provision`
+- Test that provision returns correct worktree_path, lease_id, and
+  workflow binding
+- Test that provision is idempotent (second call returns already_exists)
+- Test that `provisioned` is accepted as a valid guardian verdict
+- Test that workflow_bindings has entry after provision
+
+###### Evaluation Contract for W-GWT-2
+
+**Required tests:**
+- `test_worktree_provision_cli`: `cc-policy worktree provision`
+  registers worktree, issues implementer lease, and creates workflow
+  binding atomically
+- `test_worktree_provision_returns_lease`: provision result includes
+  valid lease_id, worktree_path, workflow_id
+- `test_worktree_provision_creates_binding`: after provision,
+  `workflows.get_binding(conn, workflow_id)` returns a binding with the
+  correct worktree_path and branch
+- `test_worktree_provision_idempotent`: calling provision twice for the
+  same path returns `already_exists=true` on the second call without
+  creating a duplicate lease or binding (uses ON CONFLICT, not
+  list_active pre-check)
+- `test_worktree_provision_partial_failure_cleanup`: when register()
+  succeeds but leases.issue() raises, worktrees.remove() is called to
+  roll back the registration -- no orphaned worktree entry remains
+- `test_worktree_provision_no_toctou`: provision uses register()
+  directly without list_active() pre-check (verify by inspecting that
+  list_active is NOT called during provision)
+- `test_guardian_provisioned_verdict_valid`: completion record with
+  `LANDING_RESULT=provisioned` validates as valid=True
+- `test_provision_does_not_reset_eval`: check-guardian.sh with
+  `LANDING_RESULT=provisioned` does not call `rt_eval_set idle` (eval
+  reset gate at check-guardian.sh line 111 already excludes provisioned
+  since it only matches `committed|merged`)
+
+**Required real-path checks:**
+- Run `cc-policy worktree provision --workflow-id test-wf
+  --feature-name test-feat --project-root /tmp/test-proj` and verify:
+  - worktrees table has an entry at the computed path
+  - dispatch_leases table has an active implementer lease at the path
+  - workflow_bindings table has a binding for workflow_id=test-wf
+- Run provision again with same args, verify `already_exists=true` and
+  no duplicate rows in any table
+
+**Required authority invariants:**
+- worktrees.py `register()` remains the sole worktree registry writer
+- leases.py `issue()` remains the sole lease issuer
+- workflows.py `bind_workflow()` remains the sole workflow binding writer
+- check-guardian.sh eval reset is gated on `committed|merged` only
+
+**Required integration points:**
+- `cc-policy worktree provision` callable from Guardian bash commands
+- Lease issued by provision is claimable by subagent-start.sh
+- Workflow binding created by provision is readable by
+  dispatch_engine's rework-path enrichment (W-GWT-1 change 4)
+
+**Forbidden shortcuts:**
+- Do not put `git worktree add` in the CLI -- Guardian runs git commands
+  directly
+- Do not create a separate provisioning module -- use existing
+  worktrees.py + leases.py + workflows.py
+- Do not modify leases.py, worktrees.py, or workflows.py APIs (the
+  existing signatures are sufficient)
+- Do not use `worktrees.list_active()` as a pre-check before
+  `register()` -- this creates a TOCTOU race. Use `register()`'s
+  ON CONFLICT as the sole concurrency guard (DEC-GUARD-WT-008 revised)
+
+**Ready-for-guardian definition:**
+CLI provision subcommand works without list_active() pre-check (register
+ON CONFLICT as sole guard). Provision is idempotent. Partial failure
+(register succeeds, lease fails) triggers worktrees.remove() rollback --
+no orphaned entries. Guardian prompt includes provision mode instructions
+with structured field references. Workflow binding exists after
+provision. All existing tests pass.
+
+###### Scope Manifest for W-GWT-2
+
+**Allowed files/directories:**
+- `runtime/cli.py` (add provision action to _handle_worktree)
+- `agents/guardian.md` (add Worktree Provisioning section)
+- `tests/runtime/test_worktree_provision.py` (new)
+- `tests/scenarios/test-guardian-provision.sh` (new)
+
+**Required files/directories:**
+- `runtime/cli.py` (provision action must be added)
+- `agents/guardian.md` (provision instructions must be added)
+- At least one test file exercising the provision CLI
+
+**Forbidden touch points:**
+- `runtime/core/worktrees.py` (use existing API, do not modify)
+- `runtime/core/leases.py` (use existing API, do not modify)
+- `runtime/core/workflows.py` (use existing API, do not modify)
+- `runtime/core/dispatch_engine.py` (changed in W-GWT-1)
+- `runtime/core/completions.py` (changed in W-GWT-1)
+- `hooks/check-guardian.sh` (changed in W-GWT-1)
+- `hooks/subagent-start.sh` (changed in W-GWT-3)
+- `agents/implementer.md` (changed in W-GWT-3)
+
+**Expected state authorities touched:**
+- WRITE: `worktrees` table (via register)
+- WRITE: `dispatch_leases` table (via issue)
+- WRITE: `workflow_bindings` table (via bind_workflow)
+- UNCHANGED: `evaluation_state`, `workflow_scope`, `completion_records`
+
+##### W-GWT-3: Implementer/Hook Cleanup and Documentation
+
+- **Weight:** M
+- **Gate:** review
+- **Deps:** W-GWT-1, W-GWT-2 (routing and provision must work first)
+- **Integration:** `agents/implementer.md` (remove worktree creation
+  instructions), `hooks/subagent-start.sh` (remove worktree creation
+  prompt, update implementer context), CLAUDE.md (update dispatch rules)
+
+**Changes:**
+
+1. **agents/implementer.md**: Remove the `## Worktree Setup` section
+   (lines 42-44) that tells implementers to create worktrees. Replace
+   with:
+   ```
+   ## Worktree
+   
+   Your worktree has been provisioned by Guardian and is specified in
+   your dispatch context. Work exclusively in that worktree. Do NOT
+   create new worktrees or run `git worktree add`.
+   ```
+
+2. **hooks/subagent-start.sh**: Remove the implementer worktree
+   creation prompt (lines 117-119):
+   ```bash
+   if [[ "$GIT_WT_COUNT" -eq 0 ]]; then
+       CONTEXT_PARTS+=("CRITICAL FIRST ACTION: No worktree detected...")
+   fi
+   ```
+   Replace with worktree path injection from lease context:
+   ```bash
+   # Inject worktree path from lease context (DEC-GUARD-WT-003)
+   if [[ -n "$_LEASE_ID" ]]; then
+       _WT_PATH=$(printf '%s' "$_CLAIM" | jq -r '.lease.worktree_path // empty')
+       [[ -n "$_WT_PATH" ]] && CONTEXT_PARTS+=("Worktree: $_WT_PATH (provisioned by Guardian)")
+   fi
+   ```
+   **Note:** The workflow binding call at line 135 is retained as an
+   idempotent update. Guardian provisioning (W-GWT-2) is now the primary
+   binding writer, but subagent-start.sh's call is safe (INSERT OR
+   REPLACE) and acts as a fallback for edge cases where provisioning
+   did not create the binding.
+
+3. **agents/guardian.md**: Update `## Worktree Management` section
+   (lines 53-54) to clarify Guardian is the SOLE worktree lifecycle
+   authority. Remove ambiguity about who creates worktrees.
+
+4. **runtime/core/policies/bash_main_sacred.py**: Update denial message
+   (line 109) from `"Create a worktree first: git worktree add ..."` to
+   reference Guardian provisioning instead of self-provisioning.
+
+5. **CLAUDE.md dispatch rules**: Update the "Source Edit Routing"
+   section and dispatch chain documentation to describe:
+   - planner -> guardian (provision) -> implementer -> tester -> guardian
+     (merge) lifecycle
+   - Guardian as sole worktree lifecycle authority
+   - Structured `guardian_mode` field in dispatch context
+
+**Tests:**
+- Scenario test: subagent-start.sh for implementer with active lease
+  includes worktree path
+- Scenario test: subagent-start.sh for implementer without worktree
+  does NOT include "CRITICAL FIRST ACTION" (that prompt is removed)
+- Verify no agent prompt contains `git worktree add` instructions
+  (except guardian.md)
+
+###### Evaluation Contract for W-GWT-3
+
+**Required tests:**
+- `test_implementer_start_with_lease_shows_worktree`: subagent-start.sh
+  for implementer with active lease includes "Worktree: <path>"
+- `test_implementer_start_no_critical_first_action`: subagent-start.sh
+  for implementer does NOT contain "CRITICAL FIRST ACTION"
+- `test_no_worktree_add_in_implementer_prompt`: agents/implementer.md
+  does not contain `git worktree add`
+- `test_guardian_sole_worktree_authority`: agents/guardian.md contains
+  sole worktree authority language
+- `test_bash_main_sacred_message_updated`: bash_main_sacred.py denial
+  message references Guardian, not self-provisioning
+- `test_claude_md_dispatch_chain`: CLAUDE.md describes planner ->
+  guardian -> implementer chain, not planner -> implementer directly
+
+**Required real-path checks:**
+- Run subagent-start.sh with implementer agent_type and an active
+  lease that has worktree_path set. Verify hookSpecificOutput contains
+  the worktree path.
+- Grep all `.md` files in `agents/` for `git worktree add` -- only
+  guardian.md should contain it.
+
+**Required authority invariants:**
+- Only agents/guardian.md contains worktree creation instructions
+- subagent-start.sh lease context injection is the sole source of
+  worktree path for implementers
+- No flat-file worktree state is introduced
+
+**Required integration points:**
+- subagent-start.sh lease claim still works (lease issued by
+  W-GWT-2 provision is claimable)
+- Implementer workflow binding still works (retained as idempotent
+  update in subagent-start.sh line 135)
+- Branch guard policy still denies source writes on main
+
+**Forbidden shortcuts:**
+- Do not remove the lease claim logic from subagent-start.sh
+  (it is still needed for all roles)
+- Do not add worktree creation fallback to implementer ("if no
+  worktree, create one") -- the provisioning is Guardian's job
+- Do not modify the worktree registry or lease system
+- Do not remove the workflow binding call from subagent-start.sh
+  (it is retained as an idempotent fallback)
+
+**Ready-for-guardian definition:**
+Implementer prompt contains no worktree creation instructions.
+subagent-start.sh injects worktree path from lease context. No agent
+prompt except guardian.md references `git worktree add`. CLAUDE.md
+describes the updated dispatch chain. All existing subagent-start
+scenario tests pass.
+
+###### Scope Manifest for W-GWT-3
+
+**Allowed files/directories:**
+- `agents/implementer.md` (remove worktree creation, add worktree
+  received instructions)
+- `agents/guardian.md` (update Worktree Management for sole authority)
+- `hooks/subagent-start.sh` (remove worktree creation prompt, add
+  worktree path injection)
+- `runtime/core/policies/bash_main_sacred.py` (update denial message)
+- `CLAUDE.md` (update dispatch rules for guardian provisioning chain)
+- `tests/scenarios/test-implementer-worktree-context.sh` (new)
+
+**Required files/directories:**
+- `agents/implementer.md` (worktree creation instructions must be
+  removed)
+- `hooks/subagent-start.sh` (CRITICAL FIRST ACTION must be removed,
+  worktree path injection added)
+- `CLAUDE.md` (dispatch chain documentation must be updated)
+
+**Forbidden touch points:**
+- `runtime/core/dispatch_engine.py` (changed in W-GWT-1)
+- `runtime/core/completions.py` (changed in W-GWT-1)
+- `runtime/cli.py` (changed in W-GWT-1 and W-GWT-2)
+- `runtime/core/worktrees.py` (no changes needed)
+- `runtime/core/leases.py` (no changes needed)
+- `runtime/core/workflows.py` (no changes needed)
+- `hooks/check-guardian.sh` (changed in W-GWT-1)
+- `hooks/post-task.sh` (no changes needed)
+
+**Expected state authorities touched:**
+- UNCHANGED: all SQLite tables (this wave is prompt/hook context only)
+- READ: `dispatch_leases` table (subagent-start.sh reads lease for
+  worktree_path)
+
+#### Wave Decomposition
+
+```
+Wave 1: W-GWT-1  (routing table + dispatch engine + carrier chain + guardian lease -- foundation)
+Wave 2: W-GWT-2  (Guardian provision CLI + prompt + workflow binding -- requires routing)
+Wave 3: W-GWT-3  (implementer cleanup + hook update + docs -- requires provision working)
+```
+
+**Critical path:** W-GWT-1 -> W-GWT-2 -> W-GWT-3
+**Max width:** 1 (strictly sequential -- each wave depends on the prior)
+
+**Codex review findings addressed:**
+
+| Finding | Severity | Resolution | Work Item |
+|---------|----------|------------|-----------|
+| HIGH-1: WORKTREE_PATH has no end-to-end carrier | HIGH | cli.py serialization + check-guardian.sh parsing + suggestion-text encoding of worktree_path in AUTO_DISPATCH line (sole carrier to orchestrator) | W-GWT-1 |
+| HIGH-2: No valid Guardian completion anchor | HIGH | DEC-GUARD-WT-006 revised: Guardian lease issued at PROJECT_ROOT on planner stop, fail-closed (PROCESS ERROR if workflow_id missing or lease issue fails). Planner lease at PROJECT_ROOT guarantees workflow_id availability. | W-GWT-1 |
+| MEDIUM-3: Rework path not in work items | MEDIUM | DEC-GUARD-WT-004 revised: rework enrichment + binding at provision time | W-GWT-1, W-GWT-2 |
+| MEDIUM-4: Mode-from-context too implicit | MEDIUM | DEC-GUARD-WT-007: structured guardian_mode field + docs update | W-GWT-1, W-GWT-3 |
+| Race safety | ADDITIONAL | DEC-GUARD-WT-008 revised: no list_active() pre-check (TOCTOU), register() ON CONFLICT as sole guard, partial-failure cleanup via worktrees.remove() | W-GWT-2 |
+
+**File-level change summary:**
+
+| File | Wave | Change Type |
+|------|------|-------------|
+| `runtime/core/completions.py` | W-GWT-1 | Modify routing table, add `provisioned` verdict |
+| `runtime/core/dispatch_engine.py` | W-GWT-1 | Change planner block routing, add guardian lease, add worktree_path enrichment (provision + rework), add guardian_mode, update suggestion |
+| `runtime/cli.py` | W-GWT-1, W-GWT-2 | Add worktree_path + guardian_mode to dispatch serialization (W-GWT-1); add provision action (W-GWT-2) |
+| `hooks/check-guardian.sh` | W-GWT-1 | Add WORKTREE_PATH parsing and payload inclusion |
+| `agents/guardian.md` | W-GWT-2, W-GWT-3 | Add provision mode section with structured fields, update Worktree Management |
+| `agents/implementer.md` | W-GWT-3 | Remove worktree creation, add received-worktree instructions |
+| `hooks/subagent-start.sh` | W-GWT-3 | Remove CRITICAL FIRST ACTION, add worktree path injection |
+| `runtime/core/policies/bash_main_sacred.py` | W-GWT-3 | Update denial message |
+| `CLAUDE.md` | W-GWT-3 | Update dispatch chain documentation |
+| `tests/runtime/test_completions.py` | W-GWT-1 | Update/add routing tests |
+| `tests/runtime/test_dispatch_engine.py` | W-GWT-1 | Update/add dispatch tests (guardian lease, worktree_path, guardian_mode, rework path) |
+| `tests/test_cli_dispatch.py` | W-GWT-1 | New/extend: serialization tests |
+| `tests/scenarios/test-check-guardian-worktree-path.sh` | W-GWT-1 | New: WORKTREE_PATH parsing test |
+| `tests/runtime/test_worktree_provision.py` | W-GWT-2 | New: provision CLI tests (incl. idempotency, binding) |
+| `tests/scenarios/test-guardian-provision.sh` | W-GWT-2 | New: guardian provision scenario |
+| `tests/scenarios/test-implementer-worktree-context.sh` | W-GWT-3 | New: implementer context scenario |
 
 ## Completed Initiatives
 
