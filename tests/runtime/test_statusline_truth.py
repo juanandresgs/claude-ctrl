@@ -1,4 +1,5 @@
-"""Unit tests for statusline actor-truth hardening (TKT-023).
+"""Unit tests for statusline actor-truth hardening (TKT-023) and readiness
+surface cleanup (W-CONV-4).
 
 Verifies that:
   - get_active_with_age() returns None when no marker is active
@@ -8,6 +9,9 @@ Verifies that:
   - snapshot() includes marker_age_seconds as an int when marker is active
   - snapshot() returns marker_age_seconds=None when no marker is active
   - snapshot() still carries active_agent after TKT-023 refactor
+  - snapshot() does NOT expose proof_status or proof_workflow (W-CONV-4:
+    proof_state is removed from the display surface; evaluation_state is sole
+    readiness authority)
 
 Production sequence exercised: subagent-start.sh calls marker set → hook reads
 snapshot → statusline.sh renders marker label with age. These tests cover that
@@ -23,9 +27,20 @@ full read path in-process using an in-memory DB.
   sleeping. The compound-interaction test (test_snapshot_marker_age_matches_old_marker)
   crosses both module boundaries in a single in-process call to mirror what
   the statusline HUD does on every render.
+
+@decision DEC-EVAL-007
+@title W-CONV-4: proof_state removed from statusline display surface
+@status accepted
+@rationale Operators were seeing both proof_status/proof_workflow and
+  evaluation_state in the HUD, creating two contradictory readiness signals.
+  Enforcement already uses only evaluation_state (TKT-024). The fix removes
+  proof_state from the snapshot dict entirely so there is exactly one readiness
+  display. The proof_state table, proof.py module, and proof CLI subcommands
+  are retained (storage is not removed, only the display layer).
 """
-import time
+
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -33,9 +48,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from runtime.core.db import connect_memory
-from runtime.schemas import ensure_schema
-from runtime.core.markers import set_active, get_active, get_active_with_age, deactivate
+from runtime.core.markers import deactivate, get_active_with_age, set_active
 from runtime.core.statusline import snapshot
+from runtime.schemas import ensure_schema
 
 
 @pytest.fixture
@@ -62,8 +77,7 @@ class TestGetActiveWithAge:
         # Insert a marker with started_at 10 minutes ago to simulate stale state.
         old_time = int(time.time()) - 600
         conn.execute(
-            "INSERT INTO agent_markers (agent_id, role, started_at, is_active)"
-            " VALUES (?, ?, ?, 1)",
+            "INSERT INTO agent_markers (agent_id, role, started_at, is_active) VALUES (?, ?, ?, 1)",
             ("agent-old", "planner", old_time),
         )
         conn.commit()
@@ -81,8 +95,7 @@ class TestGetActiveWithAge:
         # Clock skew guard: max(0, ...) must prevent negative values.
         future_time = int(time.time()) + 3600
         conn.execute(
-            "INSERT INTO agent_markers (agent_id, role, started_at, is_active)"
-            " VALUES (?, ?, ?, 1)",
+            "INSERT INTO agent_markers (agent_id, role, started_at, is_active) VALUES (?, ?, ?, 1)",
             ("agent-future", "tester", future_time),
         )
         conn.commit()
@@ -114,8 +127,7 @@ class TestSnapshotMarkerAge:
         # projection → field propagation, crossing markers.py and statusline.py.
         old_time = int(time.time()) - 600
         conn.execute(
-            "INSERT INTO agent_markers (agent_id, role, started_at, is_active)"
-            " VALUES (?, ?, ?, 1)",
+            "INSERT INTO agent_markers (agent_id, role, started_at, is_active) VALUES (?, ?, ?, 1)",
             ("agent-stale", "guardian", old_time),
         )
         conn.commit()
@@ -130,3 +142,97 @@ class TestSnapshotMarkerAge:
         result = snapshot(conn)
         assert result["marker_age_seconds"] is None
         assert result["active_agent"] is None
+
+
+# ---------------------------------------------------------------------------
+# W-CONV-4: proof_state removed from display surface
+# ---------------------------------------------------------------------------
+# These tests assert that snapshot() no longer exposes proof_status or
+# proof_workflow as top-level fields. The proof_state table itself is retained
+# (storage not removed), but the HUD surface must be clean of these fields so
+# operators see only one readiness signal (evaluation_state).
+# ---------------------------------------------------------------------------
+
+
+class TestProofStateRemovedFromDisplay:
+    """W-CONV-4: snapshot() must not expose proof_status or proof_workflow.
+
+    evaluation_state is the sole readiness authority (TKT-024 / DEC-EVAL-006).
+    Surfacing proof_state alongside it creates contradictory readiness signals.
+    These tests prove that the display surface is clean regardless of what the
+    proof_state table contains.
+
+    Production sequence: check-tester.sh writes evaluation_state → Guardian
+    reads snapshot → snapshot must carry only eval_status, not proof_status.
+    This is the compound-interaction test: proof.py (storage), statusline.py
+    (projection), and evaluation_state (readiness authority) cross boundaries
+    in a single snapshot() call to verify that proof display was excised.
+    """
+
+    def test_proof_status_not_in_snapshot_empty_db(self, conn):
+        """proof_status must not appear in snapshot when DB is empty."""
+        result = snapshot(conn)
+        assert "proof_status" not in result, (
+            "proof_status must not be a top-level snapshot field (W-CONV-4)"
+        )
+
+    def test_proof_workflow_not_in_snapshot_empty_db(self, conn):
+        """proof_workflow must not appear in snapshot when DB is empty."""
+        result = snapshot(conn)
+        assert "proof_workflow" not in result, (
+            "proof_workflow must not be a top-level snapshot field (W-CONV-4)"
+        )
+
+    def test_proof_status_not_in_snapshot_with_proof_data(self, conn):
+        """proof_status must not appear even when proof_state table has active rows.
+
+        The proof_state table is retained for storage but the display surface
+        must be clean. A live proof row must not bleed through to the HUD.
+        """
+        import runtime.core.proof as proof_mod
+
+        proof_mod.set_status(conn, "wf-live", "pending")
+        result = snapshot(conn)
+        assert "proof_status" not in result, (
+            "proof_status must not surface even with a live proof_state row (W-CONV-4)"
+        )
+        assert "proof_workflow" not in result, (
+            "proof_workflow must not surface even with a live proof_state row (W-CONV-4)"
+        )
+
+    def test_eval_status_still_present_after_proof_removal(self, conn):
+        """Removing proof_state display must not disturb eval_status fields.
+
+        eval_status and eval_workflow are the sole readiness display and must
+        remain present in the snapshot after the proof_state query is removed.
+        """
+        result = snapshot(conn)
+        assert "eval_status" in result, "eval_status must remain in snapshot (W-CONV-4)"
+        assert "eval_workflow" in result, "eval_workflow must remain in snapshot (W-CONV-4)"
+
+    def test_compound_proof_storage_retained_display_removed(self, conn):
+        """Compound-interaction: proof_state table write succeeds, snapshot clean.
+
+        Verifies the storage/display split: proof.py can still write to
+        proof_state (storage layer intact), but snapshot() does not read it
+        into the display dict. eval_status is derived from evaluation_state,
+        not proof_state.
+        """
+        import runtime.core.evaluation as eval_mod
+        import runtime.core.proof as proof_mod
+
+        # Write to proof_state (storage must still work)
+        proof_mod.set_status(conn, "wf-compound", "verified")
+        # Write evaluation_state (the readiness authority)
+        eval_mod.set_status(conn, "wf-compound", "ready_for_guardian", head_sha="abc123")
+
+        result = snapshot(conn)
+
+        # Display surface must not expose proof fields
+        assert "proof_status" not in result
+        assert "proof_workflow" not in result
+
+        # Readiness authority must be surfaced correctly
+        assert result["eval_status"] == "ready_for_guardian"
+        assert result["eval_workflow"] == "wf-compound"
+        assert result["eval_head_sha"] == "abc123"

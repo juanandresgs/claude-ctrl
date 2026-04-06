@@ -5,17 +5,17 @@ pass and returns a unified dict suitable for ANSI HUD rendering by
 scripts/statusline.sh without that script needing to call multiple subcommands.
 
 TKT-011 promotes this from a stub to the canonical implementation.
-TKT-024 adds evaluation_state as the primary readiness display. proof_state
-is deprioritized — it is no longer the readiness authority but is retained
-in the snapshot for backward compatibility.
+TKT-024 establishes evaluation_state as the sole readiness display.
+W-CONV-4 removes proof_state from the snapshot dict entirely — the proof_state
+table is retained for storage, but operators must see only one readiness signal.
 
 @decision DEC-RT-011
 Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() is the single read surface for the statusline HUD. It
-  reads evaluation_state (TKT-024 primary), proof_state (deprecated),
-  agent_markers, worktrees, dispatch_cycles, completion_records, and events in
-  one pass and returns a canonical dict. No writes happen here.
+  reads evaluation_state (TKT-024 sole readiness authority), agent_markers,
+  worktrees, dispatch_cycles, completion_records, and events in one pass and
+  returns a canonical dict. No writes happen here.
   All fields default to None/0/[] so the statusline never crashes on an empty
   or partially-populated DB. The broad exception handler at the bottom guards
   against unexpected schema errors only; all normal empty-result paths are
@@ -23,13 +23,14 @@ Rationale: snapshot() is the single read surface for the statusline HUD. It
   query failure.
 
 @decision DEC-EVAL-006
-Title: statusline.py shows eval_status as the readiness display (TKT-024)
+Title: statusline.py shows eval_status as the sole readiness display (TKT-024 + W-CONV-4)
 Status: accepted
 Rationale: After TKT-024 cutover, evaluation_state is the sole readiness
-  authority. The snapshot surfaces eval_status and eval_workflow as the
-  primary readiness fields. proof_status is retained as a legacy field
-  (proof_status_legacy) so existing consumers that read it do not crash,
-  but it carries zero enforcement meaning.
+  authority. W-CONV-4 completes the cleanup: proof_status and proof_workflow
+  are removed from the snapshot dict entirely. Operators were seeing both
+  signals which could contradict each other. proof_state table and proof.py
+  module are retained (storage is not removed), but the display surface now
+  exposes only eval_status, eval_workflow, and eval_head_sha for readiness.
 
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
@@ -59,15 +60,11 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     """Return a read-only projection of runtime state for status display.
 
     Fields returned:
-      eval_status         — evaluation_state status (TKT-024 primary readiness)
+      eval_status         — evaluation_state status (TKT-024 sole readiness)
                             ('idle'/'pending'/'needs_changes'/'ready_for_guardian'/
                             'blocked_by_plan'), or 'idle' when none
       eval_workflow       — workflow_id of the active evaluation row, or None
       eval_head_sha       — head_sha from evaluation_state, or None
-      proof_status        — DEPRECATED: legacy proof_state status; zero
-                            enforcement effect after TKT-024. Retained for
-                            backward compatibility only.
-      proof_workflow      — DEPRECATED: workflow_id of proof row, or None
       active_agent        — role of the most recently started active marker,
                             or None
       active_agent_id     — agent_id of that marker, or None
@@ -99,8 +96,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "eval_status": "idle",
         "eval_workflow": None,
         "eval_head_sha": None,
-        "proof_status": "idle",
-        "proof_workflow": None,
+        # proof_status / proof_workflow removed (W-CONV-4 / DEC-EVAL-006):
+        # operators were seeing two contradictory readiness signals. The
+        # proof_state table is retained for storage; only the display is
+        # removed. evaluation_state is the sole readiness surface.
         "active_agent": None,
         "active_agent_id": None,
         "marker_age_seconds": None,
@@ -120,29 +119,8 @@ def snapshot(conn: sqlite3.Connection) -> dict:
 
     try:
         # ------------------------------------------------------------------
-        # Proof status — prefer any non-idle row (pending/verified) over idle.
-        #
-        # @decision DEC-RT-011: Non-idle proof takes precedence because the
-        # statusline surfaces active workflow activity. When multiple workflows
-        # are tracked, the in-flight one (pending/verified) is the actionable
-        # signal; idle rows are background noise. ORDER BY updated_at DESC
-        # picks the most recently updated non-idle row when several exist.
-        # ------------------------------------------------------------------
-        row = conn.execute(
-            """
-            SELECT workflow_id, status
-            FROM   proof_state
-            WHERE  status != 'idle'
-            ORDER  BY updated_at DESC
-            LIMIT  1
-            """
-        ).fetchone()
-        if row:
-            result["proof_status"] = row["status"]
-            result["proof_workflow"] = row["workflow_id"]
-
-        # ------------------------------------------------------------------
-        # Evaluation state (TKT-024) — sole readiness authority.
+        # Evaluation state (TKT-024 / W-CONV-4) — sole readiness authority.
+        # proof_state is no longer queried here (DEC-EVAL-006 / W-CONV-4).
         # Prefer any non-idle row; most recently updated wins.
         # ------------------------------------------------------------------
         row = conn.execute(

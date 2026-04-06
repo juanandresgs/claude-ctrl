@@ -70,13 +70,13 @@ policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/session-init.sh` | Injects git state, plan status, research status, proof state, stale session files, todo HUD. Clears stale session artifacts. Does not deny — context injection only. |
+| `hooks/session-init.sh` | Injects git state, plan status, research status, evaluation state (sole readiness authority — TKT-024/W-CONV-4), stale session files, todo HUD. Clears stale session artifacts. Does not deny — context injection only. Note: proof_state is no longer surfaced in the session HUD (W-CONV-4); `evaluation_state` is the only readiness signal shown. |
 
 ### UserPromptSubmit (fires on every user prompt)
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/prompt-submit.sh` | Records proof verification when user replies "verified". Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. |
+| `hooks/prompt-submit.sh` | Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. Note: prompt-driven proof verification ("verified" reply) was removed in TKT-024 — readiness is now set exclusively by `check-tester.sh` via `evaluation_state`. |
 
 ## Not Yet Enforced
 
