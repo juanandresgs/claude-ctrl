@@ -249,7 +249,8 @@ echo "--- Statusline ---"
 
 OUT=$(cc statusline snapshot)
 assert_json_parseable "statusline snapshot valid JSON" "$OUT"
-for KEY in proof_status active_agent worktree_count dispatch_status recent_event_count snapshot_at; do
+# W-CONV-4: proof_status/proof_workflow removed from snapshot
+for KEY in active_agent worktree_count dispatch_status recent_event_count snapshot_at; do
     if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert '$KEY' in d" 2>/dev/null; then
         echo "  PASS: statusline has key '$KEY'"
         PASS=$((PASS + 1))

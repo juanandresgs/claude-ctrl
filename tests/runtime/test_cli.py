@@ -249,7 +249,6 @@ def test_statusline_snapshot_keys(db):
     assert code == 0
     assert out["status"] == "ok"
     for key in (
-        "proof_status",
         "active_agent",
         "worktree_count",
         "dispatch_status",
@@ -258,13 +257,18 @@ def test_statusline_snapshot_keys(db):
         "snapshot_at",
     ):
         assert key in out, f"missing key: {key}"
+    # W-CONV-4: proof_status/proof_workflow removed from snapshot
+    assert "proof_status" not in out
+    assert "proof_workflow" not in out
 
 
 def test_statusline_snapshot_empty_db(db):
     """Snapshot must return safe defaults on an empty database."""
     code, out = run(["statusline", "snapshot"], db)
     assert code == 0
-    assert out["proof_status"] == "idle"
+    # W-CONV-4: proof_status/proof_workflow no longer in snapshot
+    assert "proof_status" not in out
+    assert "proof_workflow" not in out
     assert out["active_agent"] is None
     assert out["worktree_count"] == 0
 

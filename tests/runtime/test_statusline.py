@@ -10,16 +10,22 @@ exercise snapshot() directly with a live conn so every internal query path
 is covered without subprocess overhead. The compound-interaction test
 (test_snapshot_full_production_sequence) validates the CLI path end-to-end.
 
+W-CONV-4: proof_status and proof_workflow were removed from the snapshot dict.
+proof_state table is retained for storage; the display surface now shows only
+evaluation_state fields (eval_status, eval_workflow, eval_head_sha).
+
 @decision DEC-RT-011
 Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
-Rationale: snapshot() reads proof_state, agent_markers, worktrees,
-  dispatch_cycles, dispatch_queue, and events in a single pass. It never
-  writes. The extended field set (proof_workflow, active_agent_id, worktrees
-  list, dispatch_cycle_id, recent_events list) was added in TKT-011 so
-  scripts/statusline.sh has everything it needs for a richer HUD without
-  calling multiple CLI subcommands. All fields have safe None/0 defaults so
-  the statusline never crashes on an empty or partially-populated DB.
+Rationale: snapshot() reads evaluation_state (sole readiness authority),
+  agent_markers, worktrees, dispatch_cycles, completion_records, and events in
+  a single pass. It never writes. The extended field set (active_agent_id,
+  worktrees list, dispatch_cycle_id, recent_events list) was added in TKT-011
+  so scripts/statusline.sh has everything it needs for a richer HUD without
+  calling multiple CLI subcommands. proof_state was removed from the snapshot
+  in W-CONV-4 (DEC-EVAL-006) — operators saw contradictory readiness signals.
+  All fields have safe None/0 defaults so the statusline never crashes on an
+  empty or partially-populated DB.
 
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
@@ -43,7 +49,7 @@ import runtime.core.completions as completions_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.events as events_mod
 import runtime.core.markers as markers_mod
-import runtime.core.proof as proof_mod
+import runtime.core.proof as proof_mod  # retained: storage still used in compound test
 import runtime.core.statusline as statusline
 import runtime.core.worktrees as worktrees_mod
 from runtime.core.db import connect_memory
@@ -66,11 +72,17 @@ def conn():
 # Key presence — all expected fields must be present in every snapshot
 # ---------------------------------------------------------------------------
 
+# W-CONV-4: proof_status and proof_workflow removed from snapshot display.
+# evaluation_state fields (eval_status, eval_workflow, eval_head_sha) are the
+# sole readiness surface. FORBIDDEN fields must not appear (enforced in
+# test_statusline_truth.py::TestProofStateRemovedFromDisplay).
 REQUIRED_KEYS = {
-    "proof_status",
-    "proof_workflow",
+    "eval_status",
+    "eval_workflow",
+    "eval_head_sha",
     "active_agent",
     "active_agent_id",
+    "marker_age_seconds",
     "worktree_count",
     "worktrees",
     "dispatch_status",
@@ -96,8 +108,13 @@ def test_snapshot_has_all_required_keys(conn):
 def test_snapshot_empty_db_safe_defaults(conn):
     """Empty DB returns safe defaults — no crash, no None where type matters."""
     snap = statusline.snapshot(conn)
-    assert snap["proof_status"] == "idle"
-    assert snap["proof_workflow"] is None
+    # W-CONV-4: proof fields must not appear at all
+    assert "proof_status" not in snap
+    assert "proof_workflow" not in snap
+    # evaluation_state fields default to idle/None
+    assert snap["eval_status"] == "idle"
+    assert snap["eval_workflow"] is None
+    assert snap["eval_head_sha"] is None
     assert snap["active_agent"] is None
     assert snap["active_agent_id"] is None
     assert snap["worktree_count"] == 0
@@ -110,38 +127,6 @@ def test_snapshot_empty_db_safe_defaults(conn):
     assert isinstance(snap["snapshot_at"], int)
     assert snap["snapshot_at"] > 0
     assert snap["status"] == "ok"
-
-
-# ---------------------------------------------------------------------------
-# Proof state reflection
-# ---------------------------------------------------------------------------
-
-
-def test_snapshot_reflects_proof_status(conn):
-    """Snapshot picks up the most recent non-idle proof status."""
-    proof_mod.set_status(conn, "wf-active", "pending")
-    snap = statusline.snapshot(conn)
-    assert snap["proof_status"] == "pending"
-    assert snap["proof_workflow"] == "wf-active"
-
-
-def test_snapshot_proof_non_idle_takes_precedence(conn):
-    """When multiple proofs exist, non-idle is preferred over idle."""
-    proof_mod.set_status(conn, "wf-old", "idle")
-    proof_mod.set_status(conn, "wf-live", "verified")
-    snap = statusline.snapshot(conn)
-    # verified is non-idle, must surface
-    assert snap["proof_status"] == "verified"
-    assert snap["proof_workflow"] == "wf-live"
-
-
-def test_snapshot_proof_idle_when_all_idle(conn):
-    """When all proof rows are idle, proof_status is idle and workflow is None."""
-    proof_mod.set_status(conn, "wf-1", "idle")
-    proof_mod.set_status(conn, "wf-2", "idle")
-    snap = statusline.snapshot(conn)
-    assert snap["proof_status"] == "idle"
-    assert snap["proof_workflow"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -359,15 +344,17 @@ def test_snapshot_at_is_current_epoch(conn):
 def test_snapshot_full_production_sequence(conn):
     """Exercises the complete production state sequence through snapshot().
 
-    Production path (DEC-WS6-001): tester submits a valid completion with
-    ready_for_guardian -> implementer marker is set -> worktree registered ->
-    dispatch cycle active -> proof set to pending -> events emitted.
-    snapshot() must reflect all of these in a single call, and dispatch_status
-    must be derived from the completion record (not the queue).
+    Production path (DEC-WS6-001 / W-CONV-4): tester submits a valid completion
+    with ready_for_guardian -> implementer marker is set -> worktree registered
+    -> dispatch cycle active -> proof written to storage (not displayed) ->
+    events emitted.  snapshot() must reflect all of these in a single call.
+    dispatch_status must be derived from the completion record (not the queue).
+    proof_state must NOT appear in the snapshot (W-CONV-4).
 
     This is the compound-interaction test: completions.py, markers.py,
-    worktrees.py, dispatch.py, proof.py, events.py, and statusline.py all
-    collaborate — snapshot() synthesizes them into one coherent projection.
+    worktrees.py, dispatch.py, proof.py (storage only), events.py, and
+    statusline.py all collaborate — snapshot() synthesizes them into one
+    coherent projection with proof display removed.
     """
     # 1. Start a dispatch cycle
     cid = dispatch_mod.start_cycle(conn, "INIT-002")
@@ -395,7 +382,7 @@ def test_snapshot_full_production_sequence(conn):
     # 4. Register a worktree
     worktrees_mod.register(conn, "/wt/tkt-011", "feature/tkt-011", ticket="TKT-011")
 
-    # 5. Set proof to pending
+    # 5. Write proof to storage — must NOT appear in snapshot (W-CONV-4)
     proof_mod.set_status(conn, "TKT-011", "pending")
 
     # 6. Emit a couple events
@@ -406,8 +393,9 @@ def test_snapshot_full_production_sequence(conn):
     snap = statusline.snapshot(conn)
 
     assert snap["status"] == "ok"
-    assert snap["proof_status"] == "pending"
-    assert snap["proof_workflow"] == "TKT-011"
+    # W-CONV-4: proof fields must not appear even with live proof_state data
+    assert "proof_status" not in snap
+    assert "proof_workflow" not in snap
     assert snap["active_agent"] == "implementer"
     assert snap["active_agent_id"] == "agent-tkt011"
     assert snap["worktree_count"] == 1

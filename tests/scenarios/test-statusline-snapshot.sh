@@ -92,28 +92,18 @@ echo "-- 1: empty DB snapshot has all required keys and safe defaults"
 
 snap=$(policy statusline snapshot)
 
-for key in proof_status proof_workflow active_agent active_agent_id \
+# W-CONV-4: proof_status/proof_workflow removed from snapshot
+for key in active_agent active_agent_id \
            worktree_count worktrees dispatch_status dispatch_initiative \
            dispatch_cycle_id recent_event_count recent_events snapshot_at status; do
     assert_jq "key '$key' present" "$snap" "has(\"$key\")"
 done
 
-assert_eq "proof_status defaults to idle"   "$snap" ".proof_status"   "idle"
+assert_jq "proof_status absent (W-CONV-4)" "$snap" "(has(\"proof_status\") | not)"
+assert_jq "proof_workflow absent (W-CONV-4)" "$snap" "(has(\"proof_workflow\") | not)"
 assert_eq "worktree_count defaults to 0"    "$snap" ".worktree_count" "0"
 assert_eq "active_agent defaults to null"   "$snap" ".active_agent"   "null"
 assert_eq "status is ok"                    "$snap" ".status"         "ok"
-
-# ---------------------------------------------------------------------------
-# Test 2: proof_status reflects non-idle proof state
-# ---------------------------------------------------------------------------
-echo ""
-echo "-- 2: proof_status reflects pending proof"
-
-policy proof set "wf-tkt011" "pending" >/dev/null
-
-snap=$(policy statusline snapshot)
-assert_eq "proof_status is pending"       "$snap" ".proof_status"   "pending"
-assert_eq "proof_workflow is wf-tkt011"   "$snap" ".proof_workflow" "wf-tkt011"
 
 # ---------------------------------------------------------------------------
 # Test 3: active_agent reflects marker
