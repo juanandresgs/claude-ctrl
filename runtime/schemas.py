@@ -316,9 +316,9 @@ LEASE_STATUSES: frozenset[str] = frozenset({"active", "released", "revoked", "ex
 # Default lease time-to-live: 2 hours.
 DEFAULT_LEASE_TTL: int = 7200
 
-# v1 enforced completion roles — tester and guardian only.
-# Implementer/planner schemas are deferred until real check-*.sh hooks exist.
-COMPLETION_ENFORCED_ROLES: frozenset[str] = frozenset({"tester", "guardian"})
+# Enforced completion roles are determined by ROLE_SCHEMAS in completions.py.
+# The keyset of ROLE_SCHEMAS is the authoritative enforced-role set.
+# This constant was removed in W-CONV-5 (dead code — nothing consumed it).
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

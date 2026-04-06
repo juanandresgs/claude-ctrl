@@ -405,6 +405,84 @@ def test_implementer_contract_uses_lease_workflow_id(conn, project_root):
     assert len(complete_events) >= 1
 
 
+def test_implementer_no_trailers_heuristic_fallback(conn, project_root):
+    """Implementer with lease but no completion record → heuristic fallback (advisory).
+
+    When no IMPL_STATUS/IMPL_HEAD_SHA trailers are present the check-implementer.sh
+    Check 8 submits nothing. dispatch_engine finds no completion record for the lease
+    and falls through to the heuristic (DEC-IMPL-CONTRACT-001). Routing is still
+    → tester (unchanged). No impl_contract_invalid event is emitted because there
+    is nothing malformed — there is simply no record.
+
+    This is the backward-compatibility path: old implementers that predate the
+    structured contract produce no record and the heuristic governs instead.
+    """
+    wf_id = "wf-impl-no-trailers-001"
+    _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    # No completion record submitted — simulates missing trailers.
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "tester"
+    assert result["error"] is None
+    # No impl_contract_invalid event — missing record is not the same as malformed.
+    invalid_events = [e for e in result["events"] if e["type"] == "impl_contract_invalid"]
+    assert len(invalid_events) == 0
+
+
+def test_full_implementer_contract_production_sequence(conn, project_root):
+    """Compound-interaction test: implementer trailer → completion submit → dispatch routing.
+
+    Exercises the real production sequence end-to-end across multiple components:
+      1. Orchestrator issues implementer lease (leases domain).
+      2. check-implementer.sh Check 8 parses IMPL_STATUS trailer and calls
+         completions.submit() (completions domain — simulated directly here).
+      3. post-task.sh fires → process_agent_stop() (dispatch_engine) runs.
+      4. dispatch_engine reads completion record for lease_id (completions domain).
+      5. Valid contract (IMPL_STATUS=complete) overrides heuristic → agent_complete event.
+      6. Routing → tester (fixed transition, unchanged by contract).
+      7. eval_state set to pending (evaluation domain).
+      8. auto_dispatch=True because not interrupted.
+
+    All three domain boundaries (leases / completions / evaluation) are crossed.
+    """
+    wf_id = "wf-impl-prod-seq-001"
+
+    # Step 1: lease issued (mirrors orchestrator pre-dispatch action)
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    assert lease["status"] == "active"
+
+    # Step 2: completion record submitted (mirrors check-implementer.sh Check 8)
+    comp_result = _submit_valid_implementer_completion(
+        conn, lease["lease_id"], wf_id, status="complete"
+    )
+    assert comp_result["valid"] is True
+    assert comp_result["verdict"] == "complete"
+
+    # Step 3+4+5+6: process_agent_stop
+    result = process_agent_stop(conn, "implementer", project_root)
+
+    # Step 6: routing → tester
+    assert result["next_role"] == "tester"
+    assert result["error"] is None
+    assert result["workflow_id"] == wf_id
+
+    # Step 5: contract overrides heuristic → agent_complete (not agent_stopped)
+    complete_events = [e for e in result["events"] if e["type"] == "agent_complete"]
+    assert len(complete_events) >= 1
+    stopped_events = [e for e in result["events"] if e["type"] == "agent_stopped"]
+    assert len(stopped_events) == 0
+
+    # Step 7: eval_state = pending written
+    from runtime.core import evaluation
+
+    state = evaluation.get(conn, wf_id)
+    assert state is not None
+    assert state["status"] == "pending"
+
+    # Step 8: auto_dispatch=True
+    assert result["auto_dispatch"] is True
+    assert result["suggestion"].startswith("AUTO_DISPATCH: tester")
+
+
 def test_full_tester_to_guardian_production_sequence(conn, project_root):
     """Compound-interaction test exercising the real production path:
 
