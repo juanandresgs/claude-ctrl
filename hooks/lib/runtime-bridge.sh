@@ -44,37 +44,6 @@ _rt_ensure_schema() {
 }
 
 # ---------------------------------------------------------------------------
-# Proof-of-work wrappers
-# ---------------------------------------------------------------------------
-
-# rt_proof_get <workflow_id>
-# Prints the proof status string ("idle", "pending", "verified") or nothing
-# on failure. Callers fall back to flat-file when this returns empty.
-rt_proof_get() {
-    _rt_ensure_schema
-    local result
-    result=$(cc_policy proof get "$1" 2>/dev/null) || return 1
-    printf '%s\n' "$result" | jq -r '.status // "idle"'
-}
-
-# rt_proof_set <workflow_id> <status>
-# Upserts proof status in SQLite. Suppresses output; callers dual-write to
-# flat file for backward compatibility.
-rt_proof_set() {
-    _rt_ensure_schema
-    cc_policy proof set "$1" "$2" >/dev/null 2>&1
-}
-
-# rt_proof_timestamp <workflow_id>
-# Prints the ISO-8601 updated_at string, or "0" when not found.
-rt_proof_timestamp() {
-    _rt_ensure_schema
-    local result
-    result=$(cc_policy proof get "$1" 2>/dev/null) || return 1
-    printf '%s\n' "$result" | jq -r '.updated_at // "0"'
-}
-
-# ---------------------------------------------------------------------------
 # Evaluation-state wrappers (TKT-024: sole readiness authority)
 # ---------------------------------------------------------------------------
 

@@ -116,8 +116,6 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | `canonical_session_id` | Stable session ID for per-session files |
 | `current_workflow_id <root>` | Stable workflow ID (usually current branch) |
 | `file_mtime <path>` | Cross-platform file mtime helper |
-| `read_proof_status <root> [workflow]` | Proof status from runtime SQLite (`proof_state` table) — zero enforcement effect after TKT-024; evaluation_state is the readiness authority |
-| `write_proof_status <root> <status> [workflow]` | Upserts proof status to runtime SQLite — zero callers in hook chain after evaluator-state cutover |
 | `read_evaluation_status <root> [workflow]` | Evaluation status (`idle`, `pending`, `needs_changes`, `ready_for_guardian`, `blocked_by_plan`) — sole readiness authority (TKT-024) |
 | `read_evaluation_state <root> [workflow]` | Full evaluation state JSON including head_sha |
 | `write_evaluation_status <root> <status> [wf] [sha]` | Upserts evaluation state — used by check-tester.sh (verdicts), post-task.sh (pending) |
@@ -188,13 +186,13 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, evaluation state (TKT-024), todo HUD, unresolved agent findings, preserved context from pre-compaction. Resets prompt count for first-prompt fallback. Note: stale `.test-status` clearing was removed when the flat file was eliminated (WS-DOC-CLEAN); runtime `test_state` is session-scoped by HEAD SHA. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
 | **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation. Note: proof verification on user "verified" reply was removed in TKT-024 — readiness is now set exclusively by check-tester.sh via evaluation_state |
 | **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
-| **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Cross-session flat files `.audit-log`, `.plan-drift`, and `.agent-findings` are no longer written or read (TKT-008/TKT-018/WS4); agent findings now flow through the runtime event store (`agent_finding` events) |
+| **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Cross-session flat files `.audit-log`, `.plan-drift`, and `.agent-findings` are no longer written or read (TKT-008/TKT-018/WS4/W-CONV-6); agent findings now flow through the runtime event store (`agent_finding` events) |
 
 ### Stop Hooks
 
 | Hook | Event | What It Does |
 |------|-------|--------------|
-| **surface.sh** | Stop | Full decision audit pipeline: (1) extract — scans project source directories for @decision annotations using ripgrep (with grep fallback); (2) validate — checks changed files over 50 lines for @decision presence and rationale; (3) reconcile — compares DEC-IDs in MASTER_PLAN.md vs code, identifies unplanned decisions (in code but not plan) and unimplemented decisions (in plan but not code), respects deprecated/superseded status; (4) persist — still writes `.plan-drift` flat file (dead write: no consumer reads it since TKT-018 removed the plan-check.sh reader); audit events route through `rt_event_emit`. Reports via `systemMessage` |
+| **surface.sh** | Stop | Full decision audit pipeline: (1) extract — scans project source directories for @decision annotations using ripgrep (with grep fallback); (2) validate — checks changed files over 50 lines for @decision presence and rationale; (3) reconcile — compares DEC-IDs in MASTER_PLAN.md vs code, identifies unplanned decisions (in code but not plan) and unimplemented decisions (in plan but not code), respects deprecated/superseded status; (4) persist — audit events route through `rt_event_emit` (`.plan-drift` flat file removed in W-CONV-6). Reports via `systemMessage` |
 | **session-summary.sh** | Stop | Deterministic (<2s runtime). Counts unique files changed (source vs config), @decision annotations added. Reports git branch, dirty/clean state, test status (waits briefly for in-flight async test-runner). Generates workflow-aware next-action guidance: on main → "create plan" or "create worktrees"; on feature branch → "fix tests", "run tests", "review changes", or "merge to main" based on current state. Includes pending todo count |
 | **forward-motion.sh** | Stop | Deterministic regex check (not AI). Extracts the last paragraph of the assistant's response and checks for forward motion indicators: `?`, "want me to", "shall I", "let me know", "would you like", "next step", etc. Returns exit 2 (feedback loop) only if the response ends with a bare completion statement ("done", "finished", "all set") and no question mark — prompting the model to add a suggestion or offer |
 
@@ -244,7 +242,7 @@ safety, WHO enforcement, destructive git protection, and evidence gates.
 
 Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
 
-Evaluator readiness (TKT-024): the Tester evaluates the implementation and emits EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers. `check-tester.sh` parses these and writes `evaluation_state`. Only `ready_for_guardian` with a matching `head_sha` passes Check 10. Source changes after evaluator clearance invalidate readiness via `track.sh` (ready_for_guardian→pending). `proof_state` has zero enforcement effect after TKT-024 cutover — stale proof cannot satisfy this gate.
+Evaluator readiness (TKT-024): the Tester evaluates the implementation and emits EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers. `check-tester.sh` parses these and writes `evaluation_state`. Only `ready_for_guardian` with a matching `head_sha` passes Check 10. Source changes after evaluator clearance invalidate readiness via `track.sh` (ready_for_guardian→pending). `proof_state` table and helpers were removed in W-CONV-6 — `evaluation_state` is the sole readiness authority.
 
 ---
 
@@ -381,11 +379,11 @@ Hooks communicate across events through state files in the project's `.claude/` 
 
 | File | Former Role | Replacement | Removed By |
 |------|------------|-------------|-----------|
-| `.proof-status-<workflow>` | Proof state authority | `evaluation_state` table (TKT-024); `proof_state` table retained but deprecated with zero enforcement effect | TKT-007/TKT-018/TKT-024 |
+| `.proof-status-<workflow>` | Proof state authority | `evaluation_state` table (TKT-024); `proof_state` table and helpers removed in W-CONV-6 | TKT-007/TKT-018/TKT-024/W-CONV-6 |
 | `.subagent-tracker` | Active agent role tracking | `agent_markers` table via `rt_marker_set`/`rt_marker_deactivate` | TKT-007/TKT-018 |
 | `.statusline-cache` | Statusline data cache | `cc-policy statusline snapshot` runtime projection | TKT-012/TKT-018 |
 | `.audit-log` | Audit trail file | `events` table via `rt_event_emit` (through `append_audit`) | TKT-008. Note: `compact-preserve.sh` still has a stale reader |
-| `.plan-drift` | Drift scoring data | Dead write: `surface.sh` still writes it, but `plan-check.sh` no longer reads it (uses commit-count heuristic) | TKT-018 (reader removed) |
+| `.plan-drift` | Drift scoring data | Dead write removed in W-CONV-6; `plan-check.sh` uses commit-count heuristic | TKT-018/W-CONV-6 |
 | `.test-status` | Test result evidence gate | `test_state` SQLite table via `rt_test_state_set`/`rt_test_state_get` | WS-DOC-CLEAN (flat-file write removed from test-runner.sh) |
 
 ---
