@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-06 (INIT-CONV W-CONV-5 completed; MASTER_PLAN reconciled; new initiatives added)
+Last updated: 2026-04-06 (W-CDX-3 revised per Codex review findings: connect-phase retry, clean-close detection, replay safety)
 
 ## Identity
 
@@ -319,10 +319,13 @@ into the new mainline.
   column (already in DDL) is populated on dispatch-significant marker writes.
   One-time cleanup deactivates existing lightweight active markers.
 - `2026-04-05 — DEC-CONV-003` Lease-first workflow identity enforced
-  everywhere. `track.sh`, `build_context()`, and all completion/evaluation
-  paths check active lease before falling back to branch-derived
-  `current_workflow_id()`. Existing duplicate workflow rows are cleaned up
-  or explicitly marked as historical in a bounded one-time repair.
+  everywhere. `track.sh` and `build_context()` already converged (WS1).
+  Remaining gap: `context-lib.sh` helpers and 3 callers in
+  `check-guardian.sh`, `check-implementer.sh`, `session-init.sh` that pass
+  no workflow_id to `read_evaluation_status()`. `get_workflow_binding()`
+  must check lease before branch derivation. `bind_workflow()` gets
+  DELETE-before-INSERT for stale row prevention. Historical row cleanup
+  deferred (no schema field, no merge rule).
 
 ### Auto-dispatch decisions
 
@@ -361,6 +364,109 @@ into the new mainline.
   BROKER_BUSY_RPC_CODE. The direct-client path spawns a separate
   `codex app-server` process, which is sufficient for 2-3 concurrent tasks.
   Broker redesign is high-effort/low-value given the working fallback.
+- `2026-04-05 — DEC-CDX-004` `interruptAppServerTurn()` is not modified for
+  broker fallback. It uses its own connection logic (not `withAppServer()`)
+  and returns `{ interrupted: false }` on failure. This is correct: if the
+  broker dies, the task running on its app-server is already dead, so
+  connecting direct to interrupt it would be pointless. The function is
+  best-effort by design.
+- `2026-04-05 — DEC-CDX-005` `resolveLatestTrackedTaskThread()` task guard is
+  not relaxed. After W-CDX-2's transparent reaping, dead-PID tasks are marked
+  "failed" before the guard runs, so they no longer block new launches. The
+  guard is only invoked for `--resume-last` task launches (not reviews). It
+  correctly prevents resuming when a genuinely alive task exists.
+- `2026-04-06 — DEC-CDX-006` Retry detection includes message-based matching
+  for clean-close errors. `BrokerCodexAppServerClient.handleExit()` (app-server.mjs:162-175)
+  rejects pending promises with `new Error("codex app-server connection closed.")`
+  when the broker socket closes gracefully (no OS-level error code). This error
+  has no `.code` property, so code-only matching misses it. The retry set adds
+  a message-based check: `error.message?.includes("connection closed")`.
+- `2026-04-06 — DEC-CDX-007` Replaying `fn(client)` on direct fallback is safe
+  because the replay targets a fresh direct-process client that has no
+  relationship to the dead broker session. `thread/start` creates a new thread
+  (not idempotent), but this is correct: the broker-side thread is dead with the
+  broker, so a new thread on the direct client is the desired outcome.
+  `review/start` and `turn/start` similarly create new server-side state on the
+  fresh client. No orphaned resources accumulate on the broker side because the
+  broker is dead. The only cost is a wasted thread allocation if the broker dies
+  after `thread/start` succeeds but before `turn/start` -- this is acceptable
+  for a resilience path that fires on transport failure.
+
+### Observatory decisions
+
+- `2026-04-06 — DEC-OBS-001` Native rebuild over pro-fork port. The
+  claude-config-pro observatory used filesystem-based traces (59% orphan rate,
+  required rebuild_index, corrupt manifests crashed jq) and 1,000+ lines of
+  bash pipeline. Our fork already has SQLite trace tables, a policy engine
+  runtime, and structured completion records. Building natively on state.db
+  eliminates the filesystem trace store, the JSONL time series, and the
+  snapshot.sh transformation layer. Analysis is SQL, not jq-over-JSONL.
+- `2026-04-06 — DEC-OBS-002` Observatory tables in state.db, not sidecar-owned
+  storage. `obs_suggestions` and `obs_metrics` are new tables in the canonical
+  schema (schemas.py). The observatory writes to these tables via the runtime
+  domain module, not by maintaining its own database. This keeps the single-DB
+  architecture intact and avoids split-authority between a sidecar DB and the
+  canonical runtime.
+- `2026-04-06 — DEC-OBS-003` Hook emission is additive, not new hooks. Each
+  existing hook gains 1-3 `rt_event_emit` or `rt_obs_metric` calls. No new
+  settings.json hook entries, no new hook files. This preserves the thin-hook
+  architecture (DEC-HOOK-001 through DEC-HOOK-004) and avoids hook-chain bloat.
+- `2026-04-06 — DEC-OBS-004` The observatory SKILL.md is the synthesis layer.
+  Raw SQL query results are structured data; the LLM interprets patterns,
+  correlates trends, and generates actionable suggestions. This avoids encoding
+  pattern-matching heuristics in Python that would inevitably become stale.
+  The skill invokes analysis queries, presents results, and asks the LLM to
+  reason about them.
+- `2026-04-06 — DEC-OBS-005` Convergence tracking preserves the pro fork's
+  best feature: closed-loop "did the fix actually help?" tracking. Each
+  suggestion has a lifecycle (proposed -> accepted/rejected/deferred) and
+  accepted suggestions are measured against the metric they claimed to improve.
+  If the metric did not improve within N sessions, the suggestion is flagged
+  as ineffective.
+
+### Behavioral evaluation decisions
+
+- `2026-04-06 — DEC-EVAL-010` Behavioral eval framework as a config-system
+  feature, not a standalone tool. The framework (runner, scorer, metrics,
+  report) lives in `~/.claude` and ships with the config system. Project-
+  specific scenarios are defined per-project under `evals/scenarios/`. Metrics
+  are project-scoped in `.claude/eval_results.db`. This makes behavioral eval
+  available to every project using the config system without external tooling.
+- `2026-04-06 — DEC-EVAL-011` Two-mode operation: deterministic (offline) and
+  live (agent-in-the-loop). Deterministic scenarios validate gate mechanics
+  (policy decisions, trailer parsing, scope compliance) using the same
+  synthetic-payload approach as existing scenario tests. Live scenarios invoke
+  the tester agent against frozen fixtures and score its judgment. Deterministic
+  mode requires no Claude runtime; live mode requires it. Both modes share the
+  same scenario definition format and metrics store.
+- `2026-04-06 — DEC-EVAL-012` Scorer uses ground-truth matching for
+  deterministic scenarios and rubric-based heuristic matching for judgment
+  scenarios. LLM-as-judge is deferred to avoid the meta-evaluation problem in
+  v1. Evidence quality is scored by keyword/phrase presence against expected
+  evidence lists, not by LLM evaluation.
+- `2026-04-06 — DEC-EVAL-013` Eval results stored in a separate
+  `eval_results.db` database, not in the main `state.db`. The eval framework
+  is an observer of the system, not a participant in it. Storing eval data in
+  state.db would violate the separation between the system under test and the
+  testing infrastructure. The eval DB uses the same SQLite conventions (WAL
+  mode, ensure_schema idempotency) but has its own schema and lifecycle.
+- `2026-04-06 — DEC-EVAL-014` CLI integration via `cc-policy eval` subcommand
+  group. `cc-policy eval run` executes scenarios. `cc-policy eval report`
+  generates human-readable reports. `cc-policy eval list` shows available
+  scenarios. This follows the existing pattern of `cc-policy <domain> <action>`
+  used throughout the runtime.
+- `2026-04-06 — DEC-EVAL-015` Frozen fixtures are git-committed directories
+  containing pre-built worktree state: source files, Evaluation Contracts,
+  expected verdicts, and expected evidence. They live in `evals/fixtures/` in
+  the config repo for universal scenarios. Project-specific fixtures live in
+  the project's `evals/fixtures/`. No fixture modification at runtime; the
+  runner copies fixtures to a temp directory before execution.
+- `2026-04-06 — DEC-EVAL-016` The framework does NOT use the full
+  planner->implementer->tester->guardian cycle for eval runs. Eval scenarios
+  target the tester phase only: a frozen implementation + Evaluation Contract
+  is presented to the tester agent, and the tester's verdict is scored. This
+  eliminates the combinatorial explosion of testing the full 4-agent chain and
+  focuses on the judgment gap that actually exists (Layer 2).
 
 ## Active Initiatives
 
@@ -2431,63 +2537,92 @@ markers that contaminate actor-role truth and statusline.
 
 #### W-CONV-3: Workflow Identity Convergence
 
-- **Status:** not started
+- **Status:** complete (merged c01c986, 2026-04-05)
 - **Issue:** #3
 - **Decision:** DEC-CONV-003
 - **Depends on:** W-CONV-1 (path normalization), W-CONV-2 (marker scoping
   provides clean actor context for workflow resolution)
 
-**Problem:** `track.sh:53` calls `current_workflow_id()` which derives
-workflow ID from branch name via `sanitize_token()`. If the active lease has
-a different `workflow_id`, eval invalidation targets a different workflow row
-than the tester/guardian paths use. `build_context()` at
-`policy_engine.py:414` falls back to branch-derived identity when no lease
-exists. Live DB shows duplicate workflow IDs: `feature/stab-a4-new-cleanup`,
-`feature-stab-a4-new-cleanup`, `feature--stab-a4-new-cleanup`, plus multiple
-bindings to the same main worktree.
+**Problem (revised 2026-04-05):** The original problem statement described
+`track.sh` and `build_context()` as using branch-derived identity without
+lease checks. Both were fixed in WS1 and are now lease-first. The **actual
+remaining gap** is in `context-lib.sh` helper functions and their callers:
+
+1. **`get_workflow_binding()`** (context-lib.sh:399) unconditionally derives
+   `WORKFLOW_ID` from `current_workflow_id()` (branch-based). Never checks
+   for an active lease.
+2. **Evaluation/proof helpers** (`read_evaluation_status`,
+   `read_evaluation_state`, `write_evaluation_status`) accept optional
+   `workflow_id` but fall back to `current_workflow_id()` when callers omit
+   it. Three callers omit it: `check-guardian.sh:189`,
+   `check-implementer.sh:114`, `session-init.sh:117`.
+3. **`bind_workflow()` stale row accumulation** — `workflow_bindings` has
+   `workflow_id` as PRIMARY KEY but no UNIQUE on `worktree_path`. When a
+   worktree gets a new workflow_id, the old binding persists.
+
+**Already converged (not bugs):**
+- `track.sh:67-72` — lease-first via `lease_context()` (DEC-WS1-TRACK-001)
+- `build_context()` at `policy_engine.py:424` — prefers lease workflow_id,
+  branch-fallback only when no lease (DEC-PE-W3-CTX-001)
+- `check-tester.sh:118-130` — lease-first via `lease_context()`
+- `check-guardian.sh:69-80` — lease-first for completion/eval reset
 
 **Approach:**
-1. Lease-first: Every shell hook and Python module that needs a workflow_id
-   checks for active lease first via `lease_context()` (shell) or lease
-   lookup (Python). Falls back to `current_workflow_id()` only when no
-   lease exists.
-2. Critical fix: `track.sh` uses `lease_context()` before falling back to
-   branch-derived `current_workflow_id()` for eval invalidation.
-3. Historical repair: One-time bounded cleanup of existing duplicate
-   workflow rows. Strategy: identify canonical form per conceptual workflow,
-   update or soft-mark non-canonical rows. If cleanup is complex, explicitly
-   mark historical rows as ignored (e.g., status='historical') rather than
-   deleting.
+1. **context-lib.sh helper convergence:** Modify `get_workflow_binding()` to
+   check `lease_context()` first. Modify evaluation/proof helpers to attempt
+   `lease_context()` when no explicit `workflow_id` is passed. Branch-derived
+   `current_workflow_id()` remains fallback when no lease exists.
+2. **Caller fix:** Where callers already have a lease-derived workflow_id,
+   pass it explicitly: `check-guardian.sh:189` (pass `_GD_WF_ID`),
+   `check-implementer.sh:114` (add lease resolution),
+   `session-init.sh:117` (add lease resolution).
+3. **bind_workflow duplicate prevention:** DELETE prior bindings for the same
+   `worktree_path` before INSERT in `bind_workflow()`. At most one binding
+   per physical worktree.
+4. **Historical row cleanup — DEFERRED.** No `status`/`historical` field
+   exists in schema, schema changes forbidden, no deterministic merge rule.
+   Prevention fix in step 3 stops the bleeding; legacy cleanup is a separate
+   follow-up.
 
 **Evaluation Contract:**
 - `bash tests/scenarios/test-lease-workflow-id-authority.sh`
+- `bash tests/scenarios/test-track-lease-invalidation.sh`
 - `bash tests/scenarios/test-routing-tester-completion.sh`
 - `bash tests/scenarios/test-routing-guardian-completion.sh`
+- `python3 -m pytest tests/runtime/test_policy_engine.py -q`
 - `python3 -m pytest tests/runtime/test_leases.py tests/runtime/test_evaluation.py -q`
-- No new duplicate-form workflow rows created by normal leased operation
-- Eval invalidation after source writes targets the same workflow_id that
-  tester and guardian paths use
-- Grep: `current_workflow_id` in `track.sh` appears only behind a lease
-  check
+- `python3 -m pytest tests/runtime/policies/test_bash_adapter_regressions.py -q`
+- New test: `bash tests/scenarios/test-context-lib-lease-first.sh` verifying:
+  (a) `get_workflow_binding()` returns lease workflow_id when lease active
+  (b) `read_evaluation_status()` with no explicit wf_id uses lease wf_id
+  (c) Both fall back to branch-derived id when no lease
+  (d) `bind_workflow()` same worktree with different wf_id removes old row
+- `grep -n 'read_evaluation_status.*PROJECT_ROOT")$' hooks/*.sh` returns
+  zero matches (all callers pass explicit workflow_id)
 
 **Scope Manifest:**
-- *Allowed:* `hooks/track.sh`, `hooks/context-lib.sh`,
-  `hooks/subagent-start.sh`, `hooks/check-tester.sh`,
-  `hooks/check-guardian.sh`, `hooks/post-task.sh`,
-  `runtime/core/policy_engine.py`, `runtime/core/workflows.py`,
-  `runtime/core/evaluation.py`, `runtime/core/completions.py`,
-  test files under `tests/`
-- *Required:* `hooks/track.sh` (lease-first workflow_id resolution)
-- *Forbidden:* `runtime/schemas.py`, `settings.json`, `MASTER_PLAN.md`
+- *Allowed:* `hooks/context-lib.sh`, `hooks/check-guardian.sh`,
+  `hooks/check-implementer.sh`, `hooks/session-init.sh`,
+  `runtime/core/workflows.py`, `runtime/core/evaluation.py`,
+  `runtime/core/completions.py`, test files under `tests/`
+- *Required:* `hooks/context-lib.sh` (lease-first helpers),
+  `hooks/check-guardian.sh` (pass _GD_WF_ID),
+  `hooks/check-implementer.sh` (add lease resolution),
+  `hooks/session-init.sh` (add lease resolution),
+  `runtime/core/workflows.py` (bind_workflow duplicate prevention),
+  `tests/scenarios/test-context-lib-lease-first.sh` (new test)
+- *Forbidden:* `runtime/schemas.py`, `settings.json`, `MASTER_PLAN.md`,
+  `hooks/track.sh` (already converged),
+  `runtime/core/policy_engine.py` (already converged),
+  `hooks/check-tester.sh` (already converged)
 
 **Expected state authorities touched:**
-- `evaluation_state` table (workflow_id alignment)
-- `completion_records` table (workflow_id alignment)
-- `workflow_bindings` table (workflow_id consistency; historical repair)
+- `evaluation_state` table (workflow_id alignment at read sites)
+- `workflow_bindings` table (stale row prevention in bind_workflow)
 
 #### W-CONV-4: Readiness Surface Cleanup
 
-- **Status:** not started
+- **Status:** complete (merged 2026-04-05)
 - **Issue:** #5
 - **Depends on:** W-CONV-3 (identity must be stable before changing what
   the operator sees)
@@ -2969,70 +3104,465 @@ end-to-end behavior.
 
 ##### W-CDX-3: Broker Fallback Hardening and Parallel Task Support
 
-- **Weight:** S
+- **Weight:** M (upgraded from S -- connect-phase restructuring adds complexity)
 - **Gate:** review
 - **Deps:** W-CDX-2 (dead task reaping must work so parallel tasks that crash
   are cleaned up)
-- **Integration:** `codex.mjs` `withAppServer()` is the sole connection path;
-  `app-server-broker.mjs` is NOT modified (the broker stays single-socket by
-  design per DEC-CDX-003)
+- **Integration:** `codex.mjs` `withAppServer()` is the sole connection path
+  for `runAppServerReview`, `runAppServerTurn`, and `findLatestTaskThread`;
+  `interruptAppServerTurn` uses its own connection logic (intentionally --
+  see analysis below); `app-server-broker.mjs` is NOT modified (the broker
+  stays single-socket by design per DEC-CDX-003)
+
+**Deep analysis (2026-04-05, revised 2026-04-06 per Codex review findings):**
+
+The following analysis was produced by reading the actual source code of all
+four involved files. Line numbers verified against current main HEAD. Items
+marked [REV] were added or revised in the 2026-04-06 Codex review pass.
+
+1. **Error propagation path for broker socket death:**
+   When the broker process dies mid-request, `BrokerCodexAppServerClient`
+   (app-server.mjs:274-329) receives a socket `error` event. This calls
+   `handleExit(error)` (app-server.mjs:162-175) which rejects all pending
+   promises with the raw Node.js socket error. The socket error carries
+   `error.code` (e.g. `ECONNRESET`, `EPIPE`) but NOT `error.rpcCode`.
+   The current `shouldRetryDirect` check at codex.mjs:616-618 only checks
+   `rpcCode === BROKER_BUSY_RPC_CODE` for transport=broker errors, so
+   socket-death errors fall through to the `code === "ENOENT" || "ECONNREFUSED"`
+   branch. `ECONNRESET` and `EPIPE` are not caught, causing the fallback to
+   be skipped and the error to propagate to the caller.
+
+2. **`withAppServer()` has no access to `onProgress`:**
+   Current signature is `withAppServer(cwd, fn)` (codex.mjs:607). All three
+   callers (`runAppServerReview` at line 779, `runAppServerTurn` at line 835,
+   `findLatestTaskThread` at line 902) have access to `options.onProgress` but
+   do not pass it to `withAppServer`. To emit progress on fallback, the
+   signature must change to `withAppServer(cwd, fn, options)` where options
+   can carry `onProgress`. This is a backward-compatible additive change.
+
+3. **Notification handler works correctly on direct-client (no change needed):**
+   `captureTurn()` (codex.mjs:553) calls `client.setNotificationHandler()`
+   on whatever client it receives. `withAppServer()` passes either the broker
+   client or the direct fallback client to `fn`. Since `fn` receives the
+   client and uses it for all operations including `captureTurn`, notifications
+   route correctly regardless of transport. Verified: no code change needed.
+
+4. **`interruptAppServerTurn()` (codex.mjs:728-771) does NOT use `withAppServer()`:**
+   It constructs its own connection: broker if available, direct otherwise.
+   It has no fallback -- if the connection fails, it returns
+   `{ interrupted: false }`. This is correct behavior: interrupt is
+   best-effort, and if the broker dies, the task it was running is already
+   dead. Adding fallback here would mean connecting direct to interrupt a
+   turn that only exists on the broker's app-server -- pointless. Decision:
+   leave `interruptAppServerTurn` unchanged (DEC-CDX-004).
+
+5. **Task guard analysis -- `resolveLatestTrackedTaskThread()` (codex-companion.mjs:311-325):**
+   - The guard at line 314 filters `listJobs()` for `jobClass === "task"` with
+     `status === "queued" || status === "running"`.
+   - After W-CDX-2, `listJobs()` transparently calls `reapStaleJobs()` --
+     jobs with dead PIDs are marked `status: "failed"` before the filter runs.
+   - The guard is ONLY invoked from `executeTaskRun()` when
+     `request.resumeLast === true` (codex-companion.mjs:440-441). It does NOT
+     affect review launches (`executeReviewRun` never calls it).
+   - Reviews and tasks use separate `withAppServer` calls, so they already
+     work in parallel through the broker/fallback mechanism.
+   - Decision: NO modification to `resolveLatestTrackedTaskThread` is needed
+     (DEC-CDX-005). The reaper handles the dead-task case; the guard correctly
+     prevents resume-last when a genuinely alive task exists.
+
+6. **Additional error code -- `EPIPE`:**
+   When `sendMessage()` writes to a broker socket whose remote end has closed
+   but before the `close` event fires, Node emits `EPIPE`. This is a
+   real-world scenario (broker killed between connect and first write).
+   Must be included in `shouldRetryDirect`.
+
+7. **`ERR_SOCKET_CLOSED` assessment:**
+   This error is thrown by Node's internal socket implementation when writing
+   to an already-destroyed socket. It surfaces as `error.code ===
+   "ERR_SOCKET_CLOSED"`. While less common than `ECONNRESET`/`EPIPE` (those
+   fire on the OS level), it can occur in race conditions where `close` fires
+   synchronously during a write attempt. Include it for completeness.
+
+8. **[REV] Connect-phase failure (Codex review Finding 1 -- HIGH):**
+   `CodexAppServerClient.connect(cwd)` (codex.mjs:610) can throw during
+   `ensureBrokerSession()` (app-server.mjs:337) BEFORE returning a client.
+   When this happens, `client` is still `null` in the catch block. The retry
+   detection `client?.transport === "broker"` evaluates to `undefined`, and
+   `Boolean(process.env[BROKER_ENDPOINT_ENV])` is false in the session-file
+   discovery path (the env var is NOT set when the broker is discovered via
+   `loadBrokerSession()` reading `broker.json` from disk). Result: connect-
+   phase failures in the session-file path silently skip retry and propagate
+   the raw error. The fix requires `withAppServer` to determine
+   `brokerRequested` BEFORE calling `connect()`, based on the same logic
+   `connect()` uses: check `process.env[BROKER_ENDPOINT_ENV]` OR whether
+   `loadBrokerSession(cwd)` returns a non-null session. This boolean is
+   captured before the try block and used for retry detection even when
+   `client` is null.
+
+9. **[REV] Direct-connect failure outside try/catch (Codex review Finding 2 -- HIGH):**
+   In the original plan's Change 3, `CodexAppServerClient.connect(cwd, { disableBroker: true })`
+   was placed BEFORE the try/catch for the direct-client path. If the direct
+   connect itself throws, the error propagates raw -- the `.brokerError` /
+   `.directError` combined error never materializes. The fix: the direct
+   `connect()` call must be INSIDE the try/catch so that failures during
+   direct connection are caught and wrapped in the dual-failure error.
+
+10. **[REV] Clean-close path bypasses retry set (Codex review Finding 3 -- MEDIUM):**
+    `handleExit(error)` (app-server.mjs:162-175) has a graceful-shutdown path:
+    when the broker socket closes without an OS-level error (e.g., broker
+    process exits cleanly while a request is in flight), `this.exitError` is
+    null, and pending promises are rejected with:
+    `new Error("codex app-server connection closed.")` (app-server.mjs:171).
+    This error has no `.code` property. The proposed retry set only checks
+    `.code`, so clean-close errors fall outside it. Fix: add a message-based
+    check to the retry detection: if `error.message` includes
+    `"connection closed"`, treat it as retriable. Decision: DEC-CDX-006.
+
+11. **[REV] Replay safety analysis (Codex review Finding 4 -- MEDIUM):**
+    Retrying on transport errors replays the ENTIRE `fn(client)` closure on a
+    fresh direct client. For `runAppServerTurn`, this means `startThread()` +
+    `captureTurn()` + `turn/start` execute again. For `runAppServerReview`,
+    it means `startThread()` + `captureTurn()` + `review/start` execute again.
+    This is SAFE for the following reasons:
+    - The replay runs against a FRESH direct-process client with its own
+      `codex app-server` process. It has no connection to the dead broker.
+    - `thread/start` creates a new thread each call -- it is a creation
+      endpoint, not idempotent. But this is CORRECT: the broker-side thread
+      died with the broker, so a new thread on the direct client is the
+      desired outcome.
+    - No orphaned resources accumulate on the dead broker: the broker process
+      and its app-server are dead. Any threads created there before failure
+      are ephemeral (both review and task threads are started with
+      `ephemeral: true` by default).
+    - The only wasted cost is a thread allocation if the broker dies between
+      `thread/start` succeeding and `turn/start` failing -- one abandoned
+      ephemeral thread. This is acceptable for a resilience path.
+    - `findLatestTaskThread` replays `thread/list`, which is a read-only
+      query. Replay is trivially safe.
+    Decision: DEC-CDX-007.
+
+12. **[REV] `handleExit` test coverage (Codex review Finding 5 -- LOW):**
+    The test plan mocks at the `connect()`/`withAppServer` level but does not
+    exercise `BrokerCodexAppServerClient.handleExit()` directly. Integration
+    testing of `handleExit` requires an actual IPC socket teardown (killing a
+    broker process mid-request), which cannot be reliably unit-tested. The 11
+    unit tests are sufficient for verifying the retry classification logic.
+    Integration-level `handleExit` propagation testing is deferred -- tracked
+    as a known gap, not a blocking concern.
 
 **Implementer scope:**
 
 - `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/codex.mjs`:
-  - Modify `withAppServer()` (lines 607-636):
-    - Expand `shouldRetryDirect` to also catch `ECONNRESET` and
-      `ERR_SOCKET_CLOSED` (observed when broker process dies mid-request)
-    - Add `emitProgress` call when falling back: "Broker busy or unavailable,
-      connecting directly to Codex runtime." (routed through the options
-      `onProgress` if available, or a module-level logger)
-    - Ensure the direct-client notification handler is properly set up (verify
-      that progress events and turn-completion events reach the caller even when
-      bypassing the broker)
-  - Modify `withAppServer()` error messages:
-    - When the direct-client fallback also fails, include both the original
-      broker error and the direct-client error in the thrown exception for
-      debuggability
+
+  **Change 1: Restructure `withAppServer()` to handle connect-phase failures
+  (addresses Findings 1, 2, 3, and 4)**
+
+  The entire function must be restructured. The current code has a single
+  try/catch where `client = await connect()` is inside the try and the catch
+  determines retry eligibility. This structure fails when `connect()` throws
+  before returning a client (Finding 1) and when the direct-connect also
+  fails (Finding 2).
+
+  Current code (codex.mjs:607-636):
+  ```js
+  async function withAppServer(cwd, fn) {
+    let client = null;
+    try {
+      client = await CodexAppServerClient.connect(cwd);
+      const result = await fn(client);
+      await client.close();
+      return result;
+    } catch (error) {
+      const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
+      const shouldRetryDirect =
+        (client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
+        (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED"));
+
+      if (client) {
+        await client.close().catch(() => {});
+        client = null;
+      }
+
+      if (!shouldRetryDirect) {
+        throw error;
+      }
+
+      const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+      try {
+        return await fn(directClient);
+      } finally {
+        await directClient.close();
+      }
+    }
+  }
+  ```
+
+  Target structure -- complete replacement:
+  ```js
+  /** @type {Set<string>} */
+  const RETRIABLE_TRANSPORT_CODES = new Set([
+    "ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ERR_SOCKET_CLOSED"
+  ]);
+
+  function isRetriableBrokerError(error, client) {
+    // RPC-level: broker reports it is busy servicing another client
+    if (client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) {
+      return true;
+    }
+    // OS-level transport errors (socket died, broker unreachable, etc.)
+    if (error?.code && RETRIABLE_TRANSPORT_CODES.has(error.code)) {
+      return true;
+    }
+    // Clean-close path: handleExit() rejects with a message-only error
+    // when the broker socket closes gracefully (no .code property).
+    // See app-server.mjs:171 and DEC-CDX-006.
+    if (error?.message?.includes("connection closed")) {
+      return true;
+    }
+    return false;
+  }
+
+  async function withAppServer(cwd, fn, options = {}) {
+    // Determine whether a broker was requested BEFORE connect(), so that
+    // connect-phase failures can still trigger retry. The env var covers
+    // explicit broker configuration; loadBrokerSession covers the
+    // session-file discovery path (Finding 1 / DEC-CDX-006).
+    const brokerRequested =
+      Boolean(process.env[BROKER_ENDPOINT_ENV]) ||
+      loadBrokerSession(cwd) != null;
+
+    let client = null;
+    let brokerError = null;
+
+    try {
+      client = await CodexAppServerClient.connect(cwd);
+      const result = await fn(client);
+      await client.close();
+      return result;
+    } catch (error) {
+      brokerError = error;
+      if (client) {
+        await client.close().catch(() => {});
+        client = null;
+      }
+
+      const shouldRetry =
+        brokerRequested && isRetriableBrokerError(error, client);
+
+      if (!shouldRetry) {
+        throw error;
+      }
+    }
+
+    // --- Direct fallback path ---
+    // Both connect() and fn() are inside the try/catch so that
+    // direct-connect failures produce the dual-failure error (Finding 2).
+    // Replay of fn() is safe per DEC-CDX-007.
+    emitProgress(
+      options.onProgress,
+      "Broker busy or unavailable, connecting directly to Codex runtime.",
+      "connecting"
+    );
+
+    let directClient = null;
+    try {
+      directClient = await CodexAppServerClient.connect(cwd, {
+        disableBroker: true
+      });
+      const result = await fn(directClient);
+      await directClient.close();
+      return result;
+    } catch (directError) {
+      const combined = new Error(
+        `Broker failed: ${brokerError.message}; direct fallback also failed: ${directError.message}`
+      );
+      combined.brokerError = brokerError;
+      combined.directError = directError;
+      throw combined;
+    } finally {
+      if (directClient) {
+        await directClient.close().catch(() => {});
+      }
+    }
+  }
+  ```
+
+  Key structural differences from the original plan:
+  - `brokerRequested` is computed BEFORE `connect()` using both the env var
+    AND `loadBrokerSession(cwd)`, so connect-phase failures in the
+    session-file path trigger retry (Finding 1).
+  - `isRetriableBrokerError()` is extracted as a named function for clarity
+    and testability. It checks `.rpcCode`, `.code` (via Set), AND
+    `.message` for the clean-close case (Finding 3).
+  - The direct fallback path has BOTH `connect()` and `fn()` inside a
+    single try/catch, so direct-connect failures produce the dual-failure
+    error with `.brokerError`/`.directError` (Finding 2).
+  - The `client` reference is captured before the `shouldRetry` check so
+    that `isRetriableBrokerError` can still inspect `client?.transport` for
+    the BROKER_BUSY_RPC_CODE case. Note: after a connect-phase failure,
+    `client` is null, but that path uses code/message matching, not
+    transport checking.
+  - The direct-client `close()` is in a finally block. On the success path,
+    `close()` runs in the try body (explicit, clean close) AND the finally
+    block checks if `directClient` is non-null before closing (idempotent
+    via `closed` flag in AppServerClientBase). On the failure path, only
+    finally runs. This ensures no leaked connections.
+  - Replay safety is documented and justified (Finding 4 / DEC-CDX-007).
+
+  **Change 2: Add `options` parameter with `onProgress` for fallback logging**
+
+  Already incorporated in the target structure above. Signature changes from
+  `async function withAppServer(cwd, fn)` to
+  `async function withAppServer(cwd, fn, options = {})`.
+
+  **Change 3: Update all callers to pass `onProgress` through**
+
+  Three call sites:
+  - `runAppServerReview` (line 779): change to `withAppServer(cwd, async (client) => { ... }, { onProgress: options.onProgress })`
+  - `runAppServerTurn` (line 835): change to `withAppServer(cwd, async (client) => { ... }, { onProgress: options.onProgress })`
+  - `findLatestTaskThread` (line 902): no `onProgress` available -- pass no options (fallback progress goes to void, which is fine for a lightweight list operation)
+
+  **Change 4: Import `loadBrokerSession`**
+
+  `codex.mjs` already imports `loadBrokerSession` from `broker-lifecycle.mjs`
+  at line 39. No new import needed. Verified.
 
 - `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/app-server.mjs`:
-  - No changes to the broker client classes
-  - Verify that `BrokerCodexAppServerClient` handles `ECONNRESET` / socket close
-    gracefully (existing `handleExit` should handle this; verify in test)
+  - **No changes.** `BrokerCodexAppServerClient.handleExit()` already
+    propagates socket errors correctly. The socket `error` event passes the
+    raw Node.js error (with `.code`) to `handleExit` which rejects pending
+    promises with it. The clean-close path (line 171) produces the
+    `"codex app-server connection closed."` message that the new
+    message-based check catches. Both paths are verified by code inspection
+    and will be proven by tests.
 
 - `plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`:
-  - Modify `resolveLatestTrackedTaskThread()` (lines 311-325):
-    - The current guard `if (activeTask) throw` prevents launching a new task
-      when any task of jobClass="task" is running/queued. After W-CDX-2 reaped
-      dead tasks, this guard is already improved (dead tasks won't appear as
-      running). Verify this is sufficient -- no code change needed if the reaper
-      handles it.
-    - If the guard is still too restrictive (e.g., blocking a review while a
-      task runs), consider relaxing it to only guard same-jobClass launches.
-      Decision: evaluate during implementation and document the choice.
+  - **No changes.** Per analysis point 5 above, the task guard works correctly
+    after W-CDX-2's transparent reaping. Reviews are not affected by the guard.
+    Decision recorded as DEC-CDX-005.
 
 - `plugins/marketplaces/openai-codex/plugins/codex/tests/test-broker-fallback.mjs` (new):
-  - Test: `withAppServer()` catches BROKER_BUSY_RPC_CODE and retries direct
-  - Test: `withAppServer()` catches ECONNREFUSED and retries direct
-  - Test: `withAppServer()` catches ECONNRESET and retries direct
-  - Test: when both broker and direct fail, error includes both messages
-  - Test: progress events work through direct-client path (mock the
-    notification handler flow)
+
+  Test pattern: follow W-CDX-1/W-CDX-2 test conventions (node:test, node:assert/strict,
+  temp workspace per test, `@decision` annotation header).
+
+  Testing strategy: `withAppServer` depends on `CodexAppServerClient.connect()`.
+  The tests must mock/stub the connection layer. Two approaches:
+  - (a) Override `CodexAppServerClient.connect` via a test-local import patch
+  - (b) Inject a factory function
+
+  Approach (a) is simpler and matches the existing codebase pattern (no DI framework).
+  Since `codex.mjs` imports `CodexAppServerClient` from `app-server.mjs`, the test can
+  create a mock client object with the same interface (`request`, `close`,
+  `setNotificationHandler`, `transport`, `stderr` properties) and test `withAppServer`
+  behavior by exporting it or by testing the higher-level functions that call it.
+
+  However, `withAppServer` is a private function (not exported). The implementer should
+  either: (a) export it for testing, or (b) test through the public functions
+  (`runAppServerReview`, `runAppServerTurn`) with mocked `CodexAppServerClient.connect`.
+
+  Recommended: export `withAppServer` AND `isRetriableBrokerError` as named exports
+  for testability. `withAppServer` has a clean contract:
+  `(cwd, fn, options?) => Promise<T>`. `isRetriableBrokerError` is a pure function
+  that can be tested independently. Add a comment noting they are exported for testing.
+
+  **Required test cases (11 tests):**
+
+  Tests 1-8 are from the original plan. Tests 9-11 are new, added to cover
+  the Codex review findings.
+
+  1. **Broker BUSY retry:** Create a mock broker client (transport="broker") whose
+     `fn` call throws `{ rpcCode: -32001 }`. Verify `withAppServer` retries with a
+     direct client and returns the direct result.
+
+  2. **ECONNREFUSED retry:** Create a mock where `CodexAppServerClient.connect()` throws
+     `{ code: "ECONNREFUSED" }` and `BROKER_ENDPOINT_ENV` is set. Verify retry.
+
+  3. **ECONNRESET retry:** Mock broker client whose `fn` throws `{ code: "ECONNRESET" }`.
+     Verify retry.
+
+  4. **EPIPE retry:** Mock broker client whose `fn` throws `{ code: "EPIPE" }`.
+     Verify retry.
+
+  5. **ERR_SOCKET_CLOSED retry:** Mock broker client whose `fn` throws
+     `{ code: "ERR_SOCKET_CLOSED" }`. Verify retry.
+
+  6. **Non-retriable error passes through:** Mock broker client whose `fn` throws
+     `{ code: "ETIMEOUT" }` (not in the retry set). Verify the error propagates
+     without retry.
+
+  7. **Dual failure produces combined error:** Mock broker client that fails with
+     ECONNRESET, AND mock direct client that also fails. Verify the thrown error
+     message contains both error messages, and has `brokerError`/`directError`
+     properties.
+
+  8. **Fallback emits progress:** Mock broker client that fails with BROKER_BUSY.
+     Pass an `onProgress` spy. Verify the spy was called with a message containing
+     "Broker busy or unavailable" before the direct client attempt.
+
+  9. **[REV] Connect-phase failure triggers retry (Finding 1):**
+     Mock `CodexAppServerClient.connect()` to throw `{ code: "ECONNREFUSED" }`
+     on first call (broker path). Do NOT set `BROKER_ENDPOINT_ENV`. Instead,
+     ensure `loadBrokerSession(cwd)` returns a non-null session object (mock
+     or write a `broker.json` to the temp workspace's state dir). Verify that
+     `withAppServer` retries with `{ disableBroker: true }` and returns the
+     direct result. This proves that `brokerRequested` is computed from
+     `loadBrokerSession()` before `connect()`, not from `client?.transport`
+     after a failed connect.
+
+  10. **[REV] Direct-connect failure produces dual-failure error (Finding 2):**
+      Mock `CodexAppServerClient.connect()` to return a broker client whose
+      `fn` throws ECONNRESET (first call), then throw ECONNREFUSED on the
+      second call (direct connect). Verify the thrown error has `.brokerError`
+      with code ECONNRESET and `.directError` with code ECONNREFUSED. This
+      proves the direct `connect()` is inside the try/catch.
+
+  11. **[REV] Clean-close message-only error triggers retry (Finding 3):**
+      Mock broker client whose `fn` throws
+      `new Error("codex app-server connection closed.")` with no `.code`.
+      Verify `withAppServer` retries with a direct client. This proves the
+      message-based check in `isRetriableBrokerError`.
+
+  **Note on `handleExit` integration coverage (Finding 5):**
+  Tests mock at the `connect()`/`withAppServer` level. Direct testing of
+  `BrokerCodexAppServerClient.handleExit()` propagation requires an actual
+  IPC socket teardown (killing a broker process mid-request), which is not
+  reliably unit-testable. The 11 unit tests are sufficient for verifying
+  the retry classification logic and the `withAppServer` control flow.
+  Integration-level `handleExit` testing is a known deferred gap.
 
 ###### Evaluation Contract for W-CDX-3
 
 **Required tests:**
-- All tests in `test-broker-fallback.mjs` pass
-- All tests from W-CDX-1 and W-CDX-2 still pass
-- Manual: launch a background task, then immediately launch a foreground review;
-  verify both succeed (one via broker, one via direct fallback)
+- All 11 tests in `test-broker-fallback.mjs` pass
+- All tests from W-CDX-1 (`test-state-lock.mjs`) still pass
+- All tests from W-CDX-2 (`test-reaper.mjs`) still pass
+- Run all three test files: `node --test tests/test-state-lock.mjs tests/test-reaper.mjs tests/test-broker-fallback.mjs`
 
 **Required real-path checks:**
-1. `withAppServer()` retries with direct client on BROKER_BUSY_RPC_CODE
-2. `withAppServer()` retries with direct client on ECONNREFUSED
-3. `withAppServer()` retries with direct client on ECONNRESET
-4. Fallback emits a progress/log message indicating direct connection
-5. Combined error message includes both broker and direct-client failure details
-6. Direct-client notification handler receives progress and turn-completion events
+1. `withAppServer()` retries with direct client on `BROKER_BUSY_RPC_CODE` (-32001)
+2. `withAppServer()` retries with direct client on `ECONNREFUSED`
+3. `withAppServer()` retries with direct client on `ECONNRESET`
+4. `withAppServer()` retries with direct client on `EPIPE`
+5. `withAppServer()` retries with direct client on `ERR_SOCKET_CLOSED`
+6. Non-retriable errors (e.g. `ETIMEOUT`, generic Error with unrelated message)
+   propagate without retry
+7. Fallback emits a progress message via `onProgress` before attempting direct
+8. When direct fallback also fails, thrown error contains both broker and direct
+   error messages plus `.brokerError` and `.directError` properties
+9. `runAppServerReview` and `runAppServerTurn` pass `onProgress` through to
+   `withAppServer` (verified by test 8 or by code inspection)
+10. [REV] Connect-phase failure (before client assignment) triggers retry when
+    `loadBrokerSession(cwd)` indicates a broker was requested, even when
+    `process.env[BROKER_ENDPOINT_ENV]` is not set (test 9)
+11. [REV] Direct-connect failure (`connect(cwd, { disableBroker: true })` throws)
+    produces a dual-failure error with `.brokerError` and `.directError`, NOT a
+    raw propagated error (test 10)
+12. [REV] Clean-close error (`"codex app-server connection closed."` with no
+    `.code`) triggers retry (test 11)
+13. [REV] `isRetriableBrokerError` returns false for errors with unrelated
+    messages and no `.code` (e.g. `new Error("permission denied")`) -- covered
+    by test 6 variant or inline assertion in test 11
 
 **Required authority invariants:**
 - The broker remains the primary connection path (no behavior change for
@@ -3040,30 +3570,60 @@ end-to-end behavior.
 - `app-server-broker.mjs` is NOT modified (single-socket design preserved)
 - Direct-client fallback is a resilience mechanism, not a replacement for the
   broker
+- `interruptAppServerTurn` is unchanged (DEC-CDX-004)
+- `resolveLatestTrackedTaskThread` is unchanged (DEC-CDX-005)
+- [REV] `loadBrokerSession()` is called read-only at the top of `withAppServer`
+  to pre-compute `brokerRequested`. This must NOT modify state, start
+  processes, or have side effects. `loadBrokerSession` (broker-lifecycle.mjs:76-87)
+  only reads `broker.json` from disk -- verified safe.
 
 **Required integration points:**
-- `runAppServerReview()` works via broker or direct fallback
-- `runAppServerTurn()` works via broker or direct fallback
-- `interruptAppServerTurn()` works via broker or direct fallback
-- `findLatestTaskThread()` works via broker or direct fallback
+- `runAppServerReview()` works via broker or direct fallback (tested through
+  `withAppServer` which it calls at line 779)
+- `runAppServerTurn()` works via broker or direct fallback (tested through
+  `withAppServer` which it calls at line 835)
+- `findLatestTaskThread()` works via broker or direct fallback (tested through
+  `withAppServer` which it calls at line 902)
 - Progress events reach `createJobProgressUpdater()` through both paths
+  (the `onProgress` callback is the same function object regardless of which
+  transport `withAppServer` ends up using)
+- `interruptAppServerTurn()` is NOT expected to work through fallback -- it
+  uses its own connection logic and returns `{ interrupted: false }` on
+  failure (this is correct behavior per DEC-CDX-004)
+- [REV] `loadBrokerSession(cwd)` is already imported by `codex.mjs` at line 39.
+  No new import is required. The call in `withAppServer` is a pure read that
+  does not interfere with `ensureBrokerSession` called inside `connect()`.
 
 **Forbidden shortcuts:**
 - Do not modify `app-server-broker.mjs` (broker stays single-socket)
+- Do not modify `codex-companion.mjs` (task guard is correct after W-CDX-2)
 - Do not add broker connection pooling or multi-socket support
 - Do not modify any file outside the plugin's `scripts/` directory
 - Do not introduce external npm dependencies
+- Do not use setTimeout-based retry or exponential backoff -- the fallback is
+  a single immediate retry to direct, not a retry loop
+- [REV] Do not add retry for errors thrown DURING `fn(client)` on the direct
+  fallback path. Only the broker-to-direct fallback is retried; the direct
+  path itself gets one attempt. Double-retry would compound replay risk.
+- [REV] Do not modify `handleExit()` in `app-server.mjs` to add a `.code`
+  property to the clean-close error. The message-based check in
+  `isRetriableBrokerError` handles it without touching the app-server layer.
 
 **Ready-for-guardian definition:**
-All tests pass. Fallback handles all observed error codes. Progress events work
-through both broker and direct paths. The manual parallel-task test
-demonstrates end-to-end concurrent execution.
+All 11 tests pass. All W-CDX-1 and W-CDX-2 tests still pass. The exported
+`withAppServer` function handles all five retriable error codes, the RPC busy
+code, AND the message-based clean-close detection. Connect-phase failures
+trigger retry when `loadBrokerSession` indicates a broker was requested.
+Direct-connect failures produce dual-failure errors. Non-retriable errors
+propagate cleanly. The progress callback fires on fallback. Replay safety is
+documented (DEC-CDX-007). No changes to `app-server-broker.mjs`,
+`app-server.mjs`, `codex-companion.mjs`, or any file outside the plugin's
+`scripts/` directory.
 
 ###### Scope Manifest for W-CDX-3
 
 **Allowed files/directories:**
 - `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/codex.mjs` (modify)
-- `plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs` (modify, only if `resolveLatestTrackedTaskThread` guard needs relaxing)
 - `plugins/marketplaces/openai-codex/plugins/codex/tests/test-broker-fallback.mjs` (new)
 
 **Required files/directories:**
@@ -3072,14 +3632,26 @@ demonstrates end-to-end concurrent execution.
 
 **Forbidden touch points:**
 - `app-server-broker.mjs` (broker is not modified per DEC-CDX-003)
+- `app-server.mjs` (no changes needed -- error propagation is already correct;
+  clean-close handled by message-based check per DEC-CDX-006)
+- `codex-companion.mjs` (task guard works correctly after W-CDX-2 per DEC-CDX-005)
+- `broker-lifecycle.mjs` (read-only use of `loadBrokerSession` -- no modifications)
 - `state.mjs` (already handled by W-CDX-1/W-CDX-2)
 - `tracked-jobs.mjs`, `job-control.mjs` (no changes needed)
 - Any file outside `plugins/marketplaces/openai-codex/plugins/codex/`
 - Core hook/runtime/policy files
 
 **Expected state authorities touched:**
-- MODIFIED: `codex.mjs` `withAppServer()` error handling -- broader retry scope
-- UNCHANGED: broker architecture, state.json, job lifecycle
+- MODIFIED: `codex.mjs` `withAppServer()` error handling -- complete
+  restructuring: `brokerRequested` pre-computed from env + `loadBrokerSession`,
+  extracted `isRetriableBrokerError()` with code + message matching, direct
+  fallback path has `connect()` inside try/catch for dual-failure errors,
+  new `options` parameter with `onProgress`, replay safety documented
+  (DEC-CDX-007). Both `withAppServer` and `isRetriableBrokerError` are now
+  exported (were private).
+- UNCHANGED: broker architecture, app-server client classes (`handleExit`
+  behavior is unchanged -- the clean-close error message is consumed as-is),
+  state.json, job lifecycle, codex-companion task guard
 
 ### INIT-AUTODISPATCH: Automatic Role Sequencing Pipeline
 
@@ -3741,6 +4313,789 @@ Stop hook behavior is unchanged. settings.json hook ordering is correct.
   leases, Codex plugin state.json
 
 
+### INIT-OBS: Native Observatory
+
+- **Status:** planned
+- **Blocked by:** none (reads existing runtime tables; new tables are additive;
+  hook emission changes are small and independent of other initiatives)
+- **Problem:** The hooks and runtime already compute rich operational data
+  (agent lifecycle, test results, guard denials, evaluation verdicts, commit
+  outcomes, files changed, session duration) but discard most of it. There is
+  no self-improvement flywheel: no mechanism surfaces recurring failure
+  patterns, inefficiencies, or improvement opportunities. The pro fork had an
+  observatory but it was built on filesystem traces (59% orphan rate,
+  rebuild_index() required, corrupt manifests), JSONL time series (tmp+mv
+  dance for atomic append), and 1,000+ lines of bash pipeline. Our fork has
+  SQLite as the trace store, structured completion records, and a Python
+  runtime -- the right substrate to build this natively.
+- **Goal:** Build a self-improvement flywheel that: (1) emits structured
+  metrics from existing hooks into SQLite, (2) provides SQL-based analysis
+  replacing bash pipelines, (3) tracks suggestions through a closed-loop
+  lifecycle (propose -> accept/reject/defer -> measure impact), and (4) exposes
+  the synthesis layer as a SKILL.md the LLM can invoke on demand.
+- **Scope:** Wave 1: Schema + domain module + CLI (tables, Python API,
+  cc-policy commands). Wave 2: Hook emission (small additions to existing
+  hooks, no new hooks). Wave 3: Analysis queries + SKILL.md (SQL-based analysis
+  functions, convergence tracking, LLM synthesis skill). Wave 4: Integration
+  tests + observatory upgrade (replace existing bare sidecar with full
+  observatory).
+- **Exit:** (1) `obs_metrics` and `obs_suggestions` tables exist and are
+  populated by live hooks. (2) `cc-policy obs` CLI provides analyze, suggest,
+  accept, reject, defer, and converge commands. (3) At least 8 metrics are
+  emitted from hooks (agent duration, test pass rate, guard denial rate,
+  evaluation verdict distribution, commit success rate, files per session,
+  hook failure rate, session duration). (4) Convergence tracking measures
+  whether accepted suggestions improved their target metric. (5) A SKILL.md
+  exists that the LLM can invoke to analyze trends, surface patterns, and
+  manage suggestions. (6) The existing bare `sidecars/observatory/observe.py`
+  is upgraded to use the new analysis infrastructure.
+- **Dependencies:** none (additive; does not require any other initiative)
+
+#### Observatory Design
+
+**Why not port the pro fork's observatory:**
+
+The pro fork's observatory had three stages: `analyze.sh` (540 lines) scanned
+filesystem trace directories and computed metrics via jq; `snapshot.sh` (240
+lines) transformed the filesystem data into JSONL time series;
+`converge.sh` (240 lines) tracked suggestion lifecycle. This pipeline had
+fundamental problems:
+
+1. Filesystem traces had a 59% orphan rate (TTL-deleted dirs left stale index
+   references)
+2. `rebuild_index()` was required before every analysis
+3. Corrupt manifests crashed jq silently
+4. Atomic JSONL append required tmp+mv dance for concurrency safety
+5. `snapshot.sh` existed solely to transform filesystem data into queryable
+   format -- it would be unnecessary with SQL
+6. Required `source-lib.sh -> trace-lib.sh -> state-lib.sh` library chain we
+   do not have
+
+Our fork has none of these problems. SQLite is the trace store. The runtime
+has structured tables for everything the observatory needs. Analysis should be
+SQL queries, not jq pipelines.
+
+**Data flow architecture:**
+
+```
+Hooks (emission)          Runtime (storage)         Observatory (analysis)
+  subagent-start.sh  --+
+  check-*.sh         --+                          +-- obs_analyze()
+  test-runner.sh     --+-- rt_obs_metric() --> obs_metrics  --+
+  auto-review.sh     --+                          |   obs_suggest()
+  track.sh           --+                          |   obs_converge()
+  session-end.sh     --+                          +-- SKILL.md (LLM)
+                                                       |
+                                                  obs_suggestions
+                                                  (lifecycle mgmt)
+```
+
+**What hooks emit (additive, not new hooks):**
+
+| Metric Name | Source Hook | Data | Frequency |
+|---|---|---|---|
+| `agent_duration_s` | `check-*.sh` (via post-task.sh) | role, duration seconds, verdict | Every agent stop |
+| `test_result` | `test-runner.sh` | pass/fail/skip counts, duration | Every test run |
+| `guard_denial` | `pre-write.sh`, `pre-bash.sh` | policy name, reason | Every denial |
+| `eval_verdict` | `check-tester.sh` | verdict, blockers/major/minor | Every evaluator run |
+| `commit_outcome` | `check-guardian.sh` | result, operation class | Every guardian run |
+| `files_changed` | `track.sh` | count | Every file write |
+| `hook_failure` | `log.sh` (error handler) | hook name, exit code | Every hook failure |
+| `session_summary` | `session-end.sh` | prompts, duration, agents spawned | Every session end |
+
+**Metric schema (obs_metrics):**
+
+```sql
+CREATE TABLE IF NOT EXISTS obs_metrics (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    metric_name TEXT    NOT NULL,
+    value       REAL    NOT NULL,
+    labels_json TEXT,
+    session_id  TEXT,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_obs_metrics_name_time
+    ON obs_metrics (metric_name, created_at);
+```
+
+- `metric_name`: one of the defined metric names above
+- `value`: numeric value (duration in seconds, count, 0/1 for boolean)
+- `labels_json`: JSON object with dimension keys for filtering (e.g.,
+  `{"role": "implementer", "verdict": "complete"}`)
+- `session_id`: links to the traces table for session context
+- `created_at`: epoch timestamp for time series queries
+
+**Suggestion schema (obs_suggestions):**
+
+```sql
+CREATE TABLE IF NOT EXISTS obs_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    category        TEXT    NOT NULL,
+    title           TEXT    NOT NULL,
+    body            TEXT,
+    target_metric   TEXT,
+    baseline_value  REAL,
+    status          TEXT    NOT NULL DEFAULT 'proposed',
+    disposition_at  INTEGER,
+    measure_after   INTEGER,
+    measured_value  REAL,
+    effective       INTEGER,
+    source_session  TEXT,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_obs_suggestions_status
+    ON obs_suggestions (status);
+```
+
+- `category`: pattern type (e.g., `repeated_denial`, `slow_agent`,
+  `test_regression`, `stale_marker`, `evaluation_churn`)
+- `target_metric`: which metric this suggestion claims to improve
+- `baseline_value`: the metric's value at suggestion time (for convergence)
+- `status`: `proposed`, `accepted`, `rejected`, `deferred`, `measured`
+- `measure_after`: epoch after which convergence should be checked
+- `measured_value`: the metric's value at convergence check time
+- `effective`: convergence result (1 = improved, 0 = no change, -1 = regressed)
+
+**Suggestion lifecycle:**
+
+```
+proposed --> accepted --> measured (effective=1: fix worked)
+    |            |              +--> measured (effective=0: ineffective fix)
+    |            |              +--> measured (effective=-1: regression)
+    +--> rejected
+    +--> deferred --> proposed (re-surface after N sessions)
+```
+
+**Convergence tracking:**
+
+When a suggestion is accepted, the observatory records the `baseline_value`
+of the `target_metric` and sets `measure_after` to `now + N sessions` (or
+N days). When the convergence check runs:
+1. Query the target metric's average over the measurement window
+2. Compare to baseline_value
+3. Set `effective` to 1 (improved), 0 (no change), or -1 (regressed)
+4. Set status to `measured`
+5. If ineffective, the LLM synthesis layer can propose a revised suggestion
+
+**Analysis functions (SQL-based, replacing 540-line analyze.sh):**
+
+The `runtime/core/observatory.py` domain module provides:
+
+- `emit_metric(conn, name, value, labels, session_id)` -- insert a metric row
+- `query_metrics(conn, name, since, until, labels_filter)` -- time series
+- `compute_trend(conn, name, window_hours)` -- moving average with slope
+- `detect_anomalies(conn, name, threshold_sigma)` -- values beyond N sigma
+- `agent_performance(conn, role, window_hours)` -- duration/verdict stats
+- `denial_hotspots(conn, window_hours)` -- most-denied policies
+- `test_health(conn, window_hours)` -- pass rate trend
+- `suggest(conn, category, title, body, target_metric, baseline)` -- create
+- `accept_suggestion(conn, id, measure_after)` -- accept with measurement window
+- `reject_suggestion(conn, id)` -- reject
+- `defer_suggestion(conn, id)` -- defer
+- `check_convergence(conn)` -- measure all accepted suggestions past their window
+- `summary(conn, window_hours)` -- full observatory report dict
+
+#### Wave Plan
+
+```
+W-OBS-1 (Schema + Domain + CLI)
+    +--> W-OBS-2 (Hook Emission)
+              +--> W-OBS-3 (Analysis + SKILL.md)
+                        +--> W-OBS-4 (Integration Tests + Sidecar Upgrade)
+```
+
+W-OBS-1 must land first (tables and API exist). W-OBS-2 depends on W-OBS-1
+(emission needs the domain module). W-OBS-3 depends on W-OBS-2 (analysis
+needs data). W-OBS-4 depends on W-OBS-3 (integration tests exercise the full
+pipeline).
+
+Critical path: W-OBS-1 -> W-OBS-2 -> W-OBS-3 -> W-OBS-4. Max width: 1.
+
+##### W-OBS-1: Schema, Domain Module, and CLI
+
+- **Weight:** M
+- **Gate:** review (user sees schema and CLI output)
+- **Deps:** none
+
+**Implementer scope:**
+
+- `runtime/schemas.py` -- add `OBS_METRICS_DDL`, `OBS_METRICS_INDEX_DDL`,
+  `OBS_SUGGESTIONS_DDL`, `OBS_SUGGESTIONS_INDEX_DDL` constants and add them
+  to `ALL_DDL`.
+- `runtime/core/observatory.py` -- NEW: domain module with all functions
+  listed in the "Analysis functions" section above. Each function takes a
+  `sqlite3.Connection` as first argument (consistent with all other domain
+  modules). Pure SQL queries, no subprocess calls.
+- `runtime/cli.py` -- add `obs` domain with actions:
+  - `cc-policy obs emit <name> <value> [--labels '...'] [--session-id '...']`
+  - `cc-policy obs query <name> [--since N] [--until N] [--labels '...'] [--limit N]`
+  - `cc-policy obs trend <name> [--window-hours N]`
+  - `cc-policy obs anomalies <name> [--threshold N]`
+  - `cc-policy obs agent-perf <role> [--window-hours N]`
+  - `cc-policy obs denial-hotspots [--window-hours N]`
+  - `cc-policy obs test-health [--window-hours N]`
+  - `cc-policy obs suggest <category> <title> [--body '...'] [--target-metric '...'] [--baseline N]`
+  - `cc-policy obs accept <id> [--measure-after N]`
+  - `cc-policy obs reject <id>`
+  - `cc-policy obs defer <id>`
+  - `cc-policy obs converge`
+  - `cc-policy obs summary [--window-hours N]`
+- `hooks/lib/runtime-bridge.sh` -- add `rt_obs_metric()` shell wrapper:
+  `rt_obs_metric <name> <value> [labels_json] [session_id]` calling
+  `cc_policy obs emit "$1" "$2" --labels "${3:-}" --session-id "${4:-}"`
+  with `>/dev/null 2>&1` for fire-and-forget semantics.
+  Export via the existing export block.
+- `hooks/context-lib.sh` -- add `rt_obs_metric` to the export list.
+- `tests/runtime/test_observatory.py` -- NEW: unit tests covering:
+  - emit_metric round-trip (emit, query, verify)
+  - compute_trend with synthetic data
+  - detect_anomalies with synthetic outlier
+  - suggest/accept/reject/defer lifecycle
+  - check_convergence with improved/unchanged/regressed scenarios
+  - summary output structure
+  - agent_performance query
+  - denial_hotspots query
+  - test_health query
+
+**Tester scope:**
+
+- `obs_metrics` and `obs_suggestions` tables exist after `ensure_schema()`
+- `emit_metric` writes a row; `query_metrics` reads it back with correct values
+- `compute_trend` returns slope and average
+- `detect_anomalies` returns outliers beyond threshold
+- `suggest` -> `accept` -> `check_convergence` lifecycle produces measured status
+- CLI `cc-policy obs emit/query/suggest/accept/reject/defer/converge/summary`
+  all produce valid JSON output
+- `rt_obs_metric` shell wrapper calls `cc-policy obs emit` successfully
+- No writes to any existing table (obs tables only)
+- All existing tests pass
+
+###### Evaluation Contract for W-OBS-1
+
+**Required tests:**
+
+1. `tests/runtime/test_observatory.py` exists and passes with 0 failures
+2. `emit_metric` + `query_metrics` round-trip returns matching data
+3. `compute_trend` with 10+ data points returns dict with `slope` and `average`
+4. `detect_anomalies` with injected outlier returns the outlier
+5. Full suggestion lifecycle: propose -> accept -> measure -> converge
+6. `check_convergence` correctly classifies improved (effective=1),
+   unchanged (effective=0), and regressed (effective=-1) metrics
+7. `summary` returns dict with keys: `metrics_24h`, `active_suggestions`,
+   `recent_anomalies`, `convergence_results`, `agent_performance`,
+   `denial_hotspots`, `test_health`
+
+**Required real-path checks:**
+
+8. `cc-policy obs emit test_metric 42.0 --labels '{"key":"val"}'` writes a row
+   to `obs_metrics`
+9. `cc-policy obs query test_metric` returns the row from check 8
+10. `cc-policy obs suggest test_cat "Test Title"` creates an obs_suggestions row
+11. `cc-policy obs summary` returns valid JSON without error
+12. `rt_obs_metric test_metric 42.0 '{"key":"val"}'` in a bash context
+    succeeds without error
+
+**Required authority invariants:**
+
+- `obs_metrics` is the sole store for observatory metrics (no JSONL, no flat
+  files)
+- `obs_suggestions` is the sole store for suggestion lifecycle (no flat files)
+- No reads or writes to any existing table (events, traces, completion_records,
+  etc.) from the observatory domain module in this wave -- analysis queries
+  that join across tables come in W-OBS-3
+- `ensure_schema()` creates both new tables idempotently
+
+**Required integration points:**
+
+- `runtime/schemas.py` `ALL_DDL` list includes the new DDL constants
+- `runtime/cli.py` obs domain registered alongside existing domains
+- `hooks/lib/runtime-bridge.sh` exports `rt_obs_metric` alongside existing
+  `rt_*` functions
+- `hooks/context-lib.sh` export list includes `rt_obs_metric`
+
+**Forbidden shortcuts:**
+
+- Do not create a separate database for observatory data
+- Do not add observatory methods to existing domain modules (events.py,
+  traces.py, etc.) -- keep it in its own `observatory.py`
+- Do not modify `settings.json`
+- Do not modify any hook logic (emission is W-OBS-2)
+- Do not add JSONL or flat-file output
+
+**Ready-for-guardian definition:**
+
+All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+`git diff --stat` shows only files in the Scope Manifest.
+
+###### Scope Manifest for W-OBS-1
+
+**Allowed files/directories:**
+
+- `runtime/schemas.py` (modify: add DDL constants)
+- `runtime/core/observatory.py` (new: domain module)
+- `runtime/cli.py` (modify: add obs domain)
+- `hooks/lib/runtime-bridge.sh` (modify: add rt_obs_metric wrapper)
+- `hooks/context-lib.sh` (modify: add rt_obs_metric to export list)
+- `tests/runtime/test_observatory.py` (new: unit tests)
+
+**Required files/directories:** All 6 of the above must be created or modified.
+
+**Forbidden touch points:**
+
+- `settings.json` (no new hooks)
+- `hooks/*.sh` except context-lib.sh (emission is W-OBS-2)
+- `agents/*.md`, `CLAUDE.md` (no prompt changes)
+- `sidecars/observatory/observe.py` (sidecar upgrade is W-OBS-4)
+- `runtime/core/events.py`, `runtime/core/traces.py`,
+  `runtime/core/completions.py`, `runtime/core/test_state.py` (observatory
+  does not modify other domain modules)
+- `MASTER_PLAN.md` (except for this planning amendment)
+
+**Expected state authorities touched:**
+
+- NEW: `obs_metrics` table -- sole authority for observatory time series
+- NEW: `obs_suggestions` table -- sole authority for suggestion lifecycle
+- MODIFIED: `runtime/schemas.py` ALL_DDL -- new entries appended
+- MODIFIED: `runtime/cli.py` -- new domain handler registered
+- MODIFIED: `hooks/lib/runtime-bridge.sh` -- new shell wrapper added
+- MODIFIED: `hooks/context-lib.sh` -- export list extended
+- UNCHANGED: all existing tables, hooks, policies, sidecars
+
+##### W-OBS-2: Hook Emission
+
+- **Weight:** M
+- **Gate:** review (user sees metric data flowing into obs_metrics)
+- **Deps:** W-OBS-1 (tables and rt_obs_metric must exist)
+
+**Implementer scope:**
+
+Each hook below gains a small addition (1-3 lines) calling `rt_obs_metric`.
+No hook logic is changed; emission is appended after existing processing.
+
+- `hooks/check-implementer.sh` -- after completion record submission, emit
+  `agent_duration_s` metric with labels `{"role":"implementer","verdict":"..."}`.
+  Duration computed from marker `started_at` to current epoch.
+- `hooks/check-tester.sh` -- after evaluation state write, emit
+  `agent_duration_s` with labels `{"role":"tester","verdict":"..."}` and
+  `eval_verdict` with labels `{"verdict":"...","blockers":N,"major":N,"minor":N}`.
+- `hooks/check-guardian.sh` -- after landing result, emit `agent_duration_s`
+  with labels `{"role":"guardian","verdict":"..."}` and `commit_outcome` with
+  labels `{"result":"...","operation_class":"..."}`.
+- `hooks/check-planner.sh` -- after planner checks, emit `agent_duration_s`
+  with labels `{"role":"planner"}`.
+- `hooks/test-runner.sh` -- after test completion, emit `test_result` with
+  labels `{"status":"...","pass":N,"fail":N,"skip":N}` and value = duration
+  seconds.
+- `hooks/pre-write.sh` -- when policy denies (exit with deny JSON), emit
+  `guard_denial` with value 1 and labels `{"policy":"...","hook":"pre-write"}`.
+- `hooks/pre-bash.sh` -- when policy denies, emit `guard_denial` with value 1
+  and labels `{"policy":"...","hook":"pre-bash"}`.
+- `hooks/track.sh` -- after file tracking, emit `files_changed` with value =
+  count of files.
+- `hooks/session-end.sh` -- emit `session_summary` with value = session
+  duration seconds and labels `{"prompt_count":N,"agents_spawned":N}`.
+- `hooks/log.sh` -- in the error handler (if one exists or add a minimal trap),
+  emit `hook_failure` with value 1 and labels `{"hook":"...","exit_code":N}`.
+  This is best-effort; if the runtime is unavailable, the failure itself should
+  not cascade.
+
+**Tester scope:**
+
+- Each modified hook emits the expected metric after its normal processing
+- Metric values are numerically correct (duration matches actual elapsed,
+  counts match actual counts)
+- Labels JSON is valid and contains the expected keys
+- Emission failures do not prevent the hook from completing its primary function
+  (all rt_obs_metric calls have `|| true` or equivalent error suppression)
+- No hook behavior changes (deny/allow decisions unchanged; output unchanged)
+- All existing tests pass
+- At least one new metric row appears in `obs_metrics` for each emission point
+  after a representative hook execution
+
+###### Evaluation Contract for W-OBS-2
+
+**Required tests:**
+
+1. After running check-implementer.sh with a mock agent stop, `obs_metrics`
+   contains an `agent_duration_s` row with `role=implementer`
+2. After running check-tester.sh with a valid eval trailer, `obs_metrics`
+   contains `agent_duration_s` (role=tester) and `eval_verdict` rows
+3. After running check-guardian.sh with a landing result, `obs_metrics`
+   contains `commit_outcome` row
+4. After running test-runner.sh, `obs_metrics` contains `test_result` row
+5. After a pre-write.sh denial, `obs_metrics` contains `guard_denial` row
+   with `hook=pre-write`
+6. After a pre-bash.sh denial, `obs_metrics` contains `guard_denial` row
+   with `hook=pre-bash`
+7. After track.sh fires, `obs_metrics` contains `files_changed` row
+8. After session-end.sh fires, `obs_metrics` contains `session_summary` row
+9. All emission calls include `|| true` or equivalent so hook primary
+   function is not impacted by emission failure
+10. No existing test regressions
+
+**Required real-path checks:**
+
+11. Run a representative hook sequence (session-init -> subagent-start ->
+    check-implementer -> check-tester -> check-guardian -> session-end) and
+    verify obs_metrics has rows for each expected metric
+12. `cc-policy obs query agent_duration_s` returns the rows from check 11
+
+**Required authority invariants:**
+
+- No hook deny/allow decision is changed by emission
+- No hook output format is changed by emission
+- `obs_metrics` is the only table written by emission (no new event types
+  in the events table for metrics)
+- rt_obs_metric calls are fire-and-forget (non-blocking on hook completion)
+
+**Required integration points:**
+
+- Each emission site is in the same function/block where the relevant data is
+  computed (e.g., duration is computed where the marker is read, not
+  re-computed elsewhere)
+- context-lib.sh sources and exports rt_obs_metric so all hooks have access
+
+**Forbidden shortcuts:**
+
+- Do not add new hook files or settings.json entries
+- Do not change hook deny/allow logic
+- Do not change hook output JSON structure
+- Do not emit metrics to the events table (use obs_metrics)
+- Do not add synchronous waits for metric emission
+
+**Ready-for-guardian definition:**
+
+All 12 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+Emission is non-blocking. `git diff --stat` shows only files in the Scope
+Manifest.
+
+###### Scope Manifest for W-OBS-2
+
+**Allowed files/directories:**
+
+- `hooks/check-implementer.sh` (modify: add agent_duration_s emission)
+- `hooks/check-tester.sh` (modify: add agent_duration_s + eval_verdict emission)
+- `hooks/check-guardian.sh` (modify: add agent_duration_s + commit_outcome)
+- `hooks/check-planner.sh` (modify: add agent_duration_s emission)
+- `hooks/test-runner.sh` (modify: add test_result emission)
+- `hooks/pre-write.sh` (modify: add guard_denial emission on deny path)
+- `hooks/pre-bash.sh` (modify: add guard_denial emission on deny path)
+- `hooks/track.sh` (modify: add files_changed emission)
+- `hooks/session-end.sh` (modify: add session_summary emission)
+- `hooks/log.sh` (modify: add hook_failure emission in error handler)
+- `tests/scenarios/test-obs-emission.sh` (new: verify metrics appear after
+  representative hook sequence)
+
+**Required files/directories:** All 11 of the above.
+
+**Forbidden touch points:**
+
+- `settings.json` (no new hook entries)
+- `runtime/core/observatory.py` (domain module is W-OBS-1, already landed)
+- `runtime/schemas.py` (schema is W-OBS-1, already landed)
+- `runtime/cli.py` (CLI is W-OBS-1, already landed)
+- `sidecars/observatory/` (sidecar upgrade is W-OBS-4)
+- `agents/*.md`, `CLAUDE.md`
+- `MASTER_PLAN.md` (except for this planning amendment)
+- `hooks/lib/runtime-bridge.sh` (rt_obs_metric already added in W-OBS-1)
+- `hooks/context-lib.sh` (export already added in W-OBS-1)
+
+**Expected state authorities touched:**
+
+- MODIFIED: `obs_metrics` table (new rows written by hooks)
+- MODIFIED: 10 hook files (small emission additions)
+- UNCHANGED: all existing tables, all hook deny/allow decisions, all hook
+  output formats, settings.json
+
+##### W-OBS-3: Analysis Queries, Convergence Tracking, and SKILL.md
+
+- **Weight:** L
+- **Gate:** review (user sees SKILL.md analysis output)
+- **Deps:** W-OBS-2 (analysis needs metric data flowing from hooks)
+
+**Implementer scope:**
+
+- `runtime/core/observatory.py` -- enhance the analysis functions to perform
+  cross-table queries. Add:
+  - `cross_analysis(conn, window_hours)` -- joins obs_metrics with traces,
+    completion_records, evaluation_state, and agent_markers to produce a
+    comprehensive operational picture. This is the SQL equivalent of the pro
+    fork's 540-line analyze.sh.
+  - `pattern_detection(conn, window_hours)` -- identifies recurring patterns:
+    - Same policy denied 3+ times in a window (repeated denial)
+    - Agent duration trending upward (slow agent)
+    - Test pass rate declining (test regression)
+    - Multiple needs_changes verdicts for the same workflow (evaluation churn)
+    - Stale markers persisting across sessions (stale marker)
+  - `generate_report(conn, window_hours)` -- produces a structured dict that
+    the SKILL.md can present: metrics summary, trend analysis, detected
+    patterns, active suggestions, convergence results.
+- `skills/observatory/SKILL.md` -- NEW: the LLM synthesis skill. Defines:
+  - **Trigger:** User invokes `/observatory` or asks about system health,
+    patterns, improvement opportunities.
+  - **Flow:**
+    1. Run `cc-policy obs summary --window-hours 24` to get structured report
+    2. If report shows anomalies or patterns, present them with context
+    3. For each detected pattern, propose a suggestion (or reference an
+       existing one)
+    4. If user accepts a suggestion, run `cc-policy obs accept <id>`
+    5. If convergence results are available, present them: "Suggestion X was
+       accepted N sessions ago. The target metric has [improved/not
+       changed/regressed]."
+  - **Presentation:** Structured sections: Health Summary, Active Patterns,
+    Trend Analysis, Suggestions (proposed/accepted/measured), Convergence
+    Results.
+- `skills/observatory/instructions.md` -- NEW: supporting instructions for the
+  skill, including example outputs and convergence interpretation guidance.
+- `tests/runtime/test_observatory_analysis.py` -- NEW: unit tests for
+  cross-table analysis queries with synthetic data in all relevant tables.
+
+**Tester scope:**
+
+- `cross_analysis` returns a dict with data drawn from multiple tables
+- `pattern_detection` identifies injected patterns (repeated denials, slow
+  agents, etc.)
+- `generate_report` includes all expected sections
+- SKILL.md is well-formed and triggers on appropriate invocations
+- All existing tests pass
+- Analysis queries do not write to any table
+
+###### Evaluation Contract for W-OBS-3
+
+**Required tests:**
+
+1. `tests/runtime/test_observatory_analysis.py` exists and passes
+2. `cross_analysis` with populated traces + completion_records + obs_metrics
+   returns a dict with keys: `agent_stats`, `test_health`, `denial_patterns`,
+   `evaluation_trends`, `convergence_status`
+3. `pattern_detection` identifies injected repeated_denial pattern
+   (same policy denied 3+ times)
+4. `pattern_detection` identifies injected slow_agent pattern
+   (duration trend increasing)
+5. `generate_report` includes `metrics_summary`, `trends`, `patterns`,
+   `suggestions`, `convergence`
+6. `cc-policy obs summary --window-hours 24` returns valid JSON with report
+   structure
+7. SKILL.md exists at `skills/observatory/SKILL.md` with valid trigger and
+   flow sections
+
+**Required real-path checks:**
+
+8. With real data from W-OBS-2 hooks, `cc-policy obs summary` returns a
+   non-empty report
+9. `cc-policy obs suggest repeated_denial "Policy X denied too often"
+   --target-metric guard_denial` creates a suggestion; `cc-policy obs accept 1
+   --measure-after 86400` accepts it; `cc-policy obs converge` checks it
+
+**Required authority invariants:**
+
+- Analysis queries are read-only against existing tables (traces,
+  completion_records, evaluation_state, agent_markers, events)
+- Only obs_suggestions is written by suggest/accept/reject/defer/converge
+- No analysis function modifies obs_metrics (that is the hook emission domain)
+
+**Required integration points:**
+
+- `observatory.py` imports from `runtime.core.traces`, `runtime.core.events`,
+  `runtime.core.completions`, `runtime.core.test_state` for query functions
+  only (read-only joins)
+- SKILL.md references `cc-policy obs` CLI commands
+
+**Forbidden shortcuts:**
+
+- Do not encode pattern-matching heuristics that should be LLM judgment into
+  hard-coded rules. Pattern detection provides structured data; the LLM
+  skill interprets significance.
+- Do not write a bash pipeline. All analysis is Python/SQL.
+- Do not create a separate analysis database or JSONL output.
+- Do not modify hook files (emission was W-OBS-2).
+
+**Ready-for-guardian definition:**
+
+All 9 checks pass. Authority invariants hold. No forbidden shortcuts taken.
+`git diff --stat` shows only files in the Scope Manifest.
+
+###### Scope Manifest for W-OBS-3
+
+**Allowed files/directories:**
+
+- `runtime/core/observatory.py` (modify: add cross-table analysis functions)
+- `skills/observatory/SKILL.md` (new: LLM synthesis skill)
+- `skills/observatory/instructions.md` (new: skill supporting instructions)
+- `tests/runtime/test_observatory_analysis.py` (new: analysis unit tests)
+
+**Required files/directories:** All 4 of the above.
+
+**Forbidden touch points:**
+
+- `hooks/*.sh` (emission was W-OBS-2)
+- `runtime/schemas.py` (schema was W-OBS-1)
+- `runtime/cli.py` (CLI was W-OBS-1)
+- `hooks/lib/runtime-bridge.sh` (bridge was W-OBS-1)
+- `sidecars/observatory/observe.py` (sidecar upgrade is W-OBS-4)
+- `settings.json`, `agents/*.md`, `CLAUDE.md`
+- `MASTER_PLAN.md` (except for this planning amendment)
+- Other `runtime/core/*.py` files (read-only imports only; no modifications)
+
+**Expected state authorities touched:**
+
+- MODIFIED: `runtime/core/observatory.py` -- enhanced with cross-table queries
+- NEW: `skills/observatory/SKILL.md` -- LLM synthesis skill
+- NEW: `skills/observatory/instructions.md` -- skill instructions
+- READ-ONLY: `traces`, `trace_manifest`, `events`, `completion_records`,
+  `evaluation_state`, `agent_markers`, `test_state` -- queried but not modified
+- UNCHANGED: all tables, all hooks, all policies
+
+##### W-OBS-4: Integration Tests and Sidecar Upgrade
+
+- **Weight:** S
+- **Gate:** review (user sees full pipeline working)
+- **Deps:** W-OBS-3 (analysis must be available)
+
+**Implementer scope:**
+
+- `sidecars/observatory/observe.py` -- upgrade the existing bare Observatory
+  class to use the full `runtime/core/observatory.py` analysis infrastructure.
+  Replace the simple `_compute_health()` with calls to `summary()` and
+  `generate_report()`. The sidecar remains read-only but now produces a rich
+  analysis report instead of just health counts.
+- `sidecars/observatory/__init__.py` -- update docstring.
+- `tests/scenarios/test-obs-pipeline.sh` -- NEW: end-to-end integration test
+  that:
+  1. Seeds obs_metrics with synthetic data via `cc-policy obs emit`
+  2. Seeds obs_suggestions with synthetic suggestions via `cc-policy obs suggest`
+  3. Runs `cc-policy obs summary` and verifies report structure
+  4. Runs `cc-policy obs converge` and verifies convergence results
+  5. Runs the observatory sidecar and verifies it produces a valid report
+- `tests/scenarios/test-obs-emission.sh` -- enhance (if not fully covered in
+  W-OBS-2) to verify the full hook -> metric -> analysis pipeline.
+
+**Tester scope:**
+
+- Observatory sidecar produces a rich report with analysis sections
+- Sidecar remains read-only (no writes to any table)
+- End-to-end pipeline: emit -> query -> analyze -> suggest -> converge
+- All existing tests pass
+
+###### Evaluation Contract for W-OBS-4
+
+**Required tests:**
+
+1. `tests/scenarios/test-obs-pipeline.sh` exists and passes
+2. Sidecar produces a report dict with keys matching `generate_report` output
+3. Sidecar makes zero writes (row count of all tables unchanged after sidecar
+   run, measured by pre/post SELECT COUNT(*))
+4. End-to-end: synthetic metrics -> summary -> detected patterns -> suggestion
+   -> acceptance -> convergence measurement
+
+**Required real-path checks:**
+
+5. `python3 sidecars/observatory/observe.py` produces valid JSON with analysis
+   sections (not just the old health-only report)
+6. `cc-policy sidecar observatory` produces the same enriched output
+
+**Required authority invariants:**
+
+- Sidecar remains read-only (DEC-SIDECAR-001 still holds)
+- No new tables created (all tables from W-OBS-1)
+- No hook modifications (emission from W-OBS-2)
+- Observatory analysis functions from W-OBS-3 are consumed, not duplicated
+
+**Forbidden shortcuts:**
+
+- Do not duplicate analysis logic in the sidecar -- call the domain module
+- Do not make the sidecar write to any table
+- Do not add new settings.json entries
+
+**Ready-for-guardian definition:**
+
+All 6 checks pass. Authority invariants hold. Sidecar is read-only. `git diff
+--stat` shows only files in the Scope Manifest.
+
+###### Scope Manifest for W-OBS-4
+
+**Allowed files/directories:**
+
+- `sidecars/observatory/observe.py` (modify: upgrade to use analysis)
+- `sidecars/observatory/__init__.py` (modify: update docstring)
+- `tests/scenarios/test-obs-pipeline.sh` (new: integration test)
+- `tests/scenarios/test-obs-emission.sh` (modify or new: emission verification)
+
+**Required files/directories:** All 4 of the above.
+
+**Forbidden touch points:**
+
+- `runtime/core/observatory.py` (analysis module is W-OBS-3, already landed)
+- `runtime/schemas.py`, `runtime/cli.py` (W-OBS-1)
+- `hooks/*.sh` (emission is W-OBS-2)
+- `settings.json`, `agents/*.md`, `CLAUDE.md`
+- `MASTER_PLAN.md` (except for this planning amendment)
+
+**Expected state authorities touched:**
+
+- MODIFIED: `sidecars/observatory/observe.py` -- enriched with analysis calls
+- READ-ONLY: all runtime tables (queried via observatory domain module)
+- UNCHANGED: all tables, hooks, policies, settings
+
+#### State Authority Map for INIT-OBS
+
+| State Domain | Current Authority | INIT-OBS Change | Work Item |
+|---|---|---|---|
+| Observatory time series | **NONE** | `obs_metrics` table (single authority) | W-OBS-1 |
+| Suggestion lifecycle | **NONE** | `obs_suggestions` table (single authority) | W-OBS-1 |
+| Observatory metric emission | **NONE** | Hooks emit via `rt_obs_metric()` | W-OBS-2 |
+| Cross-table analysis | **NONE** (basic sidecar health check only) | `observatory.py` SQL-based analysis | W-OBS-3 |
+| LLM synthesis | **NONE** | `skills/observatory/SKILL.md` skill | W-OBS-3 |
+| Observatory sidecar | Basic health counts (`observe.py`) | Full analysis report via domain module | W-OBS-4 |
+| Existing traces tables | `traces` + `trace_manifest` (DEC-TRACE-001) | READ-ONLY by analysis | W-OBS-3 |
+| Existing events table | `events` (DEC-RT-001) | READ-ONLY by analysis | W-OBS-3 |
+| Existing completion_records | `completion_records` | READ-ONLY by analysis | W-OBS-3 |
+| Existing evaluation_state | `evaluation_state` | READ-ONLY by analysis | W-OBS-3 |
+| Existing agent_markers | `agent_markers` | READ-ONLY by analysis | W-OBS-3 |
+| Existing test_state | `test_state` | READ-ONLY by analysis | W-OBS-3 |
+
+#### Known Risks for INIT-OBS
+
+1. **Metric volume growth.** Every hook invocation emits 1-3 metrics. Over
+   weeks, `obs_metrics` could grow large. Mitigation: add a TTL-based cleanup
+   function to observatory.py that deletes rows older than N days
+   (configurable, default 30). The cleanup runs during `check_convergence()`
+   calls. Index on `(metric_name, created_at)` keeps queries fast.
+
+2. **Emission latency impact on hooks.** Each `rt_obs_metric` call invokes
+   `cc-policy obs emit` as a subprocess. Mitigation: calls are
+   fire-and-forget with `|| true` and `>/dev/null 2>&1`. The cc-policy CLI
+   latency is ~42ms median (measured in INIT-002). If this proves too slow
+   for hot-path hooks, batch emission can be added later (emit to a shell
+   variable, flush at hook exit). This is an optimization, not a design change.
+
+3. **Cross-table analysis coupling.** W-OBS-3 analysis queries join across 6+
+   tables. If any table schema changes in another initiative, analysis queries
+   could break. Mitigation: analysis queries reference table columns explicitly
+   (no SELECT *). Unit tests with synthetic data verify query correctness. The
+   observatory is a reader, not a writer -- schema changes to other tables are
+   backward-compatible for SELECT queries.
+
+4. **Suggestion fatigue.** If pattern detection is too sensitive, it will
+   generate too many suggestions. Mitigation: threshold tuning (3+ occurrences
+   for repeated patterns, sigma-based for anomalies). The SKILL.md layer adds
+   LLM judgment on significance -- not every detected pattern warrants a
+   suggestion. Deferred suggestions re-surface only after N sessions, preventing
+   re-proposal spam.
+
+5. **Convergence measurement window.** If the measurement window is too short,
+   convergence results are noisy. Too long, and feedback is delayed. Default:
+   7 days or 20 sessions, whichever comes first. This is configurable per
+   suggestion via the `measure_after` field.
+
+6. **Sidecar upgrade backward compatibility.** The existing observatory sidecar
+   (`observe.py`) produces a simple health report. Any consumer parsing this
+   output will break when the report structure changes in W-OBS-4. Mitigation:
+   the enriched report is a superset -- existing keys (`health`, `observed_at`,
+   `proof_count`, etc.) are preserved. New keys are added alongside, not
+   replacing.
+
+
 ## Completed Initiatives
 
 ### INIT-REBASE: Test Suite Rebaseline (completed 2026-04-05)
@@ -3892,8 +5247,9 @@ needed due to fail-open adapters, stale tests, and bridge integration bugs.
 
 ## Parked Issues
 
-- Search and observatory sidecars remain parked from hot-path authority until
-  the kernel acceptance suite is green twice consecutively.
+- Search sidecar remains parked from hot-path authority until the kernel
+  acceptance suite is green twice consecutively. Observatory is actively
+  planned under INIT-OBS.
 - Daemon promotion and multi-client coordination stay parked until CLI mode is a
   proven stable interface.
 - Upstream synchronization remains manual and selective; no merge/rebase flow
