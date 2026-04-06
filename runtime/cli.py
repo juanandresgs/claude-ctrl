@@ -46,6 +46,7 @@ import runtime.core.markers as markers_mod
 import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.proof as proof_mod
+import runtime.core.quick_eval as quick_eval_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
 import runtime.core.tokens as tokens_mod
@@ -1084,6 +1085,75 @@ def _handle_evaluate(args) -> int:
     )
 
 
+def _handle_evaluate_quick(args) -> int:
+    """Handle ``cc-policy evaluate quick`` — STFP scope gate.
+
+    Runs git diff against HEAD in the resolved project root, validates
+    that the diff meets Simple Task Fast Path criteria (<=50 lines,
+    <=3 files, no source-code extensions), and writes
+    evaluation_state=ready_for_guardian when criteria are met.
+
+    Args (from argparse):
+      --project-root  Path to the git repo root. Defaults to
+                      CLAUDE_PROJECT_DIR env var, then git root of cwd.
+      --workflow-id   Workflow ID for evaluation_state row.
+                      Defaults to "stfp-quick" inside quick_eval module.
+
+    Output JSON (on stdout):
+      {"status": "ok", "eligible": true,  "reason": "...",
+       "files_changed": N, "lines_changed": N, "eval_written": true}
+
+    On ineligible diff, exits 1 with error JSON on stderr so the caller
+    can detect failure unambiguously.
+
+    @decision DEC-QUICKEVAL-002
+    Title: evaluate quick exits 1 on ineligible diffs
+    Status: accepted
+    Rationale: Shell callers (orchestrator scripts) rely on exit code to
+      branch: 0=approved, 1=needs full tester. Emitting error JSON to
+      stderr follows the cc-policy convention (_err returns exit code 1).
+      The full result dict is always in the JSON payload regardless of
+      exit code so callers can log the reason.
+    """
+    import os as _os
+
+    project_root = getattr(args, "project_root", None) or ""
+    if not project_root:
+        project_root = _os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if not project_root:
+        import subprocess as _sp
+
+        r = _sp.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+        )
+        project_root = r.stdout.strip() if r.returncode == 0 else ""
+
+    if not project_root:
+        return _err(
+            "evaluate quick: cannot resolve project root — pass --project-root or set CLAUDE_PROJECT_DIR"
+        )
+
+    workflow_id = getattr(args, "workflow_id", None) or ""
+
+    conn = _get_conn()
+    try:
+        result = quick_eval_mod.evaluate_quick(conn, project_root, workflow_id=workflow_id)
+    finally:
+        conn.close()
+
+    if not result["eligible"]:
+        # Emit structured error so callers can log the reason
+        print(
+            __import__("json").dumps({"status": "error", "message": result["reason"], **result}),
+            file=sys.stderr,
+        )
+        return 1
+
+    return _ok(result)
+
+
 def _handle_context(args) -> int:
     """Handle ``cc-policy context`` subcommands.
 
@@ -2074,10 +2144,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=10, help="Maximum results to return (default 10)"
     )
 
-    # evaluate — read JSON from stdin, return PolicyDecision
-    subparsers.add_parser(
+    # evaluate — policy evaluation (default: JSON from stdin) or STFP quick gate
+    #
+    # ``cc-policy evaluate``         — existing behavior: read JSON from stdin,
+    #                                  evaluate against all registered policies.
+    # ``cc-policy evaluate quick``   — STFP scope gate: validate working-tree diff
+    #                                  and write evaluation_state=ready_for_guardian.
+    #
+    # The subparser is optional (required=False) so ``cc-policy evaluate`` with no
+    # subcommand continues to work for the hooks that pipe JSON to it.
+    eval_gate_p = subparsers.add_parser(
         "evaluate",
-        help="Evaluate a hook event against all registered policies (JSON on stdin)",
+        help="Evaluate a hook event against all registered policies (JSON on stdin), "
+        "or run STFP quick-eval gate (subcommand: quick)",
+    )
+    eval_gate_sub = eval_gate_p.add_subparsers(dest="action", required=False)
+    eq_p = eval_gate_sub.add_parser(
+        "quick",
+        help="STFP scope gate: validate working-tree diff, write evaluation_state=ready_for_guardian",
+    )
+    eq_p.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Path to git repo root (defaults to CLAUDE_PROJECT_DIR or git root of cwd)",
+    )
+    eq_p.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        default=None,
+        help="Workflow ID for evaluation_state row (defaults to 'stfp-quick')",
     )
 
     # context — canonical identity resolution for hooks
@@ -2323,6 +2419,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.domain == "eval":
         return _handle_eval(args)
     if args.domain == "evaluate":
+        # Route evaluate quick to the STFP scope gate; all other invocations
+        # (no subcommand) use the existing stdin policy-evaluation handler.
+        if getattr(args, "action", None) == "quick":
+            return _handle_evaluate_quick(args)
         return _handle_evaluate(args)
     if args.domain == "context":
         return _handle_context(args)
