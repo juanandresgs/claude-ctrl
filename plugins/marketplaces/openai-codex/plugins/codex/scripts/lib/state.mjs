@@ -17,6 +17,26 @@
  *   The double-read bug in the original saveState (calling loadState a second
  *   time to get previousJobs for pruning) is removed. previousJobs is now
  *   derived from state.jobs before pruning — no second disk read.
+ *
+ * @decision DEC-CDX-002
+ * Title: Stale task reaper — transparent PID liveness check inside listJobs
+ * Status: active
+ * Rationale: When a Codex session process dies unexpectedly (kill -9, OOM,
+ *   machine sleep) its job record stays "running" or "queued" forever. The UI
+ *   then shows phantom in-progress jobs. The reaper fixes this transparently:
+ *   listJobs() calls reapStaleJobs() before returning, so every consumer gets
+ *   fresh state without any caller-side changes.
+ *
+ *   Design choices:
+ *     - process.kill(pid, 0): POSIX standard for liveness probe — no signal sent.
+ *     - ESRCH = dead; EPERM = alive (process exists, we lack permission).
+ *     - Conservative default: any unexpected error → assume alive (no spurious reap).
+ *     - Only "running" and "queued" jobs with a finite numeric pid are candidates.
+ *       Jobs without a pid field (legacy records) are skipped.
+ *     - Reaping writes through updateState() to preserve the W-CDX-1 atomic lock.
+ *     - The job detail file (<job-id>.json) is updated in the same reap pass so
+ *       readers of the detail file see consistent "failed" state.
+ *     - reapStaleJobs() returns the array of reaped job objects for caller logging.
  */
 
 import { createHash } from "node:crypto";
@@ -346,7 +366,118 @@ export function upsertJob(cwd, jobPatch) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Stale task reaper (W-CDX-2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probe whether a process is still alive using the POSIX signal-0 trick.
+ *
+ * process.kill(pid, 0) does not send a signal — it only checks whether the
+ * process exists and we have permission to signal it.
+ *
+ * Error codes:
+ *   ESRCH  — no such process → dead
+ *   EPERM  — process exists but we lack permission → alive (conservative)
+ *   <other> — unknown error → assume alive to avoid spurious reaping
+ *
+ * @param {number} pid
+ * @returns {boolean} true if the process is alive or existence is uncertain
+ */
+export function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err.code === "ESRCH") return false; // process not found
+    if (err.code === "EPERM") return true;  // exists but no permission to signal
+    return true; // conservative: assume alive on unknown errors
+  }
+}
+
+/**
+ * Scan the job list for stale jobs (status "running" or "queued" with a dead
+ * PID) and mark them as "failed".
+ *
+ * A job is a reap candidate when ALL of the following hold:
+ *   1. status is "running" or "queued"
+ *   2. pid is a finite number (not null, undefined, or NaN)
+ *   3. isProcessAlive(pid) returns false
+ *
+ * For each stale job:
+ *   - Sets status, phase → "failed"
+ *   - Sets pid → null
+ *   - Sets errorMessage with the dead PID for auditability
+ *   - Sets completedAt to now
+ *
+ * The job detail file (<job-id>.json) is also updated if it exists, so readers
+ * of the detail file see consistent state.
+ *
+ * If any jobs were reaped, state is persisted via updateState() (which holds
+ * the W-CDX-1 O_EXCL lock for the entire read-modify-write cycle).
+ *
+ * @param {string} cwd
+ * @returns {object[]} array of reaped job objects (after mutation, for logging)
+ */
+export function reapStaleJobs(cwd) {
+  const state = loadState(cwd);
+  const candidates = state.jobs.filter(
+    (job) =>
+      (job.status === "running" || job.status === "queued") &&
+      typeof job.pid === "number" &&
+      Number.isFinite(job.pid) &&
+      !isProcessAlive(job.pid)
+  );
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const reapedIds = new Set(candidates.map((j) => j.id));
+  const reapedJobs = [];
+
+  updateState(cwd, (s) => {
+    const timestamp = nowIso();
+    for (const job of s.jobs) {
+      if (!reapedIds.has(job.id)) continue;
+      const originalPid = job.pid;
+      job.status = "failed";
+      job.phase = "failed";
+      job.pid = null;
+      job.errorMessage = `Process exited unexpectedly (PID ${originalPid} not found).`;
+      job.completedAt = timestamp;
+      job.updatedAt = timestamp;
+
+      // Update the job detail file so readers of <job-id>.json see consistent state.
+      // Errors reading/writing the detail file are intentionally non-fatal: the
+      // canonical state.json is already being updated; the detail file is best-effort.
+      try {
+        const detailFile = resolveJobFile(cwd, job.id);
+        if (fs.existsSync(detailFile)) {
+          const existing = JSON.parse(fs.readFileSync(detailFile, "utf8"));
+          const updated = {
+            ...existing,
+            status: "failed",
+            phase: "failed",
+            pid: null,
+            errorMessage: job.errorMessage,
+            completedAt: timestamp,
+          };
+          fs.writeFileSync(detailFile, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
+        }
+      } catch {
+        // Non-fatal: detail file update failure must not prevent state.json reaping
+      }
+
+      reapedJobs.push({ ...job });
+    }
+  });
+
+  return reapedJobs;
+}
+
 export function listJobs(cwd) {
+  reapStaleJobs(cwd);
   return loadState(cwd).jobs;
 }
 
