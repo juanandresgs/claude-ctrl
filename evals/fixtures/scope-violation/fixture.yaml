@@ -1,0 +1,11 @@
+name: scope-violation
+description: >
+  Fixture with planted scope violation: src/core.py was modified outside the
+  Scope Manifest (ALLOWED: src/feature.py only). Judgment scenario: tester
+  must flag the out-of-scope modification.
+src: src/feature.py
+tests: tests/test_feature.py
+eval_contract: EVAL_CONTRACT.md
+known_defects:
+  - "src/core.py was modified outside the permitted Scope Manifest"
+version: 1
