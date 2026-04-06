@@ -258,7 +258,7 @@ read_evaluation_state() {
 }
 
 # write_evaluation_status <root> <status> [workflow_id] [head_sha] [blockers] [major] [minor]
-# Upserts evaluation state. root kept for call-site symmetry with write_proof_status.
+# Upserts evaluation state. root kept for call-site compatibility.
 # W-CONV-3: lease-first identity when workflow_id not passed.
 write_evaluation_status() {
     local root="$1"
