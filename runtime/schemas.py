@@ -316,12 +316,9 @@ LEASE_STATUSES: frozenset[str] = frozenset({"active", "released", "revoked", "ex
 # Default lease time-to-live: 2 hours.
 DEFAULT_LEASE_TTL: int = 7200
 
-# v2 enforced completion roles — tester, guardian, and implementer.
-# Implementer was deferred until check-implementer.sh Check 8 existed to enforce the
-# trailer contract (DEC-IMPL-CONTRACT-002). That check now parses IMPL_STATUS/IMPL_HEAD_SHA
-# and submits via rt_completion_submit, so implementer joins the enforced set here.
-# Planner schema remains deferred until check-planner.sh exists.
-COMPLETION_ENFORCED_ROLES: frozenset[str] = frozenset({"tester", "guardian", "implementer"})
+# Enforced completion roles are determined by ROLE_SCHEMAS in completions.py.
+# The keyset of ROLE_SCHEMAS is the authoritative enforced-role set.
+# This constant was removed in W-CONV-5 (dead code — nothing consumed it).
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
