@@ -97,12 +97,13 @@ tables = {r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type
 print(','.join(sorted(tables)))
 " 2>/dev/null || echo "ERROR")
 # sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns.
-# Expected list updated to match current schema (WS1+WS2+WS3+WS4+WS5 additions):
+# Expected list updated to match current schema (WS1+WS2+WS3+WS4+WS5+W-OBS-1 additions):
 #   approvals, bugs, completion_records — lease/completion/bug tracking (WS1/WS2/WS3)
 #   dispatch_leases — mandatory lease store (WS3/A3)
 #   evaluation_state — evaluator authority (TKT-024)
 #   workflow_bindings, workflow_scope — workflow scoping (TKT-022)
-EXPECTED="agent_markers,approvals,bugs,completion_records,dispatch_cycles,dispatch_leases,dispatch_queue,evaluation_state,events,proof_state,session_tokens,sqlite_sequence,test_state,todo_state,trace_manifest,traces,workflow_bindings,workflow_scope,worktrees"
+#   obs_metrics, obs_runs, obs_suggestions — observatory tables (W-OBS-1)
+EXPECTED="agent_markers,approvals,bugs,completion_records,dispatch_cycles,dispatch_leases,dispatch_queue,evaluation_state,events,obs_metrics,obs_runs,obs_suggestions,proof_state,session_tokens,sqlite_sequence,test_state,todo_state,trace_manifest,traces,workflow_bindings,workflow_scope,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))

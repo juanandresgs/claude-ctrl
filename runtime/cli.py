@@ -43,6 +43,7 @@ import runtime.core.events as events_mod
 import runtime.core.leases as leases_mod
 import runtime.core.lifecycle as lifecycle_mod
 import runtime.core.markers as markers_mod
+import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.proof as proof_mod
 import runtime.core.statusline as statusline_mod
@@ -1513,6 +1514,150 @@ def _handle_eval(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Observatory handler (W-OBS-1)
+# ---------------------------------------------------------------------------
+
+
+def _handle_obs(args) -> int:
+    """Handle all ``cc-policy obs`` subcommands.
+
+    Subcommands:
+      emit  <name> <value> [--labels JSON] [--session-id S] [--role R]
+      emit-batch            Read a JSON array of metric dicts from stdin.
+      query <name>          Query obs_metrics with optional filters.
+      suggest <cat> <title> [--body B] [--target-metric M] [--baseline F]
+                            [--signal-id S] [--source-session SS]
+      accept <id>           Accept a suggestion (optional --measure-after T).
+      reject <id>           Reject a suggestion (optional --reason R).
+      defer  <id>           Defer a suggestion (optional --reassess-after N).
+      batch-accept <cat>    Accept all proposed suggestions in a category.
+      converge              Run check_convergence and return results.
+      cleanup               Delete stale metrics and terminal suggestions.
+      status                Return high-level observatory status.
+      summary               Run full analysis and record an obs_run.
+
+    All output is JSON. Errors go to stderr with exit code 1.
+    """
+    import json as _json
+
+    conn = _get_conn()
+    try:
+        if args.action == "emit":
+            labels = None
+            if getattr(args, "labels", None):
+                try:
+                    labels = _json.loads(args.labels)
+                except _json.JSONDecodeError as e:
+                    return _err(f"obs emit: invalid --labels JSON: {e}")
+            row_id = observatory_mod.emit_metric(
+                conn,
+                name=args.name,
+                value=float(args.value),
+                labels=labels,
+                session_id=getattr(args, "session_id", None) or None,
+                role=getattr(args, "role", None) or None,
+            )
+            return _ok({"id": row_id, "metric_name": args.name, "value": float(args.value)})
+
+        elif args.action == "emit-batch":
+            raw = sys.stdin.read()
+            if not raw or not raw.strip():
+                return _err("obs emit-batch: empty stdin — nothing to insert")
+            try:
+                metrics_list = _json.loads(raw)
+            except _json.JSONDecodeError as e:
+                return _err(f"obs emit-batch: invalid JSON on stdin: {e}")
+            if not isinstance(metrics_list, list):
+                return _err("obs emit-batch: stdin must be a JSON array")
+            count = observatory_mod.emit_batch(conn, metrics_list)
+            return _ok({"inserted": count})
+
+        elif args.action == "query":
+            labels_filter = None
+            if getattr(args, "labels_filter", None):
+                try:
+                    labels_filter = _json.loads(args.labels_filter)
+                except _json.JSONDecodeError as e:
+                    return _err(f"obs query: invalid --labels-filter JSON: {e}")
+            rows = observatory_mod.query_metrics(
+                conn,
+                name=args.name,
+                since=getattr(args, "since", None),
+                until=getattr(args, "until", None),
+                labels_filter=labels_filter,
+                role=getattr(args, "role", None) or None,
+                limit=getattr(args, "limit", 100) or 100,
+            )
+            return _ok({"items": rows, "count": len(rows)})
+
+        elif args.action == "suggest":
+            baseline = getattr(args, "baseline", None)
+            if baseline is not None:
+                baseline = float(baseline)
+            row_id = observatory_mod.suggest(
+                conn,
+                category=args.category,
+                title=args.title,
+                body=getattr(args, "body", None) or None,
+                target_metric=getattr(args, "target_metric", None) or None,
+                baseline=baseline,
+                signal_id=getattr(args, "signal_id", None) or None,
+                source_session=getattr(args, "source_session", None) or None,
+            )
+            return _ok({"id": row_id, "category": args.category, "title": args.title})
+
+        elif args.action == "accept":
+            measure_after = getattr(args, "measure_after", None)
+            if measure_after is not None:
+                measure_after = int(measure_after)
+            observatory_mod.accept_suggestion(conn, id=int(args.id), measure_after=measure_after)
+            return _ok({"id": int(args.id), "status": "accepted"})
+
+        elif args.action == "reject":
+            observatory_mod.reject_suggestion(
+                conn,
+                id=int(args.id),
+                reason=getattr(args, "reason", None) or None,
+            )
+            return _ok({"id": int(args.id), "status": "rejected"})
+
+        elif args.action == "defer":
+            reassess = getattr(args, "reassess_after", 5) or 5
+            observatory_mod.defer_suggestion(conn, id=int(args.id), reassess_after=int(reassess))
+            return _ok({"id": int(args.id), "status": "deferred"})
+
+        elif args.action == "batch-accept":
+            count = observatory_mod.batch_accept(conn, category=args.category)
+            return _ok({"category": args.category, "accepted": count})
+
+        elif args.action == "converge":
+            results = observatory_mod.check_convergence(conn)
+            return _ok({"items": results, "count": len(results)})
+
+        elif args.action == "cleanup":
+            result = observatory_mod.obs_cleanup(
+                conn,
+                metrics_ttl_days=getattr(args, "metrics_ttl_days", 30) or 30,
+                suggestions_ttl_days=getattr(args, "suggestions_ttl_days", 90) or 90,
+            )
+            return _ok(result)
+
+        elif args.action == "status":
+            result = observatory_mod.status(conn)
+            return _ok(result)
+
+        elif args.action == "summary":
+            result = observatory_mod.summary(conn)
+            return _ok(result)
+
+    except Exception as e:
+        return _err(f"obs command error: {e}")
+    finally:
+        conn.close()
+    return _err(f"unknown obs action: {args.action}")
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -2058,6 +2203,67 @@ def build_parser() -> argparse.ArgumentParser:
     ev_score = ev_sub.add_parser("score", help="Re-score a previous eval run from stored outputs")
     ev_score.add_argument("--run-id", dest="run_id", required=True, help="UUID of the run to score")
 
+    # obs — observatory metrics, suggestions, and analysis (W-OBS-1)
+    obs_p = subparsers.add_parser("obs", help="Observatory metrics and suggestions (W-OBS-1)")
+    obs_sub = obs_p.add_subparsers(dest="action", required=True)
+
+    obs_emit = obs_sub.add_parser("emit", help="Emit a single metric row")
+    obs_emit.add_argument("name", help="Metric name (e.g. agent_duration_s)")
+    obs_emit.add_argument("value", type=float, help="Scalar metric value")
+    obs_emit.add_argument("--labels", default=None, help="JSON object of label key/value pairs")
+    obs_emit.add_argument("--session-id", dest="session_id", default=None)
+    obs_emit.add_argument("--role", default=None, help="Agent role (implementer, tester, ...)")
+
+    obs_sub.add_parser(
+        "emit-batch",
+        help="Insert multiple metrics from a JSON array on stdin",
+    )
+
+    obs_query = obs_sub.add_parser("query", help="Query obs_metrics with optional filters")
+    obs_query.add_argument("name", help="Metric name to query")
+    obs_query.add_argument("--since", type=int, default=None, help="Epoch lower bound (inclusive)")
+    obs_query.add_argument("--until", type=int, default=None, help="Epoch upper bound (inclusive)")
+    obs_query.add_argument(
+        "--labels-filter", dest="labels_filter", default=None, help="JSON object for label filters"
+    )
+    obs_query.add_argument("--role", default=None, help="Filter by agent role")
+    obs_query.add_argument("--limit", type=int, default=100)
+
+    obs_suggest = obs_sub.add_parser("suggest", help="Create a new improvement suggestion")
+    obs_suggest.add_argument("category", help="Suggestion category")
+    obs_suggest.add_argument("title", help="Short title for the suggestion")
+    obs_suggest.add_argument("--body", default=None, help="Detailed description")
+    obs_suggest.add_argument("--target-metric", dest="target_metric", default=None)
+    obs_suggest.add_argument("--baseline", type=float, default=None)
+    obs_suggest.add_argument("--signal-id", dest="signal_id", default=None)
+    obs_suggest.add_argument("--source-session", dest="source_session", default=None)
+
+    obs_accept = obs_sub.add_parser("accept", help="Accept a suggestion by id")
+    obs_accept.add_argument("id", type=int)
+    obs_accept.add_argument("--measure-after", dest="measure_after", type=int, default=None)
+
+    obs_reject = obs_sub.add_parser("reject", help="Reject a suggestion by id")
+    obs_reject.add_argument("id", type=int)
+    obs_reject.add_argument("--reason", default=None)
+
+    obs_defer = obs_sub.add_parser("defer", help="Defer a suggestion by id")
+    obs_defer.add_argument("id", type=int)
+    obs_defer.add_argument("--reassess-after", dest="reassess_after", type=int, default=5)
+
+    obs_ba = obs_sub.add_parser("batch-accept", help="Accept all proposed suggestions in category")
+    obs_ba.add_argument("category")
+
+    obs_sub.add_parser("converge", help="Measure accepted suggestions past their measure_after")
+
+    obs_cleanup = obs_sub.add_parser("cleanup", help="Delete stale metrics and suggestions")
+    obs_cleanup.add_argument("--metrics-ttl-days", dest="metrics_ttl_days", type=int, default=30)
+    obs_cleanup.add_argument(
+        "--suggestions-ttl-days", dest="suggestions_ttl_days", type=int, default=90
+    )
+
+    obs_sub.add_parser("status", help="Return high-level observatory status")
+    obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
+
     return parser
 
 
@@ -2122,6 +2328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_context(args)
     if args.domain == "policy":
         return _handle_policy(args)
+    if args.domain == "obs":
+        return _handle_obs(args)
 
     return _err(f"unknown domain: {args.domain}")
 
