@@ -37,6 +37,7 @@ import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.eval_metrics as eval_metrics_mod
 import runtime.core.eval_report as eval_report_mod
 import runtime.core.eval_runner as eval_runner_mod
+import runtime.core.eval_scorer as eval_scorer_mod
 import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
 import runtime.core.leases as leases_mod
@@ -1445,8 +1446,6 @@ def _handle_eval(args) -> int:
                 return _err(f"eval score: run_id '{run_id}' not found")
 
             # Fetch all outputs for this run and re-score via eval_scorer
-            import runtime.core.eval_scorer as eval_scorer_mod
-
             rows = eval_conn.execute(
                 "SELECT scenario_id, raw_output FROM eval_outputs WHERE run_id = ? ORDER BY id",
                 (run_id,),
