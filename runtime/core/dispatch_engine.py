@@ -106,6 +106,7 @@ def process_agent_stop(
         "suggestion": "",
         "error": None,
         "events": [],
+        "auto_dispatch": False,
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -224,12 +225,36 @@ def process_agent_stop(
         pass  # Audit emission is best-effort; never block routing.
 
     # ---------------------------------------------------------------------------
+    # Auto-dispatch decision (W-AD-1 — DEC-AD-001)
+    #
+    # True when the transition is clear, unblocked, and non-terminal:
+    #   - next_role is resolved (not None/empty)
+    #   - no PROCESS ERROR occurred
+    #   - agent was not interrupted mid-task
+    #
+    # False for: interrupted agents, routing errors, terminal states
+    # (cycle complete after guardian committed/merged), unknown agent types.
+    # ---------------------------------------------------------------------------
+    result["auto_dispatch"] = (
+        result["next_role"] is not None
+        and result["next_role"] != ""
+        and result["error"] is None
+        and not is_interrupted
+    )
+
+    # ---------------------------------------------------------------------------
     # Build suggestion for hookSpecificOutput additionalContext
     # ---------------------------------------------------------------------------
     if result["error"]:
         result["suggestion"] = result["error"]
     elif result["next_role"]:
-        suggestion = f"Canonical flow suggests dispatching: {result['next_role']}"
+        if result["auto_dispatch"]:
+            # Machine-parseable prefix: orchestrator can auto-dispatch without
+            # prompting the user (W-AD-1).
+            suggestion = f"AUTO_DISPATCH: {result['next_role']}"
+        else:
+            # Interrupted or non-auto path: keep canonical human-readable form.
+            suggestion = f"Canonical flow suggests dispatching: {result['next_role']}"
         if workflow_id:
             suggestion += f" (workflow_id={workflow_id})"
         result["suggestion"] = suggestion
