@@ -186,7 +186,7 @@ fi
 # Check 6: Evaluation state for git operations (TKT-024)
 # Validates evaluation_state instead of proof_state. Guardian should only
 # operate when evaluation_state == "ready_for_guardian" (set by check-tester.sh).
-EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
+EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_GD_WF_ID")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git merge|git commit|git push' || echo "")
 if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
     ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after Tester issues EVAL_VERDICT=ready_for_guardian")

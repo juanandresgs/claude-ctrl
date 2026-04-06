@@ -109,9 +109,20 @@ else
     ISSUES+=("No test results found — verify tests were run before declaring done")
 fi
 
+# W-CONV-3: resolve workflow_id via lease-first before Check 5 and Check 6.
+# Mirrors check-guardian.sh lines 69-80 pattern. _CI_WF_ID is used by both
+# the evaluation state check (Check 5) and the scope compliance check (Check 6).
+_CI_LEASE_CTX_EARLY=$(lease_context "$PROJECT_ROOT")
+_CI_LEASE_FOUND_EARLY=$(printf '%s' "$_CI_LEASE_CTX_EARLY" | jq -r '.found' 2>/dev/null || echo "false")
+_CI_WF_ID=""
+if [[ "$_CI_LEASE_FOUND_EARLY" == "true" ]]; then
+    _CI_WF_ID=$(printf '%s' "$_CI_LEASE_CTX_EARLY" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+fi
+[[ -n "$_CI_WF_ID" ]] || _CI_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+
 # Check 5: Evaluator-state handoff status (TKT-024)
 # Reports evaluation_state language instead of proof-era language.
-EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
+EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_CI_WF_ID")
 case "$EVAL_STATUS" in
     ready_for_guardian)
         VERIFICATION_NOTE="Evaluation state: ready_for_guardian — Guardian may proceed."
@@ -132,8 +143,8 @@ esac
 
 # Check 6: Workflow scope compliance (advisory — guard.sh enforces the hard deny)
 # Get changed files relative to base branch (uses workflow binding if available).
-# WS1: use lease_context() to derive workflow_id from the active lease so the
-# scope check targets the same binding the implementer was dispatched under.
+# WS1/W-CONV-3: _CI_WF_ID is already resolved via lease-first above (before Check 5).
+# That single resolution serves both Check 5 and Check 6.
 #
 # @decision DEC-WS1-CI-001
 # @title check-implementer.sh Check 6 uses lease-first identity for scope lookup
@@ -144,12 +155,8 @@ esac
 #   is stored under the lease workflow_id but the check queries the branch-derived id
 #   — returning no binding and emitting a false "no workflow binding" warning. Lease-
 #   first resolution (mirroring check-guardian.sh:69-80) fixes the mismatch.
-_CI_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
-_CI_LEASE_FOUND=$(printf '%s' "$_CI_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
-if [[ "$_CI_LEASE_FOUND" == "true" ]]; then
-    _WF_ID=$(printf '%s' "$_CI_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
-fi
-[[ -z "${_WF_ID:-}" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+#   W-CONV-3: resolution hoisted to before Check 5 so both checks share one call.
+_WF_ID="$_CI_WF_ID"
 _CHANGED_FILES_JSON="[]"
 _BASE_BRANCH="main"
 

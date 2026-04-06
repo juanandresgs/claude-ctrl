@@ -113,8 +113,17 @@ unset _SESSION_RUNTIME_ROOT _LEASE_SUM _LS_ROLE _LS_NS
 # --- Workflow evaluation state (TKT-024) ---
 # Shows evaluation_state as the readiness display. proof_state is deprecated
 # with zero enforcement effect and is no longer shown here.
+# W-CONV-3: resolve workflow_id lease-first so session HUD shows the correct
+# eval state when a lease is active with a different workflow_id than the branch.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    _SESS_EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT")
+    _SESS_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+    _SESS_LEASE_FOUND=$(printf '%s' "$_SESS_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    _SESS_WF_ID=""
+    if [[ "$_SESS_LEASE_FOUND" == "true" ]]; then
+        _SESS_WF_ID=$(printf '%s' "$_SESS_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    fi
+    [[ -n "$_SESS_WF_ID" ]] || _SESS_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+    _SESS_EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_SESS_WF_ID")
     case "$_SESS_EVAL_STATUS" in
         ready_for_guardian)
             CONTEXT_PARTS+=("Evaluation: ready_for_guardian — Guardian may proceed to commit/merge.")
@@ -130,7 +139,7 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             ;;
         # idle: no output (background noise)
     esac
-    unset _SESS_EVAL_STATUS
+    unset _SESS_EVAL_STATUS _SESS_LEASE_CTX _SESS_LEASE_FOUND _SESS_WF_ID
 fi
 
 # --- Enforcement gaps ---
