@@ -214,72 +214,6 @@ file_mtime() {
     stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null || echo "0"
 }
 
-# --- Proof-of-work state ---
-read_proof_status() {
-    local root="$1"
-    local workflow_id="${2:-}"
-    local status=""
-
-    # W-CONV-3: lease-first identity fallback
-    if [[ -z "$workflow_id" ]]; then
-        local _rps_ctx _rps_found
-        _rps_ctx=$(lease_context "$root")
-        _rps_found=$(printf '%s' "$_rps_ctx" | jq -r '.found' 2>/dev/null || echo "false")
-        if [[ "$_rps_found" == "true" ]]; then
-            workflow_id=$(printf '%s' "$_rps_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
-        fi
-    fi
-    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
-
-    # Runtime-only (TKT-008): query SQLite proof store exclusively.
-    status=$(rt_proof_get "$workflow_id" 2>/dev/null) || status=""
-
-    printf '%s\n' "${status:-idle}"
-}
-
-read_proof_timestamp() {
-    local root="$1"
-    local workflow_id="${2:-}"
-    local ts=""
-
-    # W-CONV-3: lease-first identity fallback
-    if [[ -z "$workflow_id" ]]; then
-        local _rpt_ctx _rpt_found
-        _rpt_ctx=$(lease_context "$root")
-        _rpt_found=$(printf '%s' "$_rpt_ctx" | jq -r '.found' 2>/dev/null || echo "false")
-        if [[ "$_rpt_found" == "true" ]]; then
-            workflow_id=$(printf '%s' "$_rpt_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
-        fi
-    fi
-    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
-
-    # Runtime-only (TKT-008): query SQLite proof store exclusively.
-    ts=$(rt_proof_timestamp "$workflow_id" 2>/dev/null) || ts=""
-
-    printf '%s\n' "${ts:-0}"
-}
-
-write_proof_status() {
-    local root="$1"
-    local status="$2"
-    local workflow_id="${3:-}"
-
-    # W-CONV-3: lease-first identity fallback
-    if [[ -z "$workflow_id" ]]; then
-        local _wps_ctx _wps_found
-        _wps_ctx=$(lease_context "$root")
-        _wps_found=$(printf '%s' "$_wps_ctx" | jq -r '.found' 2>/dev/null || echo "false")
-        if [[ "$_wps_found" == "true" ]]; then
-            workflow_id=$(printf '%s' "$_wps_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
-        fi
-    fi
-    [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
-
-    # Runtime-only (TKT-008): upsert into SQLite proof store exclusively.
-    # The root parameter is kept for call-site compatibility but is no longer used.
-    rt_proof_set "$workflow_id" "$status" || true
-}
-
 # --- Evaluation state (TKT-024: sole readiness authority) ---
 
 # read_evaluation_status <root> [workflow_id]
@@ -582,5 +516,5 @@ classify_git_op() {
 
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f cc_policy _rt_ensure_schema rt_proof_get rt_proof_set rt_proof_timestamp rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route
-export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_proof_status read_proof_timestamp write_proof_status read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context
+export -f cc_policy _rt_ensure_schema rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

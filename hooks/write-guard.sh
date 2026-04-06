@@ -14,8 +14,8 @@
 # write-side WHO enforcement. Any agent could freely write source files and
 # accumulate work before the git commit gate triggered. DEC-FORK-005 identifies
 # this as the most important current control gap. This hook closes it at
-# write-time. Role detection reads .claude/.subagent-tracker via
-# current_active_agent_role from context-lib.sh.
+# write-time. Role detection uses CLAUDE_AGENT_ROLE env var (runtime injection)
+# via current_active_agent_role from context-lib.sh.
 #
 # Hook chain position: AFTER branch-guard.sh, BEFORE doc-gate.sh.
 # branch-guard fires first so branch protection takes precedence; doc-gate
@@ -62,8 +62,8 @@ FILE_DIR=$(dirname "$FILE_PATH")
 [[ ! -d "$FILE_DIR" ]] && FILE_DIR=$(dirname "$FILE_DIR")
 PROJECT_ROOT=$(git -C "$FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
 
-# Detect active agent role. Uses CLAUDE_AGENT_ROLE env var first (runtime
-# injection), then falls back to .subagent-tracker file.
+# Detect active agent role. Uses CLAUDE_AGENT_ROLE env var (runtime injection)
+# then falls back to agent_markers SQLite table via current_active_agent_role.
 ROLE=$(current_active_agent_role "$PROJECT_ROOT")
 
 # ALLOW: implementer is the only role permitted to write source files
