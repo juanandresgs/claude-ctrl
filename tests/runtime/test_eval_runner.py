@@ -25,9 +25,8 @@ import pytest
 # Ensure the project root is importable regardless of test runner CWD
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-import runtime.core.eval_runner as eval_runner
-
 import runtime.core.eval_metrics as eval_metrics
+import runtime.core.eval_runner as eval_runner
 from runtime.core.db import connect_memory
 from runtime.eval_schemas import ensure_eval_schema
 
@@ -39,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCENARIOS_DIR = REPO_ROOT / "evals" / "scenarios"
 FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
 WRITE_WHO_DENY_YAML = SCENARIOS_DIR / "gate" / "write-who-deny.yaml"
+IMPL_SOURCE_ALLOW_YAML = SCENARIOS_DIR / "gate" / "impl-source-allow.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +357,93 @@ def test_run_deterministic_error_is_none_on_success(project_tmp):
         assert result["error"] is None
     finally:
         eval_runner.cleanup_fixture(path)
+
+
+def test_run_deterministic_implementer_role_allows_source_write(project_tmp):
+    """Bug 1: run_deterministic() reads actor_role from scenario setup section.
+
+    When scenario setup.actor_role is 'implementer', the write_who policy
+    must allow the source write (implementer is the authorized role).
+    This is the Compound-Interaction Test for the allow path: it crosses
+    fixture setup → policy engine evaluation boundaries with the correct role.
+    """
+    scenario = eval_runner.load_scenario(IMPL_SOURCE_ALLOW_YAML)
+    path = eval_runner.setup_fixture("basic-project", FIXTURES_DIR, project_tmp)
+    try:
+        result = eval_runner.run_deterministic(scenario, path, REPO_ROOT)
+        assert result["verdict"] == "allow", (
+            f"Expected 'allow' for implementer role but got '{result['verdict']}'. "
+            f"raw_output={result['raw_output']!r}"
+        )
+        assert result["error"] is None
+    finally:
+        eval_runner.cleanup_fixture(path)
+
+
+def test_run_deterministic_default_actor_role_is_tester(project_tmp):
+    """Bug 1 regression: scenario without setup.actor_role defaults to 'tester' (deny)."""
+    scenario = eval_runner.load_scenario(WRITE_WHO_DENY_YAML)
+    path = eval_runner.setup_fixture("clean-hello-world", FIXTURES_DIR, project_tmp)
+    try:
+        result = eval_runner.run_deterministic(scenario, path, REPO_ROOT)
+        # write-who-deny has no setup.actor_role — defaults to tester → deny
+        assert result["verdict"] == "deny"
+        assert result["error"] is None
+    finally:
+        eval_runner.cleanup_fixture(path)
+
+
+# ---------------------------------------------------------------------------
+# run_scenario() scoring integration (Bug 2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_scenario_populates_verdict_correct(eval_conn, project_tmp):
+    """Bug 2: run_scenario() populates verdict_correct via scorer for deny scenario."""
+    scenario = eval_runner.load_scenario(WRITE_WHO_DENY_YAML)
+    run_id = eval_metrics.create_run(eval_conn, mode="deterministic")
+    eval_runner.run_scenario(
+        scenario=scenario,
+        fixtures_dir=FIXTURES_DIR,
+        eval_conn=eval_conn,
+        project_tmp=project_tmp,
+        repo_root=REPO_ROOT,
+        run_id=run_id,
+    )
+    scores = eval_metrics.get_scores(eval_conn, run_id)
+    assert len(scores) == 1
+    row = scores[0]
+    # write-who-deny expects 'deny' and the deterministic runner produces 'deny'
+    assert row["verdict_correct"] == 1
+    assert row["verdict_actual"] == "deny"
+
+
+def test_run_scenario_allow_path_scores_correctly(eval_conn, project_tmp):
+    """Bug 1+2: impl-source-allow scenario passes through both fixes end-to-end.
+
+    This is the primary Compound-Interaction Test for the full production
+    sequence: load_scenario → setup_fixture → run_deterministic (with
+    actor_role from YAML) → eval_scorer.score_verdict → record_score.
+    """
+    scenario = eval_runner.load_scenario(IMPL_SOURCE_ALLOW_YAML)
+    run_id = eval_metrics.create_run(eval_conn, mode="deterministic")
+    eval_runner.run_scenario(
+        scenario=scenario,
+        fixtures_dir=FIXTURES_DIR,
+        eval_conn=eval_conn,
+        project_tmp=project_tmp,
+        repo_root=REPO_ROOT,
+        run_id=run_id,
+    )
+    scores = eval_metrics.get_scores(eval_conn, run_id)
+    assert len(scores) == 1
+    row = scores[0]
+    assert row["scenario_id"] == "impl-source-allow"
+    assert row["verdict_actual"] == "allow"
+    assert row["verdict_correct"] == 1, (
+        f"Expected verdict_correct=1 but got {row['verdict_correct']}. "
+        f"verdict_actual={row['verdict_actual']!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

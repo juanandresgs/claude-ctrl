@@ -8,6 +8,9 @@ description: >
 
 fixture: basic-project
 
+setup:
+  actor_role: implementer
+
 evaluation_contract:
   required_tests: []
   required_real_path_checks:
@@ -30,7 +33,7 @@ scoring:
   false_positive_weight: 0.0
 
 scenario_setup_notes: >
-  This scenario tests the write_who allow path. The policy engine must be
-  invoked with actor_role=implementer. run_deterministic() uses actor_role=tester
-  (DEC-EVAL-RUNNER-002), so the shell gate test invokes the policy engine
-  directly with the correct actor_role rather than going through run_deterministic.
+  This scenario tests the write_who allow path. The policy engine is invoked
+  with actor_role=implementer (from setup.actor_role above). run_deterministic()
+  reads actor_role from the scenario setup section (DEC-EVAL-RUNNER-002), so
+  no special handling is required outside of this YAML.
