@@ -183,6 +183,133 @@ def test_is_claude_meta_repo_env_not_dot_claude(monkeypatch, tmp_path):
     assert is_claude_meta_repo(str(tmp_path)) is False
 
 
+def test_is_claude_meta_repo_via_git_toplevel(monkeypatch, tmp_path):
+    """Check 2: git --show-toplevel ending in /.claude returns True (main checkout)."""
+    import subprocess
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    meta_repo = tmp_path / ".claude"
+    meta_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(meta_repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(meta_repo),
+            "-c",
+            "user.email=t@t.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+            "-q",
+        ],
+        check=True,
+    )
+    assert is_claude_meta_repo(str(meta_repo)) is True
+
+
+def test_is_claude_meta_repo_worktree(monkeypatch, tmp_path):
+    """Check 3: worktree of ~/.claude returns True via --git-common-dir (#163/#143).
+
+    Before the fix, --show-toplevel returns the worktree path which does NOT
+    end in /.claude, causing is_claude_meta_repo() to return False.
+    The fix adds --git-common-dir which DOES end in /.claude/.git for any
+    worktree of the meta-repo.
+    """
+    import subprocess
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+
+    # Set up simulated ~/.claude repo
+    meta_repo = tmp_path / ".claude"
+    meta_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(meta_repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(meta_repo),
+            "-c",
+            "user.email=t@t.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+            "-q",
+        ],
+        check=True,
+    )
+
+    # Create a worktree — its toplevel is NOT /.claude
+    worktree_dir = meta_repo / ".worktrees" / "feature-test"
+    (meta_repo / ".worktrees").mkdir()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(meta_repo),
+            "worktree",
+            "add",
+            str(worktree_dir),
+            "-b",
+            "feature/test",
+            "-q",
+        ],
+        check=True,
+    )
+
+    # Verify the test precondition: toplevel does NOT end in /.claude
+    result = subprocess.run(
+        ["git", "-C", str(worktree_dir), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    worktree_toplevel = result.stdout.strip()
+    assert not worktree_toplevel.endswith("/.claude"), (
+        f"Precondition failed: worktree toplevel '{worktree_toplevel}' "
+        "ends in /.claude — test is not exercising the bug path"
+    )
+
+    # The fix: is_claude_meta_repo must return True for the worktree
+    assert is_claude_meta_repo(str(worktree_dir)) is True, (
+        "is_claude_meta_repo() returned False for a worktree of ~/.claude — "
+        "Check 3 (--git-common-dir) is not working"
+    )
+
+
+def test_is_not_claude_meta_repo_plain_repo(monkeypatch, tmp_path):
+    """A plain repo whose name does not end in .claude must return False."""
+    import subprocess
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    plain_repo = tmp_path / "myproject"
+    plain_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(plain_repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(plain_repo),
+            "-c",
+            "user.email=t@t.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+            "-q",
+        ],
+        check=True,
+    )
+    assert is_claude_meta_repo(str(plain_repo)) is False
+
+
 # ---------------------------------------------------------------------------
 # sanitize_token
 # ---------------------------------------------------------------------------

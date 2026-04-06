@@ -159,29 +159,49 @@ def is_governance_markdown(filepath: str) -> bool:
 
 
 def is_claude_meta_repo(dir_path: str) -> bool:
-    """Check if a directory is the ~/.claude meta repo.
+    """Check if a directory is the ~/.claude meta repo (or a worktree of it).
 
-    Matches: hooks/context-lib.sh:426 is_claude_meta_repo()
+    Matches: hooks/context-lib.sh is_claude_meta_repo()
 
-    Checks CLAUDE_PROJECT_DIR env var first (because symlinks cause git to
-    resolve to the real path, bypassing the /.claude suffix check).
-    Falls back to git toplevel ending in /.claude.
+    Three-check strategy mirrors the shell version exactly:
+      1. CLAUDE_PROJECT_DIR env var (handles symlinks, fastest path).
+      2. git --show-toplevel ending in /.claude (main checkout).
+      3. git --git-common-dir ending in /.claude/.git (worktrees of the
+         meta-repo — fixes #163/#143 where worktree toplevel ends in a
+         feature branch name, not /.claude).
+
+    @decision DEC-META-001
+    Title: Use --git-common-dir to detect meta-repo worktrees
+    Status: accepted
+    Rationale: git --show-toplevel returns the worktree root (e.g.
+      ~/.claude/.worktrees/feature-foo), not the shared repo root.
+      --git-common-dir always returns the shared .git path which ends in
+      /.claude/.git for any worktree of the meta-repo. Fixes #163/#143.
     """
     claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
     if claude_project_dir.endswith("/.claude"):
         return True
 
-    # Fallback: resolve git toplevel and check suffix
     try:
+        # Check 2: git toplevel (main checkout of the meta-repo)
         result = subprocess.run(
             ["git", "-C", dir_path, "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if result.returncode == 0:
-            repo_root = result.stdout.strip()
-            return repo_root.endswith("/.claude")
+        if result.returncode == 0 and result.stdout.strip().endswith("/.claude"):
+            return True
+
+        # Check 3: git common dir (worktrees of the meta-repo)
+        result = subprocess.run(
+            ["git", "-C", dir_path, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip().endswith("/.claude/.git"):
+            return True
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
     return False
