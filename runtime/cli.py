@@ -332,6 +332,13 @@ def _handle_dispatch(args) -> int:
                     "auto_dispatch": result.get("auto_dispatch", False),
                     "codex_blocked": result.get("codex_blocked", False),
                     "codex_reason": result.get("codex_reason", ""),
+                    # W-GWT-1 (DEC-GUARD-WT-003, DEC-GUARD-WT-007): pass through
+                    # worktree_path and guardian_mode so callers (post-task.sh,
+                    # orchestrator) can read them from the structured result without
+                    # parsing the suggestion text. The suggestion text remains the
+                    # primary carrier to the orchestrator via additionalContext.
+                    "worktree_path": result.get("worktree_path", ""),
+                    "guardian_mode": result.get("guardian_mode", ""),
                     "error": result["error"],
                     "hookSpecificOutput": hook_output,
                 }

@@ -57,6 +57,36 @@ Rationale: The heuristic (DEC-STOP-ASSESS-001) detects interrupted implementers
   so the contract lookup can override is_interrupted before the event is written.
   For all other roles the behaviour is unchanged (heuristic computed and emitted
   in the same pass as before).
+
+@decision DEC-GUARD-WT-001
+Title: Planner routes to guardian (not implementer) for worktree provisioning (W-GWT-1)
+Status: accepted
+Rationale: Guardian is the sole worktree lifecycle authority (INIT-GUARD-WT). The
+  routing table previously mapped planner -> implementer directly, bypassing Guardian
+  for worktree creation. W-GWT-1 changes the planner block to route to guardian with
+  guardian_mode="provision". The completions routing table adds ("guardian",
+  "provisioned") -> "implementer" so the chain planner -> guardian -> implementer is
+  preserved end-to-end.
+
+  dispatch_engine remains a pure routing engine — no git side effects, no lease
+  writes (DEC-GUARD-WT-002). Worktree creation, Guardian lease issuance, and
+  implementer lease issuance happen in the Guardian agent via the cc-policy worktree
+  provision CLI (W-GWT-2), not here.
+
+  workflow_id at planner stop is best-effort: active lease if present, branch-derived
+  fallback otherwise, omitted from the suggestion if neither yields a value. The
+  orchestrator already knows the workflow_id from the plan context (DEC-GUARD-WT-006
+  R3), so the provision CLI receives it as a CLI argument, not from the planner lease.
+
+  worktree_path flows end-to-end: Guardian emits WORKTREE_PATH in its response text,
+  check-guardian.sh parses it into the completion record payload, _route_from_completion
+  extracts it and sets result["worktree_path"], the suggestion builder encodes it in the
+  AUTO_DISPATCH line, and cli.py serializes it in the passthrough dict (DEC-GUARD-WT-003).
+
+  On rework cycles (tester needs_changes -> implementer), the worktree already exists.
+  dispatch_engine reads worktree_path from workflow_bindings via workflows.get_binding()
+  and encodes it in the needs_changes AUTO_DISPATCH suggestion so the orchestrator can
+  pass it to the re-dispatched implementer (DEC-GUARD-WT-004).
 """
 
 from __future__ import annotations
@@ -109,6 +139,12 @@ def process_agent_stop(
         "auto_dispatch": False,
         "codex_blocked": False,
         "codex_reason": "",
+        # W-GWT-1: guardian_mode distinguishes provision (planner→guardian) from
+        # merge (tester→guardian). Populated by the planner block only.
+        "guardian_mode": "",
+        # W-GWT-1: worktree_path is extracted from the guardian completion record
+        # payload (provisioned verdict) or from workflow_bindings (rework path).
+        "worktree_path": "",
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -148,7 +184,24 @@ def process_agent_stop(
     # Role-specific routing
     # ---------------------------------------------------------------------------
     if normalised == "planner":
-        result["next_role"] = "implementer"
+        # W-GWT-1 (DEC-GUARD-WT-001): Route planner -> guardian for worktree
+        # provisioning. Guardian determines its mode from guardian_mode field.
+        result["next_role"] = "guardian"
+        result["guardian_mode"] = "provision"
+        # workflow_id at planner stop is best-effort (DEC-GUARD-WT-006 R3).
+        # _resolve_lease_context() already ran above; if it yielded a
+        # workflow_id (planner held a pre-issued lease), use it. If not, try
+        # the branch-derived fallback. Either way, routing is not gated on it —
+        # the orchestrator has workflow_id from its plan context and passes it
+        # as a CLI argument to the provision command.
+        if not workflow_id:
+            try:
+                from runtime.core import policy_utils
+
+                workflow_id = policy_utils.current_workflow_id(project_root)
+                result["workflow_id"] = workflow_id
+            except Exception:
+                pass  # Best-effort; omit from suggestion if unavailable.
 
     elif normalised == "implementer":
         result["next_role"] = "tester"
@@ -202,16 +255,31 @@ def process_agent_stop(
         )
         result["next_role"] = next_role
         result["error"] = error
+        # W-GWT-1 rework path (DEC-GUARD-WT-004): when tester routes to
+        # implementer (needs_changes), the worktree already exists. Read
+        # worktree_path from workflow_bindings so the orchestrator can pass
+        # it in the implementer re-dispatch context. Best-effort — routing
+        # is not gated on the binding lookup.
+        if next_role == "implementer" and workflow_id and not error:
+            try:
+                from runtime.core import workflows
+
+                binding = workflows.get_binding(conn, workflow_id)
+                if binding:
+                    result["worktree_path"] = binding.get("worktree_path") or ""
+            except Exception:
+                pass  # Advisory; routing is already determined.
 
     elif normalised == "guardian":
-        next_role, error = _route_from_completion(
+        next_role, error, worktree_path = _route_from_guardian_completion(
             conn,
-            role="guardian",
             workflow_id=workflow_id,
             active_lease_id=active_lease_id,
         )
         result["next_role"] = next_role
         result["error"] = error
+        if worktree_path:
+            result["worktree_path"] = worktree_path
 
     # ---------------------------------------------------------------------------
     # Emit stop audit event (deferred so implementer contract can override
@@ -259,6 +327,17 @@ def process_agent_stop(
 
     # ---------------------------------------------------------------------------
     # Build suggestion for hookSpecificOutput additionalContext
+    #
+    # W-GWT-1 (DEC-GUARD-WT-003, DEC-GUARD-WT-007): The suggestion text is the
+    # ONLY carrier of worktree_path and guardian_mode to the orchestrator via
+    # additionalContext. post-task.sh strips the cli.py result to hookSpecificOutput
+    # only, so encoded fields in the suggestion line are the last-mile delivery.
+    #
+    # Encoding rules:
+    #   planner -> guardian:     AUTO_DISPATCH: guardian (mode=provision, workflow_id=W)
+    #   guardian -> implementer: AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
+    #   tester needs_changes:    AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
+    #   all other transitions:   AUTO_DISPATCH: <role> (workflow_id=W)
     # ---------------------------------------------------------------------------
     if result["error"]:
         result["suggestion"] = result["error"]
@@ -270,8 +349,22 @@ def process_agent_stop(
         else:
             # Interrupted or non-auto path: keep canonical human-readable form.
             suggestion = f"Canonical flow suggests dispatching: {result['next_role']}"
+
+        # Build the structured parameter block (W-GWT-1).
+        # planner -> guardian: encode mode=provision
+        # guardian/tester -> implementer with worktree: encode worktree_path
+        params: list[str] = []
+        guardian_mode = result.get("guardian_mode", "")
+        worktree_path = result.get("worktree_path", "")
+        if guardian_mode:
+            params.append(f"mode={guardian_mode}")
+        if worktree_path:
+            params.append(f"worktree_path={worktree_path}")
         if workflow_id:
-            suggestion += f" (workflow_id={workflow_id})"
+            params.append(f"workflow_id={workflow_id}")
+        if params:
+            suggestion += f" ({', '.join(params)})"
+
         result["suggestion"] = suggestion
     elif normalised == "guardian" and not result["error"]:
         # Terminal state — cycle complete.
@@ -561,6 +654,111 @@ def _route_from_completion(
     _safe_release(conn, active_lease_id)
 
     return next_role, None
+
+
+def _route_from_guardian_completion(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    active_lease_id: str,
+) -> tuple[Optional[str], Optional[str], str]:
+    """Look up the guardian completion record, determine next_role, and extract worktree_path.
+
+    W-GWT-1 (DEC-GUARD-WT-003): When verdict is "provisioned", the completion
+    record payload includes WORKTREE_PATH set by check-guardian.sh. This function
+    extracts it so the caller can encode it in the AUTO_DISPATCH suggestion line
+    and in result["worktree_path"] for cli.py serialization.
+
+    All other routing logic mirrors _route_from_completion(). The only differences
+    are the role is always "guardian" and the return tuple carries worktree_path.
+
+    Returns:
+        (next_role, error, worktree_path) — next_role and error follow the same
+        contract as _route_from_completion(). worktree_path is empty string when
+        verdict is not "provisioned" or when the payload does not contain it.
+    """
+    if not workflow_id:
+        error = (
+            "PROCESS ERROR: Guardian completed but no workflow_id could be resolved. Cannot route."
+        )
+        return None, error, ""
+
+    if not active_lease_id:
+        error = (
+            f"PROCESS ERROR: Guardian completed without an active lease for "
+            f"workflow {workflow_id}. Cannot route."
+        )
+        return None, error, ""
+
+    # Read the completion record BEFORE releasing the lease (DEC-ROUTING-002).
+    try:
+        comp = completions.latest(conn, lease_id=active_lease_id)
+    except Exception as exc:
+        error = (
+            f"PROCESS ERROR: Failed to read completion record for guardian "
+            f"lease {active_lease_id}: {exc}"
+        )
+        _safe_release(conn, active_lease_id)
+        return None, error, ""
+
+    if comp is None:
+        try:
+            events.emit(
+                conn,
+                type="completion_missing",
+                detail=(
+                    f"guardian lease {active_lease_id} has no completion record "
+                    f"for workflow {workflow_id}"
+                ),
+            )
+        except Exception:
+            pass
+        error = (
+            f"PROCESS ERROR: Guardian completed with active lease "
+            f"{active_lease_id} but no completion record. Contract not fulfilled."
+        )
+        _safe_release(conn, active_lease_id)
+        return None, error, ""
+
+    # Completion record found — check validity.
+    comp_valid = comp.get("valid")
+    is_valid = comp_valid == 1 or comp_valid is True
+
+    if not is_valid:
+        try:
+            events.emit(
+                conn,
+                type="post_task_error",
+                detail=f"guardian completion record invalid for workflow {workflow_id}",
+            )
+        except Exception:
+            pass
+        error = (
+            f"PROCESS ERROR: Guardian completion record invalid for "
+            f"workflow {workflow_id} lease {active_lease_id}. Contract not fulfilled."
+        )
+        _safe_release(conn, active_lease_id)
+        return None, error, ""
+
+    # Valid completion — route via determine_next_role() (DEC-COMPLETION-001).
+    verdict = comp.get("verdict") or ""
+    next_role = completions.determine_next_role("guardian", verdict)
+
+    # Extract WORKTREE_PATH from payload when verdict is "provisioned" (W-GWT-1).
+    # check-guardian.sh parses this from the guardian response text and stores it
+    # in the completion record payload alongside LANDING_RESULT and OPERATION_CLASS.
+    worktree_path = ""
+    if verdict == "provisioned":
+        try:
+            payload = comp.get("payload_json") or {}
+            if isinstance(payload, dict):
+                worktree_path = payload.get("WORKTREE_PATH") or ""
+        except Exception:
+            pass  # Best-effort; routing is already determined.
+
+    # Release lease AFTER routing is determined (DEC-ROUTING-002).
+    _safe_release(conn, active_lease_id)
+
+    return next_role, None, worktree_path
 
 
 def _safe_release(conn: sqlite3.Connection, lease_id: str) -> None:

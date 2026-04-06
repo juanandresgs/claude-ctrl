@@ -97,16 +97,17 @@ def _submit_valid_guardian_completion(conn, lease_id, workflow_id, verdict="comm
 # ---------------------------------------------------------------------------
 
 
-def test_planner_routes_to_implementer(conn, project_root):
+def test_planner_routes_to_guardian(conn, project_root):
+    """W-GWT-1: Planner now routes to guardian (not implementer) for worktree provisioning."""
     result = process_agent_stop(conn, "planner", project_root)
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert result["error"] is None
 
 
-def test_planner_alias_plan_routes_to_implementer(conn, project_root):
-    """Tolerate 'Plan' capitalisation (matches bash case statement)."""
+def test_planner_alias_plan_routes_to_guardian(conn, project_root):
+    """Tolerate 'Plan' capitalisation (matches bash case statement) — W-GWT-1."""
     result = process_agent_stop(conn, "Plan", project_root)
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert result["error"] is None
 
 
@@ -305,8 +306,9 @@ def test_unknown_agent_type_returns_none(conn, project_root):
 
 
 def test_suggestion_contains_next_role(conn, project_root):
+    """W-GWT-1: planner now routes to guardian, suggestion must mention guardian."""
     result = process_agent_stop(conn, "planner", project_root)
-    assert "implementer" in result["suggestion"]
+    assert "guardian" in result["suggestion"]
 
 
 def test_suggestion_empty_when_cycle_complete(conn, project_root):
@@ -539,10 +541,10 @@ def test_full_tester_to_guardian_production_sequence(conn, project_root):
 
 
 def test_planner_stop_auto_dispatch(conn, project_root):
-    """Planner stop → auto_dispatch=True, next_role=implementer."""
+    """Planner stop → auto_dispatch=True, next_role=guardian (W-GWT-1)."""
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert result["error"] is None
 
 
@@ -679,22 +681,24 @@ def test_suggestion_canonical_prefix_when_false(conn, project_root):
 
 
 def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
-    """Compound-interaction test: full planner→impl→tester→guardian chain
+    """Compound-interaction test: full planner→guardian→impl→tester→guardian chain
     verifying auto_dispatch at each transition boundary.
 
+    W-GWT-1: planner now routes to guardian (provision mode), not implementer directly.
+
     Production sequence exercised:
-      planner stop → auto_dispatch=True (implementer suggested)
+      planner stop → auto_dispatch=True (guardian suggested, mode=provision)
       implementer stop (complete) → auto_dispatch=True (tester suggested)
       tester stop (ready_for_guardian) → auto_dispatch=True (guardian suggested)
       guardian stop (committed) → auto_dispatch=False (terminal)
     """
     wf_id = "wf-ad-cycle-001"
 
-    # --- Planner stop ---
+    # --- Planner stop → guardian (W-GWT-1) ---
     r_planner = process_agent_stop(conn, "planner", project_root)
     assert r_planner["auto_dispatch"] is True
-    assert r_planner["next_role"] == "implementer"
-    assert r_planner["suggestion"].startswith("AUTO_DISPATCH: implementer")
+    assert r_planner["next_role"] == "guardian"
+    assert r_planner["suggestion"].startswith("AUTO_DISPATCH: guardian")
 
     # --- Implementer stop (complete contract) ---
     impl_lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
@@ -737,29 +741,38 @@ def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
 
 
 def test_codex_gate_no_event_auto_dispatch_stays_true(conn, project_root):
-    """No codex_stop_review event → auto_dispatch stays True for clear transition."""
+    """No codex_stop_review event → auto_dispatch stays True for clear transition.
+
+    W-GWT-1: planner now routes to guardian, not implementer.
+    """
     # Planner stop — clear transition, no Codex event in DB
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert result["error"] is None
     # Confirm no codex_blocked key set to True
     assert not result.get("codex_blocked")
 
 
 def test_codex_gate_allow_auto_dispatch_stays_true(conn, project_root):
-    """ALLOW verdict → auto_dispatch stays True."""
+    """ALLOW verdict → auto_dispatch stays True.
+
+    W-GWT-1: planner now routes to guardian, not implementer.
+    """
     from runtime.core import events as ev
 
     ev.emit(conn, type="codex_stop_review", detail="VERDICT: ALLOW — work looks good")
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert not result.get("codex_blocked")
 
 
 def test_codex_gate_block_overrides_auto_dispatch(conn, project_root):
-    """BLOCK verdict → auto_dispatch becomes False, suggestion includes block reason."""
+    """BLOCK verdict → auto_dispatch becomes False, suggestion includes block reason.
+
+    W-GWT-1: planner now routes to guardian, not implementer.
+    """
     from runtime.core import events as ev
 
     block_reason = "Insufficient test coverage for edge cases"
@@ -770,7 +783,7 @@ def test_codex_gate_block_overrides_auto_dispatch(conn, project_root):
     )
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is False
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert result["error"] is None
     assert result.get("codex_blocked") is True
     assert result.get("codex_reason") == block_reason
@@ -798,8 +811,10 @@ def test_codex_gate_block_on_already_false(conn, project_root):
 
 
 def test_codex_gate_stale_event_ignored(conn, project_root):
-    """Event >60s old → ignored, auto_dispatch stays True."""
+    """Event >60s old → ignored, auto_dispatch stays True.
 
+    W-GWT-1: planner now routes to guardian, not implementer.
+    """
     # Insert a BLOCK event with a created_at timestamp 120 seconds in the past
     stale_ts = int(__import__("time").time()) - 120
     conn.execute(
@@ -811,5 +826,214 @@ def test_codex_gate_stale_event_ignored(conn, project_root):
     result = process_agent_stop(conn, "planner", project_root)
     # Stale event must be ignored
     assert result["auto_dispatch"] is True
-    assert result["next_role"] == "implementer"
+    assert result["next_role"] == "guardian"
     assert not result.get("codex_blocked")
+
+
+# ---------------------------------------------------------------------------
+# W-GWT-1: Guardian worktree authority — routing table + dispatch engine changes
+# ---------------------------------------------------------------------------
+# @decision DEC-GUARD-WT-001
+# Title: planner routes to guardian (not implementer) for worktree provisioning
+# Status: accepted
+# Rationale: The routing table maps ("planner", _) -> "guardian" so Guardian
+#   is the sole worktree lifecycle authority. Guardian determines its mode
+#   (provision vs merge) from the guardian_mode structured dispatch field.
+#   completions.py maps ("guardian", "provisioned") -> "implementer" so the
+#   chain planner -> guardian -> implementer is preserved. dispatch_engine
+#   remains a pure routing engine — no git side effects, no lease writes.
+# ---------------------------------------------------------------------------
+
+
+def _submit_valid_guardian_completion_provisioned(conn, lease_id, workflow_id, worktree_path=""):
+    """Submit a guardian completion with LANDING_RESULT=provisioned."""
+    payload = {
+        "LANDING_RESULT": "provisioned",
+        "OPERATION_CLASS": "routine_local",
+    }
+    if worktree_path:
+        payload["WORKTREE_PATH"] = worktree_path
+    return completions.submit(
+        conn,
+        lease_id=lease_id,
+        workflow_id=workflow_id,
+        role="guardian",
+        payload=payload,
+    )
+
+
+def test_planner_guardian_mode_is_provision(conn, project_root):
+    """Planner stop sets guardian_mode='provision' in result."""
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result.get("guardian_mode") == "provision"
+
+
+def test_planner_auto_dispatch_to_guardian(conn, project_root):
+    """Planner stop → auto_dispatch=True, suggestion starts AUTO_DISPATCH: guardian."""
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["suggestion"].startswith("AUTO_DISPATCH: guardian")
+
+
+def test_planner_suggestion_encodes_mode(conn, project_root):
+    """Planner AUTO_DISPATCH suggestion encodes mode=provision."""
+    result = process_agent_stop(conn, "planner", project_root)
+    assert "mode=provision" in result["suggestion"]
+
+
+def test_planner_no_lease_still_routes_to_guardian(conn, project_root):
+    """Planner without a lease still routes to guardian (best-effort workflow_id)."""
+    # No lease issued — planner routing is fixed (no lease required)
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["next_role"] == "guardian"
+    assert result["error"] is None
+    assert result.get("guardian_mode") == "provision"
+
+
+def test_planner_with_lease_resolves_workflow_id(conn, project_root):
+    """When planner has an active lease, workflow_id is resolved from it."""
+    wf_id = "wf-gwt-planner-lease-001"
+    _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["next_role"] == "guardian"
+    assert result["workflow_id"] == wf_id
+    assert result.get("guardian_mode") == "provision"
+
+
+def test_planner_suggestion_encodes_workflow_id_when_known(conn, project_root):
+    """When workflow_id is resolved at planner stop, suggestion encodes it."""
+    wf_id = "wf-gwt-planner-wf-001"
+    _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    result = process_agent_stop(conn, "planner", project_root)
+    assert wf_id in result["suggestion"]
+
+
+def test_guardian_provisioned_routes_to_implementer(conn, project_root):
+    """Guardian with 'provisioned' verdict routes to implementer — W-GWT-1."""
+    wf_id = "wf-gwt-prov-001"
+    lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion_provisioned(conn, lease["lease_id"], wf_id)
+    result = process_agent_stop(conn, "guardian", project_root)
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+
+
+def test_guardian_provisioned_suggestion_encodes_worktree_path(conn, project_root):
+    """Guardian (provisioned) AUTO_DISPATCH suggestion encodes worktree_path."""
+    wf_id = "wf-gwt-prov-wt-001"
+    worktree = "/some/project/.worktrees/feature-gwt-1"
+    lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion_provisioned(
+        conn, lease["lease_id"], wf_id, worktree_path=worktree
+    )
+    result = process_agent_stop(conn, "guardian", project_root)
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    assert worktree in result["suggestion"]
+    assert result.get("worktree_path") == worktree
+
+
+def test_guardian_provisioned_auto_dispatch_true(conn, project_root):
+    """Guardian (provisioned) is auto-dispatched to implementer."""
+    wf_id = "wf-gwt-prov-ad-001"
+    lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion_provisioned(conn, lease["lease_id"], wf_id)
+    result = process_agent_stop(conn, "guardian", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+
+
+def test_tester_needs_changes_suggestion_encodes_worktree_path(conn, project_root):
+    """Tester needs_changes auto-dispatch encodes worktree_path from workflow_bindings."""
+    from runtime.core import workflows
+
+    wf_id = "wf-gwt-nc-wt-001"
+    worktree = "/some/project/.worktrees/feature-impl-001"
+    # Register workflow binding (simulates guardian provisioning step)
+    workflows.bind_workflow(
+        conn,
+        workflow_id=wf_id,
+        worktree_path=worktree,
+        branch="feature/impl-001",
+    )
+    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "needs_changes",
+            "EVAL_TESTS_PASS": "no",
+            "EVAL_NEXT_ROLE": "implementer",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    assert worktree in result["suggestion"]
+    assert result.get("worktree_path") == worktree
+
+
+def test_tester_needs_changes_no_binding_still_routes(conn, project_root):
+    """Tester needs_changes routes correctly even when workflow_bindings has no entry."""
+    wf_id = "wf-gwt-nc-nobind-001"
+    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "needs_changes",
+            "EVAL_TESTS_PASS": "no",
+            "EVAL_NEXT_ROLE": "implementer",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    # worktree_path is empty/missing when no binding exists — that's acceptable
+    assert result.get("worktree_path", "") == ""
+
+
+def test_full_planner_guardian_implementer_chain(conn, project_root):
+    """Compound-interaction test: planner→guardian(provisioned)→implementer chain.
+
+    Production sequence (W-GWT-1):
+      1. Planner stop → routes to guardian, guardian_mode=provision.
+      2. Guardian issues provisioning lease (simulated by _issue_lease_at).
+      3. Guardian submits provisioned completion with WORKTREE_PATH.
+      4. Guardian stop → routes to implementer, worktree_path in result.
+      5. Suggestion encodes worktree_path in AUTO_DISPATCH line.
+
+    Crosses leases / completions / dispatch_engine domain boundaries.
+    """
+    wf_id = "wf-gwt-chain-001"
+    worktree = "/some/project/.worktrees/feature-gwt-chain"
+
+    # Step 1: Planner stop → routes to guardian
+    r_planner = process_agent_stop(conn, "planner", project_root)
+    assert r_planner["next_role"] == "guardian"
+    assert r_planner["auto_dispatch"] is True
+    assert r_planner.get("guardian_mode") == "provision"
+    assert r_planner["suggestion"].startswith("AUTO_DISPATCH: guardian")
+
+    # Step 2+3: Guardian issues lease and submits provisioned completion
+    guardian_lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion_provisioned(
+        conn, guardian_lease["lease_id"], wf_id, worktree_path=worktree
+    )
+
+    # Step 4: Guardian stop → routes to implementer
+    r_guardian = process_agent_stop(conn, "guardian", project_root)
+    assert r_guardian["next_role"] == "implementer"
+    assert r_guardian["error"] is None
+    assert r_guardian["auto_dispatch"] is True
+    assert r_guardian.get("worktree_path") == worktree
+
+    # Step 5: Suggestion encodes worktree_path
+    assert worktree in r_guardian["suggestion"]
+    assert r_guardian["suggestion"].startswith("AUTO_DISPATCH: implementer")

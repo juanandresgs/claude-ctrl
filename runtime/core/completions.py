@@ -46,7 +46,10 @@ ROLE_SCHEMAS: dict = {
     },
     "guardian": {
         "required": ["LANDING_RESULT", "OPERATION_CLASS"],
-        "valid_verdicts": frozenset({"committed", "merged", "denied", "skipped"}),
+        # "provisioned" is the W-GWT-1 verdict for worktree provisioning mode.
+        # It routes guardian -> implementer so the planner -> guardian ->
+        # implementer chain is complete (DEC-GUARD-WT-001).
+        "valid_verdicts": frozenset({"committed", "merged", "denied", "skipped", "provisioned"}),
         "verdict_field": "LANDING_RESULT",
     },
     "implementer": {
@@ -276,6 +279,12 @@ def determine_next_role(role: str, verdict: str) -> Optional[str]:
         ("guardian", "merged"): None,
         ("guardian", "denied"): "implementer",
         ("guardian", "skipped"): "implementer",
+        # W-GWT-1 (DEC-GUARD-WT-001): Guardian in provision mode routes to
+        # implementer after creating the worktree. The planner -> guardian ->
+        # implementer chain uses this entry. The "provisioned" verdict is only
+        # valid when guardian_mode="provision" (set by dispatch_engine planner
+        # block); the merge path uses "committed"/"merged"/"denied"/"skipped".
+        ("guardian", "provisioned"): "implementer",
         # Implementer routing is always → tester regardless of verdict.
         # The contract affects stop quality (agent_complete vs agent_stopped),
         # not routing destination (DEC-IMPL-CONTRACT-001).
