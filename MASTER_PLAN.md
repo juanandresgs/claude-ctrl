@@ -7521,7 +7521,7 @@ Wave 3: W-GWT-3  (implementer cleanup + hook update + docs -- requires provision
 | File | Wave | Change Type |
 |------|------|-------------|
 | `runtime/core/completions.py` | W-GWT-1 | Modify routing table, add `provisioned` verdict |
-| `runtime/core/dispatch_engine.py` | W-GWT-1 | Change planner block routing, add guardian lease, add worktree_path enrichment (provision + rework), add guardian_mode, update suggestion |
+| `runtime/core/dispatch_engine.py` | W-GWT-1 | Change planner block routing (no guardian lease — moved to W-GWT-2), add worktree_path enrichment (provision + rework), add guardian_mode, update suggestion with enriched AUTO_DISPATCH format |
 | `runtime/cli.py` | W-GWT-1, W-GWT-2 | Add worktree_path + guardian_mode to dispatch serialization (W-GWT-1); add provision action (W-GWT-2) |
 | `hooks/check-guardian.sh` | W-GWT-1 | Add WORKTREE_PATH parsing and payload inclusion |
 | `agents/guardian.md` | W-GWT-2, W-GWT-3 | Add provision mode section with structured fields, update Worktree Management |
@@ -7530,7 +7530,7 @@ Wave 3: W-GWT-3  (implementer cleanup + hook update + docs -- requires provision
 | `runtime/core/policies/bash_main_sacred.py` | W-GWT-3 | Update denial message |
 | `CLAUDE.md` | W-GWT-3 | Update dispatch chain documentation |
 | `tests/runtime/test_completions.py` | W-GWT-1 | Update/add routing tests |
-| `tests/runtime/test_dispatch_engine.py` | W-GWT-1 | Update/add dispatch tests (guardian lease, worktree_path, guardian_mode, rework path) |
+| `tests/runtime/test_dispatch_engine.py` | W-GWT-1 | Update/add dispatch tests (worktree_path, guardian_mode, rework path, enriched suggestion format) |
 | `tests/test_cli_dispatch.py` | W-GWT-1 | New/extend: serialization tests |
 | `tests/scenarios/test-check-guardian-worktree-path.sh` | W-GWT-1 | New: WORKTREE_PATH parsing test |
 | `tests/runtime/test_worktree_provision.py` | W-GWT-2 | New: provision CLI tests (incl. idempotency, binding) |
