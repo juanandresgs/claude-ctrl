@@ -29,9 +29,8 @@ import time
 import uuid
 from pathlib import Path
 
-from runtime.eval_schemas import ensure_eval_schema
-
 from runtime.core.db import connect
+from runtime.eval_schemas import ensure_eval_schema
 
 # ---------------------------------------------------------------------------
 # Connection factory
@@ -310,3 +309,164 @@ def record_output(
             """,
             (run_id, scenario_id, raw_output, trailer_json, evidence_text, coverage_json, now),
         )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation and regression functions
+# ---------------------------------------------------------------------------
+
+
+def get_category_breakdown(conn: sqlite3.Connection, run_id: str) -> dict:
+    """Return per-category pass/fail/error counts and average defect_recall scores.
+
+    Counts follow the same definitions as finalize_run():
+      pass  = verdict_correct=1 AND error_message IS NULL
+      error = error_message IS NOT NULL
+      fail  = verdict_correct=0 AND error_message IS NULL
+
+    avg_score is the average of defect_recall for non-NULL rows in that
+    category. If all rows have NULL defect_recall the average is 0.0.
+
+    Args:
+        conn:   Connection to eval_results.db.
+        run_id: UUID of the eval run to break down.
+
+    Returns:
+        Dict keyed by category string. Each value is a dict with keys:
+        pass, fail, error (int), avg_score (float).
+        Empty dict if the run has no scores.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            category,
+            SUM(CASE WHEN verdict_correct = 1 AND error_message IS NULL THEN 1 ELSE 0 END) AS pass_count,
+            SUM(CASE WHEN verdict_correct = 0 AND error_message IS NULL THEN 1 ELSE 0 END) AS fail_count,
+            SUM(CASE WHEN error_message IS NOT NULL THEN 1 ELSE 0 END)                     AS error_count,
+            AVG(CASE WHEN defect_recall IS NOT NULL THEN defect_recall ELSE NULL END)       AS avg_recall
+        FROM   eval_scores
+        WHERE  run_id = ?
+        GROUP  BY category
+        """,
+        (run_id,),
+    ).fetchall()
+
+    result: dict = {}
+    for row in rows:
+        result[row[0]] = {
+            "pass": row[1],
+            "fail": row[2],
+            "error": row[3],
+            "avg_score": float(row[4]) if row[4] is not None else 0.0,
+        }
+    return result
+
+
+def get_regression_check(conn: sqlite3.Connection, scenario_id: str, window: int = 5) -> dict:
+    """Compare the latest defect_recall score for a scenario against a rolling window.
+
+    Fetches the most recent `window` rows for scenario_id ordered by
+    scored_at DESC. The latest score is compared against the average of all
+    fetched rows (including itself). Regression is True if:
+
+        latest_score < window_avg * 0.8  (i.e. drops strictly more than 20%)
+
+    When no data exists, returns safe defaults with regression=False.
+
+    Args:
+        conn:        Connection to eval_results.db.
+        scenario_id: Scenario name to check.
+        window:      Number of recent runs to include in the average (default 5).
+
+    Returns:
+        Dict with keys: scenario_id, latest_score, window_avg, regression, delta.
+    """
+    rows = conn.execute(
+        """
+        SELECT defect_recall
+        FROM   eval_scores
+        WHERE  scenario_id = ?
+          AND  defect_recall IS NOT NULL
+        ORDER  BY scored_at DESC, id DESC
+        LIMIT  ?
+        """,
+        (scenario_id, window),
+    ).fetchall()
+
+    if not rows:
+        return {
+            "scenario_id": scenario_id,
+            "latest_score": 0.0,
+            "window_avg": 0.0,
+            "regression": False,
+            "delta": 0.0,
+        }
+
+    scores = [r[0] for r in rows]
+    latest_score = scores[0]
+    window_avg = sum(scores) / len(scores)
+    delta = latest_score - window_avg
+    # Regression: latest drops strictly more than 20% below window average
+    regression = bool(window_avg > 0.0 and latest_score < window_avg * 0.8)
+
+    return {
+        "scenario_id": scenario_id,
+        "latest_score": latest_score,
+        "window_avg": window_avg,
+        "regression": regression,
+        "delta": delta,
+    }
+
+
+def get_variance(conn: sqlite3.Connection, scenario_id: str, window: int = 5) -> dict:
+    """Compute score variance across recent runs for a scenario.
+
+    Fetches the most recent `window` defect_recall values for the scenario.
+    Uses population variance (divides by N). Returns zeros when no data.
+
+    Args:
+        conn:        Connection to eval_results.db.
+        scenario_id: Scenario name to measure.
+        window:      Number of recent runs to include (default 5).
+
+    Returns:
+        Dict with keys: scenario_id, window, mean, variance, std_dev, run_count.
+    """
+    rows = conn.execute(
+        """
+        SELECT defect_recall
+        FROM   eval_scores
+        WHERE  scenario_id = ?
+          AND  defect_recall IS NOT NULL
+        ORDER  BY scored_at DESC, id DESC
+        LIMIT  ?
+        """,
+        (scenario_id, window),
+    ).fetchall()
+
+    safe_default = {
+        "scenario_id": scenario_id,
+        "window": window,
+        "mean": 0.0,
+        "variance": 0.0,
+        "std_dev": 0.0,
+        "run_count": 0,
+    }
+
+    if not rows:
+        return safe_default
+
+    scores = [r[0] for r in rows]
+    n = len(scores)
+    mean = sum(scores) / n
+    variance = sum((s - mean) ** 2 for s in scores) / n
+    std_dev = variance**0.5
+
+    return {
+        "scenario_id": scenario_id,
+        "window": window,
+        "mean": mean,
+        "variance": variance,
+        "std_dev": std_dev,
+        "run_count": n,
+    }
