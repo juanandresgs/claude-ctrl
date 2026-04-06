@@ -136,9 +136,9 @@ printf '%s' "$RESULT" | jq '{hookSpecificOutput: .hookSpecificOutput}'
 # Non-fatal: || true ensures metric emission never prevents the hook from exiting cleanly.
 _review_raw=$(_local_cc_policy event query --type codex_stop_review --limit 1 2>/dev/null || echo "")
 _review_event=$(printf '%s' "$_review_raw" \
-    | jq -r 'if type == "array" then .[0].detail // "" else "" end' 2>/dev/null || echo "")
+    | jq -r '.items[0].detail // "" ' 2>/dev/null || echo "")
 _review_created=$(printf '%s' "$_review_raw" \
-    | jq -r 'if type == "array" then .[0].created_at // "" else "" end' 2>/dev/null || echo "")
+    | jq -r '.items[0].created_at // "" ' 2>/dev/null || echo "")
 if [[ -n "$_review_event" ]]; then
     _review_verdict=$(printf '%s' "$_review_event" \
         | grep -oE 'VERDICT: (ALLOW|BLOCK)' | head -1 | awk '{print $2}' || echo "")

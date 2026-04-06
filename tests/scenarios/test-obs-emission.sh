@@ -50,7 +50,7 @@ obs_count() {
     local name="$1"
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         obs query "$name" --limit 1000 2>/dev/null \
-        | jq 'length' 2>/dev/null || echo "0"
+        | jq '.count // 0' 2>/dev/null || echo "0"
 }
 
 # ===========================================================================
