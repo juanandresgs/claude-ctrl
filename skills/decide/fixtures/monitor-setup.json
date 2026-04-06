@@ -1,0 +1,281 @@
+{
+  "meta": {
+    "title": "Monitor Setup Configurator",
+    "subtitle": "Triple-checked buying guide for Mac workstation",
+    "type": "purchase"
+  },
+  "steps": [
+    {
+      "id": "priority",
+      "title": "What matters most?",
+      "subtitle": "This determines your resolution tier and eliminates incompatible options",
+      "options": [
+        {
+          "id": "5k",
+          "title": "Maximum Text Crispness",
+          "badge": { "text": "218 PPI", "color": "green" },
+          "recommended": true,
+          "price": { "amount": 0, "label": "5K Resolution" },
+          "specs": [
+            { "text": "218 PPI — native 2x Retina on macOS", "type": "highlight" },
+            { "text": "Zero interpolation, zero scaling artifacts", "type": "highlight" },
+            { "text": "Best for astigmatism — identical to MacBook built-in screen", "type": "highlight" },
+            { "text": "macOS divides resolution by 2 perfectly", "type": "neutral" },
+            { "text": "Effective workspace: 2560 x 1440 (pixel-perfect)", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "M3 Max: 3x 5K", "ok": true },
+            { "text": "M4 Pro Mini: 3x 5K", "ok": true }
+          ],
+          "data": { "tier": "5k" }
+        },
+        {
+          "id": "4k",
+          "title": "Good Text, Great Value",
+          "badge": { "text": "163 PPI", "color": "amber" },
+          "price": { "amount": 0, "label": "4K Resolution" },
+          "specs": [
+            { "text": "163 PPI — requires fractional macOS scaling", "type": "neutral" },
+            { "text": "macOS renders at 5K internally then downscales to 4K", "type": "warning" },
+            { "text": "Subtle font softness and fringing possible", "type": "warning" },
+            { "text": "Still much better than 1080p/1440p", "type": "neutral" },
+            { "text": "Significantly cheaper per monitor", "type": "neutral" }
+          ],
+          "tags": [
+            { "text": "M3 Max: 4x 4K", "ok": true },
+            { "text": "M4 Pro Mini: 3x 4K", "ok": true }
+          ],
+          "data": { "tier": "4k" }
+        }
+      ],
+      "infoBox": {
+        "html": "<strong>For your astigmatism:</strong> The jump from 163 PPI (4K) to 218 PPI (5K) at 27\" is dramatic. At 5K, macOS renders text at exactly 2x — every pixel is placed intentionally. At 4K, macOS does a fractional scale that introduces interpolation blur. Most people can't tell. <strong>You will.</strong>",
+        "variant": "critical"
+      }
+    },
+    {
+      "id": "monitor",
+      "title": "Choose your monitor",
+      "subtitle": "Options filtered by your resolution choice",
+      "filterBy": { "dataField": "tier", "matchStep": "priority" },
+      "options": [
+        {
+          "id": "asus-5k",
+          "title": "ASUS ProArt PA27JCV",
+          "badge": { "text": "5K • BEST VALUE", "color": "green" },
+          "recommended": true,
+          "price": { "amount": 799, "label": "per monitor" },
+          "specs": [
+            { "text": "5120 x 2880 — 218 PPI (same as Studio Display)", "type": "highlight" },
+            { "text": "99% DCI-P3, Delta E < 2 factory calibrated", "type": "highlight" },
+            { "text": "USB-C with 96W Power Delivery", "type": "highlight" },
+            { "text": "IPS panel, 500 nits brightness", "type": "neutral" },
+            { "text": "VESA 100x100mm, 9.1 lbs", "type": "neutral" },
+            { "text": "Available: Amazon, Best Buy, B&H", "type": "neutral" },
+            { "text": "3x = $2,397 (saves $2,400 vs Studio Display)", "type": "highlight" }
+          ],
+          "links": [
+            { "label": "Amazon", "url": "https://www.amazon.com/ASUS-Display-Professional-Monitor-PA27JCV/dp/B0D6C6F2L8", "detail": "Ships to 20002" },
+            { "label": "Best Buy", "url": "https://www.bestbuy.com/product/asus-proart-27-5k-ips-professional-monitor-with-hdr-displayport-hdmi-black/JJGGLQP8YY", "detail": "2-3 day shipping" },
+            { "label": "B&H Photo", "url": "https://www.bhphotovideo.com/c/product/1850479-REG/asus_pa27jcv_27_proart_5k_usb_c.html", "detail": "Free shipping" }
+          ],
+          "data": { "tier": "5k" }
+        },
+        {
+          "id": "studio",
+          "title": "Apple Studio Display",
+          "badge": { "text": "5K • APPLE", "color": "purple" },
+          "price": { "amount": 1599, "label": "per monitor (VESA mount)" },
+          "specs": [
+            { "text": "5120 x 2880 — 218 PPI", "type": "highlight" },
+            { "text": "Zero-fiddling macOS integration (gold standard)", "type": "highlight" },
+            { "text": "600 nits, DCI-P3 wide color", "type": "neutral" },
+            { "text": "12MP Center Stage camera, 6-speaker audio", "type": "neutral" },
+            { "text": "Thunderbolt 3 (96W PD)", "type": "neutral" },
+            { "text": "4 years old — no panel refresh since 2022", "type": "warning" },
+            { "text": "Studio Display 2 expected H1 2026", "type": "warning" },
+            { "text": "3x = $4,797", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Apple Store", "url": "https://www.apple.com/shop/buy-mac/apple-studio-display/standard-glass-vesa-mount-adapter", "detail": "VESA mount option" },
+            { "label": "Amazon", "url": "https://www.amazon.com/Apple-Studio-Display-Standard-Adapter/dp/B09V3HGN6Q", "detail": "Prime shipping" }
+          ],
+          "data": { "tier": "5k" }
+        },
+        {
+          "id": "dell-4k",
+          "title": "Dell U2725QE",
+          "badge": { "text": "4K • 120Hz", "color": "blue" },
+          "price": { "amount": 660, "label": "per monitor" },
+          "specs": [
+            { "text": "3840 x 2160 — 163 PPI", "type": "neutral" },
+            { "text": "IPS Black, 3000:1 contrast ratio", "type": "highlight" },
+            { "text": "120Hz refresh rate", "type": "highlight" },
+            { "text": "Thunderbolt 4, 140W Power Delivery", "type": "neutral" },
+            { "text": "Highest eye comfort certification", "type": "neutral" },
+            { "text": "3x ≈ $1,860–$2,100", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Dell Direct", "url": "https://www.dell.com/en-us/shop/dell-ultrasharp-27-4k-thunderbolt-hub-monitor-u2725qe/apd/210-bqhr/monitors-monitor-accessories", "detail": "Official store" }
+          ],
+          "data": { "tier": "4k" }
+        },
+        {
+          "id": "asus-4k",
+          "title": "ASUS ProArt PA279CRV",
+          "badge": { "text": "4K • BUDGET", "color": "blue" },
+          "price": { "amount": 379, "label": "per monitor" },
+          "specs": [
+            { "text": "3840 x 2160 — 163 PPI", "type": "neutral" },
+            { "text": "99% DCI-P3, Calman Verified", "type": "neutral" },
+            { "text": "USB-C with 96W Power Delivery", "type": "neutral" },
+            { "text": "Exceptional value", "type": "highlight" },
+            { "text": "3x = $1,137", "type": "highlight" }
+          ],
+          "links": [
+            { "label": "Amazon", "url": "https://www.amazon.com/ASUS-Display-Professional-Monitor-PA279CRV/dp/B0BQPSX5CR", "detail": "Prime shipping" }
+          ],
+          "data": { "tier": "4k" }
+        }
+      ]
+    },
+    {
+      "id": "quantity",
+      "title": "How many monitors?",
+      "subtitle": "Constrained by your Magnus Pro 59\" desk and Mac display outputs",
+      "options": [
+        {
+          "id": "qty-3",
+          "title": "Triple (3x 27\")",
+          "recommended": true,
+          "specs": [
+            { "text": "Center monitor directly in front — no seam", "type": "highlight" },
+            { "text": "Fits Magnus Pro 59\" with arms (panels overhang edges)", "type": "highlight" },
+            { "text": "Two flanking monitors angled inward 15–25°", "type": "neutral" },
+            { "text": "Both M3 Max and M4 Pro support this", "type": "neutral" },
+            { "text": "Total width ~72\" with angle — arms handle the overhang", "type": "neutral" }
+          ],
+          "data": { "value": 3 }
+        },
+        {
+          "id": "qty-4",
+          "title": "Quad (4x 27\")",
+          "eliminated": true,
+          "price": { "amount": 0, "label": "Not possible" },
+          "specs": [
+            { "text": "96\" of panel width — exceeds 59\" desk", "type": "warning" },
+            { "text": "Not feasible even with arms and creative mounting", "type": "warning" },
+            { "text": "Would need Magnus Pro XL (70\") at minimum", "type": "warning" },
+            { "text": "M4 Pro Mini only supports 3 external anyway", "type": "warning" }
+          ],
+          "data": { "value": 4 }
+        },
+        {
+          "id": "qty-2",
+          "title": "Dual (2x 27\")",
+          "specs": [
+            { "text": "Seam in the center of your view", "type": "warning" },
+            { "text": "Fits easily on desk", "type": "neutral" },
+            { "text": "Could add third later", "type": "neutral" }
+          ],
+          "data": { "value": 2 }
+        }
+      ]
+    },
+    {
+      "id": "arms",
+      "title": "Monitor arms",
+      "subtitle": "Secretlab arms integrate with Magnus Pro magnetic cable management",
+      "options": [
+        {
+          "id": "secretlab-combo",
+          "title": "Secretlab Dual + Single Arm",
+          "badge": { "text": "DESIGNED FOR MAGNUS", "color": "green" },
+          "recommended": true,
+          "price": { "amount": 398, "label": "" },
+          "specs": [
+            { "text": "Dual Arm ($249): holds 2 flanking monitors", "type": "highlight" },
+            { "text": "Single Arm ($149): holds center primary monitor", "type": "highlight" },
+            { "text": "Magnetic cable management integration", "type": "highlight" },
+            { "text": "Supports up to 34\" / 17.6 lbs each (PA27JCV is 9.1 lbs)", "type": "neutral" },
+            { "text": "VESA 100x100mm compatible", "type": "neutral" },
+            { "text": "Full aluminum construction", "type": "neutral" },
+            { "text": "Includes 20mm standoff screws for recessed VESA", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Secretlab Monitor Arms", "url": "https://secretlab.co/pages/monitor-arms", "detail": "$49 flat rate shipping" }
+          ],
+          "visibleWhen": { "step": "quantity", "equals": "qty-3" }
+        },
+        {
+          "id": "secretlab-dual",
+          "title": "Secretlab Dual Arm",
+          "badge": { "text": "DESIGNED FOR MAGNUS", "color": "green" },
+          "recommended": true,
+          "price": { "amount": 249, "label": "" },
+          "specs": [
+            { "text": "Holds both monitors on one base", "type": "highlight" },
+            { "text": "Magnetic cable management integration", "type": "highlight" },
+            { "text": "Minimal desk footprint", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Secretlab Monitor Arms", "url": "https://secretlab.co/products/magnus-monitor-arm", "detail": "$49 flat rate shipping" }
+          ],
+          "visibleWhen": { "step": "quantity", "equals": "qty-2" }
+        },
+        {
+          "id": "third-party",
+          "title": "Third-Party Arms",
+          "badge": { "text": "ALTERNATIVE", "color": "blue" },
+          "price": { "amount": 275, "label": "" },
+          "specs": [
+            { "text": "Standard VESA desk clamp mount", "type": "neutral" },
+            { "text": "No magnetic cable management integration", "type": "warning" },
+            { "text": "Options: Ergotron, StarTech, Mount-It!", "type": "neutral" },
+            { "text": "Works but loses Magnus integration", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Amazon Search", "url": "https://www.amazon.com/s?k=triple+monitor+arm+VESA", "detail": "Various options" }
+          ]
+        }
+      ]
+    }
+  ],
+  "impactBar": {
+    "items": [
+      { "label": "Monitors", "fromStep": "monitor", "multiplyByStep": "quantity" },
+      { "label": "Arms", "fromStep": "arms" },
+      { "label": "Cables", "perUnit": 30, "multiplyByStep": "quantity", "approximate": true }
+    ],
+    "totalLabel": "Total Setup Cost",
+    "prefix": "$"
+  },
+  "summary": {
+    "title": "✅ Your Setup — Ready to Buy",
+    "gridItems": [
+      { "label": "Monitors", "template": "{quantity.title}", "highlight": false },
+      { "label": "Monitor Choice", "template": "{monitor.title}", "highlight": false },
+      { "label": "Monitor Cost", "template": "{monitor.price}", "highlight": false },
+      { "label": "Arms", "template": "{arms.title}", "highlight": false },
+      { "label": "Arm Cost", "template": "${arms.price}", "highlight": false },
+      { "label": "Grand Total", "template": "${total}", "highlight": true }
+    ],
+    "actions": [
+      { "text": "<strong>CRITICAL:</strong> Connect all monitors via <strong>USB-C only</strong>. Never use HDMI. This eliminates YCbCr color space issues.", "critical": true },
+      { "text": "Mount arms to Magnus Pro desk — Single Arm at center, Dual Arm behind it branching left/right.", "condition": "quantity=qty-3" },
+      { "text": "Mount Dual Arm to Magnus Pro desk centered.", "condition": "quantity=qty-2" },
+      { "text": "Attach monitors to arms using VESA 100x100mm mounts." },
+      { "text": "Cable 1: Center monitor USB-C → Thunderbolt port 1 (charges MacBook at 96W)" },
+      { "text": "Cable 2: Left monitor USB-C → Thunderbolt port 2" },
+      { "text": "Cable 3: Right monitor USB-C → Thunderbolt port 3", "condition": "quantity=qty-3" },
+      { "text": "System Settings → Displays → Verify resolution matches chosen tier" },
+      { "text": "Set scaling to native Retina sweet spot. <strong>Done.</strong>" }
+    ],
+    "footer": {
+      "html": "<strong>Mac Compatibility Verified:</strong><br>M3 Max MacBook Pro: 4 external displays (3x TB4 + 1x HDMI) — drives this setup via Thunderbolt ✓<br>M4 Pro Mac Mini: 3 external displays (3x TB5 + 1x HDMI) — drives this setup via Thunderbolt ✓<br><strong>Ship to 20002:</strong> Amazon Prime 2-day, Best Buy 2-3 day, B&H free shipping, Secretlab $49 flat rate"
+    },
+    "export": {
+      "enabled": false
+    }
+  }
+}

@@ -1,0 +1,250 @@
+{
+  "meta": {
+    "title": "Authentication & Database Stack",
+    "subtitle": "Choose your tech stack for the auth microservice",
+    "type": "technical",
+    "planContext": {
+      "masterPlan": "MASTER_PLAN.md",
+      "phase": "Phase 1: Core Authentication",
+      "requirements": ["REQ-P0-001", "REQ-P0-002", "REQ-P0-003"]
+    }
+  },
+  "steps": [
+    {
+      "id": "auth-method",
+      "title": "Choose authentication method",
+      "subtitle": "This determines token management and session handling strategy",
+      "decId": "DEC-AUTH-001",
+      "options": [
+        {
+          "id": "jwt-pkce",
+          "title": "JWT + PKCE Flow",
+          "badge": { "text": "Modern", "color": "purple" },
+          "recommended": true,
+          "specs": [
+            { "text": "Stateless, scales horizontally", "type": "highlight" },
+            { "text": "No server-side session storage needed", "type": "highlight" },
+            { "text": "PKCE prevents authorization code interception", "type": "highlight" },
+            { "text": "Requires careful token rotation strategy", "type": "warning" },
+            { "text": "Token expiry and refresh handling complexity", "type": "warning" },
+            { "text": "Cannot revoke tokens without blacklist", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "RFC 7636 (PKCE)", "url": "https://datatracker.ietf.org/doc/html/rfc7636", "detail": "OAuth 2.0 extension" },
+            { "label": "Auth0: JWT Best Practices", "url": "https://auth0.com/blog/a-look-at-the-latest-draft-for-jwt-bcp/", "detail": "Security guidance" }
+          ],
+          "data": { "complexity": "medium", "scalability": "high" }
+        },
+        {
+          "id": "session-based",
+          "title": "Session-Based Auth",
+          "badge": { "text": "Traditional", "color": "blue" },
+          "specs": [
+            { "text": "Simple to implement and reason about", "type": "highlight" },
+            { "text": "Easy to revoke sessions server-side", "type": "highlight" },
+            { "text": "Requires sticky sessions or shared state store", "type": "warning" },
+            { "text": "Harder to scale horizontally", "type": "warning" },
+            { "text": "Simpler security model for junior devs", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Express Session Docs", "url": "https://github.com/expressjs/session", "detail": "Node.js implementation" }
+          ],
+          "data": { "complexity": "low", "scalability": "medium" }
+        },
+        {
+          "id": "oauth-delegated",
+          "title": "OAuth Delegated (Auth0/Clerk)",
+          "badge": { "text": "Managed", "color": "green" },
+          "specs": [
+            { "text": "Offload auth complexity to managed service", "type": "highlight" },
+            { "text": "Built-in MFA, social login, session management", "type": "highlight" },
+            { "text": "Vendor lock-in risk", "type": "warning" },
+            { "text": "Monthly cost scales with users", "type": "warning" },
+            { "text": "Less control over auth flow", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Auth0 Pricing", "url": "https://auth0.com/pricing", "detail": "Free tier: 7,500 MAU" },
+            { "label": "Clerk Pricing", "url": "https://clerk.com/pricing", "detail": "Free tier: 10,000 MAU" }
+          ],
+          "data": { "complexity": "low", "scalability": "high" }
+        }
+      ],
+      "infoBox": {
+        "html": "<strong>Decision criteria:</strong> If you need horizontal scaling and have backend expertise, JWT+PKCE is solid. If you want simplicity and can afford vendor cost, OAuth delegated wins. Session-based is safest for MVPs.",
+        "variant": "default"
+      }
+    },
+    {
+      "id": "database",
+      "title": "Choose database & ORM",
+      "subtitle": "This determines data modeling, query patterns, and migration strategy",
+      "decId": "DEC-DATA-001",
+      "options": [
+        {
+          "id": "postgres-prisma",
+          "title": "PostgreSQL + Prisma",
+          "badge": { "text": "Type-Safe", "color": "purple" },
+          "recommended": true,
+          "specs": [
+            { "text": "Type-safe queries with Prisma Client", "type": "highlight" },
+            { "text": "Built-in migration system", "type": "highlight" },
+            { "text": "Excellent TypeScript integration", "type": "highlight" },
+            { "text": "ACID transactions for user data integrity", "type": "neutral" },
+            { "text": "PostgreSQL widely supported on all platforms", "type": "neutral" },
+            { "text": "Prisma can feel heavy for simple queries", "type": "warning" }
+          ],
+          "links": [
+            { "label": "Prisma Docs", "url": "https://www.prisma.io/docs", "detail": "Official documentation" },
+            { "label": "PostgreSQL Hosting", "url": "https://www.postgresql.org/support/professional_hosting/", "detail": "Managed options" }
+          ],
+          "data": { "relational": true, "typed": true }
+        },
+        {
+          "id": "mongodb-mongoose",
+          "title": "MongoDB + Mongoose",
+          "badge": { "text": "Document", "color": "green" },
+          "specs": [
+            { "text": "Flexible schema for evolving data models", "type": "highlight" },
+            { "text": "Fast iteration without strict migrations", "type": "highlight" },
+            { "text": "No join complexity for simple queries", "type": "neutral" },
+            { "text": "Weaker consistency guarantees than PostgreSQL", "type": "warning" },
+            { "text": "Type safety requires additional setup (Zod/TypeBox)", "type": "warning" }
+          ],
+          "links": [
+            { "label": "Mongoose Docs", "url": "https://mongoosejs.com/docs/", "detail": "ODM for MongoDB" },
+            { "label": "MongoDB Atlas", "url": "https://www.mongodb.com/cloud/atlas", "detail": "Managed MongoDB" }
+          ],
+          "data": { "relational": false, "typed": false }
+        },
+        {
+          "id": "sqlite-drizzle",
+          "title": "SQLite + Drizzle ORM",
+          "badge": { "text": "Lightweight", "color": "blue" },
+          "specs": [
+            { "text": "Zero-config local development", "type": "highlight" },
+            { "text": "Drizzle ORM is fast and type-safe", "type": "highlight" },
+            { "text": "Great for MVPs and edge deployments", "type": "neutral" },
+            { "text": "Limited concurrency (write locks)", "type": "warning" },
+            { "text": "Not suitable for high-traffic production", "type": "warning" }
+          ],
+          "links": [
+            { "label": "Drizzle ORM Docs", "url": "https://orm.drizzle.team/docs/overview", "detail": "Lightweight ORM" },
+            { "label": "SQLite on Cloudflare", "url": "https://developers.cloudflare.com/d1/", "detail": "D1 edge database" }
+          ],
+          "data": { "relational": true, "typed": true }
+        }
+      ]
+    },
+    {
+      "id": "deployment",
+      "title": "Choose deployment platform",
+      "subtitle": "This determines infrastructure complexity and operational overhead",
+      "decId": "DEC-DEPLOY-001",
+      "options": [
+        {
+          "id": "docker-fly",
+          "title": "Docker + Fly.io",
+          "badge": { "text": "Containers", "color": "purple" },
+          "recommended": true,
+          "specs": [
+            { "text": "Full control over runtime environment", "type": "highlight" },
+            { "text": "Easy to replicate locally with Docker Compose", "type": "highlight" },
+            { "text": "Global edge deployment with Fly.io", "type": "highlight" },
+            { "text": "Requires Docker knowledge", "type": "warning" },
+            { "text": "More moving parts than serverless", "type": "neutral" }
+          ],
+          "links": [
+            { "label": "Fly.io Docs", "url": "https://fly.io/docs/", "detail": "Platform documentation" },
+            { "label": "Fly.io Pricing", "url": "https://fly.io/docs/about/pricing/", "detail": "Free tier available" }
+          ],
+          "data": { "serverless": false }
+        },
+        {
+          "id": "serverless-vercel",
+          "title": "Serverless (Vercel Functions)",
+          "badge": { "text": "Zero-Ops", "color": "green" },
+          "specs": [
+            { "text": "Zero infrastructure management", "type": "highlight" },
+            { "text": "Auto-scaling with pay-per-use", "type": "highlight" },
+            { "text": "Great for APIs with bursty traffic", "type": "neutral" },
+            { "text": "Cold starts can add latency", "type": "warning" },
+            { "text": "10-second execution limit on free tier", "type": "warning" }
+          ],
+          "links": [
+            { "label": "Vercel Functions", "url": "https://vercel.com/docs/functions", "detail": "Serverless API docs" },
+            { "label": "Vercel Pricing", "url": "https://vercel.com/pricing", "detail": "Generous free tier" }
+          ],
+          "data": { "serverless": true }
+        },
+        {
+          "id": "vps-manual",
+          "title": "VPS (Manual Setup)",
+          "badge": { "text": "Traditional", "color": "blue" },
+          "specs": [
+            { "text": "Full control and cheapest at scale", "type": "highlight" },
+            { "text": "Predictable monthly cost", "type": "neutral" },
+            { "text": "Requires server administration skills", "type": "warning" },
+            { "text": "Manual security updates and patches", "type": "warning" },
+            { "text": "No auto-scaling without orchestration", "type": "warning" }
+          ],
+          "links": [
+            { "label": "Digital Ocean", "url": "https://www.digitalocean.com/pricing", "detail": "$6/mo Droplets" },
+            { "label": "Hetzner", "url": "https://www.hetzner.com/cloud", "detail": "€4/mo VPS" }
+          ],
+          "data": { "serverless": false }
+        }
+      ]
+    }
+  ],
+  "impactBar": {
+    "items": [
+      { "label": "Auth", "fromStep": "auth-method" },
+      { "label": "Database", "fromStep": "database" },
+      { "label": "Deployment", "fromStep": "deployment" }
+    ],
+    "totalLabel": "Total",
+    "prefix": ""
+  },
+  "summary": {
+    "title": "🎯 Your Tech Stack",
+    "gridItems": [
+      { "label": "Auth Method", "template": "{auth-method.title}", "highlight": false },
+      { "label": "Database", "template": "{database.title}", "highlight": false },
+      { "label": "Deployment", "template": "{deployment.title}", "highlight": false }
+    ],
+    "actions": [
+      { "text": "Set up repository with TypeScript, ESLint, and Prettier" },
+      { "text": "Initialize database schema and run first migration" },
+      { "text": "Implement auth flow with token/session handling" },
+      { "text": "Write integration tests for auth endpoints" },
+      { "text": "Configure deployment pipeline (CI/CD)" },
+      { "text": "Set up monitoring and logging" },
+      { "text": "<strong>Ship MVP to production</strong>", "critical": true }
+    ],
+    "footer": {
+      "html": "<strong>Recommended Stack:</strong> JWT+PKCE + PostgreSQL+Prisma + Docker+Fly.io gives you type safety, scalability, and control.<br><br><strong>Alternative for Speed:</strong> OAuth Delegated (Clerk) + MongoDB+Mongoose + Vercel Serverless ships faster but trades control for convenience."
+    },
+    "export": {
+      "enabled": true,
+      "filename": "tech-decisions.json",
+      "includeDecIds": true
+    }
+  },
+  "research": {
+    "summary": "Deep research consensus: JWT+PKCE is the modern standard for stateless auth, PostgreSQL+Prisma offers best-in-class type safety for TypeScript, and containerized deployment (Fly.io/Railway) balances control with ease-of-use.",
+    "sources": [
+      {
+        "provider": "OpenAI",
+        "title": "Auth & Database Stack Research",
+        "content": "JWT with PKCE provides strong security guarantees for SPAs. Prisma's type safety eliminates entire classes of runtime errors. Fly.io offers global deployment without Kubernetes complexity.",
+        "citations": []
+      },
+      {
+        "provider": "Perplexity",
+        "title": "Community Consensus on Modern Auth",
+        "content": "Reddit r/webdev: JWT is preferred for APIs. Auth0/Clerk recommended for teams without security expertise. PostgreSQL remains the safe default for relational data.",
+        "citations": []
+      }
+    ]
+  }
+}

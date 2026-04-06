@@ -1,0 +1,346 @@
+---
+name: deep-research
+description: Multi-model deep research with comparative assessment (OpenAI + Perplexity + Gemini). Queries 3 deep research providers in parallel and produces a comparative synthesis.
+argument-hint: "[research topic or question]"
+context: fork
+agent: general-purpose
+allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
+---
+
+# Deep Research: Multi-Model Comparative Analysis
+
+Query up to 3 deep research models (OpenAI o3-deep-research, Perplexity sonar-deep-research, Gemini deep-research-pro) in parallel, then produce a comparative assessment highlighting agreements, disagreements, and unique insights.
+
+## Setup Check
+
+The skill requires at least one API key. Check `~/.claude/.env`:
+
+### First-Time Setup
+
+If no config exists, create it:
+
+```bash
+cat > ~/.claude/.env << 'ENVEOF'
+# Deep Research API Configuration
+# All keys are optional — skill works with any subset
+
+# OpenAI (o3-deep-research via Responses API)
+OPENAI_API_KEY=
+
+# Perplexity (sonar-deep-research via Chat Completions API)
+PERPLEXITY_API_KEY=
+
+# Gemini (deep-research-pro via Interactions API)
+GEMINI_API_KEY=
+ENVEOF
+
+chmod 600 ~/.claude/.env
+echo "Config created at ~/.claude/.env"
+echo "Add at least one API key for deep research."
+```
+
+**DO NOT stop if the config doesn't exist.** Create it and tell the user to add keys.
+
+---
+
+## Research Execution
+
+**Step 1: Run the deep research script**
+
+**CRITICAL: This script takes 2-10 minutes.** It runs blocking — do NOT use `run_in_background`. This skill runs in a forked context, so blocking is correct.
+
+Create the output directory and run the script:
+
+```bash
+# timeout must exceed script's internal 1800s timeout
+# Output stays project-local at .claude/research/ so implementer can reference it
+RESEARCH_DIR=".claude/research/DeepResearch_[SafeTopic]_[YYYY-MM-DD]"
+mkdir -p "$RESEARCH_DIR" && \
+python3 ~/.claude/skills/deep-research/scripts/deep_research.py "$ARGUMENTS" \
+  --output-dir "$RESEARCH_DIR" --validate=2 2>&1
+```
+
+Set `timeout: 1920000` on the Bash tool call (script's 1800s timeout + 120s buffer = 1920s = 32 min).
+
+The script will:
+- Detect which API keys are configured
+- Launch available providers in parallel
+- Poll async providers (OpenAI, Gemini) until complete
+- Write `raw_results.json` to the output directory
+- Print progress to stderr
+
+**IMPORTANT**: Deep research models take 2-10 minutes per provider. The script handles all polling internally. Do NOT interrupt it.
+
+**Step 2: Read and parse the results**
+
+Use the **Read** tool to read `raw_results.json` from the output directory. The file is a JSON object:
+```json
+{
+  "topic": "the research topic",
+  "provider_count": 3,
+  "success_count": 3,
+  "warnings": [],
+  "citation_validation": {
+    "depth": 1,
+    "total": 47,
+    "valid": 42,
+    "invalid": 2,
+    "unreachable": 3,
+    "skipped": 0
+  },
+  "comparison_matrix": {
+    "providers": ["openai", "perplexity", "gemini"],
+    "topics": [
+      {
+        "name": "company overview",
+        "openai": "detailed",
+        "perplexity": "mentioned",
+        "gemini": "detailed",
+        "agreement": "consensus"
+      }
+    ],
+    "citation_overlap": {
+      "https://example.com/paper": ["openai", "gemini"]
+    },
+    "stats": {
+      "total_topics": 18,
+      "consensus": 5,
+      "majority": 7,
+      "unique": 6
+    }
+  },
+  "results": [
+    {
+      "provider": "openai",
+      "success": true,
+      "report": "full report text...",
+      "citations": [
+        {
+          "url": "...",
+          "title": "...",
+          "validation": {
+            "status": "valid",
+            "depth": 1,
+            "details": "HTTP 200"
+          }
+        }
+      ],
+      "model": "o3-deep-research-2025-06-26",
+      "elapsed_seconds": 145.3,
+      "error": null
+    },
+    ...
+  ]
+}
+```
+
+Note: `citation_validation` and `validation` fields within citations are only present if `--validate=1` or higher was used. The `comparison_matrix` key is always present — it is computed deterministically by the script from markdown headings and citation URLs.
+
+**Step 3: Check for provider failures**
+
+**MANDATORY**: Before synthesis, check if `success_count < provider_count` (or check the `warnings` array in the JSON). If ANY providers failed:
+
+1. **Immediately tell the user** with a `WARNING:` prefix — which providers failed, their error messages, and elapsed time
+2. You **SHOULD** supplement failed providers with WebSearch to fill knowledge gaps
+3. Note which findings in your synthesis came from WebSearch rather than deep research
+
+Do NOT silently skip failed providers. The user must know about failures before reading the report.
+
+---
+
+## Synthesis: Produce the Comparative Report
+
+Read ALL provider reports carefully. Then produce a report in this structure:
+
+```markdown
+# Deep Research Report: [Topic]
+
+## Provider Status
+| Provider | Status | Time | Notes |
+|----------|--------|------|-------|
+| OpenAI | OK | 145s | |
+| Perplexity | OK | 89s | |
+| Gemini | FAILED | 600s | HTTPError: timed out after 600s |
+
+*(Always include this table. Green path: all OK. Failure path: makes problems immediately visible.)*
+
+## Executive Summary
+[3-5 sentence overview of the key findings across all models]
+
+## Individual Model Reports
+
+### OpenAI (o3-deep-research) — [elapsed]s
+[Condensed key findings from OpenAI's report — preserve the important facts,
+remove redundant prose. 200-400 words.]
+
+### Perplexity (sonar-deep-research) — [elapsed]s
+[Condensed key findings from Perplexity's report. 200-400 words.]
+
+### Gemini (deep-research-pro) — [elapsed]s
+[Condensed key findings from Gemini's report. 200-400 words.]
+
+## Comparative Assessment
+
+Tag each finding with its agreement level:
+- `[consensus]` — All providers agree
+- `[majority]` — 2+ providers agree
+- `[contested]` — Providers disagree
+- `[unique-<provider>]` — Single provider finding (e.g., `[unique-openai]`)
+
+### Points of Agreement
+[`[consensus]` findings — claims made by all providers. Highest confidence.]
+
+### Points of Majority Agreement
+[`[majority]` findings — claims made by 2+ but not all providers.]
+
+### Points of Disagreement
+[`[contested]` findings — claims where providers contradict each other. Note which model says what.]
+
+### Unique Insights
+[`[unique-<provider>]` findings — single-provider findings. Interesting but lower confidence.]
+
+### Confidence Assessment
+| Finding | OpenAI | Perplexity | Gemini | Confidence |
+|---------|--------|------------|--------|------------|
+| [key claim 1] | ✓ | ✓ | ✓ | High |
+| [key claim 2] | ✓ | ✓ | — | Medium |
+| [key claim 3] | — | — | ✓ | Low |
+
+### Source Quality Comparison
+| Provider | Citations | Report Length | Depth |
+|----------|-----------|-------------|-------|
+| OpenAI | [n] sources | [n] words | [assessment] |
+| Perplexity | [n] sources | [n] words | [assessment] |
+| Gemini | [n] sources | [n] words | [assessment] |
+
+## References
+
+**CRITICAL: The report must be verifiable.** Include a numbered references section at the end using citations from all providers. Every factual claim in the report should be traceable to a source.
+
+Build the references list by:
+1. Collecting all citation URLs from the `citations` arrays in the JSON results
+2. Deduplicating by URL (multiple providers may cite the same source)
+3. Numbering them sequentially
+4. Using inline reference numbers `[1]`, `[2]` etc. throughout the report body to link claims to sources
+
+Format:
+[1] Title or description — URL
+[2] Title or description — URL
+...
+
+If a provider (like Gemini) returns no structured citations, note that its claims are unsourced and lower confidence. Prefer citing claims that have URLs backing them.
+```
+
+**Adaptation rules:**
+- If only 1 provider succeeded: Skip comparative sections, note limited analysis. Begin Executive Summary with a note about which provider(s) failed and why.
+- If only 2 providers succeeded: Pairwise comparison instead of tri-model. Begin Executive Summary with a note about which provider failed and why.
+- If 0 providers succeeded: Report the errors and suggest checking API keys
+
+---
+
+## Save All Outputs
+
+The output directory was already created in Step 1. The script already wrote `raw_results.json` there.
+
+Write these additional files to the same directory:
+
+| File | Contents |
+|------|----------|
+| `report.md` | Your comparative synthesis (the report above) |
+| `comparison-matrix.md` | Topic coverage matrix (see below) |
+| `openai.md` | OpenAI's full report text (from `results[].report` where provider=openai) |
+| `perplexity.md` | Perplexity's full report text |
+| `gemini.md` | Gemini's full report text |
+
+Only write provider files for providers that succeeded. The raw individual reports are often 5-40K chars — preserve them in full, don't truncate.
+
+### Comparison Matrix
+
+The script produced a `comparison_matrix` object inside `raw_results.json` and a standalone `comparison_matrix.json`. **Start from the pre-built matrix.** The script matched topics using heading text similarity. Review the results:
+
+1. **Render the matrix as-is** for topics with `match_method: "exact"` or `"heading-fuzzy"` — these are high-confidence matches.
+2. **Review `unmatched_hints`** — these are unique topics the code couldn't match, along with their body keywords. If any cover the same subject across providers despite different headings, merge them in your synthesis and note the merge with `[llm-merged]`.
+3. The matrix is your scaffold, not your constraint. Code handles structure; you handle meaning.
+
+**How to render the matrix:**
+1. Read `comparison_matrix.topics` from the JSON — each entry has `name`, one key per provider (`"detailed"`, `"mentioned"`, or `"absent"`), and `agreement`.
+2. Render it as a markdown table.
+3. Use `comparison_matrix.citation_overlap` to call out URLs cited by multiple providers (these are the highest-confidence sources).
+4. Use `comparison_matrix.stats` for the summary line (consensus/majority/unique counts).
+
+Example output format:
+```markdown
+## Topic Coverage Matrix
+
+| Topic | OpenAI | Perplexity | Gemini | Agreement |
+|-------|--------|------------|--------|-----------|
+| company overview | Detailed | Mentioned | Detailed | consensus |
+| apt group connections | Detailed | Detailed | Absent | majority |
+| post-leak developments | Absent | Detailed | Absent | unique-perplexity |
+
+**Stats:** 18 topics — 5 consensus, 7 majority, 6 unique
+
+### Shared Citations (cited by 2+ providers)
+- https://example.com/paper — openai, gemini
+```
+
+**Your job in synthesis:** Read the structured matrix and explain the *interesting patterns* — which consensus findings are most significant, which unique-provider findings deserve follow-up, which majority findings have the strongest evidence. The matrix gives you the structure; you provide the interpretation.
+
+Coverage levels (defined by word count in the section body):
+- **Detailed** — 100+ words (substantial section)
+- **Mentioned** — 1–99 words (brief reference)
+- **Absent** — Topic not found in provider's report
+
+Tell the user where the reports were saved and list the files.
+
+---
+
+## Graceful Degradation
+
+| Keys Available | Behavior |
+|---|---|
+| 0 | Error with setup instructions |
+| 1 | Single provider report, note limited comparison |
+| 2 | Pairwise comparison |
+| 3 | Full tri-model comparison |
+
+---
+
+## Write Context Summary (MANDATORY — do this LAST)
+
+Write a compact result summary so the parent session receives key findings:
+
+```bash
+cat > .claude/.skill-result.md << 'SKILLEOF'
+## Deep Research Result: [Topic]
+
+**Status:** [n]/3 providers succeeded | [list any failures]
+**Time:** [total elapsed]s
+**Output:** .claude/research/DeepResearch_[Topic]_[Date]/report.md
+
+### Key Findings (highest confidence)
+1. [Finding supported by 2+ providers]
+2. [Finding supported by 2+ providers]
+3. [Additional key finding]
+
+### Needs Attention
+- [Any provider failures or gaps worth noting]
+SKILLEOF
+```
+
+Keep under 2000 characters. This is consumed by a hook — the parent session will see it automatically.
+
+---
+
+## After the Report
+
+End with:
+```
+---
+Deep Research complete — [n]/3 providers succeeded.
+WARNING: [provider names] failed — [brief error reasons] (only include this line if any failed)
+- Total research time: [sum of elapsed]s
+- Report saved to: .claude/research/DeepResearch_[Topic]_[Date]/report.md
+
+Want me to dig deeper into any specific finding?
+```
