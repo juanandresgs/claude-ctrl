@@ -604,33 +604,136 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   }
 }
 
-async function withAppServer(cwd, fn) {
+/**
+ * @decision DEC-CDX-006
+ * Title: W-CDX-3 retriable broker error classification
+ * Status: active
+ * Rationale: The original shouldRetryDirect check only caught BROKER_BUSY_RPC_CODE,
+ *   ENOENT, and ECONNREFUSED. Three additional failure modes were discovered via
+ *   code review: (1) ECONNRESET/EPIPE/ERR_SOCKET_CLOSED are OS-level socket deaths
+ *   that the broker emits but the original check ignored; (2) the clean-close path
+ *   in handleExit() (app-server.mjs:171) produces a message-only error with no .code;
+ *   (3) connect-phase failures (before client is assigned) need brokerRequested
+ *   computed pre-connect via loadBrokerSession so the env-var check is not the only
+ *   trigger. All three gaps are addressed here. The direct-connect call is inside the
+ *   try/catch so dual-failure produces a combined error with .brokerError/.directError.
+ *   Replay of fn() on direct client is safe per DEC-CDX-007: all callers create
+ *   ephemeral threads; the dead broker's threads are gone with it.
+ */
+
+/** @type {Set<string>} */
+const RETRIABLE_TRANSPORT_CODES = new Set([
+  "ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ERR_SOCKET_CLOSED"
+]);
+
+/**
+ * Returns true when a broker-connection error should trigger a direct-client retry.
+ * Exported for unit testing.
+ * @param {unknown} error
+ * @param {{ transport?: string } | null} client
+ * @returns {boolean}
+ */
+export function isRetriableBrokerError(error, client) {
+  // RPC-level: broker reports it is busy servicing another client
+  if (client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) {
+    return true;
+  }
+  // OS-level transport errors (socket died, broker unreachable, etc.)
+  if (error?.code && RETRIABLE_TRANSPORT_CODES.has(error.code)) {
+    return true;
+  }
+  // Clean-close path: handleExit() (app-server.mjs:171) rejects with a message-only
+  // error when the broker socket closes gracefully (no .code property). DEC-CDX-006.
+  if (error?.message?.includes("connection closed")) {
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Test seams — injectable factories for connect and loadBrokerSession.
+// Production code calls through these; tests override them via the _set* exports.
+// ---------------------------------------------------------------------------
+let _connectFn = (cwd, opts) => CodexAppServerClient.connect(cwd, opts);
+export function _setConnectFn(fn) { _connectFn = fn; }
+export function _resetConnectFn() { _connectFn = (cwd, opts) => CodexAppServerClient.connect(cwd, opts); }
+
+let _loadBrokerSessionFn = loadBrokerSession;
+export function _setLoadBrokerSessionFn(fn) { _loadBrokerSessionFn = fn; }
+export function _resetLoadBrokerSessionFn() { _loadBrokerSessionFn = loadBrokerSession; }
+
+/**
+ * Opens a connection to the Codex app-server, runs `fn(client)`, and closes
+ * the connection.  On retriable broker errors, automatically retries with a
+ * direct (non-broker) client and emits progress via `options.onProgress`.
+ *
+ * Exported for unit testing.
+ *
+ * @template T
+ * @param {string} cwd
+ * @param {(client: CodexAppServerClient) => Promise<T>} fn
+ * @param {{ onProgress?: ProgressReporter | null }} [options]
+ * @returns {Promise<T>}
+ */
+export async function withAppServer(cwd, fn, options = {}) {
+  // Determine whether a broker was requested BEFORE connect(), so that
+  // connect-phase failures can still trigger retry. The env var covers
+  // explicit broker configuration; _loadBrokerSessionFn covers the
+  // session-file discovery path. DEC-CDX-006 / Finding 1.
+  const brokerRequested =
+    Boolean(process.env[BROKER_ENDPOINT_ENV]) ||
+    _loadBrokerSessionFn(cwd) != null;
+
   let client = null;
+  let brokerError = null;
+
   try {
-    client = await CodexAppServerClient.connect(cwd);
+    client = await _connectFn(cwd);
     const result = await fn(client);
     await client.close();
     return result;
   } catch (error) {
-    const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
-    const shouldRetryDirect =
-      (client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
-      (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED"));
-
+    brokerError = error;
+    // Capture transport before nulling client so isRetriableBrokerError can
+    // inspect client?.transport for the BROKER_BUSY_RPC_CODE case.
+    const clientAtError = client;
     if (client) {
       await client.close().catch(() => {});
       client = null;
     }
 
-    if (!shouldRetryDirect) {
+    const shouldRetry = brokerRequested && isRetriableBrokerError(error, clientAtError);
+    if (!shouldRetry) {
       throw error;
     }
+  }
 
-    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
-    try {
-      return await fn(directClient);
-    } finally {
-      await directClient.close();
+  // --- Direct fallback path ---
+  // Both connect() and fn() are inside the try/catch so that direct-connect
+  // failures produce the dual-failure error. DEC-CDX-006 / Finding 2.
+  // Replay of fn() is safe per DEC-CDX-007.
+  emitProgress(
+    options.onProgress,
+    "Broker busy or unavailable, connecting directly to Codex runtime.",
+    "connecting"
+  );
+
+  let directClient = null;
+  try {
+    directClient = await _connectFn(cwd, { disableBroker: true });
+    const result = await fn(directClient);
+    await directClient.close();
+    return result;
+  } catch (directError) {
+    const combined = new Error(
+      `Broker failed: ${brokerError.message}; direct fallback also failed: ${directError.message}`
+    );
+    combined.brokerError = brokerError;
+    combined.directError = directError;
+    throw combined;
+  } finally {
+    if (directClient) {
+      await directClient.close().catch(() => {});
     }
   }
 }
@@ -823,7 +926,7 @@ export async function runAppServerReview(cwd, options = {}) {
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr)
     };
-  });
+  }, { onProgress: options.onProgress });
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
@@ -890,7 +993,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  });
+  }, { onProgress: options.onProgress });
 }
 
 export async function findLatestTaskThread(cwd) {
