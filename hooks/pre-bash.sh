@@ -33,6 +33,11 @@ source "$HOOKS_DIR/log.sh"
 # shellcheck source=hooks/context-lib.sh
 source "$HOOKS_DIR/context-lib.sh"
 
+# Observatory: flush any accumulated batch metrics on exit (W-OBS-2).
+# Hot-path hook — use batch pattern so metric emission never adds latency to the
+# deny/allow path. _obs_accum queues metrics; rt_obs_metric_batch flushes once at exit.
+trap 'rt_obs_metric_batch' EXIT
+
 HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')
 [[ -z "$COMMAND" ]] && exit 0
@@ -90,6 +95,8 @@ if [[ -z "$RESULT" ]] \
     || ! printf '%s' "$RESULT" | jq -e '.hookSpecificOutput | objects' >/dev/null 2>&1; then
     # Engine failed or returned invalid/unwrapped output — emit deny (fail-closed).
     # The deny itself is wrapped in the required PreToolUse hookSpecificOutput envelope.
+    # Observatory: accumulate fail-closed denial (W-OBS-2).
+    _obs_accum guard_denial 1 '{"policy":"pre_bash_adapter","hook":"pre-bash"}'
     _ERR=$(cat /tmp/pre-bash-eval-err$$ 2>/dev/null || echo "cc_policy evaluate returned empty or invalid output")
     rm -f /tmp/pre-bash-eval-err$$
     printf '%s\n' "$(jq -n \
@@ -100,6 +107,14 @@ if [[ -z "$RESULT" ]] \
 fi
 
 rm -f /tmp/pre-bash-eval-err$$
+
+# Observatory: accumulate denial metric when the policy engine returned a deny (W-OBS-2).
+# Extract policy_name from the result JSON; fall back to "unknown" when absent.
+_pb_action=$(printf '%s' "$RESULT" | jq -r '.action // "allow"' 2>/dev/null || echo "allow")
+if [[ "$_pb_action" == "deny" ]]; then
+    _pb_policy=$(printf '%s' "$RESULT" | jq -r '.policy_name // "unknown"' 2>/dev/null || echo "unknown")
+    _obs_accum guard_denial 1 "{\"policy\":\"${_pb_policy}\",\"hook\":\"pre-bash\"}"
+fi
 
 # Pass through the full engine output unchanged.
 # cc_policy evaluate already emits the correct PreToolUse wrapper:

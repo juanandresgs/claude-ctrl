@@ -53,6 +53,21 @@ if [[ -f "$_TR_LOCK" ]]; then
     rm -f "$_TR_LOCK"
 fi
 
+# Observatory: emit session_summary metric before cleanup erases ephemeral data (W-OBS-2).
+# Reads .session-start-epoch (written by prompt-submit.sh on first prompt) and
+# .prompt-count-<session_id> (written by prompt-submit.sh on each turn) for labels.
+# All reads are best-effort — a missing file produces 0; metric emission uses || true.
+_obs_session_id=$(canonical_session_id 2>/dev/null || echo "")
+_obs_start_epoch=$(cat "$PROJECT_ROOT/.claude/.session-start-epoch" 2>/dev/null || echo "0")
+_obs_prompt_count=$(cat "$PROJECT_ROOT/.claude/.prompt-count-${_obs_session_id}" 2>/dev/null || echo "0")
+_obs_now=$(date +%s)
+_obs_session_duration=0
+if [[ "$_obs_start_epoch" -gt 0 ]]; then
+    _obs_session_duration=$(( _obs_now - _obs_start_epoch ))
+fi
+rt_obs_metric session_summary "$_obs_session_duration" \
+    "{\"prompt_count\":${_obs_prompt_count:-0}}" "" "" || true
+
 # --- Clean up session-scoped files (these don't persist) ---
 rm -f "$PROJECT_ROOT/.claude/.session-changes"*
 rm -f "$PROJECT_ROOT/.claude/.session-decisions"*

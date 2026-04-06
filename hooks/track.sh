@@ -11,7 +11,7 @@ set -euo pipefail
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
-HOOK_INPUT=$(read_input)
+read_input > /dev/null
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path
@@ -36,6 +36,12 @@ TMPFILE=$(mktemp "${TRACKING_DIR}/.track.XXXXXX")
 echo "$FILE_PATH" > "$TMPFILE"
 cat "$TMPFILE" >> "$TRACKING_FILE"
 rm -f "$TMPFILE"
+
+# Observatory: emit files_changed count async so track.sh adds zero latency (W-OBS-2).
+# Hot-path hook — use fire-and-forget (& disown). Value is the running total of
+# unique files tracked in this session (line count of the session tracking file).
+_tk_file_count=$(wc -l < "$TRACKING_FILE" 2>/dev/null | tr -d ' ') || _tk_file_count=1
+rt_obs_metric files_changed "$_tk_file_count" "" "" "" & disown
 
 # --- Invalidate evaluation_state when source files change after clearance ---
 # If evaluation_state is ready_for_guardian and source code changes, the

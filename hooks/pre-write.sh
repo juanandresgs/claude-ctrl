@@ -28,6 +28,11 @@ HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOKS_DIR/log.sh"
 source "$HOOKS_DIR/context-lib.sh"
 
+# Observatory: flush any accumulated batch metrics on exit (W-OBS-2).
+# Hot-path hook — use batch pattern so metric emission never adds latency to the
+# deny/allow path. _obs_accum queues metrics; rt_obs_metric_batch flushes once at exit.
+trap 'rt_obs_metric_batch' EXIT
+
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
 [[ -z "$FILE_PATH" ]] && exit 0
@@ -75,6 +80,8 @@ if [[ "$_VALID" == "false" ]]; then
     # Runtime unavailable or returned invalid output — deny the write.
     # Emitting JSON to stdout signals Claude to use hookSpecificOutput.
     # Non-zero exit (2) ensures the hook is treated as blocking.
+    # Observatory: accumulate fail-closed denial (W-OBS-2).
+    _obs_accum guard_denial 1 '{"policy":"pre_write_adapter","hook":"pre-write"}'
     printf '%s\n' "$(jq -n \
         --arg reason "Policy engine unavailable or returned invalid output (exit=${_EVAL_EXIT}). Write blocked by fail-closed guard." \
         '{
@@ -90,5 +97,13 @@ if [[ "$_VALID" == "false" ]]; then
     exit 2
 fi
 
-echo "$RESULT"
+# Observatory: accumulate denial metric when the policy engine returned a deny (W-OBS-2).
+# Extract policy_name from the result JSON; fall back to "unknown" when absent.
+_pw_action=$(printf '%s' "$RESULT" | jq -r '.action // "allow"' 2>/dev/null || echo "allow")
+if [[ "$_pw_action" == "deny" ]]; then
+    _pw_policy=$(printf '%s' "$RESULT" | jq -r '.policy_name // "unknown"' 2>/dev/null || echo "unknown")
+    _obs_accum guard_denial 1 "{\"policy\":\"${_pw_policy}\",\"hook\":\"pre-write\"}"
+fi
+
+printf '%s\n' "$RESULT"
 exit 0
