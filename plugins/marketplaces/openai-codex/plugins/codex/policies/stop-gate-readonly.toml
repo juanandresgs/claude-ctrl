@@ -1,0 +1,26 @@
+# Policy: Allow read-only git commands in plan mode for stop-gate reviews.
+# Gemini CLI plan mode blocks shell_exec by default. This policy whitelists
+# specific read-only git commands so the reviewer can inspect repo state.
+
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = [
+  "git log",
+  "git diff",
+  "git status",
+  "git show",
+  "git branch",
+  "git rev-parse",
+  "git ls-files",
+  "git blame",
+  "git shortlog",
+  "cat ",
+  "head ",
+  "tail ",
+  "wc ",
+  "find ",
+  "ls "
+]
+decision = "allow"
+priority = 100
+modes = ["plan"]
