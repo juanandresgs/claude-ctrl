@@ -46,7 +46,7 @@ if [[ -z "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
     unset _sl_root
 fi
 
-_cc() { python3 "$RUNTIME_ROOT/cli.py" "$@" 2>/dev/null; }
+_cc() { python3 "$RUNTIME_ROOT/cli.py" "$@"; }
 
 # ---------------------------------------------------------------------------
 # stdin — single jq call to extract all fields as tab-separated values
@@ -131,6 +131,8 @@ dispatch_next=""
 dispatch_from_verdict=""
 review_reviewed="false"
 review_verdict=""
+review_reviewer=""
+snapshot_status="ok"
 if [[ -n "$snapshot" ]]; then
     eval_status=$(printf '%s' "$snapshot" | jq -r '.eval_status // "idle"' 2>/dev/null) || eval_status="idle"
     eval_workflow=$(printf '%s' "$snapshot" | jq -r '.eval_workflow // empty' 2>/dev/null) || eval_workflow=""
@@ -141,6 +143,8 @@ if [[ -n "$snapshot" ]]; then
     dispatch_from_verdict=$(printf '%s' "$snapshot" | jq -r '.dispatch_from_verdict // empty' 2>/dev/null) || dispatch_from_verdict=""
     review_reviewed=$(printf '%s' "$snapshot" | jq -r '.last_review.reviewed // false' 2>/dev/null) || review_reviewed="false"
     review_verdict=$(printf '%s' "$snapshot" | jq -r '.last_review.verdict // empty' 2>/dev/null) || review_verdict=""
+    review_reviewer=$(printf '%s' "$snapshot" | jq -r '.last_review.reviewer // empty' 2>/dev/null) || review_reviewer=""
+    snapshot_status=$(printf '%s' "$snapshot" | jq -r '.status // "ok"' 2>/dev/null) || snapshot_status="ok"
 fi
 [[ "${wt_count:-0}" =~ ^[0-9]+$ ]] || wt_count=0
 [[ "${marker_age_seconds:-0}" =~ ^[0-9]+$ ]] || marker_age_seconds=0
@@ -148,7 +152,9 @@ fi
 [[ "$eval_workflow"  == "null" ]] && eval_workflow=""
 [[ "$dispatch_next"  == "null" ]] && dispatch_next=""
 [[ "$dispatch_from_verdict" == "null" ]] && dispatch_from_verdict=""
-[[ "$review_verdict" == "null" ]] && review_verdict=""
+[[ "$review_verdict"  == "null" ]] && review_verdict=""
+[[ "$review_reviewer" == "null" ]] && review_reviewer=""
+[[ "$snapshot_status"  == "null" ]] && snapshot_status="ok"
 
 # ---------------------------------------------------------------------------
 # Terminal width
@@ -359,9 +365,13 @@ _p1_t_0=""; _p1_w_0=0
 _p1_t_1=""; _p1_w_1=0
 _p1_t_2=""; _p1_w_2=0
 _p1_t_3=""; _p1_w_3=0
-
 # P1.0: workspace (priority 1)
-_s=$(printf '\033[1;36m%s\033[0m' "$workspace")
+# Bug #3 fix: append [!] indicator when snapshot status is partial_failure.
+if [[ "$snapshot_status" == "partial_failure" ]]; then
+  _s=$(printf '\033[1;36m%s\033[0m \033[1;31m[!]\033[0m' "$workspace")
+else
+  _s=$(printf '\033[1;36m%s\033[0m' "$workspace")
+fi
 ansi_visible_width "$_s"; _p1_w_0=$_AVW; _p1_t_0="$_s"
 
 # P1.1: dirty + lines changed (priority 2, conditional)
@@ -584,16 +594,18 @@ fi
 
 # L3.2: review indicator (priority 3, conditional — DEC-SL-160)
 # Shows review status from last_review snapshot field when reviewed=true.
+# Bug #3 fix: read reviewer name from snapshot JSON instead of hardcoding.
+_review_label="${review_reviewer:-codex}"
 if [[ "$review_reviewed" == "true" ]]; then
   case "$review_verdict" in
     ALLOW)
-      _s=$(printf '\033[32m✓codex\033[0m')
+      _s=$(printf '\033[32m✓%s\033[0m' "$_review_label")
       ;;
     BLOCK)
-      _s=$(printf '\033[31m✗codex\033[0m')
+      _s=$(printf '\033[31m✗%s\033[0m' "$_review_label")
       ;;
     *)
-      _s=$(printf '\033[33m⏳codex\033[0m')
+      _s=$(printf '\033[33m⏳%s\033[0m' "$_review_label")
       ;;
   esac
   ansi_visible_width "$_s"; _l3w2=$_AVW; _l3_2="$_s"

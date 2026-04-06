@@ -278,11 +278,17 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # Section: Last review — most recent codex_stop_review event scoped
     # to the current eval cycle (DEC-SL-160).
     #
-    # Scope rule: the review event must postdate the most recent
+    # Scope rule: the review event must strictly postdate the most recent
     # evaluation_state.updated_at so that a review from a previous step
-    # does not carry forward to the new step. When _eval_updated_at is
-    # None (no non-idle eval state), any codex_stop_review event qualifies
-    # (since=0 matches all rows).
+    # does not carry forward to the new step. Strict greater-than
+    # (created_at > updated_at) prevents same-second eval resets from
+    # retaining a stale review (Bug #2 fix).
+    #
+    # Workflow scoping (Bug #1 fix): when eval_workflow is known and
+    # non-idle, we additionally require the event detail to contain
+    # "workflow=<eval_workflow>". This prevents a review for wf-b from
+    # appearing when the active eval is wf-a. When eval is idle or no
+    # workflow is set, last_review stays at the default (reviewed=False).
     #
     # Detail format written by stop-review-gate-hook.mjs:
     #   "VERDICT: <ALLOW|BLOCK> — workflow=<id> | <reason>"
@@ -290,19 +296,29 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # now we default to "codex" since that is the sole writer (DEC-AD-002).
     # ------------------------------------------------------------------
     try:
-        _since = _eval_updated_at if _eval_updated_at is not None else 0
+        _eval_wf = result.get("eval_workflow")
+        _eval_st = result.get("eval_status")
 
-        row = conn.execute(
-            """
-            SELECT source, detail, created_at
-            FROM   events
-            WHERE  type = 'codex_stop_review'
-              AND  created_at >= ?
-            ORDER  BY id DESC
-            LIMIT  1
-            """,
-            (_since,),
-        ).fetchone()
+        # Only look for reviews when there is an active (non-idle) workflow.
+        # An idle eval or missing workflow means no review should surface.
+        if _eval_wf and _eval_st != "idle" and _eval_updated_at is not None:
+            _since = _eval_updated_at
+            _wf_pattern = f"workflow={_eval_wf}"
+
+            row = conn.execute(
+                """
+                SELECT source, detail, created_at
+                FROM   events
+                WHERE  type = 'codex_stop_review'
+                  AND  created_at > ?
+                  AND  detail LIKE '%' || ? || '%'
+                ORDER  BY id DESC
+                LIMIT  1
+                """,
+                (_since, _wf_pattern),
+            ).fetchone()
+        else:
+            row = None
 
         if row:
             detail = row["detail"] or ""

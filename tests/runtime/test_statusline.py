@@ -520,7 +520,22 @@ class TestLastReview:
         assert snap["last_review"]["reviewed_at"] is None
 
     def test_last_review_allow_verdict(self, conn):
-        """ALLOW verdict maps to reviewed=True, verdict='ALLOW'."""
+        """ALLOW verdict maps to reviewed=True, verdict='ALLOW'.
+
+        Bug #1 fix: review must be scoped to the active eval workflow.
+        We set eval state for wf-test first, then insert a review event
+        with created_at strictly after the eval updated_at.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        # Set eval state with updated_at = now - 2 so review event at now > it
+        eval_mod.set_status(conn, "wf-test", "pending")
+        # Backdate eval updated_at so the review event (at current time) is strictly later
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-test'"
+        )
+        conn.commit()
+
         events_mod.emit(
             conn,
             "codex_stop_review",
@@ -533,7 +548,18 @@ class TestLastReview:
         assert isinstance(snap["last_review"]["reviewed_at"], int)
 
     def test_last_review_block_verdict(self, conn):
-        """BLOCK verdict maps to reviewed=True, verdict='BLOCK'."""
+        """BLOCK verdict maps to reviewed=True, verdict='BLOCK'.
+
+        Bug #1 fix: review must be scoped to the active eval workflow.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        eval_mod.set_status(conn, "wf-test", "pending")
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-test'"
+        )
+        conn.commit()
+
         events_mod.emit(
             conn,
             "codex_stop_review",
@@ -544,11 +570,87 @@ class TestLastReview:
         assert snap["last_review"]["verdict"] == "BLOCK"
 
     def test_last_review_newest_wins(self, conn):
-        """When multiple codex_stop_review events exist, newest wins."""
-        events_mod.emit(conn, "codex_stop_review", detail="VERDICT: BLOCK — workflow=wf-1 | first")
-        events_mod.emit(conn, "codex_stop_review", detail="VERDICT: ALLOW — workflow=wf-2 | second")
+        """When multiple codex_stop_review events exist for same workflow, newest wins.
+
+        Bug #1 fix: both events must reference the active eval workflow.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        eval_mod.set_status(conn, "wf-test", "pending")
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-test'"
+        )
+        conn.commit()
+
+        events_mod.emit(
+            conn, "codex_stop_review", detail="VERDICT: BLOCK — workflow=wf-test | first"
+        )
+        events_mod.emit(
+            conn, "codex_stop_review", detail="VERDICT: ALLOW — workflow=wf-test | second"
+        )
         snap = statusline.snapshot(conn)
         assert snap["last_review"]["verdict"] == "ALLOW"
+
+    def test_last_review_not_shown_when_eval_idle(self, conn):
+        """Bug #1: review must not surface when eval is idle (no active workflow).
+
+        A codex_stop_review event exists, but no evaluation_state is active.
+        last_review.reviewed must be False.
+        """
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            detail="VERDICT: ALLOW — workflow=wf-orphan | orphan review",
+        )
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is False
+
+    def test_last_review_wrong_workflow_not_shown(self, conn):
+        """Bug #1: review for wf-b must not surface when eval_workflow is wf-a.
+
+        A review event exists for wf-b, but the active eval is wf-a.
+        last_review.reviewed must be False.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        eval_mod.set_status(conn, "wf-a", "pending")
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-a'"
+        )
+        conn.commit()
+
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            detail="VERDICT: ALLOW — workflow=wf-b | wrong workflow",
+        )
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is False
+
+    def test_last_review_same_second_not_shown(self, conn):
+        """Bug #2: review emitted in the same second as eval reset must not qualify.
+
+        Both evaluation_state.updated_at and events.created_at use int(time.time()).
+        The filter must be strict greater-than (created_at > updated_at) so a
+        same-second review does not carry forward after an eval reset.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        now = int(time.time())
+        eval_mod.set_status(conn, "wf-same-sec", "pending")
+        # Force both timestamps to be identical
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = ? WHERE workflow_id = 'wf-same-sec'",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO events (type, detail, created_at) VALUES (?, ?, ?)",
+            ("codex_stop_review", "VERDICT: ALLOW — workflow=wf-same-sec | same second", now),
+        )
+        conn.commit()
+
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is False
 
     def test_last_review_resets_after_new_eval_step(self, conn):
         """Review event before eval reset does not carry into the new step.
@@ -557,6 +659,9 @@ class TestLastReview:
         emitted at T=100. Then a new evaluation_state row is written at T=200
         (new step starts). A snapshot at T=300 must show reviewed=False because
         no review event postdates the eval reset at T=200.
+
+        Bug #1 fix: review is also for a different workflow (old vs wf-new-step),
+        so workflow scoping additionally prevents it from surfacing.
         """
         import time as time_mod
 
@@ -574,8 +679,8 @@ class TestLastReview:
         eval_mod.set_status(conn, "wf-new-step", "pending")
 
         snap = statusline.snapshot(conn)
-        # The review event predates the new eval step, so reviewed must be False.
-        # (The eval update sets updated_at to now, which is after old_ts-10.)
+        # The review event predates the new eval step AND has wrong workflow,
+        # so reviewed must be False.
         assert snap["last_review"]["reviewed"] is False
 
     def test_last_review_present_when_review_after_eval(self, conn):
@@ -583,15 +688,24 @@ class TestLastReview:
 
         Compound-interaction test (DEC-SL-160): evaluation_state is written
         first, then a codex_stop_review event is emitted. snapshot() must
-        reflect reviewed=True because the event postdates the eval row.
+        reflect reviewed=True because the event strictly postdates the eval row.
+
+        Bug #2 fix: strict greater-than means same-second no longer qualifies.
+        We backdate eval updated_at by 2 seconds so the review event at current
+        time is strictly later.
         """
         import runtime.core.evaluation as eval_mod
 
         # Set eval state (this sets updated_at to approx now)
         eval_mod.set_status(conn, "wf-reviewed", "pending")
 
-        # Emit review event after eval state is set (same second is fine —
-        # the DB query uses >= so equal timestamps qualify).
+        # Backdate eval updated_at so the review event is strictly later
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-reviewed'"
+        )
+        conn.commit()
+
+        # Emit review event — its created_at (now) is strictly > eval updated_at (now-2)
         events_mod.emit(
             conn,
             "codex_stop_review",
