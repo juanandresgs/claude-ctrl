@@ -107,6 +107,8 @@ def process_agent_stop(
         "error": None,
         "events": [],
         "auto_dispatch": False,
+        "codex_blocked": False,
+        "codex_reason": "",
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -243,6 +245,19 @@ def process_agent_stop(
     )
 
     # ---------------------------------------------------------------------------
+    # Codex stop-review gate (W-AD-3 — DEC-AD-002)
+    #
+    # Only runs when auto_dispatch is already True — no point querying the gate
+    # if routing already blocked. Advisory: errors never block routing.
+    # ---------------------------------------------------------------------------
+    if result["auto_dispatch"]:
+        codex_blocked, codex_reason = _check_codex_gate(conn, workflow_id)
+        if codex_blocked:
+            result["auto_dispatch"] = False
+            result["codex_blocked"] = True
+            result["codex_reason"] = codex_reason
+
+    # ---------------------------------------------------------------------------
     # Build suggestion for hookSpecificOutput additionalContext
     # ---------------------------------------------------------------------------
     if result["error"]:
@@ -268,6 +283,12 @@ def process_agent_stop(
             pass
         result["suggestion"] = ""
 
+    # Append Codex block reason when gate fired.
+    if result.get("codex_blocked"):
+        result["suggestion"] = (result["suggestion"] or "") + (
+            f"\nCODEX BLOCK: {result['codex_reason']}"
+        )
+
     # Append interruption warning to suggestion when check-* hooks flagged an
     # interrupted stop. Advisory only — does not change routing.
     try:
@@ -287,6 +308,48 @@ def process_agent_stop(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _check_codex_gate(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+) -> tuple[bool, str]:
+    """Check if the Codex stop-review gate blocked auto-dispatch (W-AD-3).
+
+    Queries the events table for the most recent codex_stop_review event
+    within a 60-second window. Returns (blocked, reason).
+
+    The gate is advisory: any exception during lookup is swallowed and the
+    function returns (False, "") so routing is never blocked by a gate error.
+
+    Args:
+        conn:        Open SQLite connection with schema applied.
+        workflow_id: Current workflow_id (informational; not used for
+                     filtering since the Codex hook writes to the global
+                     events table without a workflow scope key).
+
+    Returns:
+        (blocked, reason) — blocked is True only when the most recent
+        codex_stop_review event within 60 seconds contains "VERDICT: BLOCK".
+        reason is the text following "VERDICT: BLOCK" in the detail string,
+        stripped of leading punctuation and whitespace.
+    """
+    try:
+        recent = events.query(
+            conn,
+            type="codex_stop_review",
+            since=int(time.time()) - 60,
+            limit=1,
+        )
+        for evt in recent:
+            detail = evt.get("detail") or ""
+            if "VERDICT: BLOCK" in detail:
+                # Extract reason after "VERDICT: BLOCK", strip leading "— - " chars
+                reason = detail.split("VERDICT: BLOCK", 1)[1].strip().lstrip("\u2014- ").strip()
+                return True, reason or "Codex review blocked"
+    except Exception:
+        pass  # Advisory; never block routing on gate errors (DEC-AD-003).
+    return False, ""
 
 
 def _resolve_stop_assessment_wf_id(

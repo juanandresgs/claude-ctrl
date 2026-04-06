@@ -323,6 +323,8 @@ def _handle_dispatch(args) -> int:
                     "next_role": result["next_role"],
                     "workflow_id": result["workflow_id"],
                     "auto_dispatch": result.get("auto_dispatch", False),
+                    "codex_blocked": result.get("codex_blocked", False),
+                    "codex_reason": result.get("codex_reason", ""),
                     "error": result["error"],
                     "hookSpecificOutput": hook_output,
                 }

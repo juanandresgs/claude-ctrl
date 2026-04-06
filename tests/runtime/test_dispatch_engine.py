@@ -641,3 +641,97 @@ def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
     assert r_guardian["auto_dispatch"] is False
     assert not r_guardian["next_role"]
     assert r_guardian["suggestion"] == ""
+
+
+# ---------------------------------------------------------------------------
+# W-AD-3: Codex stop-review gate (_check_codex_gate integration)
+# ---------------------------------------------------------------------------
+# @decision DEC-AD-002
+# Title: Codex stop-review gate communicates via events table
+# Status: accepted
+# Rationale: The Codex gate hook writes a codex_stop_review event and
+#   dispatch_engine reads the most recent such event within a 60-second window.
+#   BLOCK verdict sets auto_dispatch=False and appends the block reason to
+#   suggestion. Errors in the lookup are advisory — never block routing.
+#   This keeps dispatch_engine as the sole auto_dispatch decision authority
+#   while Codex acts as a pure event emitter.
+# ---------------------------------------------------------------------------
+
+
+def test_codex_gate_no_event_auto_dispatch_stays_true(conn, project_root):
+    """No codex_stop_review event → auto_dispatch stays True for clear transition."""
+    # Planner stop — clear transition, no Codex event in DB
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    # Confirm no codex_blocked key set to True
+    assert not result.get("codex_blocked")
+
+
+def test_codex_gate_allow_auto_dispatch_stays_true(conn, project_root):
+    """ALLOW verdict → auto_dispatch stays True."""
+    from runtime.core import events as ev
+
+    ev.emit(conn, type="codex_stop_review", detail="VERDICT: ALLOW — work looks good")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+    assert not result.get("codex_blocked")
+
+
+def test_codex_gate_block_overrides_auto_dispatch(conn, project_root):
+    """BLOCK verdict → auto_dispatch becomes False, suggestion includes block reason."""
+    from runtime.core import events as ev
+
+    block_reason = "Insufficient test coverage for edge cases"
+    ev.emit(
+        conn,
+        type="codex_stop_review",
+        detail=f"VERDICT: BLOCK — {block_reason}",
+    )
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["auto_dispatch"] is False
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    assert result.get("codex_blocked") is True
+    assert result.get("codex_reason") == block_reason
+    assert "CODEX BLOCK" in result["suggestion"]
+    assert block_reason in result["suggestion"]
+
+
+def test_codex_gate_block_on_already_false(conn, project_root):
+    """auto_dispatch already False (error) + BLOCK verdict → stays False, no double-negative."""
+    from runtime.core import events as ev
+
+    # Emit a BLOCK verdict
+    ev.emit(
+        conn,
+        type="codex_stop_review",
+        detail="VERDICT: BLOCK — test reason",
+    )
+    # Tester with no lease → PROCESS ERROR → auto_dispatch=False already
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["auto_dispatch"] is False
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+    # codex_blocked should NOT be set since auto_dispatch was already False before gate check
+    assert not result.get("codex_blocked")
+
+
+def test_codex_gate_stale_event_ignored(conn, project_root):
+    """Event >60s old → ignored, auto_dispatch stays True."""
+
+    # Insert a BLOCK event with a created_at timestamp 120 seconds in the past
+    stale_ts = int(__import__("time").time()) - 120
+    conn.execute(
+        "INSERT INTO events (type, source, detail, created_at) VALUES (?, ?, ?, ?)",
+        ("codex_stop_review", None, "VERDICT: BLOCK — stale reason", stale_ts),
+    )
+    conn.commit()
+
+    result = process_agent_stop(conn, "planner", project_root)
+    # Stale event must be ignored
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+    assert not result.get("codex_blocked")

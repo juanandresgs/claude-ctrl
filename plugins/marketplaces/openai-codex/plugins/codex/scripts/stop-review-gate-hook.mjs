@@ -199,11 +199,49 @@ function runStopReview(cwd, input = {}) {
   }
 }
 
+// ── SubagentStop verdict emitter ─────────────────────────────────────
+//
+// Writes a codex_stop_review event to the runtime events table so that
+// dispatch_engine._check_codex_gate() can read the verdict and override
+// auto_dispatch when BLOCK. This path must NOT emit decision:block to
+// hookSpecificOutput — that is reserved for the Stop event path where
+// Claude itself is the actor being blocked. At SubagentStop, dispatch_engine
+// is the sole auto_dispatch authority; this hook is a pure event emitter.
+//
+// @decision DEC-AD-002
+// Title: Codex gate communicates verdict via events table, not hookSpecificOutput
+// Status: accepted
+// Rationale: SubagentStop hooks cannot directly mutate dispatch_engine results.
+//   Writing to the events table decouples the Codex gate (quality signal) from
+//   dispatch_engine (routing authority). post-task.sh reads both; the gate writes
+//   only. Errors during emission are suppressed — the gate is advisory.
+
+function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
+  // Synchronous variant — stops-review hook runs synchronously.
+  const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
+  const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
+  try {
+    execFileSync(
+      "python3",
+      [cliPath, "event", "emit", "codex_stop_review", "--detail", detail],
+      { cwd, timeout: 5000, encoding: "utf8" }
+    );
+  } catch {
+    // Advisory; never block routing on event emission errors (DEC-AD-003)
+  }
+}
+
+// ── Main ─────────────────────────────────────────────────────────────
+
 function main() {
   const input = readHookInput();
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
+
+  // Detect SubagentStop vs Stop: SubagentStop input has agent_type field.
+  // When agent_type is present, we are in the SubagentStop hook chain.
+  const isSubagentStop = Boolean(input.agent_type);
 
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), input));
   const runningJob = jobs.find((job) => job.status === "queued" || job.status === "running");
@@ -212,18 +250,40 @@ function main() {
     : null;
 
   if (!config.stopReviewGate) {
-    logNote(runningTaskNote);
+    if (!isSubagentStop) {
+      // On Stop, always log the running task note even when gate is off.
+      logNote(runningTaskNote);
+    }
     return;
   }
 
   const setupNote = buildSetupNote(cwd);
   if (setupNote) {
-    logNote(setupNote);
-    logNote(runningTaskNote);
+    if (!isSubagentStop) {
+      logNote(setupNote);
+      logNote(runningTaskNote);
+    }
     return;
   }
 
   const review = runStopReview(cwd, input);
+  const workflowId = input.workflow_id || "";
+
+  if (isSubagentStop) {
+    // SubagentStop path: write verdict to events table, emit only informational
+    // additionalContext. Do NOT emit decision:block — dispatch_engine owns routing.
+    const verdict = review.ok ? "ALLOW" : "BLOCK";
+    const reason = review.reason || (review.ok ? "work looks good" : "review found issues");
+    emitCodexReviewEventSync(cwd, workflowId, verdict, reason);
+    // Informational only — orchestrator sees this in additionalContext
+    const contextNote = review.ok
+      ? `Codex gate (SubagentStop/${input.agent_type}): ALLOW`
+      : `Codex gate (SubagentStop/${input.agent_type}): BLOCK — ${reason}`;
+    emitDecision({ additionalContext: contextNote });
+    return;
+  }
+
+  // Stop event path: existing behavior — block if review failed.
   if (!review.ok) {
     emitDecision({
       decision: "block",
