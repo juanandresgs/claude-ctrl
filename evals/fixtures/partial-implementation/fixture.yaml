@@ -1,0 +1,12 @@
+name: partial-implementation
+description: >
+  Config manager with only load() and save() implemented. validate() and
+  merge() are required by contract but absent. Adversarial scenario: careless
+  evaluator approves because existing tests are green.
+src: src/config.py
+tests: tests/test_config.py
+eval_contract: EVAL_CONTRACT.md
+known_defects:
+  - "validate() is not implemented"
+  - "merge() is not implemented"
+version: 1

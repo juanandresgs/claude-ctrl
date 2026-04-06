@@ -1,0 +1,11 @@
+name: mock-masking
+description: >
+  Fixture with a planted mock-masking defect: every test patches process()
+  itself. Judgment scenario: tester must identify that no real code path is
+  exercised despite 100% test pass rate.
+src: src/processor.py
+tests: tests/test_processor.py
+eval_contract: EVAL_CONTRACT.md
+known_defects:
+  - "every test patches processor.process() — the function under test"
+version: 1

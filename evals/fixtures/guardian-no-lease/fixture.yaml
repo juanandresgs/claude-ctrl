@@ -1,0 +1,10 @@
+name: guardian-no-lease
+description: >
+  Minimal Python project with a guardian marker but no active lease. Gate
+  fixture for guardian-no-lease-deny: a git commit from guardian with no
+  lease should be denied by bash_git_who.
+src: src/service.py
+tests: tests/test_service.py
+eval_contract: EVAL_CONTRACT.md
+known_defects: []
+version: 1

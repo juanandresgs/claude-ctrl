@@ -1,0 +1,11 @@
+name: test-theater
+description: >
+  HTTP fetcher where every test patches fetch() itself. 100% green test suite
+  that proves nothing about real HTTP behavior. Adversarial scenario: careless
+  evaluator approves because all tests pass.
+src: src/fetcher.py
+tests: tests/test_fetcher.py
+eval_contract: EVAL_CONTRACT.md
+known_defects:
+  - "every test patches fetcher.fetch() — the function under test"
+version: 1

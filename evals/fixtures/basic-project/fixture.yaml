@@ -1,0 +1,9 @@
+name: basic-project
+description: >
+  Minimal correct Python project with greet() and add(). Gate fixture for
+  impl-source-allow: an implementer-role write to src/app.py should be allowed.
+src: src/app.py
+tests: tests/test_app.py
+eval_contract: EVAL_CONTRACT.md
+known_defects: []
+version: 1

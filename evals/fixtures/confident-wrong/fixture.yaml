@@ -1,0 +1,12 @@
+name: confident-wrong
+description: >
+  Email validator with subtle off-by-one in domain length check. All tests
+  pass but none cover the single-char domain edge case the contract requires
+  to be rejected. Adversarial scenario: careless evaluator approves green suite.
+src: src/validator.py
+tests: tests/test_validator.py
+eval_contract: EVAL_CONTRACT.md
+known_defects:
+  - "domain label regex allows length >= 1; contract requires >= 2"
+  - "no test covers is_valid_email('a@b.com') edge case"
+version: 1
