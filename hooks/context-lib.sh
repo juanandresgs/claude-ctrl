@@ -220,6 +220,15 @@ read_proof_status() {
     local workflow_id="${2:-}"
     local status=""
 
+    # W-CONV-3: lease-first identity fallback
+    if [[ -z "$workflow_id" ]]; then
+        local _rps_ctx _rps_found
+        _rps_ctx=$(lease_context "$root")
+        _rps_found=$(printf '%s' "$_rps_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_rps_found" == "true" ]]; then
+            workflow_id=$(printf '%s' "$_rps_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+    fi
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
 
     # Runtime-only (TKT-008): query SQLite proof store exclusively.
@@ -233,6 +242,15 @@ read_proof_timestamp() {
     local workflow_id="${2:-}"
     local ts=""
 
+    # W-CONV-3: lease-first identity fallback
+    if [[ -z "$workflow_id" ]]; then
+        local _rpt_ctx _rpt_found
+        _rpt_ctx=$(lease_context "$root")
+        _rpt_found=$(printf '%s' "$_rpt_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_rpt_found" == "true" ]]; then
+            workflow_id=$(printf '%s' "$_rpt_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+    fi
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
 
     # Runtime-only (TKT-008): query SQLite proof store exclusively.
@@ -246,6 +264,15 @@ write_proof_status() {
     local status="$2"
     local workflow_id="${3:-}"
 
+    # W-CONV-3: lease-first identity fallback
+    if [[ -z "$workflow_id" ]]; then
+        local _wps_ctx _wps_found
+        _wps_ctx=$(lease_context "$root")
+        _wps_found=$(printf '%s' "$_wps_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_wps_found" == "true" ]]; then
+            workflow_id=$(printf '%s' "$_wps_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+    fi
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
 
     # Runtime-only (TKT-008): upsert into SQLite proof store exclusively.
@@ -257,11 +284,21 @@ write_proof_status() {
 
 # read_evaluation_status <root> [workflow_id]
 # Returns the evaluation status string for the workflow, or "idle" on failure.
+# W-CONV-3: when workflow_id is empty, tries lease_context() before falling
+# back to current_workflow_id() so leased hooks always hit the right record.
 read_evaluation_status() {
     local root="$1"
     local workflow_id="${2:-}"
     local status=""
 
+    if [[ -z "$workflow_id" ]]; then
+        local _res_ctx _res_found
+        _res_ctx=$(lease_context "$root")
+        _res_found=$(printf '%s' "$_res_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_res_found" == "true" ]]; then
+            workflow_id=$(printf '%s' "$_res_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+    fi
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
     status=$(rt_eval_get "$workflow_id" 2>/dev/null) || status=""
     printf '%s\n' "${status:-idle}"
@@ -269,16 +306,26 @@ read_evaluation_status() {
 
 # read_evaluation_state <root> [workflow_id]
 # Returns the full evaluation state JSON, or empty string on failure.
+# W-CONV-3: lease-first identity when workflow_id not passed.
 read_evaluation_state() {
     local root="$1"
     local workflow_id="${2:-}"
 
+    if [[ -z "$workflow_id" ]]; then
+        local _rese_ctx _rese_found
+        _rese_ctx=$(lease_context "$root")
+        _rese_found=$(printf '%s' "$_rese_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_rese_found" == "true" ]]; then
+            workflow_id=$(printf '%s' "$_rese_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+    fi
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
     cc_policy evaluation get "$workflow_id" 2>/dev/null || true
 }
 
 # write_evaluation_status <root> <status> [workflow_id] [head_sha] [blockers] [major] [minor]
 # Upserts evaluation state. root kept for call-site symmetry with write_proof_status.
+# W-CONV-3: lease-first identity when workflow_id not passed.
 write_evaluation_status() {
     local root="$1"
     local status="$2"
@@ -288,6 +335,14 @@ write_evaluation_status() {
     local major="${6:-0}"
     local minor="${7:-0}"
 
+    if [[ -z "$workflow_id" ]]; then
+        local _wes_ctx _wes_found
+        _wes_ctx=$(lease_context "$root")
+        _wes_found=$(printf '%s' "$_wes_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+        if [[ "$_wes_found" == "true" ]]; then
+            workflow_id=$(printf '%s' "$_wes_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+        fi
+    fi
     [[ -n "$workflow_id" ]] || workflow_id=$(current_workflow_id "$root")
     rt_eval_set "$workflow_id" "$status" "$head_sha" "$blockers" "$major" "$minor" || true
 }
@@ -396,11 +451,31 @@ is_claude_meta_repo() {
 #   current_workflow_id (branch-based), queries the runtime for the
 #   worktree_path, and exports all four binding fields. Guard.sh Check 12
 #   and check-implementer.sh both call through this function.
+#
+# @decision DEC-CONV-003
+# @title get_workflow_binding uses lease-first identity (W-CONV-3)
+# @status accepted
+# @rationale W-CONV-3: lease_context() is the authoritative identity source
+#   when a lease is active. The previous implementation always derived
+#   WORKFLOW_ID from the branch name via current_workflow_id(). When a lease
+#   is active with an explicit workflow_id that differs from the branch-derived
+#   token, the binding query would use the wrong key and return not-found.
+#   Fix: call lease_context() first; if found==true use its workflow_id; fall
+#   back to current_workflow_id() only when no lease is active.
 get_workflow_binding() {
     local root="${1:-}"
     [[ -n "$root" ]] || root=$(detect_project_root)
 
-    WORKFLOW_ID=$(current_workflow_id "$root")
+    # W-CONV-3: lease-first identity. When a lease is active its workflow_id
+    # takes precedence over the branch-derived id.
+    local _gwb_lease_ctx _gwb_lease_found
+    _gwb_lease_ctx=$(lease_context "$root")
+    _gwb_lease_found=$(printf '%s' "$_gwb_lease_ctx" | jq -r '.found' 2>/dev/null || echo "false")
+    if [[ "$_gwb_lease_found" == "true" ]]; then
+        WORKFLOW_ID=$(printf '%s' "$_gwb_lease_ctx" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    fi
+    [[ -n "${WORKFLOW_ID:-}" ]] || WORKFLOW_ID=$(current_workflow_id "$root")
+
     WORKFLOW_WORKTREE=""
     WORKFLOW_BRANCH=""
     WORKFLOW_TICKET=""

@@ -64,7 +64,23 @@ def bind_workflow(
     """
     canonical_worktree = normalize_path(worktree_path)
     now = int(time.time())
+    # @decision DEC-CONV-003
+    # Title: bind_workflow removes stale bindings for the same worktree_path (W-CONV-3)
+    # Status: accepted
+    # Rationale: When an implementer is re-dispatched to a worktree under a new
+    #   workflow_id, the old binding remains in workflow_bindings indexed by the
+    #   old id. Hooks that scan by worktree_path can then return the stale row.
+    #   Fix: within the same transaction, DELETE any row where worktree_path
+    #   matches the canonical path AND workflow_id differs from the one being
+    #   inserted. This ensures each worktree_path has at most one active binding.
     with conn:
+        conn.execute(
+            """
+            DELETE FROM workflow_bindings
+            WHERE worktree_path = ? AND workflow_id != ?
+            """,
+            (canonical_worktree, workflow_id),
+        )
         conn.execute(
             """
             INSERT INTO workflow_bindings
