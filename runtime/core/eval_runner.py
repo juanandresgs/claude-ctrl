@@ -28,19 +28,20 @@ Rationale: Keeps eval execution concerns (YAML load, fixture setup, policy
   always cleaned up by cleanup_fixture() even when errors occur.
 
 @decision DEC-EVAL-RUNNER-002
-Title: run_deterministic() builds a synthetic PolicyContext with actor_role=tester
+Title: run_deterministic() reads actor_role from scenario setup section
 Status: accepted
-Rationale: Gate scenarios test policy enforcement. For write-who-deny, the
-  expected behaviour is that a "tester" role writing a source file is denied
-  by the write_who policy. Rather than seeding state.db with a live marker
-  (which would require full schema bootstrap in the fixture), we build a
-  PolicyContext directly with actor_role="tester". This is valid because
-  build_context() is the production path for resolving actor_role from DB
-  state, but policy functions receive a PolicyContext — they do not re-query
-  the DB. Injecting actor_role directly tests the policy function's logic
-  without needing a live DB. This mirrors the approach used in
-  tests/runtime/test_policy_engine.py (_make_request with hand-crafted
-  PolicyContext).
+Rationale: Gate scenarios test policy enforcement for multiple roles. The
+  write-who-deny scenario verifies the deny path (actor_role="tester"); the
+  impl-source-allow scenario verifies the allow path (actor_role="implementer").
+  Rather than seeding state.db with a live marker (which would require full
+  schema bootstrap in the fixture), we build a PolicyContext directly with the
+  actor_role specified in scenario.setup.actor_role (defaulting to "tester" when
+  absent, preserving backward compatibility). This is valid because build_context()
+  is the production path for resolving actor_role from DB state, but policy
+  functions receive a PolicyContext — they do not re-query the DB. Injecting
+  actor_role directly tests the policy function's logic without needing a live DB.
+  This mirrors the approach used in tests/runtime/test_policy_engine.py
+  (_make_request with hand-crafted PolicyContext).
 
 @decision DEC-EVAL-RUNNER-003
 Title: run_live() is a scaffold raising NotImplementedError
@@ -51,10 +52,23 @@ Rationale: Live mode requires seed scenarios that do not exist until W-EVAL-5.
   absence explicitly. run_scenario() catches NotImplementedError and records
   it as an error in eval_scores so the run_all() aggregate counts remain
   accurate.
+
+@decision DEC-EVAL-RUNNER-004
+Title: run_scenario() uses eval_scorer.score_verdict() for deterministic scoring
+Status: accepted
+Rationale: The scoring pipeline (eval_scorer) was previously unused — the
+  scoring, expected_evidence, and expected_defects fields in scenario YAML were
+  dead data. For deterministic scenarios the raw_output is a policy decision
+  string (not tester agent output), so the full score_scenario() pipeline
+  (which parses EVAL_VERDICT trailers and coverage tables from agent prose) does
+  not apply. Instead run_scenario() calls score_verdict() directly and passes
+  the structured scores into record_score(). Live scenarios will use the full
+  score_scenario() pipeline when W-EVAL-5 is implemented.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -66,6 +80,7 @@ from typing import Optional
 import yaml
 
 import runtime.core.eval_metrics as eval_metrics
+import runtime.core.eval_scorer as eval_scorer
 from runtime.core.policy_engine import (
     PolicyContext,
     PolicyDecision,
@@ -220,6 +235,18 @@ def setup_fixture(
     _run_git(dest, ["add", "."])
     _run_git(dest, ["commit", "-m", f"fixture: {fixture_name} (eval setup)"])
 
+    # If a MASTER_PLAN.md is present, advance its mtime to now+2s so the
+    # plan_exists staleness check (write_plan_exists policy) sees 0 commits
+    # after the plan. The check uses git log --after={plan_mtime}: if plan_mtime
+    # is in the future relative to all commits, no commits appear "after" the
+    # plan, so churn=0 and the gate passes. Without this, the single fixture
+    # commit is always "after" the plan (copied files have mtime < commit time),
+    # triggering a 100% source-churn deny even with a valid MASTER_PLAN.md.
+    plan_file = dest / "MASTER_PLAN.md"
+    if plan_file.exists():
+        future_ts = time.time() + 2.0
+        os.utime(str(plan_file), (future_ts, future_ts))
+
     # Create and checkout a feature branch
     _run_git(dest, ["checkout", "-b", f"feature/eval-{run_uuid}"])
 
@@ -250,9 +277,9 @@ def run_deterministic(
 ) -> dict:
     """Execute a deterministic scenario via the policy engine.
 
-    Builds a synthetic PolicyContext with actor_role matching the scenario's
-    expected denied role (or a default "tester" role for write-who-deny gate
-    scenarios). Constructs a PolicyRequest for a Write tool use on a source
+    Builds a synthetic PolicyContext with actor_role read from the scenario's
+    setup section (scenario.setup.actor_role), defaulting to "tester" if not
+    specified. Constructs a PolicyRequest for a Write tool use on a source
     file inside the fixture, then calls the default policy registry.
 
     See DEC-EVAL-RUNNER-002 for the rationale of injecting actor_role directly
@@ -288,11 +315,14 @@ def run_deterministic(
             src_rel = "src/hello.py"
         target_file = str(fixture_path / src_rel)
 
-        # Build synthetic PolicyContext: actor_role="tester" so write_who denies.
-        # For gate scenarios the intent is always to verify the denial path.
+        # Read actor_role from scenario setup section; default to "tester" so
+        # all existing scenarios without a setup section are unchanged (deny path).
         # DEC-EVAL-RUNNER-002: injecting actor_role directly, not via DB.
+        setup: dict = scenario.get("setup") or {}
+        actor_role: str = setup.get("actor_role", "tester")
+
         context = PolicyContext(
-            actor_role="tester",
+            actor_role=actor_role,
             actor_id="eval-runner-synthetic",
             workflow_id="eval-run",
             worktree_path=str(fixture_path),
@@ -312,12 +342,21 @@ def run_deterministic(
         # The hook (pre-write.sh) sends event_type="Write" — we replicate that
         # exactly. Using "PreToolUse" would cause all write policies to skip
         # (event_type mismatch → "skip" in explain()), producing a default allow.
+        #
+        # Content must be >= 20 lines to avoid the write_plan_exists fast-mode
+        # bypass (< 20 lines → "feedback" before the plan check runs). Using a
+        # realistic-length file ensures all write-path policies evaluate normally
+        # for both the deny (write_who catches tester before plan check) and the
+        # allow (write_who passes implementer, plan check runs to completion) paths.
+        _synthetic_content = "# synthetic eval write — deterministic gate scenario\n" + (
+            "# padding line\n" * 24
+        )
         request = PolicyRequest(
             event_type="Write",
             tool_name="Write",
             tool_input={
                 "file_path": target_file,
-                "content": "# synthetic eval write\n",
+                "content": _synthetic_content,
             },
             context=context,
             cwd=str(fixture_path),
@@ -396,7 +435,14 @@ def run_scenario(
     repo_root: Path,
     run_id: str,
 ) -> dict:
-    """Orchestrate one scenario: setup → run → record → cleanup.
+    """Orchestrate one scenario: setup → run → score → record → cleanup.
+
+    For deterministic scenarios, calls eval_scorer.score_verdict() to populate
+    the scoring fields in record_score(). The scoring, expected_evidence, and
+    expected_defects YAML fields are live data — they are no longer dead.
+
+    For live scenarios (W-EVAL-5), the full eval_scorer.score_scenario() pipeline
+    will be used instead. See DEC-EVAL-RUNNER-004.
 
     Errors during setup or execution are caught, recorded as error scores,
     and returned. Fixture cleanup always runs even on error.
@@ -437,7 +483,13 @@ def run_scenario(
         duration_ms = result["duration_ms"]
         error_msg = result["error"]
 
-        verdict_correct = 1 if verdict_actual == verdict_expected else 0
+        # Score — DEC-EVAL-RUNNER-004:
+        # For deterministic mode the raw_output is a policy decision string,
+        # not tester agent prose, so the full score_scenario() (which parses
+        # EVAL_VERDICT trailers and coverage tables) does not apply. Use
+        # score_verdict() directly and leave the live-specific scores as None.
+        v_score = eval_scorer.score_verdict(verdict_actual, verdict_expected)
+        verdict_correct = 1 if v_score == 1.0 else 0
 
         # Record output
         eval_metrics.record_output(
@@ -447,7 +499,9 @@ def run_scenario(
             raw_output=raw_output or "",
         )
 
-        # Record score
+        # Record score — scoring fields populated from scorer (Bug 2 fix).
+        # defect_recall and evidence_score are None for deterministic mode
+        # (no agent prose to parse); false_positive_count defaults to 0.
         eval_metrics.record_score(
             eval_conn,
             run_id=run_id,
@@ -456,7 +510,11 @@ def run_scenario(
             verdict_expected=verdict_expected,
             verdict_actual=verdict_actual,
             verdict_correct=verdict_correct,
+            defect_recall=None,
+            evidence_score=None,
+            false_positive_count=0,
             confidence_expected=confidence_expected if confidence_expected else None,
+            confidence_actual=None,
             duration_ms=duration_ms,
             error_message=error_msg,
         )
