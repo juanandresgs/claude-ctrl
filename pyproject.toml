@@ -12,3 +12,10 @@ ignore = ["E501"]
 "tests/runtime/test_*.py" = ["E402"]
 "tests/runtime/policies/*.py" = ["E402"]
 "sidecars/**/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "fast: fast-feedback Python tests",
+    "slow: slower Python integration tests",
+]
