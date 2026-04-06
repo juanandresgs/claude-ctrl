@@ -230,6 +230,8 @@ fi
 # ---------------------------------------------------------------------------
 PROJ_A="$TMP_DIR/project-a"
 PROJ_B="$TMP_DIR/project-b"
+# Export variables needed by the inline Python heredoc subprocess calls below.
+export CLI TEST_DB PROJ_A PROJ_B
 
 # Write two markers with different project roots
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" marker set \
