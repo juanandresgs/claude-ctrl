@@ -5096,6 +5096,1059 @@ All 6 checks pass. Authority invariants hold. Sidecar is read-only. `git diff
    replacing.
 
 
+
+### INIT-EVAL: Behavioral Evaluation Framework
+
+- **Status:** planned
+- **Blocked by:** none (builds on existing infrastructure; does not require
+  INIT-003/004/PE/CONV/CDX/TESTGAP/AUTODISPATCH/OBS completion)
+- **Problem:** The system has 870+ unit tests and 77 scenario tests that verify
+  gate mechanics (deterministic policy checks). Zero infrastructure exists to
+  measure LLM agent judgment quality. The tester agent prompt
+  (`agents/tester.md`) defines a 3-tier verification model, refusal conditions,
+  evidence requirements, and a structured verdict trailer, but nothing validates
+  whether the agent actually follows these rules. A tester that misses a
+  dual-authority bug, approves confident-but-wrong implementations, or skips
+  Tier 2/3 verification is invisible to the current test suite. The result: the
+  governance system enforces perfect deterministic gates around imperfect
+  judgment, and the judgment itself is never measured.
+
+  **Who has this problem:** Every project using this config system. The dispatch
+  cycle delegates readiness decisions to the tester agent. If the tester's
+  judgment is unreliable, Guardian commits unreliable work.
+
+  **How often:** Every evaluator dispatch. The tester runs on every
+  implementation completion. There is no feedback loop telling us whether the
+  tester's verdicts are accurate.
+
+  **Cost:** Undetected: wrong verdicts propagate through Guardian to main.
+  Detected late: user catches issues after merge, requiring revert + rework.
+  The eval framework closes this feedback loop.
+
+- **Goal:** Build a behavioral evaluation framework that measures evaluator
+  judgment quality with ground-truth scenarios, tracks accuracy over time, and
+  integrates into the existing `cc-policy` CLI. The framework must work both
+  offline (deterministic, no Claude runtime) and live (with the tester agent),
+  and must be portable across all projects using this config system.
+
+- **Non-goals:**
+  - Full multi-agent pipeline evaluation (testing the 4-agent chain end-to-end).
+    We target the tester phase only -- the judgment gap.
+  - LLM-as-judge scoring. v1 uses heuristic matching against ground truth.
+    LLM-based scoring introduces the meta-evaluation problem (who evaluates
+    the evaluator of the evaluator?) and is deferred.
+  - Replacing existing unit/scenario tests. The behavioral eval framework
+    supplements them by testing judgment quality. Deterministic gate tests
+    remain in `tests/`.
+  - Auto-remediation. The framework measures and reports; it does not
+    automatically fix failing evaluators.
+
+- **Dominant constraints:**
+  - Must work without a live Claude runtime (deterministic mode for CI).
+  - Must also work with the live runtime (live mode for real agent evaluation).
+  - Framework code lives in `~/.claude` (portable across projects).
+  - Must not write to `state.db` -- eval results go to a separate
+    `eval_results.db` (DEC-EVAL-013).
+  - Must integrate with the existing `cc-policy` CLI pattern (DEC-EVAL-014).
+  - Scenarios target the tester phase only (DEC-EVAL-016).
+
+- **Scope:** Five waves covering: scenario schema and fixtures, scenario runner,
+  scorer and metrics store, report generator and CLI integration, and seed
+  scenario library.
+
+- **Exit:** (1) `cc-policy eval run` executes deterministic scenarios with
+  pass/fail results. (2) `cc-policy eval run --live` executes live scenarios
+  against the tester agent and scores verdicts. (3) `cc-policy eval report`
+  produces a human-readable accuracy report with per-category breakdowns.
+  (4) At least 15 seed scenarios exist (5 deterministic gate, 5 judgment, 5
+  adversarial). (5) `eval_results.db` tracks scenario runs over time with
+  regression detection.
+
+- **Dependencies:** none (additive infrastructure)
+
+#### Architecture
+
+```
+evals/
+  scenarios/                    # Scenario definitions (YAML)
+    gate/                       # Deterministic gate mechanics
+    judgment/                   # LLM judgment quality
+    adversarial/                # Scenarios designed to fool the evaluator
+  fixtures/                     # Frozen worktree states
+    dual-authority-planted/     # Implementation with known dual-authority bug
+    clean-implementation/       # Correct implementation (should pass)
+    mock-masking/               # Tests that use internal mocks (should flag)
+    confident-wrong/            # Plausible but incorrect implementation
+    ...
+runtime/
+  core/
+    eval_runner.py              # Scenario runner (setup, execute, capture)
+    eval_scorer.py              # Scorer (compare output vs ground truth)
+    eval_metrics.py             # Metrics store (eval_results.db CRUD)
+    eval_report.py              # Report generator (human-readable output)
+  cli.py                        # +eval subcommand group
+  eval_schemas.py               # eval_results.db schema definitions
+```
+
+**Key architectural decisions:**
+
+1. **Scenario definitions are YAML, not Python.** Each scenario is a YAML file
+   declaring: name, category, fixture path, Evaluation Contract, expected
+   verdict, expected evidence keywords, and mode (deterministic/live). YAML is
+   human-readable and diff-friendly. The runner interprets YAML; no scenario
+   contains executable code.
+
+2. **Fixtures are git-committed directories.** Each fixture is a self-contained
+   directory with source files, test files, an Evaluation Contract, and a
+   Scope Manifest. The runner copies the fixture to a temp directory, sets up
+   a git repo in it, and runs the evaluation.
+
+3. **Separate eval_results.db.** The eval framework is an observer, not a
+   participant. It never writes to state.db. The eval DB is located at
+   `.claude/eval_results.db` (project-scoped) or `~/.claude/eval_results.db`
+   (global).
+
+4. **Two execution modes:**
+   - **Deterministic:** Runs policy evaluation (`cc-policy evaluate`) against
+     fixture state with synthetic hook payloads. Validates the correct
+     policy decision is returned. No LLM invocation. Same approach as
+     existing scenario tests in `tests/scenarios/`.
+   - **Live:** Dispatches the tester agent (using the same dispatch mechanism
+     as production) against a frozen fixture in a temp worktree. Captures
+     the agent's structured output (EVAL_VERDICT trailer, evidence sections,
+     coverage table). Scores the output against ground truth.
+
+5. **Scorer architecture:** The scorer receives structured evaluator output
+   and ground truth, then computes:
+   - **Verdict accuracy:** Did the evaluator reach the correct verdict?
+   - **Defect detection (recall):** For planted-defect scenarios, did the
+     evaluator identify the planted defects?
+   - **Evidence quality:** Does the evidence section contain expected
+     keywords/phrases?
+   - **False positive rate (precision):** For clean implementations, did
+     the evaluator incorrectly flag issues?
+   - **Confidence calibration:** Does the stated confidence level match
+     the scenario difficulty?
+
+#### State Authority Map
+
+| State Domain | Authority | Location | Readers | Writers |
+|---|---|---|---|---|
+| Scenario definitions | YAML files | `evals/scenarios/*.yaml` | eval_runner.py | Human (authored) |
+| Frozen fixtures | Git-committed dirs | `evals/fixtures/` | eval_runner.py | Human (authored) |
+| Eval run results | eval_results.db | `.claude/eval_results.db` | eval_report.py, eval_metrics.py | eval_runner.py (via eval_metrics.py) |
+| Eval run history | eval_results.db `eval_runs` table | `.claude/eval_results.db` | eval_report.py | eval_metrics.py |
+| Scenario scores | eval_results.db `eval_scores` table | `.claude/eval_results.db` | eval_report.py | eval_scorer.py (via eval_metrics.py) |
+| Evaluator output (raw) | eval_results.db `eval_outputs` table | `.claude/eval_results.db` | eval_scorer.py | eval_runner.py (via eval_metrics.py) |
+
+**Adjacent components (integration surfaces):**
+- `runtime/cli.py` -- existing CLI entry point; eval subcommand group added here
+- `runtime/core/policy_engine.py` -- deterministic scenarios call `evaluate()`
+- `runtime/core/evaluation.py` -- eval_runner reads evaluation_state for
+  fixture setup
+- `runtime/schemas.py` -- NOT modified (eval has its own schema file)
+- `agents/tester.md` -- live scenarios dispatch the tester agent; the prompt
+  is the system under test
+- `tests/acceptance/test-full-lifecycle.sh` -- pattern reference for synthetic
+  payload construction
+- `hooks/post-task.sh` -- live scenarios trigger post-task for dispatch routing
+- `settings.json` -- NOT modified (eval uses existing hook wiring)
+
+#### eval_results.db Schema
+
+```sql
+-- Each eval run is a batch execution of one or more scenarios
+CREATE TABLE IF NOT EXISTS eval_runs (
+    run_id      TEXT    PRIMARY KEY,  -- UUID
+    started_at  INTEGER NOT NULL,
+    finished_at INTEGER,
+    mode        TEXT    NOT NULL,     -- 'deterministic' | 'live'
+    scenario_count INTEGER NOT NULL DEFAULT 0,
+    pass_count  INTEGER NOT NULL DEFAULT 0,
+    fail_count  INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT               -- CLI args, git SHA, etc.
+);
+
+-- Individual scenario results within a run
+CREATE TABLE IF NOT EXISTS eval_scores (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT    NOT NULL REFERENCES eval_runs(run_id),
+    scenario_id TEXT    NOT NULL,     -- Matches YAML file name
+    category    TEXT    NOT NULL,     -- 'gate' | 'judgment' | 'adversarial'
+    verdict_expected TEXT NOT NULL,   -- Ground truth verdict
+    verdict_actual   TEXT,           -- Evaluator's actual verdict
+    verdict_correct  INTEGER NOT NULL DEFAULT 0,  -- 1 if match
+    defect_recall    REAL,           -- 0.0-1.0 for planted-defect scenarios
+    evidence_score   REAL,           -- 0.0-1.0 keyword match ratio
+    false_positive_count INTEGER DEFAULT 0,
+    confidence_expected TEXT,         -- High/Medium/Low
+    confidence_actual   TEXT,
+    duration_ms  INTEGER,
+    error_message TEXT,              -- Non-null if scenario errored
+    scored_at    INTEGER NOT NULL
+);
+
+-- Raw evaluator output for debugging and re-scoring
+CREATE TABLE IF NOT EXISTS eval_outputs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT    NOT NULL REFERENCES eval_runs(run_id),
+    scenario_id TEXT    NOT NULL,
+    raw_output  TEXT    NOT NULL,     -- Full evaluator text output
+    trailer_json TEXT,               -- Parsed EVAL_* trailer as JSON
+    evidence_text TEXT,              -- Extracted evidence section
+    coverage_json TEXT,              -- Parsed coverage table as JSON
+    captured_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_scores_run ON eval_scores (run_id);
+CREATE INDEX IF NOT EXISTS idx_eval_scores_scenario ON eval_scores (scenario_id);
+CREATE INDEX IF NOT EXISTS idx_eval_scores_category ON eval_scores (category);
+CREATE INDEX IF NOT EXISTS idx_eval_outputs_run ON eval_outputs (run_id);
+```
+
+#### Scenario Definition Schema (YAML)
+
+```yaml
+# Example: evals/scenarios/judgment/dual-authority-detection.yaml
+name: dual-authority-detection
+category: judgment
+mode: live
+description: >
+  Implementation introduces a parallel flat-file tracking mechanism
+  alongside the existing SQLite agent_markers table. The evaluator
+  should detect this as a Tier 3 dual-authority violation.
+
+fixture: dual-authority-planted
+
+evaluation_contract:
+  required_tests:
+    - "test_marker_lifecycle.py passes"
+    - "test_dual_write.py passes"
+  required_real_path_checks:
+    - "agent_markers table is queried for active markers"
+    - "No flat-file .subagent-tracker reads in hot path"
+  authority_invariants:
+    - "agent_markers is the sole marker authority"
+  forbidden_shortcuts:
+    - "Do not approve if flat-file tracking coexists with SQLite"
+
+ground_truth:
+  expected_verdict: needs_changes
+  expected_defects:
+    - keyword: "dual-authority"
+      section: "Dual-Authority Audit"
+    - keyword: "flat-file"
+      section: "Coverage"
+  expected_evidence:
+    - "two tracking mechanisms"
+    - "agent_markers table"
+    - ".subagent-tracker"
+  expected_confidence: High
+  expected_tier3_status: "Failed"
+
+scoring:
+  verdict_weight: 0.4
+  defect_recall_weight: 0.3
+  evidence_weight: 0.2
+  false_positive_weight: 0.1
+```
+
+#### Wave Decomposition
+
+```
+W-EVAL-1 (scenario schema + eval_results.db + fixture infrastructure)
+   |-- W-EVAL-2 (eval_runner.py -- deterministic mode)
+        |-- W-EVAL-3 (eval_scorer.py + eval_metrics.py -- scoring pipeline)
+        |    |-- W-EVAL-4 (eval_report.py + CLI integration)
+        |-- W-EVAL-5 (seed scenario library -- 15 scenarios across 3 categories)
+```
+
+**Critical path:** W-EVAL-1 -> W-EVAL-2 -> W-EVAL-3 -> W-EVAL-4
+**Max width:** 2 (W-EVAL-3 and W-EVAL-5 can run in parallel after W-EVAL-2)
+
+W-EVAL-1 defines the data model (YAML schema, DB schema, fixture format).
+W-EVAL-2 builds the runner that loads scenarios and executes them in
+deterministic mode. W-EVAL-3 builds the scorer that compares outputs to ground
+truth. W-EVAL-4 integrates everything into the CLI with reporting. W-EVAL-5
+populates the scenario library. Live mode (tester agent invocation) is added
+to the runner in W-EVAL-2 but the seed scenarios for live mode come in
+W-EVAL-5.
+
+#### Known Risks
+
+1. **Fixture staleness.** Frozen fixtures represent a point-in-time system
+   state. As the config system evolves (new policies, changed schemas),
+   fixtures may become unrealistic. Mitigation: fixtures include a
+   `compat_version` field. The runner warns when a fixture's compat version
+   does not match the current system version. Fixture updates are a maintenance
+   task, not a framework concern.
+
+2. **Live mode flakiness.** LLM outputs are non-deterministic. The same
+   scenario may produce different verdicts on consecutive runs. Mitigation:
+   (a) the scorer uses fuzzy matching for evidence (keyword presence, not
+   exact string match), (b) live scenarios have an `acceptable_verdicts` field
+   for borderline cases, (c) the metrics store tracks variance over multiple
+   runs, (d) the report flags high-variance scenarios.
+
+3. **Scorer heuristic brittleness.** Keyword-based evidence scoring may miss
+   valid evidence phrased differently. Mitigation: evidence keywords are
+   broad (e.g., "dual-authority" not "dual-authority state logic is
+   prohibited"). The scorer computes a ratio, not a binary. Low evidence
+   scores trigger investigation, not automatic failure.
+
+4. **Eval-as-code-coverage confusion.** The framework measures evaluator
+   judgment quality, not code coverage. Users may conflate "eval score" with
+   "test coverage." Mitigation: the report explicitly separates "gate
+   mechanics accuracy" from "judgment accuracy" with different sections.
+
+5. **Live mode cost.** Each live scenario invokes the tester agent, which
+   consumes tokens. Running 15 scenarios costs ~15 agent dispatches.
+   Mitigation: live scenarios are opt-in (`--live` flag). Deterministic
+   scenarios run by default and are free.
+
+6. **Temp directory cleanup.** The runner creates temp directories for each
+   scenario. If the runner crashes, temps accumulate. Mitigation: temps are
+   created in `tmp/eval-*` under the project root (Sacred Practice 3). A
+   cleanup function runs at exit. The runner also cleans up stale eval temps
+   older than 1 hour on startup.
+
+#### W-EVAL-1: Scenario Schema, Eval DB, and Fixture Infrastructure
+
+##### TKT-EVAL-1: Scenario Schema and Eval Database Foundation
+
+- **Weight:** M
+- **Gate:** review (user sees schema and fixture format)
+- **Deps:** none
+
+**Implementer scope:**
+
+- Create `runtime/eval_schemas.py` with:
+  - `EVAL_RUNS_DDL`, `EVAL_SCORES_DDL`, `EVAL_OUTPUTS_DDL` constants
+  - `EVAL_ALL_DDL` list
+  - `ensure_eval_schema(conn)` function (same pattern as `schemas.py`)
+  - `EVAL_CATEGORIES` frozenset: `{"gate", "judgment", "adversarial"}`
+  - `EVAL_MODES` frozenset: `{"deterministic", "live"}`
+  - `EVAL_VERDICTS` frozenset matching EVALUATION_STATUSES
+- Create `runtime/core/eval_metrics.py` with:
+  - `get_eval_conn(project_dir: Path) -> sqlite3.Connection` -- opens
+    `.claude/eval_results.db` in the project directory
+  - `create_run(conn, mode, metadata) -> run_id` -- inserts a new eval_runs row
+  - `record_score(conn, run_id, scenario_id, ...) -> None` -- inserts an
+    eval_scores row
+  - `record_output(conn, run_id, scenario_id, raw_output, ...) -> None` --
+    inserts an eval_outputs row
+  - `finalize_run(conn, run_id) -> None` -- updates eval_runs with counts and
+    finished_at
+  - `get_run(conn, run_id) -> dict | None`
+  - `list_runs(conn, limit) -> list[dict]`
+  - `get_scores(conn, run_id) -> list[dict]`
+- Create `evals/` directory structure:
+  - `evals/scenarios/gate/` (empty, with .gitkeep)
+  - `evals/scenarios/judgment/` (empty, with .gitkeep)
+  - `evals/scenarios/adversarial/` (empty, with .gitkeep)
+  - `evals/fixtures/` (empty, with .gitkeep)
+  - `evals/README.md` -- documents the scenario YAML schema and fixture format
+- Create one example fixture: `evals/fixtures/clean-hello-world/`
+  - `src/hello.py` -- trivial correct implementation
+  - `tests/test_hello.py` -- real test (not a mock)
+  - `EVAL_CONTRACT.md` -- simple Evaluation Contract for this fixture
+  - `fixture.yaml` -- fixture metadata (compat_version, description, files)
+- Create one example scenario: `evals/scenarios/gate/write-who-deny.yaml`
+  - Uses the existing `cc-policy evaluate` deterministic path
+  - Expected: tester source write is denied
+- Create unit tests: `tests/runtime/test_eval_schemas.py`,
+  `tests/runtime/test_eval_metrics.py`
+
+**Tester scope:**
+
+- Verify `ensure_eval_schema()` creates all tables idempotently
+- Verify `create_run` / `record_score` / `record_output` / `finalize_run`
+  round-trip correctly
+- Verify `eval_results.db` is created in `.claude/` not alongside `state.db`
+- Verify the example scenario YAML is valid and parseable
+- Verify the example fixture directory contains expected files
+- Run all existing tests to confirm no regression
+
+###### Evaluation Contract for TKT-EVAL-1
+
+**Required tests:**
+- `tests/runtime/test_eval_schemas.py` -- schema creation, idempotency, table
+  existence checks
+- `tests/runtime/test_eval_metrics.py` -- CRUD operations: create_run,
+  record_score, record_output, finalize_run, get_run, list_runs, get_scores
+
+**Required real-path checks:**
+1. `runtime/eval_schemas.py` defines EVAL_RUNS_DDL, EVAL_SCORES_DDL,
+   EVAL_OUTPUTS_DDL with all columns matching the schema design above
+2. `ensure_eval_schema(conn)` is idempotent (calling twice is a no-op)
+3. `eval_metrics.get_eval_conn()` returns a connection to
+   `.claude/eval_results.db`, NOT `state.db`
+4. `create_run()` returns a UUID string
+5. `record_score()` correctly inserts all scoring fields
+6. `finalize_run()` computes pass_count, fail_count, error_count from
+   eval_scores rows
+7. Example YAML scenario at `evals/scenarios/gate/write-who-deny.yaml` is
+   valid YAML and contains all required schema fields (name, category, mode,
+   fixture, ground_truth)
+8. Example fixture at `evals/fixtures/clean-hello-world/` has src/, tests/,
+   EVAL_CONTRACT.md, and fixture.yaml
+
+**Required authority invariants:**
+- `eval_results.db` is a separate database file from `state.db`
+- No imports from eval_schemas or eval_metrics in any existing runtime module
+- No writes to state.db from any eval module
+
+**Required integration points:**
+- `runtime/eval_schemas.py` follows the same pattern as `runtime/schemas.py`
+  (DDL constants, ensure_schema function, status frozensets)
+- `runtime/core/eval_metrics.py` follows the same pattern as other domain
+  modules (takes conn as first arg, returns dicts)
+
+**Forbidden shortcuts:**
+- Do not add eval tables to `schemas.py` ALL_DDL (separate DB)
+- Do not use `state.db` connection for eval data
+- Do not write executable code in scenario YAML files
+- Do not import the eval modules in `runtime/cli.py` yet (CLI comes in
+  W-EVAL-4)
+
+**Ready-for-guardian definition:**
+All required tests pass. eval_results.db is a separate file from state.db.
+The YAML schema is documented in `evals/README.md`. Example scenario and
+fixture are valid.
+
+###### Scope Manifest for TKT-EVAL-1
+
+**Allowed files/directories:**
+- `runtime/eval_schemas.py` (new)
+- `runtime/core/eval_metrics.py` (new)
+- `evals/` (new directory tree)
+- `tests/runtime/test_eval_schemas.py` (new)
+- `tests/runtime/test_eval_metrics.py` (new)
+
+**Required files/directories:**
+- `runtime/eval_schemas.py` (must be created)
+- `runtime/core/eval_metrics.py` (must be created)
+- `evals/scenarios/gate/write-who-deny.yaml` (must be created)
+- `evals/fixtures/clean-hello-world/` (must be created)
+- `tests/runtime/test_eval_schemas.py` (must be created)
+- `tests/runtime/test_eval_metrics.py` (must be created)
+
+**Forbidden touch points:**
+- `runtime/schemas.py` (eval has its own schema file)
+- `runtime/cli.py` (CLI integration is W-EVAL-4)
+- `runtime/core/evaluation.py` (production eval state unchanged)
+- `hooks/*` (no hook changes)
+- `settings.json` (no hook wiring changes)
+- `agents/*.md` (no prompt changes)
+- `state.db` (eval uses separate DB)
+
+**Expected state authorities touched:**
+- NEW: `eval_results.db` with tables `eval_runs`, `eval_scores`, `eval_outputs`
+- UNCHANGED: all existing state.db tables
+
+#### W-EVAL-2: Scenario Runner (Deterministic Mode)
+
+##### TKT-EVAL-2: Eval Runner -- Deterministic and Live Execution
+
+- **Weight:** L
+- **Gate:** review (user sees scenario execution output)
+- **Deps:** TKT-EVAL-1 (schema and fixtures must exist)
+
+**Implementer scope:**
+
+- Create `runtime/core/eval_runner.py` with:
+  - `load_scenario(yaml_path: Path) -> dict` -- parse and validate a scenario
+    YAML file against the schema (required fields, valid category, valid mode)
+  - `discover_scenarios(base_dir: Path, category: str | None, mode: str | None)
+    -> list[dict]` -- find all YAML files in the scenarios directory, optionally
+    filtered by category and mode
+  - `setup_fixture(fixture_name: str, fixtures_dir: Path) -> Path` -- copy a
+    named fixture directory to `tmp/eval-<uuid>/`, initialize a git repo in
+    it, return the temp path
+  - `run_deterministic(scenario: dict, fixture_path: Path, conn: Connection)
+    -> dict` -- execute a deterministic scenario:
+    1. Build a synthetic hook payload from the scenario's fixture
+    2. Call `cc-policy evaluate` with the payload (subprocess or direct Python
+       call to policy_engine.evaluate)
+    3. Capture the policy decision
+    4. Return structured result dict with verdict, raw output, duration
+  - `run_live(scenario: dict, fixture_path: Path, conn: Connection)
+    -> dict` -- execute a live scenario:
+    1. Set up the fixture as a temp worktree with proper runtime state
+       (marker, lease, workflow binding, evaluation_state)
+    2. Invoke the tester agent via subprocess (same mechanism as production
+       dispatch)
+    3. Capture the agent's full output
+    4. Parse the EVAL_* trailer from the output
+    5. Extract the evidence section and coverage table
+    6. Return structured result dict
+  - `cleanup_fixture(fixture_path: Path) -> None` -- remove the temp directory
+  - `run_scenario(scenario: dict, fixtures_dir: Path, eval_conn: Connection,
+    runtime_conn: Connection | None) -> dict` -- orchestrate: setup, execute
+    (deterministic or live based on mode), record output, cleanup
+  - `run_all(scenarios_dir: Path, fixtures_dir: Path, eval_conn: Connection,
+    runtime_conn: Connection | None, category: str | None, mode: str | None)
+    -> str` -- discover scenarios, create run, execute each, finalize run,
+    return run_id
+- Create `tests/runtime/test_eval_runner.py` with:
+  - Test `load_scenario` with valid and invalid YAML
+  - Test `discover_scenarios` with directory containing mixed categories
+  - Test `setup_fixture` creates a temp directory with git repo
+  - Test `run_deterministic` with the example `write-who-deny` scenario
+  - Test `cleanup_fixture` removes the temp directory
+  - Test `run_all` orchestrates multiple scenarios and records results
+
+**Tester scope:**
+
+- Verify `load_scenario` rejects YAML missing required fields
+- Verify `discover_scenarios` finds scenarios in subdirectories
+- Verify `setup_fixture` creates a git-initialized temp directory
+- Verify `run_deterministic` produces correct verdict for the write-who-deny
+  scenario
+- Verify `run_all` creates an eval_runs row and eval_scores rows
+- Verify temp directory cleanup happens even on error
+- Run all existing tests to confirm no regression
+
+###### Evaluation Contract for TKT-EVAL-2
+
+**Required tests:**
+- `tests/runtime/test_eval_runner.py` -- all tests pass
+- All existing `tests/runtime/test_eval_*.py` tests from W-EVAL-1 still pass
+- All existing tests in `tests/runtime/` pass (no regression)
+
+**Required real-path checks:**
+1. `load_scenario()` validates required fields: name, category, mode, fixture,
+   ground_truth
+2. `load_scenario()` raises ValueError for missing/invalid fields
+3. `discover_scenarios()` returns only `.yaml`/`.yml` files
+4. `discover_scenarios()` filters by category when specified
+5. `setup_fixture()` creates a temp directory under `tmp/eval-*`
+6. `setup_fixture()` initializes a git repo in the temp directory
+7. `setup_fixture()` copies all fixture files including subdirectories
+8. `run_deterministic()` calls policy_engine.evaluate (or subprocess equivalent)
+   with a synthetic payload built from the fixture
+9. `run_deterministic()` returns a dict with keys: verdict, raw_output,
+   duration_ms, error (None on success)
+10. `run_all()` creates an eval_runs row, runs each scenario, records scores
+    and outputs, finalizes the run
+11. `cleanup_fixture()` removes the temp directory
+12. Temp directories are created in project `tmp/`, not `/tmp/`
+    (Sacred Practice 3)
+
+**Required authority invariants:**
+- eval_runner never writes to state.db
+- eval_runner writes to eval_results.db only through eval_metrics functions
+- eval_runner does not modify any fixture files (copies to temp)
+
+**Required integration points:**
+- `eval_runner.py` imports `eval_metrics.py` for recording results
+- `eval_runner.py` imports `eval_schemas.py` for DB setup
+- `eval_runner.py` can import `policy_engine.py` for deterministic evaluation
+- Fixture setup must be compatible with the existing hook infrastructure
+  (correct directory structure for cc-policy to find)
+
+**Forbidden shortcuts:**
+- Do not hardcode scenario paths (must be discoverable from directory)
+- Do not skip fixture setup for deterministic scenarios (even deterministic
+  scenarios need a valid file path context)
+- Do not catch all exceptions silently (record errors explicitly)
+- Do not modify the CLI yet (CLI integration is W-EVAL-4)
+- Do not implement live mode agent dispatch in this wave (scaffold the
+  function, implement fully in W-EVAL-5 when seed scenarios exist)
+
+**Ready-for-guardian definition:**
+All test_eval_runner tests pass. `run_deterministic()` correctly evaluates the
+write-who-deny scenario against the policy engine and returns the correct
+verdict. `run_all()` produces a complete eval_runs row with accurate counts.
+Temp cleanup is reliable.
+
+###### Scope Manifest for TKT-EVAL-2
+
+**Allowed files/directories:**
+- `runtime/core/eval_runner.py` (new)
+- `tests/runtime/test_eval_runner.py` (new)
+
+**Required files/directories:**
+- `runtime/core/eval_runner.py` (must be created)
+- `tests/runtime/test_eval_runner.py` (must be created)
+
+**Forbidden touch points:**
+- `runtime/cli.py` (CLI integration is W-EVAL-4)
+- `runtime/schemas.py` (eval has its own schema)
+- `runtime/core/evaluation.py` (production eval state unchanged)
+- `runtime/core/policy_engine.py` (read-only usage, no modification)
+- `hooks/*` (no hook changes)
+- `settings.json` (no wiring changes)
+- `agents/*.md` (no prompt changes)
+- `evals/` (fixtures/scenarios already created in W-EVAL-1)
+
+**Expected state authorities touched:**
+- READS: `state.db` (via policy_engine for deterministic evaluation, read-only)
+- WRITES: `eval_results.db` (via eval_metrics)
+- UNCHANGED: all state.db tables
+
+#### W-EVAL-3: Scorer and Metrics Pipeline
+
+##### TKT-EVAL-3: Eval Scorer and Metrics Aggregation
+
+- **Weight:** M
+- **Gate:** review (user sees scoring output and metrics)
+- **Deps:** TKT-EVAL-2 (runner must exist to produce outputs for scoring)
+
+**Implementer scope:**
+
+- Create `runtime/core/eval_scorer.py` with:
+  - `parse_trailer(raw_output: str) -> dict` -- extract EVAL_VERDICT,
+    EVAL_TESTS_PASS, EVAL_NEXT_ROLE, EVAL_HEAD_SHA from evaluator output text.
+    Returns dict with keys matching trailer fields, None values for missing
+    fields.
+  - `extract_evidence(raw_output: str) -> str` -- extract the "What I Observed"
+    / evidence section from evaluator output. Uses section header detection.
+  - `extract_coverage(raw_output: str) -> list[dict]` -- parse the Coverage
+    table (markdown table format) into a list of dicts with keys: area, tier,
+    status, evidence.
+  - `score_verdict(actual: str, expected: str) -> float` -- 1.0 if match, 0.0
+    if mismatch. Handles None/missing gracefully.
+  - `score_defect_recall(evidence_text: str, expected_defects: list[dict])
+    -> float` -- ratio of expected defect keywords found in the evidence text.
+    Each defect has a `keyword` and optional `section`; if section is
+    specified, keyword must appear in that section.
+  - `score_evidence_quality(evidence_text: str, expected_evidence: list[str])
+    -> float` -- ratio of expected evidence phrases found in the evidence text.
+    Case-insensitive matching.
+  - `score_false_positives(coverage: list[dict], expected_clean_areas:
+    list[str]) -> int` -- count of areas marked as failed that should have
+    been clean.
+  - `score_confidence(actual: str, expected: str) -> float` -- 1.0 if match,
+    0.5 if adjacent (High/Medium or Medium/Low), 0.0 otherwise.
+  - `score_scenario(raw_output: str, ground_truth: dict, scoring_weights: dict)
+    -> dict` -- orchestrate all scoring functions, compute weighted total score,
+    return a complete score dict ready for `record_score()`.
+- Extend `runtime/core/eval_metrics.py` with:
+  - `get_category_breakdown(conn, run_id) -> dict` -- per-category pass/fail
+    counts and average scores
+  - `get_regression_check(conn, scenario_id, window: int) -> dict` -- compare
+    latest score against average of last N runs. Flag if score dropped
+    significantly.
+  - `get_variance(conn, scenario_id, window: int) -> dict` -- compute score
+    variance across recent runs for live scenarios.
+- Create unit tests: `tests/runtime/test_eval_scorer.py` with:
+  - Test `parse_trailer` with valid trailer, missing fields, malformed trailer
+  - Test `extract_evidence` with full evaluator output containing evidence
+    section
+  - Test `extract_coverage` with markdown table parsing
+  - Test `score_verdict` with match, mismatch, and None cases
+  - Test `score_defect_recall` with full, partial, and zero recall
+  - Test `score_evidence_quality` with various keyword presence patterns
+  - Test `score_false_positives` with clean and noisy scenarios
+  - Test `score_scenario` end-to-end with mock evaluator output
+
+**Tester scope:**
+
+- Verify trailer parsing handles all 4 trailer fields correctly
+- Verify evidence extraction works with the actual `agents/tester.md` output
+  format
+- Verify coverage table parsing handles markdown variations
+- Verify scoring functions produce correct float values in [0.0, 1.0]
+- Verify `score_scenario` computes weighted total correctly
+- Verify regression detection flags significant score drops
+- Run all existing tests to confirm no regression
+
+###### Evaluation Contract for TKT-EVAL-3
+
+**Required tests:**
+- `tests/runtime/test_eval_scorer.py` -- all tests pass
+- All existing `tests/runtime/test_eval_*.py` tests still pass
+
+**Required real-path checks:**
+1. `parse_trailer()` extracts EVAL_VERDICT from real evaluator output format
+2. `parse_trailer()` returns None values for missing trailer fields
+3. `extract_evidence()` finds the "What I Observed" section
+4. `extract_coverage()` parses the markdown Coverage table from
+   `agents/tester.md` format
+5. `score_verdict()` returns 1.0 for exact match, 0.0 for mismatch
+6. `score_defect_recall()` returns correct ratio (0/N, partial, N/N)
+7. `score_evidence_quality()` is case-insensitive
+8. `score_scenario()` applies weights from scoring config
+9. `get_category_breakdown()` produces correct per-category aggregation
+10. `get_regression_check()` flags when latest score drops >20% below
+    window average
+
+**Required authority invariants:**
+- Scorer never writes to state.db
+- Scorer reads from eval_results.db only
+- Scorer does not invoke any LLM (heuristic matching only in v1)
+
+**Required integration points:**
+- `eval_scorer.py` output format is compatible with `eval_metrics.record_score()`
+  input format
+- Trailer parsing is compatible with `agents/tester.md` Evaluator Trailer format
+- Coverage parsing is compatible with `agents/tester.md` Coverage table format
+
+**Forbidden shortcuts:**
+- Do not use LLM-as-judge for evidence scoring (v1 is heuristic only)
+- Do not hardcode expected output formats (parse flexibly with fallbacks)
+- Do not swallow parsing errors (record them as error_message in eval_scores)
+- Do not modify eval_schemas.py unless schema changes are required
+
+**Ready-for-guardian definition:**
+All test_eval_scorer tests pass. Trailer parsing correctly handles the exact
+format defined in `agents/tester.md`. Score functions produce correct values
+for edge cases (empty input, partial matches, None fields). Regression
+detection correctly identifies score drops.
+
+###### Scope Manifest for TKT-EVAL-3
+
+**Allowed files/directories:**
+- `runtime/core/eval_scorer.py` (new)
+- `runtime/core/eval_metrics.py` (modify: add aggregation functions)
+- `tests/runtime/test_eval_scorer.py` (new)
+
+**Required files/directories:**
+- `runtime/core/eval_scorer.py` (must be created)
+- `tests/runtime/test_eval_scorer.py` (must be created)
+
+**Forbidden touch points:**
+- `runtime/cli.py` (CLI integration is W-EVAL-4)
+- `runtime/schemas.py` (eval has its own schema)
+- `runtime/core/evaluation.py` (production eval state unchanged)
+- `runtime/core/eval_runner.py` (runner is modified only if integration
+  requires it; prefer keeping runner and scorer loosely coupled)
+- `hooks/*` (no hook changes)
+- `agents/*.md` (no prompt changes)
+
+**Expected state authorities touched:**
+- READS: `eval_results.db` (eval_outputs for re-scoring)
+- WRITES: `eval_results.db` (eval_scores via eval_metrics)
+- UNCHANGED: state.db, all existing tables
+
+#### W-EVAL-4: Report Generator and CLI Integration
+
+##### TKT-EVAL-4: Eval Report and CLI Subcommand Group
+
+- **Weight:** M
+- **Gate:** review (user sees report output and CLI commands)
+- **Deps:** TKT-EVAL-3 (scorer must exist for report data)
+
+**Implementer scope:**
+
+- Create `runtime/core/eval_report.py` with:
+  - `format_run_summary(run: dict, scores: list[dict]) -> str` -- format a
+    single run as a human-readable text block. Includes: run_id, timestamp,
+    mode, total/pass/fail counts, overall accuracy percentage.
+  - `format_category_breakdown(breakdown: dict) -> str` -- format per-category
+    results as a table.
+  - `format_scenario_detail(score: dict) -> str` -- format a single scenario
+    score with all fields.
+  - `format_regression_alerts(regressions: list[dict]) -> str` -- format
+    regression warnings for scenarios with declining scores.
+  - `generate_report(conn, run_id: str | None, last_n: int) -> str` -- full
+    report generation. If run_id is provided, report on that run. If not,
+    report on the last N runs with trend data.
+  - `generate_json_report(conn, run_id: str | None) -> dict` -- machine-
+    readable JSON report for programmatic consumption.
+- Modify `runtime/cli.py` to add `eval` subcommand group:
+  - `cc-policy eval run [--category CATEGORY] [--mode MODE] [--live]
+    [--scenarios-dir DIR] [--fixtures-dir DIR]` -- discover and run scenarios,
+    output run_id and summary.
+  - `cc-policy eval report [--run-id ID] [--last N] [--json]` -- generate and
+    print a report.
+  - `cc-policy eval list [--category CATEGORY] [--mode MODE]` -- list available
+    scenarios.
+  - `cc-policy eval score --run-id ID` -- re-score a previous run (re-reads
+    eval_outputs, re-runs scorer).
+  - Import pattern: `import runtime.core.eval_runner`, `import
+    runtime.core.eval_scorer`, `import runtime.core.eval_metrics`, `import
+    runtime.core.eval_report`. Follows existing cli.py import pattern at
+    module level.
+- Create unit tests: `tests/runtime/test_eval_report.py`
+- Create scenario test: `tests/scenarios/test-eval-cli-roundtrip.sh` -- run
+  `cc-policy eval run`, verify output includes run_id, then run
+  `cc-policy eval report --run-id <id>`, verify report is non-empty.
+
+**Tester scope:**
+
+- Verify `cc-policy eval run` discovers and executes the example scenario
+  from W-EVAL-1
+- Verify `cc-policy eval report` produces readable output with correct counts
+- Verify `cc-policy eval list` shows available scenarios
+- Verify `cc-policy eval run --category gate` filters correctly
+- Verify JSON report output is valid JSON
+- Verify the scenario test passes
+- Run all existing tests to confirm no regression
+
+###### Evaluation Contract for TKT-EVAL-4
+
+**Required tests:**
+- `tests/runtime/test_eval_report.py` -- all tests pass
+- `tests/scenarios/test-eval-cli-roundtrip.sh` -- passes
+- All existing tests pass (no regression)
+
+**Required real-path checks:**
+1. `cc-policy eval run` exits 0 and outputs JSON with run_id and summary
+2. `cc-policy eval report --run-id <id>` produces a multi-section text report
+3. `cc-policy eval list` outputs JSON array of available scenarios
+4. `cc-policy eval run --category gate` runs only gate scenarios
+5. `cc-policy eval report --json` outputs valid JSON
+6. `cc-policy eval score --run-id <id>` re-scores and updates results
+7. Report includes per-category breakdown (gate/judgment/adversarial)
+8. Report includes regression alerts when applicable
+9. CLI follows existing `_handle_<domain>` pattern in cli.py
+10. eval imports are at module level in cli.py (not lazy)
+
+**Required authority invariants:**
+- CLI eval commands never write to state.db
+- CLI eval commands write to eval_results.db only
+- Report generator is read-only (reads from eval_results.db)
+
+**Required integration points:**
+- cli.py `_handle_eval()` follows the same pattern as `_handle_evaluation()`,
+  `_handle_marker()`, etc.
+- argparse subparser for eval is added to the existing subparsers in cli.py
+- eval commands use `_ok()` and `_err()` helper pattern
+
+**Forbidden shortcuts:**
+- Do not create a separate CLI script for eval (must be in cc-policy)
+- Do not skip error handling (eval errors must produce _err() JSON)
+- Do not hardcode scenario/fixture paths (accept --scenarios-dir and
+  --fixtures-dir arguments with sensible defaults)
+
+**Ready-for-guardian definition:**
+`cc-policy eval run` works end-to-end: discovers scenarios, runs them, records
+results, outputs summary. `cc-policy eval report` produces a readable report.
+The CLI roundtrip scenario test passes. All existing tests pass.
+
+###### Scope Manifest for TKT-EVAL-4
+
+**Allowed files/directories:**
+- `runtime/core/eval_report.py` (new)
+- `runtime/cli.py` (modify: add eval subcommand group)
+- `tests/runtime/test_eval_report.py` (new)
+- `tests/scenarios/test-eval-cli-roundtrip.sh` (new)
+
+**Required files/directories:**
+- `runtime/core/eval_report.py` (must be created)
+- `runtime/cli.py` (must be modified)
+- `tests/runtime/test_eval_report.py` (must be created)
+- `tests/scenarios/test-eval-cli-roundtrip.sh` (must be created)
+
+**Forbidden touch points:**
+- `runtime/schemas.py` (eval has its own schema)
+- `runtime/core/evaluation.py` (production eval state unchanged)
+- `hooks/*` (no hook changes)
+- `settings.json` (no wiring changes)
+- `agents/*.md` (no prompt changes)
+
+**Expected state authorities touched:**
+- READS: `eval_results.db` (all eval tables)
+- MODIFIED: `runtime/cli.py` (new subcommand group added)
+- UNCHANGED: state.db, all existing tables
+
+#### W-EVAL-5: Seed Scenario Library
+
+##### TKT-EVAL-5: 15 Seed Scenarios Across Three Categories
+
+- **Weight:** L
+- **Gate:** approve (user must approve the scenario list and ground truths
+  before they become the evaluation baseline)
+- **Deps:** TKT-EVAL-2 (runner must work for deterministic scenarios),
+  TKT-EVAL-3 (scorer must work for ground truth comparison)
+
+**Implementer scope:**
+
+Create 15 scenarios across three categories. Each scenario requires a YAML
+definition and a corresponding fixture directory.
+
+**Category: gate (5 deterministic scenarios)**
+
+1. `evals/scenarios/gate/write-who-deny.yaml` -- Tester attempts source write;
+   policy denies. Expected: deny decision.
+   Fixture: `evals/fixtures/basic-project/` (minimal project with src/)
+
+2. `evals/scenarios/gate/impl-source-allow.yaml` -- Implementer writes source
+   file; policy allows. Expected: allow decision.
+   Fixture: reuses `basic-project` with implementer marker set
+
+3. `evals/scenarios/gate/guardian-no-lease-deny.yaml` -- Guardian attempts git
+   commit without lease; policy denies. Expected: deny decision.
+   Fixture: `evals/fixtures/guardian-no-lease/` (project with guardian marker
+   but no active lease)
+
+4. `evals/scenarios/gate/eval-invalidation.yaml` -- Source write after
+   ready_for_guardian; evaluation_state reset to pending. Expected: status
+   change from ready_for_guardian to pending.
+   Fixture: `evals/fixtures/eval-ready/` (project with evaluation_state set
+   to ready_for_guardian)
+
+5. `evals/scenarios/gate/scope-violation-deny.yaml` -- Implementer writes to
+   forbidden path; policy denies. Expected: deny decision.
+   Fixture: `evals/fixtures/scoped-project/` (project with workflow_scope
+   forbidding certain paths)
+
+**Category: judgment (5 live scenarios)**
+
+6. `evals/scenarios/judgment/dual-authority-detection.yaml` -- Implementation
+   introduces parallel flat-file tracking alongside SQLite. Expected verdict:
+   needs_changes. Expected evidence: "dual-authority" in Tier 3 audit.
+   Fixture: `evals/fixtures/dual-authority-planted/`
+
+7. `evals/scenarios/judgment/mock-masking.yaml` -- Tests use internal mocks
+   that would pass even if the implementation were deleted. Expected verdict:
+   needs_changes. Expected evidence: mock criticism in Tier 1.
+   Fixture: `evals/fixtures/mock-masking/`
+
+8. `evals/scenarios/judgment/clean-implementation.yaml` -- Correct
+   implementation with real tests. Expected verdict: ready_for_guardian.
+   Expected evidence: all tiers fully verified.
+   Fixture: `evals/fixtures/clean-implementation/`
+
+9. `evals/scenarios/judgment/unreachable-code.yaml` -- New module is never
+   imported or called from any entry point. Expected verdict: needs_changes.
+   Expected evidence: integration failure in Coverage table.
+   Fixture: `evals/fixtures/unreachable-code/`
+
+10. `evals/scenarios/judgment/scope-violation-in-impl.yaml` -- Implementation
+    modifies files outside the Scope Manifest. Expected verdict: needs_changes.
+    Expected evidence: scope compliance failure.
+    Fixture: `evals/fixtures/scope-violation/`
+
+**Category: adversarial (5 live scenarios)**
+
+11. `evals/scenarios/adversarial/confident-wrong.yaml` -- Implementation looks
+    correct, has passing tests, but has a subtle logic bug. Tests pass because
+    they test the wrong property. Expected verdict: needs_changes (should catch
+    in Tier 2). Expected evidence: live feature test reveals wrong behavior.
+    Fixture: `evals/fixtures/confident-wrong/`
+
+12. `evals/scenarios/adversarial/test-theater.yaml` -- All tests pass but every
+    test uses mocks that return canned values. No real code is exercised.
+    Expected verdict: needs_changes. Expected evidence: mock criticism.
+    Fixture: `evals/fixtures/test-theater/`
+
+13. `evals/scenarios/adversarial/partial-implementation.yaml` -- Only half the
+    Evaluation Contract items are implemented. Tests pass for the implemented
+    half. Expected verdict: needs_changes. Expected evidence: contract items
+    not met.
+    Fixture: `evals/fixtures/partial-implementation/`
+
+14. `evals/scenarios/adversarial/stale-evaluation.yaml` -- Implementation was
+    modified after the last evaluator run. HEAD SHA no longer matches.
+    Expected verdict: needs_changes. Expected evidence: SHA mismatch or
+    refusal condition triggered.
+    Fixture: `evals/fixtures/stale-evaluation/`
+
+15. `evals/scenarios/adversarial/hidden-state-mutation.yaml` -- Implementation
+    writes to `~/.claude/state.db` directly instead of going through the
+    runtime domain modules. Tests pass but state isolation is violated.
+    Expected verdict: needs_changes. Expected evidence: non-isolated state
+    access in refusal conditions or Tier 3 audit.
+    Fixture: `evals/fixtures/hidden-state-mutation/`
+
+For each scenario, create:
+- The YAML scenario definition
+- The fixture directory with source files, test files, and EVAL_CONTRACT.md
+- For judgment/adversarial scenarios: realistic implementations that a human
+  would recognize as having the stated defect
+
+Create tests:
+- `tests/runtime/test_eval_scenarios.py` -- validate all 15 YAML files parse
+  correctly and reference existing fixtures
+- `tests/scenarios/test-eval-gate-scenarios.sh` -- run all 5 gate scenarios
+  in deterministic mode, verify all pass
+
+**Tester scope:**
+
+- Verify all 15 YAML files are valid and parseable
+- Verify all fixtures exist and contain expected files
+- Run the 5 gate scenarios via `cc-policy eval run --category gate` and verify
+  all produce correct verdicts
+- For judgment/adversarial scenarios: manually inspect fixtures to confirm the
+  planted defects are realistic and detectable by a competent evaluator
+- Verify the ground truth verdicts are reasonable (not testing impossibilities)
+- Run all existing tests to confirm no regression
+
+###### Evaluation Contract for TKT-EVAL-5
+
+**Required tests:**
+- `tests/runtime/test_eval_scenarios.py` -- all 15 scenarios validate
+- `tests/scenarios/test-eval-gate-scenarios.sh` -- all 5 gate scenarios pass
+- All existing tests pass
+
+**Required real-path checks:**
+1. 15 YAML files exist under `evals/scenarios/` (5 gate, 5 judgment,
+   5 adversarial)
+2. Each YAML file has all required schema fields
+3. Each YAML file references an existing fixture directory
+4. Each fixture directory contains at minimum: source files, an
+   EVAL_CONTRACT.md, and a fixture.yaml
+5. Gate scenarios produce correct verdicts when run via `cc-policy eval run`
+6. Judgment scenario fixtures contain realistic planted defects
+7. Adversarial scenario fixtures contain subtle defects that require careful
+   evaluation
+8. No fixture references files outside its own directory
+9. No fixture contains real credentials, API keys, or sensitive data
+10. Ground truth verdicts are reasonable (clean implementations get
+    ready_for_guardian, defective implementations get needs_changes)
+
+**Required authority invariants:**
+- No new tables in state.db
+- No changes to existing eval framework code (scenarios are data, not code)
+- No changes to agents/*.md (the tester prompt is the system under test)
+
+**Required integration points:**
+- All YAML files parseable by `eval_runner.load_scenario()`
+- All fixtures compatible with `eval_runner.setup_fixture()`
+- Gate scenarios compatible with `eval_runner.run_deterministic()`
+- Judgment/adversarial scenarios compatible with `eval_runner.run_live()`
+  (structure only; live execution requires Claude runtime)
+
+**Forbidden shortcuts:**
+- Do not create trivial fixtures that any evaluator would pass (must be
+  realistic)
+- Do not plant defects that are impossible to detect (must be fair)
+- Do not reuse a single fixture for multiple scenarios with different ground
+  truths (each scenario gets its own fixture or a clearly documented shared
+  fixture)
+- Do not modify the tester agent prompt to make scenarios easier (the prompt
+  is the system under test)
+
+**Ready-for-guardian definition:**
+All 15 scenarios and their fixtures exist and validate. Gate scenarios produce
+correct deterministic verdicts. Judgment and adversarial fixtures are realistic
+and reviewed by the user (gate: approve).
+
+###### Scope Manifest for TKT-EVAL-5
+
+**Allowed files/directories:**
+- `evals/scenarios/gate/*.yaml` (new: 5 files)
+- `evals/scenarios/judgment/*.yaml` (new: 5 files)
+- `evals/scenarios/adversarial/*.yaml` (new: 5 files)
+- `evals/fixtures/*/` (new: ~12 fixture directories)
+- `tests/runtime/test_eval_scenarios.py` (new)
+- `tests/scenarios/test-eval-gate-scenarios.sh` (new)
+
+**Required files/directories:**
+- 15 YAML scenario definitions (must be created)
+- Corresponding fixture directories (must be created)
+- `tests/runtime/test_eval_scenarios.py` (must be created)
+- `tests/scenarios/test-eval-gate-scenarios.sh` (must be created)
+
+**Forbidden touch points:**
+- `runtime/core/eval_runner.py` (runner code unchanged; scenarios are data)
+- `runtime/core/eval_scorer.py` (scorer code unchanged)
+- `runtime/cli.py` (CLI unchanged)
+- `runtime/schemas.py` (eval has its own schema)
+- `hooks/*` (no hook changes)
+- `settings.json` (no wiring changes)
+- `agents/*.md` (the tester prompt is the system under test -- do NOT modify
+  it to accommodate scenarios)
+
+**Expected state authorities touched:**
+- NEW: 15 YAML scenario files (data, not code)
+- NEW: ~12 fixture directories (data, not code)
+- UNCHANGED: all state.db tables, all eval_results.db tables
+
 ## Completed Initiatives
 
 ### INIT-REBASE: Test Suite Rebaseline (completed 2026-04-05)
