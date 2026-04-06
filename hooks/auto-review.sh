@@ -26,6 +26,7 @@
 set -euo pipefail
 source "$(dirname "$0")/log.sh"
 
+# shellcheck disable=SC2034  # HOOK_INPUT read for side effects (read_input advances stdin)
 HOOK_INPUT=$(read_input)
 COMMAND=$(get_field '.tool_input.command')
 
@@ -236,6 +237,7 @@ analyze_single_command() {
         else
             stripped="${stripped#*[[:space:]]}"
         fi
+        # shellcheck disable=SC2001  # sed needed: bash ${var#} only trims one char; extglob not guaranteed
         stripped=$(echo "$stripped" | sed 's/^[[:space:]]*//')
     done
 
@@ -251,6 +253,7 @@ analyze_single_command() {
 
     # Extract arguments (everything after command name)
     local args
+    # shellcheck disable=SC2001  # sed strips first word+spaces; bash ${var#word} can't match trailing spaces
     args=$(echo "$stripped" | sed "s|^[^[:space:]]*[[:space:]]*||")
 
     # Classify the command
@@ -281,8 +284,10 @@ analyze_substitutions() {
     # Extract $(...) content — simple approach for common cases
     # Handle nested parens by counting depth
     local remaining="$cmd"
+    # shellcheck disable=SC2016  # literal '$(' is intentional: testing for the string, not expanding it
     while [[ "$remaining" == *'$('* ]]; do
-        # Find the $( position
+        # Find the $( position — before is unused; after anchors the scan
+        # shellcheck disable=SC2034  # before unused by design: only after (the content post-opener) is needed
         local before="${remaining%%\$(*}"
         local after="${remaining#*\$(}"
 
@@ -316,6 +321,7 @@ analyze_substitutions() {
     # Handle backtick substitutions
     local bt_remaining="$cmd"
     while [[ "$bt_remaining" == *'`'* ]]; do
+        # shellcheck disable=SC2034  # bt_before unused by design: only bt_after is needed for content scan
         local bt_before="${bt_remaining%%\`*}"
         local bt_after="${bt_remaining#*\`}"
         if [[ "$bt_after" == *'`'* ]]; then
@@ -452,19 +458,28 @@ analyze_git() {
     subcmd=$(echo "$args" | sed -E 's/^(-[A-Za-z]\s+[^[:space:]]+\s+)*//; s/^(-[A-Za-z]+\s+)*//' | awk '{print $1}')
 
     # Check dangerous flags first (cross-cutting)
-    if echo "$args" | grep -qE '--force\b'; then
+    # @decision DEC-AUTOREVIEW-001
+    # @title POSIX-compatible flag detection for BSD grep portability
+    # @status accepted
+    # @rationale macOS BSD grep does not support \b in -E patterns (\b silently
+    #   returns non-zero, causing dangerous flags to be misclassified as safe).
+    #   Additionally, grep -qE '--force' passes --force as a grep option, not a
+    #   pattern, on BSD grep. Fix: use grep -qF (fixed-string) for long double-dash
+    #   flags — these are literal strings, no regex needed. Short flags (\s-f) use
+    #   grep -qE with ($|\s) anchor and a leading character to avoid the -- problem.
+    if echo "$args" | grep -qF -- '--force'; then
         set_risk "git $subcmd --force — force flag bypasses safety checks"
         return 1
     fi
-    if echo "$args" | grep -qE '--hard\b'; then
+    if echo "$args" | grep -qF -- '--hard'; then
         set_risk "git $subcmd --hard — discards uncommitted changes permanently"
         return 1
     fi
-    if echo "$args" | grep -qE '--no-verify\b'; then
+    if echo "$args" | grep -qF -- '--no-verify'; then
         set_risk "git $subcmd --no-verify — skips pre-commit/pre-push hooks"
         return 1
     fi
-    if echo "$args" | grep -qE '\s-f\b' && [[ "$subcmd" != "fetch" ]]; then
+    if echo "$args" | grep -qE '\s-f($|\s)' && [[ "$subcmd" != "fetch" ]]; then
         set_risk "git $subcmd -f — force flag bypasses safety checks"
         return 1
     fi
@@ -476,14 +491,14 @@ analyze_git() {
         rev-parse|rev-list|ls-files|ls-tree|ls-remote|name-rev|for-each-ref)
             return 0 ;;
         branch)
-            if echo "$args" | grep -qE '\s-[dD]\b'; then
+            if echo "$args" | grep -qE '\s-[dD]($|\s)'; then
                 set_risk "git branch -d/-D — deletes a branch"
                 return 1
             fi
             return 0
             ;;
         tag)
-            if echo "$args" | grep -qE '\s-[dafs]\b|--delete'; then
+            if echo "$args" | grep -qE '\s-[dafs]($|\s)|--delete'; then
                 set_risk "git tag create/delete — modifies repository tags"
                 return 1
             fi
@@ -617,7 +632,9 @@ analyze_docker() {
 
     case "$subcmd" in
         # Safe: read/inspect/build
-        build|ps|images|image|logs|inspect|version|info|top|stats|port|history|events|manifest)
+        # Note: 'image' is intentionally absent here — it belongs in the destructive branch below
+        # (docker image rm/prune are destructive; docker image ls/inspect are handled via subcommand check)
+        build|ps|images|logs|inspect|version|info|top|stats|port|history|events|manifest)
             return 0 ;;
         run|exec|create|start|compose)
             # Docker run/compose are generally safe for dev
@@ -726,11 +743,18 @@ analyze_curl() {
         set_risk "curl -X $method — sends data-modifying HTTP request"
         return 1
     fi
-    if echo "$args" | grep -qEi '(-d\b|--data\b|--data-raw\b|--data-binary\b|--data-urlencode\b)'; then
+    if echo "$args" | grep -qEi '(^|\s)-d($|\s)' || \
+       echo "$args" | grep -qFi -- '--data' || \
+       echo "$args" | grep -qFi -- '--data-raw' || \
+       echo "$args" | grep -qFi -- '--data-binary' || \
+       echo "$args" | grep -qFi -- '--data-urlencode'; then
         set_risk "curl with --data — sends POST data to remote server"
         return 1
     fi
-    if echo "$args" | grep -qEi '(--upload-file\b|-T\b|-F\b|--form\b)'; then
+    if echo "$args" | grep -qFi -- '--upload-file' || \
+       echo "$args" | grep -qEi '(^|\s)-T($|\s)' || \
+       echo "$args" | grep -qEi '(^|\s)-F($|\s)' || \
+       echo "$args" | grep -qFi -- '--form'; then
         set_risk "curl with file upload — sends local files to remote server"
         return 1
     fi
@@ -743,7 +767,7 @@ analyze_curl() {
 analyze_sed() {
     local args="$1"
 
-    if echo "$args" | grep -qE '(^|\s)-i\b|--in-place\b'; then
+    if echo "$args" | grep -qE '(^|\s)-i($|\s)' || echo "$args" | grep -qF -- '--in-place'; then
         set_risk "sed -i (in-place edit) — modifies files directly on disk"
         return 1
     fi
@@ -756,7 +780,7 @@ analyze_sed() {
 analyze_chmod() {
     local args="$1"
 
-    if echo "$args" | grep -qE '\b777\b'; then
+    if echo "$args" | grep -qE '(^|\s)777($|\s)'; then
         set_risk "chmod 777 — grants world-readable/writable/executable permissions"
         return 1
     fi
@@ -816,7 +840,7 @@ analyze_gh() {
         # Read operations
         issue|pr|release|repo|gist|project|run|workflow|api)
             # Most gh commands with view/list/status are safe
-            if echo "$args" | grep -qE '\b(view|list|status|diff|checks|ls|search|get)\b'; then
+            if echo "$args" | grep -qE '(^|\s)(view|list|status|diff|checks|ls|search|get)($|\s)'; then
                 return 0
             fi
             # gh api is safe for GET
@@ -828,15 +852,15 @@ analyze_gh() {
                 return 0
             fi
             # Standard dev workflow — constructive operations auto-approved
-            if echo "$args" | grep -qE '\b(create|edit|comment|close|reopen)\b'; then
+            if echo "$args" | grep -qE '(^|\s)(create|edit|comment|close|reopen)($|\s)'; then
                 return 0
             fi
             # Merge — Guardian handles formal approval; auto-approve here
-            if echo "$args" | grep -qE '\bmerge\b'; then
+            if echo "$args" | grep -qE '(^|\s)merge($|\s)'; then
                 return 0
             fi
             # Review is harder to undo — keep risky
-            if echo "$args" | grep -qE '\breview\b'; then
+            if echo "$args" | grep -qE '(^|\s)review($|\s)'; then
                 set_risk "gh $subcmd review — modifies GitHub review state"
                 return 1
             fi

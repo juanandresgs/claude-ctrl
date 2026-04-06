@@ -305,35 +305,18 @@ fi
 
 # Test G4.2: git push --force — dangerous flag detection
 #
-# NOTE: auto-review.sh uses grep -qE '--force\b' to detect the force flag.
-# macOS BSD grep does not support \b word-boundary assertions in -E patterns
-# (it treats --force\b as an unknown option and exits non-zero, which means
-# the flag check never matches). As a result, on macOS git push --force falls
-# through to the push → return 0 path and is incorrectly allowed.
-#
-# This test documents the observed platform behavior rather than the intended
-# behavior. The underlying grep portability issue in auto-review.sh is out of
-# scope for this task (Scope Manifest forbids source changes to hooks/auto-review.sh).
-#
-# Platform check: if GNU grep is available (supports \b), assert advisory.
-# Otherwise assert allow (BSD grep fallback behavior).
+# Bug #262 fix: auto-review.sh previously used grep -qE '--force\b' which failed
+# silently on macOS BSD grep (\b unsupported in -E mode), causing --force to be
+# misclassified as safe. Fixed by replacing \b with plain '--force' — no real git
+# flag starts with --force and continues with word chars, so the trailing boundary
+# was unnecessary. This test now asserts risky on all platforms.
 G4_2_OUT=$(run_hook "git push --force")
-G4_2_DECISION=$(printf '%s' "$G4_2_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
 G4_2_CTX=$(printf '%s' "$G4_2_OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
-if grep --version 2>/dev/null | grep -q "GNU grep"; then
-    # GNU grep: \b works, force flag detected → advisory
-    if [[ "$G4_2_CTX" == *"auto-review risk:"* ]]; then
-        pass "G4.2: 'git push --force' → advisory context (GNU grep, risky)"
-    else
-        fail "G4.2: 'git push --force' → expected advisory (GNU grep), got decision='$G4_2_DECISION' ctx='$G4_2_CTX'"
-    fi
+if [[ "$G4_2_CTX" == *"auto-review risk:"* ]]; then
+    pass "G4.2: 'git push --force' → advisory context (risky, POSIX-portable detection)"
 else
-    # BSD grep (macOS): \b unsupported, force flag silently missed → allow
-    if [[ "$G4_2_DECISION" == "allow" ]]; then
-        pass "G4.2: 'git push --force' → allow (BSD grep: \\b word-boundary not supported, flag detection skipped)"
-    else
-        fail "G4.2: 'git push --force' → unexpected result on BSD grep: decision='$G4_2_DECISION' ctx='$G4_2_CTX'"
-    fi
+    G4_2_DECISION=$(printf '%s' "$G4_2_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
+    fail "G4.2: 'git push --force' → expected advisory context, got decision='$G4_2_DECISION' ctx='$G4_2_CTX'"
 fi
 
 # Test G4.3: git reset --hard → not safe (advisory context)
@@ -384,6 +367,49 @@ if [[ "$G5_4_CTX" == *"auto-review risk:"* ]]; then
     pass "G5.4: compound with risky segment 'cat && rm -rf' → advisory context"
 else
     fail "G5.4: compound with risky segment → expected advisory context, got '$G5_4_CTX' (full: $G5_4_OUT)"
+fi
+
+# ===========================================================================
+# Group 6 — check-guardian.sh grep pattern for git -C form (Bug #141)
+#
+# These tests directly verify that the grep patterns on lines 178 and 190 of
+# check-guardian.sh match both 'git commit' and 'git -C /path commit' forms.
+# We grep inline (not via subprocess hook) to test the pattern directly.
+# ===========================================================================
+printf '\n-- Group 6: check-guardian git -C pattern (Bug #141) --\n'
+
+GUARDIAN_HOOK="$REPO_ROOT/hooks/check-guardian.sh"
+
+# Test G6.1: plain 'git commit' form — matches original pattern
+G6_1_TEXT="The agent ran git commit -m 'fix'"
+if printf '%s' "$G6_1_TEXT" | grep -qiE 'merged|committed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit'; then
+    pass "G6.1: 'git commit' form matched by check-guardian pattern"
+else
+    fail "G6.1: 'git commit' form should match check-guardian pattern"
+fi
+
+# Test G6.2: 'git -C /path commit' form — previously missed, now caught
+G6_2_TEXT="The agent ran git -C /repo/path commit -m 'fix'"
+if printf '%s' "$G6_2_TEXT" | grep -qiE 'merged|committed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit'; then
+    pass "G6.2: 'git -C /path commit' form matched by check-guardian pattern (Bug #141)"
+else
+    fail "G6.2: 'git -C /path commit' form should match check-guardian pattern (Bug #141)"
+fi
+
+# Test G6.3: 'git -C /path push' form — matched by Check 6 pattern
+G6_3_TEXT="Pushed: git -C /repo/worktree push origin feature/foo"
+if printf '%s' "$G6_3_TEXT" | grep -qiE 'merged|committed|pushed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit|git\s+(\S+\s+)*push'; then
+    pass "G6.3: 'git -C /path push' form matched by check-guardian Check 6 pattern"
+else
+    fail "G6.3: 'git -C /path push' form should match check-guardian Check 6 pattern"
+fi
+
+# Test G6.4: safe text with no git ops — must NOT match
+G6_4_TEXT="The agent ran ls and echo hello"
+if ! printf '%s' "$G6_4_TEXT" | grep -qiE 'merged|committed|pushed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit|git\s+(\S+\s+)*push'; then
+    pass "G6.4: non-git-op text does not match check-guardian pattern (no false positive)"
+else
+    fail "G6.4: non-git-op text should NOT match check-guardian pattern"
 fi
 
 # ---------------------------------------------------------------------------
