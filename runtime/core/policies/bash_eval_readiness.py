@@ -35,7 +35,6 @@ from typing import Optional
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
-    extract_git_target_dir,
     extract_merge_ref,
     sanitize_token,
 )
@@ -106,10 +105,14 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     # Determine target dir.
-    if _COMMIT_RE.search(command):
-        target_dir = extract_git_target_dir(command, request.cwd or "")
-    else:
-        target_dir = request.context.project_root or request.cwd or ""
+    # Fix #175: on the commit path, use the project_root already resolved by
+    # cli.py (_handle_evaluate) from target_cwd. Re-parsing the raw command
+    # with extract_git_target_dir() was the workaround for the missing
+    # effective_cwd propagation; now that request.cwd IS the effective target
+    # directory, context.project_root (resolved from it) is authoritative.
+    # The merge path is unchanged — it uses extract_merge_ref() for merge
+    # semantics and project_root/cwd for the directory.
+    target_dir = request.context.project_root or request.cwd or ""
 
     workflow_id = _resolve_workflow_id(request, command, target_dir)
 

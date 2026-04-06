@@ -25,7 +25,6 @@ import subprocess
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import extract_git_target_dir
 
 _COMMIT_RE = __import__("re").compile(r"\bgit\b.*\bcommit\b")
 
@@ -85,7 +84,13 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if request.context.is_meta_repo:
         return None
 
-    target_dir = extract_git_target_dir(command, request.cwd or "")
+    # Fix #175: use the project_root already resolved by cli.py (_handle_evaluate)
+    # from target_cwd, rather than re-parsing the raw command with
+    # extract_git_target_dir(). Re-parsing fails on unexpanded shell variables
+    # and is redundant now that effective_cwd flows through to PolicyRequest.cwd.
+    # _merge_head_exists() needs the repo root (.git/ lives there), which is
+    # exactly what context.project_root provides.
+    target_dir = request.context.project_root or request.cwd or ""
     if not target_dir:
         return None
 

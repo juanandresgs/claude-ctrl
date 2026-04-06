@@ -988,11 +988,21 @@ def _handle_evaluate(args) -> int:
 
         resolved_project_root = _normalize_path(resolved_project_root)
 
+    # Fix #175: effective_cwd is the directory policies should treat as "current
+    # working directory". When the command targets a repo other than the session
+    # cwd (target_cwd was resolved to a project root), use target_cwd so that
+    # policies receiving request.cwd see the target repo's path, not the session
+    # path. This eliminates the workaround in bash_main_sacred, bash_eval_readiness,
+    # and bash_workflow_scope that re-parsed the raw command with
+    # extract_git_target_dir() — those policies now use request.context.project_root
+    # or request.cwd and get the right directory without re-parsing.
+    effective_cwd = target_cwd if resolved_project_root else cwd
+
     conn = _get_conn()
     try:
         ctx = policy_engine_mod.build_context(
             conn,
-            cwd=target_cwd if resolved_project_root else cwd,
+            cwd=effective_cwd,
             actor_role=actor_role,
             actor_id=actor_id,
             project_root=resolved_project_root,
@@ -1003,7 +1013,7 @@ def _handle_evaluate(args) -> int:
             tool_name=tool_name,
             tool_input=tool_input,
             context=ctx,
-            cwd=cwd,
+            cwd=effective_cwd,
         )
 
         decision = policy_engine_mod.default_registry().evaluate(request)
