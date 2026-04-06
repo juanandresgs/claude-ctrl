@@ -21,7 +21,6 @@ Tests verify:
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -32,7 +31,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib.render import ProviderResult, render_json
+from lib.render import ProviderResult, render_json  # noqa: E402
 
 
 class TestWarnings(unittest.TestCase):
@@ -324,9 +323,9 @@ if failed:
         with open(openai_path) as f:
             content = f.read()
 
-        # Verify incomplete terminal state
+        # Verify incomplete terminal state (check key fragments; formatter may split the call)
         self.assertIn('status == "incomplete"', content)
-        self.assertIn('raise ProviderAPIError("openai", 0, "returned incomplete', content)
+        self.assertIn('"returned incomplete', content)
 
         # Verify cancelled terminal state
         self.assertIn('status == "cancelled"', content)

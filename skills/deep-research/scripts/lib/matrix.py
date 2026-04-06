@@ -46,7 +46,7 @@ this decision: 'exact', 'heading-fuzzy', 'unmatched'.
 """
 
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Word count threshold separating 'detailed' from 'mentioned' coverage.
@@ -56,24 +56,107 @@ DETAILED_WORD_THRESHOLD = 100
 FUZZY_MATCH_THRESHOLD = 0.60
 
 # English stop words excluded from body keyword extraction.
-STOP_WORDS = frozenset({
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
-    "should", "may", "might", "can", "could", "must", "to", "of", "in",
-    "for", "on", "with", "at", "by", "from", "as", "into", "through",
-    "during", "before", "after", "above", "below", "between", "but", "and",
-    "or", "nor", "not", "no", "so", "if", "then", "than", "that", "this",
-    "these", "those", "it", "its", "they", "them", "their", "he", "she",
-    "we", "you", "who", "which", "what", "when", "where", "how", "also",
-    "very", "more", "most", "other", "some", "such", "only", "same",
-    "just", "about", "each", "all", "both", "few", "many", "much", "any",
-    "own",
-})
+STOP_WORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "can",
+        "could",
+        "must",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "but",
+        "and",
+        "or",
+        "nor",
+        "not",
+        "no",
+        "so",
+        "if",
+        "then",
+        "than",
+        "that",
+        "this",
+        "these",
+        "those",
+        "it",
+        "its",
+        "they",
+        "them",
+        "their",
+        "he",
+        "she",
+        "we",
+        "you",
+        "who",
+        "which",
+        "what",
+        "when",
+        "where",
+        "how",
+        "also",
+        "very",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "only",
+        "same",
+        "just",
+        "about",
+        "each",
+        "all",
+        "both",
+        "few",
+        "many",
+        "much",
+        "any",
+        "own",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Topic:
@@ -88,6 +171,7 @@ class Topic:
         citations_in_section: Number of URLs found in the section body.
         body_keywords: Significant keywords from section body (stop-word filtered).
     """
+
     heading: str
     raw_heading: str
     level: int
@@ -110,6 +194,7 @@ class MatchedTopic:
             'heading-fuzzy' — heading Jaccard >= 0.60.
             'unmatched'     — topic found in only one provider; no match found.
     """
+
     canonical_name: str
     coverage: Dict[str, str]  # {provider: 'detailed'|'mentioned'|'absent'}
     agreement_level: str
@@ -129,6 +214,7 @@ class ComparisonMatrix:
             Each entry: {"provider": str, "heading": str, "top_keywords": [str]}.
             Used by the LLM synthesis step to identify potential manual merges.
     """
+
     topics: List[MatchedTopic]
     providers: List[str]
     citation_overlap: Dict[str, List[str]]
@@ -176,6 +262,7 @@ class ComparisonMatrix:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_body_keywords(text: str) -> Set[str]:
     """Extract significant keywords from section body text.
 
@@ -191,7 +278,7 @@ def _extract_body_keywords(text: str) -> Set[str]:
     """
     words: Set[str] = set()
     for word in text.lower().split():
-        cleaned = re.sub(r'[^a-z0-9]', '', word)
+        cleaned = re.sub(r"[^a-z0-9]", "", word)
         if cleaned and len(cleaned) > 1 and cleaned not in STOP_WORDS:
             words.add(cleaned)
     return words
@@ -325,15 +412,17 @@ def extract_topics(report: str) -> List[Topic]:
         coverage = "detailed" if word_count >= DETAILED_WORD_THRESHOLD else "mentioned"
         citation_count = _count_urls(body)
 
-        topics.append(Topic(
-            heading=heading,
-            raw_heading=raw_heading,
-            level=level,
-            word_count=word_count,
-            coverage=coverage,
-            citations_in_section=citation_count,
-            body_keywords=_extract_body_keywords(body),
-        ))
+        topics.append(
+            Topic(
+                heading=heading,
+                raw_heading=raw_heading,
+                level=level,
+                word_count=word_count,
+                coverage=coverage,
+                citations_in_section=citation_count,
+                body_keywords=_extract_body_keywords(body),
+            )
+        )
 
     return topics
 
@@ -341,6 +430,7 @@ def extract_topics(report: str) -> List[Topic]:
 # ---------------------------------------------------------------------------
 # Cross-provider matching
 # ---------------------------------------------------------------------------
+
 
 def _best_match(
     needle: Topic,
@@ -441,10 +531,12 @@ def match_topics(
                         if cluster_match_method == "unmatched":
                             cluster_match_method = "heading-fuzzy"
 
-            clusters.append({
-                "topics": cluster_topics,
-                "match_method": cluster_match_method,
-            })
+            clusters.append(
+                {
+                    "topics": cluster_topics,
+                    "match_method": cluster_match_method,
+                }
+            )
 
     # -----------------------------------------------------------------------
     # Convert clusters to MatchedTopic instances.
@@ -479,17 +571,17 @@ def match_topics(
         elif present_count >= 2:
             agreement = "majority"
         else:
-            only_provider = next(
-                p for p, v in coverage.items() if v != "absent"
-            )
+            only_provider = next(p for p, v in coverage.items() if v != "absent")
             agreement = f"unique-{only_provider}"
 
-        matched.append(MatchedTopic(
-            canonical_name=canonical,
-            coverage=coverage,
-            agreement_level=agreement,
-            match_method=match_method,
-        ))
+        matched.append(
+            MatchedTopic(
+                canonical_name=canonical,
+                coverage=coverage,
+                agreement_level=agreement,
+                match_method=match_method,
+            )
+        )
 
     return matched
 
@@ -498,15 +590,25 @@ def match_topics(
 # Citation overlap
 # ---------------------------------------------------------------------------
 
+
 def _extract_urls(citations: List[Any]) -> Set[str]:
     """Extract normalized URL strings from a citations list.
 
-    Handles both dict citations ({"url": "..."}) and bare URL strings.
+    Handles both dict citations and bare URL strings.
+
+    For dict citations, ``resolved_url`` is preferred over ``url`` when
+    present and non-empty.  The ``--validate`` flow (validate_citations)
+    follows Gemini grounding redirects and stores the final destination
+    under ``resolved_url``.  Using ``resolved_url`` ensures that a Gemini
+    citation and an OpenAI/Perplexity citation to the same page are counted
+    as overlapping rather than distinct URLs.
     """
     urls: Set[str] = set()
     for citation in citations:
         if isinstance(citation, dict):
-            url = citation.get("url", "")
+            # Prefer resolved_url (set by validate_citations for Gemini redirects);
+            # fall back to url when resolved_url is absent or empty.
+            url = citation.get("resolved_url") or citation.get("url", "")
             if url:
                 urls.add(url.strip())
         elif isinstance(citation, str):
@@ -551,6 +653,7 @@ def _compute_citation_overlap(
 # ---------------------------------------------------------------------------
 # Matrix builder
 # ---------------------------------------------------------------------------
+
 
 def build_matrix(results: list) -> ComparisonMatrix:
     """Build a ComparisonMatrix from a list of ProviderResult instances.
@@ -636,11 +739,13 @@ def build_matrix(results: list) -> ComparisonMatrix:
         if topic_obj is not None and topic_obj.body_keywords:
             keywords = sorted(topic_obj.body_keywords)[:20]
 
-        unmatched_hints.append({
-            "provider": owning_provider,
-            "heading": t.canonical_name,
-            "top_keywords": keywords,
-        })
+        unmatched_hints.append(
+            {
+                "provider": owning_provider,
+                "heading": t.canonical_name,
+                "top_keywords": keywords,
+            }
+        )
 
     return ComparisonMatrix(
         topics=matched,
