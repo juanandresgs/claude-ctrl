@@ -378,6 +378,7 @@ fi
 # ===========================================================================
 printf '\n-- Group 6: check-guardian git -C pattern (Bug #141) --\n'
 
+# shellcheck disable=SC2034  # GUARDIAN_HOOK reserved for future direct-invoke tests
 GUARDIAN_HOOK="$REPO_ROOT/hooks/check-guardian.sh"
 
 # Test G6.1: plain 'git commit' form — matches original pattern
@@ -410,6 +411,133 @@ if ! printf '%s' "$G6_4_TEXT" | grep -qiE 'merged|committed|pushed|git\s+(\S+\s+
     pass "G6.4: non-git-op text does not match check-guardian pattern (no false positive)"
 else
     fail "G6.4: non-git-op text should NOT match check-guardian pattern"
+fi
+
+
+# ===========================================================================
+# Group 7 — classify_git_op (Fix #175: BSD grep \b patterns)
+#
+# classify_git_op lives in hooks/context-lib.sh. It previously used \b
+# word-boundary assertions that silently failed on macOS BSD grep, causing
+# all git ops to fall through to "unclassified". Fix #175 replaced \b with
+# explicit POSIX ERE anchors: (^|\s)git(\s.*\s|\s)(subcommand)(\s|$).
+#
+# These tests source only classify_git_op (extracted via awk, no runtime deps)
+# and verify the classification result on macOS BSD grep.
+# ===========================================================================
+printf '\n-- Group 7: classify_git_op BSD-grep compatibility (Fix #175) --\n'
+
+CONTEXT_LIB="$REPO_ROOT/hooks/context-lib.sh"
+CTX_STUB="$TMP_DIR/ctx_funcs.sh"
+
+# Extract just classify_git_op from context-lib.sh — stops at closing brace
+awk '
+    /^classify_git_op\(\)/ { in_func=1 }
+    in_func { print }
+    in_func && /^\}$/ { in_func=0 }
+' "$CONTEXT_LIB" > "$CTX_STUB"
+
+# Prepend minimal header (no runtime deps needed — classify_git_op is pure)
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    cat "$CTX_STUB"
+} > "$TMP_DIR/ctx_with_header.sh"
+mv "$TMP_DIR/ctx_with_header.sh" "$CTX_STUB"
+
+# shellcheck disable=SC1090
+source "$CTX_STUB"
+
+# Test G7.1: plain 'git commit -m test' → routine_local
+G7_1_RESULT=$(classify_git_op "git commit -m test")
+if [[ "$G7_1_RESULT" == "routine_local" ]]; then
+    pass "G7.1: 'git commit -m test' → routine_local (got '$G7_1_RESULT')"
+else
+    fail "G7.1: 'git commit -m test' → expected routine_local, got '$G7_1_RESULT'"
+fi
+
+# Test G7.2: 'git -C /path commit -m test' → routine_local (handles -C form)
+G7_2_RESULT=$(classify_git_op "git -C /repo/path commit -m test")
+if [[ "$G7_2_RESULT" == "routine_local" ]]; then
+    pass "G7.2: 'git -C /path commit -m test' → routine_local (got '$G7_2_RESULT')"
+else
+    fail "G7.2: 'git -C /path commit -m test' → expected routine_local, got '$G7_2_RESULT'"
+fi
+
+# Test G7.3: 'git push origin main' → high_risk
+G7_3_RESULT=$(classify_git_op "git push origin main")
+if [[ "$G7_3_RESULT" == "high_risk" ]]; then
+    pass "G7.3: 'git push origin main' → high_risk (got '$G7_3_RESULT')"
+else
+    fail "G7.3: 'git push origin main' → expected high_risk, got '$G7_3_RESULT'"
+fi
+
+# Test G7.4: 'git merge --abort' → admin_recovery
+G7_4_RESULT=$(classify_git_op "git merge --abort")
+if [[ "$G7_4_RESULT" == "high_risk" || "$G7_4_RESULT" == "admin_recovery" ]]; then
+    if [[ "$G7_4_RESULT" == "admin_recovery" ]]; then
+        pass "G7.4: 'git merge --abort' → admin_recovery (got '$G7_4_RESULT')"
+    else
+        fail "G7.4: 'git merge --abort' → expected admin_recovery, got '$G7_4_RESULT'"
+    fi
+else
+    fail "G7.4: 'git merge --abort' → expected admin_recovery, got '$G7_4_RESULT'"
+fi
+
+# Test G7.5: 'git reset --merge' → admin_recovery
+G7_5_RESULT=$(classify_git_op "git reset --merge")
+if [[ "$G7_5_RESULT" == "admin_recovery" ]]; then
+    pass "G7.5: 'git reset --merge' → admin_recovery (got '$G7_5_RESULT')"
+else
+    fail "G7.5: 'git reset --merge' → expected admin_recovery, got '$G7_5_RESULT'"
+fi
+
+# Test G7.6: 'git rebase origin/main' → high_risk
+G7_6_RESULT=$(classify_git_op "git rebase origin/main")
+if [[ "$G7_6_RESULT" == "high_risk" ]]; then
+    pass "G7.6: 'git rebase origin/main' → high_risk (got '$G7_6_RESULT')"
+else
+    fail "G7.6: 'git rebase origin/main' → expected high_risk, got '$G7_6_RESULT'"
+fi
+
+# Test G7.7: 'git reset --hard HEAD~1' → high_risk (reset, not admin_recovery)
+G7_7_RESULT=$(classify_git_op "git reset --hard HEAD~1")
+if [[ "$G7_7_RESULT" == "high_risk" ]]; then
+    pass "G7.7: 'git reset --hard HEAD~1' → high_risk (got '$G7_7_RESULT')"
+else
+    fail "G7.7: 'git reset --hard HEAD~1' → expected high_risk, got '$G7_7_RESULT'"
+fi
+
+# Test G7.8: 'ls -la' → unclassified (no git op)
+G7_8_RESULT=$(classify_git_op "ls -la")
+if [[ "$G7_8_RESULT" == "unclassified" ]]; then
+    pass "G7.8: 'ls -la' → unclassified (got '$G7_8_RESULT')"
+else
+    fail "G7.8: 'ls -la' → expected unclassified, got '$G7_8_RESULT'"
+fi
+
+# Test G7.9: 'git log --oneline' → unclassified (read-only git op)
+G7_9_RESULT=$(classify_git_op "git log --oneline")
+if [[ "$G7_9_RESULT" == "unclassified" ]]; then
+    pass "G7.9: 'git log --oneline' → unclassified (got '$G7_9_RESULT')"
+else
+    fail "G7.9: 'git log --oneline' → expected unclassified, got '$G7_9_RESULT'"
+fi
+
+# Test G7.10: 'git merge --no-ff feature/foo' → high_risk (non-ff merge)
+G7_10_RESULT=$(classify_git_op "git merge --no-ff feature/foo")
+if [[ "$G7_10_RESULT" == "high_risk" ]]; then
+    pass "G7.10: 'git merge --no-ff feature/foo' → high_risk (got '$G7_10_RESULT')"
+else
+    fail "G7.10: 'git merge --no-ff feature/foo' → expected high_risk, got '$G7_10_RESULT'"
+fi
+
+# Test G7.11: compound interaction — 'git -C /repo rebase' → high_risk (-C form)
+G7_11_RESULT=$(classify_git_op "git -C /repo rebase origin/main")
+if [[ "$G7_11_RESULT" == "high_risk" ]]; then
+    pass "G7.11: 'git -C /repo rebase' → high_risk (got '$G7_11_RESULT')"
+else
+    fail "G7.11: 'git -C /repo rebase' → expected high_risk, got '$G7_11_RESULT'"
 fi
 
 # ---------------------------------------------------------------------------

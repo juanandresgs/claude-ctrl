@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
+# SC2034: Variables set by get_git_state, get_plan_status, get_session_changes,
+# and get_research_status are intentional "output variable" pattern — they are
+# set by functions and consumed by callers that source this library. shellcheck
+# cannot see cross-file use. Disabling file-wide rather than per-line to reduce
+# noise on a pattern that is architecturally deliberate and documented below.
 # Shared context-building library for Claude Code hooks.
 # Source this file from hooks that need project context:
 #   source "$(dirname "$0")/context-lib.sh"
@@ -516,21 +522,37 @@ lease_context() {
 #   routine_local:  commit, merge
 #   unclassified:   everything else
 classify_git_op() {
+    # @decision DEC-CTXLIB-001
+    # @title POSIX-compatible word boundaries in classify_git_op
+    # @status accepted
+    # @rationale BSD grep (macOS) does not support \b word-boundary assertions in
+    #   ERE mode. The original \bgit\b patterns silently failed on macOS, causing
+    #   every git op to fall through to "unclassified". Replaced with explicit
+    #   POSIX ERE anchors.
+    #
+    #   Pattern structure: (^|\s)git(\s.*\s|\s)(subcommand)(\s|$)
+    #   - (^|\s)git  : git at start of string or after whitespace
+    #   - (\s.*\s|\s): either one-or-more args+spaces between git and subcommand
+    #                  (e.g. "git -C /path commit") or a single space (e.g. "git commit")
+    #   - (subcommand)(\s|$): subcommand followed by space or end of string
+    #
+    #   Matches both "git commit" and "git -C /path commit" forms.
+    #   Verified against macOS BSD grep (ERE, no \b support).
     local cmd="$1"
     # Admin recovery: merge --abort (governed recovery, not a landing op)
-    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--abort'; then echo "admin_recovery"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)merge(\s|$).*--abort'; then echo "admin_recovery"; return; fi
     # Admin recovery: reset --merge (backed-out merge recovery)
-    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b.*--merge'; then echo "admin_recovery"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)reset(\s|$).*--merge'; then echo "admin_recovery"; return; fi
     # High-risk: push (any form)
-    if echo "$cmd" | grep -qE '\bgit\b.*\bpush\b'; then echo "high_risk"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)push(\s|$)'; then echo "high_risk"; return; fi
     # High-risk: rebase
-    if echo "$cmd" | grep -qE '\bgit\b.*\brebase\b'; then echo "high_risk"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)rebase(\s|$)'; then echo "high_risk"; return; fi
     # High-risk: reset (any form not already caught by admin_recovery above)
-    if echo "$cmd" | grep -qE '\bgit\b.*\breset\b'; then echo "high_risk"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)reset(\s|$)'; then echo "high_risk"; return; fi
     # High-risk: non-ff merge (explicit --no-ff)
-    if echo "$cmd" | grep -qE '\bgit\b.*\bmerge\b.*--no-ff'; then echo "high_risk"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)merge(\s|$).*--no-ff'; then echo "high_risk"; return; fi
     # Routine local: commit or merge (local-only, no --no-ff)
-    if echo "$cmd" | grep -qE '\bgit\b.*\b(commit|merge)\b'; then echo "routine_local"; return; fi
+    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)(commit|merge)(\s|$)'; then echo "routine_local"; return; fi
     # Default: unclassified (git log, git status, git diff, etc.)
     echo "unclassified"
 }

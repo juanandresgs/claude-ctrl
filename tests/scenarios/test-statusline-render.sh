@@ -31,6 +31,7 @@ TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/state.db"
 GIT_DIR="$TMP_DIR/project"
 
+# shellcheck disable=SC2329  # cleanup is invoked via trap EXIT
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -53,24 +54,47 @@ policy() {
 # Helper: run statusline.sh with runtime pointed at repo runtime dir and the
 # test DB. Pipes synthetic stdin JSON exactly as Claude Code does.
 # ---------------------------------------------------------------------------
+# Fix #160: stderr is captured to a temp file rather than suppressed. If the
+# script exits non-zero, stderr is forwarded to our stderr so crash diagnostics
+# are visible. stdout (the HUD) is kept clean for segment assertions.
 run_statusline() {
-    echo "$STDIN_JSON" | \
+    local _sl_stderr_file _sl_output _sl_exit
+    _sl_stderr_file=$(mktemp)
+    _sl_output=$(echo "$STDIN_JSON" | \
     CLAUDE_RUNTIME_ROOT="$REPO_ROOT/runtime" \
     CLAUDE_POLICY_DB="$TEST_DB" \
     CLAUDE_PROJECT_DIR="$GIT_DIR" \
-        bash "$SCRIPT" 2>/dev/null
+        bash "$SCRIPT" 2>"$_sl_stderr_file")
+    _sl_exit=$?
+    if [[ $_sl_exit -ne 0 ]]; then
+        printf '  WARN: statusline exited %d, stderr: %s\n' "$_sl_exit" "$(cat "$_sl_stderr_file")" >&2
+    fi
+    rm -f "$_sl_stderr_file"
+    printf '%s' "$_sl_output"
+    return $_sl_exit
 }
 
 # ---------------------------------------------------------------------------
 # Helper: run statusline.sh with a broken runtime root so it falls back.
 # Still pipes stdin JSON — the fallback path also reads it for model/version.
 # ---------------------------------------------------------------------------
+# Fix #160: same stderr capture pattern — broken runtime may emit diagnostics
+# that were previously invisible. The fallback path is expected to exit 0.
 run_statusline_fallback() {
-    echo "$STDIN_JSON" | \
+    local _slb_stderr_file _slb_output _slb_exit
+    _slb_stderr_file=$(mktemp)
+    _slb_output=$(echo "$STDIN_JSON" | \
     CLAUDE_RUNTIME_ROOT="/nonexistent-path-$$" \
     CLAUDE_POLICY_DB="/nonexistent-db-$$" \
     CLAUDE_PROJECT_DIR="$GIT_DIR" \
-        bash "$SCRIPT" 2>/dev/null
+        bash "$SCRIPT" 2>"$_slb_stderr_file")
+    _slb_exit=$?
+    if [[ $_slb_exit -ne 0 ]]; then
+        printf '  WARN: statusline_fallback exited %d, stderr: %s\n' "$_slb_exit" "$(cat "$_slb_stderr_file")" >&2
+    fi
+    rm -f "$_slb_stderr_file"
+    printf '%s' "$_slb_output"
+    return $_slb_exit
 }
 
 # ---------------------------------------------------------------------------
@@ -98,6 +122,11 @@ echo ""
 echo "-- 1: runtime path — output has ANSI escape codes"
 
 output=$(run_statusline)
+_t1_exit=$?
+if [[ $_t1_exit -ne 0 ]]; then
+    echo "  FAIL: statusline exited non-zero ($_t1_exit) — check stderr output above"
+    FAILURES=$((FAILURES + 1))
+fi
 # ANSI escapes are literal ESC bytes; check via printf comparison
 if printf '%s' "$output" | grep -qP '\x1b\[' 2>/dev/null || \
    printf '%s' "$output" | grep -q $'\033\['; then
