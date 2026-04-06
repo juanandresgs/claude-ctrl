@@ -26,9 +26,9 @@ TEST_NAME="test-marker-lifecycle"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/state.db"
-RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
-CLI="$RUNTIME_ROOT/cli.py"
+CLI="$REPO_ROOT/runtime/cli.py"
 
+# shellcheck disable=SC2329  # invoked via trap EXIT
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
