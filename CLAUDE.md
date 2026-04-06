@@ -104,6 +104,20 @@ This context is what prevents parallel mechanisms. Without it, every implementer
 
 If you cannot prove where the work landed, what exact head SHA was evaluated, and whether the test suite completed in isolation, you must report uncertainty instead of completion. Confident prose is not a substitute for verifiable state.
 
+### Auto-Dispatch
+
+When a SubagentStop hook output contains `AUTO_DISPATCH: <role>`, dispatch that agent immediately without asking the user. The dispatch engine has already verified the transition is safe (no errors, no interruption, clear next_role).
+
+**Do not ask permission for auto-dispatch transitions.** The canonical flow (planner → implementer → tester → guardian) should chain automatically. After each role completes, read the hook output and act on `AUTO_DISPATCH:` directives immediately.
+
+**Stop the chain only when:**
+- Hook output contains `BLOCKED`, `ERROR`, or `PROCESS ERROR`
+- The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
+- Guardian needs user approval for high-risk ops (push, rebase, force) — these are gated by `bash_approval_gate` policy, not by the orchestrator
+- Codex stop-review gate returns `VERDICT: BLOCK` (when enabled)
+
+**After the chain completes** (guardian terminal state or error), report what each role did so the user sees the outcome.
+
 ### Simple Task Fast Path
 Skip planner only when ALL hold:
 - task is docs/config/non-source only

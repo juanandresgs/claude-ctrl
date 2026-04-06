@@ -60,6 +60,7 @@
     "ask": [],
     "defaultMode": "bypassPermissions"
   },
+  "model": "opus[1m]",
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "context7"
@@ -315,19 +316,27 @@
     "type": "command",
     "command": "$HOME/.claude/scripts/statusline.sh"
   },
+  "enabledPlugins": {
+    "codex@openai-codex": true
+  },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
       }
+    },
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
     }
   },
-  "effortLevel": "high",
   "autoUpdatesChannel": "latest",
   "skipDangerousModePermissionPrompt": true,
   "installation": {
     "method": "native"
   },
-  "model": "opus[1m]"
+  "effortLevel": "high"
 }
