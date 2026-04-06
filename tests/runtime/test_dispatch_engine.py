@@ -442,3 +442,202 @@ def test_full_tester_to_guardian_production_sequence(conn, project_root):
     # eval state should not exist unless pre-existing
     eval_state = evaluation.get(conn, wf_id)
     assert eval_state is None or eval_state["status"] != "pending"
+
+
+# ---------------------------------------------------------------------------
+# W-AD-1: auto_dispatch field and suggestion prefix
+# ---------------------------------------------------------------------------
+# @decision DEC-AD-001
+# Title: auto_dispatch field in process_agent_stop result
+# Status: accepted
+# Rationale: The dispatch pipeline computes next_role correctly but the
+#   orchestrator asks the user for permission at every handoff. The auto_dispatch
+#   bool field distinguishes "auto-dispatch this" from "suggestion, check with
+#   user". It is True for clear, unblocked, non-terminal transitions and False
+#   for interrupted, errored, or terminal states. When True, the suggestion is
+#   prefixed with "AUTO_DISPATCH: <role>\n" so the orchestrator can parse it
+#   without additional signaling. This implements W-AD-1 (issue #13).
+# ---------------------------------------------------------------------------
+
+
+def test_planner_stop_auto_dispatch(conn, project_root):
+    """Planner stop → auto_dispatch=True, next_role=implementer."""
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+
+
+def test_implementer_stop_auto_dispatch(conn, project_root):
+    """Implementer stop (no interruption, valid contract) → auto_dispatch=True."""
+    wf_id = "wf-ad-impl-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "tester"
+    assert result["error"] is None
+
+
+def test_implementer_stop_interrupted_no_auto_dispatch(conn, project_root):
+    """Implementer stop with IMPL_STATUS=partial (interrupted) → auto_dispatch=False."""
+    wf_id = "wf-ad-impl-002"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    # partial verdict → is_interrupted = True via contract override
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="partial")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["auto_dispatch"] is False
+    assert result["next_role"] == "tester"  # routing unchanged
+
+
+def test_tester_ready_for_guardian_auto_dispatch(conn, project_root):
+    """Tester stop (ready_for_guardian) → auto_dispatch=True, next_role=guardian."""
+    wf_id = "wf-ad-tester-001"
+    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    _submit_valid_tester_completion(conn, lease["lease_id"], wf_id)
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "guardian"
+    assert result["error"] is None
+
+
+def test_tester_needs_changes_auto_dispatch(conn, project_root):
+    """Tester stop (needs_changes) → auto_dispatch=True, next_role=implementer."""
+    wf_id = "wf-ad-tester-002"
+    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "needs_changes",
+            "EVAL_TESTS_PASS": "no",
+            "EVAL_NEXT_ROLE": "implementer",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+
+
+def test_tester_blocked_by_plan_auto_dispatch(conn, project_root):
+    """Tester stop (blocked_by_plan) → auto_dispatch=True, next_role=planner."""
+    wf_id = "wf-ad-tester-003"
+    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "blocked_by_plan",
+            "EVAL_TESTS_PASS": "no",
+            "EVAL_NEXT_ROLE": "planner",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "planner"
+    assert result["error"] is None
+
+
+def test_guardian_committed_no_auto_dispatch(conn, project_root):
+    """Guardian stop (committed) → auto_dispatch=False (terminal, next_role=None)."""
+    wf_id = "wf-ad-guardian-001"
+    lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="committed")
+    result = process_agent_stop(conn, "guardian", project_root)
+    assert result["auto_dispatch"] is False
+    assert not result["next_role"]  # None or empty → terminal
+    assert result["error"] is None
+
+
+def test_guardian_denied_auto_dispatch(conn, project_root):
+    """Guardian stop (denied) → auto_dispatch=True, next_role=implementer."""
+    wf_id = "wf-ad-guardian-002"
+    lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="denied")
+    result = process_agent_stop(conn, "guardian", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+
+
+def test_error_no_auto_dispatch(conn, project_root):
+    """Routing error (no lease for tester) → auto_dispatch=False."""
+    # No lease → PROCESS ERROR for tester
+    result = process_agent_stop(conn, "tester", project_root)
+    assert result["auto_dispatch"] is False
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+
+
+def test_suggestion_auto_dispatch_prefix(conn, project_root):
+    """When auto_dispatch=True, suggestion starts with 'AUTO_DISPATCH: '."""
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["suggestion"].startswith("AUTO_DISPATCH: ")
+
+
+def test_suggestion_canonical_prefix_when_false(conn, project_root):
+    """When auto_dispatch=False and non-terminal (interrupted impl), suggestion format unchanged.
+
+    For the interrupted implementer case: auto_dispatch=False and next_role=tester,
+    so the suggestion should start with 'Canonical flow suggests' (not AUTO_DISPATCH).
+    The interruption warning is appended after.
+    """
+    wf_id = "wf-ad-canon-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
+    result = process_agent_stop(conn, "implementer", project_root)
+    # blocked → is_interrupted=True → auto_dispatch=False
+    assert result["auto_dispatch"] is False
+    # Suggestion starts with 'Canonical flow suggests' not 'AUTO_DISPATCH'
+    assert result["suggestion"].startswith("Canonical flow suggests")
+
+
+def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
+    """Compound-interaction test: full planner→impl→tester→guardian chain
+    verifying auto_dispatch at each transition boundary.
+
+    Production sequence exercised:
+      planner stop → auto_dispatch=True (implementer suggested)
+      implementer stop (complete) → auto_dispatch=True (tester suggested)
+      tester stop (ready_for_guardian) → auto_dispatch=True (guardian suggested)
+      guardian stop (committed) → auto_dispatch=False (terminal)
+    """
+    wf_id = "wf-ad-cycle-001"
+
+    # --- Planner stop ---
+    r_planner = process_agent_stop(conn, "planner", project_root)
+    assert r_planner["auto_dispatch"] is True
+    assert r_planner["next_role"] == "implementer"
+    assert r_planner["suggestion"].startswith("AUTO_DISPATCH: implementer")
+
+    # --- Implementer stop (complete contract) ---
+    impl_lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, impl_lease["lease_id"], wf_id, status="complete")
+    r_impl = process_agent_stop(conn, "implementer", project_root)
+    assert r_impl["auto_dispatch"] is True
+    assert r_impl["next_role"] == "tester"
+    assert r_impl["suggestion"].startswith("AUTO_DISPATCH: tester")
+
+    # --- Tester stop (ready_for_guardian) ---
+    tester_lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    _submit_valid_tester_completion(conn, tester_lease["lease_id"], wf_id)
+    r_tester = process_agent_stop(conn, "tester", project_root)
+    assert r_tester["auto_dispatch"] is True
+    assert r_tester["next_role"] == "guardian"
+    assert r_tester["suggestion"].startswith("AUTO_DISPATCH: guardian")
+
+    # --- Guardian stop (committed → terminal) ---
+    guardian_lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion(conn, guardian_lease["lease_id"], wf_id, verdict="committed")
+    r_guardian = process_agent_stop(conn, "guardian", project_root)
+    assert r_guardian["auto_dispatch"] is False
+    assert not r_guardian["next_role"]
+    assert r_guardian["suggestion"] == ""
