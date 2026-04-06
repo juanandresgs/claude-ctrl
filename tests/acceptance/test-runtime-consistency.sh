@@ -163,8 +163,7 @@ fi
 snap=$(policy statusline snapshot)
 
 assert_eq "snapshot: status ok"           "ok"       "$(printf '%s' "$snap" | jq -r '.status')"
-assert_eq "snapshot: proof is verified"   "verified" "$(printf '%s' "$snap" | jq -r '.proof_status')"
-assert_eq "snapshot: proof workflow"      "$WORKFLOW" "$(printf '%s' "$snap" | jq -r '.proof_workflow')"
+# W-CONV-4: proof_status/proof_workflow removed from snapshot
 assert_eq "snapshot: active_agent tester" "tester"   "$(printf '%s' "$snap" | jq -r '.active_agent')"
 assert_jq_true "snapshot: worktree_count >= 1" "$snap" "(.worktree_count >= 1)"
 assert_eq "snapshot: dispatch_status guardian" "guardian" \

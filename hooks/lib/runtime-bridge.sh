@@ -165,9 +165,10 @@ rt_event_emit() {
 # all HUD state flows through the canonical runtime projection.
 #
 # Returns raw JSON (not a scalar) so the caller can jq-parse any field it needs:
-#   proof_status, proof_workflow, active_agent, active_agent_id,
-#   worktree_count, worktrees[], dispatch_status, dispatch_initiative,
-#   dispatch_cycle_id, recent_event_count, recent_events[], snapshot_at
+#   active_agent, active_agent_id, worktree_count, worktrees[],
+#   dispatch_status, dispatch_initiative, dispatch_cycle_id,
+#   recent_event_count, recent_events[], snapshot_at
+# Note: proof_status/proof_workflow were removed in W-CONV-4.
 rt_statusline_snapshot() {
     _rt_ensure_schema
     cc_policy statusline snapshot 2>/dev/null
