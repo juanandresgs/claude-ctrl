@@ -226,6 +226,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 7b: eval_workflow appears in HUD when eval is non-idle (W-SL-160)
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- 7b: eval_workflow — HUD shows workflow id alongside eval status"
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "wf-sl-test"; then
+    echo "  PASS: eval_workflow 'wf-sl-test' present in HUD"
+else
+    echo "  FAIL: eval_workflow missing; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Test 7c: review indicator — codex review ALLOW renders in HUD (DEC-SL-160)
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- 7c: review indicator — ALLOW review renders in HUD"
+
+policy event emit "codex_stop_review" --detail "VERDICT: ALLOW — workflow=wf-sl-test | looks good" >/dev/null
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "codex"; then
+    echo "  PASS: review indicator 'codex' present in HUD"
+else
+    echo "  FAIL: review indicator missing; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Test 8: active agent renders ⚡<role> in HUD
 # ---------------------------------------------------------------------------
 echo ""

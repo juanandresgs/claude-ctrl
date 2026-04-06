@@ -76,6 +76,7 @@ def conn():
 # evaluation_state fields (eval_status, eval_workflow, eval_head_sha) are the
 # sole readiness surface. FORBIDDEN fields must not appear (enforced in
 # test_statusline_truth.py::TestProofStateRemovedFromDisplay).
+# DEC-SL-160: last_review and errors are new fields added by W-SL-160.
 REQUIRED_KEYS = {
     "eval_status",
     "eval_workflow",
@@ -93,8 +94,10 @@ REQUIRED_KEYS = {
     "dispatch_cycle_id",
     "recent_event_count",
     "recent_events",
+    "last_review",
     "snapshot_at",
     "status",
+    "errors",
 }
 
 
@@ -124,6 +127,13 @@ def test_snapshot_empty_db_safe_defaults(conn):
     assert snap["dispatch_cycle_id"] is None
     assert snap["recent_event_count"] == 0
     assert snap["recent_events"] == []
+    # DEC-SL-160: last_review defaults to unreviewed
+    assert snap["last_review"]["reviewed"] is False
+    assert snap["last_review"]["reviewer"] is None
+    assert snap["last_review"]["verdict"] is None
+    assert snap["last_review"]["reviewed_at"] is None
+    # DEC-SL-160: errors list is empty on clean DB
+    assert snap["errors"] == []
     assert isinstance(snap["snapshot_at"], int)
     assert snap["snapshot_at"] > 0
     assert snap["status"] == "ok"
@@ -411,3 +421,183 @@ def test_snapshot_full_production_sequence(conn):
     assert snap["recent_event_count"] == 2
     assert len(snap["recent_events"]) == 2
     assert snap["recent_events"][0]["type"] == "proof.set"
+    # DEC-SL-160: errors list is empty when all sections succeed
+    assert snap["errors"] == []
+    assert snap["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Partial failure reporting (DEC-SL-160 / W-SL-160)
+# ---------------------------------------------------------------------------
+
+
+class TestPartialFailureReporting:
+    """Per-section isolation: a failing section sets partial_failure without
+    suppressing data from sections that succeeded (DEC-SL-160).
+
+    These tests induce genuine SQLite OperationalErrors by dropping specific
+    tables from the schema after ensure_schema runs. This exercises the real
+    exception path without mocking internal C-extension methods (which are
+    read-only in CPython ≥3.14).
+    """
+
+    @pytest.fixture
+    def conn_no_worktrees(self):
+        """In-memory DB with full schema except the worktrees table dropped."""
+        c = connect_memory()
+        ensure_schema(c)
+        c.execute("DROP TABLE worktrees")
+        c.commit()
+        yield c
+        c.close()
+
+    def test_partial_failure_sets_status(self, conn_no_worktrees):
+        """A missing worktrees table triggers partial_failure status."""
+        snap = statusline.snapshot(conn_no_worktrees)
+        assert snap["status"] == "partial_failure"
+
+    def test_partial_failure_accumulates_error_entry(self, conn_no_worktrees):
+        """errors[] has one entry with section='worktrees' when table missing."""
+        snap = statusline.snapshot(conn_no_worktrees)
+        assert len(snap["errors"]) >= 1
+        sections = [e["section"] for e in snap["errors"]]
+        assert "worktrees" in sections
+        # The error string must contain sqlite diagnostic text.
+        err = next(e for e in snap["errors"] if e["section"] == "worktrees")
+        assert err["error"]  # non-empty
+
+    def test_partial_failure_other_sections_still_populated(self):
+        """When worktrees table is missing, eval and markers still populate.
+
+        eval section runs before worktrees in snapshot(), so its data must
+        survive the worktrees fault.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        c = connect_memory()
+        ensure_schema(c)
+
+        # Populate eval and markers before dropping worktrees.
+        eval_mod.set_status(c, "wf-partial", "pending")
+        markers_mod.set_active(c, "agent-partial", "tester")
+
+        c.execute("DROP TABLE worktrees")
+        c.commit()
+
+        snap = statusline.snapshot(c)
+        c.close()
+
+        # Sections before the fault must still be present.
+        assert snap["eval_status"] == "pending"
+        assert snap["active_agent"] == "tester"
+        # Worktrees section failed — count stays at safe default.
+        assert snap["worktree_count"] == 0
+
+    def test_no_errors_on_clean_db(self, conn):
+        """Clean DB with no faults must return errors=[] and status='ok'."""
+        snap = statusline.snapshot(conn)
+        assert snap["errors"] == []
+        assert snap["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Last review indicator (DEC-SL-160 / W-SL-160)
+# ---------------------------------------------------------------------------
+
+
+class TestLastReview:
+    """last_review field reflects the most recent codex_stop_review event
+    scoped to the current eval cycle. The review indicator resets when a new
+    eval step starts (DEC-SL-160).
+    """
+
+    def test_last_review_default_unreviewed(self, conn):
+        """Empty DB: last_review.reviewed is False."""
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is False
+        assert snap["last_review"]["reviewer"] is None
+        assert snap["last_review"]["verdict"] is None
+        assert snap["last_review"]["reviewed_at"] is None
+
+    def test_last_review_allow_verdict(self, conn):
+        """ALLOW verdict maps to reviewed=True, verdict='ALLOW'."""
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            detail="VERDICT: ALLOW — workflow=wf-test | work looks good",
+        )
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is True
+        assert snap["last_review"]["verdict"] == "ALLOW"
+        assert snap["last_review"]["reviewer"] == "codex"
+        assert isinstance(snap["last_review"]["reviewed_at"], int)
+
+    def test_last_review_block_verdict(self, conn):
+        """BLOCK verdict maps to reviewed=True, verdict='BLOCK'."""
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            detail="VERDICT: BLOCK — workflow=wf-test | missing tests",
+        )
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is True
+        assert snap["last_review"]["verdict"] == "BLOCK"
+
+    def test_last_review_newest_wins(self, conn):
+        """When multiple codex_stop_review events exist, newest wins."""
+        events_mod.emit(conn, "codex_stop_review", detail="VERDICT: BLOCK — workflow=wf-1 | first")
+        events_mod.emit(conn, "codex_stop_review", detail="VERDICT: ALLOW — workflow=wf-2 | second")
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["verdict"] == "ALLOW"
+
+    def test_last_review_resets_after_new_eval_step(self, conn):
+        """Review event before eval reset does not carry into the new step.
+
+        Production sequence (DEC-SL-160): a codex_stop_review event is
+        emitted at T=100. Then a new evaluation_state row is written at T=200
+        (new step starts). A snapshot at T=300 must show reviewed=False because
+        no review event postdates the eval reset at T=200.
+        """
+        import time as time_mod
+
+        # Insert an old review event (T-10)
+        old_ts = int(time_mod.time()) - 10
+        conn.execute(
+            "INSERT INTO events (type, detail, created_at) VALUES (?, ?, ?)",
+            ("codex_stop_review", "VERDICT: ALLOW — workflow=old | stale review", old_ts),
+        )
+        conn.commit()
+
+        # Now set evaluation_state updated_at to now (new step, T=now)
+        import runtime.core.evaluation as eval_mod
+
+        eval_mod.set_status(conn, "wf-new-step", "pending")
+
+        snap = statusline.snapshot(conn)
+        # The review event predates the new eval step, so reviewed must be False.
+        # (The eval update sets updated_at to now, which is after old_ts-10.)
+        assert snap["last_review"]["reviewed"] is False
+
+    def test_last_review_present_when_review_after_eval(self, conn):
+        """Review event after eval start is correctly surfaced.
+
+        Compound-interaction test (DEC-SL-160): evaluation_state is written
+        first, then a codex_stop_review event is emitted. snapshot() must
+        reflect reviewed=True because the event postdates the eval row.
+        """
+        import runtime.core.evaluation as eval_mod
+
+        # Set eval state (this sets updated_at to approx now)
+        eval_mod.set_status(conn, "wf-reviewed", "pending")
+
+        # Emit review event after eval state is set (same second is fine —
+        # the DB query uses >= so equal timestamps qualify).
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            detail="VERDICT: ALLOW — workflow=wf-reviewed | all good",
+        )
+
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is True
+        assert snap["last_review"]["verdict"] == "ALLOW"

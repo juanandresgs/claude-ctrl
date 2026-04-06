@@ -93,9 +93,11 @@ echo "-- 1: empty DB snapshot has all required keys and safe defaults"
 snap=$(policy statusline snapshot)
 
 # W-CONV-4: proof_status/proof_workflow removed from snapshot
+# DEC-SL-160: last_review and errors are new required fields
 for key in active_agent active_agent_id \
            worktree_count worktrees dispatch_status dispatch_initiative \
-           dispatch_cycle_id recent_event_count recent_events snapshot_at status; do
+           dispatch_cycle_id recent_event_count recent_events \
+           last_review snapshot_at status errors; do
     assert_jq "key '$key' present" "$snap" "has(\"$key\")"
 done
 
@@ -104,6 +106,8 @@ assert_jq "proof_workflow absent (W-CONV-4)" "$snap" "(has(\"proof_workflow\") |
 assert_eq "worktree_count defaults to 0"    "$snap" ".worktree_count" "0"
 assert_eq "active_agent defaults to null"   "$snap" ".active_agent"   "null"
 assert_eq "status is ok"                    "$snap" ".status"         "ok"
+assert_eq "errors defaults to []"           "$snap" "(.errors | length)" "0"
+assert_eq "last_review.reviewed is false"   "$snap" ".last_review.reviewed" "false"
 
 # ---------------------------------------------------------------------------
 # Test 3: active_agent reflects marker

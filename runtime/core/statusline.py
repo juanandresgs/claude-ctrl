@@ -8,6 +8,8 @@ TKT-011 promotes this from a stub to the canonical implementation.
 TKT-024 establishes evaluation_state as the sole readiness display.
 W-CONV-4 removes proof_state from the snapshot dict entirely — the proof_state
 table is retained for storage, but operators must see only one readiness signal.
+W-SL-160 introduces per-section partial failure reporting and a last_review
+section that shows whether the latest output was reviewed by Codex/Gemini.
 
 @decision DEC-RT-011
 Title: Statusline snapshot is a read-only projection across all runtime tables
@@ -17,10 +19,10 @@ Rationale: snapshot() is the single read surface for the statusline HUD. It
   worktrees, dispatch_cycles, completion_records, and events in one pass and
   returns a canonical dict. No writes happen here.
   All fields default to None/0/[] so the statusline never crashes on an empty
-  or partially-populated DB. The broad exception handler at the bottom guards
-  against unexpected schema errors only; all normal empty-result paths are
-  handled individually so partial state is still returned on any single
-  query failure.
+  or partially-populated DB. Per-section try/except (W-SL-160) reports partial
+  failures without suppressing successfully-loaded sections: if any section
+  fails, status becomes 'partial_failure' and an errors[] list accumulates the
+  section name and exception message.
 
 @decision DEC-EVAL-006
 Title: statusline.py shows eval_status as the sole readiness display (TKT-024 + W-CONV-4)
@@ -44,6 +46,20 @@ Rationale: WS6 removes dispatch_queue from the routing hot-path. post-task.sh
   surface where the routing decision came from. dispatch_initiative and
   dispatch_cycle_id remain (read from dispatch_cycles) for initiative-level
   tracking, which is not routing state.
+
+@decision DEC-SL-160
+Title: Per-section partial failure reporting and review status indicator
+Status: accepted
+Rationale: W-SL-160 replaces the single broad try/except with per-section
+  isolation. Each query section (eval, markers, worktrees, dispatch, events,
+  last_review) is wrapped independently. If any section fails, status becomes
+  'partial_failure' and the section name + exception string are appended to
+  errors[]. Sections that succeed still populate their fields normally — a bad
+  events query does not suppress good eval state. The last_review section
+  queries for the most recent codex_stop_review event that postdates the last
+  evaluation_state update, so the review indicator resets automatically when a
+  new eval cycle starts. Detail format from stop-review-gate-hook.mjs:
+  "VERDICT: <ALLOW|BLOCK> — workflow=<id> | <reason>".
 """
 
 from __future__ import annotations
@@ -86,10 +102,19 @@ def snapshot(conn: sqlite3.Connection) -> dict:
       recent_event_count  — count of the most recent events returned (up to 5)
       recent_events       — list of up to 5 events, newest first, each with
                             {type, detail, created_at}
+      last_review         — review status scoped to the current eval cycle
+                            (DEC-SL-160): {reviewed: bool, reviewer: str|None,
+                             verdict: str|None, reviewed_at: int|None}.
+                            reviewed=False when no codex_stop_review event
+                            postdates the most recent evaluation_state update.
       snapshot_at         — Unix epoch when this snapshot was taken
-      status              — always 'ok'
+      status              — 'ok' when all sections succeeded, 'partial_failure'
+                            when one or more sections raised an exception
+      errors              — list of {section: str, error: str} for each failed
+                            section; empty list when status is 'ok'
 
-    Never raises: returns safe defaults for any missing data.
+    Never raises. On partial failure, successfully-loaded sections still
+    populate their fields (DEC-SL-160: per-section isolation).
     """
     now = int(time.time())
     result: dict = {
@@ -113,19 +138,32 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "dispatch_cycle_id": None,
         "recent_event_count": 0,
         "recent_events": [],
+        "last_review": {
+            "reviewed": False,
+            "reviewer": None,
+            "verdict": None,
+            "reviewed_at": None,
+        },
         "snapshot_at": now,
         "status": "ok",
+        "errors": [],
     }
 
+    # Tracks the updated_at of the most recent non-idle evaluation_state row.
+    # Used by the last_review section to scope review events to the current
+    # eval cycle — a review event before the last eval reset does not count.
+    _eval_updated_at: int | None = None
+
+    # ------------------------------------------------------------------
+    # Section: Evaluation state (TKT-024 / W-CONV-4) — sole readiness
+    # authority. proof_state is no longer queried here (DEC-EVAL-006).
+    # Prefer any non-idle row; most recently updated wins.
+    # We also read updated_at here to scope last_review correctly.
+    # ------------------------------------------------------------------
     try:
-        # ------------------------------------------------------------------
-        # Evaluation state (TKT-024 / W-CONV-4) — sole readiness authority.
-        # proof_state is no longer queried here (DEC-EVAL-006 / W-CONV-4).
-        # Prefer any non-idle row; most recently updated wins.
-        # ------------------------------------------------------------------
         row = conn.execute(
             """
-            SELECT workflow_id, status, head_sha
+            SELECT workflow_id, status, head_sha, updated_at
             FROM   evaluation_state
             WHERE  status != 'idle'
             ORDER  BY updated_at DESC
@@ -136,24 +174,33 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             result["eval_status"] = row["status"]
             result["eval_workflow"] = row["workflow_id"]
             result["eval_head_sha"] = row["head_sha"]
+            _eval_updated_at = row["updated_at"]
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "eval", "error": str(exc)})
 
-        # ------------------------------------------------------------------
-        # Active agent — most recently started active marker with age.
-        #
-        # @decision DEC-RT-023: Use get_active_with_age() so the snapshot
-        # carries marker_age_seconds without a second query. The age is
-        # computed once at snapshot time and is consistent across all
-        # consumers of this dict.
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Section: Active agent — most recently started active marker with age.
+    #
+    # @decision DEC-RT-023: Use get_active_with_age() so the snapshot
+    # carries marker_age_seconds without a second query. The age is
+    # computed once at snapshot time and is consistent across all
+    # consumers of this dict.
+    # ------------------------------------------------------------------
+    try:
         marker = get_active_with_age(conn)
         if marker:
             result["active_agent"] = marker["role"]
             result["active_agent_id"] = marker["agent_id"]
             result["marker_age_seconds"] = marker["age_seconds"]
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "markers", "error": str(exc)})
 
-        # ------------------------------------------------------------------
-        # Worktrees — all active (removed_at IS NULL), full detail rows
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Section: Worktrees — all active (removed_at IS NULL), full detail rows
+    # ------------------------------------------------------------------
+    try:
         rows = conn.execute(
             """
             SELECT path, branch, ticket
@@ -165,19 +212,23 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         wt_list = [{"path": r["path"], "branch": r["branch"], "ticket": r["ticket"]} for r in rows]
         result["worktree_count"] = len(wt_list)
         result["worktrees"] = wt_list
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "worktrees", "error": str(exc)})
 
-        # ------------------------------------------------------------------
-        # Dispatch — derive next_role from latest completion record.
-        #
-        # @decision DEC-WS6-001: dispatch_queue is no longer the routing
-        # authority. post-task.sh stopped enqueuing into dispatch_queue —
-        # the queue was a write-only sink with no live readers in the
-        # enforcement path. Routing is now determined by
-        # determine_next_role(role, verdict) applied to the most recent
-        # completion record. dispatch_initiative and dispatch_cycle_id are
-        # retained from dispatch_cycles — that is initiative-level tracking,
-        # not routing state.
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Section: Dispatch — derive next_role from latest completion record.
+    #
+    # @decision DEC-WS6-001: dispatch_queue is no longer the routing
+    # authority. post-task.sh stopped enqueuing into dispatch_queue —
+    # the queue was a write-only sink with no live readers in the
+    # enforcement path. Routing is now determined by
+    # determine_next_role(role, verdict) applied to the most recent
+    # completion record. dispatch_initiative and dispatch_cycle_id are
+    # retained from dispatch_cycles — that is initiative-level tracking,
+    # not routing state.
+    # ------------------------------------------------------------------
+    try:
         comp = comp_latest(conn)
         if comp and comp.get("valid"):
             _next = determine_next_role(comp["role"], comp.get("verdict", ""))
@@ -198,10 +249,14 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         if row:
             result["dispatch_initiative"] = row["initiative"]
             result["dispatch_cycle_id"] = row["id"]
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "dispatch", "error": str(exc)})
 
-        # ------------------------------------------------------------------
-        # Recent events — up to 5 most recent, newest first
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Section: Recent events — up to 5 most recent, newest first
+    # ------------------------------------------------------------------
+    try:
         rows = conn.execute(
             """
             SELECT type, detail, created_at
@@ -215,11 +270,65 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         ]
         result["recent_event_count"] = len(evt_list)
         result["recent_events"] = evt_list
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "events", "error": str(exc)})
 
-    except Exception:
-        # Never crash the statusline — return whatever we have so far.
-        # This guard is for unexpected schema errors only; normal empty-result
-        # paths are handled individually above and do not raise.
-        pass
+    # ------------------------------------------------------------------
+    # Section: Last review — most recent codex_stop_review event scoped
+    # to the current eval cycle (DEC-SL-160).
+    #
+    # Scope rule: the review event must postdate the most recent
+    # evaluation_state.updated_at so that a review from a previous step
+    # does not carry forward to the new step. When _eval_updated_at is
+    # None (no non-idle eval state), any codex_stop_review event qualifies
+    # (since=0 matches all rows).
+    #
+    # Detail format written by stop-review-gate-hook.mjs:
+    #   "VERDICT: <ALLOW|BLOCK> — workflow=<id> | <reason>"
+    # source field carries the provider when present (future use); for
+    # now we default to "codex" since that is the sole writer (DEC-AD-002).
+    # ------------------------------------------------------------------
+    try:
+        _since = _eval_updated_at if _eval_updated_at is not None else 0
+
+        row = conn.execute(
+            """
+            SELECT source, detail, created_at
+            FROM   events
+            WHERE  type = 'codex_stop_review'
+              AND  created_at >= ?
+            ORDER  BY id DESC
+            LIMIT  1
+            """,
+            (_since,),
+        ).fetchone()
+
+        if row:
+            detail = row["detail"] or ""
+            # source field is not currently populated by the hook; fall back
+            # to "codex" — the only provider that emits codex_stop_review.
+            reviewer: str = row["source"] or "codex"
+
+            # Parse verdict from detail string.
+            verdict: str | None = None
+            if "VERDICT: ALLOW" in detail:
+                verdict = "ALLOW"
+            elif "VERDICT: BLOCK" in detail:
+                verdict = "BLOCK"
+            elif "VERDICT: PASS" in detail:
+                verdict = "PASS"
+            elif "VERDICT: CONTINUE" in detail:
+                verdict = "CONTINUE"
+
+            result["last_review"] = {
+                "reviewed": True,
+                "reviewer": reviewer,
+                "verdict": verdict,
+                "reviewed_at": row["created_at"],
+            }
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "last_review", "error": str(exc)})
 
     return result
