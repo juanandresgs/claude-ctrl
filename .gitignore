@@ -10,3 +10,12 @@ state.db-shm
 state.db-wal
 tmp/
 .claude/
+
+# Plugin system — track forked codex plugin source, ignore runtime state
+plugins/cache/
+plugins/data/
+plugins/blocklist.json
+plugins/install-counts-cache.json
+plugins/installed_plugins.json
+plugins/known_marketplaces.json
+plugins/marketplaces/openai-codex/plugins/codex/.claude-plugin/
