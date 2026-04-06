@@ -10,9 +10,9 @@
 # Output: exactly 3 newline-separated ANSI lines
 #
 # Line layout:
-#   Line 1 (repo):   workspace │ N uncommitted +N/-N lines │ N worktrees │ ⚡impl
+#   Line 1 (repo):   workspace │ N uncommitted +N/-N lines │ N worktrees │ marker: impl (2m)
 #   Line 2 (model):  model [████████░░░░] 52% │ 145K tks │ ∑1.2M tks │ cache hit 78% │ session 12m
-#   Line 3 (meta):   todos: 3p 10g │ eval: ✓ ready │ next: tester
+#   Line 3 (meta):   eval: ✓ ready (wf-123) │ next: tester (ready_for_guardian) │ ✓codex │ todos: 3p 10g
 #
 # State source: cc-policy CLI (runtime/cli.py) — NOT runtime-bridge.sh.
 # statusline.sh is standalone; it invokes python3 directly.
@@ -46,7 +46,7 @@ if [[ -z "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
     unset _sl_root
 fi
 
-_cc() { python3 "$RUNTIME_ROOT/cli.py" "$@" 2>/dev/null; }
+_cc() { python3 "$RUNTIME_ROOT/cli.py" "$@"; }
 
 # ---------------------------------------------------------------------------
 # stdin — single jq call to extract all fields as tab-separated values
@@ -123,21 +123,38 @@ fi
 
 # Extract snapshot fields (safe defaults when snapshot unavailable)
 eval_status="idle"
+eval_workflow=""
 active_agent=""
 marker_age_seconds=0
 wt_count=0
 dispatch_next=""
+dispatch_from_verdict=""
+review_reviewed="false"
+review_verdict=""
+review_reviewer=""
+snapshot_status="ok"
 if [[ -n "$snapshot" ]]; then
     eval_status=$(printf '%s' "$snapshot" | jq -r '.eval_status // "idle"' 2>/dev/null) || eval_status="idle"
+    eval_workflow=$(printf '%s' "$snapshot" | jq -r '.eval_workflow // empty' 2>/dev/null) || eval_workflow=""
     active_agent=$(printf '%s' "$snapshot" | jq -r '.active_agent // empty' 2>/dev/null) || active_agent=""
     marker_age_seconds=$(printf '%s' "$snapshot" | jq -r '.marker_age_seconds // 0' 2>/dev/null) || marker_age_seconds=0
     wt_count=$(printf '%s' "$snapshot"    | jq -r '.worktree_count // 0' 2>/dev/null)    || wt_count=0
     dispatch_next=$(printf '%s' "$snapshot" | jq -r '.dispatch_status // empty' 2>/dev/null) || dispatch_next=""
+    dispatch_from_verdict=$(printf '%s' "$snapshot" | jq -r '.dispatch_from_verdict // empty' 2>/dev/null) || dispatch_from_verdict=""
+    review_reviewed=$(printf '%s' "$snapshot" | jq -r '.last_review.reviewed // false' 2>/dev/null) || review_reviewed="false"
+    review_verdict=$(printf '%s' "$snapshot" | jq -r '.last_review.verdict // empty' 2>/dev/null) || review_verdict=""
+    review_reviewer=$(printf '%s' "$snapshot" | jq -r '.last_review.reviewer // empty' 2>/dev/null) || review_reviewer=""
+    snapshot_status=$(printf '%s' "$snapshot" | jq -r '.status // "ok"' 2>/dev/null) || snapshot_status="ok"
 fi
 [[ "${wt_count:-0}" =~ ^[0-9]+$ ]] || wt_count=0
 [[ "${marker_age_seconds:-0}" =~ ^[0-9]+$ ]] || marker_age_seconds=0
 [[ "$active_agent"   == "null" ]] && active_agent=""
+[[ "$eval_workflow"  == "null" ]] && eval_workflow=""
 [[ "$dispatch_next"  == "null" ]] && dispatch_next=""
+[[ "$dispatch_from_verdict" == "null" ]] && dispatch_from_verdict=""
+[[ "$review_verdict"  == "null" ]] && review_verdict=""
+[[ "$review_reviewer" == "null" ]] && review_reviewer=""
+[[ "$snapshot_status"  == "null" ]] && snapshot_status="ok"
 
 # ---------------------------------------------------------------------------
 # Terminal width
@@ -348,9 +365,13 @@ _p1_t_0=""; _p1_w_0=0
 _p1_t_1=""; _p1_w_1=0
 _p1_t_2=""; _p1_w_2=0
 _p1_t_3=""; _p1_w_3=0
-
 # P1.0: workspace (priority 1)
-_s=$(printf '\033[1;36m%s\033[0m' "$workspace")
+# Bug #3 fix: append [!] indicator when snapshot status is partial_failure.
+if [[ "$snapshot_status" == "partial_failure" ]]; then
+  _s=$(printf '\033[1;36m%s\033[0m \033[1;31m[!]\033[0m' "$workspace")
+else
+  _s=$(printf '\033[1;36m%s\033[0m' "$workspace")
+fi
 ansi_visible_width "$_s"; _p1_w_0=$_AVW; _p1_t_0="$_s"
 
 # P1.1: dirty + lines changed (priority 2, conditional)
@@ -373,7 +394,10 @@ fi
 
 # P1.3: active marker label (priority 4, conditional)
 # Shows "marker: <role>[?] (<age>)" — conservative label, not actor claim.
-# ? suffix appears when age >= 300s (stale marker advisory).
+# ? suffix appears when age >= stale threshold (default 300s, configurable via
+# CC_STALE_MARKER_THRESHOLD env var). DEC-SL-160: configurable stale threshold.
+_stale_threshold="${CC_STALE_MARKER_THRESHOLD:-300}"
+[[ "${_stale_threshold}" =~ ^[0-9]+$ ]] || _stale_threshold=300
 if [[ -n "$active_agent" ]]; then
   _age_s="${marker_age_seconds:-0}"
   _age_display=""
@@ -385,7 +409,7 @@ if [[ -n "$active_agent" ]]; then
     _age_display="${_age_s}s"
   fi
   _stale_suffix=""
-  if (( _age_s >= 300 )); then
+  if (( _age_s >= _stale_threshold )); then
     _stale_suffix="?"
   fi
   _s=$(printf '\033[33mmarker: %s%s (%s)\033[0m' "$active_agent" "$_stale_suffix" "$_age_display")
@@ -507,73 +531,117 @@ _append_l2_seg() {
 [[ $_l2d4 -eq 0 ]] && _append_l2_seg "$_l2_4"
 
 # ---------------------------------------------------------------------------
-# LINE 3 (meta): todos: 3p 10g │ eval: ✓ ready │ next: tester
+# LINE 3 (meta): eval: ✓ ready (wf-123) │ next: tester (ready_for_guardian) │ ✓codex │ todos: 3p 10g
 #
 # Priority table (lower = higher priority, dropped last):
-#   1 = todos (project state — most actionable)
-#   2 = evaluation readiness indicator (workflow gate signal)
-#   3 = next dispatch role (drops first)
+#   1 = evaluation readiness indicator + workflow (gate signal — most critical)
+#   2 = next dispatch role + from_verdict (routing state)
+#   3 = review indicator (Codex/Gemini review status, DEC-SL-160)
+#   4 = todos (project state — drops first before eval)
+#
+# @decision DEC-SL-160-DROP
+# @title todos drop before eval on Line 3
+# @status accepted
+# @rationale W-SL-160: eval readiness is the most critical signal on Line 3.
+#   At narrow terminals, todos should shed first so eval and dispatch remain
+#   visible. Review indicator sheds before todos since it is informational.
 # ---------------------------------------------------------------------------
 
 _l3_0=""; _l3w0=0
 _l3_1=""; _l3w1=0
 _l3_2=""; _l3w2=0
+_l3_3=""; _l3w3=0
 
-# L3.0: todos (priority 1, conditional — shown when any count > 0)
-if (( todo_project > 0 && todo_global > 0 )); then
-  _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m\033[35m %d\033[2mg\033[0m' \
-    "$todo_project" "$todo_global")
-  ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
-elif (( todo_project > 0 )); then
-  _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m' "$todo_project")
-  ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
-elif (( todo_global > 0 )); then
-  _s=$(printf '\033[35mtodos: %d\033[2mg\033[0m' "$todo_global")
-  ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
-fi
-
-# L3.1: evaluation readiness indicator (priority 2, shown for non-idle eval)
+# L3.0: evaluation readiness indicator + workflow (priority 1, shown for non-idle eval)
 # TKT-024: evaluation_state is the sole readiness authority. proof_status is
 # no longer read or rendered here.
+# W-SL-160: eval_workflow shown in parentheses when available.
 case "$eval_status" in
   ready_for_guardian)
-    _s=$(printf '\033[32meval: ✓ ready\033[0m')
-    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+    _wf_suffix=""
+    [[ -n "$eval_workflow" ]] && _wf_suffix=$(printf ' \033[2m(%s)\033[32m' "$eval_workflow")
+    _s=$(printf '\033[32meval: ✓ ready%s\033[0m' "$_wf_suffix")
+    ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
     ;;
   pending)
-    _s=$(printf '\033[33meval: ⏳ pending\033[0m')
-    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+    _wf_suffix=""
+    [[ -n "$eval_workflow" ]] && _wf_suffix=$(printf ' \033[2m(%s)\033[33m' "$eval_workflow")
+    _s=$(printf '\033[33meval: ⏳ pending%s\033[0m' "$_wf_suffix")
+    ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
     ;;
   needs_changes)
-    _s=$(printf '\033[31meval: ✗ needs_changes\033[0m')
-    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+    _wf_suffix=""
+    [[ -n "$eval_workflow" ]] && _wf_suffix=$(printf ' \033[2m(%s)\033[31m' "$eval_workflow")
+    _s=$(printf '\033[31meval: ✗ needs_changes%s\033[0m' "$_wf_suffix")
+    ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
     ;;
   blocked_by_plan)
-    _s=$(printf '\033[31meval: ⚠ blocked_by_plan\033[0m')
-    ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+    _wf_suffix=""
+    [[ -n "$eval_workflow" ]] && _wf_suffix=$(printf ' \033[2m(%s)\033[31m' "$eval_workflow")
+    _s=$(printf '\033[31meval: ⚠ blocked_by_plan%s\033[0m' "$_wf_suffix")
+    ansi_visible_width "$_s"; _l3w0=$_AVW; _l3_0="$_s"
     ;;
 esac
 
-# L3.2: next dispatch role (priority 3, conditional)
+# L3.1: next dispatch role + from_verdict (priority 2, conditional)
+# W-SL-160: dispatch_from_verdict shown in parentheses when available.
 if [[ -n "$dispatch_next" ]]; then
-  _s=$(printf '\033[35mnext: %s\033[0m' "$dispatch_next")
+  _verdict_suffix=""
+  [[ -n "$dispatch_from_verdict" ]] && _verdict_suffix=$(printf ' \033[2m(%s)\033[0m' "$dispatch_from_verdict")
+  _s=$(printf '\033[35mnext: %s%s\033[0m' "$dispatch_next" "$_verdict_suffix")
+  ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+fi
+
+# L3.2: review indicator (priority 3, conditional — DEC-SL-160)
+# Shows review status from last_review snapshot field when reviewed=true.
+# Bug #3 fix: read reviewer name from snapshot JSON instead of hardcoding.
+_review_label="${review_reviewer:-codex}"
+if [[ "$review_reviewed" == "true" ]]; then
+  case "$review_verdict" in
+    ALLOW)
+      _s=$(printf '\033[32m✓%s\033[0m' "$_review_label")
+      ;;
+    BLOCK)
+      _s=$(printf '\033[31m✗%s\033[0m' "$_review_label")
+      ;;
+    *)
+      _s=$(printf '\033[33m⏳%s\033[0m' "$_review_label")
+      ;;
+  esac
   ansi_visible_width "$_s"; _l3w2=$_AVW; _l3_2="$_s"
 fi
 
+# L3.3: todos (priority 4, conditional — shown when any count > 0)
+# W-SL-160: todos now drop before eval (priority 4, not 1).
+if (( todo_project > 0 && todo_global > 0 )); then
+  _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m\033[35m %d\033[2mg\033[0m' \
+    "$todo_project" "$todo_global")
+  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
+elif (( todo_project > 0 )); then
+  _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m' "$todo_project")
+  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
+elif (( todo_global > 0 )); then
+  _s=$(printf '\033[35mtodos: %d\033[2mg\033[0m' "$todo_global")
+  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
+fi
+
 # Responsive drop loop for Line 3
-_l3d0=0; _l3d1=0; _l3d2=0
+# Drop order: todos (4) → review (3) → dispatch (2). Eval never drops.
+_l3d0=0; _l3d1=0; _l3d2=0; _l3d3=0
 
 _compute_l3_width() {
   local total=0 seg_count=0
   [[ $_l3d0 -eq 0 && -n "$_l3_0" ]] && total=$(( total + _l3w0 )) && (( seg_count++ )) || true
   [[ $_l3d1 -eq 0 && -n "$_l3_1" ]] && total=$(( total + _l3w1 )) && (( seg_count++ )) || true
   [[ $_l3d2 -eq 0 && -n "$_l3_2" ]] && total=$(( total + _l3w2 )) && (( seg_count++ )) || true
+  [[ $_l3d3 -eq 0 && -n "$_l3_3" ]] && total=$(( total + _l3w3 )) && (( seg_count++ )) || true
   (( seg_count > 1 )) && total=$(( total + (seg_count - 1) * 3 )) || true
   _L3_TOTAL=$total
 }
 
 _L3_TOTAL=0
 _compute_l3_width
+if (( _L3_TOTAL > term_w && _l3w3 > 0 )); then _l3d3=1; _compute_l3_width; fi
 if (( _L3_TOTAL > term_w && _l3w2 > 0 )); then _l3d2=1; _compute_l3_width; fi
 if (( _L3_TOTAL > term_w && _l3w1 > 0 )); then _l3d1=1; _compute_l3_width; fi
 
@@ -591,6 +659,7 @@ _append_l3_seg() {
 [[ $_l3d0 -eq 0 ]] && _append_l3_seg "$_l3_0"
 [[ $_l3d1 -eq 0 ]] && _append_l3_seg "$_l3_1"
 [[ $_l3d2 -eq 0 ]] && _append_l3_seg "$_l3_2"
+[[ $_l3d3 -eq 0 ]] && _append_l3_seg "$_l3_3"
 
 # ---------------------------------------------------------------------------
 # Output — always exactly 3 lines for stable HUD height.
