@@ -71,7 +71,7 @@ else
 fi
 
 # Check 5: Approval-loop detection — agent should not end with unanswered question
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue|write)|ready to (begin|start|implement)\?' || echo "")
     HAS_COMPLETION=$(echo "$RESPONSE_TEXT" | grep -iE 'plan (complete|ready|written)|MASTER_PLAN\.md (created|written|updated)|created.*issues|phases defined' || echo "")
