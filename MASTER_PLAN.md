@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-05 (INIT-REBASE completed; INIT-PE postmortem added; acceptance baseline updated to 970 passed, 0 failed)
+Last updated: 2026-04-06 (INIT-CONV W-CONV-5 completed; MASTER_PLAN reconciled; new initiatives added)
 
 ## Identity
 
@@ -17,7 +17,8 @@ governs.
 - The live hook kernel is in [hooks/](hooks) with
   [settings.json](settings.json). INIT-002 consolidated the Write|Edit chain
   into `pre-write.sh` and the Bash chain into `pre-bash.sh`; policy logic lives
-  in [hooks/lib/](hooks/lib).
+  in [runtime/core/policies/](runtime/core/policies/) via the Python policy
+  engine (`cc-policy evaluate`). Shell hooks are thin JSON adapters.
 - Shared workflow state is owned by the SQLite-backed runtime in
   [runtime/](runtime), reached through
   [hooks/lib/runtime-bridge.sh](hooks/lib/runtime-bridge.sh). The `cc-policy`
@@ -266,6 +267,100 @@ into the new mainline.
   proof writers removed from hook chain (prompt-submit, subagent-start,
   guard merge-reset, track invalidation, session-init idle). Zero proof
   writes remain after cutover.
+
+
+### Policy engine decisions
+
+- `2026-04-03 — DEC-PE-001` Migration order: write-path first (PE-W2), then
+  bash-path (PE-W3). Write-path is lower-risk with 7 simpler policies; bash-path
+  has 13 checks with complex context dependencies (lease, evaluation, approval).
+- `2026-04-03 — DEC-PE-002` Engine shape: registered Python callables with
+  priority ordering, first-deny-wins. Each policy is `(PolicyRequest) ->
+  PolicyDecision | None`. None means no opinion. Deny stops evaluation. Allow is
+  advisory. Priority is integer (lower first). Event-type filtering skips
+  irrelevant policies without calling them.
+- `2026-04-03 — DEC-PE-003` Dispatch migration is Wave 4, parallel with
+  PreToolUse migration (W2/W3). Dispatch emission and lifecycle are
+  PostToolUse/SubagentStop concerns sharing PolicyContext but not evaluate().
+
+### Test baseline reconciliation decisions
+
+- `2026-04-03 — DEC-REBASE-001` Fix stale test expectations rather than
+  adjusting enforcement. The 4 post-INIT-PE failures are test-truth
+  mismatches (tests expect pre-PE behavior), not policy bugs. `doc_gate`
+  and `dispatch_status` derivation are correct per their contracts.
+- `2026-04-03 — DEC-REBASE-002` REBASE-W2 (acceptance lint gate) is
+  optional. The drift pattern is real but the 4 failures were caught during
+  review and are easily diagnosed. Defer lint gate to user judgment.
+
+### Test gap coverage decisions
+
+- `2026-04-05 — DEC-TESTGAP-001` auto-review.sh test strategy: source
+  individual functions where possible, run end-to-end via subprocess with
+  crafted JSON on stdin for the full hook path. Sourcing is preferred
+  because it allows testing decompose_command and classify_command in
+  isolation without the log.sh HOOK_INPUT machinery.
+- `2026-04-05 — DEC-TESTGAP-002` stop-assessment false-positive regression
+  tests extend the existing test-stop-assessment.sh (Cases D, E, F) rather
+  than creating a new file, because the existing helper infrastructure
+  (run_hook_chain, count_events, temp git setup) is reusable and the cases
+  are logically contiguous with A-C.
+
+### Identity convergence decisions
+
+- `2026-04-05 — DEC-CONV-001` `normalize_path()` in `policy_utils.py` is
+  the single canonical path normalizer. Uses `os.path.realpath()`. No ad-hoc
+  inline normalization elsewhere. Shell callers use the Python bridge for
+  guaranteed consistency or `realpath`/`readlink -f` where available.
+- `2026-04-05 — DEC-CONV-002` Only dispatch-significant roles (planner,
+  implementer, tester, guardian) create agent markers. `get_active()` accepts
+  `project_root` and `workflow_id` scoping. Global newest-marker fallback is
+  removed. Marker schema adds `project_root` column; existing `workflow_id`
+  column (already in DDL) is populated on dispatch-significant marker writes.
+  One-time cleanup deactivates existing lightweight active markers.
+- `2026-04-05 — DEC-CONV-003` Lease-first workflow identity enforced
+  everywhere. `track.sh`, `build_context()`, and all completion/evaluation
+  paths check active lease before falling back to branch-derived
+  `current_workflow_id()`. Existing duplicate workflow rows are cleaned up
+  or explicitly marked as historical in a bounded one-time repair.
+
+### Auto-dispatch decisions
+
+- `2026-04-05 — DEC-AD-001` Auto-dispatch signal is an explicit `auto_dispatch`
+  boolean in the dispatch_engine result dict, not implicit from `next_role`. This
+  makes the decision inspectable and testable independently of routing.
+  Interrupted agents, error states, and Codex BLOCK verdicts set it to false.
+- `2026-04-05 — DEC-AD-002` The Codex stop-review gate communicates with
+  dispatch_engine via the runtime `events` table (event type
+  `codex_stop_review`), not via hookSpecificOutput merging or flat files. This
+  preserves dispatch_engine as the sole auto_dispatch decision authority.
+- `2026-04-05 — DEC-AD-003` The Codex gate at SubagentStop is opt-in via the
+  existing `stopReviewGate` config in the Codex plugin state. When disabled,
+  auto-dispatch proceeds without quality review. When the gate is unavailable
+  (not set up, errors), dispatch_engine treats it as ALLOW (fail-open for
+  quality, fail-closed for safety).
+- `2026-04-05 — DEC-AD-004` Auto-dispatch fires for tester needs_changes and
+  blocked_by_plan routes (back to implementer and planner respectively). The
+  user does not need to approve rework — only new work, terminal states, and
+  high-risk operations require user attention.
+
+### Codex plugin concurrency decisions
+
+- `2026-04-05 — DEC-CDX-001` Atomic state writes for Codex plugin use O_EXCL
+  lockfile + write-tmp-rename, not SQLite. The plugin's state.json is a
+  marketplace plugin artifact independent of the core runtime SQLite backend.
+  Adding SQLite here would create a second DB authority. The lockfile approach
+  is Node.js stdlib-only and sufficient for the low-contention write pattern
+  (2-3 concurrent writers max).
+- `2026-04-05 — DEC-CDX-002` Stale task reaping is lazy (on read), not periodic.
+  `reapStaleJobs()` runs on every `listJobs()` call, checking PID liveness via
+  `process.kill(pid, 0)`. This avoids background timers and ensures liveness is
+  always fresh when queried. Cost: one syscall per running job per read.
+- `2026-04-05 — DEC-CDX-003` Broker multi-socket support is deferred.
+  `withAppServer()` already falls back from broker to direct client on
+  BROKER_BUSY_RPC_CODE. The direct-client path spawns a separate
+  `codex app-server` process, which is sufficient for 2-3 concurrent tasks.
+  Broker redesign is high-effort/low-value given the working fallback.
 
 ## Active Initiatives
 
@@ -1874,6 +1969,1741 @@ New (8):
 - MODIFIED: `check-tester.sh` — sole evaluator verdict writer
 - DEPRECATED: `proof_state` — zero enforcement effect after cutover
 
+
+### INIT-TESTGAP: Test Gap Coverage (auto-review.sh + stop-assessment false-positive regressions)
+
+- **Status:** planned
+- **Goal:** Eliminate two high-priority test coverage gaps identified during
+  audit: (1) auto-review.sh has 842 lines of command classification logic
+  with zero test coverage, and (2) the stop-assessment heuristic
+  (DEC-STOP-ASSESS-001) has no persistent false-positive regression tests.
+- **Scope:** Tests only -- no source code changes. Two work items: create
+  test-auto-review.sh (new file) and extend test-stop-assessment.sh
+  (append Cases D, E, F).
+- **Exit:** `bash tests/scenarios/test-auto-review.sh` passes with all
+  assertions green. `bash tests/scenarios/test-stop-assessment.sh` passes
+  with Cases A-F all green. No source files modified.
+- **Dependencies:** None (tests-only, no architectural prerequisites)
+
+#### Problem Statement
+
+The hook chain contains two untested critical paths:
+
+1. `hooks/auto-review.sh` is an 842-line three-tier command classification
+   engine. It handles compound command decomposition (`&&`, `||`, `;`, `|`),
+   quote-aware splitting, command substitution recursion, and per-tool
+   analyzers for git, npm, docker, curl, and more. A multi-line parsing bug
+   (decompose_command failed to track quotes across newlines) was already
+   found and fixed in-session. Without tests, regressions are invisible.
+
+2. `hooks/check-implementer.sh` Check 7 implements a stop-assessment
+   heuristic that scans the last ~500 chars of agent responses for
+   future-tense patterns, cross-checked against test evidence. Live probes
+   confirmed false-positive suppression works (response with "Let me check"
+   body BUT also containing "PASS: 5 tests passed" correctly suppresses the
+   stop_assessment event). These probes are ephemeral -- no test file
+   captures them for regression protection.
+
+#### Wave Decomposition
+
+**Wave 1 (parallel -- no dependencies between items):**
+
+##### W1-A: test-auto-review.sh (Weight: M, Gate: review, Deps: none)
+
+Create `tests/scenarios/test-auto-review.sh` exercising the production-
+critical paths of `hooks/auto-review.sh`.
+
+**Function-level tests (source the hook functions):**
+
+The test file sources `hooks/auto-review.sh` functions by extracting them
+or by sourcing the file with the main execution path disabled (set
+COMMAND="" before the main block, or source only the function definitions).
+Strategy: extract the functions (lines 37-520) into a sourceable block via
+a test preamble that defines stubs for `read_input`, `get_field`, and
+`log.sh` dependencies, then sources the hook. This avoids executing the
+main block (lines 833-842) which requires stdin JSON.
+
+**Test matrix (assertions):**
+
+1. `decompose_command` -- multi-line collapse:
+   - Input: `printf '%s' "line1\nline2"` (contains literal newline)
+   - Assert: output is a single segment (newline collapsed to space)
+
+2. `decompose_command` -- `&&` splitting with quote preservation:
+   - Input: `echo "hello && world" && ls`
+   - Assert: two segments: `echo "hello && world"` and ` ls`
+
+3. `decompose_command` -- `||` splitting:
+   - Input: `false || echo fallback`
+   - Assert: two segments: `false ` and ` echo fallback`
+
+4. `decompose_command` -- `;` splitting:
+   - Input: `echo a; echo b`
+   - Assert: two segments: `echo a` and ` echo b`
+
+5. `decompose_command` -- semicolon inside quotes preserved:
+   - Input: `echo "a;b"`
+   - Assert: one segment (semicolon not treated as separator)
+
+6. `classify_command` -- Tier 1 (always safe):
+   - Commands: `ls`, `cat`, `echo`, `grep`, `wc`, `sort`
+   - Assert: each returns `1`
+
+7. `classify_command` -- Tier 2 (behavior-dependent):
+   - Commands: `git`, `npm`, `python3`, `docker`, `curl`, `sed`
+   - Assert: each returns `2`
+
+8. `classify_command` -- Tier 3 (always risky):
+   - Commands: `rm`, `sudo`, `kill`, `bash`, `ssh`, `eval`
+   - Assert: each returns `3`
+
+9. `classify_command` -- Unknown command:
+   - Command: `nonexistent_tool_xyz`
+   - Assert: returns `0` (unknown)
+
+10. `is_safe` -- Tier 1 command is safe:
+    - Input: `ls -la /tmp`
+    - Assert: returns 0 (safe)
+
+11. `is_safe` -- Tier 3 command is risky:
+    - Input: `rm -rf /foo`
+    - Assert: returns 1 (risky), RISK_REASON non-empty
+
+12. `is_safe` -- pipe safety (all safe):
+    - Input: `cat file.txt | grep pattern | wc -l`
+    - Assert: returns 0 (safe)
+
+13. `is_safe` -- pipe safety (one risky segment):
+    - Input: `cat file.txt | rm dangerous`
+    - Assert: returns 1 (risky)
+
+14. `analyze_tier2` for git -- safe subcommands:
+    - Input: `analyze_git "status"`, `analyze_git "log --oneline"`,
+      `analyze_git "diff HEAD"`
+    - Assert: each returns 0
+
+15. `analyze_tier2` for git -- risky flags:
+    - Input: `analyze_git "push --force"`, `analyze_git "reset --hard"`
+    - Assert: each returns 1, RISK_REASON set
+
+16. `analyze_tier2` for python3/node -- always allowed:
+    - Input: `analyze_tier2 "python3" "script.py" 0`
+    - Assert: returns 0
+
+17. `is_safe` -- heredoc detected as risky:
+    - Input: `cat << EOF`
+    - Assert: returns 1, RISK_REASON mentions heredoc
+
+18. `is_safe` -- command substitution recursion:
+    - Input: `echo $(ls /tmp)`
+    - Assert: returns 0 (ls is safe inside substitution)
+
+19. `is_safe` -- risky command inside substitution:
+    - Input: `echo $(rm -rf /foo)`
+    - Assert: returns 1
+
+**End-to-end tests (subprocess invocation):**
+
+20. Hook invoked with safe command JSON:
+    - Stdin: `{"tool_input": {"command": "ls -la"}}`
+    - Assert: stdout contains `"permissionDecision": "allow"`
+
+21. Hook invoked with risky command JSON:
+    - Stdin: `{"tool_input": {"command": "rm -rf /"}}`
+    - Assert: stdout contains `"additionalContext"` with risk description
+
+22. Hook invoked with compound safe command:
+    - Stdin: `{"tool_input": {"command": "git status && git log --oneline -5"}}`
+    - Assert: stdout contains `"permissionDecision": "allow"`
+
+23. Hook invoked with compound mixed command:
+    - Stdin: `{"tool_input": {"command": "ls -la && rm -rf /tmp/test"}}`
+    - Assert: stdout contains `"additionalContext"` (not allow)
+
+**Integration considerations:**
+- End-to-end tests must provide a real `log.sh` path. The hook sources
+  `log.sh` relative to its own directory (`$(dirname "$0")/log.sh`), so
+  running the hook as a subprocess from `tests/scenarios/` requires the
+  hook to be invoked at its actual path (`hooks/auto-review.sh`).
+- The function-level tests stub out `log.sh` dependencies (read_input,
+  get_field) since those require stdin JSON. Only the bare functions
+  (decompose_command, classify_command, is_safe, analyze_tier2, etc.) are
+  exercised.
+
+##### W1-B: test-stop-assessment.sh Cases D, E, F (Weight: S, Gate: review, Deps: none)
+
+Extend `tests/scenarios/test-stop-assessment.sh` with three new cases that
+lock down the false-positive suppression boundary.
+
+**Test matrix (assertions):**
+
+Case D: Future-tense body with test evidence present (false-positive suppression)
+- Response: "I reviewed the task. Let me check the existing implementation.
+  PASS: 5 tests passed. All checks green."
+- Assert: `stop_assessment` event count = 0 (suppressed by test evidence)
+- Assert: `agent_complete` event count >= 1
+- Assert: `agent_stopped` event count = 0
+- Assert: no WARNING in hookSpecificOutput.additionalContext
+
+Case E: Response ends with completion confirmation, no future-tense trailing
+- Response: "Implementation complete. All tests pass. Ready for tester review."
+- Assert: `stop_assessment` event count = 0
+- Assert: `agent_complete` event count >= 1
+- Assert: `agent_stopped` event count = 0
+
+Case F: Very short response (edge case)
+- Response: "Done."
+- Assert: `stop_assessment` event count = 0
+- Assert: `agent_complete` event count >= 1
+- Assert: `agent_stopped` event count = 0
+
+**Integration considerations:**
+- Reuse the existing `run_hook_chain` helper and `count_events` helper.
+- Each case gets its own tmp git dir and DB (same pattern as Cases A-C)
+  to avoid cross-contamination.
+- The response for Case D is carefully constructed: the future-tense
+  pattern ("Let me check") appears in the last 500 chars, but test
+  evidence ("PASS: 5 tests passed") also appears. The heuristic must
+  detect the future-tense pattern, then suppress via test evidence
+  cross-check.
+
+#### Evaluation Contract
+
+**Required tests:**
+- `bash tests/scenarios/test-auto-review.sh` exits 0 with all PASS lines
+- `bash tests/scenarios/test-stop-assessment.sh` exits 0 with Cases A-F
+  all PASS
+- Each test is independently runnable (no test-runner.sh dependency)
+
+**Required real-path checks:**
+- test-auto-review.sh end-to-end tests must invoke the actual
+  `hooks/auto-review.sh` hook (not a copy), confirming the hook's stdin
+  JSON contract (`tool_input.command`) and stdout JSON contract
+  (`permissionDecision` / `additionalContext`) are exercised against the
+  real file
+- test-stop-assessment.sh Cases D-F must invoke the actual
+  `hooks/check-implementer.sh` and `hooks/post-task.sh` hooks (same as
+  Cases A-C), confirming the false-positive suppression path is exercised
+  against the real code
+
+**Required authority invariants:**
+- No source files in `hooks/` are modified
+- No runtime files in `runtime/` are modified
+- No `settings.json` changes
+- The test files do not write to any production DB path (each test uses its
+  own temp DB via `CLAUDE_POLICY_DB`)
+
+**Required integration points:**
+- test-auto-review.sh end-to-end tests must confirm `hooks/log.sh` is
+  correctly sourced by the hook (the hook fails if log.sh is unavailable)
+- test-stop-assessment.sh Cases D-F must confirm the check-implementer ->
+  post-task hook chain works identically to Cases A-C (same helpers, same
+  env vars)
+
+**Forbidden shortcuts:**
+- Do not mock `decompose_command`, `classify_command`, or `is_safe` -- test
+  the real implementations
+- Do not modify any hook source to make it "testable"
+- Do not use `eval` to construct test commands
+- Do not skip the end-to-end tests (assertions 20-23) -- function-level
+  tests alone are insufficient because they bypass the hook's input parsing
+  and output formatting
+
+**Ready-for-guardian definition:**
+- Both test files execute independently with exit code 0
+- All individual assertions report PASS (no FAIL lines in output)
+- No source files outside `tests/scenarios/` are modified
+- The implementer provides the full test output as evidence
+
+#### Scope Manifest
+
+**Allowed files/directories:**
+- `tests/scenarios/test-auto-review.sh` (create)
+- `tests/scenarios/test-stop-assessment.sh` (modify -- append only)
+- `tmp/` (test temp files, cleaned by trap)
+
+**Required files/directories:**
+- `tests/scenarios/test-auto-review.sh` must be created
+- `tests/scenarios/test-stop-assessment.sh` must be modified (Cases D, E, F
+  appended before the Results block)
+
+**Forbidden touch points:**
+- `hooks/auto-review.sh` -- read only, do not modify
+- `hooks/check-implementer.sh` -- read only, do not modify
+- `hooks/post-task.sh` -- read only, do not modify
+- `hooks/log.sh` -- read only, do not modify
+- `hooks/lib/*` -- do not modify
+- `runtime/*` -- do not modify
+- `settings.json` -- do not modify
+- `MASTER_PLAN.md` -- do not modify (planner-only)
+
+**Expected state authorities touched:**
+- None (test-only work; each test creates its own ephemeral SQLite DB
+  in tmp/ and destroys it on exit)
+
+### INIT-CONV: Identity Convergence
+
+- **Status:** in progress
+- **Blocked by:** none (independent of INIT-003/004/PE/REBASE/TESTGAP)
+- **Problem:** Storage authority is singular (SQLite), but identity authority
+  is not. Three dimensions — path, agent, workflow — derive values through
+  multiple incompatible paths, causing live enforcement bugs and state
+  pollution. The Python policy engine and completion-driven router are the
+  right core. The remaining work is to remove identity drift, not to add
+  another layer.
+- **Evidence:** `test-guard-db-scoping.sh` currently fails (path
+  normalization). Live marker list accumulates stale Explore/general-purpose
+  entries. Live DB shows duplicate workflow forms for the same conceptual
+  work. Statusline shows contradictory proof/eval readiness.
+- **Handoff:** `docs/HANDOFF_2026-04-05_SYSTEM_EVAL.md`
+- **North star:** One authority per operational fact: one canonical
+  `project_root`, one canonical `workflow_id`, one canonical active-agent
+  identity, one readiness authority, one dispatch routing authority, one
+  lifecycle authority for spawn and stop.
+
+#### Explicit non-goals
+
+- Shell-to-Python lifecycle migration (strategic, deferred)
+- `cli.py` decomposition into subcommand modules (maintenance)
+- New features or capabilities
+- Schema version migration framework
+- `dispatch_queue` table removal (separate cleanup issue unless proven
+  trivial by grep/test audit)
+
+#### Dependency graph
+
+```
+W-CONV-1 (Path Identity)
+    │
+    ├──→ W-CONV-2 (Marker Authority)
+    │         │
+    │         └──→ W-CONV-3 (Workflow Identity)
+    │                   │
+    │                   ├──→ W-CONV-4 (Readiness Surface)  ─┐
+    │                   │                                    ├──→ W-CONV-6 (Dead Surface Deletion)
+    │                   └──→ W-CONV-5 (Completion Contracts)─┘
+```
+
+W-CONV-4 and W-CONV-5 can execute in parallel after W-CONV-3.
+W-CONV-6 requires both W-CONV-4 and W-CONV-5.
+
+#### Required retest set (every packet)
+
+```bash
+python3 -m pytest tests/runtime/policies/test_bash_adapter_regressions.py -q
+bash tests/scenarios/test-guard-db-scoping.sh
+bash tests/scenarios/test-marker-lifecycle.sh
+bash tests/scenarios/test-lease-workflow-id-authority.sh
+bash tests/scenarios/test-routing-tester-completion.sh
+bash tests/scenarios/test-routing-guardian-completion.sh
+```
+
+Full convergence retest (after W-CONV-6):
+
+```bash
+python3 -m pytest tests/runtime/test_policy_engine.py tests/runtime/test_dispatch_engine.py tests/runtime/test_dispatch.py tests/runtime/test_hook_bridge.py tests/runtime/test_evaluation.py tests/runtime/test_leases.py tests/runtime/test_markers.py tests/runtime/test_statusline_truth.py tests/runtime/test_cli.py tests/runtime/test_config_scoping.py tests/runtime/policies -q
+```
+
+#### W-CONV-1: Path Identity Convergence
+
+- **Status:** complete (merged 43e26c6, 2026-04-05)
+- **Issue:** #4
+- **Decision:** DEC-CONV-001
+
+**Problem:** `detect_project_root()` in `policy_utils.py` returns raw paths.
+`~/.claude` is a symlink that git canonicalizes to the realpath.
+`/tmp` canonicalizes to `/private/tmp` on macOS. `test_state` is keyed by
+exact `project_root` string. Result: rows written via one path form become
+invisible when queried via another. `test-guard-db-scoping.sh` currently
+fails because of this.
+
+**Approach:** Add `normalize_path()` to `policy_utils.py` using
+`os.path.realpath()`. Apply at every persist and query boundary for
+`project_root` and `worktree_path`. Shell callers use the Python bridge or
+`realpath`/`readlink -f`.
+
+**Callsites that must normalize (Python — persist/query project_root):**
+- `runtime/core/policy_utils.py:detect_project_root()` — normalize return
+- `runtime/core/policy_engine.py:build_context()` — project_root parameter
+- `runtime/core/test_state.py:set_status()` — persists project_root as key
+- `runtime/core/test_state.py:get_status()` — queries by project_root
+- `runtime/core/test_state.py:check_pass()` — queries by project_root
+- `runtime/cli.py:_handle_evaluate()` — resolves target_cwd to project_root
+
+**Callsites that must normalize (Python — persist/query worktree_path):**
+- `runtime/core/workflows.py:bind_workflow()` — persists worktree_path
+- `runtime/core/leases.py` — worktree_path in lease records
+- `runtime/core/policy_engine.py:build_context()` — lease lookup
+- `runtime/core/dispatch_engine.py` — issues leases with worktree_path
+
+**Callsites that must normalize (Shell — forwarding to Python):**
+- `hooks/pre-bash.sh` — TARGET_CWD forwarded to evaluate payload
+- `hooks/pre-write.sh` — _PROJECT_ROOT from git rev-parse
+- `hooks/track.sh` — PROJECT_ROOT for eval invalidation
+- `hooks/subagent-start.sh` — PROJECT_ROOT for marker and lease binding
+- `hooks/context-lib.sh:detect_project_root()` — the shell version
+- All `check-*.sh` hooks — PROJECT_ROOT for runtime lookups
+
+**Evaluation Contract:**
+- `bash tests/scenarios/test-guard-db-scoping.sh` MUST PASS (currently fails)
+- `python3 -m pytest tests/runtime/policies/test_bash_adapter_regressions.py -q`
+- `python3 -m pytest tests/runtime/test_policy_engine.py tests/runtime/test_config_scoping.py -q`
+- New test: symlink-path write + realpath read returns same row
+- New test: `/tmp/` write + `/private/tmp/` query matches
+- `normalize_path()` exists in `policy_utils.py` as the sole normalizer
+- No module persists raw paths while another persists realpaths
+
+**Scope Manifest:**
+- *Allowed:* `runtime/core/policy_utils.py`, `runtime/core/policy_engine.py`,
+  `runtime/core/test_state.py`, `runtime/cli.py`, `runtime/core/workflows.py`,
+  `runtime/core/leases.py`, `runtime/core/dispatch_engine.py`,
+  `hooks/pre-bash.sh`, `hooks/pre-write.sh`, `hooks/track.sh`,
+  `hooks/subagent-start.sh`, `hooks/context-lib.sh`, `hooks/check-*.sh`,
+  `tests/scenarios/test-guard-db-scoping.sh`, test files under `tests/`
+- *Required:* `runtime/core/policy_utils.py` (add normalize_path),
+  `runtime/core/policy_engine.py` (normalize in build_context),
+  `runtime/core/test_state.py` (normalize project_root in set/get)
+- *Forbidden:* `runtime/schemas.py`, `settings.json`, `MASTER_PLAN.md`,
+  `agents/*.md`, `CLAUDE.md`
+
+**Expected state authorities touched:**
+- `test_state` table (project_root key normalization)
+- `evaluation_state` table (workflow_id derivation path change)
+- `dispatch_leases` table (worktree_path normalization)
+- `workflow_bindings` table (worktree_path normalization)
+
+#### W-CONV-2: Marker Authority Repair
+
+- **Status:** complete (merged 7a6d56a, 2026-04-05)
+- **Issue:** #2
+- **Decision:** DEC-CONV-002
+- **Depends on:** W-CONV-1 (path identity must be stable before scoping
+  markers by project)
+
+**Problem:** `SubagentStart` registers markers for all agent types
+(`subagent-start.sh:49`). `SubagentStop` matchers in `settings.json` only
+cover planner|Plan, implementer, tester, guardian. `get_active()` in
+`markers.py:52` returns the globally newest active marker with no project or
+workflow scoping. Live state has accumulated stale Explore/general-purpose
+markers that contaminate actor-role truth and statusline.
+
+**Approach:**
+1. Filter: Only dispatch-significant roles (planner, implementer, tester,
+   guardian) create markers in `subagent-start.sh`.
+2. Schema: Add `project_root` column to `agent_markers` via migration in
+   `ensure_schema()`. Populate `project_root` (using `normalize_path()` from
+   W-CONV-1) and `workflow_id` (column already exists in DDL) on
+   dispatch-significant marker writes.
+3. Scope: `get_active()` accepts optional `project_root` and `workflow_id`
+   parameters. When provided, WHERE clause filters by them. Global unscoped
+   fallback is removed.
+4. Cleanup: One-time deactivation of existing active lightweight markers
+   (role NOT IN planner/implementer/tester/guardian) in `ensure_schema()`
+   migration.
+
+**Evaluation Contract:**
+- `bash tests/scenarios/test-marker-lifecycle.sh`
+- `python3 -m pytest tests/runtime/test_markers.py -q`
+- `python3 -m pytest tests/runtime/test_policy_engine.py -q`
+- New test: spawning Explore agent creates NO marker row
+- New test: with tester active in workflow A and implementer active in
+  workflow B, `get_active(project_root=X, workflow_id=A)` returns tester
+- `get_active()` in `policy_engine.py build_context()` uses scoped query
+- Active marker list does not accumulate lightweight roles
+
+**Scope Manifest:**
+- *Allowed:* `hooks/subagent-start.sh`, `runtime/core/markers.py`,
+  `runtime/core/lifecycle.py`, `runtime/core/policy_engine.py`,
+  `runtime/core/statusline.py`, `runtime/schemas.py` (migration only),
+  test files under `tests/`
+- *Required:* `hooks/subagent-start.sh` (filter lightweight types),
+  `runtime/core/markers.py` (scoped get_active, add project_root param),
+  `runtime/core/policy_engine.py` (use scoped marker query),
+  `runtime/schemas.py` (add project_root column migration)
+- *Forbidden:* `settings.json`, `MASTER_PLAN.md`, `agents/*.md`
+
+**Expected state authorities touched:**
+- `agent_markers` table (schema change: project_root column; write
+  filtering; scoped reads; one-time cleanup migration)
+
+#### W-CONV-3: Workflow Identity Convergence
+
+- **Status:** not started
+- **Issue:** #3
+- **Decision:** DEC-CONV-003
+- **Depends on:** W-CONV-1 (path normalization), W-CONV-2 (marker scoping
+  provides clean actor context for workflow resolution)
+
+**Problem:** `track.sh:53` calls `current_workflow_id()` which derives
+workflow ID from branch name via `sanitize_token()`. If the active lease has
+a different `workflow_id`, eval invalidation targets a different workflow row
+than the tester/guardian paths use. `build_context()` at
+`policy_engine.py:414` falls back to branch-derived identity when no lease
+exists. Live DB shows duplicate workflow IDs: `feature/stab-a4-new-cleanup`,
+`feature-stab-a4-new-cleanup`, `feature--stab-a4-new-cleanup`, plus multiple
+bindings to the same main worktree.
+
+**Approach:**
+1. Lease-first: Every shell hook and Python module that needs a workflow_id
+   checks for active lease first via `lease_context()` (shell) or lease
+   lookup (Python). Falls back to `current_workflow_id()` only when no
+   lease exists.
+2. Critical fix: `track.sh` uses `lease_context()` before falling back to
+   branch-derived `current_workflow_id()` for eval invalidation.
+3. Historical repair: One-time bounded cleanup of existing duplicate
+   workflow rows. Strategy: identify canonical form per conceptual workflow,
+   update or soft-mark non-canonical rows. If cleanup is complex, explicitly
+   mark historical rows as ignored (e.g., status='historical') rather than
+   deleting.
+
+**Evaluation Contract:**
+- `bash tests/scenarios/test-lease-workflow-id-authority.sh`
+- `bash tests/scenarios/test-routing-tester-completion.sh`
+- `bash tests/scenarios/test-routing-guardian-completion.sh`
+- `python3 -m pytest tests/runtime/test_leases.py tests/runtime/test_evaluation.py -q`
+- No new duplicate-form workflow rows created by normal leased operation
+- Eval invalidation after source writes targets the same workflow_id that
+  tester and guardian paths use
+- Grep: `current_workflow_id` in `track.sh` appears only behind a lease
+  check
+
+**Scope Manifest:**
+- *Allowed:* `hooks/track.sh`, `hooks/context-lib.sh`,
+  `hooks/subagent-start.sh`, `hooks/check-tester.sh`,
+  `hooks/check-guardian.sh`, `hooks/post-task.sh`,
+  `runtime/core/policy_engine.py`, `runtime/core/workflows.py`,
+  `runtime/core/evaluation.py`, `runtime/core/completions.py`,
+  test files under `tests/`
+- *Required:* `hooks/track.sh` (lease-first workflow_id resolution)
+- *Forbidden:* `runtime/schemas.py`, `settings.json`, `MASTER_PLAN.md`
+
+**Expected state authorities touched:**
+- `evaluation_state` table (workflow_id alignment)
+- `completion_records` table (workflow_id alignment)
+- `workflow_bindings` table (workflow_id consistency; historical repair)
+
+#### W-CONV-4: Readiness Surface Cleanup
+
+- **Status:** not started
+- **Issue:** #5
+- **Depends on:** W-CONV-3 (identity must be stable before changing what
+  the operator sees)
+
+**Problem:** `statusline.py:131-142` queries `proof_state` and surfaces
+`proof_status` and `proof_workflow` alongside `evaluation_state`.
+Enforcement already uses only `evaluation_state`, but operators see both
+signals, which can contradict. `docs/DISPATCH.md` still describes
+prompt-driven proof verification as live.
+
+**Approach:** Remove `proof_state` reads from `statusline.py` snapshot.
+Make `evaluation_state` the sole readiness display. Update stale docs.
+`proof_state` table remains in schema (storage removal is W-CONV-6 scope
+if ever needed).
+
+**Evaluation Contract:**
+- `python3 -m pytest tests/runtime/test_statusline_truth.py -q`
+- Statusline snapshot JSON does NOT contain `proof_status` or
+  `proof_workflow` as readiness fields
+- `evaluation_state` is the sole readiness display
+- `docs/DISPATCH.md` does not describe proof verification as live behavior
+
+**Scope Manifest:**
+- *Allowed:* `runtime/core/statusline.py`, `runtime/core/proof.py`,
+  `runtime/cli.py`, `hooks/session-init.sh`, `hooks/context-lib.sh`,
+  `docs/DISPATCH.md`, `hooks/HOOKS.md`, `docs/*.md`,
+  `scripts/statusline.sh`, test files under `tests/`
+- *Required:* `runtime/core/statusline.py` (remove proof_state reads)
+- *Forbidden:* `runtime/schemas.py`, `settings.json`, `MASTER_PLAN.md`
+
+**Expected state authorities touched:**
+- `proof_state` table (read path removed from statusline)
+
+#### W-CONV-5: Completion Contract Closure (Implementer)
+
+- **Status:** complete (2026-04-05)
+- **Issue:** #6
+- **Depends on:** W-CONV-3 (workflow identity must be stable so completion
+  records have correct workflow_id)
+- **Commit:** `297a330`
+
+**Problem:** `completions.py:39-50` defined `ROLE_SCHEMAS` only for tester
+and guardian. Implementer schema was commented out (lines 52-66).
+`check-implementer.sh` did not parse structured trailers. Stop-handling
+relied on the stop-assessment heuristic (DEC-STOP-ASSESS-001) as primary
+signal.
+
+**Delivered:**
+1. Activated implementer schema in `completions.py` (IMPL_STATUS,
+   IMPL_HEAD_SHA) — now in ROLE_SCHEMAS at lines 52-57.
+2. `check-implementer.sh` Check 8 (lines 265-322) parses IMPL_STATUS and
+   IMPL_HEAD_SHA trailers from implementer response, submits completion
+   record via `cc-policy completion submit`.
+3. `dispatch_engine.py` DEC-IMPL-CONTRACT-001 (lines 163-191) reads the
+   completion record and overrides the heuristic `is_interrupted` signal
+   when a valid contract is present. Deferred stop-event emission (lines
+   218-224) ensures the override happens before the event is written.
+4. Heuristic (DEC-STOP-ASSESS-001) is fallback only when no valid
+   completion record exists.
+5. Routing (implementer → tester) unchanged regardless of contract status.
+
+**Review evidence:**
+- Tests: 16/16 passing (`tests/scenarios/test-implementer-completion-contract.sh`)
+- Codex review: PASS on contract override, race condition, tests; PARTIAL
+  on false-continuation (orchestrator prompt trust is out of scope)
+- Minor follow-up gaps: `db.py` busy_timeout (graceful fallback exists),
+  `completions.latest()` role filter (safe via explicit check at line 170)
+
+**Evaluation Contract:**
+- `python3 -m pytest tests/runtime/test_dispatch.py tests/runtime/test_dispatch_engine.py -q`
+- `bash tests/scenarios/test-routing-tester-completion.sh`
+- `bash tests/scenarios/test-routing-guardian-completion.sh`
+- New test: implementer with valid IMPL_STATUS trailer produces valid
+  completion record
+- New test: implementer without trailers falls back to heuristic
+  (advisory, not primary)
+- Routing rules remain exclusively in `completions.py:determine_next_role()`
+
+**Scope Manifest:**
+- *Allowed:* `agents/implementer.md`, `hooks/check-implementer.sh`,
+  `runtime/core/completions.py`, `runtime/core/dispatch_engine.py`,
+  `runtime/schemas.py` (COMPLETION_ENFORCED_ROLES update only),
+  test files under `tests/`
+- *Required:* `runtime/core/completions.py` (activate implementer schema),
+  `hooks/check-implementer.sh` (parse structured trailers)
+- *Forbidden:* `settings.json`, `MASTER_PLAN.md`, `agents/planner.md`
+  (planner contract is follow-up)
+
+**Expected state authorities touched:**
+- `completion_records` table (new role schema validated)
+
+#### W-CONV-6: Dead Surface Deletion
+
+- **Status:** not started
+- **Issue:** #7
+- **Depends on:** W-CONV-4 (readiness surface proven), W-CONV-5 (completion
+  contracts proven)
+
+**Problem:** Dead compatibility surfaces remain after replacement paths
+landed: `.plan-drift` dead write in `surface.sh`, stale `.subagent-tracker`
+references in comments, dead proof helpers in `context-lib.sh`, zero-byte
+`.claude/runtime.db` artifact.
+
+**Approach:** Delete each dead surface only after its replacement is proven
+by the prior packets. `dispatch_queue` table removal is explicitly out of
+scope for this initiative — tracked as a separate follow-up issue.
+
+**Primary targets:**
+- `.plan-drift` dead write in `surface.sh`
+- Stale `.subagent-tracker` references in hook comments
+- Dead `write_proof_status()`/`read_proof_status()` helpers in
+  `context-lib.sh` and `runtime-bridge.sh`
+- `.claude/runtime.db` zero-byte artifact
+
+**Evaluation Contract:**
+- Full convergence retest suite (all runtime + policy tests)
+- `grep -r '\.plan-drift' hooks/` returns zero matches
+- `grep -r '\.subagent-tracker' hooks/` returns zero matches
+- `grep -r 'write_proof_status\|read_proof_status' hooks/` returns zero
+  matches
+- `.claude/runtime.db` does not exist
+
+**Scope Manifest:**
+- *Allowed:* `hooks/surface.sh`, `hooks/write-guard.sh`,
+  `hooks/context-lib.sh`, `hooks/lib/runtime-bridge.sh`,
+  `hooks/session-end.sh`, `docs/*.md`, `hooks/HOOKS.md`,
+  `.claude/runtime.db` (deletion)
+- *Required:* `hooks/surface.sh` (remove .plan-drift write),
+  `hooks/context-lib.sh` (remove dead proof helpers)
+- *Forbidden:* `runtime/schemas.py` (no table drops in this initiative),
+  `settings.json`, `MASTER_PLAN.md`, `runtime/core/policy_engine.py`
+  (stable after packets 1-3)
+
+**Expected state authorities touched:**
+- None (removing dead code paths, not changing live authorities)
+
+### INIT-CDX: Codex Plugin Concurrency and Dead Task Handling
+
+- **Status:** planned
+- **Blocked by:** none (independent of INIT-003/004/PE/REBASE/TESTGAP/CONV;
+  operates entirely within the plugin's `scripts/` directory, no core hook or
+  runtime changes)
+- **Problem:** The Codex plugin has three interrelated reliability defects:
+  (1) dead tasks are never reaped -- a crashed process leaves its job record as
+  status="running" forever, blocking new task launches and misleading status
+  displays; (2) state writes are not atomic -- `upsertJob()` does
+  read-modify-write of `state.json` with no lock, so concurrent writers (e.g.,
+  background worker + session cleanup) silently lose updates; (3) the broker
+  serializes all operations behind a single active socket, though a direct-client
+  fallback path already exists that mitigates this.
+- **Goal:** Make job state writes crash-safe and concurrency-safe, automatically
+  reap dead tasks so no job stays "running" after its process dies, and harden
+  the direct-client fallback path so parallel task execution is reliable.
+- **Scope:** Three waves touching 7 files in
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/`. No core hook,
+  runtime, or policy-engine files are modified. This is a plugin-internal
+  improvement with no integration surface to the core governance system.
+- **Exit:** (1) concurrent `upsertJob()` calls from separate processes never
+  lose updates; (2) a job whose PID is dead is automatically marked failed on
+  the next status read; (3) two concurrent task invocations both succeed (one
+  via broker, one via direct-client fallback) without data loss.
+- **Dependencies:** none
+
+#### Wave Decomposition
+
+```
+W-CDX-1 (Atomic state writes) ─── W-CDX-2 (Stale task reaper)
+                                    └── W-CDX-3 (Broker fallback hardening)
+```
+
+**Critical path:** W-CDX-1 -> W-CDX-2 -> W-CDX-3
+**Max width:** 1
+
+#### State Authority Map
+
+| State Domain | Current Authority | INIT-CDX Change | Wave |
+|---|---|---|---|
+| Job records (list, status, metadata) | `state.json` per-workspace, no lock | O_EXCL lockfile + write-tmp-rename for atomic read-modify-write | W-CDX-1 |
+| Job detail files | `<jobs-dir>/<job-id>.json` (single-writer per job) | No change | -- |
+| Job log files | `<jobs-dir>/<job-id>.log` (append-only) | No change | -- |
+| Broker session | `broker.json` per-workspace | No change | -- |
+| Job liveness | **NONE** (the bug) | PID-based liveness check via `process.kill(pid, 0)` on every `listJobs()` | W-CDX-2 |
+| Codex app-server connection | Broker (primary) or direct process (fallback) | Fallback hardened with retry, logging, and notification handler setup | W-CDX-3 |
+
+#### Known Risks
+
+1. **O_EXCL lockfile stale on crash.** If the process crashes between acquiring
+   the lock and releasing it, the lockfile persists. Mitigation: stale lock
+   detection by mtime -- if lockfile is older than 5 seconds, forcibly remove it.
+   The 5-second threshold is generous (normal lock hold time is <50ms for a JSON
+   read-modify-write).
+2. **PID reuse false negative.** On macOS, PIDs are recycled. A dead task's PID
+   could be reused by an unrelated process, causing the reaper to think the task
+   is still alive. Mitigation: PID reuse on macOS cycles through ~99999 PIDs.
+   The window where a task PID is reused AND the task is dead AND the reaper
+   hasn't run is negligible. For additional safety, the reaper can cross-check
+   `process.kill(pid, 0)` with the job's `startedAt` timestamp -- if the job
+   started hours ago and the PID is alive but has a different process start time,
+   it's a reuse. This cross-check is deferred to a future enhancement if PID
+   reuse proves to be a real problem.
+3. **Direct-client fallback resource consumption.** Each direct client spawns a
+   `codex app-server` process. With 3 concurrent tasks, that's 3 extra processes.
+   Mitigation: these are short-lived (task duration) and the Codex app-server is
+   designed to be spawnable. The broker still handles the common single-task case
+   efficiently.
+4. **Backward compatibility.** Existing job records lack lockfile awareness. No
+   issue: the lockfile is separate from state.json. Old and new code can coexist
+   -- old code writes without locking (less safe but not breaking), new code
+   acquires the lock first. After rollout, all writers use the lock.
+5. **Test isolation.** Testing concurrent writes requires spawning parallel
+   processes that race on state.json. Mitigation: use Node.js `worker_threads`
+   or `child_process.fork()` in tests to create real write contention.
+
+##### W-CDX-1: Atomic State Writes in state.mjs
+
+- **Weight:** M
+- **Gate:** review
+- **Deps:** none
+- **Integration:** `state.mjs` is imported by `tracked-jobs.mjs`,
+  `job-control.mjs`, `codex-companion.mjs`, `session-lifecycle-hook.mjs`,
+  `stop-review-gate-hook.mjs`, `broker-lifecycle.mjs`. All callers benefit
+  automatically since the lock is internal to `updateState()`/`saveState()`.
+
+**Implementer scope:**
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs`:
+  - Add `acquireLock(stateDir, timeoutMs = 2000)` function:
+    - Creates `<stateDir>/state.lock` with `fs.openSync(lockPath, 'wx')` (O_EXCL)
+    - On EEXIST: check lockfile mtime; if older than 5 seconds, `fs.unlinkSync`
+      and retry; otherwise backoff (10ms, 20ms, 40ms... exponential) and retry
+    - Returns a release function that `fs.unlinkSync`s the lockfile
+    - On timeout: throw an error ("Could not acquire state lock after Nms")
+  - Add `releaseLock(lockPath)` function:
+    - `fs.unlinkSync(lockPath)` wrapped in try-catch (ignore ENOENT)
+  - Modify `saveState(cwd, state)`:
+    - Write to `state.json.tmp` first, then `fs.renameSync` to `state.json`
+    - This ensures a crash mid-write leaves either the old state.json intact or
+      the new one fully written (rename is atomic on POSIX)
+  - Modify `updateState(cwd, mutate)`:
+    - Wrap the entire read-modify-write in `acquireLock` / `releaseLock`
+    - Pattern: `const release = acquireLock(stateDir); try { load, mutate, save }
+      finally { release(); }`
+  - Modify `saveState(cwd, state)`:
+    - Remove the `loadState(cwd)` call at line 93 that re-reads state for pruning.
+      Instead, accept the jobs-to-prune from the caller or compute the prune diff
+      from the state argument alone. The double-read is a concurrency hazard even
+      with locking (it widens the lock hold time unnecessarily) and is also a
+      correctness bug: the second read can see stale data from before the lock
+      was acquired. The prune diff should be computed from `state.jobs` only.
+
+**Test plan:**
+
+- Create `plugins/marketplaces/openai-codex/plugins/codex/tests/test-state-lock.mjs`:
+  - Test: single writer acquires and releases lock correctly
+  - Test: second writer blocks until first releases
+  - Test: stale lock (mtime > 5s) is forcibly removed
+  - Test: timeout is thrown after 2 seconds of contention
+  - Test: write-tmp-rename leaves valid state.json even if process crashes
+    (simulate by writing tmp then not renaming, verify old state.json survives)
+  - Test: concurrent `upsertJob` from two `child_process.fork()` workers both
+    succeed and both updates are visible in final state.json
+  - Test: `saveState` no longer re-reads state.json (the double-read is removed)
+
+###### Evaluation Contract for W-CDX-1
+
+**Required tests:**
+- All tests in `test-state-lock.mjs` pass
+- Existing Codex plugin functionality is not regressed (manual: run
+  `/codex:status`, launch a foreground task, launch a background task)
+
+**Required real-path checks:**
+1. `acquireLock` creates `state.lock` with O_EXCL and returns a release function
+2. `releaseLock` removes `state.lock` (ENOENT is ignored)
+3. `updateState` holds lock for entire read-modify-write cycle
+4. `saveState` writes to `state.json.tmp` then renames to `state.json`
+5. `saveState` does NOT call `loadState` internally (double-read removed)
+6. Two processes calling `upsertJob` concurrently both succeed; final
+   `state.json` contains both updates
+7. A lockfile older than 5 seconds is forcibly removed by the next acquirer
+
+**Required authority invariants:**
+- `state.json` remains the sole authority for job list state
+- The lockfile is transient (only held during write); it is never the authority
+  for anything
+- No new state file or database is introduced
+
+**Required integration points:**
+- `tracked-jobs.mjs` `runTrackedJob()` continues to work (it calls `upsertJob`)
+- `session-lifecycle-hook.mjs` `cleanupSessionJobs()` continues to work (it
+  calls `saveState` directly)
+- `stop-review-gate-hook.mjs` `listJobs()` continues to work
+- `codex-companion.mjs` `handleCancel()` continues to work (it calls `upsertJob`)
+
+**Forbidden shortcuts:**
+- Do not use `setTimeout`-based lock polling (use busy-wait with `fs.openSync`
+  retry to avoid yielding the event loop mid-lock-acquisition)
+- Do not introduce external npm dependencies
+- Do not change the state.json schema or format
+- Do not modify any file outside the plugin's `scripts/` directory
+
+**Ready-for-guardian definition:**
+All tests pass. Lock acquisition, contention, stale-lock cleanup, and
+concurrent-writer scenarios are demonstrated. The double-read in `saveState` is
+eliminated. `state.json` format is unchanged and backward-compatible.
+
+###### Scope Manifest for W-CDX-1
+
+**Allowed files/directories:**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs` (modify)
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-state-lock.mjs` (new)
+
+**Required files/directories:**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs` (must be modified)
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-state-lock.mjs` (must be created)
+
+**Forbidden touch points:**
+- Any file outside `plugins/marketplaces/openai-codex/plugins/codex/`
+- `state.json` schema (format must remain identical)
+- `tracked-jobs.mjs`, `job-control.mjs`, `codex-companion.mjs` (callers must
+  not need changes -- the lock is internal)
+- Core hook/runtime/policy files
+
+**Expected state authorities touched:**
+- MODIFIED: `state.mjs` write path -- now atomic via lockfile + tmp-rename
+- UNCHANGED: `state.json` format, `<job-id>.json` files, `<job-id>.log` files
+
+##### W-CDX-2: Stale Task Reaper
+
+- **Weight:** M
+- **Gate:** review
+- **Deps:** W-CDX-1 (reaper writes must be atomic)
+- **Integration:** `listJobs()` is called by `job-control.mjs`
+  `buildStatusSnapshot()`, `buildSingleJobSnapshot()`, `resolveResultJob()`,
+  `resolveCancelableJob()`; `codex-companion.mjs`
+  `resolveLatestTrackedTaskThread()`, `handleTaskResumeCandidate()`;
+  `stop-review-gate-hook.mjs`; `session-lifecycle-hook.mjs`
+  `cleanupSessionJobs()` (via `loadState()`).
+
+**Implementer scope:**
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs`:
+  - Add `isProcessAlive(pid)` function:
+    - Try `process.kill(pid, 0)`; return true on success
+    - Catch: if `error.code === 'ESRCH'`, return false (process not found)
+    - Catch: if `error.code === 'EPERM'`, return true (process exists but we
+      lack permission -- still alive)
+    - Catch: for any other error, return true (conservative: assume alive)
+  - Add `reapStaleJobs(cwd)` function:
+    - Load state via `loadState(cwd)`
+    - Find all jobs where `(status === "running" || status === "queued")` AND
+      `pid` is a finite number AND `!isProcessAlive(pid)`
+    - For each: set `status: "failed"`, `phase: "failed"`, `pid: null`,
+      `errorMessage: "Process exited unexpectedly (PID <pid> not found)."`,
+      `completedAt: nowIso()`
+    - Also update the corresponding job detail file (`<job-id>.json`) with the
+      same fields, reading the existing detail and merging
+    - If any jobs were reaped, save state via `saveState()` (which now uses the
+      lock from W-CDX-1)
+    - Return array of reaped job objects (for caller logging)
+  - Modify `listJobs(cwd)`:
+    - Call `reapStaleJobs(cwd)` before returning
+    - This makes reaping transparent to all callers
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/job-control.mjs`:
+  - No changes needed -- `listJobs()` already reaps via the above
+
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-reaper.mjs` (new):
+  - Test: a job with a non-existent PID is reaped to status="failed"
+  - Test: a job with PID=`process.pid` (current process, alive) is NOT reaped
+  - Test: a job with no PID field is NOT reaped (legacy job record)
+  - Test: a completed job is NOT reaped (already terminal)
+  - Test: a queued job with dead PID is reaped
+  - Test: the job detail file (`<job-id>.json`) is updated when reaped
+  - Test: `listJobs()` returns reaped state (status=failed) after reap
+  - Test: multiple dead jobs are all reaped in a single `listJobs()` call
+  - Test: reaper handles EPERM gracefully (process exists, permission denied)
+
+###### Evaluation Contract for W-CDX-2
+
+**Required tests:**
+- All tests in `test-reaper.mjs` pass
+- All tests in `test-state-lock.mjs` (W-CDX-1) still pass
+- Manual: kill -9 a background Codex task, then run `/codex:status` and verify
+  the task shows as "failed" (not "running")
+
+**Required real-path checks:**
+1. `isProcessAlive(pid)` returns false for non-existent PID (ESRCH)
+2. `isProcessAlive(pid)` returns true for alive PID
+3. `isProcessAlive(pid)` returns true for EPERM (alive but no permission)
+4. `reapStaleJobs()` transitions running+dead-PID jobs to failed
+5. `reapStaleJobs()` transitions queued+dead-PID jobs to failed
+6. `reapStaleJobs()` leaves running+alive-PID jobs untouched
+7. `reapStaleJobs()` leaves terminal (completed/failed/cancelled) jobs untouched
+8. `reapStaleJobs()` updates both `state.json` and the job detail file
+9. `listJobs()` transparently reaps before returning
+10. `resolveLatestTrackedTaskThread()` no longer throws "Task X is still running"
+    for dead tasks (they are reaped before the check)
+
+**Required authority invariants:**
+- `state.json` remains the sole authority for job list state
+- `<job-id>.json` remains the sole authority for job detail state
+- The reaper is a read-path side effect, not a separate daemon or authority
+
+**Required integration points:**
+- `buildStatusSnapshot()` reports reaped jobs as failed (not running)
+- `resolveLatestTrackedTaskThread()` skips reaped jobs (they have
+  status="failed", not "running")
+- `stop-review-gate-hook.mjs` sees reaped state through `listJobs()`
+- `cleanupSessionJobs()` sees reaped state through `loadState()` (note:
+  `cleanupSessionJobs` calls `loadState` directly, not `listJobs`, so the
+  reaper must also be called from `loadState` or `cleanupSessionJobs` must
+  call `reapStaleJobs` explicitly -- verify this integration)
+
+**Forbidden shortcuts:**
+- Do not add a background timer or periodic sweep
+- Do not change job status values or add new ones
+- Do not modify any file outside the plugin's `scripts/` directory
+- Do not introduce external npm dependencies
+
+**Ready-for-guardian definition:**
+All tests pass. Dead-PID jobs are automatically reaped. No phantom "running"
+jobs survive a PID check. The kill-and-check manual test demonstrates the
+end-to-end behavior.
+
+###### Scope Manifest for W-CDX-2
+
+**Allowed files/directories:**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs` (modify)
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-reaper.mjs` (new)
+
+**Required files/directories:**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs` (must be modified)
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-reaper.mjs` (must be created)
+
+**Forbidden touch points:**
+- `tracked-jobs.mjs` (callers must not need changes)
+- `job-control.mjs` (callers must not need changes)
+- `codex-companion.mjs` (callers must not need changes)
+- Any file outside `plugins/marketplaces/openai-codex/plugins/codex/`
+- Core hook/runtime/policy files
+
+**Expected state authorities touched:**
+- MODIFIED: `state.mjs` read path -- `listJobs()` now reaps stale jobs on read
+- UNCHANGED: `state.json` format, job status values, job detail file format
+
+##### W-CDX-3: Broker Fallback Hardening and Parallel Task Support
+
+- **Weight:** S
+- **Gate:** review
+- **Deps:** W-CDX-2 (dead task reaping must work so parallel tasks that crash
+  are cleaned up)
+- **Integration:** `codex.mjs` `withAppServer()` is the sole connection path;
+  `app-server-broker.mjs` is NOT modified (the broker stays single-socket by
+  design per DEC-CDX-003)
+
+**Implementer scope:**
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/codex.mjs`:
+  - Modify `withAppServer()` (lines 607-636):
+    - Expand `shouldRetryDirect` to also catch `ECONNRESET` and
+      `ERR_SOCKET_CLOSED` (observed when broker process dies mid-request)
+    - Add `emitProgress` call when falling back: "Broker busy or unavailable,
+      connecting directly to Codex runtime." (routed through the options
+      `onProgress` if available, or a module-level logger)
+    - Ensure the direct-client notification handler is properly set up (verify
+      that progress events and turn-completion events reach the caller even when
+      bypassing the broker)
+  - Modify `withAppServer()` error messages:
+    - When the direct-client fallback also fails, include both the original
+      broker error and the direct-client error in the thrown exception for
+      debuggability
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/app-server.mjs`:
+  - No changes to the broker client classes
+  - Verify that `BrokerCodexAppServerClient` handles `ECONNRESET` / socket close
+    gracefully (existing `handleExit` should handle this; verify in test)
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`:
+  - Modify `resolveLatestTrackedTaskThread()` (lines 311-325):
+    - The current guard `if (activeTask) throw` prevents launching a new task
+      when any task of jobClass="task" is running/queued. After W-CDX-2 reaped
+      dead tasks, this guard is already improved (dead tasks won't appear as
+      running). Verify this is sufficient -- no code change needed if the reaper
+      handles it.
+    - If the guard is still too restrictive (e.g., blocking a review while a
+      task runs), consider relaxing it to only guard same-jobClass launches.
+      Decision: evaluate during implementation and document the choice.
+
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-broker-fallback.mjs` (new):
+  - Test: `withAppServer()` catches BROKER_BUSY_RPC_CODE and retries direct
+  - Test: `withAppServer()` catches ECONNREFUSED and retries direct
+  - Test: `withAppServer()` catches ECONNRESET and retries direct
+  - Test: when both broker and direct fail, error includes both messages
+  - Test: progress events work through direct-client path (mock the
+    notification handler flow)
+
+###### Evaluation Contract for W-CDX-3
+
+**Required tests:**
+- All tests in `test-broker-fallback.mjs` pass
+- All tests from W-CDX-1 and W-CDX-2 still pass
+- Manual: launch a background task, then immediately launch a foreground review;
+  verify both succeed (one via broker, one via direct fallback)
+
+**Required real-path checks:**
+1. `withAppServer()` retries with direct client on BROKER_BUSY_RPC_CODE
+2. `withAppServer()` retries with direct client on ECONNREFUSED
+3. `withAppServer()` retries with direct client on ECONNRESET
+4. Fallback emits a progress/log message indicating direct connection
+5. Combined error message includes both broker and direct-client failure details
+6. Direct-client notification handler receives progress and turn-completion events
+
+**Required authority invariants:**
+- The broker remains the primary connection path (no behavior change for
+  single-task case)
+- `app-server-broker.mjs` is NOT modified (single-socket design preserved)
+- Direct-client fallback is a resilience mechanism, not a replacement for the
+  broker
+
+**Required integration points:**
+- `runAppServerReview()` works via broker or direct fallback
+- `runAppServerTurn()` works via broker or direct fallback
+- `interruptAppServerTurn()` works via broker or direct fallback
+- `findLatestTaskThread()` works via broker or direct fallback
+- Progress events reach `createJobProgressUpdater()` through both paths
+
+**Forbidden shortcuts:**
+- Do not modify `app-server-broker.mjs` (broker stays single-socket)
+- Do not add broker connection pooling or multi-socket support
+- Do not modify any file outside the plugin's `scripts/` directory
+- Do not introduce external npm dependencies
+
+**Ready-for-guardian definition:**
+All tests pass. Fallback handles all observed error codes. Progress events work
+through both broker and direct paths. The manual parallel-task test
+demonstrates end-to-end concurrent execution.
+
+###### Scope Manifest for W-CDX-3
+
+**Allowed files/directories:**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/codex.mjs` (modify)
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs` (modify, only if `resolveLatestTrackedTaskThread` guard needs relaxing)
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-broker-fallback.mjs` (new)
+
+**Required files/directories:**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/codex.mjs` (must be modified)
+- `plugins/marketplaces/openai-codex/plugins/codex/tests/test-broker-fallback.mjs` (must be created)
+
+**Forbidden touch points:**
+- `app-server-broker.mjs` (broker is not modified per DEC-CDX-003)
+- `state.mjs` (already handled by W-CDX-1/W-CDX-2)
+- `tracked-jobs.mjs`, `job-control.mjs` (no changes needed)
+- Any file outside `plugins/marketplaces/openai-codex/plugins/codex/`
+- Core hook/runtime/policy files
+
+**Expected state authorities touched:**
+- MODIFIED: `codex.mjs` `withAppServer()` error handling -- broader retry scope
+- UNCHANGED: broker architecture, state.json, job lifecycle
+
+### INIT-AUTODISPATCH: Automatic Role Sequencing Pipeline
+
+- **Status:** planned
+- **Blocked by:** none (operates on dispatch emission, prompt rules, and Codex
+  gate wiring; no dependency on INIT-003/004/PE/CONV/CDX/TESTGAP/REBASE)
+- **Problem:** The dispatch pipeline (planner -> implementer -> tester ->
+  guardian) computes the correct `next_role` via `dispatch_engine.py` but the
+  orchestrator treats every handoff as a user-approval prompt. The user is
+  frustrated by constant approval requests at every role boundary. The gap is
+  explicitly documented in `docs/DISPATCH.md:86-89`:
+  > **Not Yet Enforced:** Automatic role sequencing. The
+  > planner-to-implementer-to-tester-to-guardian flow is a convention the
+  > orchestrator follows from prompt instructions. No hook blocks dispatching
+  > out of order.
+
+  The user wants: (1) the canonical chain to flow automatically, (2) the Codex
+  stop-review gate as the quality checkpoint replacing manual user approval, and
+  (3) the chain to stop only when a tester says needs_changes/blocked_by_plan,
+  guardian needs explicit approval for high-risk ops, or Codex review says BLOCK.
+- **Goal:** Close the "Not Yet Enforced: Automatic role sequencing" gap so the
+  canonical dispatch chain flows without user intervention at every handoff, with
+  the Codex review gate as the automated quality checkpoint.
+- **Scope:** Four surfaces: `dispatch_engine.py` (one new field in result dict),
+  `runtime/cli.py` (pass-through of new field), `post-task.sh` (emit
+  `AUTO_DISPATCH:` directive), `CLAUDE.md` (auto-dispatch rules in Dispatch Rules
+  section), `settings.json` (wire Codex gate into SubagentStop), and
+  `docs/DISPATCH.md` (remove the gap from "Not Yet Enforced").
+- **Exit:** (1) When dispatch_engine computes a clear next_role with no errors,
+  `post-task.sh` emits `AUTO_DISPATCH: <role>` in hookSpecificOutput. (2) The
+  orchestrator dispatches that role immediately without asking the user. (3) When
+  `stopReviewGate` is enabled, the Codex gate runs at SubagentStop and can BLOCK
+  the auto-dispatch. (4) The chain stops automatically for: tester
+  needs_changes/blocked_by_plan with no auto-route, guardian high-risk ops
+  (push/rebase/force), errors, Codex BLOCK verdicts, and interrupted agents.
+  (5) `docs/DISPATCH.md` "Not Yet Enforced" section no longer lists automatic
+  role sequencing.
+- **Dependencies:** none
+
+#### Design Rationale
+
+**Why `auto_dispatch` as a field, not implicit from `next_role`:** There are
+cases where `next_role` is computed but auto-dispatch should NOT happen:
+interrupted agents (WARNING in suggestion), guardian high-risk ops that need
+user approval, and Codex BLOCK verdicts. The explicit boolean makes the
+auto-dispatch decision inspectable and testable independently of routing.
+
+**Why wire Codex into SubagentStop, not keep it on Stop only:** The Codex
+stop-review gate currently fires on the `Stop` hook event (session end). For
+auto-dispatch, the quality checkpoint must run BETWEEN role completions -- at
+SubagentStop time, after check-*.sh validates the role's output and before
+auto-dispatch fires the next role. Keeping it on Stop only would mean the
+quality gate runs too late (after all roles have already auto-dispatched).
+
+**Why opt-in via `stopReviewGate` config:** Not all users want Codex reviewing
+every role handoff. The existing `stopReviewGate: true/false` config in the
+Codex plugin state controls whether the gate fires. When false, auto-dispatch
+proceeds without the Codex review. When true, the gate runs at each
+SubagentStop and can BLOCK auto-dispatch.
+
+**Why the Codex gate runs AFTER check-*.sh but BEFORE post-task.sh:** The
+check-*.sh hooks validate role output (completion contracts, trailers, scope).
+The Codex gate reviews the work quality (architectural alignment, correctness).
+post-task.sh reads both signals -- the dispatch_engine result AND the Codex
+verdict -- to decide whether to emit `AUTO_DISPATCH:` or a suggestion.
+
+**Hook chain ordering concern:** The current SubagentStop chain is
+`[check-*.sh, post-task.sh]` per role. Adding the Codex gate between them
+requires inserting a new hook entry. However, hooks in the same array run
+sequentially and their outputs are independent -- each hook's JSON is merged
+by the Claude runtime. The Codex gate hook must write its verdict to a
+location that post-task.sh can read. Two options: (a) write to runtime state
+(SQLite), (b) use a temporary file. We choose (a) for consistency with the
+project's "runtime owns shared state" principle. The Codex gate writes its
+verdict to an `events` table entry; post-task.sh reads the most recent
+`codex_stop_review` event within a 60-second window.
+
+**Auto-dispatch for interrupted agents:** When check-implementer.sh or the
+completion contract detects an interrupted agent, the dispatch_engine sets
+`auto_dispatch: false` and appends a WARNING to the suggestion. The orchestrator
+sees the warning and can choose to resume the agent or dispatch the next role.
+This is conservative -- an interrupted implementer should probably be resumed,
+not replaced by a tester evaluating incomplete work.
+
+#### Wave Decomposition
+
+```
+W-AD-1 (dispatch_engine + CLI + post-task.sh)
+   └── W-AD-2 (CLAUDE.md auto-dispatch rules + docs/DISPATCH.md update)
+        └── W-AD-3 (Codex gate SubagentStop wiring)
+```
+
+**Critical path:** W-AD-1 -> W-AD-2 -> W-AD-3
+**Max width:** 1 (each wave depends on the prior for the signal contract)
+
+W-AD-1 adds the `auto_dispatch` field and changes the hookSpecificOutput
+format. W-AD-2 adds the orchestrator rules that act on `AUTO_DISPATCH:`.
+W-AD-3 wires the Codex gate as the quality checkpoint that can override
+auto-dispatch.
+
+#### State Authority Map
+
+| State Domain | Current Authority | INIT-AUTODISPATCH Change | Wave |
+|---|---|---|---|
+| Dispatch routing (next_role) | `dispatch_engine.py` via `process_agent_stop()` | Unchanged -- auto_dispatch is a new field alongside next_role | W-AD-1 |
+| Dispatch suggestion text | `dispatch_engine.py` `suggestion` field | `AUTO_DISPATCH: <role>` directive replaces `Canonical flow suggests dispatching: <role>` when auto_dispatch is true | W-AD-1 |
+| Codex stop-review verdict | Codex plugin `stop-review-gate-hook.mjs` on Stop event | Additionally fires on SubagentStop; verdict written to `events` table as `codex_stop_review` type | W-AD-3 |
+| Orchestrator dispatch behavior | CLAUDE.md Dispatch Rules (prompt convention) | Explicit auto-dispatch rule: act on `AUTO_DISPATCH:` without asking user | W-AD-2 |
+| hookSpecificOutput format | `post-task.sh` → `cli.py` process-stop handler | Pass-through of new `auto_dispatch` field; format change in suggestion text | W-AD-1 |
+
+#### Known Risks
+
+1. **Runaway chain.** If the tester always says `ready_for_guardian` and the
+   guardian always says `committed`, the chain could loop without the user ever
+   seeing what happened. Mitigation: the orchestrator must report what each role
+   did after the chain completes (or stops). The user sees a summary, not
+   nothing. Also, the chain is fundamentally bounded: guardian terminal states
+   (committed, merged) return `next_role: None`, which terminates the chain.
+
+2. **Codex gate latency.** The stop-review-gate-hook.mjs has a 15-minute
+   timeout. At every SubagentStop, this could add minutes of latency.
+   Mitigation: (a) the gate is opt-in via `stopReviewGate` config, (b) the
+   gate prompt includes `last_assistant_message` which is the role's output --
+   for status/setup turns it returns ALLOW immediately, (c) the timeout is per
+   the existing Codex task infrastructure which spawns a background Codex
+   process.
+
+3. **Codex gate unavailable.** If Codex is not set up (not logged in, CLI not
+   installed), the gate should not block auto-dispatch. Mitigation: the existing
+   `buildSetupNote()` in stop-review-gate-hook.mjs already handles this -- it
+   returns early without blocking. post-task.sh treats "no codex verdict" as
+   "ALLOW" (fail-open for the quality gate, fail-closed for the safety gate).
+
+4. **SubagentStop hook chain output merging.** When multiple hooks in the same
+   SubagentStop array emit `hookSpecificOutput`, the Claude runtime merges them.
+   If both the Codex gate hook and post-task.sh emit `hookSpecificOutput`, the
+   merge behavior must be understood. Current observation: hooks in a chain run
+   sequentially; each hook's output is an independent JSON object; the runtime
+   concatenates `additionalContext` strings from all hooks in order.
+   Mitigation: the Codex gate hook writes its verdict to SQLite (not
+   hookSpecificOutput), so only post-task.sh emits the final dispatch directive.
+
+5. **Existing Stop hook Codex gate.** The Codex gate currently fires on the
+   `Stop` event (session end). Adding it to `SubagentStop` means it fires at
+   both role boundaries AND session end. If `stopReviewGate` is true, the user
+   gets Codex reviews at both points. This is intentional: SubagentStop reviews
+   quality per-role, Stop reviews the session. If the user finds this redundant,
+   they can disable `stopReviewGate` (which disables both) or we can add a
+   separate per-event toggle later. We do not add that toggle in this initiative
+   to keep scope minimal.
+
+6. **Prompt compliance.** Auto-dispatch relies on the orchestrator (Claude)
+   obeying the CLAUDE.md rule "When SubagentStop hook output contains
+   `AUTO_DISPATCH: <role>`, dispatch that agent immediately without asking the
+   user." This is a prompt instruction, not a mechanical gate. The orchestrator
+   could still ask the user. Mitigation: this is the fundamental architecture of
+   Claude Code hooks -- they advise, they do not force tool calls. The prompt
+   rule is as strong as any other CLAUDE.md instruction. Mechanical enforcement
+   of automatic dispatch would require changes to the Claude Code runtime itself,
+   which is out of scope.
+
+##### W-AD-1: Auto-Dispatch Signal in dispatch_engine and hookSpecificOutput
+
+- **Weight:** M
+- **Gate:** review
+- **Deps:** none
+- **Integration:** `dispatch_engine.py` is called by `cli.py` `process-stop`
+  handler, which is called by `post-task.sh`. `post-task.sh` is in the
+  SubagentStop hook chain for all four roles. Changing the result dict format
+  requires updating the CLI handler to pass the new field through.
+
+**Implementer scope:**
+
+- `runtime/core/dispatch_engine.py`:
+  - Add `auto_dispatch: bool` field to the result dict (default `False`).
+  - Set `auto_dispatch = True` when ALL of:
+    - `next_role` is not None
+    - `error` is None
+    - `is_interrupted` is False
+    - The next_role is not guardian with a high-risk operation pending (for
+      guardian: only auto-dispatch when the tester verdict was
+      `ready_for_guardian` AND the guardian's expected operation is
+      commit/merge, not push/rebase/force -- this is approximated by always
+      auto-dispatching to guardian since guard.sh will deny the high-risk ops
+      mechanically; the user approval gate is in `bash_approval_gate` policy)
+  - For the `tester` role: when completion verdict is `needs_changes` or
+    `blocked_by_plan`, set `auto_dispatch = True` (auto-dispatch back to
+    implementer or planner respectively -- the user does not need to approve
+    rework).
+  - Change the suggestion format:
+    - When `auto_dispatch` is true: prefix the suggestion with
+      `AUTO_DISPATCH: <next_role>\n` followed by the existing detail text.
+    - When `auto_dispatch` is false: keep the existing
+      `Canonical flow suggests dispatching: <role>` format.
+  - The interruption warning appended when `is_interrupted` is true already
+    prevents auto-dispatch (since `auto_dispatch` is set false when
+    interrupted).
+
+- `runtime/cli.py`:
+  - In the `process-stop` handler (around line 299-315), pass `auto_dispatch`
+    through in the returned JSON: add `"auto_dispatch": result["auto_dispatch"]`
+    to the `_ok()` payload.
+  - Include `auto_dispatch` in the `hookSpecificOutput.additionalContext` when
+    true: prepend `AUTO_DISPATCH: <next_role>\n` to the additionalContext string
+    so the orchestrator sees it in the hook output.
+
+- `hooks/post-task.sh`:
+  - No routing logic changes (it remains a thin adapter per
+    DEC-DISPATCH-ENGINE-001).
+  - The hookSpecificOutput is already passed through from the CLI output. The
+    CLI handler now includes the `AUTO_DISPATCH:` prefix in additionalContext
+    when auto_dispatch is true, so post-task.sh needs no format changes -- it
+    already echoes the CLI's hookSpecificOutput verbatim.
+
+- `tests/runtime/test_dispatch_engine.py` (modify existing):
+  - Add test: planner stop -> auto_dispatch=True, next_role=implementer
+  - Add test: implementer stop (no interruption) -> auto_dispatch=True,
+    next_role=tester
+  - Add test: implementer stop (interrupted) -> auto_dispatch=False,
+    next_role=tester
+  - Add test: tester stop (ready_for_guardian) -> auto_dispatch=True,
+    next_role=guardian
+  - Add test: tester stop (needs_changes) -> auto_dispatch=True,
+    next_role=implementer
+  - Add test: tester stop (blocked_by_plan) -> auto_dispatch=True,
+    next_role=planner
+  - Add test: guardian stop (committed) -> auto_dispatch=False,
+    next_role=None (cycle complete, no dispatch)
+  - Add test: guardian stop (denied) -> auto_dispatch=True,
+    next_role=implementer
+  - Add test: error in routing -> auto_dispatch=False
+  - Add test: suggestion text starts with `AUTO_DISPATCH:` when auto_dispatch
+    is true
+  - Add test: suggestion text starts with `Canonical flow suggests` when
+    auto_dispatch is false
+
+- `tests/scenarios/test-auto-dispatch-signal.sh` (new):
+  - End-to-end: pipe synthetic JSON through `cc-policy dispatch process-stop`
+    for each role and verify the hookSpecificOutput contains `AUTO_DISPATCH:`
+    when expected and `Canonical flow suggests` when not.
+
+**Tester scope:**
+
+- Run all existing dispatch_engine tests -- verify no regression.
+- Run the new auto_dispatch tests.
+- Run the scenario test.
+- Verify the hookSpecificOutput JSON from post-task.sh contains the
+  `AUTO_DISPATCH:` prefix for happy-path transitions.
+- Verify interrupted agents produce `auto_dispatch: false` with the WARNING.
+- Verify error cases produce `auto_dispatch: false`.
+
+###### Evaluation Contract for W-AD-1
+
+**Required tests:**
+- All existing tests in `tests/runtime/test_dispatch_engine.py` pass
+- All new auto_dispatch tests pass (11 cases listed above)
+- `test-auto-dispatch-signal.sh` scenario test passes
+
+**Required real-path checks:**
+1. `process_agent_stop()` returns `auto_dispatch` field in the result dict
+2. `auto_dispatch` is `True` for planner -> implementer transition
+3. `auto_dispatch` is `True` for implementer -> tester transition (not
+   interrupted)
+4. `auto_dispatch` is `False` for interrupted implementer -> tester
+5. `auto_dispatch` is `True` for tester(ready_for_guardian) -> guardian
+6. `auto_dispatch` is `True` for tester(needs_changes) -> implementer
+7. `auto_dispatch` is `True` for tester(blocked_by_plan) -> planner
+8. `auto_dispatch` is `False` for guardian(committed) -> None (cycle complete)
+9. `auto_dispatch` is `True` for guardian(denied) -> implementer
+10. `auto_dispatch` is `False` when `error` is not None
+11. Suggestion text starts with `AUTO_DISPATCH: <role>` when auto_dispatch is
+    true
+12. Suggestion text starts with `Canonical flow suggests` when auto_dispatch is
+    false
+13. `cc-policy dispatch process-stop` JSON output includes `auto_dispatch` field
+14. hookSpecificOutput `additionalContext` includes `AUTO_DISPATCH:` prefix when
+    auto_dispatch is true
+
+**Required authority invariants:**
+- `dispatch_engine.py` remains the sole routing authority
+- `completions.py` `determine_next_role()` remains the sole routing table
+- `auto_dispatch` is derived from existing fields (next_role, error,
+  is_interrupted) -- no new state authority introduced
+- post-task.sh remains a thin adapter with no routing logic
+
+**Required integration points:**
+- `cli.py` process-stop handler passes `auto_dispatch` through
+- post-task.sh echoes hookSpecificOutput verbatim (no changes needed)
+- Existing check-*.sh hooks are not modified
+
+**Forbidden shortcuts:**
+- Do not add routing logic to post-task.sh
+- Do not modify the completion record schema
+- Do not modify the evaluation state machine
+- Do not modify check-*.sh hooks
+- Do not add a new SQLite table for auto-dispatch state
+- Do not modify `completions.py` `determine_next_role()`
+
+**Ready-for-guardian definition:**
+All 14 real-path checks pass. All tests pass (existing + new). The
+`auto_dispatch` field is present and correct in both Python dict and CLI JSON
+output. hookSpecificOutput format changes are verified end-to-end.
+
+###### Scope Manifest for W-AD-1
+
+**Allowed files/directories:**
+- `runtime/core/dispatch_engine.py` (modify)
+- `runtime/cli.py` (modify)
+- `tests/runtime/test_dispatch_engine.py` (modify)
+- `tests/scenarios/test-auto-dispatch-signal.sh` (new)
+
+**Required files/directories:**
+- `runtime/core/dispatch_engine.py` (must be modified)
+- `runtime/cli.py` (must be modified)
+- `tests/runtime/test_dispatch_engine.py` (must be modified)
+- `tests/scenarios/test-auto-dispatch-signal.sh` (must be created)
+
+**Forbidden touch points:**
+- `runtime/core/completions.py` (routing table unchanged)
+- `runtime/core/evaluation.py` (eval state machine unchanged)
+- `hooks/check-*.sh` (validation hooks unchanged)
+- `hooks/post-task.sh` (thin adapter, needs no changes since CLI formats the
+  hookSpecificOutput)
+- `settings.json` (hook wiring unchanged in this wave)
+- `CLAUDE.md` (prompt changes are W-AD-2)
+- `docs/DISPATCH.md` (doc update is W-AD-2)
+- `agents/*.md` (no agent prompt changes)
+- `plugins/` (Codex gate wiring is W-AD-3)
+
+**Expected state authorities touched:**
+- MODIFIED: `dispatch_engine.py` result dict format (new `auto_dispatch` field)
+- MODIFIED: `cli.py` process-stop JSON output (new `auto_dispatch` field,
+  modified `additionalContext` format)
+- UNCHANGED: completion_records, evaluation_state, dispatch_queue, agent_markers,
+  events, leases
+
+##### W-AD-2: Orchestrator Auto-Dispatch Rules and Documentation
+
+- **Weight:** S
+- **Gate:** approve (user must approve the CLAUDE.md rules before they become
+  the orchestrator's dispatch behavior)
+- **Deps:** W-AD-1 (the `AUTO_DISPATCH:` signal must exist in hookSpecificOutput
+  before the orchestrator rules can reference it)
+- **Integration:** CLAUDE.md is read by the orchestrator on every session.
+  `docs/DISPATCH.md` is reference documentation. Both are governance markdown
+  (planner-only writes).
+
+**Implementer scope:**
+
+- `CLAUDE.md` — Add a new subsection `### Auto-Dispatch` under `## Dispatch
+  Rules`, after the existing `### Debugging Discipline` subsection:
+
+  ```markdown
+  ### Auto-Dispatch
+
+  When SubagentStop hook output contains `AUTO_DISPATCH: <role>`, dispatch
+  that agent immediately without asking the user. The dispatch engine has
+  already validated that the transition is safe:
+  - The prior role's completion contract was fulfilled
+  - No errors were detected
+  - The agent was not interrupted mid-task
+  - The routing table determined a clear next role
+
+  **Stop the chain and report to the user when:**
+  - Hook output contains `BLOCKED`, `ERROR`, or `PROCESS ERROR`
+  - Hook output does NOT contain `AUTO_DISPATCH:` (fallback to manual dispatch)
+  - The Codex stop-review gate returned VERDICT: BLOCK
+  - The evaluation_state is needs_changes or blocked_by_plan with a tester
+    recommendation to halt (the auto-dispatch back to implementer/planner
+    still fires -- only halt if the cycle is clearly stuck)
+
+  **After the chain completes or stops, report what happened:**
+  - Summarize each role's outcome (what the planner planned, what the
+    implementer built, what the tester found, what the guardian landed)
+  - If any role was auto-dispatched, note it was automatic
+  - If the chain stopped early, explain why
+
+  Auto-dispatch does NOT apply to:
+  - Guardian operations that require user approval (push, rebase, force ops
+    -- these are gated by bash_approval_gate policy)
+  - The first dispatch in a new workflow (the user starts the chain)
+  - Recovery after Codex BLOCK verdicts (the user must review findings first)
+  ```
+
+- `docs/DISPATCH.md` — Update the "Not Yet Enforced" section:
+  - Remove "Automatic role sequencing" from the list.
+  - Add a new section `## Auto-Dispatch` documenting the mechanism:
+    - `AUTO_DISPATCH: <role>` signal in hookSpecificOutput
+    - When it fires (all clear transitions)
+    - When it does NOT fire (errors, interruptions, cycle-complete)
+    - How the Codex gate integrates (opt-in via `stopReviewGate`)
+  - Move "Automatic role sequencing" to the "Current Enforcement Surface"
+    section under SubagentStop, noting it is now implemented.
+
+**Tester scope:**
+
+- Verify CLAUDE.md changes are limited to the new Auto-Dispatch subsection.
+- Verify docs/DISPATCH.md accurately reflects the mechanism from W-AD-1.
+- Verify no other CLAUDE.md sections are modified.
+- Verify the rules match the auto_dispatch logic in dispatch_engine.py.
+
+###### Evaluation Contract for W-AD-2
+
+**Required checks:**
+1. CLAUDE.md has a `### Auto-Dispatch` subsection under `## Dispatch Rules`
+2. The subsection instructs the orchestrator to dispatch immediately on
+   `AUTO_DISPATCH:` without asking the user
+3. The subsection lists the stop conditions (BLOCKED, ERROR, no AUTO_DISPATCH,
+   Codex BLOCK)
+4. The subsection lists the reporting requirement (summarize chain outcomes)
+5. The subsection lists the exclusions (guardian high-risk ops, first dispatch,
+   Codex BLOCK recovery)
+6. `docs/DISPATCH.md` no longer lists "Automatic role sequencing" under "Not
+   Yet Enforced"
+7. `docs/DISPATCH.md` has a new `## Auto-Dispatch` section documenting the
+   mechanism
+8. No other sections of CLAUDE.md are modified
+9. No files outside CLAUDE.md and docs/DISPATCH.md are modified
+
+**Required authority invariants:**
+- CLAUDE.md remains the orchestrator's judgment layer (prompt guidance)
+- Auto-dispatch is a prompt instruction, not a mechanical gate
+- docs/DISPATCH.md remains the dispatch reference documentation
+
+**Forbidden shortcuts:**
+- Do not modify any hook, runtime, or test file
+- Do not modify agents/*.md
+- Do not add new Sacred Practices
+- Do not modify the existing Dispatch Rules subsections (Source Edit Routing,
+  Integration Surface Context, Uncertainty Reporting, Simple Task Fast Path,
+  Debugging Discipline)
+
+**Ready-for-guardian definition:**
+All 9 checks pass. CLAUDE.md diff shows only the new Auto-Dispatch subsection.
+docs/DISPATCH.md diff shows the gap removal and new section.
+
+###### Scope Manifest for W-AD-2
+
+**Allowed files/directories:**
+- `CLAUDE.md` (modify: add Auto-Dispatch subsection)
+- `docs/DISPATCH.md` (modify: remove gap, add Auto-Dispatch section)
+
+**Required files/directories:**
+- `CLAUDE.md` (must be modified)
+- `docs/DISPATCH.md` (must be modified)
+
+**Forbidden touch points:**
+- `runtime/` (no runtime changes)
+- `hooks/` (no hook changes)
+- `tests/` (no test changes)
+- `settings.json` (no hook wiring changes)
+- `agents/*.md` (no agent prompt changes)
+- `plugins/` (Codex gate wiring is W-AD-3)
+- `MASTER_PLAN.md` (except for this planning amendment)
+
+**Expected state authorities touched:**
+- None (prompt and documentation changes only)
+
+##### W-AD-3: Codex Stop-Review Gate at SubagentStop
+
+- **Weight:** M
+- **Gate:** review
+- **Deps:** W-AD-1 (auto_dispatch signal must exist), W-AD-2 (orchestrator must
+  know how to act on AUTO_DISPATCH and Codex BLOCK)
+- **Integration:** The Codex plugin's `stop-review-gate-hook.mjs` is currently
+  wired to the `Stop` event in the plugin's `hooks.json`. This wave adds it to
+  the core `settings.json` SubagentStop chain for all four roles, positioned
+  AFTER check-*.sh and BEFORE post-task.sh. The gate writes its verdict to the
+  runtime `events` table; post-task.sh reads it to gate auto_dispatch.
+
+**Design detail for Codex gate -> dispatch_engine communication:**
+
+The Codex gate hook runs as a separate hook in the SubagentStop chain. It cannot
+directly modify dispatch_engine's result. Instead:
+
+1. The Codex gate hook (`stop-review-gate-hook.mjs`) runs after check-*.sh.
+2. If `stopReviewGate` is enabled and Codex is available, it runs the review.
+3. It writes the verdict to the runtime `events` table via `cc-policy event emit
+   --type codex_stop_review --detail "VERDICT: ALLOW|BLOCK <reason>"`.
+4. post-task.sh, which runs after the Codex gate hook, calls dispatch
+   process-stop as before. dispatch_engine reads the most recent
+   `codex_stop_review` event within a 60-second window.
+5. If the verdict is BLOCK, dispatch_engine overrides `auto_dispatch` to false
+   and appends the block reason to the suggestion.
+6. If no recent verdict is found (Codex not enabled, or not available),
+   dispatch_engine treats it as ALLOW (fail-open for quality gate).
+
+This keeps the Codex gate as a pure event emitter and dispatch_engine as the
+sole decision authority.
+
+**Alternative considered and rejected:** Having the Codex gate emit
+`hookSpecificOutput` with a BLOCK decision that Claude sees alongside the
+post-task.sh output. Rejected because: (a) the hook output merge behavior is
+additive (both outputs appear), making it harder to create a single clear
+directive, and (b) the dispatch_engine should own the final auto_dispatch
+decision, not have it split between two hooks.
+
+**Implementer scope:**
+
+- `runtime/core/dispatch_engine.py`:
+  - Add a `_check_codex_gate()` helper that queries the `events` table for the
+    most recent `codex_stop_review` event within a 60-second window matching
+    the current workflow_id.
+  - Returns `(blocked: bool, reason: str)`.
+  - Call `_check_codex_gate()` after computing `auto_dispatch = True` but
+    before building the suggestion. If blocked, set `auto_dispatch = False` and
+    append the block reason to the suggestion.
+  - This is advisory — errors in the lookup never block routing (same pattern
+    as `_detect_interrupted`).
+
+- `settings.json`:
+  - Add the Codex stop-review gate hook to all four SubagentStop arrays,
+    positioned AFTER check-*.sh and BEFORE post-task.sh:
+    ```json
+    {
+      "type": "command",
+      "command": "$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+      "timeout": 900
+    }
+    ```
+  - The hook is safe to add even when Codex is not configured: the existing
+    `stop-review-gate-hook.mjs` checks `config.stopReviewGate` and returns
+    early (no-op) when false.
+
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`:
+  - Modify to detect when invoked as SubagentStop vs Stop:
+    - Read the hook input JSON. SubagentStop input includes `agent_type` field;
+      Stop input does not.
+    - When invoked as SubagentStop: after running the review and getting the
+      verdict, write the verdict to the runtime events table via
+      `cc-policy event emit --type codex_stop_review --detail "VERDICT: <verdict> | workflow=<wf_id> | <reason>"`.
+    - When invoked as Stop: keep existing behavior (emit `decision: block` to
+      hookSpecificOutput to prevent session end).
+  - The SubagentStop path should NOT emit `decision: block` to hookSpecificOutput
+    (that would prevent the orchestrator from seeing the hook output). Instead,
+    it only writes to the events table and lets dispatch_engine handle the
+    blocking.
+
+- `tests/runtime/test_dispatch_engine.py` (modify):
+  - Add test: auto_dispatch=True with no codex_stop_review event -> stays True
+  - Add test: auto_dispatch=True with ALLOW verdict event -> stays True
+  - Add test: auto_dispatch=True with BLOCK verdict event -> becomes False,
+    suggestion includes block reason
+  - Add test: auto_dispatch=False (error) with BLOCK verdict -> stays False
+    (BLOCK does not change an already-false auto_dispatch)
+  - Add test: stale codex_stop_review event (>60s old) -> ignored, auto_dispatch
+    stays True
+
+- `tests/scenarios/test-codex-gate-stop.sh` (new):
+  - Emit a synthetic `codex_stop_review` BLOCK event, then run dispatch
+    process-stop for implementer. Verify auto_dispatch is false and suggestion
+    includes the block reason.
+  - Emit a synthetic `codex_stop_review` ALLOW event, then run dispatch
+    process-stop for implementer. Verify auto_dispatch is true.
+
+**Tester scope:**
+
+- Verify Codex gate hook is in all four SubagentStop arrays in settings.json.
+- Verify the hook writes to events table when invoked as SubagentStop.
+- Verify dispatch_engine reads the verdict and gates auto_dispatch.
+- Run all existing tests -- no regression.
+- Run new tests.
+- Manually: with `stopReviewGate: false`, verify the gate is a no-op at
+  SubagentStop.
+- Manually: with `stopReviewGate: true` and Codex available, verify the gate
+  runs and writes a verdict.
+
+###### Evaluation Contract for W-AD-3
+
+**Required tests:**
+- All existing tests in `tests/runtime/test_dispatch_engine.py` pass
+- All new Codex gate tests pass (5 cases listed above)
+- `test-codex-gate-stop.sh` scenario test passes
+- All existing scenario tests pass (no regression)
+
+**Required real-path checks:**
+1. `settings.json` has the Codex gate hook in all four SubagentStop arrays,
+   positioned after check-*.sh and before post-task.sh
+2. `stop-review-gate-hook.mjs` detects SubagentStop invocation via `agent_type`
+   field presence
+3. On SubagentStop with `stopReviewGate: true`, the hook writes a
+   `codex_stop_review` event to the events table
+4. On SubagentStop with `stopReviewGate: false`, the hook is a no-op
+5. `dispatch_engine.py` `_check_codex_gate()` reads the most recent
+   `codex_stop_review` event within 60 seconds
+6. BLOCK verdict sets `auto_dispatch = False` and appends reason to suggestion
+7. ALLOW verdict (or no verdict) leaves `auto_dispatch` unchanged
+8. Stale events (>60s) are ignored
+9. Errors in the Codex gate lookup never block routing
+10. On Stop event, the hook still uses existing behavior (decision: block to
+    hookSpecificOutput)
+
+**Required authority invariants:**
+- `dispatch_engine.py` remains the sole auto_dispatch decision authority
+- The Codex gate is an event emitter, not a decision authority
+- `events` table is the communication channel (not flat files, not
+  hookSpecificOutput merging)
+- The `stopReviewGate` config in the Codex plugin state is the sole toggle
+- No new SQLite table is introduced (uses existing `events` table)
+
+**Required integration points:**
+- `stop-review-gate-hook.mjs` writes to events via `cc-policy event emit`
+- `dispatch_engine.py` reads events via `events.query()`
+- `settings.json` hook ordering: check-*.sh -> codex-gate -> post-task.sh
+- Existing Stop hook behavior is unchanged
+
+**Forbidden shortcuts:**
+- Do not have the Codex gate emit `decision: block` on SubagentStop (that
+  would misuse the hook output contract)
+- Do not have dispatch_engine call the Codex API directly (separation of
+  concerns)
+- Do not create a new SQLite table for Codex verdicts (use existing events)
+- Do not make the Codex gate mandatory (must respect stopReviewGate config)
+- Do not modify the stop-review prompt template
+  (`prompts/stop-review-gate.md`)
+- Do not modify check-*.sh hooks
+- Do not modify `completions.py` or `evaluation.py`
+
+**Ready-for-guardian definition:**
+All 10 real-path checks pass. All tests pass (existing + new). The Codex gate
+fires at SubagentStop when enabled and writes verdicts to the events table.
+dispatch_engine correctly reads verdicts and gates auto_dispatch. The existing
+Stop hook behavior is unchanged. settings.json hook ordering is correct.
+
+###### Scope Manifest for W-AD-3
+
+**Allowed files/directories:**
+- `runtime/core/dispatch_engine.py` (modify: add _check_codex_gate)
+- `settings.json` (modify: add Codex gate to SubagentStop arrays)
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs` (modify: SubagentStop detection and event writing)
+- `tests/runtime/test_dispatch_engine.py` (modify: add Codex gate tests)
+- `tests/scenarios/test-codex-gate-stop.sh` (new)
+
+**Required files/directories:**
+- `runtime/core/dispatch_engine.py` (must be modified)
+- `settings.json` (must be modified)
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs` (must be modified)
+- `tests/runtime/test_dispatch_engine.py` (must be modified)
+- `tests/scenarios/test-codex-gate-stop.sh` (must be created)
+
+**Forbidden touch points:**
+- `runtime/core/completions.py` (routing table unchanged)
+- `runtime/core/evaluation.py` (eval state machine unchanged)
+- `hooks/check-*.sh` (validation hooks unchanged)
+- `hooks/post-task.sh` (thin adapter, no changes needed)
+- `CLAUDE.md` (prompt changes were W-AD-2)
+- `docs/DISPATCH.md` (doc update was W-AD-2)
+- `agents/*.md` (no agent prompt changes)
+- `plugins/.../prompts/stop-review-gate.md` (prompt template unchanged)
+- `runtime/schemas.py` (no schema changes -- uses existing events table)
+
+**Expected state authorities touched:**
+- MODIFIED: `dispatch_engine.py` auto_dispatch decision (now reads Codex gate
+  events)
+- MODIFIED: `events` table (new event type: `codex_stop_review`)
+- MODIFIED: `settings.json` SubagentStop hook arrays (new Codex gate entry)
+- MODIFIED: `stop-review-gate-hook.mjs` (SubagentStop detection + event writing)
+- UNCHANGED: completion_records, evaluation_state, dispatch_queue, agent_markers,
+  leases, Codex plugin state.json
+
+
 ## Completed Initiatives
 
 ### INIT-REBASE: Test Suite Rebaseline (completed 2026-04-05)
@@ -2031,5 +3861,7 @@ needed due to fail-open adapters, stale tests, and bridge integration bugs.
   proven stable interface.
 - Upstream synchronization remains manual and selective; no merge/rebase flow
   from upstream is allowed into this mainline.
-- Plugin ecosystems, auxiliary agent ecosystems, and non-core experiments remain
-  out of scope until the kernel and runtime authority are stable.
+- Plugin ecosystems and auxiliary agent ecosystems remain out of scope for
+  core runtime authority. INIT-CDX addresses Codex plugin concurrency as an
+  operational concern (state.json locking, stale task reaping) without
+  introducing plugin state into the runtime SQLite backend.
