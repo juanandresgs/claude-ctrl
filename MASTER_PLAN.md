@@ -6665,7 +6665,8 @@ and reviewed by the user (gate: approve).
   issuance + workflow binding atomically so the Guardian does not need to
   call multiple CLI commands. The git worktree creation itself is a bash
   command the Guardian executes between reservation and final registration.
-  See DEC-GUARD-WT-008 for the reserve-before-add pattern.
+  See DEC-GUARD-WT-008 for the idempotency and partial-failure cleanup
+  pattern.
 
 - `DEC-GUARD-WT-003` **Worktree path injection via dispatch result
   enrichment (REVISED).** When Guardian completes provisioning, its
@@ -6680,12 +6681,18 @@ and reviewed by the user (gate: approve).
      `result["worktree_path"]`.
   4. cli.py `_handle_dispatch()` serializes `worktree_path` in the
      result dict (same pattern as `auto_dispatch`).
-  5. hookSpecificOutput `additionalContext` includes the path in the
-     suggestion text for the orchestrator.
+  5. dispatch_engine suggestion builder encodes `worktree_path` in the
+     AUTO_DISPATCH line: `AUTO_DISPATCH: implementer
+     (worktree_path=<path>, workflow_id=<W>)`. This is the critical
+     last mile: post-task.sh strips the cli.py result to
+     `hookSpecificOutput` only, so the suggestion text (which becomes
+     `additionalContext`) is the ONLY carrier to the orchestrator.
 
   **Changes from original plan:** cli.py must add `worktree_path` to the
   serialized output (was forbidden in original W-GWT-1 scope).
   check-guardian.sh must parse `WORKTREE_PATH` (was not in any scope).
+  **R2 addition:** suggestion builder must encode worktree_path in
+  AUTO_DISPATCH line (sole carrier to orchestrator via additionalContext).
 
 - `DEC-GUARD-WT-004` **Worktree reuse on rework cycles (REVISED).** When
   `("tester", "needs_changes") -> "implementer"`, the worktree already

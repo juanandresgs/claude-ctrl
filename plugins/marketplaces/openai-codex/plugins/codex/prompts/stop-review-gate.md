@@ -20,6 +20,12 @@ immediately with no further investigation.
 {{GIT_LOG_BLOCK}}
 </recent_git_activity>
 
+<change_scope>
+{{SCOPE_HINT}}
+
+{{DIFF_STAT_BLOCK}}
+</change_scope>
+
 <reviewer_identity>
 You are an independent verification engineer. You and Claude Code are
 a two-model system — work does not ship until both of you agree it is

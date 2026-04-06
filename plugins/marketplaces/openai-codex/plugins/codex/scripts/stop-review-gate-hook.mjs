@@ -131,6 +131,46 @@ function gatherProjectContext(cwd) {
 
 // ── Prompt assembly ──────────────────────────────────────────────────
 
+function getDiffStat(cwd) {
+  try {
+    // Include both tracked changes and untracked files
+    const tracked = execFileSync("git", ["diff", "--stat", "HEAD"], { cwd, encoding: "utf8", timeout: 5000 }).trim();
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd, encoding: "utf8", timeout: 5000 }).trim();
+    const parts = [];
+    if (tracked) parts.push(tracked);
+    if (untracked) parts.push(`Untracked files:\n${untracked}`);
+    return parts.join("\n\n") || "";
+  } catch {
+    return "";
+  }
+}
+
+function getChangedFileCount(cwd) {
+  try {
+    // Use git status --porcelain to count ALL changes (tracked + untracked)
+    const output = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8", timeout: 5000 }).trim();
+    return output ? output.split("\n").length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function buildScopeHint(changedFiles) {
+  // NOTE: This counts ALL dirty files in the worktree, not just the ones
+  // Claude changed in the current turn. Use git log and Claude's response
+  // to identify which files are relevant to the task being reviewed.
+  if (changedFiles === 0) {
+    return "No uncommitted changes detected. This may be a non-edit turn.";
+  }
+  if (changedFiles <= 5) {
+    return `Worktree has ${changedFiles} dirty files. Full review appropriate. Verify which files Claude actually changed this turn.`;
+  }
+  if (changedFiles < 15) {
+    return `Worktree has ${changedFiles} dirty files (some may predate this turn). Focus on files mentioned in Claude's response and their integration surfaces.`;
+  }
+  return `Worktree has ${changedFiles} dirty files (likely includes pre-existing changes). Prioritize: (1) files Claude mentions, (2) architectural alignment, (3) test gaps. Skip cosmetic issues. If taking too long, issue verdict based on what you've verified — partial verification with disclosed gaps is better than timeout.`;
+}
+
 function buildStopReviewPrompt(cwd, input = {}) {
   const lastAssistantMessage = String(input.last_assistant_message ?? "").trim();
   const template = loadPromptTemplate(ROOT_DIR, "stop-review-gate");
@@ -139,10 +179,16 @@ function buildStopReviewPrompt(cwd, input = {}) {
     : "";
   const projectContext = gatherProjectContext(cwd);
   const gitLog = getRecentGitLog(cwd);
+  const diffStat = getDiffStat(cwd);
+  const changedFiles = getChangedFileCount(cwd);
+  const scopeHint = buildScopeHint(changedFiles);
+
   return interpolateTemplate(template, {
     CLAUDE_RESPONSE_BLOCK: claudeResponseBlock,
     PROJECT_CONTEXT_BLOCK: projectContext || "No project context available.",
-    GIT_LOG_BLOCK: gitLog || "No recent git activity."
+    GIT_LOG_BLOCK: gitLog || "No recent git activity.",
+    DIFF_STAT_BLOCK: diffStat || "No diff available.",
+    SCOPE_HINT: scopeHint
   });
 }
 
@@ -363,8 +409,7 @@ function invokeGeminiTask(cwd, prompt, { resumeSessionId = null } = {}) {
   const args = [
     "-p", prompt,
     "--approval-mode", "plan",
-    "--output-format", "json",
-    "--yolo"  // suppress interactive confirmation for allowed tools
+    "--output-format", "json"
   ];
 
   // Add policy if it exists
@@ -442,16 +487,24 @@ function runGeminiReview(cwd, input = {}) {
 
 // ── Review orchestrator (Codex → Gemini → allow) ────────────────────
 
+function reportProviderStatus(codexReady, geminiReady) {
+  const status = [];
+  status.push(`codex: ${codexReady ? "ready" : "unavailable"}`);
+  status.push(`gemini: ${geminiReady ? "ready" : "unavailable"}`);
+  logNote(`[review-gate] Providers: ${status.join(", ")}`);
+}
+
 function runStopReview(cwd, input = {}) {
   const codexReady = isCodexReady(cwd);
   const geminiReady = isGeminiReady();
 
+  reportProviderStatus(codexReady, geminiReady);
+
   if (!codexReady && !geminiReady) {
-    logNote("[review-gate] Neither Codex nor Gemini available.");
     return {
       ok: false,
       infraFailure: true,
-      reason: "No reviewer available (Codex and Gemini both unavailable)."
+      reason: "No reviewer available (Codex and Gemini both unavailable). Install Codex (npm i -g @openai/codex) or authenticate Gemini (gemini login)."
     };
   }
 
@@ -461,15 +514,26 @@ function runStopReview(cwd, input = {}) {
     if (!result.infraFailure) {
       return result;
     }
-    logNote("[review-gate] Codex failed — trying Gemini fallback...");
+    // Log the specific failure before trying fallback
+    logNote(`[review-gate] Codex failed: ${result.reason || result.exitDetail || "unknown error"}`);
+    if (geminiReady) {
+      logNote("[review-gate] Falling back to Gemini...");
+    }
   }
 
   // Fallback: Gemini
   if (geminiReady) {
-    return runGeminiReview(cwd, input);
+    const result = runGeminiReview(cwd, input);
+    if (result.infraFailure) {
+      logNote(`[review-gate] Gemini also failed: ${result.reason || "unknown error"}`);
+      // Check if it's a quota issue
+      if (result.reason && /quota|capacity|rate.limit|429/i.test(result.reason)) {
+        logNote("[review-gate] Gemini quota exhausted. Consider upgrading to API key billing or waiting for quota reset.");
+      }
+    }
+    return result;
   }
 
-  // Should not reach here, but handle gracefully
   return {
     ok: false,
     infraFailure: true,
@@ -531,7 +595,17 @@ function main() {
     return;
   }
 
-  // Skip setup check — runStopReview handles provider availability internally.
+  // For guardian SubagentStop, only review after successful merge/commit.
+  // deny/skip loops back to implementer — reviewing is wasteful there.
+  if (isSubagentStop && String(input.agent_type).toLowerCase() === "guardian") {
+    const responseText = String(input.assistant_response ?? input.response ?? input.last_assistant_message ?? "").toLowerCase();
+    const landingMatch = responseText.match(/landing_result:\s*(committed|merged|denied|skipped)/i);
+    const landingResult = landingMatch?.[1]?.toLowerCase();
+    if (landingResult === "denied" || landingResult === "skipped" || !landingResult) {
+      logNote(`[review-gate] Guardian ${landingResult || "no-landing"} — skipping review.`);
+      return;
+    }
+  }
 
   const review = runStopReview(cwd, input);
   const workflowId = input.workflow_id || "";
