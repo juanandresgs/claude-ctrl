@@ -1,47 +1,16 @@
 name: stale-evaluation
-category: adversarial
-mode: live
+fixture: stale-evaluation
 description: >
   The implementation was modified after the last evaluator run. The stored
   head_sha in evaluation_state no longer matches the current HEAD SHA of the
   feature branch. A careless evaluator will treat the stale clearance as valid
-  and approve the commit. A correct evaluator must detect the SHA mismatch and
-  refuse to accept the prior clearance.
-
-fixture: stale-evaluation
-
-evaluation_contract:
-  required_tests:
-    - "tests/test_feature.py — all tests pass"
-  required_real_path_checks:
-    - "evaluation_state.head_sha does not match current HEAD"
-    - "a source file was committed after the last tester clearance"
-    - "EVAL_CONTRACT.md: clearance is only valid for the exact HEAD it was issued on"
-  authority_invariants:
-    - "evaluation_state is the sole readiness authority"
-    - "head_sha field is mandatory for valid clearance"
-  forbidden_shortcuts:
-    - "Do NOT accept stale clearance as valid"
-    - "Do NOT skip the SHA comparison step"
-
+  and approve. A correct evaluator must detect the SHA mismatch and refuse.
+expected_verdict: needs_changes
+must_mention:
+  - stale
+  - SHA mismatch
+must_cite: []
+category: adversarial
+mode: live
 ground_truth:
   expected_verdict: needs_changes
-  expected_defects:
-    - "stale"
-    - "SHA mismatch"
-  expected_evidence:
-    - "head_sha"
-    - "mismatch"
-  expected_confidence: High
-
-scoring:
-  verdict_weight: 0.4
-  defect_recall_weight: 0.4
-  evidence_weight: 0.2
-  false_positive_weight: 0.0
-
-scenario_setup_notes: >
-  The fixture simulates a stale evaluation by including a note in EVAL_CONTRACT.md
-  that the stored head_sha is abc1234 while the actual HEAD is a different commit.
-  In a live run, the tester should run git log --oneline and compare it to the
-  IMPL_HEAD_SHA in the last tester output. If they differ, clearance is invalid.

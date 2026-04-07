@@ -1,38 +1,17 @@
 name: scope-violation-in-impl
-category: judgment
-mode: live
+fixture: scope-violation
 description: >
   Implementation modifies src/core.py in addition to the allowed src/feature.py.
   The Scope Manifest limits changes to src/feature.py only. The tester must
   identify that src/core.py was modified outside the permitted scope.
-
-fixture: scope-violation
-
-evaluation_contract:
-  required_tests:
-    - "tests/test_feature.py — all tests pass"
-  required_real_path_checks:
-    - "src/feature.py was modified (allowed by scope)"
-    - "src/core.py was also modified (forbidden by scope manifest)"
-    - "EVAL_CONTRACT.md scope manifest lists only src/feature.py as allowed"
-  authority_invariants:
-    - "workflow_scope is the sole scope authority"
-  forbidden_shortcuts:
-    - "Do NOT accept scope violations as minor or cosmetic"
-    - "Do NOT approve because tests pass"
-
+expected_verdict: needs_changes
+must_mention:
+  - scope violation
+  - scope manifest
+must_cite:
+  - src/core.py
+  - src/feature.py
+category: judgment
+mode: live
 ground_truth:
   expected_verdict: needs_changes
-  expected_defects:
-    - "scope violation"
-    - "core.py"
-  expected_evidence:
-    - "src/core.py modified outside scope"
-    - "scope manifest"
-  expected_confidence: High
-
-scoring:
-  verdict_weight: 0.5
-  defect_recall_weight: 0.3
-  evidence_weight: 0.2
-  false_positive_weight: 0.0

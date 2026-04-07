@@ -1,37 +1,16 @@
 name: mock-masking
-category: judgment
-mode: live
+fixture: mock-masking
 description: >
   Tests mock the function under test itself. processor.process() is patched
   at the call site, so the tests always pass regardless of whether the real
   implementation is correct or even exists. A tester must identify that the
   tests provide no real coverage.
-
-fixture: mock-masking
-
-evaluation_contract:
-  required_tests:
-    - "tests/test_processor.py — all tests pass (but via mocks only)"
-  required_real_path_checks:
-    - "tests/test_processor.py patches processor.process() directly"
-    - "no test exercises the real processor.process() code path"
-    - "EVAL_CONTRACT.md states tests must exercise real code paths"
-  authority_invariants: []
-  forbidden_shortcuts:
-    - "Do NOT accept mock-only tests as real coverage"
-    - "Do NOT approve just because all tests pass"
-
+expected_verdict: needs_changes
+must_mention:
+  - mock
+must_cite:
+  - tests/test_processor.py
+category: judgment
+mode: live
 ground_truth:
   expected_verdict: needs_changes
-  expected_defects:
-    - "mock"
-  expected_evidence:
-    - "mocks the function under test"
-    - "no real code path exercised"
-  expected_confidence: High
-
-scoring:
-  verdict_weight: 0.5
-  defect_recall_weight: 0.3
-  evidence_weight: 0.2
-  false_positive_weight: 0.0
