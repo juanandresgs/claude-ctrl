@@ -526,15 +526,19 @@ def test_status_zero_acceptance_rate_when_no_decisions(conn):
 
 
 def test_summary_returns_expected_keys(conn):
-    """EC-12: summary returns dict with expected report keys."""
+    """EC-12: summary delegates to generate_report() — result has generate_report keys.
+
+    W-OBS-3 replaced the bespoke summary assembly with generate_report() delegation.
+    The old keys (metrics_24h, active_suggestions, agent_performance, denial_hotspots,
+    recent_anomalies, convergence_results) are superseded by the richer structure.
+    """
     result = obs.summary(conn)
-    assert "metrics_24h" in result
-    assert "active_suggestions" in result
-    assert "recent_anomalies" in result
-    assert "convergence_results" in result
-    assert "agent_performance" in result
-    assert "denial_hotspots" in result
-    assert "test_health" in result
+    assert "metrics_summary" in result
+    assert "trends" in result
+    assert "patterns" in result
+    assert "suggestions" in result
+    assert "convergence" in result
+    assert "review_gate_health" in result
 
 
 def test_summary_records_obs_run(conn):
@@ -549,7 +553,8 @@ def test_summary_metrics_24h_count(conn):
     for _ in range(5):
         obs.emit_metric(conn, "probe", 1.0)
     result = obs.summary(conn)
-    assert result["metrics_24h"] >= 5
+    # W-OBS-3: metrics_24h moved into metrics_summary.total
+    assert result["metrics_summary"]["total"] >= 5
 
 
 # ---------------------------------------------------------------------------
@@ -626,11 +631,11 @@ def test_full_production_sequence(conn):
     run_count_after = conn.execute("SELECT COUNT(*) FROM obs_runs").fetchone()[0]
     assert run_count_after == run_count_before + 1
 
-    # Summary structure is complete
-    assert report["metrics_24h"] >= 10
-    assert report["active_suggestions"] >= 3  # 3 accepted + 1 proposed = 4 active
-    assert "agent_performance" in report
-    assert "implementer" in report["agent_performance"]
+    # Summary structure is complete (W-OBS-3: keys from generate_report)
+    assert report["metrics_summary"]["total"] >= 10
+    assert len(report["suggestions"]) >= 3  # 3 accepted + 1 proposed = 4 active
+    assert "trends" in report
+    assert "agent_duration_s" in report["trends"]
 
     # Step 7: cleanup — no expired data yet (all recent)
     cleanup_result = obs.obs_cleanup(conn, metrics_ttl_days=30, suggestions_ttl_days=90)

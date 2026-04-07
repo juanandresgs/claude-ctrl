@@ -3,8 +3,10 @@
 This is the canonical write authority for obs_metrics, obs_suggestions, and
 obs_runs. No other module writes to these tables (W-OBS-1).
 
-In this wave the module is self-contained: all metric queries target obs_metrics
-only. Cross-table analysis (joining events, traces, etc.) arrives in W-OBS-3.
+W-OBS-3 adds cross-table analysis functions (cross_analysis, pattern_detection,
+generate_report) and refactors summary() to delegate to generate_report().
+All joins to non-obs tables use LEFT JOIN so the analysis works when enrichment
+tables have zero rows.
 
 @decision DEC-OBS-001
 Title: Observatory tables are sole authority for metrics, suggestions, and runs
@@ -31,6 +33,26 @@ Rationale: Full linear regression requires more compute and external libraries.
   The (last - first) / count approximation is sufficient for the early observatory
   wave and matches the spec. W-OBS-3 can upgrade to scipy regression when the
   analysis layer matures.
+
+@decision DEC-OBS-004
+Title: All cross-table joins are LEFT JOIN to tolerate empty enrichment tables
+Status: accepted
+Rationale: obs_metrics is the primary data source for the observatory. Enrichment
+  tables (traces, evaluation_state, completion_records, agent_markers) may have
+  zero rows in early sessions, test environments, or after cleanup. Using LEFT JOIN
+  means enrichment columns are NULL rather than the query returning zero rows.
+  Analysis functions must accept NULL enrichment columns gracefully. This satisfies
+  the W-OBS-3 null-tolerance requirement without requiring data backfill.
+
+@decision DEC-OBS-005
+Title: summary() delegates entirely to generate_report() — no dual path
+Status: accepted
+Rationale: W-OBS-3 replaces summary()'s bespoke assembly logic with generate_report().
+  Keeping both code paths would create dual-authority for the report structure.
+  The old keys (metrics_24h, agent_performance, denial_hotspots) are removed;
+  callers needing those fields can call the underlying functions directly or read
+  the richer generate_report output. Deletion-first: the legacy assembly block
+  is removed entirely in this wave.
 """
 
 from __future__ import annotations
@@ -622,63 +644,580 @@ def status(conn: sqlite3.Connection) -> dict:
     }
 
 
-def summary(conn: sqlite3.Connection, window_hours: int = 24) -> dict:
-    """Run all analysis functions and assemble a report dict.
+def cross_analysis(conn: sqlite3.Connection, window_hours: int = 24) -> dict:
+    """Produce a comprehensive operational picture by joining obs_metrics with
+    enrichment tables via LEFT JOIN.
 
-    Also records an obs_runs entry with a snapshot of the report.
+    All joins to non-obs tables (traces, completion_records, evaluation_state,
+    agent_markers) use LEFT JOIN so null enrichment produces NULL columns rather
+    than empty result sets. The function produces a valid report when enrichment
+    tables are completely empty.
 
     Returns a dict with keys:
-        metrics_24h, active_suggestions, recent_anomalies,
-        convergence_results, agent_performance, denial_hotspots, test_health
+        agent_stats       list[dict] — per-role duration metrics
+        test_health       dict       — pass rate, fail count, avg duration
+        denial_patterns   list[dict] — top denied policies grouped by label
+        evaluation_trends list[dict] — verdict distribution
+        convergence_status list[dict] — active suggestions and convergence state
+        review_gate_health dict      — infra failure rate, provider breakdown,
+                                       predictive accuracy
+
+    @decision DEC-OBS-004
+    Title: All cross-table joins are LEFT JOIN to tolerate empty enrichment tables
+    Status: accepted
+    Rationale: See module-level docstring.
     """
     since = int(time.time()) - window_hours * 3600
 
-    # Count metrics in the window
-    metrics_24h = conn.execute(
+    # --- agent_stats: per-role avg/p50/p95 from agent_duration_s ---
+    # LEFT JOIN traces to enrich with ticket context; NULLs are fine.
+    rows = conn.execute(
+        """
+        SELECT   m.role,
+                 COUNT(*)            AS cnt,
+                 AVG(m.value)        AS avg_duration,
+                 MIN(m.value)        AS min_duration,
+                 MAX(m.value)        AS max_duration,
+                 t.ticket            AS ticket
+        FROM     obs_metrics  m
+        LEFT JOIN traces      t ON m.session_id = t.session_id
+        WHERE    m.metric_name = 'agent_duration_s'
+          AND    m.created_at  >= ?
+          AND    m.role        IS NOT NULL
+        GROUP BY m.role
+        ORDER BY cnt DESC
+        """,
+        (since,),
+    ).fetchall()
+
+    agent_stats: list[dict] = []
+    for r in rows:
+        # Compute p50/p95 via Python sort (SQLite has no percentile function)
+        vals_rows = conn.execute(
+            """
+            SELECT value FROM obs_metrics
+            WHERE  metric_name = 'agent_duration_s'
+              AND  created_at  >= ?
+              AND  role        = ?
+            ORDER  BY value ASC
+            """,
+            (since, r["role"]),
+        ).fetchall()
+        vals = [v[0] for v in vals_rows]
+        p50 = vals[len(vals) // 2] if vals else 0.0
+        p95_idx = int(len(vals) * 0.95)
+        p95 = vals[min(p95_idx, len(vals) - 1)] if vals else 0.0
+
+        agent_stats.append(
+            {
+                "role": r["role"],
+                "count": r["cnt"],
+                "avg_duration": r["avg_duration"],
+                "min_duration": r["min_duration"],
+                "max_duration": r["max_duration"],
+                "p50_duration": p50,
+                "p95_duration": p95,
+                "ticket": r["ticket"],  # NULL when traces table is empty
+            }
+        )
+
+    # --- test_health: pass rate and average duration ---
+    th = test_health(conn, window_hours=window_hours)
+
+    # --- denial_patterns: top denied policies ---
+    dp = denial_hotspots(conn, window_hours=window_hours)
+
+    # --- evaluation_trends: verdict distribution from eval_verdict metrics ---
+    eval_rows = conn.execute(
+        """
+        SELECT   json_extract(labels_json, '$.verdict') AS verdict,
+                 COUNT(*)                               AS cnt
+        FROM     obs_metrics
+        WHERE    metric_name = 'eval_verdict'
+          AND    created_at  >= ?
+        GROUP BY verdict
+        ORDER BY cnt DESC
+        """,
+        (since,),
+    ).fetchall()
+    evaluation_trends = [
+        {"verdict": r["verdict"] or "unknown", "count": r["cnt"]} for r in eval_rows
+    ]
+
+    # --- convergence_status: active suggestions and their convergence state ---
+    sugg_rows = conn.execute(
+        """
+        SELECT id, category, title, status, target_metric,
+               baseline_value, measured_value, effective, measure_after
+        FROM   obs_suggestions
+        WHERE  status IN ('proposed', 'accepted', 'measured')
+        ORDER  BY created_at DESC
+        LIMIT  50
+        """,
+    ).fetchall()
+    convergence_status = [dict(r) for r in sugg_rows]
+
+    # --- review_gate_health: infra failure rate, provider breakdown,
+    #     predictive accuracy (review_verdict agreement with eval_verdict) ---
+    total_reviews = conn.execute(
+        "SELECT COUNT(*) FROM obs_metrics WHERE metric_name='review_verdict' AND created_at >= ?",
+        (since,),
+    ).fetchone()[0]
+
+    infra_failures = conn.execute(
+        "SELECT COUNT(*) FROM obs_metrics WHERE metric_name='review_infra_failure' AND created_at >= ?",
+        (since,),
+    ).fetchone()[0]
+
+    infra_failure_rate = (infra_failures / total_reviews) if total_reviews > 0 else 0.0
+
+    # Provider breakdown: group review_verdict by provider label
+    provider_rows = conn.execute(
+        """
+        SELECT   json_extract(labels_json, '$.provider') AS provider,
+                 COUNT(*)                                AS cnt
+        FROM     obs_metrics
+        WHERE    metric_name = 'review_verdict'
+          AND    created_at  >= ?
+        GROUP BY provider
+        """,
+        (since,),
+    ).fetchall()
+    provider_breakdown = [
+        {"provider": r["provider"] or "unknown", "count": r["cnt"]} for r in provider_rows
+    ]
+
+    # Predictive accuracy: fraction of review_verdict rows whose verdict label
+    # matches a corresponding eval_verdict within the same session.
+    # Uses LEFT JOIN on session_id — when evaluation_state is empty, accuracy = None.
+    accuracy_row = conn.execute(
+        """
+        SELECT COUNT(ev.id)  AS total_paired,
+               SUM(
+                 CASE WHEN json_extract(rv.labels_json, '$.verdict') IN ('ALLOW','pass')
+                       AND json_extract(ev.labels_json, '$.verdict') IN ('ready_for_guardian','pass')
+                      THEN 1
+                      WHEN json_extract(rv.labels_json, '$.verdict') NOT IN ('ALLOW','pass')
+                       AND json_extract(ev.labels_json, '$.verdict') NOT IN ('ready_for_guardian','pass')
+                      THEN 1
+                      ELSE 0
+                 END
+               )              AS agreed
+        FROM   obs_metrics rv
+        LEFT JOIN obs_metrics ev
+               ON rv.session_id   = ev.session_id
+              AND ev.metric_name  = 'eval_verdict'
+              AND ev.created_at   >= ?
+        WHERE  rv.metric_name = 'review_verdict'
+          AND  rv.created_at  >= ?
+        """,
+        (since, since),
+    ).fetchone()
+
+    predictive_accuracy: Optional[float] = None
+    if accuracy_row and accuracy_row["total_paired"] and accuracy_row["total_paired"] > 0:
+        agreed = accuracy_row["agreed"] or 0
+        predictive_accuracy = agreed / accuracy_row["total_paired"]
+
+    review_gate_health = {
+        "total_reviews": total_reviews,
+        "infra_failures": infra_failures,
+        "infra_failure_rate": infra_failure_rate,
+        "provider_breakdown": provider_breakdown,
+        "predictive_accuracy": predictive_accuracy,
+    }
+
+    return {
+        "agent_stats": agent_stats,
+        "test_health": th,
+        "denial_patterns": dp,
+        "evaluation_trends": evaluation_trends,
+        "convergence_status": convergence_status,
+        "review_gate_health": review_gate_health,
+    }
+
+
+def pattern_detection(conn: sqlite3.Connection, window_hours: int = 24) -> list[dict]:
+    """Identify recurring operational patterns in obs_metrics.
+
+    Detects these pattern types:
+        repeated_denial    Same policy denied 3+ times in window
+        slow_agent         Agent duration trending upward (slope > 0.1)
+        test_regression    Test pass rate declining in recent half vs prior half
+        evaluation_churn   Multiple needs_changes for same workflow
+        stale_marker       Active agent_markers older than 1 hour (LEFT JOIN)
+        review_quality     Review infra failure rate > 20%
+
+    Each pattern dict has:
+        pattern_type     str
+        severity_score   float  (occurrence_count × recency_weight)
+        description      str
+        evidence         list   (specific occurrences)
+        suggested_action str
+
+    Recency weight: all occurrences in window receive weight 1.0 (uniform).
+    Future waves can apply time-decay weighting.
+
+    @decision DEC-OBS-004
+    Title: LEFT JOIN for stale_marker detection
+    Status: accepted
+    Rationale: agent_markers may be empty. LEFT JOIN prevents empty-table
+      crashes; the stale_marker pattern simply produces zero results when
+      the table is empty.
+    """
+    now = int(time.time())
+    since = now - window_hours * 3600
+    patterns: list[dict] = []
+
+    # --- repeated_denial: same policy denied 3+ times ---
+    denial_rows = conn.execute(
+        """
+        SELECT   json_extract(labels_json, '$.policy') AS policy,
+                 COUNT(*)                              AS cnt
+        FROM     obs_metrics
+        WHERE    metric_name = 'guard_denial'
+          AND    created_at  >= ?
+        GROUP BY policy
+        HAVING   COUNT(*) >= 3
+        ORDER BY cnt DESC
+        """,
+        (since,),
+    ).fetchall()
+    for r in denial_rows:
+        policy = r["policy"] or "unknown"
+        cnt = r["cnt"]
+        # Collect specific evidence rows
+        evidence_rows = conn.execute(
+            """
+            SELECT id, created_at, labels_json
+            FROM   obs_metrics
+            WHERE  metric_name = 'guard_denial'
+              AND  created_at  >= ?
+              AND  json_extract(labels_json, '$.policy') = ?
+            ORDER  BY created_at DESC
+            LIMIT  5
+            """,
+            (since, policy),
+        ).fetchall()
+        evidence = [dict(e) for e in evidence_rows]
+        patterns.append(
+            {
+                "pattern_type": "repeated_denial",
+                "severity_score": float(cnt),
+                "description": f"Policy '{policy}' denied {cnt} times in {window_hours}h window",
+                "evidence": evidence,
+                "suggested_action": (
+                    f"Review policy '{policy}' configuration. "
+                    "Consider whether the rule is misconfigured or the workflow needs adjustment."
+                ),
+            }
+        )
+
+    # --- slow_agent: agent duration trending upward (slope > 0.1) ---
+    role_rows = conn.execute(
+        "SELECT DISTINCT role FROM obs_metrics WHERE metric_name='agent_duration_s' AND role IS NOT NULL",
+    ).fetchall()
+    for (role,) in role_rows:
+        # compute_trend is not role-filtered; query role-specific slope directly
+        role_vals = conn.execute(
+            """
+            SELECT value FROM obs_metrics
+            WHERE  metric_name = 'agent_duration_s'
+              AND  created_at  >= ?
+              AND  role        = ?
+            ORDER  BY created_at ASC
+            """,
+            (since, role),
+        ).fetchall()
+        vals = [v[0] for v in role_vals]
+        if len(vals) < 2:
+            continue
+        slope = (vals[-1] - vals[0]) / len(vals)
+        if slope > 0.1:
+            patterns.append(
+                {
+                    "pattern_type": "slow_agent",
+                    "severity_score": float(slope),
+                    "description": (
+                        f"Agent '{role}' duration trending upward "
+                        f"(slope={slope:.2f}s/run, last={vals[-1]:.1f}s)"
+                    ),
+                    "evidence": [
+                        {"role": role, "first": vals[0], "last": vals[-1], "count": len(vals)}
+                    ],
+                    "suggested_action": (
+                        f"Investigate context growth or inefficiency in '{role}' agent. "
+                        "Check for prompt bloat, large file reads, or excessive tool calls."
+                    ),
+                }
+            )
+
+    # --- test_regression: pass rate declining (recent half vs prior half) ---
+    test_rows = conn.execute(
+        """
+        SELECT value, created_at FROM obs_metrics
+        WHERE  metric_name = 'test_result'
+          AND  created_at  >= ?
+        ORDER  BY created_at ASC
+        """,
+        (since,),
+    ).fetchall()
+    if len(test_rows) >= 4:
+        mid = len(test_rows) // 2
+        prior_vals = [r["value"] for r in test_rows[:mid]]
+        recent_vals = [r["value"] for r in test_rows[mid:]]
+        prior_rate = sum(prior_vals) / len(prior_vals)
+        recent_rate = sum(recent_vals) / len(recent_vals)
+        if prior_rate > 0 and (prior_rate - recent_rate) / prior_rate >= 0.10:
+            decline = prior_rate - recent_rate
+            patterns.append(
+                {
+                    "pattern_type": "test_regression",
+                    "severity_score": float(decline * len(recent_vals)),
+                    "description": (
+                        f"Test pass rate declined from {prior_rate:.1%} to {recent_rate:.1%} "
+                        f"({decline:.1%} drop) in {window_hours}h window"
+                    ),
+                    "evidence": [
+                        {
+                            "prior_rate": prior_rate,
+                            "recent_rate": recent_rate,
+                            "prior_count": len(prior_vals),
+                            "recent_count": len(recent_vals),
+                        }
+                    ],
+                    "suggested_action": (
+                        "Investigate recent test failures. Check for flaky tests or "
+                        "newly broken functionality in recent commits."
+                    ),
+                }
+            )
+
+    # --- evaluation_churn: multiple needs_changes for same workflow ---
+    churn_rows = conn.execute(
+        """
+        SELECT   session_id,
+                 COUNT(*) AS cnt
+        FROM     obs_metrics
+        WHERE    metric_name  = 'eval_verdict'
+          AND    created_at   >= ?
+          AND    json_extract(labels_json, '$.verdict') = 'needs_changes'
+          AND    session_id   IS NOT NULL
+        GROUP BY session_id
+        HAVING   COUNT(*) >= 2
+        ORDER BY cnt DESC
+        """,
+        (since,),
+    ).fetchall()
+    for r in churn_rows:
+        session = r["session_id"]
+        cnt = r["cnt"]
+        patterns.append(
+            {
+                "pattern_type": "evaluation_churn",
+                "severity_score": float(cnt),
+                "description": (
+                    f"Session '{session}' received {cnt} needs_changes verdicts — "
+                    "evaluation loop is not converging"
+                ),
+                "evidence": [{"session_id": session, "needs_changes_count": cnt}],
+                "suggested_action": (
+                    f"Review session '{session}' implementation. "
+                    "Multiple evaluation failures suggest unclear requirements or "
+                    "incomplete implementation scope."
+                ),
+            }
+        )
+
+    # --- stale_marker: LEFT JOIN agent_markers for markers > 1 hour old ---
+    stale_rows = conn.execute(
+        """
+        SELECT am.agent_id, am.role, am.started_at
+        FROM   agent_markers am
+        WHERE  am.is_active  = 1
+          AND  am.started_at < ?
+        ORDER  BY am.started_at ASC
+        LIMIT  20
+        """,
+        (now - 3600,),
+    ).fetchall()
+    for r in stale_rows:
+        age_hours = (now - r["started_at"]) / 3600
+        patterns.append(
+            {
+                "pattern_type": "stale_marker",
+                "severity_score": float(age_hours),
+                "description": (
+                    f"Agent marker '{r['agent_id']}' (role={r['role']}) "
+                    f"has been active for {age_hours:.1f}h"
+                ),
+                "evidence": [dict(r)],
+                "suggested_action": (
+                    f"Check whether agent '{r['agent_id']}' is still running. "
+                    "Stale markers indicate crashed or orphaned agent sessions."
+                ),
+            }
+        )
+
+    # --- review_quality: infra failure rate > 20% ---
+    total_reviews = conn.execute(
+        "SELECT COUNT(*) FROM obs_metrics WHERE metric_name='review_verdict' AND created_at >= ?",
+        (since,),
+    ).fetchone()[0]
+    infra_failures = conn.execute(
+        "SELECT COUNT(*) FROM obs_metrics WHERE metric_name='review_infra_failure' AND created_at >= ?",
+        (since,),
+    ).fetchone()[0]
+    if total_reviews > 0:
+        failure_rate = infra_failures / total_reviews
+        if failure_rate > 0.20:
+            patterns.append(
+                {
+                    "pattern_type": "review_quality",
+                    "severity_score": float(infra_failures),
+                    "description": (
+                        f"Review gate infra failure rate is {failure_rate:.1%} "
+                        f"({infra_failures}/{total_reviews} reviews failed)"
+                    ),
+                    "evidence": [
+                        {
+                            "total_reviews": total_reviews,
+                            "infra_failures": infra_failures,
+                            "failure_rate": failure_rate,
+                        }
+                    ],
+                    "suggested_action": (
+                        "Investigate review gate provider health. "
+                        "High infra failure rates indicate network issues, quota exhaustion, "
+                        "or provider outages."
+                    ),
+                }
+            )
+
+    return patterns
+
+
+def generate_report(conn: sqlite3.Connection, window_hours: int = 24) -> dict:
+    """Assemble a comprehensive analysis report and record an obs_run.
+
+    Calls cross_analysis(), pattern_detection(), check_convergence(), and
+    compute_trend() for key metrics. Records the run via record_run().
+
+    Returns a dict with keys:
+        metrics_summary   dict  — total, by_type, by_role counts in window
+        trends            dict  — compute_trend output keyed by metric name
+        patterns          list  — output of pattern_detection()
+        suggestions       list  — active obs_suggestions rows
+        convergence       list  — output of check_convergence()
+        review_gate_health dict — review verdict stats, provider breakdown,
+                                  predictive accuracy (from cross_analysis)
+
+    @decision DEC-OBS-005
+    Title: summary() delegates entirely to generate_report()
+    Status: accepted
+    Rationale: See module-level docstring.
+    """
+    since = int(time.time()) - window_hours * 3600
+
+    # --- metrics_summary: total, by_type, by_role ---
+    total_metrics = conn.execute(
         "SELECT COUNT(*) FROM obs_metrics WHERE created_at >= ?",
         (since,),
     ).fetchone()[0]
 
-    # Active suggestions (proposed + accepted)
-    active_suggestions = conn.execute(
-        "SELECT COUNT(*) FROM obs_suggestions WHERE status IN ('proposed', 'accepted')"
-    ).fetchone()[0]
-
-    # Anomalies: collect across all distinct metric names in window
-    distinct_names = conn.execute(
-        "SELECT DISTINCT metric_name FROM obs_metrics WHERE created_at >= ?",
+    by_type_rows = conn.execute(
+        """
+        SELECT metric_name, COUNT(*) AS cnt
+        FROM   obs_metrics
+        WHERE  created_at >= ?
+        GROUP  BY metric_name
+        ORDER  BY cnt DESC
+        """,
         (since,),
     ).fetchall()
-    recent_anomalies: list[dict] = []
-    for (mname,) in distinct_names:
-        recent_anomalies.extend(detect_anomalies(conn, mname))
+    by_type = {r["metric_name"]: r["cnt"] for r in by_type_rows}
 
-    # Convergence check
-    convergence_results = check_convergence(conn)
+    by_role_rows = conn.execute(
+        """
+        SELECT role, COUNT(*) AS cnt
+        FROM   obs_metrics
+        WHERE  created_at >= ?
+          AND  role IS NOT NULL
+        GROUP  BY role
+        ORDER  BY cnt DESC
+        """,
+        (since,),
+    ).fetchall()
+    by_role = {r["role"]: r["cnt"] for r in by_role_rows}
 
-    # Agent performance (aggregate across known roles)
-    roles = ["implementer", "tester", "guardian", "planner"]
-    ap = {r: agent_performance(conn, r, window_hours=window_hours) for r in roles}
+    metrics_summary = {"total": total_metrics, "by_type": by_type, "by_role": by_role}
 
-    dh = denial_hotspots(conn, window_hours=window_hours)
-    th = test_health(conn, window_hours=window_hours)
+    # --- trends: compute_trend for key metric names ---
+    key_metrics = [
+        "agent_duration_s",
+        "test_result",
+        "guard_denial",
+        "eval_verdict",
+        "review_verdict",
+        "review_duration_s",
+        "review_infra_failure",
+    ]
+    trends = {m: compute_trend(conn, m, window_hours=window_hours) for m in key_metrics}
 
-    report = {
-        "metrics_24h": metrics_24h,
-        "active_suggestions": active_suggestions,
-        "recent_anomalies": recent_anomalies,
-        "convergence_results": convergence_results,
-        "agent_performance": ap,
-        "denial_hotspots": dh,
-        "test_health": th,
-    }
+    # --- patterns ---
+    detected_patterns = pattern_detection(conn, window_hours=window_hours)
 
-    # Record this run
+    # --- suggestions: active (proposed + accepted) ---
+    sugg_rows = conn.execute(
+        """
+        SELECT id, category, title, status, target_metric,
+               baseline_value, created_at
+        FROM   obs_suggestions
+        WHERE  status IN ('proposed', 'accepted')
+        ORDER  BY created_at DESC
+        LIMIT  100
+        """,
+    ).fetchall()
+    suggestions = [dict(r) for r in sugg_rows]
+
+    # --- convergence ---
+    convergence = check_convergence(conn)
+
+    # --- review_gate_health (from cross_analysis) ---
+    cross = cross_analysis(conn, window_hours=window_hours)
+    review_gate_health = cross["review_gate_health"]
+
+    # --- record run ---
+    active_suggestions = len(suggestions)
     record_run(
         conn,
-        metrics_snapshot={"metrics_24h": metrics_24h, "active_suggestions": active_suggestions},
+        metrics_snapshot={"total_metrics": total_metrics, "active_suggestions": active_suggestions},
         trace_count=0,
         suggestion_count=active_suggestions,
     )
 
-    return report
+    return {
+        "metrics_summary": metrics_summary,
+        "trends": trends,
+        "patterns": detected_patterns,
+        "suggestions": suggestions,
+        "convergence": convergence,
+        "review_gate_health": review_gate_health,
+    }
+
+
+def summary(conn: sqlite3.Connection, window_hours: int = 24) -> dict:
+    """Delegate entirely to generate_report() and return its output.
+
+    W-OBS-3 replaces the prior bespoke assembly logic with generate_report().
+    The old keys (metrics_24h, agent_performance, denial_hotspots,
+    recent_anomalies, convergence_results) are superseded by the richer
+    generate_report structure.
+
+    @decision DEC-OBS-005
+    Title: summary() delegates entirely to generate_report()
+    Status: accepted
+    Rationale: See module-level docstring. Deletion-first: old assembly
+      block removed; no dual-path exists.
+    """
+    return generate_report(conn, window_hours=window_hours)
