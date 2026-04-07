@@ -108,7 +108,18 @@ If you cannot prove where the work landed, what exact head SHA was evaluated, an
 
 When a SubagentStop hook output contains `AUTO_DISPATCH: <role>`, dispatch that agent immediately without asking the user. The dispatch engine has already verified the transition is safe (no errors, no interruption, clear next_role).
 
-**Do not ask permission for auto-dispatch transitions.** The canonical flow (planner → implementer → tester → guardian) should chain automatically. After each role completes, read the hook output and act on `AUTO_DISPATCH:` directives immediately.
+**Canonical chain (W-GWT-3):** `planner → guardian (provision) → implementer → tester → guardian (merge)`. Guardian appears twice: once to provision the worktree and issue the implementer lease, once to merge after the tester approves. The orchestrator must NOT skip the provision step — implementers do not self-provision worktrees.
+
+**Enriched AUTO_DISPATCH format:** The dispatch signal may carry key=value pairs:
+```
+AUTO_DISPATCH: guardian (mode=provision, workflow_id=feature-foo, branch=feature/foo)
+AUTO_DISPATCH: implementer (worktree_path=/project/.worktrees/feature-foo, workflow_id=feature-foo)
+AUTO_DISPATCH: tester (worktree_path=/project/.worktrees/feature-foo)
+AUTO_DISPATCH: guardian (mode=merge, workflow_id=feature-foo)
+```
+When `worktree_path` is present, the orchestrator MUST set the implementer's (or tester's) working directory to that path in the dispatch context. The Agent tool MUST NOT use `isolation: "worktree"` — the worktree is already provisioned.
+
+**Do not ask permission for auto-dispatch transitions.** After each role completes, read the hook output and act on `AUTO_DISPATCH:` directives immediately.
 
 **Stop the chain only when:**
 - Hook output contains `BLOCKED`, `ERROR`, or `PROCESS ERROR`

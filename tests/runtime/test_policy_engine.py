@@ -376,7 +376,7 @@ def test_default_registry_is_registry():
 
 
 def test_default_registry_has_all_policies():
-    """W2+W3: 19 policies registered (7 write + 12 bash) in priority order."""
+    """23 policies registered (7 write + 15 bash + 1 W-GWT-3) in priority order."""
     reg = default_registry()
     policies = reg.list_policies()
     names = {p.name for p in policies}
@@ -407,7 +407,7 @@ def test_default_registry_has_all_policies():
     }
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
-    assert len(policies) == 22
+    assert len(policies) == 23
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)

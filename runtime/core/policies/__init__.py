@@ -47,6 +47,7 @@ def register_all(registry: PolicyRegistry) -> None:
       100  bash_tmp_safety        -- deny /tmp writes
       200  bash_worktree_cwd      -- deny bare cd into .worktrees/
       300  bash_git_who           -- lease-based WHO enforcement for git ops
+      350  bash_worktree_creation -- deny git worktree add from non-guardian roles (W-GWT-3)
       400  bash_main_sacred       -- deny commits on main/master
       500  bash_force_push        -- deny unsafe force push
       600  bash_destructive_git   -- hard deny reset --hard, clean -f, branch -D
@@ -144,6 +145,7 @@ def register_all(registry: PolicyRegistry) -> None:
         bash_test_gate,
         bash_tmp_safety,
         bash_workflow_scope,
+        bash_worktree_creation,
         bash_worktree_cwd,
         bash_worktree_removal,
     )
@@ -151,6 +153,7 @@ def register_all(registry: PolicyRegistry) -> None:
     bash_tmp_safety.register(registry)
     bash_worktree_cwd.register(registry)
     bash_git_who.register(registry)
+    bash_worktree_creation.register(registry)
     bash_main_sacred.register(registry)
     bash_force_push.register(registry)
     bash_destructive_git.register(registry)
