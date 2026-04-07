@@ -317,6 +317,145 @@ def test_lifecycle_on_stop_via_cli_noop_role_mismatch(db_path):
     assert active.get("role") == "guardian"
 
 
+# ---------------------------------------------------------------------------
+# Scoped marker lookup tests (DEC-LIFECYCLE-004 / ENFORCE-RCA-6-ext / #26)
+#
+# These verify that on_stop_by_role respects project_root and workflow_id
+# scoping so that stopping an agent in project A does not silently deactivate
+# an unrelated active marker in project B. Before the scoping fix, the
+# globally-newest active marker was used unconditionally, enabling cross-
+# project contamination and orphan-marker poisoning of role detection.
+# ---------------------------------------------------------------------------
+
+
+def test_on_stop_by_role_scoped_to_project_root(conn):
+    """Deactivation scoped by project_root targets only the caller's project.
+
+    Regression guard for ENFORCE-RCA-6-ext / #26: before this fix, a newer
+    active marker from project B could be deactivated when the caller in
+    project A called on_stop_by_role, OR the caller's own older marker
+    could be missed because the globally-newest belonged to project B.
+    """
+    # Start two tester markers in two different projects
+    markers.set_active(conn, "agent-A", "tester", project_root="/repo/A", workflow_id=None)
+    markers.set_active(conn, "agent-B", "tester", project_root="/repo/B", workflow_id=None)
+
+    # Stop tester in project A only — must leave B's marker intact
+    result = on_stop_by_role(conn, "tester", project_root="/repo/A")
+    assert result["found"] is True
+    assert result["deactivated"] is True
+    assert result["agent_id"] == "agent-A"
+
+    # Project B's marker should still be active
+    active_b = markers.get_active(conn, project_root="/repo/B")
+    assert active_b is not None
+    assert active_b["agent_id"] == "agent-B"
+
+
+def test_on_stop_by_role_scoped_ignores_stale_other_project(conn):
+    """When caller's project has no active marker, scoped lookup returns found=False.
+
+    Even if a GLOBALLY-newer active marker exists in another project, the
+    scoped query must not return it. Before the fix, the unscoped query
+    would return the foreign marker and either deactivate it (wrong) or
+    fail the role match and appear as a no-op (also wrong — masks the real
+    state).
+    """
+    # Active marker exists only in project B, not A
+    markers.set_active(
+        conn, "agent-B-only", "implementer", project_root="/repo/B", workflow_id=None
+    )
+
+    # Call scoped to project A — should NOT find the B marker
+    result = on_stop_by_role(conn, "implementer", project_root="/repo/A")
+    assert result["found"] is False
+    assert result["deactivated"] is False
+
+    # B's marker is still active
+    active_b = markers.get_active(conn, project_root="/repo/B")
+    assert active_b is not None
+
+
+def test_on_stop_by_role_scoped_with_workflow_id(conn):
+    """project_root + workflow_id narrow the scope further within a project."""
+    markers.set_active(conn, "agent-wf1", "tester", project_root="/repo/A", workflow_id="wf-001")
+    markers.set_active(conn, "agent-wf2", "tester", project_root="/repo/A", workflow_id="wf-002")
+
+    # Stop only wf-001 in project A — wf-002 must survive
+    result = on_stop_by_role(conn, "tester", project_root="/repo/A", workflow_id="wf-001")
+    assert result["found"] is True
+    assert result["agent_id"] == "agent-wf1"
+
+    # wf-002 still active
+    active_wf2 = markers.get_active(conn, project_root="/repo/A", workflow_id="wf-002")
+    assert active_wf2 is not None
+    assert active_wf2["agent_id"] == "agent-wf2"
+
+
+def test_on_stop_by_role_unscoped_backward_compat(conn):
+    """When called with no scoping (legacy path), behaviour is unchanged.
+
+    statusline.py and other context-less callers continue to pass no scoping
+    args; the old global behaviour must be preserved for backward compat.
+    """
+    on_agent_start(conn, "guardian", "agent-legacy")
+    # Legacy unscoped call — must still work
+    result = on_stop_by_role(conn, "guardian")
+    assert result["found"] is True
+    assert result["deactivated"] is True
+    assert result["agent_id"] == "agent-legacy"
+
+
+def test_cli_marker_get_active_scoped(db_path):
+    """CLI `marker get-active --project-root` scopes the query correctly.
+
+    Shell-boundary test: rt_marker_get_active_role in runtime-bridge.sh
+    passes --project-root through to this CLI subcommand. If the CLI
+    ignores the flag, the shell-side scoping is silently broken.
+    """
+    # Start two markers in different projects via CLI
+    _cc("marker", "set", "agent-X", "implementer", "--project-root", "/proj/X", db_path=db_path)
+    _cc("marker", "set", "agent-Y", "implementer", "--project-root", "/proj/Y", db_path=db_path)
+
+    # Scoped query for X must return agent-X
+    rc, data = _cc("marker", "get-active", "--project-root", "/proj/X", db_path=db_path)
+    assert rc == 0
+    assert data.get("found") is True
+    assert data.get("agent_id") == "agent-X"
+
+    # Scoped query for Y must return agent-Y
+    rc2, data2 = _cc("marker", "get-active", "--project-root", "/proj/Y", db_path=db_path)
+    assert rc2 == 0
+    assert data2.get("found") is True
+    assert data2.get("agent_id") == "agent-Y"
+
+
+def test_cli_lifecycle_on_stop_scoped(db_path):
+    """CLI `lifecycle on-stop --project-root` deactivates only the caller's marker."""
+    # Two active implementers in different projects
+    _cc("marker", "set", "agent-P", "implementer", "--project-root", "/proj/P", db_path=db_path)
+    _cc("marker", "set", "agent-Q", "implementer", "--project-root", "/proj/Q", db_path=db_path)
+
+    # Stop only in P
+    rc, data = _cc(
+        "lifecycle", "on-stop", "implementer", "--project-root", "/proj/P", db_path=db_path
+    )
+    assert rc == 0
+    assert data.get("deactivated") is True
+    assert data.get("agent_id") == "agent-P"
+
+    # Q is still active
+    rc2, q_data = _cc("marker", "get-active", "--project-root", "/proj/Q", db_path=db_path)
+    assert rc2 == 0
+    assert q_data.get("found") is True
+    assert q_data.get("agent_id") == "agent-Q"
+
+    # P is gone
+    rc3, p_data = _cc("marker", "get-active", "--project-root", "/proj/P", db_path=db_path)
+    assert rc3 == 0
+    assert p_data.get("found") is False
+
+
 def test_lifecycle_on_stop_compound_check_hook_sequence(db_path):
     """Compound-interaction test: full SubagentStop hook sequence.
 

@@ -167,14 +167,16 @@ def _handle_evaluation(args) -> int:
 
 
 def _handle_marker(args) -> int:
+    # Shared by set and get-active; both accept --project-root/--workflow-id
+    # scoping per W-CONV-2 (set) and ENFORCE-RCA-6-ext/#26 (get-active).
+    from runtime.core.policy_utils import normalize_path as _norm_path
+
     conn = _get_conn()
     try:
         if args.action == "set":
             # W-CONV-2: accept optional --project-root and --workflow-id so the
             # test-marker-lifecycle.sh helper and production callers can write
             # scoped markers via `cc-policy marker set`.
-            from runtime.core.policy_utils import normalize_path as _norm_path
-
             _pr = getattr(args, "project_root", None) or ""
             _wf = getattr(args, "workflow_id", None) or ""
             markers_mod.set_active(
@@ -187,7 +189,16 @@ def _handle_marker(args) -> int:
             return _ok({"agent_id": args.agent_id, "role": args.role})
 
         elif args.action == "get-active":
-            result = markers_mod.get_active(conn)
+            # ENFORCE-RCA-6-ext/#26: honor --project-root and --workflow-id
+            # scoping so the caller can filter to its own project and avoid
+            # returning a stale marker from an unrelated project.
+            _pr = getattr(args, "project_root", None)
+            _wf = getattr(args, "workflow_id", None)
+            result = markers_mod.get_active(
+                conn,
+                project_root=_norm_path(_pr) if _pr else None,
+                workflow_id=_wf if _wf else None,
+            )
             if result is None:
                 return _ok({"found": False, "active_agent": None})
             result["found"] = True
@@ -581,7 +592,18 @@ def _handle_lifecycle(args) -> int:
     conn = _get_conn()
     try:
         if args.action == "on-stop":
-            result = lifecycle_mod.on_stop_by_role(conn, args.agent_type)
+            # ENFORCE-RCA-6-ext/#26: pass scoping through so deactivation
+            # targets the caller's own active marker, not the globally newest.
+            from runtime.core.policy_utils import normalize_path as _norm_path
+
+            _pr = getattr(args, "project_root", None)
+            _wf = getattr(args, "workflow_id", None)
+            result = lifecycle_mod.on_stop_by_role(
+                conn,
+                args.agent_type,
+                project_root=_norm_path(_pr) if _pr else None,
+                workflow_id=_wf if _wf else None,
+            )
             return _ok(result)
     finally:
         conn.close()
@@ -2003,7 +2025,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Workflow ID to associate with this marker",
     )
-    marker_sub.add_parser("get-active")
+    mga = marker_sub.add_parser("get-active")
+    # ENFORCE-RCA-6-ext/#26: scoped marker lookup prevents cross-project
+    # contamination. Without these flags, get_active returns the globally
+    # newest active marker, which can be a stale marker from an unrelated
+    # project and poison role detection in this one.
+    mga.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Scope marker lookup to this canonical project root",
+    )
+    mga.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        default=None,
+        help="Scope marker lookup further to this workflow_id",
+    )
     md = marker_sub.add_parser("deactivate")
     md.add_argument("agent_id")
     marker_sub.add_parser("list")
@@ -2077,6 +2115,21 @@ def build_parser() -> argparse.ArgumentParser:
     lc_onstop.add_argument(
         "agent_type",
         help="Role to match for deactivation (implementer, tester, guardian, planner)",
+    )
+    # ENFORCE-RCA-6-ext/#26: scoped deactivation prevents the handler from
+    # grabbing a globally-newer active marker from an unrelated project and
+    # deactivating it instead of the caller's own.
+    lc_onstop.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Scope deactivation to this canonical project root",
+    )
+    lc_onstop.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        default=None,
+        help="Scope deactivation further to this workflow_id",
     )
 
     dp_p = subparsers.add_parser("dispatch", help="Dispatch queue and cycles")

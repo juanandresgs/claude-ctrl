@@ -73,7 +73,12 @@ def on_agent_stop(conn: sqlite3.Connection, agent_type: str, agent_id: str) -> N
     markers.deactivate(conn, agent_id)
 
 
-def on_stop_by_role(conn: sqlite3.Connection, agent_type: str) -> dict:
+def on_stop_by_role(
+    conn: sqlite3.Connection,
+    agent_type: str,
+    project_root: str | None = None,
+    workflow_id: str | None = None,
+) -> dict:
     """Deactivate the active marker whose role matches agent_type.
 
     This is the single authority for marker deactivation in SubagentStop hooks
@@ -101,11 +106,32 @@ def on_stop_by_role(conn: sqlite3.Connection, agent_type: str) -> dict:
       on_stop_by_role gives one implementation reachable via
       `cc-policy lifecycle on-stop <agent_type>`.
 
+    @decision DEC-LIFECYCLE-004
+    @title Scoped deactivation by project_root and workflow_id (ENFORCE-RCA-6-ext / #26)
+    @status accepted
+    @rationale Pre-scoping, on_stop_by_role called markers.get_active() unscoped.
+      In a multi-project environment — or a dual-checkout symlinked repo like
+      ~/.claude → claude-ctrl-hardFork — the globally-newest active marker may
+      belong to a different logical project. Stopping agent X in project A
+      could silently deactivate an active marker in project B, or fail to
+      deactivate agent X because a newer marker from B holds the "globally
+      newest" slot. Forwarding project_root and workflow_id to
+      markers.get_active() ensures the lookup is strictly scoped to the
+      caller's project, eliminating cross-project contamination and orphan-
+      marker poisoning.
+
+      Backward compatibility: when both params are None (old callers),
+      behaviour is identical to the pre-scoping path — statusline.py and any
+      other context-less caller continues to work.
+
     Args:
-        conn:       Open SQLite connection with schema applied.
-        agent_type: Role string to match (implementer, tester, guardian, planner).
+        conn:         Open SQLite connection with schema applied.
+        agent_type:   Role string to match (implementer, tester, guardian, planner).
+        project_root: Optional canonical project root to scope the lookup.
+                      When None, falls back to unscoped global query.
+        workflow_id:  Optional workflow_id to further scope within a project.
     """
-    active = markers.get_active(conn)
+    active = markers.get_active(conn, project_root=project_root, workflow_id=workflow_id)
     if active is None or active.get("role") != agent_type:
         return {"found": False, "deactivated": False, "agent_id": None, "role": None}
     agent_id = active["agent_id"]

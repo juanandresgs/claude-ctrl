@@ -69,6 +69,73 @@ def test_is_source_file_all_extensions():
         assert is_source_file(f"file.{ext}") is True, f"expected True for .{ext}"
 
 
+def test_is_source_file_mjs():
+    """ENFORCE-RCA-6 (DEC-SOURCEEXT-001): .mjs is a source extension."""
+    assert is_source_file("module.mjs") is True
+
+
+def test_is_source_file_cjs():
+    """ENFORCE-RCA-6 (DEC-SOURCEEXT-001): .cjs is a source extension."""
+    assert is_source_file("legacy.cjs") is True
+
+
+def test_is_source_file_mts():
+    """ENFORCE-RCA-6 (DEC-SOURCEEXT-001): .mts is a source extension."""
+    assert is_source_file("typed-module.mts") is True
+
+
+def test_is_source_file_cts():
+    """ENFORCE-RCA-6 (DEC-SOURCEEXT-001): .cts is a source extension."""
+    assert is_source_file("typed-legacy.cts") is True
+
+
+def test_source_extensions_contains_modern_js_variants():
+    """Regression guard: ENFORCE-RCA-6 gap where policies skipped .mjs/.cjs/.mts/.cts.
+
+    Before this fix the orchestrator could edit .mjs files on main with no
+    policy intervention — branch_guard, write_who, doc_gate, plan_guard,
+    test_gate_pretool, and mock_gate all gate on is_source_file() and all
+    returned False for .mjs. Verified via direct cc-policy evaluate call.
+    """
+    assert "mjs" in SOURCE_EXTENSIONS
+    assert "cjs" in SOURCE_EXTENSIONS
+    assert "mts" in SOURCE_EXTENSIONS
+    assert "cts" in SOURCE_EXTENSIONS
+
+
+def test_source_extensions_python_shell_parity():
+    """Python SOURCE_EXTENSIONS must match the shell mirror in hooks/context-lib.sh.
+
+    DEC-PE-001 / DEC-SOURCEEXT-001: Python policy modules and shell hooks make
+    the same source-file classification decision. Drift between the two lists
+    creates an enforcement gap where one layer denies and the other allows
+    (the exact root cause of ENFORCE-RCA-6). This test reads the shell file
+    directly and asserts the extension lists are identical.
+    """
+    import re
+    from pathlib import Path
+
+    shell_file = Path(__file__).resolve().parent.parent.parent / "hooks" / "context-lib.sh"
+    text = shell_file.read_text(encoding="utf-8")
+
+    # Extract: SOURCE_EXTENSIONS='ts|tsx|js|jsx|...|zsh'
+    match = re.search(r"^SOURCE_EXTENSIONS='([^']+)'", text, re.MULTILINE)
+    assert match, "Could not find SOURCE_EXTENSIONS in hooks/context-lib.sh"
+
+    shell_exts = set(match.group(1).split("|"))
+    python_exts = set(SOURCE_EXTENSIONS)
+
+    missing_in_shell = python_exts - shell_exts
+    missing_in_python = shell_exts - python_exts
+
+    assert not missing_in_shell and not missing_in_python, (
+        f"SOURCE_EXTENSIONS drift detected.\n"
+        f"  In Python but not in shell: {sorted(missing_in_shell)}\n"
+        f"  In shell but not in Python: {sorted(missing_in_python)}\n"
+        f"  Update both: runtime/core/policy_utils.py:77 AND hooks/context-lib.sh:164"
+    )
+
+
 # ---------------------------------------------------------------------------
 # is_skippable_path
 # ---------------------------------------------------------------------------

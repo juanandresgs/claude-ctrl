@@ -82,7 +82,20 @@ def _init_repo(tmp_path: Path, *, branch: str = "feature/test", name: str = "rep
 
 
 def _set_role(project_root: Path, role: str) -> None:
-    _policy(project_root, "marker", "set", "agent-test", role)
+    # ENFORCE-RCA-6-ext/#26: write the marker scoped to project_root so that
+    # current_active_agent_role (which is now scoped) can find it. Before the
+    # scoping fix the unscoped fallback would return this marker regardless;
+    # with scoping enforced, the marker must match CLAUDE_PROJECT_DIR used by
+    # the hook under test.
+    _policy(
+        project_root,
+        "marker",
+        "set",
+        "agent-test",
+        role,
+        "--project-root",
+        str(project_root),
+    )
 
 
 def _seed_master_plan(repo: Path, content: str = "# Plan\n") -> None:
@@ -212,7 +225,18 @@ def _typescript_exports(count: int = 25) -> str:
 
 def _configure_guardian_git_allow(repo: Path) -> None:
     _set_role(repo, "guardian")
-    _policy(repo, "test-state", "set", "pass", "--project-root", str(repo), "--passed", "1", "--total", "1")
+    _policy(
+        repo,
+        "test-state",
+        "set",
+        "pass",
+        "--project-root",
+        str(repo),
+        "--passed",
+        "1",
+        "--total",
+        "1",
+    )
 
     head_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     workflow_id = "feature-ready"

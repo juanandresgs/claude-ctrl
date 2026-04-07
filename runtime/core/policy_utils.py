@@ -80,6 +80,11 @@ SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         "tsx",
         "js",
         "jsx",
+        # Modern JS/TS module variants (DEC-SOURCEEXT-001, ENFORCE-RCA-6)
+        "mjs",
+        "cjs",
+        "mts",
+        "cts",
         "py",
         "rs",
         "go",

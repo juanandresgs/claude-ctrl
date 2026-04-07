@@ -161,7 +161,7 @@ get_research_status() {
 # Single source of truth for source file extensions across all hooks.
 # DECISION: Consolidated extension list. Rationale: Source file regex was
 # copy-pasted in 8+ hooks creating drift risk. Status: accepted.
-SOURCE_EXTENSIONS='ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
+SOURCE_EXTENSIONS='ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
 
 # Check if a file is a source file by extension
 is_source_file() {
@@ -334,7 +334,21 @@ find_worktree_for_branch() {
 current_active_agent_role() {
     # SQLite agent_markers is the sole authority (TKT-008, DEC-IDENTITY-NO-ENV-VAR).
     # CLAUDE_AGENT_ROLE env var is intentionally NOT consulted — it is a spoofing vector.
-    rt_marker_get_active_role 2>/dev/null || echo ""
+    #
+    # ENFORCE-RCA-6-ext / #26: pass project_root through to the runtime so the
+    # query is scoped to THIS project. Without scoping, a stale active marker
+    # from another project or a prior crashed session silently poisons role
+    # detection — e.g. the orchestrator inherits implementer authority from an
+    # orphaned marker and bypasses write_who/branch_guard on source writes.
+    #
+    # NOTE: workflow_id is NOT auto-derived here. Many legitimate markers are
+    # stored with workflow_id=NULL (agents spawned before a workflow was bound,
+    # test fixtures, statusline callers). Passing a branch-derived workflow_id
+    # would filter them out and silently return empty. project_root-only
+    # scoping matches the schema's WHERE-clause semantics in markers.get_active
+    # (optional predicates are only applied when the query arg is non-None).
+    local root="${1:-}"
+    rt_marker_get_active_role "$root" "" 2>/dev/null || echo ""
 }
 
 is_guardian_role() {
