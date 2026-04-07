@@ -236,6 +236,172 @@ def _handle_event(args) -> int:
     return _err(f"unknown event action: {args.action}")
 
 
+def _provision_worktree(
+    conn,
+    workflow_id: str,
+    feature_name: str,
+    project_root: str,
+    base_branch: str = "main",
+) -> dict:
+    """Core provision logic: filesystem-first, then DB writes, with partial-failure cleanup.
+
+    Provision sequence (DEC-GUARD-WT-008 R3, DEC-GUARD-WT-002):
+      1. Compute worktree_path and branch from project_root + feature_name.
+      2. Filesystem check: does the path already exist? → already_exists path.
+      3. git worktree add (subprocess) — filesystem is created BEFORE any DB write.
+         If this fails, return error immediately (nothing to clean up).
+      4. worktrees.register(path, branch) — ON CONFLICT is the sole concurrency guard.
+      5. leases.issue() for Guardian at PROJECT_ROOT (DEC-GUARD-WT-006 R3).
+      6. leases.issue() for implementer at worktree_path.
+      7. workflows.bind_workflow() — workflow binding at provision time (DEC-GUARD-WT-004).
+
+    Partial-failure cleanup (DEC-GUARD-WT-008 R3):
+      If step 4 succeeds but steps 5-7 fail, call worktrees.remove() to roll back
+      the registration, then `git worktree remove` to remove the filesystem path.
+      If step 3 succeeds but step 4 fails, only `git worktree remove` is needed.
+
+    Re-provision (already_exists=True):
+      Filesystem path exists → skip git worktree add, ensure DB state is correct.
+      Active implementer lease is NOT revoked on re-provision (spec requirement).
+
+    @decision DEC-GUARD-WT-002
+    Title: Worktree provisioning is a runtime function, not a dispatch_engine side effect
+    Status: accepted
+    Rationale: This function is the ONE place in the runtime that runs git commands
+      via subprocess. dispatch_engine remains pure (no git, no lease writes). The
+      Guardian agent calls `cc-policy worktree provision` which delegates here.
+      The filesystem-first order (DEC-GUARD-WT-008 R3) prevents DB state from
+      accumulating when git fails. ON CONFLICT in register() is the sole concurrency
+      guard — no list_active() pre-check to avoid TOCTOU races.
+
+    @decision DEC-GUARD-WT-008
+    Title: Provision-if-absent idempotency — filesystem-first, no TOCTOU pre-check
+    Status: accepted
+    Rationale: Filesystem check (os.path.exists) determines already-exists, not a
+      DB pre-check. This eliminates the TOCTOU window where two concurrent provisions
+      both see the DB as empty and race. The filesystem is the ground truth.
+
+    @decision DEC-GUARD-WT-006
+    Title: Guardian provisioning lease issued by provision CLI (R3)
+    Status: accepted
+    Rationale: check-guardian.sh uses lease_context(PROJECT_ROOT) to find the active
+      lease for completion record submission. The Guardian lease must be at PROJECT_ROOT,
+      not at the worktree path. This function issues it here so check-guardian.sh can
+      find it after the guardian agent runs `cc-policy worktree provision`.
+    """
+    import os as _os
+    import subprocess as _subprocess
+
+    from runtime.core.policy_utils import normalize_path
+
+    project_root = normalize_path(project_root)
+    branch = f"feature/{feature_name}"
+    worktree_path = _os.path.join(project_root, ".worktrees", f"feature-{feature_name}")
+
+    # --- Step 1: Filesystem check (DEC-GUARD-WT-008 R3) ---
+    already_exists = _os.path.exists(worktree_path)
+
+    git_created = False
+    if not already_exists:
+        # --- Step 2: git worktree add (filesystem-first, before any DB write) ---
+        r = _subprocess.run(
+            [
+                "git",
+                "-C",
+                project_root,
+                "worktree",
+                "add",
+                f".worktrees/feature-{feature_name}",
+                "-b",
+                branch,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"git worktree add failed (exit {r.returncode}): {r.stderr.strip()}")
+        git_created = True
+
+    # --- Steps 3-6: DB writes (with partial-failure cleanup) ---
+    register_done = False
+    try:
+        # Step 3: Register worktree (ON CONFLICT is the sole concurrency guard)
+        worktrees_mod.register(conn, path=worktree_path, branch=branch, ticket=workflow_id)
+        register_done = True
+
+        # Step 4: Guardian lease at PROJECT_ROOT (DEC-GUARD-WT-006 R3)
+        # Revokes any prior Guardian lease at project_root (one-active-per-worktree).
+        g_lease = leases_mod.issue(
+            conn,
+            role="guardian",
+            worktree_path=project_root,
+            workflow_id=workflow_id,
+            branch=branch,
+            requires_eval=False,  # Guardian provisioning does not require eval
+        )
+
+        # Step 5: Implementer lease at worktree_path.
+        # On re-provision: check if an active implementer lease already exists.
+        # If so, reuse it (do NOT revoke — spec requirement).
+        if already_exists:
+            existing_impl = leases_mod.get_current(conn, worktree_path=worktree_path)
+            if existing_impl is not None and existing_impl["role"] == "implementer":
+                i_lease = existing_impl
+            else:
+                i_lease = leases_mod.issue(
+                    conn,
+                    role="implementer",
+                    worktree_path=worktree_path,
+                    workflow_id=workflow_id,
+                    branch=branch,
+                )
+        else:
+            i_lease = leases_mod.issue(
+                conn,
+                role="implementer",
+                worktree_path=worktree_path,
+                workflow_id=workflow_id,
+                branch=branch,
+            )
+
+        # Step 6: Workflow binding (DEC-GUARD-WT-004 revised)
+        workflows_mod.bind_workflow(
+            conn,
+            workflow_id=workflow_id,
+            worktree_path=worktree_path,
+            branch=branch,
+            base_branch=base_branch,
+        )
+
+    except Exception:
+        # Partial-failure cleanup (DEC-GUARD-WT-008 R3):
+        # Roll back register() if it succeeded, then remove the git worktree.
+        if register_done:
+            try:
+                worktrees_mod.remove(conn, worktree_path)
+            except Exception:
+                pass  # Best-effort; cleanup failure does not mask original error
+        if git_created:
+            try:
+                _subprocess.run(
+                    ["git", "-C", project_root, "worktree", "remove", worktree_path],
+                    capture_output=True,
+                    check=False,
+                )
+            except Exception:
+                pass  # Best-effort cleanup
+        raise
+
+    return {
+        "worktree_path": worktree_path,
+        "branch": branch,
+        "guardian_lease_id": g_lease["lease_id"],
+        "implementer_lease_id": i_lease["lease_id"],
+        "workflow_id": workflow_id,
+        "already_exists": already_exists,
+    }
+
+
 def _handle_worktree(args) -> int:
     conn = _get_conn()
     try:
@@ -255,6 +421,41 @@ def _handle_worktree(args) -> int:
         elif args.action == "list":
             rows = worktrees_mod.list_active(conn)
             return _ok({"items": rows, "count": len(rows)})
+
+        elif args.action == "provision":
+            import os as _os
+
+            # Resolve project_root from args or CLAUDE_PROJECT_DIR env var
+            project_root = getattr(args, "project_root", None) or ""
+            if not project_root:
+                project_root = _os.environ.get("CLAUDE_PROJECT_DIR", "")
+            if not project_root:
+                return _err(
+                    "worktree provision: --project-root is required (or set CLAUDE_PROJECT_DIR)"
+                )
+
+            workflow_id = getattr(args, "workflow_id", None) or ""
+            if not workflow_id:
+                return _err("worktree provision: --workflow-id is required")
+
+            feature_name = getattr(args, "feature_name", None) or ""
+            if not feature_name:
+                return _err("worktree provision: --feature-name is required")
+
+            base_branch = getattr(args, "base_branch", "main") or "main"
+
+            try:
+                result = _provision_worktree(
+                    conn,
+                    workflow_id=workflow_id,
+                    feature_name=feature_name,
+                    project_root=project_root,
+                    base_branch=base_branch,
+                )
+            except Exception as exc:
+                return _err(f"worktree provision failed: {exc}")
+
+            return _ok(result)
 
     finally:
         conn.close()
@@ -1830,6 +2031,40 @@ def build_parser() -> argparse.ArgumentParser:
     wrm = wt_sub.add_parser("remove")
     wrm.add_argument("path")
     wt_sub.add_parser("list")
+
+    # worktree provision — W-GWT-2 (DEC-GUARD-WT-002)
+    # Guardian calls this to create worktrees, issue leases, and bind workflows.
+    wt_prov = wt_sub.add_parser(
+        "provision",
+        help=(
+            "Provision a new worktree: git worktree add, DB register, "
+            "Guardian + implementer leases, workflow binding (W-GWT-2)"
+        ),
+    )
+    wt_prov.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        required=True,
+        help="Workflow ID to bind to the new worktree",
+    )
+    wt_prov.add_argument(
+        "--feature-name",
+        dest="feature_name",
+        required=True,
+        help="Feature name (used to compute branch feature/<name> and path .worktrees/feature-<name>)",
+    )
+    wt_prov.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Git repo root (defaults to CLAUDE_PROJECT_DIR env var)",
+    )
+    wt_prov.add_argument(
+        "--base-branch",
+        dest="base_branch",
+        default="main",
+        help="Base branch for the new worktree (default: main)",
+    )
 
     # dispatch
     # lifecycle: agent marker lifecycle (single authority for on-stop by role)
