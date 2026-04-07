@@ -129,6 +129,21 @@ def classify_git_op(command: str) -> str:
       Guardian leases that include high_risk can permit them, and (c) they require
       an approval token via the standard high_risk approval flow. This aligns the
       lifecycle-management operations with the same security model as push/rebase/reset.
+
+    @decision DEC-LEASE-EGAP-003
+    Title: RCA-1 ops classified as high_risk — cherry-pick, revert, worktree move,
+           stash drop/clear, remote add/remove/set-url, update-ref, filter-branch
+    Status: accepted
+    Rationale: E2E testing (RCA-1, issue #21) proved these 9 operations were matched
+      by the expanded _GIT_OP_RE in bash_git_who.py but then fell through to
+      "unclassified" in classify_git_op(). "unclassified" is not in any lease's
+      allowed_ops, producing a confusing denial message unrelated to the real
+      enforcement intent. Classifying each as high_risk means: Guardian leases
+      that include high_risk can permit them; implementer leases cannot; and the
+      standard approval-token flow applies. This keeps the security model consistent
+      across all state-mutating git operations. Classification precedence: these
+      checks appear AFTER admin_recovery but BEFORE the catch-all unclassified
+      return so they do not interfere with recovery operations.
     """
     # Strip path arguments to prevent false subcommand matches
     cmd = _strip_git_paths(command)
@@ -163,6 +178,33 @@ def classify_git_op(command: str) -> str:
     # High-risk: merge --no-ff (must check before plain merge)
     if re.search(r"\bmerge\b", cmd) and "--no-ff" in cmd:
         return "high_risk"
+    # ── RCA-1 additions (DEC-LEASE-EGAP-003) ────────────────────────────────
+    # High-risk: cherry-pick — replays commits onto HEAD, mutates history
+    if re.search(r"\bcherry-pick\b", cmd):
+        return "high_risk"
+    # High-risk: revert — creates a new commit undoing prior work
+    if re.search(r"\brevert\b", cmd):
+        return "high_risk"
+    # High-risk: worktree move — relocates a worktree on disk
+    if re.search(r"\bworktree\b", cmd) and re.search(r"\bmove\b", cmd):
+        return "high_risk"
+    # High-risk: stash drop / stash clear — permanently discard stashed work
+    if re.search(r"\bstash\b", cmd) and re.search(r"\b(drop|clear)\b", cmd):
+        return "high_risk"
+    # High-risk: remote add / remove / rm / set-url — modifies remote config
+    if re.search(r"\bremote\b", cmd) and re.search(r"\b(add|remove|rm|set-url)\b", cmd):
+        return "high_risk"
+    # High-risk: update-ref — directly writes ref objects, bypassing normal
+    #   commit flow; used for surgery on the ref namespace
+    if re.search(r"\bupdate-ref\b", cmd):
+        return "high_risk"
+    # High-risk: symbolic-ref — rewrites HEAD or other symbolic refs
+    if re.search(r"\bsymbolic-ref\b", cmd):
+        return "high_risk"
+    # High-risk: filter-branch / filter-repo — rewrites entire commit history
+    if re.search(r"\bfilter-branch\b", cmd) or re.search(r"\bfilter-repo\b", cmd):
+        return "high_risk"
+    # ── end RCA-1 additions ──────────────────────────────────────────────────
     # Routine local: commit
     if re.search(r"\bcommit\b", cmd):
         return "routine_local"

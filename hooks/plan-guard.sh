@@ -87,7 +87,7 @@ FILE_DIR=$(dirname "$FILE_PATH")
 [[ ! -d "$FILE_DIR" ]] && FILE_DIR=$(dirname "$FILE_DIR")
 PROJECT_ROOT=$(git -C "$FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
 
-# Read active agent role from subagent tracker or CLAUDE_AGENT_ROLE env var
+# Read active agent role from SQLite agent_markers (sole authority, DEC-IDENTITY-NO-ENV-VAR)
 ROLE=$(current_active_agent_role "$PROJECT_ROOT")
 
 # Allow: planner or Plan role (both spellings seen in SubagentStart payloads)

@@ -14,8 +14,8 @@
 # write-side WHO enforcement. Any agent could freely write source files and
 # accumulate work before the git commit gate triggered. DEC-FORK-005 identifies
 # this as the most important current control gap. This hook closes it at
-# write-time. Role detection uses CLAUDE_AGENT_ROLE env var (runtime injection)
-# via current_active_agent_role from context-lib.sh.
+# write-time. Role detection uses SQLite agent_markers as sole authority
+# via current_active_agent_role from context-lib.sh (DEC-IDENTITY-NO-ENV-VAR).
 #
 # Hook chain position: AFTER branch-guard.sh, BEFORE doc-gate.sh.
 # branch-guard fires first so branch protection takes precedence; doc-gate
@@ -34,6 +34,7 @@ set -euo pipefail
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
+# shellcheck disable=SC2034  # HOOK_INPUT is consumed by get_field via context-lib shared state
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
 
@@ -62,8 +63,8 @@ FILE_DIR=$(dirname "$FILE_PATH")
 [[ ! -d "$FILE_DIR" ]] && FILE_DIR=$(dirname "$FILE_DIR")
 PROJECT_ROOT=$(git -C "$FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
 
-# Detect active agent role. Uses CLAUDE_AGENT_ROLE env var (runtime injection)
-# then falls back to agent_markers SQLite table via current_active_agent_role.
+# Detect active agent role. SQLite agent_markers is the sole authority
+# (DEC-IDENTITY-NO-ENV-VAR). CLAUDE_AGENT_ROLE env var is NOT consulted.
 ROLE=$(current_active_agent_role "$PROJECT_ROOT")
 
 # ALLOW: implementer is the only role permitted to write source files

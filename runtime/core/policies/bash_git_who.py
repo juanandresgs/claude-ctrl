@@ -33,6 +33,13 @@ Rationale: The original regex only gated commit/merge/push. Operations such as
   applies WHO enforcement to the full set of state-mutating git commands so that
   no Guardian-only operation bypasses the lease check.
 
+  RCA-1 (#21): E2E testing proved 9 additional ops were NOT gated:
+    cherry-pick, revert, worktree move, stash drop, stash clear,
+    remote add/remove/set-url, update-ref, filter-branch.
+  These are now included. classify_git_op() in leases.py classifies all new
+  ops as high_risk (see DEC-LEASE-EGAP-003 in leases.py) so the lease
+  allowed_ops check works correctly after the regex match succeeds.
+
   classify_git_op() in leases.py already classifies rebase and reset as
   high_risk — the expansion here only ensures the match layer is consistent.
   worktree remove and branch -D are treated as high_risk by the expanded
@@ -59,16 +66,27 @@ from typing import Optional
 from runtime.core.leases import classify_git_op
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
-# @decision DEC-PE-EGAP-GIT-WHO-001 (expanded)
+# @decision DEC-PE-EGAP-GIT-WHO-001 (expanded, RCA-1 #21)
 # Matches all Guardian-only git operations. Word-boundary patterns prevent
 # false positives on path arguments (e.g. /path/to/feature-rebase-branch).
-# worktree\s+(remove|prune) and branch\s+-[dD] use \s+ to match the required
-# whitespace between the subcommand and its argument — this avoids matching
-# command names that start with "remove" or "prune" in unusual contexts.
+# \s+ between subcommand tokens ensures we match the required whitespace
+# and avoid substring false positives in paths or argument values.
+#
+# RCA-1 additions: cherry-pick, revert, worktree move, stash drop/clear,
+# remote add/remove/rm/set-url, update-ref, symbolic-ref, filter-branch,
+# filter-repo. All are classified high_risk by classify_git_op() in leases.py
+# (DEC-LEASE-EGAP-003) so the lease allowed_ops check fires after this match.
 _GIT_OP_RE = re.compile(
-    r"\bgit\b.*\b(commit|merge|push|rebase|reset|tag"
-    r"|worktree\s+(?:remove|prune)"
-    r"|branch\s+-[dD])\b"
+    r"\bgit\b.*\b("
+    r"commit|merge|push|rebase|reset|tag"
+    r"|worktree\s+(?:remove|prune|move)"
+    r"|branch\s+-[dDmM]"
+    r"|cherry-pick|revert"
+    r"|stash\s+(?:drop|clear)"
+    r"|remote\s+(?:add|remove|rm|set-url)"
+    r"|update-ref|symbolic-ref"
+    r"|filter-branch|filter-repo"
+    r")\b"
 )
 
 
