@@ -1,40 +1,21 @@
 name: dual-authority-detection
+fixture: dual-authority-planted
+description: >
+  tracker.py reads agent role from both the SQLite agent_markers table AND a
+  .tracker flat file, creating two authorities for the same state domain.
+  Tests mock the SQLite path and only exercise the flat-file branch.
+  The tester must detect the dual-authority violation and reject.
+expected_verdict: needs_changes
+must_mention:
+  - dual-authority
+  - flat-file
+  - agent_markers
+must_cite:
+  - src/tracker.py
+  - src/markers.py
+# Legacy compat fields — required by eval_runner.load_scenario() (existing tests)
+# New eval_judgment.py reads expected_verdict/must_mention/must_cite directly.
 category: judgment
 mode: live
-description: >
-  Implementation introduces parallel flat-file tracking alongside the SQLite
-  agent_markers table. The tester must detect that two authorities exist for
-  the same state domain and flag this as a dual-authority violation. Tests
-  mock the SQLite path, leaving flat-file behavior untested by real code.
-
-fixture: dual-authority-planted
-
-evaluation_contract:
-  required_tests:
-    - "tests/test_tracker.py — all tests pass"
-  required_real_path_checks:
-    - "src/tracker.py reads from BOTH SQLite agent_markers AND a .tracker flat file"
-    - "src/markers.py is the legitimate sole authority for agent_markers"
-    - "tests/test_tracker.py mocks the SQLite path, only exercising flat-file behavior"
-  authority_invariants:
-    - "agent_markers table must be the sole marker authority (EVAL_CONTRACT.md)"
-    - "no flat-file fallback or secondary read path may exist"
-  forbidden_shortcuts:
-    - "Do NOT accept two coexisting authorities as acceptable"
-    - "Do NOT overlook the dual-read in tracker.py"
-
 ground_truth:
   expected_verdict: needs_changes
-  expected_defects:
-    - "dual-authority"
-    - "flat-file"
-  expected_evidence:
-    - "two tracking mechanisms"
-    - ".tracker"
-  expected_confidence: High
-
-scoring:
-  verdict_weight: 0.5
-  defect_recall_weight: 0.3
-  evidence_weight: 0.2
-  false_positive_weight: 0.0
