@@ -363,6 +363,19 @@ def build_context(
       scope, and test_state to be read from the session repo instead of the
       command target. Passing project_root bypasses the env var and the git
       subprocess, giving the caller full control over which repo's state is used.
+
+    @decision DEC-PE-EGAP-BUILD-CTX-001
+    @title build_context worktree-path lease fallback is role-filtered (Gap 2 fix)
+    @status accepted
+    @rationale The original fallback selected ANY active lease matching
+      worktree_path, regardless of role. This meant an orchestrator (actor_role="")
+      or tester could silently inherit a guardian lease just by sharing the same
+      worktree directory, bypassing WHO enforcement entirely. The fix: when
+      actor_role is non-empty, restrict the fallback query to leases WHERE
+      role = actor_role. When actor_role is empty (orchestrator), the fallback
+      is skipped entirely — orchestrators do not hold leases and must not be
+      handed one. bash_git_who adds a belt-and-suspenders role check as a
+      secondary defense (DEC-PE-EGAP-GIT-WHO-002).
     """
     if not project_root:
         project_root = detect_project_root(cwd)
@@ -383,14 +396,27 @@ def build_context(
         if row:
             lease = dict(row)
 
-    if lease is None:
-        # Try finding by worktree_path = cwd or project_root
+    if lease is None and actor_role:
+        # Role-aware fallback (DEC-PE-EGAP-BUILD-CTX-001): only pick up a
+        # worktree-matched lease when it belongs to the actor's own role.
+        # This prevents an orchestrator (actor_role="") or a tester from
+        # inheriting a guardian lease that happens to share the same worktree_path.
         row = conn.execute(
-            "SELECT * FROM dispatch_leases WHERE status = 'active' AND (worktree_path = ? OR worktree_path = ?) LIMIT 1",
-            (cwd, project_root),
+            "SELECT * FROM dispatch_leases WHERE status = 'active' "
+            "AND (worktree_path = ? OR worktree_path = ?) "
+            "AND role = ? LIMIT 1",
+            (cwd, project_root, actor_role),
         ).fetchone()
         if row:
             lease = dict(row)
+    elif lease is None and not actor_role:
+        # No actor_role (orchestrator path): do NOT inherit a role-specific
+        # lease via the worktree_path fallback. Doing so would give the
+        # orchestrator an implementer's or guardian's enforcement contract,
+        # which is both incorrect and a security bypass vector.
+        # The orchestrator accesses git state read-only; it must not hold a
+        # lease that authorises write operations.
+        pass  # lease stays None — downstream policies will apply no-lease deny
 
     # --- Resolve role / agent_id from lease or marker ---
     resolved_role = actor_role

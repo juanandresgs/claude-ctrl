@@ -376,7 +376,7 @@ def test_default_registry_is_registry():
 
 
 def test_default_registry_has_all_policies():
-    """23 policies registered (7 write + 15 bash + 1 W-GWT-3) in priority order."""
+    """24 policies registered (10 write + 14 bash) in priority order."""
     reg = default_registry()
     policies = reg.list_policies()
     names = {p.name for p in policies}
@@ -390,10 +390,12 @@ def test_default_registry_has_all_policies():
         "plan_immutability",
         "decision_log",
     }
-    # W3 bash-path policies
+    # W3 bash-path policies (including enforcement-gaps additions)
     w3_expected = {
         "bash_tmp_safety",
         "bash_worktree_cwd",
+        "bash_worktree_nesting",  # Gap 5: prevent nested worktree creation
+        "bash_worktree_creation",  # W-GWT-3: guardian-only worktree creation
         "bash_git_who",
         "bash_force_push",
         "bash_main_sacred",
@@ -407,7 +409,9 @@ def test_default_registry_has_all_policies():
     }
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
-    assert len(policies) == 23
+    assert (
+        len(policies) == 24
+    )  # 22 original + bash_worktree_creation (W-GWT-3) + bash_worktree_nesting (Gap 5)
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)

@@ -22,6 +22,19 @@
 #   safe from dangerous invocations of the same tool. A policy engine
 #   that understands subcommands, flags, and composition provides
 #   intelligent auto-approval without sacrificing safety.
+#
+# @decision DEC-AUTOREVIEW-HEREDOC-001
+# @title analyze_substitutions bails immediately on heredoc content (Gap 3 fix)
+# @status accepted
+# @rationale decompose_command() collapses newlines with `tr '\n' ' '`. When a
+#   command contains $(cat <<'EOF'\ntext\nEOF\n), the heredoc terminator loses
+#   its newline context and the paren-depth counter walks into heredoc body content,
+#   producing a garbled `inner` string that crashes is_safe with exit code 5.
+#   The fix: detect `<<` in analyze_substitutions before entering the paren-depth
+#   loop and return 1 (risky) immediately. Heredocs are already classified as risky
+#   by is_safe Phase 1 — this guard prevents the crash on the path from
+#   analyze_single_command → analyze_substitutions when the top-level is_safe Phase 1
+#   check fires AFTER analyze_substitutions is already called.
 
 set -euo pipefail
 source "$(dirname "$0")/log.sh"
@@ -281,6 +294,19 @@ analyze_substitutions() {
     local depth="$2"
     local next_depth=$((depth + 1))
 
+    # Gap 3 fix (DEC-AUTOREVIEW-HEREDOC-001): if the command itself contains a
+    # heredoc marker (<<), bail immediately. decompose_command() collapses newlines
+    # via `tr '\n' ' '`, which corrupts heredoc structure and causes the paren-depth
+    # counter below to walk off into garbage content, producing exit code 5 or
+    # an empty inner string that crashes the recursive is_safe call.
+    # Heredocs are already marked risky by the is_safe Phase 1 check — this guard
+    # prevents the crash that happens when we reach analyze_substitutions with a
+    # heredoc still in the command string (e.g. from a $() wrapping a heredoc).
+    if echo "$cmd" | grep -qE '<<'; then
+        set_risk "Heredoc (<<) inside command substitution — cannot statically analyze"
+        return 1
+    fi
+
     # Extract $(...) content — simple approach for common cases
     # Handle nested parens by counting depth
     local remaining="$cmd"
@@ -290,6 +316,14 @@ analyze_substitutions() {
         # shellcheck disable=SC2034  # before unused by design: only after (the content post-opener) is needed
         local before="${remaining%%\$(*}"
         local after="${remaining#*\$(}"
+
+        # Guard: if the content after $( contains a heredoc, skip recursive analysis.
+        # The paren-depth counter cannot handle multi-line heredoc content correctly
+        # because decompose_command has already collapsed newlines.
+        if echo "$after" | grep -qE '<<'; then
+            set_risk "Heredoc (<<) inside command substitution — cannot statically analyze"
+            return 1
+        fi
 
         # Count parentheses to find matching close
         local paren_depth=1
