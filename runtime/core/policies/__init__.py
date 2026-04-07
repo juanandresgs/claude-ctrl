@@ -43,19 +43,20 @@ def register_all(registry: PolicyRegistry) -> None:
       700  doc_gate           -- header + @decision annotation enforcement
       750  mock_gate          -- escalating gate: internal mocks in test files
 
-    Bash-path priorities (PE-W3):
-      100  bash_tmp_safety        -- deny /tmp writes
-      200  bash_worktree_cwd      -- deny bare cd into .worktrees/
-      300  bash_git_who           -- lease-based WHO enforcement for git ops
-      400  bash_main_sacred       -- deny commits on main/master
-      500  bash_force_push        -- deny unsafe force push
-      600  bash_destructive_git   -- hard deny reset --hard, clean -f, branch -D
-      700  bash_worktree_removal  -- safe worktree removal enforcement
-      800  bash_test_gate_merge   -- test-pass gate for git merge
-      850  bash_test_gate_commit  -- test-pass gate for git commit
-      900  bash_eval_readiness    -- eval_state=ready_for_guardian gate
-     1000  bash_workflow_scope    -- workflow binding + scope compliance
-     1100  bash_approval_gate     -- one-shot approval for high-risk git ops
+    Bash-path priorities (PE-W3 + enforcement-gaps):
+      100  bash_tmp_safety           -- deny /tmp writes
+      200  bash_worktree_cwd         -- deny bare cd into .worktrees/
+      250  bash_worktree_nesting     -- deny worktree add from inside .worktrees/ (Gap 5)
+      300  bash_git_who              -- lease-based WHO enforcement for git ops (expanded Gap 1)
+      400  bash_main_sacred          -- deny commits on main/master
+      500  bash_force_push           -- deny unsafe force push
+      600  bash_destructive_git      -- hard deny reset --hard, clean -f, branch -D
+      700  bash_worktree_removal     -- safe worktree removal enforcement
+      800  bash_test_gate_merge      -- test-pass gate for git merge
+      850  bash_test_gate_commit     -- test-pass gate for git commit
+      900  bash_eval_readiness       -- eval_state=ready_for_guardian gate
+     1000  bash_workflow_scope       -- workflow binding + scope compliance
+     1100  bash_approval_gate        -- one-shot approval for high-risk git ops
     """
     # PE-W2: write-path policies
     from runtime.core.policies.write_branch import branch_guard
@@ -133,7 +134,7 @@ def register_all(registry: PolicyRegistry) -> None:
         priority=750,
     )
 
-    # PE-W3: bash-path policies (guard.sh migration)
+    # PE-W3: bash-path policies (guard.sh migration + enforcement-gaps fixes)
     from runtime.core.policies import (
         bash_approval_gate,
         bash_destructive_git,
@@ -145,11 +146,15 @@ def register_all(registry: PolicyRegistry) -> None:
         bash_tmp_safety,
         bash_workflow_scope,
         bash_worktree_cwd,
+        bash_worktree_nesting,
         bash_worktree_removal,
     )
 
     bash_tmp_safety.register(registry)
     bash_worktree_cwd.register(registry)
+    bash_worktree_nesting.register(
+        registry
+    )  # Gap 5: prevent nested worktree creation (priority 250)
     bash_git_who.register(registry)
     bash_main_sacred.register(registry)
     bash_force_push.register(registry)

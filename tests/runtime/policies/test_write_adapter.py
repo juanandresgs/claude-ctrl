@@ -9,11 +9,17 @@ Rationale: The hook is a security-critical gate. If the policy runtime
   ``|| true`` which caused fail-open behavior. This file proves the fix:
   when cc_policy evaluate exits non-zero, or returns empty output, or returns
   non-JSON, the hook emits a deny payload with permissionDecision=deny and
-  blockingHook=pre_write_adapter, and exits with code 2.
+  blockingHook=pre_write_adapter.
+
+  Gap 4 update (DEC-HOOK-004-FC-WRAPPER): the hook now exits 0 on fail-closed
+  deny instead of exit 2. Claude Code ignores stdout from hooks that exit
+  non-zero — so exit 2 was silently discarding the deny JSON. The correct
+  contract is: deny JSON on stdout + exit 0. Tests that previously asserted
+  returncode != 0 now assert returncode == 0 to match the corrected contract.
 
 Production sequence this tests:
   Claude Write/Edit -> pre-write.sh -> cc_policy evaluate (broken) ->
-  adapter detects failure -> emits deny JSON -> exits 2 -> write blocked.
+  adapter detects failure -> emits deny JSON on stdout -> exits 0 -> write blocked.
 """
 
 from __future__ import annotations
@@ -118,9 +124,10 @@ def test_adapter_denies_when_cc_policy_crashes():
             env=env,
         )
 
-    # Must exit non-zero (fail closed)
-    assert result.returncode != 0, (
-        f"Expected non-zero exit when cc_policy crashes, got 0. "
+    # Must exit 0 — Claude Code ignores stdout from hooks that exit non-zero.
+    # The deny contract is: deny JSON on stdout + exit 0 (DEC-HOOK-004-FC-WRAPPER).
+    assert result.returncode == 0, (
+        f"Expected exit 0 (deny JSON on stdout) when cc_policy crashes, got {result.returncode}. "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
 
@@ -173,8 +180,9 @@ def test_adapter_denies_when_cc_policy_returns_empty():
             env=env,
         )
 
-    assert result.returncode != 0, (
-        f"Expected non-zero exit when cc_policy returns empty, got 0. stdout={result.stdout!r}"
+    # Exit 0 with deny JSON on stdout is the corrected fail-closed contract (DEC-HOOK-004-FC-WRAPPER).
+    assert result.returncode == 0, (
+        f"Expected exit 0 (deny JSON on stdout) when cc_policy returns empty, got {result.returncode}. stdout={result.stdout!r}"
     )
     payload = json.loads(result.stdout.strip())
     assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -210,8 +218,9 @@ def test_adapter_denies_when_cc_policy_returns_non_json():
             env=env,
         )
 
-    assert result.returncode != 0, (
-        f"Expected non-zero exit when cc_policy returns non-JSON, got 0. stdout={result.stdout!r}"
+    # Exit 0 with deny JSON on stdout is the corrected fail-closed contract (DEC-HOOK-004-FC-WRAPPER).
+    assert result.returncode == 0, (
+        f"Expected exit 0 (deny JSON on stdout) when cc_policy returns non-JSON, got {result.returncode}. stdout={result.stdout!r}"
     )
     payload = json.loads(result.stdout.strip())
     assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -246,8 +255,9 @@ def test_adapter_denies_when_cc_policy_returns_json_without_hook_output():
             env=env,
         )
 
-    assert result.returncode != 0, (
-        f"Expected non-zero exit for JSON without hookSpecificOutput, got 0. stdout={result.stdout!r}"
+    # Exit 0 with deny JSON on stdout is the corrected fail-closed contract (DEC-HOOK-004-FC-WRAPPER).
+    assert result.returncode == 0, (
+        f"Expected exit 0 (deny JSON on stdout) for JSON without hookSpecificOutput, got {result.returncode}. stdout={result.stdout!r}"
     )
     payload = json.loads(result.stdout.strip())
     assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"

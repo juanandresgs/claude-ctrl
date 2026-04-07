@@ -100,7 +100,8 @@ def classify_git_op(command: str) -> str:
 
     Classification precedence (first match wins):
       admin_recovery: merge --abort, reset --merge (governed recovery, not landing)
-      high_risk:      push, rebase, reset, merge --no-ff
+      high_risk:      push, rebase, reset, merge --no-ff, worktree remove/prune,
+                      branch -d/-D, tag (state-mutating operations requiring Guardian)
       routine_local:  commit, merge (without --no-ff)
       unclassified:   everything else
 
@@ -116,6 +117,18 @@ def classify_git_op(command: str) -> str:
       high_risk), but bypass Check 10's eval-readiness gate. The admin_recovery
       class is checked BEFORE the generic reset/merge patterns so the specific
       variants win over the broader classification.
+
+    @decision DEC-LEASE-EGAP-002
+    Title: worktree remove/prune, branch -d/-D, and tag are classified as high_risk
+    Status: accepted
+    Rationale: These operations were previously unclassified, meaning they fell
+      through to "unclassified" which is not in any lease's allowed_ops — so they
+      were implicitly denied. However, "unclassified" produces a confusing error
+      message and does not integrate with Guardian's approval-token flow. Classifying
+      them as high_risk means: (a) they are explicitly denied for implementers, (b)
+      Guardian leases that include high_risk can permit them, and (c) they require
+      an approval token via the standard high_risk approval flow. This aligns the
+      lifecycle-management operations with the same security model as push/rebase/reset.
     """
     # Strip path arguments to prevent false subcommand matches
     cmd = _strip_git_paths(command)
@@ -134,6 +147,18 @@ def classify_git_op(command: str) -> str:
         return "high_risk"
     # High-risk: reset (any form not already caught by admin_recovery above)
     if re.search(r"\breset\b", cmd):
+        return "high_risk"
+    # High-risk: worktree remove or prune (DEC-LEASE-EGAP-002)
+    if re.search(r"\bworktree\b", cmd) and re.search(r"\b(remove|prune)\b", cmd):
+        return "high_risk"
+    # High-risk: branch -d or -D (DEC-LEASE-EGAP-002)
+    if re.search(r"\bbranch\b", cmd) and re.search(r"-[dD]\b", cmd):
+        return "high_risk"
+    # High-risk: tag (create/delete/annotate) — DEC-LEASE-EGAP-002
+    # git tag <name> creates a tag; git tag -d <name> deletes one.
+    # Note: `git tag` with no args just lists tags (safe), but classify_git_op
+    # is only called after _GIT_OP_RE matches, which requires a tag argument.
+    if re.search(r"\btag\b", cmd):
         return "high_risk"
     # High-risk: merge --no-ff (must check before plain merge)
     if re.search(r"\bmerge\b", cmd) and "--no-ff" in cmd:
