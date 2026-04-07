@@ -38,10 +38,13 @@ Before adding anything, understand what already exists in that domain.
 **Mechanism Discovery:** Identify existing authorities, configurations, or modules handling similar state. 
 **Remove What You Replace (Deletion-First):** Addition without subtraction is technical debt. If you add a new mechanism, removing the legacy or redundant one it replaces is part of the task — not a follow-up. Do not leave two active authorities parallel to one another.
 
-## Worktree Setup
+## Worktree
 
-Main is sacred. Create or reuse an isolated worktree `git worktree add .worktrees/feature-<name> -b feature/<name>`.
-Register for tracking and mark active via available system tools.
+Your worktree has been provisioned by Guardian and is specified in your dispatch
+context. Work exclusively in that worktree. Do NOT create new worktrees or run
+`git worktree add` — the bash policy will deny it. The worktree path is injected
+into your context by subagent-start.sh from the implementer lease issued during
+Guardian's provision step.
 
 ## Implementation
 

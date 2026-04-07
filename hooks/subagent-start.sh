@@ -113,9 +113,22 @@ case "$AGENT_TYPE" in
         fi
         ;;
     implementer)
-        # Check if any worktrees exist for this project
-        if [[ "$GIT_WT_COUNT" -eq 0 ]]; then
-            CONTEXT_PARTS+=("CRITICAL FIRST ACTION: No worktree detected. You MUST create a git worktree BEFORE writing any code. Run: git worktree add ../\<feature-name\> -b \<feature-name\> main — then cd into the worktree and work there. Do NOT write source code on main.")
+        # Inject worktree path from lease context (DEC-GUARD-WT-003, W-GWT-3).
+        # Guardian provisions the worktree and issues an implementer lease that
+        # carries worktree_path. We surface it here so the agent knows its
+        # working directory without re-inferring from environment.
+        # If no lease was found (no worktree provisioned yet), warn — Guard.sh
+        # will deny high-risk git ops and the orchestrator should dispatch
+        # Guardian in provision mode before this implementer proceeds.
+        if [[ -n "$_LEASE_ID" ]]; then
+            _WT_PATH=$(printf '%s' "$_CLAIM" | jq -r '.lease.worktree_path // empty' 2>/dev/null || true)
+            if [[ -n "$_WT_PATH" ]]; then
+                CONTEXT_PARTS+=("Worktree: $_WT_PATH (provisioned by Guardian)")
+            else
+                CONTEXT_PARTS+=("WARNING: No worktree detected. Guardian should have provisioned one. Check dispatch context for worktree_path.")
+            fi
+        else
+            CONTEXT_PARTS+=("WARNING: No worktree detected. Guardian should have provisioned one. Check dispatch context for worktree_path.")
         fi
         CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to 50+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
 
