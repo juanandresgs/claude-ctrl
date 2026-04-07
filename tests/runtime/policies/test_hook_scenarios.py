@@ -210,11 +210,30 @@ def _assert_hook_result(
             assert reason_substring in _reason(payload), (
                 f"deny reason missing {reason_substring!r}: {_reason(payload)!r}"
             )
+        # ENFORCE-RCA-11 / DEC-EVAL-HOOKOUT-001: hookEventName must be present
+        # in hookSpecificOutput whenever a permissionDecision is emitted.
+        # Without it Claude Code silently discards the deny and the command
+        # executes unblocked (root cause: cc-policy evaluate was a no-op since PE-W1).
+        hook_specific = (payload or {}).get("hookSpecificOutput", {})
+        assert hook_specific.get("hookEventName") == "PreToolUse", (
+            "ENFORCE-RCA-11: hookSpecificOutput must contain hookEventName='PreToolUse' "
+            f"for deny decisions; got hookSpecificOutput={hook_specific!r}"
+        )
         return
 
     assert decision != "deny", (
         f"expected non-deny path, got payload={payload!r}\nstderr={result.stderr!r}"
     )
+
+    # ENFORCE-RCA-11 / DEC-EVAL-HOOKOUT-001: hookEventName must also be present
+    # for allow decisions that emit a permissionDecision field.
+    if payload is not None:
+        hook_specific = payload.get("hookSpecificOutput", {})
+        if hook_specific.get("permissionDecision") is not None:
+            assert hook_specific.get("hookEventName") == "PreToolUse", (
+                "ENFORCE-RCA-11: hookSpecificOutput must contain hookEventName='PreToolUse' "
+                f"for allow decisions; got hookSpecificOutput={hook_specific!r}"
+            )
 
 
 def _typescript_exports(count: int = 25) -> str:

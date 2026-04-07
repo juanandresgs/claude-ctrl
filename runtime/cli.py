@@ -1293,17 +1293,29 @@ def _handle_evaluate(args) -> int:
     finally:
         conn.close()
 
-    # Build hookSpecificOutput per Claude hook contract
+    # Build hookSpecificOutput per Claude hook contract.
+    # ENFORCE-RCA-11 / DEC-EVAL-HOOKOUT-001: hookEventName is REQUIRED by the
+    # Claude Code hook output contract (hooks/HOOKS.md:28-34). Without it,
+    # Claude Code silently discards the permissionDecision and the command
+    # executes unblocked. This was the latent root cause of every
+    # cc-policy evaluate deny being a no-op since PE-W1 (3be693f).
     if decision.action == "deny":
         hook_output = {
+            "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": decision.reason,
             "blockingHook": decision.policy_name,
         }
     elif decision.action == "feedback":
-        hook_output = {"additionalContext": decision.reason}
+        hook_output = {
+            "hookEventName": "PreToolUse",
+            "additionalContext": decision.reason,
+        }
     else:
-        hook_output = {"permissionDecision": "allow"}
+        hook_output = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+        }
 
     return _ok(
         {
