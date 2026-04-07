@@ -317,21 +317,24 @@ find_worktree_for_branch() {
 }
 
 # --- Role detection ---
+#
+# @decision DEC-IDENTITY-NO-ENV-VAR
+# Title: CLAUDE_AGENT_ROLE env var removed as role-detection authority
+# Status: accepted
+# Rationale: RCA-2 (#22) found that current_active_agent_role() trusted the
+#   CLAUDE_AGENT_ROLE environment variable as highest-precedence role source.
+#   This is a spoofing vector: any process (or prompt injection) that sets
+#   CLAUDE_AGENT_ROLE=guardian before invoking a hook can impersonate the
+#   Guardian role and bypass WHO enforcement. The env var path predates
+#   TKT-008 (SQLite agent_markers). Now that agent_markers is the authoritative
+#   source of role identity, the env var path is removed entirely. SQLite is
+#   the sole source. Any code that previously relied on CLAUDE_AGENT_ROLE to
+#   inject a role at hook dispatch time must instead write a row to
+#   agent_markers via rt_marker_set (the correct API since TKT-008).
 current_active_agent_role() {
-    local root="$1"
-    local role=""
-
-    # Env var takes precedence — explicit override always wins
-    if [[ -n "${CLAUDE_AGENT_ROLE:-}" ]]; then
-        printf '%s\n' "$CLAUDE_AGENT_ROLE"
-        return 0
-    fi
-
-    # Runtime-only (TKT-008): query SQLite agent_markers exclusively.
-    # .subagent-tracker flat-file fallback removed.
-    role=$(rt_marker_get_active_role 2>/dev/null) || role=""
-
-    printf '%s\n' "$role"
+    # SQLite agent_markers is the sole authority (TKT-008, DEC-IDENTITY-NO-ENV-VAR).
+    # CLAUDE_AGENT_ROLE env var is intentionally NOT consulted — it is a spoofing vector.
+    rt_marker_get_active_role 2>/dev/null || echo ""
 }
 
 is_guardian_role() {

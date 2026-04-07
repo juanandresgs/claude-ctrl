@@ -107,9 +107,23 @@ is_safe() {
     fi
 
     # ── PHASE 1: Dangerous pattern bypass ──
-    # Heredocs can contain anything
-    if echo "$cmd" | grep -qE '<<\s*[A-Za-z_"'"'"']'; then
-        set_risk "Heredoc (<<) detected — content cannot be statically analyzed"
+    # Heredocs can contain anything.
+    # Pattern precision (RCA-4, #24): use (^|[^<]) negative lookbehind equivalent
+    # to exclude:
+    #   <<<   (here-string — safe, passes a single string, not a heredoc body)
+    #   <<(   (process substitution opener — caught by the <( check below)
+    #   arithmetic << (e.g. $((1<<3))) — the << inside $((...)) is shift, not heredoc
+    # The pattern requires the << to NOT be preceded by another < and to be
+    # followed by an optional - (tab-strip form) then a valid heredoc delimiter
+    # starting with a letter, underscore, or quote character.
+    # This matches: <<EOF  <<-EOF  <<"EOF"  <<'EOF'  echo "<<test>>" (false positive, safe)
+    # This does NOT match: <<<  <<< "bar"  $((1<<3))
+    # Note: echo "<<test>>" IS matched (false positive) because the regex cannot
+    # distinguish << inside a double-quoted string from a real heredoc delimiter.
+    # The false positive is intentional — being conservative is safer than missing
+    # a real heredoc. The only guaranteed exclusions are <<<, <<(, and arithmetic <<.
+    if echo "$cmd" | grep -qE '(^|[^<])<<-?[[:space:]]*['"'"'"'"'"']?[A-Za-z_][A-Za-z0-9_]*'; then
+        set_risk "Heredoc detected — content cannot be statically analyzed"
         return 1
     fi
     # Redirects to system paths (exempt /dev/null, /dev/stdout, /dev/stderr)
@@ -302,15 +316,16 @@ analyze_substitutions() {
     local next_depth=$((depth + 1))
 
     # Gap 3 fix (DEC-AUTOREVIEW-HEREDOC-001): if the command itself contains a
-    # heredoc marker (<<), bail immediately. decompose_command() collapses newlines
+    # heredoc marker, bail immediately. decompose_command() collapses newlines
     # via `tr '\n' ' '`, which corrupts heredoc structure and causes the paren-depth
     # counter below to walk off into garbage content, producing exit code 5 or
     # an empty inner string that crashes the recursive is_safe call.
     # Heredocs are already marked risky by the is_safe Phase 1 check — this guard
     # prevents the crash that happens when we reach analyze_substitutions with a
     # heredoc still in the command string (e.g. from a $() wrapping a heredoc).
-    if echo "$cmd" | grep -qE '<<'; then
-        set_risk "Heredoc (<<) inside command substitution — cannot statically analyze"
+    # RCA-4 precision: use the same pattern as Phase 1 (excludes <<<, arithmetic <<).
+    if echo "$cmd" | grep -qE '(^|[^<])<<-?[[:space:]]*['"'"'"'"'"']?[A-Za-z_][A-Za-z0-9_]*'; then
+        set_risk "Heredoc inside command substitution — cannot statically analyze"
         return 1
     fi
 
@@ -327,8 +342,9 @@ analyze_substitutions() {
         # Guard: if the content after $( contains a heredoc, skip recursive analysis.
         # The paren-depth counter cannot handle multi-line heredoc content correctly
         # because decompose_command has already collapsed newlines.
-        if echo "$after" | grep -qE '<<'; then
-            set_risk "Heredoc (<<) inside command substitution — cannot statically analyze"
+        # RCA-4 precision: same pattern as Phase 1 — excludes <<<, arithmetic <<.
+        if echo "$after" | grep -qE '(^|[^<])<<-?[[:space:]]*['"'"'"'"'"']?[A-Za-z_][A-Za-z0-9_]*'; then
+            set_risk "Heredoc inside command substitution — cannot statically analyze"
             return 1
         fi
 

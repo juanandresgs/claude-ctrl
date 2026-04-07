@@ -139,6 +139,79 @@ assert_exit_zero "$EXIT_CODE" 'exit 0 on empty command'
 assert_no_match "$OUTPUT" 'hook-safety-crash-deny' \
     'no crash deny on empty command'
 
+# ── Scenario 5: here-string <<< must NOT trigger heredoc detection ────────────
+# grep foo <<< "bar" passes a single string via here-string — not a heredoc body.
+# RCA-4: the pattern (^|[^<])<<- excludes <<< because the third < prevents match.
+# Expected: auto-approve (not advisory, not crash-deny).
+
+printf 'Scenario 5: here-string <<< should NOT trigger heredoc detection\n'
+
+INPUT_JSON=$(jq -n '{"tool_name":"Bash","tool_input":{"command":"grep foo <<< \"bar\""},"cwd":"/tmp"}')
+OUTPUT=$(printf '%s' "$INPUT_JSON" | bash "$HOOKS_DIR/auto-review.sh" 2>/dev/null)
+EXIT_CODE=$?
+
+assert_exit_zero "$EXIT_CODE" 'exit 0 on here-string command'
+assert_json_field "$OUTPUT" '.hookSpecificOutput.permissionDecision' 'allow' \
+    'here-string <<< auto-approved (not flagged as heredoc)'
+assert_no_match "$OUTPUT" 'Heredoc detected' \
+    'here-string does not produce heredoc advisory'
+
+# ── Scenario 6: << inside a double-quoted string — conservative false positive ─
+# echo "<<test>>" contains << inside double quotes — not a real shell heredoc.
+# However the regex cannot distinguish quoted << from a heredoc delimiter:
+# "<<t" matches (^|[^<])<<...[A-Za-z_] because " is not < and t is [A-Za-z_].
+# RCA-4 excludes <<< and arithmetic <<, but NOT quoted <<.
+# The false positive is intentional — being conservative is safer than missing
+# a real heredoc body. Expected: heredoc advisory (risky), exit 0, no crash.
+
+printf 'Scenario 6: quoted << (echo "<<test>>") — conservative false positive, advisory exit 0\n'
+
+INPUT_JSON=$(jq -n '{"tool_name":"Bash","tool_input":{"command":"echo \"<<test>>\""},"cwd":"/tmp"}')
+OUTPUT=$(printf '%s' "$INPUT_JSON" | bash "$HOOKS_DIR/auto-review.sh" 2>/dev/null)
+EXIT_CODE=$?
+
+assert_exit_zero "$EXIT_CODE" 'exit 0 on quoted << command (no crash)'
+assert_nonempty "$OUTPUT" 'produced JSON output for quoted << command'
+assert_no_match "$OUTPUT" 'hook-safety-crash-deny' \
+    'quoted << produces advisory, not crash deny'
+
+# ── Scenario 7: arithmetic << must NOT trigger heredoc detection ──────────────
+# bash -c 'echo $((1<<3))' — the << inside $((...)) is a left-shift operator.
+# RCA-4: the pattern excludes arithmetic << because the << is preceded by a digit,
+# not a word-boundary, and the (^|[^<]) anchor only excludes another <.
+# The delimiter after << would need to start with a letter/underscore/quote;
+# "3))" does not match [A-Za-z_], so no heredoc match.
+# Expected: auto-approve (may still be advisory for bash -c, but not for heredoc).
+
+printf 'Scenario 7: arithmetic << (1<<3) should NOT trigger heredoc detection\n'
+
+INPUT_JSON=$(jq -n '{"tool_name":"Bash","tool_input":{"command":"bash -c '\''echo $((1<<3))'\''"},"cwd":"/tmp"}')
+OUTPUT=$(printf '%s' "$INPUT_JSON" | bash "$HOOKS_DIR/auto-review.sh" 2>/dev/null)
+EXIT_CODE=$?
+
+assert_exit_zero "$EXIT_CODE" 'exit 0 on arithmetic << command'
+assert_no_match "$OUTPUT" 'Heredoc detected' \
+    'arithmetic << does not produce heredoc advisory'
+
+# ── Scenario 8: tab-strip heredoc <<-EOF SHOULD trigger heredoc detection ─────
+# cat <<-EOF\n\ttext\n\tEOF is a valid tab-stripping heredoc form.
+# RCA-4: the pattern includes <<- as an optional - after <<, so this must match.
+# Expected: advisory output (risky), exit 0.
+
+printf 'Scenario 8: tab-strip heredoc (<<-EOF) SHOULD trigger heredoc detection\n'
+
+INPUT_JSON=$(jq -n '{"tool_name":"Bash","tool_input":{"command":"cat <<-EOF\n\tsome text\n\tEOF"},"cwd":"/tmp"}')
+OUTPUT=$(printf '%s' "$INPUT_JSON" | bash "$HOOKS_DIR/auto-review.sh" 2>/dev/null)
+EXIT_CODE=$?
+
+assert_exit_zero "$EXIT_CODE" 'exit 0 on tab-strip heredoc (no crash)'
+assert_nonempty "$OUTPUT" 'produced JSON output for tab-strip heredoc'
+assert_no_match "$OUTPUT" 'hook-safety-crash-deny' \
+    'tab-strip heredoc produces advisory, not crash deny'
+# Must be advisory (heredoc detected), not auto-approved
+assert_no_match "$OUTPUT" '"permissionDecision":"allow"' \
+    'tab-strip heredoc is NOT auto-approved'
+
 # ── Results ───────────────────────────────────────────────────────────────────
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"

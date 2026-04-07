@@ -514,3 +514,351 @@ def make_request(
         context=context,
         cwd=cwd,
     )
+
+
+# ---------------------------------------------------------------------------
+# RCA-1 (#21): 9 new ops that previously bypassed _GIT_OP_RE
+# Each test confirms the op is denied when no lease is present.
+# ---------------------------------------------------------------------------
+
+
+class TestRCA1NewOps:
+    """RCA-1: The 9 git operations confirmed as ungatd by E2E testing must now
+    be matched by the expanded _GIT_OP_RE and denied when no lease is present.
+
+    One test per op: cherry-pick, revert, worktree move, stash drop, stash clear,
+    remote add, remote remove, update-ref, filter-branch.
+    """
+
+    def _deny(self, command: str) -> Optional[PolicyDecision]:
+        from runtime.core.policies.bash_git_who import check
+
+        ctx = make_context(lease=None)
+        req = make_request(command, context=ctx)
+        return check(req)
+
+    def test_cherry_pick_denied_no_lease(self):
+        d = self._deny("git cherry-pick abc1234")
+        assert d is not None, "git cherry-pick must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_revert_denied_no_lease(self):
+        d = self._deny("git revert HEAD~1")
+        assert d is not None, "git revert must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_worktree_move_denied_no_lease(self):
+        d = self._deny("git worktree move .worktrees/old .worktrees/new")
+        assert d is not None, "git worktree move must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_stash_drop_denied_no_lease(self):
+        d = self._deny("git stash drop stash@{0}")
+        assert d is not None, "git stash drop must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_stash_clear_denied_no_lease(self):
+        d = self._deny("git stash clear")
+        assert d is not None, "git stash clear must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_remote_add_denied_no_lease(self):
+        d = self._deny("git remote add upstream https://github.com/org/repo.git")
+        assert d is not None, "git remote add must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_remote_remove_denied_no_lease(self):
+        d = self._deny("git remote remove upstream")
+        assert d is not None, "git remote remove must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_update_ref_denied_no_lease(self):
+        d = self._deny("git update-ref refs/heads/main abc1234")
+        assert d is not None, "git update-ref must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    def test_filter_branch_denied_no_lease(self):
+        d = self._deny("git filter-branch --tree-filter 'rm -f secrets.txt' HEAD")
+        assert d is not None, "git filter-branch must be caught by _GIT_OP_RE"
+        assert d.action == "deny"
+        assert d.policy_name == "bash_git_who"
+
+    # --- All new ops classify as high_risk (DEC-LEASE-EGAP-003) ---
+
+    def test_new_ops_classify_high_risk(self):
+        """All 9 RCA-1 ops must classify as high_risk, not unclassified."""
+        from runtime.core.leases import classify_git_op
+
+        ops = [
+            "git cherry-pick abc1234",
+            "git revert HEAD~1",
+            "git worktree move .worktrees/old .worktrees/new",
+            "git stash drop stash@{0}",
+            "git stash clear",
+            "git remote add upstream https://github.com/org/repo.git",
+            "git remote remove upstream",
+            "git update-ref refs/heads/main abc1234",
+            "git filter-branch --tree-filter 'rm secrets.txt' HEAD",
+        ]
+        for cmd in ops:
+            cls = classify_git_op(cmd)
+            assert cls == "high_risk", (
+                f"Expected high_risk for '{cmd}', got '{cls}'. "
+                "Op class must be high_risk so Guardian leases can permit it "
+                "and implementer leases correctly deny it."
+            )
+
+    def test_new_ops_allowed_with_guardian_lease(self):
+        """Guardian lease (high_risk in allowed_ops) must pass WHO for all RCA-1 ops."""
+        from runtime.core.policies.bash_git_who import check
+
+        lease = _make_guardian_lease()
+        ctx = make_context(lease=lease, actor_role_override="guardian")
+
+        cmds = [
+            "git cherry-pick abc1234",
+            "git revert HEAD~1",
+            "git worktree move .worktrees/old .worktrees/new",
+            "git stash drop stash@{0}",
+            "git stash clear",
+            "git remote add upstream https://github.com/org/repo.git",
+            "git remote remove upstream",
+            "git update-ref refs/heads/main abc1234",
+            "git filter-branch --tree-filter 'rm secrets.txt' HEAD",
+        ]
+        for cmd in cmds:
+            req = make_request(cmd, context=ctx)
+            d = check(req)
+            assert d is None, (
+                f"Guardian with high_risk lease must be allowed to run '{cmd}', "
+                f"but got deny: {d.reason if d else 'none'}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# RCA-2 (#22): CLAUDE_AGENT_ROLE env var must have NO effect on hook decisions
+# ---------------------------------------------------------------------------
+
+
+class TestRCA2EnvVarSpoofing:
+    """RCA-2: current_active_agent_role() must ignore CLAUDE_AGENT_ROLE env var.
+
+    The SQLite agent_markers table is the sole source of role identity since
+    TKT-008. The env var path is a spoofing vector — any process that sets
+    CLAUDE_AGENT_ROLE=guardian before invoking a hook can impersonate Guardian.
+
+    These tests verify the Python policy layer (classify, regex) is consistent
+    with the fix. The bash-layer fix is in context-lib.sh; its correctness is
+    tested by the bash scenario tests.
+    """
+
+    def test_env_var_does_not_affect_bash_git_who(self, monkeypatch):
+        """Setting CLAUDE_AGENT_ROLE=guardian in env must not change bash_git_who outcome.
+
+        bash_git_who is a pure Python policy — it reads context.actor_role, which
+        comes from build_context() (SQLite), not from env vars. This test confirms
+        that even if the env var is set at the process level, the policy layer
+        ignores it (the context carries the real role from SQLite).
+        """
+
+        from runtime.core.policies.bash_git_who import check
+
+        monkeypatch.setenv("CLAUDE_AGENT_ROLE", "guardian")
+
+        # Context has actor_role="" (orchestrator) — env var should have no effect
+        ctx = make_context(lease=_make_guardian_lease(), actor_role_override="")
+        req = make_request("git commit -m 'spoof attempt'", context=ctx)
+        decision = check(req)
+
+        # Even with the env var set, the policy sees actor_role="" and must deny
+        assert decision is not None, (
+            "CLAUDE_AGENT_ROLE=guardian env var must not grant commit access to "
+            "an empty-role (orchestrator) actor — SQLite is sole authority"
+        )
+        assert decision.action == "deny"
+
+    def test_env_var_set_but_sqlite_empty_returns_empty_role(self, monkeypatch):
+        """When env var is set but SQLite has no active marker, role must be empty.
+
+        This tests the contract of the bash-layer fix via the Python policy layer:
+        bash_git_who reads context.actor_role (from build_context/SQLite), and if
+        the marker table has no active row, actor_role will be "". The env var
+        must be completely ignored at this layer.
+        """
+        monkeypatch.setenv("CLAUDE_AGENT_ROLE", "guardian")
+
+        # A context built without a lease and with actor_role="" simulates the
+        # case where SQLite has no active marker despite the env var being set.
+        ctx = make_context(lease=None, actor_role_override="")
+        req = make_request("git push origin main", context=ctx)
+
+        from runtime.core.policies.bash_git_who import check
+
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        # Reason must mention lease (no-lease path), not role mismatch —
+        # because lease is None, the no-lease branch fires first.
+        assert "lease" in decision.reason.lower()
+
+    def test_context_actor_role_is_source_of_truth(self, monkeypatch):
+        """The policy reads context.actor_role, never os.environ['CLAUDE_AGENT_ROLE'].
+
+        Set a contradictory env var (implementer) while the context says guardian.
+        The policy must trust the context (guardian) and allow the op.
+        """
+        monkeypatch.setenv("CLAUDE_AGENT_ROLE", "implementer")
+
+        from runtime.core.policies.bash_git_who import check
+
+        # Context says guardian with guardian lease — op should be allowed
+        lease = _make_guardian_lease()
+        ctx = make_context(lease=lease, actor_role_override="guardian")
+        req = make_request("git push origin main", context=ctx)
+        decision = check(req)
+        # Guardian with high_risk lease: push is high_risk, should pass WHO
+        assert decision is None, (
+            "When context.actor_role=guardian (from SQLite), env var=implementer "
+            "must not override — the op must be allowed"
+        )
+
+
+# ---------------------------------------------------------------------------
+# RCA-3 (#23): shlex tokenizer for bash_worktree_nesting target-path parsing
+# ---------------------------------------------------------------------------
+
+
+class TestRCA3WorktreeNestingParser:
+    """RCA-3: The shlex.split tokenizer must correctly extract the target path
+    from git worktree add commands with complex flag combinations that bypassed
+    the original regex parser.
+
+    Production sequence: hook payload → bash_worktree_nesting.check() →
+    _extract_worktree_add_target() → os.path.realpath() → .worktrees/ check.
+    """
+
+    def _check(self, command: str, cwd: str = "/project") -> Optional[PolicyDecision]:
+        from runtime.core.policies.bash_worktree_nesting import check
+
+        ctx = make_context()
+        req = PolicyRequest(
+            event_type="PreToolUse",
+            tool_name="Bash",
+            tool_input={"command": command},
+            context=ctx,
+            cwd=cwd,
+        )
+        return check(req)
+
+    def test_no_checkout_flag_then_separator_bypass_denied(self):
+        """git worktree add --no-checkout -- .worktrees/byp branch must be denied.
+
+        The -- end-of-options separator means the next token is unconditionally
+        the path. The original regex skipped --no-checkout but did not handle --.
+        """
+        decision = self._check(
+            "git worktree add --no-checkout -- .worktrees/outer/.worktrees/byp branch",
+            cwd="/project",
+        )
+        assert decision is not None, "--no-checkout -- bypass must be caught by shlex parser"
+        assert decision.action == "deny"
+        assert decision.policy_name == "bash_worktree_nesting"
+
+    def test_detach_flag_bypass_denied(self):
+        """git worktree add --detach .worktrees/outer/.worktrees/byp must be denied."""
+        decision = self._check(
+            "git worktree add --detach .worktrees/outer/.worktrees/byp",
+            cwd="/project",
+        )
+        assert decision is not None, "--detach bypass must be caught by shlex parser"
+        assert decision.action == "deny"
+
+    def test_branch_flag_then_nested_path_denied(self):
+        """git worktree add -B branch .worktrees/outer/.worktrees/byp must be denied.
+
+        -B consumes the next token (branch name), so the path is the token after that.
+        The original regex grouped -B and its value ambiguously.
+        """
+        decision = self._check(
+            "git worktree add -B mybranch .worktrees/outer/.worktrees/byp",
+            cwd="/project",
+        )
+        assert decision is not None, "-B <branch> bypass must be caught by shlex parser"
+        assert decision.action == "deny"
+
+    def test_cwd_nesting_via_git_dash_c(self):
+        """git -C .worktrees/feature-x worktree add nested must be denied.
+
+        git -C shifts the effective CWD, so the anchor for relative paths changes.
+        The policy should detect that the effective CWD is inside .worktrees/.
+        """
+        decision = self._check(
+            "git -C .worktrees/feature-x worktree add .worktrees/inner -b inner",
+            cwd="/project",
+        )
+        # The resolved path of .worktrees/inner relative to .worktrees/feature-x
+        # anchor is /project/.worktrees/feature-x/.worktrees/inner — nested.
+        assert decision is not None, "git -C inside .worktrees/ must trigger nesting denial"
+        assert decision.action == "deny"
+
+    def test_realpath_resolution_catches_dotdot_evasion(self):
+        """Relative path with .. must be resolved before nesting check.
+
+        Two cases are exercised:
+
+        Case A (allowed): .worktrees/outer/../inner
+          os.path.realpath(/project/.worktrees/outer/../inner)
+            = /project/.worktrees/inner       ← single .worktrees/, allowed
+
+        Case B (denied): .worktrees/outer/../.worktrees/inner
+          os.path.realpath(/project/.worktrees/outer/../.worktrees/inner)
+            = /project/.worktrees/.worktrees/inner  ← two .worktrees, denied
+
+        Case A confirms that realpath() normalises .. correctly so a legitimately
+        relocated path is not falsely blocked.
+        Case B confirms that a nested path cannot evade detection by inserting ..
+        between two .worktrees/ segments.
+        """
+        # Case A: .worktrees/outer/../inner → /project/.worktrees/inner (allowed)
+        decision_a = self._check(
+            "git worktree add .worktrees/outer/../inner -b inner",
+            cwd="/project",
+        )
+        assert decision_a is None, (
+            "Dotdot that resolves to single .worktrees/ must be allowed after realpath()"
+        )
+
+        # Case B: .worktrees/outer/../.worktrees/inner → nested (denied)
+        decision_b = self._check(
+            "git worktree add .worktrees/outer/../.worktrees/inner -b inner",
+            cwd="/project",
+        )
+        assert decision_b is not None, (
+            "Dotdot that still leaves two .worktrees/ segments must be denied"
+        )
+        assert decision_b.action == "deny"
+
+    def test_legitimate_worktree_add_still_allowed(self):
+        """A normal git worktree add from project root must not be blocked."""
+        decision = self._check(
+            "git worktree add .worktrees/feature-foo -b feature/foo",
+            cwd="/project",
+        )
+        assert decision is None, "Normal worktree add from project root must be allowed"
+
+    def test_worktree_add_cwd_inside_worktree_still_denied(self):
+        """CWD check still fires for all flag combinations."""
+        decision = self._check(
+            "git worktree add --no-checkout .worktrees/child -b child",
+            cwd="/project/.worktrees/feature-x",
+        )
+        assert decision is not None, "CWD nesting check must fire regardless of flags"
+        assert decision.action == "deny"
