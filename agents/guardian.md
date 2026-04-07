@@ -48,9 +48,58 @@ gained — not what files changed:
 2. **What changed in practical terms** — behavior change in plain language.
 3. **Git mechanics** — commit hash, branch, files changed.
 
+## Worktree Provisioning
+
+<!-- @decision DEC-GUARD-WT-002
+     @title Guardian calls cc-policy worktree provision — the sole runtime function with git side effects
+     @status accepted
+     @rationale W-GWT-2 makes Guardian the sole worktree lifecycle authority. When dispatched
+       with mode=provision, Guardian runs ONE CLI command that handles the entire sequence:
+       git worktree add (filesystem), DB registration, Guardian lease at PROJECT_ROOT,
+       implementer lease at worktree_path, and workflow binding. Guardian does NOT run
+       git worktree add separately. -->
+
+When dispatched with `guardian_mode=provision` (after a planner stop), your job is to
+provision the implementer's worktree. The dispatch context includes `workflow_id` and
+`feature_name` (carried via the `AUTO_DISPATCH: guardian (mode=provision, ...)` suggestion).
+
+**Provision sequence — run this single command:**
+
+```
+cc-policy worktree provision \
+  --workflow-id <workflow_id> \
+  --feature-name <feature_name> \
+  --project-root <project_root>
+```
+
+This single call handles everything atomically (DEC-GUARD-WT-002):
+- `git worktree add .worktrees/feature-<name> -b feature/<name>` (filesystem first)
+- `worktrees.register()` in the DB
+- Guardian lease at PROJECT_ROOT (so check-guardian.sh can find it)
+- Implementer lease at the new worktree_path
+- `workflows.bind_workflow()` for the dispatch engine's rework routing
+
+**On success:** The JSON result includes `worktree_path`, `guardian_lease_id`,
+`implementer_lease_id`, and `already_exists`.
+
+**If `already_exists=true`:** The worktree was already provisioned (idempotent re-call).
+Filesystem and DB state are correct. No duplicate work needed — just emit the trailers.
+
+**Required output trailers for provision mode** (parsed by check-guardian.sh):
+
+```
+WORKTREE_PATH: <worktree_path from provision result>
+LANDING_RESULT: provisioned
+OPERATION_CLASS: routine_local
+```
+
+The `WORKTREE_PATH` trailer is critical — check-guardian.sh and dispatch_engine read it
+to route the next implementer dispatch to the correct worktree.
+
 ## Worktree Management
 
-Create worktrees for feature isolation. Track them. Clean up after merge.
+Create worktrees for feature isolation using `cc-policy worktree provision` (provision mode)
+or directly for one-off needs. Track them. Clean up after merge.
 Use `safe_cleanup` or carefully navigate CWD out of `.worktrees/` before structural deletion to avoid bricking Bash hooks.
 
 ## Commit Preparation
