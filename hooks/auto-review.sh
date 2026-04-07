@@ -36,15 +36,18 @@
 #   analyze_single_command → analyze_substitutions when the top-level is_safe Phase 1
 #   check fires AFTER analyze_substitutions is already called.
 
+# shellcheck disable=SC2329  # All helper functions are invoked indirectly via _hook_main → run_fail_closed
 set -euo pipefail
 source "$(dirname "$0")/log.sh"
-
-# shellcheck disable=SC2034  # HOOK_INPUT read for side effects (read_input advances stdin)
-HOOK_INPUT=$(read_input)
-COMMAND=$(get_field '.tool_input.command')
-
-# Exit silently (defer to user) if no command
-[[ -z "$COMMAND" ]] && exit 0
+# shellcheck source=hooks/lib/hook-safety.sh
+# Fail-closed crash wrapper (DEC-HOOK-004-FC-WRAPPER — Finding 1 fix):
+# auto-review.sh is a PreToolUse hook. A crash before emitting a response causes
+# Claude Code to treat the hook as erroring (non-blocking), defeating fail-closed
+# intent. hook-safety.sh installs an EXIT trap that emits a deny JSON and forces
+# exit 0 whenever the hook exits without having called _mark_hook_responded().
+# Note: auto-review.sh does NOT source context-lib.sh — hook-safety.sh guards
+# _obs_accum / rt_obs_metric_batch with `type -t` checks so it works without them.
+source "$(dirname "$0")/lib/hook-safety.sh"
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -59,6 +62,8 @@ approve() {
   }
 }
 EOF
+    # Disarm the EXIT trap before exiting — we have successfully responded.
+    _mark_hook_responded
     exit 0
 }
 
@@ -75,6 +80,8 @@ advise() {
   }
 }
 EOF
+    # Disarm the EXIT trap before exiting — we have successfully responded.
+    _mark_hook_responded
     exit 0
 }
 
@@ -917,12 +924,29 @@ analyze_gh() {
 }
 
 # ── Main ─────────────────────────────────────────────────────────
+# shellcheck disable=SC2329  # _hook_main is invoked indirectly via run_fail_closed
 
-if is_safe "$COMMAND" 0; then
-    approve "auto-review: all command segments classified as safe"
-fi
+_hook_main() {
+    # read_input advances stdin to position past the hook JSON payload.
+    # We discard the output — get_field re-parses from the cached input internally.
+    read_input > /dev/null
+    COMMAND=$(get_field '.tool_input.command')
 
-# Not safe — inject advisory context and defer to the normal permission system.
-# The model receives the risk reason and can explain it when the permission
-# prompt appears. Guardian handles git commit/push/merge formally.
-advise
+    # Defer silently (no opinion) if no command — mark responded so EXIT trap is a no-op.
+    if [[ -z "$COMMAND" ]]; then
+        _mark_hook_responded
+        exit 0
+    fi
+
+    if is_safe "$COMMAND" 0; then
+        approve "auto-review: all command segments classified as safe"
+    fi
+
+    # Not safe — inject advisory context and defer to the normal permission system.
+    # The model receives the risk reason and can explain it when the permission
+    # prompt appears. Guardian handles git commit/push/merge formally.
+    advise
+}
+
+run_fail_closed _hook_main
+exit 0

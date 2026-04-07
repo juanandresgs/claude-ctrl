@@ -31,10 +31,11 @@
 #   the session repo. Patterns matched (same as policy_utils.extract_git_target_dir):
 #     Pattern A: cd /path && git ...
 #     Pattern B: git -C /path ...
-# Remove -e: hook-safety.sh's EXIT trap handles unexpected exits. Without this,
-# any failing subcommand exits non-zero before the trap can emit the deny JSON,
-# defeating the fail-closed contract (Claude Code ignores stdout on non-zero exit).
-set -uo pipefail
+# set -euo pipefail: -e is intentionally retained. hook-safety.sh's run_fail_closed
+# temporarily disables -e with `set +e` around the hook function call, then restores
+# it with `set -e`. This keeps the forbidden-shortcuts clause (do not remove set -e)
+# while still letting the EXIT trap handle unexpected crashes in the hook function.
+set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=hooks/log.sh
