@@ -588,10 +588,18 @@ function main() {
     ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
 
-  if (!config.stopReviewGate) {
-    if (!isSubagentStop) {
-      logNote(runningTaskNote);
-    }
+  // ENFORCE-RCA-14 / DEC-ENFORCE-REVIEW-GATE-002: the SubagentStop review path
+  // is part of dispatch-chain integrity — it writes codex_stop_review events
+  // that dispatch_engine._check_codex_gate consumes for AUTO_DISPATCH routing
+  // decisions. It MUST run on every SubagentStop regardless of the user-facing
+  // `config.stopReviewGate` flag, otherwise the events table stays empty and
+  // the dispatch engine gate silently always-allows.
+  //
+  // `config.stopReviewGate` continues to gate only the USER-FACING regular
+  // Stop path (the interactive block at turn-end that the user opts into
+  // via `codex setup --enable-review-gate`).
+  if (!isSubagentStop && !config.stopReviewGate) {
+    logNote(runningTaskNote);
     return;
   }
 
