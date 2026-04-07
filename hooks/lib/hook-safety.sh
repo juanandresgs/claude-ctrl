@@ -55,11 +55,18 @@ _fail_closed_exit_handler() {
         # This MUST go to stdout so Claude Code sees it as a valid deny decision.
         printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"HOOK CRASH — enforcement hook crashed before completing evaluation. Fail-closed safety deny. DO NOT retry this command. Report this crash to the user. (exit_code='"${_exit_code}"')","blockingHook":"hook-safety-crash-deny"}}'
         # Emit observatory crash metric (best-effort, never block the deny path).
-        _obs_accum hook_crash 1 '{"hook":"hook-safety","reason":"crash_before_response"}' 2>/dev/null || true
+        # Guard: _obs_accum may not be defined if context-lib.sh was not sourced
+        # (e.g. auto-review.sh only sources log.sh). Never crash the deny path.
+        if type -t _obs_accum >/dev/null 2>&1; then
+            _obs_accum hook_crash 1 '{"hook":"hook-safety","reason":"crash_before_response"}' 2>/dev/null || true
+        fi
     fi
     # Always flush observatory batch on exit — replaces the standalone
     # `trap 'rt_obs_metric_batch' EXIT` callers previously used.
-    rt_obs_metric_batch 2>/dev/null || true
+    # Guard: rt_obs_metric_batch may not be defined if context-lib.sh was not sourced.
+    if type -t rt_obs_metric_batch >/dev/null 2>&1; then
+        rt_obs_metric_batch 2>/dev/null || true
+    fi
     # Force exit 0: the deny JSON is on stdout; Claude Code reads it.
     # exit non-zero here would cause Claude Code to discard the stdout payload.
     exit 0
@@ -84,8 +91,18 @@ _install_fail_closed_trap() {
 #   run_fail_closed _hook_main
 run_fail_closed() {
     _install_fail_closed_trap
-    # Run the hook logic function
+    # Temporarily disable -e so that a non-zero return from the hook function
+    # does not trigger bash's ERR handler (which would exit non-zero before the
+    # EXIT trap can emit the deny JSON). The EXIT trap is the single authority
+    # for handling unexpected failures — set -e would bypass it.
+    set +e
     "$@"
+    local _rc=$?
+    set -e
+    if [[ $_rc -ne 0 ]]; then
+        # Hook function failed — EXIT trap will fire and emit the deny JSON.
+        return $_rc
+    fi
     # Normal return: hook responded successfully — disarm the crash deny.
     _mark_hook_responded
 }
