@@ -129,6 +129,36 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/pre-agent.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/pre-agent.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -180,6 +210,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/subagent-start.sh",
             "timeout": 5
           }
@@ -190,6 +225,11 @@
       {
         "matcher": "planner|Plan",
         "hooks": [
+          {
+            "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-planner.sh",
@@ -212,6 +252,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/check-implementer.sh",
             "timeout": 5
           },
@@ -232,6 +277,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/check-tester.sh",
             "timeout": 5
           },
@@ -250,6 +300,11 @@
       {
         "matcher": "guardian",
         "hooks": [
+          {
+            "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
+          },
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-guardian.sh",
