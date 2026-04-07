@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# cc-policy — portable wrapper for the runtime CLI
+#
+# Resolves the runtime relative to this script's location, so it works
+# regardless of where the repo lives (as long as ~/.claude is symlinked
+# or the repo is on PATH via this script's parent).
+#
+# Setup (one-time per machine):
+#   echo 'export PATH="$HOME/.claude/bin:$PATH"' >> ~/.zshrc
+#   # OR
+#   ln -sf "$HOME/.claude/bin/cc-policy" ~/.local/bin/cc-policy
+#
+# After that, `cc-policy obs summary` works from any directory.
+
+set -euo pipefail
+
+# Resolve the symlink chain to find the actual script directory
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+    SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+    [[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+# Repo root is one level up from bin/
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUNTIME_CLI="$REPO_ROOT/runtime/cli.py"
+
+if [[ ! -f "$RUNTIME_CLI" ]]; then
+    echo "ERROR: cc-policy: runtime/cli.py not found at $RUNTIME_CLI" >&2
+    echo "       Check that ~/.claude is symlinked to the config repo." >&2
+    exit 1
+fi
+
+exec python3 "$RUNTIME_CLI" "$@"

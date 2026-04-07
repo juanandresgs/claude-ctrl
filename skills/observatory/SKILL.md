@@ -38,17 +38,30 @@ Parse `$ARGUMENTS` to determine the mode:
 
 ## Phase 1: Gather Data
 
+**CLI invocation:** Prefer `cc-policy` if it is on PATH. If not, fall back to
+`python3 ~/.claude/runtime/cli.py`. The wrapper at `~/.claude/bin/cc-policy`
+is committed to the repo; on first machine setup, run `bash ~/.claude/bin/install.sh`
+to register it on PATH.
+
+Detection one-liner you can use:
+```bash
+CCP=$(command -v cc-policy || echo "python3 $HOME/.claude/runtime/cli.py")
+```
+
 For all modes except `status`, run the full summary:
 
 ```bash
-cc-policy obs summary --window-hours 24
+$CCP obs summary
 ```
 
 For `status` mode only:
 
 ```bash
-cc-policy obs status
+$CCP obs status
 ```
+
+**Note:** `obs summary` takes no flags — window is fixed at 24h. Other commands
+use positional arguments; check `$CCP obs --help` if uncertain about syntax.
 
 Parse the JSON output. If the command fails (non-zero exit), report the error
 and stop — do not proceed with stale or empty data.
