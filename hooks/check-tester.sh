@@ -55,7 +55,7 @@ if [[ -n "$AGENT_TYPE" ]]; then
 fi
 
 ISSUES=()
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
 
 # ---------------------------------------------------------------------------
 # Parse EVAL_* trailers (TKT-024)

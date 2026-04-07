@@ -18,7 +18,7 @@ source "$(dirname "$0")/log.sh"
 HOOK_INPUT=$(read_input)
 
 # Extract the transcript/response text from hook input
-RESPONSE=$(echo "$HOOK_INPUT" | jq -r '.assistant_response // empty' 2>/dev/null)
+RESPONSE=$(echo "$HOOK_INPUT" | jq -r '.last_assistant_message // .assistant_response // empty' 2>/dev/null)
 
 # If we can't get the response text, pass (when in doubt, ok)
 [[ -z "$RESPONSE" ]] && exit 0

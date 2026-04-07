@@ -47,7 +47,7 @@ fi
 ISSUES=()
 
 # Extract agent's response text first (needed for phase-boundary detection)
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
 
 # --- Completion contract submission (Phase 2: DEC-COMPLETION-001) ---
 # Parse LANDING_RESULT and OPERATION_CLASS from guardian response text.
