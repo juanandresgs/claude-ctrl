@@ -547,6 +547,26 @@ class TestLastReview:
         assert snap["last_review"]["reviewer"] == "codex"
         assert isinstance(snap["last_review"]["reviewed_at"], int)
 
+    def test_last_review_workflow_source_keeps_reviewer_codex(self, conn):
+        """Workflow scope in events.source must not surface as the reviewer name."""
+        import runtime.core.evaluation as eval_mod
+
+        eval_mod.set_status(conn, "wf-test", "pending")
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-test'"
+        )
+        conn.commit()
+
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            source="workflow:wf-test",
+            detail="VERDICT: ALLOW — workflow=wf-test | work looks good",
+        )
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is True
+        assert snap["last_review"]["reviewer"] == "codex"
+
     def test_last_review_block_verdict(self, conn):
         """BLOCK verdict maps to reviewed=True, verdict='BLOCK'.
 

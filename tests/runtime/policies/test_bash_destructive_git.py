@@ -131,3 +131,15 @@ def test_empty_command_skipped():
     req = make_request("")
     decision = check(req)
     assert decision is None
+
+
+def test_quoted_git_reset_hard_prompt_skipped():
+    req = make_request('node tool.mjs task "when should I use git reset --hard"')
+    decision = check(req)
+    assert decision is None
+
+
+def test_quoted_git_branch_force_delete_prompt_skipped():
+    req = make_request('node tool.mjs task "can git branch -D be dangerous"')
+    decision = check(req)
+    assert decision is None

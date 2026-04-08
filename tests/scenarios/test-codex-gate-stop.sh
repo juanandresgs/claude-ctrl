@@ -55,25 +55,48 @@ call_process_stop() {
         | CLAUDE_POLICY_DB="$TEST_DB" $CC dispatch process-stop 2>/dev/null || echo '{}'
 }
 
-# Helper: emit a codex_stop_review event with the given detail string.
+# Helper: derive the runtime workflow_id/source key for a project root.
+workflow_id_for_root() {
+    local root="$1"
+    PYTHONPATH="$REPO_ROOT" python3 - "$root" <<'PYEOF'
+import sys
+from runtime.core.policy_utils import current_workflow_id
+print(current_workflow_id(sys.argv[1]))
+PYEOF
+}
+
+workflow_source_for_root() {
+    local root="$1"
+    printf 'workflow:%s\n' "$(workflow_id_for_root "$root")"
+}
+
+# Helper: emit a codex_stop_review event with the given detail string for a root.
 emit_codex_event() {
-    local detail="$1"
-    CLAUDE_POLICY_DB="$TEST_DB" $CC event emit "codex_stop_review" --detail "$detail" >/dev/null 2>&1 || true
+    local root="$1"
+    local detail="$2"
+    local db="${3:-$TEST_DB}"
+    local source
+    source="$(workflow_source_for_root "$root")"
+    CLAUDE_POLICY_DB="$db" $CC event emit "codex_stop_review" --source "$source" --detail "$detail" >/dev/null 2>&1 || true
 }
 
 # Helper: emit a codex_stop_review event with a stale created_at timestamp by
 # inserting directly into SQLite (60 + 10 seconds in the past).
 emit_stale_codex_event() {
-    local detail="$1"
+    local root="$1"
+    local detail="$2"
+    local db="${3:-$TEST_DB}"
     local stale_ts
+    local source
     stale_ts=$(python3 -c "import time; print(int(time.time()) - 130)")
-    python3 - "$TEST_DB" "$detail" "$stale_ts" <<'PYEOF'
+    source="$(workflow_source_for_root "$root")"
+    python3 - "$db" "$source" "$detail" "$stale_ts" <<'PYEOF'
 import sys, sqlite3
-db, detail, ts = sys.argv[1], sys.argv[2], int(sys.argv[3])
+db, source, detail, ts = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 conn = sqlite3.connect(db)
 conn.execute(
-    "INSERT INTO events (type, source, detail, created_at) VALUES (?, NULL, ?, ?)",
-    ("codex_stop_review", detail, ts)
+    "INSERT INTO events (type, source, detail, created_at) VALUES (?, ?, ?, ?)",
+    ("codex_stop_review", source, detail, ts)
 )
 conn.commit()
 conn.close()
@@ -127,7 +150,7 @@ fi
 # --------------------------------------------------------------------------
 WD2="$TMP_DIR/wt-allow"
 mkdir -p "$WD2"
-emit_codex_event "VERDICT: ALLOW — work looks good"
+emit_codex_event "$WD2" "VERDICT: ALLOW — workflow=$(workflow_id_for_root "$WD2") | work looks good"
 
 OUT2=$(call_process_stop "planner" "$WD2")
 AUTO2=$(get_field "$OUT2" "auto_dispatch")
@@ -152,7 +175,7 @@ fi
 WD3="$TMP_DIR/wt-block"
 mkdir -p "$WD3"
 BLOCK_REASON="Insufficient test coverage for edge cases"
-emit_codex_event "VERDICT: BLOCK — $BLOCK_REASON"
+emit_codex_event "$WD3" "VERDICT: BLOCK — workflow=$(workflow_id_for_root "$WD3") | $BLOCK_REASON"
 
 OUT3=$(call_process_stop "planner" "$WD3")
 AUTO3=$(get_field "$OUT3" "auto_dispatch")
@@ -194,7 +217,7 @@ CLAUDE_POLICY_DB="$STALE_DB" $CC schema ensure >/dev/null 2>&1
 
 WD4="$TMP_DIR/wt-stale"
 mkdir -p "$WD4"
-emit_stale_codex_event "VERDICT: BLOCK — stale reason should be ignored"
+emit_stale_codex_event "$WD4" "VERDICT: BLOCK — workflow=$(workflow_id_for_root "$WD4") | stale reason should be ignored" "$STALE_DB"
 
 OUT4=$(printf '{"agent_type":"planner","project_root":"%s"}' "$WD4" \
     | CLAUDE_POLICY_DB="$STALE_DB" $CC dispatch process-stop 2>/dev/null || echo '{}')
@@ -220,11 +243,10 @@ fi
 # Use a fresh DB so the Test 3 BLOCK event doesn't interfere.
 ERR_DB="$TMP_DIR/state-err.db"
 CLAUDE_POLICY_DB="$ERR_DB" $CC schema ensure >/dev/null 2>&1
-CLAUDE_POLICY_DB="$ERR_DB" $CC event emit "codex_stop_review" \
-    --detail "VERDICT: BLOCK — should not matter" >/dev/null 2>&1 || true
 
 WD5="$TMP_DIR/wt-err"
 mkdir -p "$WD5"
+emit_codex_event "$WD5" "VERDICT: BLOCK — workflow=$(workflow_id_for_root "$WD5") | should not matter" "$ERR_DB"
 
 # Tester with no lease/no workflow → PROCESS ERROR → auto_dispatch=False before gate runs
 OUT5=$(printf '{"agent_type":"tester","project_root":"%s"}' "$WD5" \

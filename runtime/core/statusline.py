@@ -292,8 +292,9 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     #
     # Detail format written by stop-review-gate-hook.mjs:
     #   "VERDICT: <ALLOW|BLOCK> — workflow=<id> | <reason>"
-    # source field carries the provider when present (future use); for
-    # now we default to "codex" since that is the sole writer (DEC-AD-002).
+    # source now carries the workflow scope key ``workflow:<id>`` for dispatch
+    # routing. That scope key is NOT a reviewer name; the user-facing reviewer
+    # remains "codex".
     # ------------------------------------------------------------------
     try:
         _eval_wf = result.get("eval_workflow")
@@ -322,9 +323,8 @@ def snapshot(conn: sqlite3.Connection) -> dict:
 
         if row:
             detail = row["detail"] or ""
-            # source field is not currently populated by the hook; fall back
-            # to "codex" — the only provider that emits codex_stop_review.
-            reviewer: str = row["source"] or "codex"
+            source = row["source"] or ""
+            reviewer: str = "codex" if not source or source.startswith("workflow:") else source
 
             # Parse verdict from detail string.
             verdict: str | None = None

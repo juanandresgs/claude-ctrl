@@ -13,9 +13,11 @@ Rationale: Before this module, enforcement toggles were scattered across
 Scope precedence (lookup order):
   workflow=<id>  →  project=<root>  →  global  →  None
 
-WHO gate: only the guardian role may call set_(). All other callers receive
-  a PermissionError. This prevents implementers from self-escalating their
-  own enforcement posture.
+WHO gate: guardian remains the writer for enforcement-sensitive toggles.
+  The sole exception is ``review_gate_regular_stop``: it is a user-facing
+  session-end preference, so the orchestrator/user path (empty actor_role)
+  may write it directly. This keeps the canonical authority in the runtime
+  without forcing plugin setup through a guardian lease.
 
 @decision DEC-REGULAR-STOP-REVIEW-001
 Title: Regular Stop review gate toggled via enforcement_config, not state.json
@@ -25,9 +27,11 @@ Rationale: The codex plugin's state.json previously held stopReviewGate as
   created a split authority: the SubagentStop path was unconditional (RCA-14)
   but the regular-Stop path read from a plugin-local file. By moving the
   toggle into enforcement_config, both paths are controlled by the same
-  canonical authority with the same WHO gate and scope precedence semantics.
-  The plugin state.json is kept as a dual-write target during the deprecation
-  window (one release cycle) to avoid breaking in-flight setups.
+  canonical authority with the same scope precedence semantics. Because the
+  regular Stop gate is a user-facing preference rather than a dispatch-safety
+  control, the orchestrator/user path (empty actor_role) may write this one
+  key directly. The plugin state.json is kept only as a compatibility mirror
+  during the deprecation window.
 """
 
 from __future__ import annotations
@@ -87,15 +91,18 @@ def set_(
     scope: str = "global",
     actor_role: Optional[str] = None,
 ) -> None:
-    """Set a config value. Guardian-only WHO gate (DEC-CONFIG-AUTHORITY-001).
+    """Set a config value with the configured WHO gate.
 
-    Raises PermissionError when actor_role is not "guardian". This is the
-    enforcement boundary — callers must obtain a guardian lease before
-    writing enforcement toggles.
+    Guardian remains the writer for enforcement-sensitive keys. The sole
+    exception is ``review_gate_regular_stop``, which may also be written by
+    the orchestrator/user path (empty actor_role) because it is a user-facing
+    regular-Stop preference.
 
     Uses UPSERT so re-setting an existing key updates updated_at atomically.
     """
-    if actor_role != "guardian":
+    if key == "review_gate_regular_stop" and (actor_role is None or actor_role == ""):
+        pass
+    elif actor_role != "guardian":
         raise PermissionError(
             f"Only guardian role may set enforcement_config (got actor_role={actor_role!r})"
         )

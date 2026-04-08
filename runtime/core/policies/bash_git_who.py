@@ -25,25 +25,14 @@ Rationale: guard.sh Check 3 calls rt_lease_validate_op() which does a DB read
   (bash_eval_readiness at priority=900, bash_approval_gate at priority=1100).
 
 @decision DEC-PE-EGAP-GIT-WHO-001
-Title: Expanded _GIT_OP_RE covers all Guardian-only git operations
+Title: classify_git_op is the sole git-op gate for bash_git_who
 Status: accepted
-Rationale: The original regex only gated commit/merge/push. Operations such as
-  git worktree remove, git branch -d/-D, git rebase, git reset, and git tag all
-  modify repository state and must require a valid lease. The expanded regex
-  applies WHO enforcement to the full set of state-mutating git commands so that
-  no Guardian-only operation bypasses the lease check.
-
-  RCA-1 (#21): E2E testing proved 9 additional ops were NOT gated:
-    cherry-pick, revert, worktree move, stash drop, stash clear,
-    remote add/remove/set-url, update-ref, filter-branch.
-  These are now included. classify_git_op() in leases.py classifies all new
-  ops as high_risk (see DEC-LEASE-EGAP-003 in leases.py) so the lease
-  allowed_ops check works correctly after the regex match succeeds.
-
-  classify_git_op() in leases.py already classifies rebase and reset as
-  high_risk — the expansion here only ensures the match layer is consistent.
-  worktree remove and branch -D are treated as high_risk by the expanded
-  classify_git_op logic (see leases.py DEC-LEASE-EGAP-002).
+Rationale: The prior _GIT_OP_RE layer duplicated classify_git_op() with a
+  weaker, shell-unaware regex. It drifted from the canonical classifier and,
+  under ENFORCE-RCA-13, matched phrases like "git commit" inside quoted
+  natural-language prompt text passed to non-git commands. bash_git_who now
+  classifies first and skips when the result is "unclassified", so only real
+  git invocations proceed to lease enforcement.
 
 @decision DEC-PE-EGAP-GIT-WHO-002
 Title: Belt-and-suspenders role check in bash_git_who guards against lease inheritance by wrong actor
@@ -59,56 +48,31 @@ Rationale: build_context() is the primary defense against role-blind lease
 from __future__ import annotations
 
 import json
-import re
 import time
 from typing import Optional
 
-from runtime.core.leases import classify_git_op
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-
-# @decision DEC-PE-EGAP-GIT-WHO-001 (expanded, RCA-1 #21)
-# Matches all Guardian-only git operations. Word-boundary patterns prevent
-# false positives on path arguments (e.g. /path/to/feature-rebase-branch).
-# \s+ between subcommand tokens ensures we match the required whitespace
-# and avoid substring false positives in paths or argument values.
-#
-# RCA-1 additions: cherry-pick, revert, worktree move, stash drop/clear,
-# remote add/remove/rm/set-url, update-ref, symbolic-ref, filter-branch,
-# filter-repo. All are classified high_risk by classify_git_op() in leases.py
-# (DEC-LEASE-EGAP-003) so the lease allowed_ops check fires after this match.
-_GIT_OP_RE = re.compile(
-    r"\bgit\b.*\b("
-    r"commit|merge|push|rebase|reset|tag"
-    r"|worktree\s+(?:remove|prune|move)"
-    r"|branch\s+-[dDmM]"
-    r"|cherry-pick|revert"
-    r"|stash\s+(?:drop|clear)"
-    r"|remote\s+(?:add|remove|rm|set-url)"
-    r"|update-ref|symbolic-ref"
-    r"|filter-branch|filter-repo"
-    r")\b"
-)
-
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Deny git operations requiring a Guardian lease when no valid active lease covers the op.
 
     Logic:
       1. Skip if meta-repo.
-      2. Match git operations that require a lease (expanded set, see _GIT_OP_RE).
+      2. Classify the command; skip if it is not a real git op.
       3. If no lease in context: deny with guidance to issue a lease.
       4. Belt-and-suspenders role check: if lease.role doesn't match actor_role, deny.
       5. If lease expired: deny with effects to expire stale leases.
-      6. Classify the op; if op_class is blocked or not in allowed_ops: deny.
+      6. If op_class is blocked or not in allowed_ops: deny.
       7. If all checks pass: return None (allow through to later policies).
 
     Source: guard.sh lines 140-178 (Check 3).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _GIT_OP_RE.search(command):
+    op_class = intent.git_op_class
+    if op_class == "unclassified":
         return None
 
     # Meta-repo bypass.
@@ -158,8 +122,6 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             effects={"expire_stale_leases": True},
         )
 
-    # Classify the op and check against lease allowed/blocked ops.
-    op_class = classify_git_op(command)
     try:
         allowed_ops = json.loads(lease.get("allowed_ops_json") or "[]")
         blocked_ops = json.loads(lease.get("blocked_ops_json") or "[]")

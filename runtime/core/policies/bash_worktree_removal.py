@@ -21,13 +21,9 @@ import subprocess
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import extract_git_target_dir, resolve_path_from_base
 
 _WORKTREE_REMOVE_PATTERN = re.compile(r"git\s+worktree\s+remove")
 _CD_PATTERN = re.compile(r"(^|[;&|]\s*)cd\s+")
-
-# Strip 'git worktree remove [-f] ' prefix to get the path argument.
-_PATH_STRIP = re.compile(r".*git\s+worktree\s+remove\s+(-f\s+)?")
 
 
 def _get_main_worktree(target_dir: str) -> str:
@@ -54,24 +50,21 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 230-248 (Check 7).
     """
+    intent = request.command_intent
     command = request.tool_input.get("command", "")
-    if not command:
+    if not command or intent is None:
         return None
 
-    if not _WORKTREE_REMOVE_PATTERN.search(command):
+    if intent.worktree_action != "remove":
         return None
 
-    # Extract the worktree path argument from the command.
-    m = _PATH_STRIP.search(command)
-    if not m:
-        return None
-    wt_path_raw = command[m.end() :].strip().split()[0] if command[m.end() :].strip() else ""
+    wt_path_raw = intent.worktree_target_raw
     if not wt_path_raw:
         return None
 
-    target_dir = extract_git_target_dir(command, request.cwd or "")
+    target_dir = intent.command_cwd or request.cwd or ""
     main_wt = _get_main_worktree(target_dir)
-    wt_abs = resolve_path_from_base(target_dir, wt_path_raw)
+    wt_abs = intent.worktree_target_resolved
 
     input_cwd = request.cwd or ""
 

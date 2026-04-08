@@ -1,7 +1,8 @@
 """Unit tests for runtime.core.events.
 
 Tests the events table domain module using an in-memory SQLite database.
-Covers emit/query ordering, type filtering, time filtering, and limit.
+Covers emit/query ordering, type filtering, source filtering, time filtering,
+and limit.
 
 @decision DEC-RT-001
 Title: Canonical SQLite schema for all shared workflow state
@@ -62,6 +63,14 @@ def test_query_type_filter(conn):
     rows = events.query(conn, type="type.a")
     assert len(rows) == 2
     assert all(r["type"] == "type.a" for r in rows)
+
+
+def test_query_source_filter(conn):
+    events.emit(conn, "evt", source="workflow:wf-a")
+    events.emit(conn, "evt", source="workflow:wf-b")
+    rows = events.query(conn, source="workflow:wf-a")
+    assert len(rows) == 1
+    assert rows[0]["source"] == "workflow:wf-a"
 
 
 def test_query_returns_newest_first(conn):

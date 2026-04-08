@@ -60,7 +60,8 @@ FAILURES=0
 # ---------------------------------------------------------------------------
 set_marker() {
     local agent_id="$1" role="$2"
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" marker set "$agent_id" "$role" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" \
+        marker set "$agent_id" "$role" --project-root "$TMP_DIR" >/dev/null 2>&1
 }
 
 # Helper: deactivate a marker directly (cleanup between tests)
@@ -257,33 +258,19 @@ else
     echo "  PASS: [7] scoped pre-condition: at least one active marker present"
 fi
 
-# Verify scoped query returns the correct role for project A
-role_a=$(CLAUDE_POLICY_DB="$TEST_DB" python3 - <<'PYEOF'
-import sys, json, subprocess, os
-result = subprocess.run(
-    ["python3", os.environ["CLI"], "marker", "get-active"],
-    capture_output=True, text=True,
-    env={**os.environ, "CLAUDE_POLICY_DB": os.environ["TEST_DB"]}
-)
-# We can only verify unscoped via CLI; scoped is tested via Python unit tests.
-# Just confirm both markers are in the list.
-result2 = subprocess.run(
-    ["python3", os.environ["CLI"], "marker", "list"],
-    capture_output=True, text=True,
-    env={**os.environ, "CLAUDE_POLICY_DB": os.environ["TEST_DB"]}
-)
-data = json.loads(result2.stdout)
-items = data.get("items", [])
-scoped = [i for i in items if i.get("project_root") in [os.environ["PROJ_A"], os.environ["PROJ_B"]] and i.get("is_active") == 1]
-print(len(scoped))
-PYEOF
-)
+# Verify scoped query returns the correct role for each project_root.
+role_a=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" marker get-active --project-root "$PROJ_A" 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('role',''))" 2>/dev/null \
+    || echo "")
+role_b=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" marker get-active --project-root "$PROJ_B" 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('role',''))" 2>/dev/null \
+    || echo "")
 
-if [[ "$role_a" != "2" ]]; then
-    echo "  FAIL: [7] scoped markers: expected 2 active scoped markers, got $role_a"
+if [[ "$role_a" != "tester" || "$role_b" != "implementer" ]]; then
+    echo "  FAIL: [7] scoped markers: expected tester/implementer by project_root, got A=$role_a B=$role_b"
     FAILURES=$((FAILURES + 1))
 else
-    echo "  PASS: [7] scoped markers: 2 active project-scoped markers found in list"
+    echo "  PASS: [7] scoped markers: project_root-scoped get-active returns the correct role"
 fi
 
 # Clean up scoped markers

@@ -192,3 +192,26 @@ def test_non_git_command_skipped():
     req = make_request("ls -la", context=ctx)
     decision = check(req)
     assert decision is None
+
+
+def test_natural_language_prompt_with_git_commit_is_skipped():
+    ctx = make_context(lease=None)
+    req = make_request('node tool.mjs task "investigate git commit gating"', context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_echo_git_push_argument_is_skipped():
+    ctx = make_context(lease=None)
+    req = make_request("echo git push", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_nested_shell_git_push_still_denied_without_lease():
+    ctx = make_context(lease=None)
+    req = make_request('bash -lc "git push origin main"', context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "bash_git_who"

@@ -22,6 +22,7 @@ import pytest
 
 from runtime.core import completions, evaluation, leases
 from runtime.core.dispatch_engine import process_agent_stop
+from runtime.core.policy_utils import current_workflow_id
 from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,10 @@ def _issue_lease_at(conn, role, project_root, workflow_id="wf-test-001"):
         workflow_id=workflow_id,
         worktree_path=project_root,
     )
+
+
+def _codex_workflow_source(project_root: str) -> str:
+    return f"workflow:{current_workflow_id(project_root)}"
 
 
 def _submit_valid_tester_completion(conn, lease_id, workflow_id):
@@ -731,8 +736,9 @@ def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
 # @decision DEC-AD-002
 # Title: Codex stop-review gate communicates via events table
 # Status: accepted
-# Rationale: The Codex gate hook writes a codex_stop_review event and
-#   dispatch_engine reads the most recent such event within a 60-second window.
+# Rationale: The Codex gate hook writes a workflow-scoped codex_stop_review
+#   event and dispatch_engine reads the most recent such event within a
+#   60-second window for the current workflow only.
 #   BLOCK verdict sets auto_dispatch=False and appends the block reason to
 #   suggestion. Errors in the lookup are advisory — never block routing.
 #   This keeps dispatch_engine as the sole auto_dispatch decision authority
@@ -761,7 +767,13 @@ def test_codex_gate_allow_auto_dispatch_stays_true(conn, project_root):
     """
     from runtime.core import events as ev
 
-    ev.emit(conn, type="codex_stop_review", detail="VERDICT: ALLOW — work looks good")
+    wf_id = current_workflow_id(project_root)
+    ev.emit(
+        conn,
+        type="codex_stop_review",
+        source=_codex_workflow_source(project_root),
+        detail=f"VERDICT: ALLOW — workflow={wf_id} | work looks good",
+    )
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
     assert result["next_role"] == "guardian"
@@ -775,11 +787,13 @@ def test_codex_gate_block_overrides_auto_dispatch(conn, project_root):
     """
     from runtime.core import events as ev
 
+    wf_id = current_workflow_id(project_root)
     block_reason = "Insufficient test coverage for edge cases"
     ev.emit(
         conn,
         type="codex_stop_review",
-        detail=f"VERDICT: BLOCK — {block_reason}",
+        source=_codex_workflow_source(project_root),
+        detail=f"VERDICT: BLOCK — workflow={wf_id} | {block_reason}",
     )
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is False
@@ -795,11 +809,13 @@ def test_codex_gate_block_on_already_false(conn, project_root):
     """auto_dispatch already False (error) + BLOCK verdict → stays False, no double-negative."""
     from runtime.core import events as ev
 
+    wf_id = current_workflow_id(project_root)
     # Emit a BLOCK verdict
     ev.emit(
         conn,
         type="codex_stop_review",
-        detail="VERDICT: BLOCK — test reason",
+        source=_codex_workflow_source(project_root),
+        detail=f"VERDICT: BLOCK — workflow={wf_id} | test reason",
     )
     # Tester with no lease → PROCESS ERROR → auto_dispatch=False already
     result = process_agent_stop(conn, "tester", project_root)
@@ -815,16 +831,38 @@ def test_codex_gate_stale_event_ignored(conn, project_root):
 
     W-GWT-1: planner now routes to guardian, not implementer.
     """
+    wf_id = current_workflow_id(project_root)
     # Insert a BLOCK event with a created_at timestamp 120 seconds in the past
     stale_ts = int(__import__("time").time()) - 120
     conn.execute(
         "INSERT INTO events (type, source, detail, created_at) VALUES (?, ?, ?, ?)",
-        ("codex_stop_review", None, "VERDICT: BLOCK — stale reason", stale_ts),
+        (
+            "codex_stop_review",
+            _codex_workflow_source(project_root),
+            f"VERDICT: BLOCK — workflow={wf_id} | stale reason",
+            stale_ts,
+        ),
     )
     conn.commit()
 
     result = process_agent_stop(conn, "planner", project_root)
     # Stale event must be ignored
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "guardian"
+    assert not result.get("codex_blocked")
+
+
+def test_codex_gate_wrong_workflow_ignored(conn, project_root):
+    """A newer BLOCK verdict for another workflow must not block this workflow."""
+    from runtime.core import events as ev
+
+    ev.emit(
+        conn,
+        type="codex_stop_review",
+        source="workflow:wf-other",
+        detail="VERDICT: BLOCK — workflow=wf-other | wrong workflow",
+    )
+    result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
     assert result["next_role"] == "guardian"
     assert not result.get("codex_blocked")

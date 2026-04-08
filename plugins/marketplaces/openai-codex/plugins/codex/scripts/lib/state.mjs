@@ -39,6 +39,7 @@
  *     - reapStaleJobs() returns the array of reaped job objects for caller logging.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -66,10 +67,51 @@ function defaultState() {
   return {
     version: STATE_VERSION,
     config: {
-      stopReviewGate: false
+      stopReviewGate: true
     },
     jobs: []
   };
+}
+
+function buildPolicyCliEnv(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const env = { ...process.env };
+  if (!env.CLAUDE_PROJECT_DIR) {
+    env.CLAUDE_PROJECT_DIR = workspaceRoot;
+  }
+  if (!env.CLAUDE_POLICY_DB) {
+    env.CLAUDE_POLICY_DB = path.join(workspaceRoot, ".claude", "state.db");
+  }
+  return env;
+}
+
+function policyCliPath() {
+  return path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "..", "..", "..", "..", "..", "..", "..", "runtime", "cli.py"
+  );
+}
+
+function readCanonicalRegularStopGate(cwd) {
+  try {
+    const out = execFileSync(
+      "python3",
+      [policyCliPath(), "config", "get", "review_gate_regular_stop"],
+      {
+        env: buildPolicyCliEnv(cwd),
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000
+      }
+    );
+    const parsed = JSON.parse(out);
+    if (parsed?.status !== "ok" || typeof parsed.value !== "string") {
+      return null;
+    }
+    return parsed.value === "true";
+  } catch {
+    return null;
+  }
 }
 
 export function resolveStateDir(cwd) {
@@ -484,67 +526,66 @@ export function listJobs(cwd) {
 /**
  * Dual-write shim for stopReviewGate (DEC-REGULAR-STOP-REVIEW-001).
  *
- * When a caller sets the stopReviewGate key in state.json, we also propagate
- * the value to the canonical enforcement_config authority via cc-policy config
- * set. This keeps state.json as a deprecated dual-write target during the
- * transition window: new readers use enforcement_config; legacy readers that
- * still load getConfig() continue to work.
+ * When a caller sets the stopReviewGate key, the canonical write happens via
+ * enforcement_config first and state.json becomes a compatibility mirror only.
+ * This prevents setup/reporting from claiming a gate state that the hook
+ * runtime does not actually read.
  *
- * The dual-write is best-effort: if the cc-policy CLI call fails (e.g. the
- * runtime is unavailable or the caller lacks guardian role), we log to stderr
- * but do NOT throw — the primary state.json write must not be blocked by the
- * secondary propagation.
+ * The canonical write is authoritative: if cc-policy config set fails, the
+ * caller must see the error and state.json must NOT diverge from the runtime.
  *
  * @param {string} cwd
  * @param {string} key
  * @param {*} value
  */
-function maybePropagateToEnforcementConfig(cwd, key, value) {
+function writeCanonicalConfig(cwd, key, value) {
   if (key !== "stopReviewGate") {
     return;
   }
   // Map state.json bool/string to enforcement_config string value.
   // "true" / true → "true"; anything else → "false".
   const canonicalValue = (value === true || value === "true") ? "true" : "false";
-  // execFileSync is imported at the top of this file from "node:child_process".
-  const cliPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "..", "..", "..", "..", "..", "..", "runtime", "cli.py"
-  );
-  const env = { ...process.env };
-  if (!env.CLAUDE_POLICY_DB && env.CLAUDE_PROJECT_DIR) {
-    env.CLAUDE_POLICY_DB = `${env.CLAUDE_PROJECT_DIR}/.claude/state.db`;
-  }
   try {
     execFileSync(
       "python3",
-      [cliPath, "config", "set", "review_gate_regular_stop", canonicalValue],
-      { env, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }
+      [policyCliPath(), "config", "set", "review_gate_regular_stop", canonicalValue],
+      {
+        env: buildPolicyCliEnv(cwd),
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000
+      }
     );
-  } catch {
-    // Best-effort: do not block the primary state.json write (DEC-REGULAR-STOP-REVIEW-001)
-    process.stderr.write(
-      `[state.mjs] dual-write to enforcement_config failed for key=${key}; state.json write proceeds\n`
-    );
+  } catch (error) {
+    const detail = error?.stderr?.toString?.().trim() || error?.message || "unknown error";
+    throw new Error(`Failed to update canonical review gate config: ${detail}`);
   }
 }
 
 export function setConfig(cwd, key, value) {
-  // Primary write: state.json via updateState (atomic, W-CDX-1 lock).
+  // Canonical write first: enforcement_config is the authority for stopReviewGate.
+  writeCanonicalConfig(cwd, key, value);
+  // Compatibility mirror: persist the visible plugin state after the canonical
+  // authority accepts the write.
   const result = updateState(cwd, (state) => {
     state.config = {
       ...state.config,
       [key]: value
     };
   });
-  // Secondary write: propagate stopReviewGate to the canonical enforcement_config
-  // authority (DEC-REGULAR-STOP-REVIEW-001). Best-effort; never throws.
-  maybePropagateToEnforcementConfig(cwd, key, value);
   return result;
 }
 
 export function getConfig(cwd) {
-  return loadState(cwd).config;
+  const state = loadState(cwd);
+  const canonicalRegularStop = readCanonicalRegularStopGate(cwd);
+  if (canonicalRegularStop !== null) {
+    state.config = {
+      ...state.config,
+      stopReviewGate: canonicalRegularStop
+    };
+  }
+  return state.config;
 }
 
 export function writeJobFile(cwd, jobId, payload) {

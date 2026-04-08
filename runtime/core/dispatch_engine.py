@@ -410,35 +410,45 @@ def _check_codex_gate(
     """Check if the Codex stop-review gate blocked auto-dispatch (W-AD-3).
 
     Queries the events table for the most recent codex_stop_review event
-    within a 60-second window. Returns (blocked, reason).
+    for the current workflow within a 60-second window. Returns (blocked, reason).
 
     The gate is advisory: any exception during lookup is swallowed and the
     function returns (False, "") so routing is never blocked by a gate error.
 
     Args:
         conn:        Open SQLite connection with schema applied.
-        workflow_id: Current workflow_id (informational; not used for
-                     filtering since the Codex hook writes to the global
-                     events table without a workflow scope key).
+        workflow_id: Current workflow_id. The Codex hook writes it into
+                     events.source as ``workflow:<id>`` and the gate only
+                     consults events carrying that exact scope key.
 
     Returns:
         (blocked, reason) — blocked is True only when the most recent
         codex_stop_review event within 60 seconds contains "VERDICT: BLOCK".
-        reason is the text following "VERDICT: BLOCK" in the detail string,
-        stripped of leading punctuation and whitespace.
+        reason is the human review reason from the detail string, with any
+        ``workflow=<id> |`` prefix stripped away.
     """
+    if not workflow_id:
+        return False, ""
+
+    source_key = f"workflow:{workflow_id}"
+
     try:
         recent = events.query(
             conn,
             type="codex_stop_review",
+            source=source_key,
             since=int(time.time()) - 60,
             limit=1,
         )
         for evt in recent:
             detail = evt.get("detail") or ""
             if "VERDICT: BLOCK" in detail:
-                # Extract reason after "VERDICT: BLOCK", strip leading "— - " chars
+                # Strip the verdict prefix, then drop the workflow marker segment
+                # when the hook wrote the compatibility format:
+                #   VERDICT: BLOCK — workflow=<id> | <reason>
                 reason = detail.split("VERDICT: BLOCK", 1)[1].strip().lstrip("\u2014- ").strip()
+                if reason.startswith("workflow=") and "|" in reason:
+                    reason = reason.split("|", 1)[1].strip()
                 return True, reason or "Codex review blocked"
     except Exception:
         pass  # Advisory; never block routing on gate errors (DEC-AD-003).

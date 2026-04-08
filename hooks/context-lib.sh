@@ -360,10 +360,20 @@ is_claude_meta_repo() {
     local dir="$1"
     local repo_root
 
-    # Check 1: CLAUDE_PROJECT_DIR env var — symlinks cause git to resolve to
-    # the real path (e.g. ~/Code/foo) even when ~/.claude is the logical root.
-    if [[ "${CLAUDE_PROJECT_DIR:-}" == */.claude ]]; then
-        return 0
+    # Check 1: CLAUDE_PROJECT_DIR env var, realpath-dereferenced to defeat
+    # dual-checkout symlinks (DEC-META-002 / ENFORCE-RCA-11). The prior check
+    # trusted the literal string suffix; when ~/.claude is a symlink to a
+    # regular project repo, the unresolved literal ended with /.claude so
+    # is_claude_meta_repo returned true and every bash_main_sacred /
+    # is_meta_repo-gated policy bypassed enforcement. Dereferencing first
+    # makes the symlink case return false correctly while preserving the
+    # legitimate meta-repo case (realpath is idempotent for real /.claude).
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+        local _cpd_resolved
+        _cpd_resolved=$(readlink -f "${CLAUDE_PROJECT_DIR}" 2>/dev/null || echo "${CLAUDE_PROJECT_DIR}")
+        if [[ "$_cpd_resolved" == */.claude ]]; then
+            return 0
+        fi
     fi
 
     # Check 2: git toplevel — works for the main checkout of the meta-repo.
@@ -520,14 +530,16 @@ lease_context() {
 # --- Git operation classifier (DEC-CLASSIFY-001) ---
 # classify_git_op <command>
 # Returns "routine_local", "high_risk", "admin_recovery", or "unclassified".
-# Bash implementation for hook performance — avoids Python startup overhead.
-# Authority for risk levels: this function. guard.sh Check 13 reads it.
+# Shell adapter for the canonical Python classifier in runtime/core/leases.py.
+# Authority for risk levels: runtime/core/leases.py::classify_git_op().
 #
 # @decision DEC-CLASSIFY-001
-# @title Bash classifier is the authority for git op risk levels
+# @title Canonical Python classifier is the authority for git op risk levels
 # @status accepted
-# @rationale Hook performance requires avoiding Python startup for every
-#   command. The classifier is simple regex matching — bash is sufficient.
+# @rationale ENFORCE-RCA-13 proved the bash regex classifier drifted from the
+#   Python policy engine and false-positive matched quoted prompt text. This
+#   shell wrapper now delegates to the canonical Python parser so hook and
+#   policy-engine enforcement classify the same command the same way.
 #   routine_local:  evaluation_state gates these (Check 10). high_risk: approval
 #   token required (Check 13). admin_recovery: merge --abort and reset --merge
 #   require lease + approval but NOT evaluation readiness (DEC-LEASE-002).
@@ -539,39 +551,17 @@ lease_context() {
 #   routine_local:  commit, merge
 #   unclassified:   everything else
 classify_git_op() {
-    # @decision DEC-CTXLIB-001
-    # @title POSIX-compatible word boundaries in classify_git_op
-    # @status accepted
-    # @rationale BSD grep (macOS) does not support \b word-boundary assertions in
-    #   ERE mode. The original \bgit\b patterns silently failed on macOS, causing
-    #   every git op to fall through to "unclassified". Replaced with explicit
-    #   POSIX ERE anchors.
-    #
-    #   Pattern structure: (^|\s)git(\s.*\s|\s)(subcommand)(\s|$)
-    #   - (^|\s)git  : git at start of string or after whitespace
-    #   - (\s.*\s|\s): either one-or-more args+spaces between git and subcommand
-    #                  (e.g. "git -C /path commit") or a single space (e.g. "git commit")
-    #   - (subcommand)(\s|$): subcommand followed by space or end of string
-    #
-    #   Matches both "git commit" and "git -C /path commit" forms.
-    #   Verified against macOS BSD grep (ERE, no \b support).
     local cmd="$1"
-    # Admin recovery: merge --abort (governed recovery, not a landing op)
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)merge(\s|$).*--abort'; then echo "admin_recovery"; return; fi
-    # Admin recovery: reset --merge (backed-out merge recovery)
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)reset(\s|$).*--merge'; then echo "admin_recovery"; return; fi
-    # High-risk: push (any form)
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)push(\s|$)'; then echo "high_risk"; return; fi
-    # High-risk: rebase
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)rebase(\s|$)'; then echo "high_risk"; return; fi
-    # High-risk: reset (any form not already caught by admin_recovery above)
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)reset(\s|$)'; then echo "high_risk"; return; fi
-    # High-risk: non-ff merge (explicit --no-ff)
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)merge(\s|$).*--no-ff'; then echo "high_risk"; return; fi
-    # Routine local: commit or merge (local-only, no --no-ff)
-    if echo "$cmd" | grep -qE '(^|\s)git(\s.*\s|\s)(commit|merge)(\s|$)'; then echo "routine_local"; return; fi
-    # Default: unclassified (git log, git status, git diff, etc.)
-    echo "unclassified"
+    local repo_root
+    repo_root="$(cd "${__CONTEXT_LIB_DIR}/.." && pwd)"
+
+    # ENFORCE-RCA-13: delegate to the canonical Python classifier so quoted
+    # prompt text and wrapper-shell cases are parsed once, not drifted twice.
+    PYTHONPATH="${repo_root}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c '
+from runtime.core.leases import classify_git_op
+import sys
+print(classify_git_op(sys.argv[1]))
+' "$cmd"
 }
 
 # Export for subshells

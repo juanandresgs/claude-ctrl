@@ -575,8 +575,12 @@ function runStopReview(cwd, input = {}) {
 // (DEC-CONFIG-AUTHORITY-001 risk #3)
 function readEnforcementConfig(cwd, key) {
   const env = { ...process.env };
-  if (!env.CLAUDE_POLICY_DB && env.CLAUDE_PROJECT_DIR) {
-    env.CLAUDE_POLICY_DB = `${env.CLAUDE_PROJECT_DIR}/.claude/state.db`;
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  if (!env.CLAUDE_PROJECT_DIR) {
+    env.CLAUDE_PROJECT_DIR = workspaceRoot;
+  }
+  if (!env.CLAUDE_POLICY_DB) {
+    env.CLAUDE_POLICY_DB = path.join(env.CLAUDE_PROJECT_DIR, ".claude", "state.db");
   }
   const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
   try {
@@ -597,10 +601,18 @@ function readEnforcementConfig(cwd, key) {
 function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
   const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
   const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
+  const args = [cliPath, "event", "emit", "codex_stop_review"];
+  if (workflowId) {
+    // ENFORCE-RCA-16: dispatch_engine gates by exact workflow scope, not the
+    // latest global codex_stop_review event. Keep workflow=<id> in detail for
+    // statusline compatibility, but the authoritative scope key is source.
+    args.push("--source", `workflow:${workflowId}`);
+  }
+  args.push("--detail", detail);
   try {
     execFileSync(
       "python3",
-      [cliPath, "event", "emit", "codex_stop_review", "--detail", detail],
+      args,
       { cwd, timeout: 5000, encoding: "utf8" }
     );
   } catch {
@@ -687,10 +699,14 @@ function main() {
       return;
     }
 
-    // CONTINUE → block dispatch, recommend re-dispatching the same subagent
+    // CONTINUE → inject findings as context, let post-task.sh still run.
+    // decision:"block" was too aggressive (DEC-ENFORCE-REVIEW-GATE-001) — it
+    // killed the entire SubagentStop hook chain, preventing post-task.sh from
+    // emitting AUTO_DISPATCH. Instead, use systemMessage so the orchestrator
+    // sees both the review findings AND the dispatch directive. The orchestrator
+    // should address CONTINUE findings before following AUTO_DISPATCH.
     emitDecision({
-      decision: "block",
-      reason: `[${provider}] Review found issues with ${agentType}'s work. Re-dispatch ${agentType} to address:\n\n${review.reason}`
+      systemMessage: `REVIEW_GATE_CONTINUE: [${provider}] Review found issues with ${agentType}'s work. Address these before following AUTO_DISPATCH:\n\n${review.reason}`
     });
     return;
   }

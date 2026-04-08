@@ -89,7 +89,28 @@
         ]
       }
     ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/block-worktree-create.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/block-worktree-create.sh",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Write|Edit",
         "hooks": [
@@ -120,13 +141,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/pre-bash.sh",
-            "timeout": 10
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/auto-review.sh",
-            "timeout": 5
+            "command": "$HOME/.claude/hooks/pre-bash.sh",
+            "timeout": 10
           }
         ]
       },
@@ -351,6 +372,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/forward-motion.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "timeout": 900
           }
         ]
       }

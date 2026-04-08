@@ -54,6 +54,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from runtime.core.command_intent import BashCommandIntent, build_bash_command_intent
 from runtime.core.policy_utils import (
     current_workflow_id,
     detect_project_root,
@@ -99,6 +100,7 @@ class PolicyRequest:
     tool_input  — raw tool_input dict from Claude hook JSON
     context     — fully resolved PolicyContext
     cwd         — the CWD at hook invocation time
+    command_intent — runtime-owned parsed intent for bash commands
     """
 
     event_type: str
@@ -106,6 +108,25 @@ class PolicyRequest:
     tool_input: dict
     context: PolicyContext
     cwd: str
+    command_intent: Optional[BashCommandIntent] = None
+
+    def __post_init__(self) -> None:
+        """Auto-populate command_intent for bash requests.
+
+        Tests and direct callers often construct PolicyRequest by hand.
+        Populating the parsed intent here keeps those call sites compatible
+        while preserving the single-authority parsing model.
+        """
+        if self.command_intent is not None:
+            return
+        if self.tool_name != "Bash":
+            return
+        if not isinstance(self.tool_input, dict):
+            return
+        command = self.tool_input.get("command", "") or ""
+        if not command:
+            return
+        self.command_intent = build_bash_command_intent(command, cwd=self.cwd or "")
 
 
 @dataclass

@@ -14,6 +14,7 @@ Rationale: Policies that run in Python must make the same path/token decisions
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from runtime.core.policy_utils import (
     is_governance_markdown,
     is_skippable_path,
     is_source_file,
+    resolve_path_from_base,
     sanitize_token,
 )
 
@@ -456,8 +458,21 @@ def test_extract_git_target_dir_cd_pattern(tmp_path):
     assert result == str(tmp_path)
 
 
+def test_extract_git_target_dir_relative_dash_c(tmp_path):
+    target = tmp_path / ".worktrees" / "feature-a"
+    target.mkdir(parents=True)
+    cmd = "git -C .worktrees/feature-a status"
+    result = extract_git_target_dir(cmd, cwd=str(tmp_path))
+    assert result == str(target)
+
+
 def test_extract_git_target_dir_fallback_cwd(tmp_path):
     cmd = "git status"
     result = extract_git_target_dir(cmd, cwd=str(tmp_path))
     # Falls back to cwd when no cd or -C pattern found
     assert result == str(tmp_path)
+
+
+def test_resolve_path_from_base_expands_home():
+    result = resolve_path_from_base("/tmp/project", "~")
+    assert result == os.path.expanduser("~")

@@ -26,8 +26,6 @@ from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
-_COMMIT_RE = __import__("re").compile(r"\bgit\b.*\bcommit\b")
-
 
 def _get_branch(target_dir: str) -> str:
     try:
@@ -73,11 +71,12 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 180-204 (Check 4).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _COMMIT_RE.search(command):
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand != "commit":
         return None
 
     # Meta-repo bypass.
@@ -90,7 +89,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # and is redundant now that effective_cwd flows through to PolicyRequest.cwd.
     # _merge_head_exists() needs the repo root (.git/ lives there), which is
     # exactly what context.project_root provides.
-    target_dir = request.context.project_root or request.cwd or ""
+    target_dir = request.context.project_root or intent.target_cwd or request.cwd or ""
     if not target_dir:
         return None
 

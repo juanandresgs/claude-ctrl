@@ -30,8 +30,11 @@ Rationale: Subagents today rediscover identity from ambient state (markers, CWD
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
+import os
 import re
+import shlex
 import sqlite3
 import time
 import uuid
@@ -68,22 +71,159 @@ ROLE_DEFAULTS: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 
-def _strip_git_paths(command: str) -> str:
-    """Strip path arguments from git commands to prevent false subcommand matches.
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
+_PASSTHROUGH_WRAPPERS = frozenset({"command", "builtin", "nohup", "time"})
+_SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh"})
+_GIT_GLOBAL_OPTS_WITH_VALUE = frozenset(
+    {
+        "-C",
+        "-c",
+        "--exec-path",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--super-prefix",
+        "--config-env",
+    }
+)
 
-    Removes:
-      - git -C <path> → git
-      - cd <path> && → (empty)
-      - Quoted paths after -C
 
-    This prevents paths like '/path/feature-rebase-w1' from matching
-    subcommand patterns like \\brebase\\b.
-    """
-    # Strip: git -C "/path/..." or git -C '/path/...' or git -C /path/...
-    result = re.sub(r'\bgit\s+-C\s+("([^"]+)"|\'([^\']+)\'|(\S+))', "git", command)
-    # Strip: cd "/path" && or cd '/path' && or cd /path &&
-    result = re.sub(r'\bcd\s+("([^"]+)"|\'([^\']+)\'|(\S+))\s*&&\s*', "", result)
-    return result
+@dataclass(frozen=True)
+class GitInvocation:
+    """A real git invocation extracted from a shell command string."""
+
+    argv: tuple[str, ...]
+    subcommand: str
+    args: tuple[str, ...]
+
+
+def _shell_tokens(command: str) -> list[str]:
+    """Tokenize a shell command string while preserving unquoted separators."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _split_shell_segments(tokens: list[str]) -> list[list[str]]:
+    """Split tokens on unquoted shell control operators."""
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in _SHELL_SEPARATORS:
+            if current:
+                segments.append(current)
+            current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _extract_shell_c_payload(tokens: list[str]) -> Optional[str]:
+    """Return the command string passed to sh/bash/zsh -c/-lc, if present."""
+    for index, token in enumerate(tokens):
+        if token == "--":
+            continue
+        if token.startswith("-") and token != "-":
+            if token == "-c" or "c" in token[1:]:
+                return tokens[index + 1] if index + 1 < len(tokens) else None
+            continue
+        break
+    return None
+
+
+def _git_argv_from_segment(segment: list[str], *, depth: int = 0) -> Optional[list[str]]:
+    """Resolve a shell segment to the git argv it actually executes, if any."""
+    index = 0
+    while index < len(segment) and _ENV_ASSIGN_RE.match(segment[index]):
+        index += 1
+    if index >= len(segment):
+        return None
+
+    command = os.path.basename(segment[index])
+    if command == "env":
+        index += 1
+        while index < len(segment) and (
+            _ENV_ASSIGN_RE.match(segment[index]) or segment[index].startswith("-")
+        ):
+            index += 1
+        if index >= len(segment):
+            return None
+        command = os.path.basename(segment[index])
+
+    if command in _PASSTHROUGH_WRAPPERS:
+        return _git_argv_from_segment(segment[index + 1 :], depth=depth)
+
+    if command in _SHELL_WRAPPERS:
+        if depth >= 2:
+            return None
+        inner = _extract_shell_c_payload(segment[index + 1 :])
+        return _extract_git_argv(inner, depth=depth + 1) if inner else None
+
+    if command != "git":
+        return None
+
+    return segment[index:]
+
+
+def _extract_git_argv(command: str, *, depth: int = 0) -> Optional[list[str]]:
+    """Extract the argv for the first real git invocation in a shell command."""
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return None
+
+    for segment in _split_shell_segments(tokens):
+        argv = _git_argv_from_segment(segment, depth=depth)
+        if argv is not None:
+            return argv
+    return None
+
+
+def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
+    """Return (subcommand, remaining_args) for a git argv list."""
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token in _GIT_GLOBAL_OPTS_WITH_VALUE:
+            index += 2
+            continue
+        if token.startswith("-C") and token != "-C":
+            index += 1
+            continue
+        if token.startswith("-c") and token != "-c":
+            index += 1
+            continue
+        if (
+            token.startswith("--exec-path=")
+            or token.startswith("--git-dir=")
+            or token.startswith("--work-tree=")
+            or token.startswith("--namespace=")
+            or token.startswith("--super-prefix=")
+            or token.startswith("--config-env=")
+        ):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return token, argv[index + 1 :]
+    return "", []
+
+
+def parse_git_invocation(command: str) -> Optional[GitInvocation]:
+    """Parse the first real git invocation embedded in a shell command string."""
+    argv = _extract_git_argv(command)
+    if not argv:
+        return None
+
+    subcommand, args = _git_subcommand(argv)
+    if not subcommand:
+        return None
+
+    return GitInvocation(tuple(argv), subcommand, tuple(args))
 
 
 def classify_git_op(command: str) -> str:
@@ -92,11 +232,10 @@ def classify_git_op(command: str) -> str:
     Returns one of: "routine_local", "high_risk", "admin_recovery",
     "unclassified".
 
-    This is the sole classifier for the migrated Check 3 path. Word-boundary
-    matching prevents substring false positives (e.g. 'git remote' does not
-    match 'git reset'). Path arguments are stripped first to prevent false
-    matches on path components (e.g. '/path/feature-rebase-w1' should not
-    trigger the rebase classifier).
+    This is the sole classifier for the migrated Check 3 path. Tokenization is
+    shell-aware: quoted prompt text such as ``node tool "how to git push"``
+    must NOT classify as a git operation, while nested shell invocations such
+    as ``bash -lc "git push"`` still must classify correctly.
 
     Classification precedence (first match wins):
       admin_recovery: merge --abort, reset --merge (governed recovery, not landing)
@@ -145,71 +284,72 @@ def classify_git_op(command: str) -> str:
       checks appear AFTER admin_recovery but BEFORE the catch-all unclassified
       return so they do not interfere with recovery operations.
     """
-    # Strip path arguments to prevent false subcommand matches
-    cmd = _strip_git_paths(command)
+    invocation = parse_git_invocation(command)
+    if not invocation:
+        return "unclassified"
+
+    subcommand = invocation.subcommand
+    args = invocation.args
 
     # Admin recovery: merge --abort (governed recovery, not a landing operation)
-    if re.search(r"\bmerge\b.*--abort", cmd):
+    if subcommand == "merge" and "--abort" in args:
         return "admin_recovery"
     # Admin recovery: reset --merge (backed-out merge recovery)
-    if re.search(r"\breset\b.*--merge", cmd):
+    if subcommand == "reset" and "--merge" in args:
         return "admin_recovery"
     # High-risk: push
-    if re.search(r"\bpush\b", cmd):
+    if subcommand == "push":
         return "high_risk"
     # High-risk: rebase
-    if re.search(r"\brebase\b", cmd):
+    if subcommand == "rebase":
         return "high_risk"
     # High-risk: reset (any form not already caught by admin_recovery above)
-    if re.search(r"\breset\b", cmd):
+    if subcommand == "reset":
         return "high_risk"
     # High-risk: worktree remove or prune (DEC-LEASE-EGAP-002)
-    if re.search(r"\bworktree\b", cmd) and re.search(r"\b(remove|prune)\b", cmd):
+    if subcommand == "worktree" and args[:1] and args[0] in ("remove", "prune"):
         return "high_risk"
-    # High-risk: branch -d or -D (DEC-LEASE-EGAP-002)
-    if re.search(r"\bbranch\b", cmd) and re.search(r"-[dD]\b", cmd):
+    # High-risk: branch delete/rename (DEC-LEASE-EGAP-002 + parity with WHO gate)
+    if subcommand == "branch" and any(re.fullmatch(r"-[A-Za-z]*[dDmM][A-Za-z]*", arg) for arg in args):
         return "high_risk"
     # High-risk: tag (create/delete/annotate) — DEC-LEASE-EGAP-002
-    # git tag <name> creates a tag; git tag -d <name> deletes one.
-    # Note: `git tag` with no args just lists tags (safe), but classify_git_op
-    # is only called after _GIT_OP_RE matches, which requires a tag argument.
-    if re.search(r"\btag\b", cmd):
+    if subcommand == "tag":
         return "high_risk"
     # High-risk: merge --no-ff (must check before plain merge)
-    if re.search(r"\bmerge\b", cmd) and "--no-ff" in cmd:
+    if subcommand == "merge" and "--no-ff" in args:
         return "high_risk"
     # ── RCA-1 additions (DEC-LEASE-EGAP-003) ────────────────────────────────
     # High-risk: cherry-pick — replays commits onto HEAD, mutates history
-    if re.search(r"\bcherry-pick\b", cmd):
+    if subcommand == "cherry-pick":
         return "high_risk"
     # High-risk: revert — creates a new commit undoing prior work
-    if re.search(r"\brevert\b", cmd):
+    if subcommand == "revert":
         return "high_risk"
     # High-risk: worktree move — relocates a worktree on disk
-    if re.search(r"\bworktree\b", cmd) and re.search(r"\bmove\b", cmd):
+    if subcommand == "worktree" and args[:1] and args[0] == "move":
         return "high_risk"
     # High-risk: stash drop / stash clear — permanently discard stashed work
-    if re.search(r"\bstash\b", cmd) and re.search(r"\b(drop|clear)\b", cmd):
+    if subcommand == "stash" and args[:1] and args[0] in ("drop", "clear"):
         return "high_risk"
     # High-risk: remote add / remove / rm / set-url — modifies remote config
-    if re.search(r"\bremote\b", cmd) and re.search(r"\b(add|remove|rm|set-url)\b", cmd):
+    if subcommand == "remote" and args[:1] and args[0] in ("add", "remove", "rm", "set-url"):
         return "high_risk"
     # High-risk: update-ref — directly writes ref objects, bypassing normal
     #   commit flow; used for surgery on the ref namespace
-    if re.search(r"\bupdate-ref\b", cmd):
+    if subcommand == "update-ref":
         return "high_risk"
     # High-risk: symbolic-ref — rewrites HEAD or other symbolic refs
-    if re.search(r"\bsymbolic-ref\b", cmd):
+    if subcommand == "symbolic-ref":
         return "high_risk"
     # High-risk: filter-branch / filter-repo — rewrites entire commit history
-    if re.search(r"\bfilter-branch\b", cmd) or re.search(r"\bfilter-repo\b", cmd):
+    if subcommand in ("filter-branch", "filter-repo"):
         return "high_risk"
     # ── end RCA-1 additions ──────────────────────────────────────────────────
     # Routine local: commit
-    if re.search(r"\bcommit\b", cmd):
+    if subcommand == "commit":
         return "routine_local"
     # Routine local: merge (without --no-ff already handled above)
-    if re.search(r"\bmerge\b", cmd):
+    if subcommand == "merge":
         return "routine_local"
     return "unclassified"
 

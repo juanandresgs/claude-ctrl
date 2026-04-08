@@ -30,15 +30,9 @@ Rationale: W-GWT-2 made Guardian the sole creator of worktrees via
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-
-# Match `git worktree add` in both forms:
-#   git worktree add ...
-#   git -C /path worktree add ...
-_WORKTREE_ADD_RE = re.compile(r"\bgit\b.*\bworktree\s+add\b")
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -58,11 +52,14 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
       - git worktree prune  (maintenance, not creation)
       - Any command not containing `git ... worktree add`
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _WORKTREE_ADD_RE.search(command):
+    is_worktree_add = intent.worktree_action == "add" or (
+        intent.shell_parse_error and intent.likely_worktree_add
+    )
+    if not is_worktree_add:
         return None
 
     # Guardian is the sole worktree lifecycle authority — exempt.

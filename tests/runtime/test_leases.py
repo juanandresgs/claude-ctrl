@@ -79,6 +79,19 @@ def test_classify_git_c_path_commit_is_routine_local():
     assert leases.classify_git_op("git -C /some/path commit -m 'msg'") == "routine_local"
 
 
+def test_classify_quoted_prompt_git_commit_is_unclassified():
+    cmd = 'node tool.mjs task "investigate git commit gating"'
+    assert leases.classify_git_op(cmd) == "unclassified"
+
+
+def test_classify_echo_git_push_argument_is_unclassified():
+    assert leases.classify_git_op("echo git push") == "unclassified"
+
+
+def test_classify_nested_shell_git_push_is_high_risk():
+    assert leases.classify_git_op('bash -lc "git push origin main"') == "high_risk"
+
+
 # ---------------------------------------------------------------------------
 # issue()
 # ---------------------------------------------------------------------------

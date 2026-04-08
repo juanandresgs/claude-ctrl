@@ -16,7 +16,6 @@ from __future__ import annotations
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import extract_cd_target
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -27,15 +26,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 129-133 (Check 2).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    cd_target = extract_cd_target(command)
+    cd_target = intent.cd_target
     if not cd_target:
         return None
 
-    if ".worktrees/" not in cd_target:
+    resolved = intent.cd_target_resolved or ""
+    if ".worktrees/" not in cd_target and "/.worktrees/" not in resolved:
         return None
 
     return PolicyDecision(

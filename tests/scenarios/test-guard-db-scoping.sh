@@ -41,7 +41,8 @@ setup() {
     CLAUDE_POLICY_DB="$HOME_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 
     # Common gates in project DB: guardian role, test-status, workflow binding + scope
-    CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1

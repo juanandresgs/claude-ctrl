@@ -33,11 +33,17 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 217-228 (Check 6).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if _RESET_HARD.search(command):
+    invocation = intent.git_invocation
+    if invocation is None:
+        return None
+
+    canonical = " ".join(invocation.argv)
+
+    if _RESET_HARD.search(canonical):
         return PolicyDecision(
             action="deny",
             reason=(
@@ -47,7 +53,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             policy_name="bash_destructive_git",
         )
 
-    if _CLEAN_F.search(command):
+    if _CLEAN_F.search(canonical):
         return PolicyDecision(
             action="deny",
             reason=(
@@ -57,7 +63,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             policy_name="bash_destructive_git",
         )
 
-    if _BRANCH_D.search(command):
+    if _BRANCH_D.search(canonical):
         return PolicyDecision(
             action="deny",
             reason=(

@@ -156,3 +156,15 @@ def test_empty_command_skipped():
     req = make_request("", context=ctx)
     decision = check(req)
     assert decision is None
+
+
+def test_quoted_git_merge_prompt_skipped():
+    ctx = make_context(eval_state=None)
+    req = make_request('node tool.mjs task "investigate git merge gating"', context=ctx)
+    assert check(req) is None
+
+
+def test_quoted_git_commit_prompt_skipped():
+    ctx = make_context(eval_state=None)
+    req = make_request('node tool.mjs task "investigate git commit gating"', context=ctx)
+    assert check(req) is None

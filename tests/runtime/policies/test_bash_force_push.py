@@ -112,3 +112,9 @@ def test_empty_command_skipped():
     req = make_request("")
     decision = check(req)
     assert decision is None
+
+
+def test_quoted_git_force_push_prompt_skipped():
+    req = make_request('node tool.mjs task "explain git push --force risks"')
+    decision = check(req)
+    assert decision is None

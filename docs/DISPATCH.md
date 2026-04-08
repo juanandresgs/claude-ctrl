@@ -98,9 +98,11 @@ The orchestrator stops the chain only when hook output contains `BLOCKED`,
 `ERROR`, or `PROCESS ERROR`, or when Guardian needs user approval for high-risk
 ops (push, rebase, force) — gated by `bash_approval_gate` policy.
 
-The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in the
-`settings.json` SubagentStop chain and may emit `VERDICT: BLOCK` to halt the
-chain for human review.
+The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in
+`settings.json` for both `SubagentStop` and regular `Stop`. Repo settings are
+the sole wiring authority; the vendored plugin no longer self-registers a
+separate `Stop` hook. On `SubagentStop` the gate may emit `VERDICT: BLOCK` to
+halt the chain for human review.
 
 ### Properties that remain prompt-level (not mechanically blocked)
 

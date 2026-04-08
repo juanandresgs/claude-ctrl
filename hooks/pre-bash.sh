@@ -24,13 +24,11 @@
 #   of bash's ERR trap silently killing the hook with non-zero exit.
 #
 # Target-aware context (DEC-PE-W3-CTX-001):
-#   Commands like ``git -C /other-repo commit`` target a different repo than
-#   the session cwd. We extract the git target directory from the command and
-#   pass it as ``target_cwd`` in the evaluate payload so the policy engine
-#   resolves lease/scope/eval_state/test_state from the command target, not
-#   the session repo. Patterns matched (same as policy_utils.extract_git_target_dir):
-#     Pattern A: cd /path && git ...
-#     Pattern B: git -C /path ...
+#   Hooks no longer parse git target directories themselves. This adapter
+#   forwards the raw command text and the runtime derives structured
+#   BashCommandIntent once during cc-policy evaluate. That runtime-owned
+#   intent resolves lease/scope/eval_state/test_state against the command
+#   target repo, not the session repo.
 # set -euo pipefail: -e is intentionally retained. hook-safety.sh's run_fail_closed
 # temporarily disables -e with `set +e` around the hook function call, then restores
 # it with `set -e`. This keeps the forbidden-shortcuts clause (do not remove set -e)
@@ -60,39 +58,12 @@ _hook_main() {
     # Resolve actor context for the policy engine.
     ACTOR_ROLE=$(current_active_agent_role "$(detect_project_root)" 2>/dev/null || echo "")
 
-    # --- Target-aware context: extract git target directory from command ---
-    # Pattern A: cd /path (unquoted, single-quoted, or double-quoted)
-    # Pattern B: git -C /path
-    # Fallback: empty string (engine will use session cwd)
-    TARGET_CWD=""
-    if echo "$COMMAND" | grep -qE 'cd\s+("([^"]+)"|'"'"'([^'"'"']+)'"'"'|([^\s&;]+))'; then
-        _candidate=$(echo "$COMMAND" | sed -E 's/.*cd[[:space:]]+"([^"]+)".*/\1/;t end
-s/.*cd[[:space:]]+'"'"'([^'"'"']+)'"'"'.*/\1/;t end
-s/.*cd[[:space:]]+([^[:space:]&;]+).*/\1/;t end
-d
-:end' 2>/dev/null || echo "")
-        if [[ -n "$_candidate" && -d "$_candidate" ]]; then
-            TARGET_CWD="$_candidate"
-        fi
-    fi
-    if [[ -z "$TARGET_CWD" ]] && echo "$COMMAND" | grep -qE 'git\s+-C\s+'; then
-        _candidate=$(echo "$COMMAND" | sed -E 's/.*git[[:space:]]+-C[[:space:]]+"([^"]+)".*/\1/;t end
-s/.*git[[:space:]]+-C[[:space:]]+'"'"'([^'"'"']+)'"'"'.*/\1/;t end
-s/.*git[[:space:]]+-C[[:space:]]+([^[:space:]]+).*/\1/;t end
-d
-:end' 2>/dev/null || echo "")
-        if [[ -n "$_candidate" && -d "$_candidate" ]]; then
-            TARGET_CWD="$_candidate"
-        fi
-    fi
-
-    # Build evaluate payload — merge actor_role, target_cwd, and hook fields.
+    # Build evaluate payload — merge actor_role and hook fields. The runtime
+    # constructs BashCommandIntent from .tool_input.command, including any
+    # target_cwd derivation, so the hook no longer carries that authority.
     EVAL_INPUT=$(printf '%s' "$HOOK_INPUT" | jq \
         --arg role "$ACTOR_ROLE" \
-        --arg target_cwd "$TARGET_CWD" \
-        '. + {event_type: "PreToolUse", tool_name: "Bash", actor_role: $role, actor_id: "",
-              target_cwd: (if $target_cwd != "" then $target_cwd else null end)}
-         | if .target_cwd == null then del(.target_cwd) else . end')
+        '. + {event_type: "PreToolUse", tool_name: "Bash", actor_role: $role, actor_id: ""}')
 
     # Call policy engine — single authority for all Bash decisions.
     # Fail-closed: if the engine errors or returns empty output, emit a deny

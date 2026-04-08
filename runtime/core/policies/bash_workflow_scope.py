@@ -24,10 +24,10 @@ Rationale: guard.sh Check 12 queries the DB for binding and scope, then runs
 from __future__ import annotations
 
 import fnmatch
-import re
 import subprocess
 from typing import Optional
 
+from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
@@ -35,22 +35,21 @@ from runtime.core.policy_utils import (
     sanitize_token,
 )
 
-_COMMIT_MERGE_RE = re.compile(r"\bgit\b.*\b(commit|merge)\b")
-_COMMIT_RE = re.compile(r"\bgit\b.*\bcommit\b")
 
-
-def _resolve_workflow_id(request: PolicyRequest, command: str) -> str:
+def _resolve_workflow_id(
+    request: PolicyRequest, invocation: GitInvocation, target_dir: str
+) -> str:
     lease = request.context.lease
     if lease:
         wf = lease.get("workflow_id", "")
         if wf:
             return wf
     # Merge: try the merge ref
-    if re.search(r"\bgit\b.*\bmerge\b", command):
-        merge_ref = extract_merge_ref(command)
+    if invocation.subcommand == "merge":
+        merge_ref = extract_merge_ref(" ".join(invocation.argv))
         if merge_ref:
             return sanitize_token(merge_ref)
-    return current_workflow_id(request.context.project_root or "")
+    return current_workflow_id(target_dir)
 
 
 def _get_changed_files(target_dir: str, base_branch: str) -> list[str]:
@@ -112,18 +111,20 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 368-422 (Check 12).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _COMMIT_MERGE_RE.search(command):
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand not in ("commit", "merge"):
         return None
 
     # Meta-repo bypass.
     if request.context.is_meta_repo:
         return None
 
-    workflow_id = _resolve_workflow_id(request, command)
+    target_dir = request.context.project_root or intent.target_cwd or request.cwd or ""
+    workflow_id = _resolve_workflow_id(request, invocation, target_dir)
 
     # Sub-check A: binding must exist.
     if not request.context.binding:
@@ -156,8 +157,6 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # is no longer needed — both paths resolve to the same source of truth.
     # Merge path is preserved as-is (project_root or cwd) since it was already
     # correct; the commit path now matches it rather than re-parsing the command.
-    target_dir = request.context.project_root or request.cwd or ""
-
     base_branch = request.context.binding.get("base_branch", "main") or "main"
     changed_files = _get_changed_files(target_dir, base_branch)
 

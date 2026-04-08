@@ -103,6 +103,34 @@ def test_evaluate_no_policies_returns_allow():
     assert decision.policy_name == "default"
 
 
+def test_policy_request_auto_builds_bash_command_intent():
+    req = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "git -C /tmp/example status"},
+        context=PolicyContext(
+            actor_role="implementer",
+            actor_id="agent-test",
+            workflow_id="test-workflow",
+            worktree_path="/tmp/test",
+            branch="feature/test",
+            project_root="/tmp/test",
+            is_meta_repo=False,
+            lease=None,
+            scope=None,
+            eval_state=None,
+            test_state=None,
+            binding=None,
+            dispatch_phase=None,
+        ),
+        cwd="/tmp/test",
+    )
+    assert req.command_intent is not None
+    assert req.command_intent.git_invocation is not None
+    assert req.command_intent.git_invocation.subcommand == "status"
+    assert req.command_intent.git_op_class == "unclassified"
+
+
 # ---------------------------------------------------------------------------
 # evaluate: single deny policy
 # ---------------------------------------------------------------------------

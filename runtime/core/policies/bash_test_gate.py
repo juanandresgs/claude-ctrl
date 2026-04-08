@@ -19,14 +19,9 @@ Rationale: Sacred Practice #4 — nothing is done until tested. The runtime
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-
-_MERGE_RE = re.compile(r"\bgit\b.*\bmerge\b")
-_MERGE_ABORT_RE = re.compile(r"\bmerge\b.*--abort")
-_COMMIT_RE = re.compile(r"\bgit\b.*\bcommit\b")
 
 _PASS_STATUSES = frozenset({"pass", "pass_complete"})
 
@@ -49,15 +44,16 @@ def check_merge(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 250-266 (Check 8).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _MERGE_RE.search(command):
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand != "merge":
         return None
 
     # Admin recovery exemption.
-    if _MERGE_ABORT_RE.search(command):
+    if "--abort" in invocation.args:
         return None
 
     # Meta-repo bypass.
@@ -92,11 +88,12 @@ def check_commit(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 268-283 (Check 9).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _COMMIT_RE.search(command):
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand != "commit":
         return None
 
     # Meta-repo bypass.

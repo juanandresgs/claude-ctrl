@@ -41,8 +41,10 @@ _local_cc_policy() {
 # cc-policy lifecycle on-stop is the single authority for role-matched
 # marker deactivation. It queries the active marker, matches its role to
 # AGENT_TYPE, and deactivates — all in Python. No bash-side query needed.
+# Pass project_root so the lifecycle authority only touches markers for this
+# project; otherwise the globally newest active marker can be deactivated.
 if [[ -n "$AGENT_TYPE" ]]; then
-    _local_cc_policy lifecycle on-stop "$AGENT_TYPE" >/dev/null 2>&1 || true
+    _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
 fi
 
 ISSUES=()

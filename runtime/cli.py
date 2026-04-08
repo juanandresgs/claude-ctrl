@@ -102,8 +102,9 @@ def _handle_config(args) -> int:
       get <key> [--workflow-id <id>] [--project-root <path>]
           Look up a toggle with scope precedence (workflow > project > global).
       set <key> <value> [--scope global|project=...|workflow=...]
-          Write a toggle. Guardian-only WHO gate enforced by enforcement_config.set_().
-          actor_role is read from CLAUDE_AGENT_ROLE env or defaults to "".
+          Write a toggle. Guardian-only for enforcement-sensitive keys; the
+          user-facing regular Stop key may also be written by the orchestrator
+          path (empty CLAUDE_AGENT_ROLE). actor_role is read from the env.
       list [--scope <scope>]
           List all enforcement_config rows, optionally filtered by scope.
 
@@ -292,6 +293,7 @@ def _handle_event(args) -> int:
             rows = events_mod.query(
                 conn,
                 type=getattr(args, "type", None),
+                source=getattr(args, "source", None),
                 since=getattr(args, "since", None),
                 limit=getattr(args, "limit", 50),
             )
@@ -1225,6 +1227,9 @@ def _handle_evaluate(args) -> int:
     import json as _json
     import os as _os
     import subprocess as _subprocess
+    from dataclasses import replace as _replace
+
+    from runtime.core.command_intent import build_bash_command_intent as _build_bash_command_intent
 
     raw = sys.stdin.read()
     if not raw or not raw.strip():
@@ -1241,20 +1246,31 @@ def _handle_evaluate(args) -> int:
     cwd = payload.get("cwd", "")
     actor_role = payload.get("actor_role", "")
     actor_id = payload.get("actor_id", "")
+    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+    command_intent = (
+        _build_bash_command_intent(command, cwd=cwd)
+        if tool_name == "Bash" and command
+        else None
+    )
 
     # --- Target-aware context resolution (DEC-PE-W3-CTX-001) ---
-    # When the command targets a different repo than the session cwd (e.g.
+    # Runtime-owned command intent is now the primary target resolver. When
+    # the command targets a different repo than the session cwd (e.g.
     # ``git -C /other-repo commit`` or ``cd /other-repo && git commit``),
-    # the hook extracts the target directory and passes it as ``target_cwd``.
-    # We resolve the git project root from target_cwd so that all downstream
-    # state lookups (lease, scope, eval_state, test_state) use the target
-    # repo's context, not the session repo's.
+    # build_bash_command_intent() derives target_cwd from the raw command.
+    # ``payload.target_cwd`` remains supported as an explicit override for
+    # backwards-compatible callers and older tests.
     #
     # Resolution order:
-    #   1. target_cwd present and is a real directory → resolve git root from it
-    #   2. target_cwd absent or not a directory → use cwd as before
+    #   1. explicit payload.target_cwd if present
+    #   2. derived command_intent.target_cwd
+    #   3. cwd as before
     resolved_project_root = ""
-    target_cwd = payload.get("target_cwd", "")
+    target_cwd = payload.get("target_cwd", "") or ""
+    if target_cwd and command_intent is not None:
+        command_intent = _replace(command_intent, target_cwd=target_cwd)
+    elif not target_cwd and command_intent is not None:
+        target_cwd = command_intent.target_cwd
     if target_cwd and _os.path.isdir(target_cwd):
         try:
             r = _subprocess.run(
@@ -1306,6 +1322,7 @@ def _handle_evaluate(args) -> int:
             tool_input=tool_input,
             context=ctx,
             cwd=effective_cwd,
+            command_intent=command_intent,
         )
 
         decision = policy_engine_mod.default_registry().evaluate(request)
@@ -2123,6 +2140,7 @@ def build_parser() -> argparse.ArgumentParser:
     ee.add_argument("--detail")
     eq = event_sub.add_parser("query")
     eq.add_argument("--type")
+    eq.add_argument("--source")
     eq.add_argument("--since", type=int)
     eq.add_argument("--limit", type=int, default=50)
 

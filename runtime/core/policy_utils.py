@@ -169,7 +169,8 @@ def is_claude_meta_repo(dir_path: str) -> bool:
     Matches: hooks/context-lib.sh is_claude_meta_repo()
 
     Three-check strategy mirrors the shell version exactly:
-      1. CLAUDE_PROJECT_DIR env var (handles symlinks, fastest path).
+      1. CLAUDE_PROJECT_DIR env var (realpath-dereferenced to defeat
+         dual-checkout symlinks).
       2. git --show-toplevel ending in /.claude (main checkout).
       3. git --git-common-dir ending in /.claude/.git (worktrees of the
          meta-repo — fixes #163/#143 where worktree toplevel ends in a
@@ -182,10 +183,33 @@ def is_claude_meta_repo(dir_path: str) -> bool:
       ~/.claude/.worktrees/feature-foo), not the shared repo root.
       --git-common-dir always returns the shared .git path which ends in
       /.claude/.git for any worktree of the meta-repo. Fixes #163/#143.
+
+    @decision DEC-META-002
+    Title: CLAUDE_PROJECT_DIR is realpath-dereferenced before the /.claude
+      suffix check (ENFORCE-RCA-11)
+    Status: accepted
+    Rationale: The prior check trusted the literal string suffix. When a
+      non-meta-repo is accessed via a symlink named `.claude` — e.g. the
+      dual-checkout setup where `~/.claude` is a symlink to a regular
+      project repo like `~/Code/…/claude-ctrl-hardFork` — the unresolved
+      literal ended with `/.claude`, so is_claude_meta_repo returned True
+      and every bash_main_sacred / write policy that consults
+      request.context.is_meta_repo bypassed enforcement for that session.
+      Empirically verified on 2026-04-07: `git commit --allow-empty` on
+      main was allowed via the symlink path but denied via the realpath
+      (ENFORCE-RCA-11). Realpath-dereferencing CLAUDE_PROJECT_DIR before
+      the suffix check fixes the symlink case without breaking the
+      original "env var is the fastest path" intent — if the env var
+      already points to a real /.claude path, realpath is idempotent.
     """
     claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    if claude_project_dir.endswith("/.claude"):
-        return True
+    if claude_project_dir:
+        try:
+            resolved = os.path.realpath(claude_project_dir)
+        except OSError:
+            resolved = claude_project_dir
+        if resolved.endswith("/.claude"):
+            return True
 
     try:
         # Check 2: git toplevel (main checkout of the meta-repo)
@@ -261,9 +285,20 @@ def extract_git_target_dir(command: str, cwd: str = "") -> str:
 
     Unlike the shell version, we do NOT fall back to detect_project_root()
     as a final fallback — we use the cwd parameter the caller provides.
-    This keeps the function pure (no subprocess calls unless the patterns
-    matched a real path that needs existence-checking).
+    Relative targets are resolved against cwd via resolve_path_from_base()
+    before existence checks so runtime-owned intent parsing can honor
+    ``git -C .worktrees/foo ...`` and ``cd ./repo && git ...`` correctly.
     """
+    base = cwd or os.getcwd()
+
+    def _resolve_existing(candidate: str) -> str:
+        if not candidate:
+            return ""
+        resolved = resolve_path_from_base(base, candidate)
+        if resolved and os.path.isdir(resolved):
+            return normalize_path(resolved)
+        return ""
+
     # Pattern A: cd ... (double-quoted, single-quoted, or unquoted)
     m = re.search(
         r'cd\s+("([^"]+)"|\'([^\']+)\'|([^\s&;]+))',
@@ -271,8 +306,9 @@ def extract_git_target_dir(command: str, cwd: str = "") -> str:
     )
     if m:
         candidate = m.group(2) or m.group(3) or m.group(4) or ""
-        if candidate and os.path.isdir(candidate):
-            return candidate
+        resolved = _resolve_existing(candidate)
+        if resolved:
+            return resolved
 
     # Pattern B: git -C ... (double-quoted, single-quoted, or unquoted)
     m = re.search(
@@ -281,8 +317,9 @@ def extract_git_target_dir(command: str, cwd: str = "") -> str:
     )
     if m:
         candidate = m.group(2) or m.group(3) or m.group(4) or ""
-        if candidate and os.path.isdir(candidate):
-            return candidate
+        resolved = _resolve_existing(candidate)
+        if resolved:
+            return resolved
 
     # Fallback: use cwd
     return cwd
@@ -357,11 +394,15 @@ def resolve_path_from_base(base: str, candidate: str) -> str:
 
     Matches: hooks/guard.sh lines 42-56 resolve_path_from_base()
 
+    If candidate is home-relative (~ or ~user), expand it first.
     If candidate is absolute, return it unchanged.
     If candidate is relative, resolve it against base using os.path.realpath
     so symlinks are resolved (equivalent to the shell's pwd -P).
     Returns the candidate unchanged if resolution fails.
     """
+    if candidate.startswith("~"):
+        return os.path.expanduser(candidate)
+
     if os.path.isabs(candidate):
         return candidate
 

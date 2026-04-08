@@ -12,20 +12,22 @@ test_state, and scope from /session-repo, not /other-repo.
 These tests verify the Python-layer fixes:
   - _handle_evaluate in cli.py must treat empty/invalid stdin as an error
     (non-zero exit) rather than defaulting to allow.
-  - build_context() must use ``target_cwd`` when present in the evaluate
-    payload, overriding ``cwd``.
+  - build_context() must use the runtime-resolved target repo rather than the
+    session cwd when the command targets another repo.
 
 Production sequence modelled here:
   pre-bash.sh -> cc_policy evaluate (stdin JSON) -> _handle_evaluate()
-  -> build_context(cwd=target_cwd) -> PolicyRegistry.evaluate()
+  -> build_bash_command_intent(command) -> build_context(cwd=effective_cwd)
+  -> PolicyRegistry.evaluate()
 
 @decision DEC-PE-W3-REG-001
 @title Regression tests: fail-closed adapter and target-aware context
 @status accepted
-@rationale Two acceptance blockers required code changes in cli.py
-  (_handle_evaluate) and pre-bash.sh. These tests pin the correct behaviour
-  so future changes cannot silently reintroduce fail-open or session-cwd
-  cross-contamination. They exercise the real production path (CLI -> context
+@rationale The acceptance blockers originally required code changes in cli.py
+  (_handle_evaluate) and pre-bash.sh. The command-target authority now lives
+  in the runtime rather than the hook, but the regressions are the same:
+  fail-open is forbidden and session-cwd cross-contamination is forbidden.
+  These tests pin the production path (CLI -> command-intent -> context
   builder -> registry) without mocking internal functions.
 """
 
@@ -223,6 +225,7 @@ class TestTargetAwareContext:
         finally:
             conn.close()
 
+
     def test_project_root_override_scopes_workflow_id_to_target(self, tmp_path):
         """workflow_id derived from project_root override differs from session wf.
 
@@ -261,6 +264,39 @@ class TestTargetAwareContext:
 
         finally:
             conn.close()
+
+
+class TestQuotedPromptGitPhrases:
+    """Quoted prose about git must not be treated as a real git invocation."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'node tool.mjs task "investigate git commit gating"',
+            'node tool.mjs task "investigate git merge gating"',
+            'node tool.mjs task "explain git push --force risks"',
+            'node tool.mjs task "when should I use git reset --hard"',
+        ],
+    )
+    def test_evaluate_allows_natural_language_git_phrases(self, db, tmp_path, command):
+        _run_cli_raw(["schema", "ensure"], "", db)
+        payload = {
+            "event_type": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "cwd": str(tmp_path),
+            "actor_role": "implementer",
+            "actor_id": "agent-test",
+        }
+        code, out = _run_evaluate(
+            payload,
+            db,
+            extra_env={"CLAUDE_PROJECT_DIR": str(tmp_path)},
+        )
+        assert code == 0, f"evaluate should exit 0 for prose-only git text; got {code}: {out}"
+        assert out.get("action") == "allow", (
+            f"quoted prose mentioning git must not trigger bash git policies; got {out}"
+        )
 
     def test_seeded_eval_state_not_visible_in_target_context(self, tmp_path):
         """eval_state seeded for session workflow must not appear in target context.
@@ -302,7 +338,7 @@ class TestTargetAwareContext:
             conn.close()
 
     # -----------------------------------------------------------------------
-    # CLI level: target_cwd field propagates through _handle_evaluate
+    # CLI level: explicit target_cwd override still works through _handle_evaluate
     # -----------------------------------------------------------------------
 
     def test_cli_target_cwd_exits_zero_and_returns_action(self, db, tmp_path):
@@ -350,6 +386,36 @@ class TestTargetAwareContext:
         assert code == 0
         assert "action" in out
 
+    def test_cli_derives_target_cwd_from_git_dash_c_when_field_absent(self, db, tmp_path):
+        """Runtime command-intent derives target_cwd from raw `git -C` text."""
+        target = str(tmp_path)
+        payload = {
+            "event_type": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {target} status"},
+            "cwd": "/nonexistent-session-repo-xyzzy",
+            "actor_role": "implementer",
+            "actor_id": "",
+        }
+        code, out = _run_evaluate(payload, db, extra_env={"CLAUDE_PROJECT_DIR": ""})
+        assert code == 0, f"runtime-derived target_cwd should exit 0; got {code}: {out}"
+        assert "action" in out
+
+    def test_cli_derives_target_cwd_from_cd_prefix_when_field_absent(self, db, tmp_path):
+        """Runtime command-intent derives target_cwd from raw `cd ... && git ...` text."""
+        target = str(tmp_path)
+        payload = {
+            "event_type": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"cd {target} && git status"},
+            "cwd": "/nonexistent-session-repo-xyzzy",
+            "actor_role": "implementer",
+            "actor_id": "",
+        }
+        code, out = _run_evaluate(payload, db, extra_env={"CLAUDE_PROJECT_DIR": ""})
+        assert code == 0, f"runtime-derived target_cwd should exit 0; got {code}: {out}"
+        assert "action" in out
+
 
 # ---------------------------------------------------------------------------
 # Compound interaction: target extraction flows through to context scoping
@@ -360,9 +426,8 @@ class TestTargetExtractionEndToEnd:
     """Verify the full production sequence end-to-end.
 
     Production path:
-      hook extracts target_dir from command
-      -> passes as target_cwd in evaluate payload
-      -> _handle_evaluate() calls build_context(cwd=target_cwd)
+      runtime derives target_dir from command intent
+      -> _handle_evaluate() calls build_context(cwd=effective_cwd)
       -> all downstream state reads use the correct project_root
 
     These tests exercise the full CLI -> engine -> registry path without
@@ -370,7 +435,7 @@ class TestTargetExtractionEndToEnd:
     """
 
     def test_git_dash_c_target_cwd_accepted(self, db, tmp_path):
-        """git -C <dir>: evaluate with target_cwd=<dir> exits 0."""
+        """Explicit target_cwd override still works for git -C <dir>."""
         target = str(tmp_path)
         payload = {
             "event_type": "PreToolUse",
@@ -390,7 +455,7 @@ class TestTargetExtractionEndToEnd:
         assert out.get("action") in ("allow", "deny", "feedback"), f"unexpected action: {out}"
 
     def test_cd_and_git_target_cwd_accepted(self, db, tmp_path):
-        """cd /dir && git commit ...: evaluate with target_cwd=/dir exits 0."""
+        """Explicit target_cwd override still works for cd /dir && git ... ."""
         target = str(tmp_path)
         payload = {
             "event_type": "PreToolUse",

@@ -16,7 +16,8 @@ Rationale: enforcement_config replaces the scattered toggle authorities
 Title: Regular Stop review gate toggled via enforcement_config, not state.json
 Status: accepted
 Rationale: Tests confirm review_gate_regular_stop is seeded true globally,
-  overridable per-project and per-workflow, and guarded by the WHO gate.
+  overridable per-project and per-workflow, with a narrow orchestrator/user
+  exception for the user-facing regular Stop toggle.
 """
 
 from __future__ import annotations
@@ -84,10 +85,16 @@ def test_set_as_implementer_raises_permission_error(conn):
         ec.set_(conn, "review_gate_regular_stop", "false", actor_role="implementer")
 
 
-def test_set_as_orchestrator_raises_permission_error(conn):
-    """Empty actor_role (orchestrator) must not be allowed to write enforcement_config."""
+def test_set_regular_stop_as_orchestrator_is_allowed(conn):
+    """The user-facing regular Stop toggle may be written by the orchestrator path."""
+    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="")
+    assert ec.get(conn, "review_gate_regular_stop") == "false"
+
+
+def test_set_subagent_stop_as_orchestrator_raises_permission_error(conn):
+    """The orchestrator/user path must not mutate dispatch-safety toggles."""
     with pytest.raises(ECPermissionError):
-        ec.set_(conn, "review_gate_regular_stop", "false", actor_role="")
+        ec.set_(conn, "review_gate_subagent_stop", "false", actor_role="")
 
 
 # ---------------------------------------------------------------------------

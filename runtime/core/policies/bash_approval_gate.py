@@ -26,10 +26,8 @@ Rationale: approvals.check_and_consume() mutates the DB (consumes a token).
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
-from runtime.core.leases import classify_git_op
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
@@ -37,34 +35,48 @@ from runtime.core.policy_utils import (
     sanitize_token,
 )
 
-_GIT_RE = re.compile(r"\bgit\b")
 
+def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
+    """Determine the approval op_type string for a high-risk or admin_recovery command.
 
-def _resolve_op_type(command: str) -> Optional[str]:
-    """Determine the approval op_type string for a high-risk or admin_recovery command."""
-    if re.search(r"\bgit\b.*\bpush\b", command):
+    Accepts either a PolicyRequest (production path) or a raw command string
+    (unit-test convenience / backwards compatibility).
+    """
+    if isinstance(request, str):
+        from runtime.core.command_intent import build_bash_command_intent
+
+        intent = build_bash_command_intent(request)
+    else:
+        intent = request.command_intent
+    invocation = intent.git_invocation if intent is not None else None
+    if invocation is None:
+        return None
+
+    if invocation.subcommand == "push":
         return "push"
-    if re.search(r"\bgit\b.*\brebase\b", command):
+    if invocation.subcommand == "rebase":
         return "rebase"
-    if re.search(r"\bmerge\b.*--abort", command):
+    if invocation.subcommand == "merge" and "--abort" in invocation.args:
         return "admin_recovery"
-    if re.search(r"\breset\b.*--merge", command):
+    if invocation.subcommand == "reset" and "--merge" in invocation.args:
         return "admin_recovery"
-    if re.search(r"\bgit\b.*\breset\b", command):
+    if invocation.subcommand == "reset":
         return "reset"
-    if re.search(r"\bgit\b.*\bmerge\b.*--no-ff", command):
+    if invocation.subcommand == "merge" and "--no-ff" in invocation.args:
         return "non_ff_merge"
     return None
 
 
-def _resolve_workflow_id(request: PolicyRequest, command: str) -> str:
+def _resolve_workflow_id(request: PolicyRequest) -> str:
     lease = request.context.lease
     if lease:
         wf = lease.get("workflow_id", "")
         if wf:
             return wf
-    if re.search(r"\bgit\b.*\bmerge\b", command):
-        merge_ref = extract_merge_ref(command)
+    intent = request.command_intent
+    invocation = intent.git_invocation if intent is not None else None
+    if invocation is not None and invocation.subcommand == "merge":
+        merge_ref = extract_merge_ref(" ".join(invocation.argv))
         if merge_ref:
             return sanitize_token(merge_ref)
     return current_workflow_id(request.context.project_root or "")
@@ -86,22 +98,23 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 424-483 (Check 13).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _GIT_RE.search(command):
+    invocation = intent.git_invocation
+    if invocation is None:
         return None
 
-    op_class = classify_git_op(command)
+    op_class = intent.git_op_class
     if op_class not in ("high_risk", "admin_recovery"):
         return None
 
-    op_type = _resolve_op_type(command)
+    op_type = _resolve_op_type(request)
     if not op_type:
         return None
 
-    workflow_id = _resolve_workflow_id(request, command)
+    workflow_id = _resolve_workflow_id(request)
 
     # Check for a pending (unconsumed) approval token in context.
     # build_context() does not pre-load approval tokens — they are stateful

@@ -18,7 +18,6 @@ from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
-_FORCE_PUSH_PATTERN = re.compile(r"\bgit\b.*\bpush\b.*(-f\b|--force\b)", re.DOTALL)
 _MAIN_MASTER_PATTERN = re.compile(r"(origin|upstream)\s+(main|master)\b")
 _FORCE_WITH_LEASE_PATTERN = re.compile(r"--force-with-lease")
 
@@ -33,15 +32,21 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 206-215 (Check 5).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _FORCE_PUSH_PATTERN.search(command):
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand != "push":
+        return None
+
+    canonical = " ".join(invocation.argv)
+
+    if not re.search(r"(^| )git\b.*\bpush\b.*(-f\b|--force\b)", canonical):
         return None
 
     # Case 1: force push to main/master — hard deny regardless of flag form.
-    if _MAIN_MASTER_PATTERN.search(command):
+    if _MAIN_MASTER_PATTERN.search(canonical):
         return PolicyDecision(
             action="deny",
             reason=(
@@ -52,8 +57,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         )
 
     # Case 2: raw --force without --force-with-lease.
-    if not _FORCE_WITH_LEASE_PATTERN.search(command):
-        safer = re.sub(r"--force(?!-with-lease)", "--force-with-lease", command)
+    if not _FORCE_WITH_LEASE_PATTERN.search(canonical):
+        safer = re.sub(r"--force(?!-with-lease)", "--force-with-lease", canonical)
         safer = re.sub(r"\s-f(\s|$)", " --force-with-lease\\1", safer)
         return PolicyDecision(
             action="deny",

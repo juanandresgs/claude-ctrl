@@ -40,15 +40,17 @@ def emit(
 def query(
     conn: sqlite3.Connection,
     type: Optional[str] = None,
+    source: Optional[str] = None,
     since: Optional[int] = None,
     limit: int = 50,
 ) -> list[dict]:
     """Return events, newest first, with optional type and time filters.
 
     Args:
-        type:  If given, return only events whose type matches exactly.
-        since: If given, return only events with created_at >= since (epoch).
-        limit: Maximum number of rows to return (default 50).
+        type:   If given, return only events whose type matches exactly.
+        source: If given, return only events whose source matches exactly.
+        since:  If given, return only events with created_at >= since (epoch).
+        limit:  Maximum number of rows to return (default 50).
     """
     clauses: list[str] = []
     params: list = []
@@ -56,6 +58,9 @@ def query(
     if type is not None:
         clauses.append("type = ?")
         params.append(type)
+    if source is not None:
+        clauses.append("source = ?")
+        params.append(source)
     if since is not None:
         clauses.append("created_at >= ?")
         params.append(since)

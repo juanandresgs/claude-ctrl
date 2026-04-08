@@ -28,21 +28,16 @@ Rationale: guard.sh Check 10 reads evaluation_state from SQLite via
 
 from __future__ import annotations
 
-import re
 import subprocess
 from typing import Optional
 
+from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
     extract_merge_ref,
     sanitize_token,
 )
-
-_COMMIT_MERGE_RE = re.compile(r"\bgit\b.*\b(commit|merge)\b")
-_COMMIT_RE = re.compile(r"\bgit\b.*\bcommit\b")
-_MERGE_RE = re.compile(r"\bgit\b.*\bmerge\b")
-_ADMIN_RECOVERY_RE = re.compile(r"(\bmerge\b.*--abort|\breset\b.*--merge)")
 
 
 def _git_rev_parse(target_dir: str, ref: str) -> str:
@@ -67,7 +62,9 @@ def _sha_prefix_match(sha_a: str, sha_b: str) -> bool:
     return sha_b.startswith(sha_a) or sha_a.startswith(sha_b)
 
 
-def _resolve_workflow_id(request: PolicyRequest, command: str, target_dir: str) -> str:
+def _resolve_workflow_id(
+    request: PolicyRequest, invocation: GitInvocation, target_dir: str
+) -> str:
     """Resolve workflow_id using lease-first then branch-derived fallback."""
     lease = request.context.lease
     if lease:
@@ -76,8 +73,8 @@ def _resolve_workflow_id(request: PolicyRequest, command: str, target_dir: str) 
             return wf
 
     # For merge: try to derive from the merge ref
-    if _MERGE_RE.search(command):
-        merge_ref = extract_merge_ref(command)
+    if invocation.subcommand == "merge":
+        merge_ref = extract_merge_ref(" ".join(invocation.argv))
         if merge_ref:
             return sanitize_token(merge_ref)
 
@@ -89,15 +86,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     Source: guard.sh lines 285-366 (Check 10).
     """
-    command = request.tool_input.get("command", "")
-    if not command:
+    intent = request.command_intent
+    if intent is None:
         return None
 
-    if not _COMMIT_MERGE_RE.search(command):
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand not in ("commit", "merge"):
         return None
 
     # Admin recovery exemption.
-    if _ADMIN_RECOVERY_RE.search(command):
+    if invocation.subcommand == "merge" and "--abort" in invocation.args:
         return None
 
     # Meta-repo bypass.
@@ -112,9 +110,9 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # directory, context.project_root (resolved from it) is authoritative.
     # The merge path is unchanged — it uses extract_merge_ref() for merge
     # semantics and project_root/cwd for the directory.
-    target_dir = request.context.project_root or request.cwd or ""
+    target_dir = request.context.project_root or intent.target_cwd or request.cwd or ""
 
-    workflow_id = _resolve_workflow_id(request, command, target_dir)
+    workflow_id = _resolve_workflow_id(request, invocation, target_dir)
 
     # Check evaluation state — use context (already loaded for resolved workflow_id).
     eval_state = request.context.eval_state
@@ -134,8 +132,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # SHA comparison: stored head_sha vs. relevant HEAD.
     stored_sha = eval_state.get("head_sha", "") if eval_state else ""
 
-    is_merge = _MERGE_RE.search(command)
-    merge_ref = extract_merge_ref(command) if is_merge else None
+    is_merge = invocation.subcommand == "merge"
+    merge_ref = extract_merge_ref(" ".join(invocation.argv)) if is_merge else None
 
     if is_merge and merge_ref:
         compare_head = _git_rev_parse(target_dir, merge_ref)

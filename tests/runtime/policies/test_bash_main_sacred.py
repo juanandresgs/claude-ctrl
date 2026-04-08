@@ -78,12 +78,7 @@ def test_meta_repo_commit_on_main_allowed():
 # ---------------------------------------------------------------------------
 
 
-def test_commit_command_is_matched():
-    """Verify the regex matches standard commit forms used in production."""
-    import re
-
-    pattern = re.compile(r"\bgit\b.*\bcommit\b")
-    assert pattern.search("git commit -m 'fix'")
-    assert pattern.search("git -C /path commit -m 'fix'")
-    assert not pattern.search("git status")
-    assert not pattern.search("git push")
+def test_quoted_git_commit_prompt_skipped():
+    req = make_request('node tool.mjs task "investigate git commit gating"')
+    decision = check(req)
+    assert decision is None
