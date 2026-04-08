@@ -481,3 +481,44 @@ rt_obs_metric_batch() {
         | cc_policy obs emit-batch >/dev/null 2>&1 || true
     _OBS_BATCH=()
 }
+
+# ---------------------------------------------------------------------------
+# Enforcement config wrappers (DEC-CONFIG-AUTHORITY-001)
+# ---------------------------------------------------------------------------
+
+# rt_config_get <key> [scope]
+# Returns the config value for the given key, or the sentinel string
+# "__FAIL_CLOSED__" when the CLI call fails (network error, missing table, etc.).
+#
+# IMPORTANT: Callers MUST distinguish:
+#   ""               — key exists but is explicitly set to empty string
+#   "__FAIL_CLOSED__" — lookup failed; treat as enforcement-on (fail-closed)
+#   (absent / None)  — key not set; fall back to built-in default
+#
+# The fail-closed sentinel avoids silent fail-open behaviour when the policy
+# engine is temporarily unavailable. Any caller that receives "__FAIL_CLOSED__"
+# MUST default to the more-restrictive posture (i.e. treat the gate as enabled).
+rt_config_get() {
+    _rt_ensure_schema
+    local key="${1:-}"
+    [[ -z "$key" ]] && { printf '__FAIL_CLOSED__\n'; return 1; }
+    local result
+    if ! result=$(cc_policy config get "$key" 2>/dev/null); then
+        printf '__FAIL_CLOSED__\n'
+        return 1
+    fi
+    printf '%s\n' "$result" | jq -r '.value // empty' 2>/dev/null
+}
+
+# rt_config_set <key> <value> [scope]
+# Writes an enforcement_config row via cc-policy config set.
+# Caller must have CLAUDE_AGENT_ROLE=guardian in the environment or the
+# Python layer will raise PermissionError and return non-zero exit.
+# Returns nonzero on any error.
+rt_config_set() {
+    _rt_ensure_schema
+    local key="${1:-}" value="${2:-}"
+    local scope="${3:-global}"
+    [[ -z "$key" || -z "$value" ]] && return 1
+    cc_policy config set "$key" "$value" --scope "$scope" >/dev/null 2>&1
+}

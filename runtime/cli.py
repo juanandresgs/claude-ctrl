@@ -34,6 +34,7 @@ import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
 import runtime.core.dispatch as dispatch_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
+import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
 import runtime.core.eval_report as eval_report_mod
 import runtime.core.eval_runner as eval_runner_mod
@@ -92,6 +93,60 @@ def _handle_schema(args) -> int:
     conn = _get_conn()
     conn.close()
     return _ok({"message": "schema ensured"})
+
+
+def _handle_config(args) -> int:
+    """Handle all ``cc-policy config`` subcommands.
+
+    Subcommands:
+      get <key> [--workflow-id <id>] [--project-root <path>]
+          Look up a toggle with scope precedence (workflow > project > global).
+      set <key> <value> [--scope global|project=...|workflow=...]
+          Write a toggle. Guardian-only WHO gate enforced by enforcement_config.set_().
+          actor_role is read from CLAUDE_AGENT_ROLE env or defaults to "".
+      list [--scope <scope>]
+          List all enforcement_config rows, optionally filtered by scope.
+
+    All subcommands output JSON {"status": "ok", ...} on success.
+    PermissionError from set_ is surfaced as {"status": "error", "message": ...}.
+    """
+    import os
+
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            value = enforcement_config_mod.get(
+                conn,
+                args.key,
+                workflow_id=getattr(args, "workflow_id", "") or "",
+                project_root=getattr(args, "project_root", "") or "",
+            )
+            return _ok({"key": args.key, "value": value, "found": value is not None})
+
+        elif args.action == "set":
+            actor_role = os.environ.get("CLAUDE_AGENT_ROLE", "") or ""
+            scope = getattr(args, "scope", "global") or "global"
+            enforcement_config_mod.set_(
+                conn,
+                args.key,
+                args.value,
+                scope=scope,
+                actor_role=actor_role,
+            )
+            return _ok({"key": args.key, "value": args.value, "scope": scope})
+
+        elif args.action == "list":
+            scope_filter = getattr(args, "scope", None)
+            rows = enforcement_config_mod.list_all(conn, scope=scope_filter)
+            return _ok({"items": rows, "count": len(rows)})
+
+    except enforcement_config_mod.PermissionError as e:
+        return _err(str(e))
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown config action: {args.action}")
 
 
 def _handle_proof(args) -> int:
@@ -2667,6 +2722,51 @@ def build_parser() -> argparse.ArgumentParser:
     obs_sub.add_parser("status", help="Return high-level observatory status")
     obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
 
+    # config — enforcement toggle authority (DEC-CONFIG-AUTHORITY-001)
+    config_p = subparsers.add_parser(
+        "config", help="Enforcement config: get/set/list toggle values"
+    )
+    config_sub = config_p.add_subparsers(dest="action", required=True)
+
+    cfg_get = config_sub.add_parser("get", help="Look up a config value (scope-precedence)")
+    cfg_get.add_argument("key", help="Config key, e.g. review_gate_regular_stop")
+    cfg_get.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        default="",
+        help="Narrow lookup to workflow scope",
+    )
+    cfg_get.add_argument(
+        "--project-root",
+        dest="project_root",
+        default="",
+        help="Narrow lookup to project scope",
+    )
+    cfg_get.add_argument(
+        "--scope",
+        dest="scope",
+        default=None,
+        help="(unused by get, kept for symmetry)",
+    )
+
+    cfg_set = config_sub.add_parser("set", help="Write a config value (guardian role required)")
+    cfg_set.add_argument("key", help="Config key")
+    cfg_set.add_argument("value", help="Config value (string-encoded)")
+    cfg_set.add_argument(
+        "--scope",
+        dest="scope",
+        default="global",
+        help="Scope: global | project=<root> | workflow=<id>",
+    )
+
+    cfg_list = config_sub.add_parser("list", help="List all enforcement_config rows")
+    cfg_list.add_argument(
+        "--scope",
+        dest="scope",
+        default=None,
+        help="Filter to a specific scope",
+    )
+
     return parser
 
 
@@ -2737,6 +2837,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_policy(args)
     if args.domain == "obs":
         return _handle_obs(args)
+    if args.domain == "config":
+        return _handle_config(args)
 
     return _err(f"unknown domain: {args.domain}")
 

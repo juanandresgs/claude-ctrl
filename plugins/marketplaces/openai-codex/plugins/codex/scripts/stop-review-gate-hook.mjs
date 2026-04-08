@@ -558,6 +558,42 @@ function runStopReview(cwd, input = {}) {
 //   dispatch_engine (routing authority). post-task.sh reads both; the gate writes
 //   only. Errors during emission are suppressed — the gate is advisory.
 
+// readEnforcementConfig — read a toggle from the policy engine DB.
+//
+// @decision DEC-CONFIG-AUTHORITY-001
+// Title: Policy engine is the canonical authority for enforcement toggles
+// Status: accepted
+// Rationale: Plugin state.json's stopReviewGate is no longer the authority
+//   for whether the regular-Stop review gate runs. Both the SubagentStop and
+//   regular-Stop paths now read from enforcement_config via cc-policy, making
+//   the policy engine the single source of truth. The state.json field is
+//   kept as a dual-write target during the deprecation window only.
+//
+// CRITICAL: mirror the bash cc_policy() pattern of setting CLAUDE_POLICY_DB
+// from CLAUDE_PROJECT_DIR before shelling out. Without this, node code
+// bypasses project scoping and reads from the default DB path.
+// (DEC-CONFIG-AUTHORITY-001 risk #3)
+function readEnforcementConfig(cwd, key) {
+  const env = { ...process.env };
+  if (!env.CLAUDE_POLICY_DB && env.CLAUDE_PROJECT_DIR) {
+    env.CLAUDE_POLICY_DB = `${env.CLAUDE_PROJECT_DIR}/.claude/state.db`;
+  }
+  const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
+  try {
+    const out = execFileSync(
+      "python3",
+      [cliPath, "config", "get", key],
+      { env, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }
+    );
+    const parsed = JSON.parse(out);
+    return parsed.value || null;
+  } catch {
+    // Fail-closed: return null, NOT a default-true assumption.
+    // Callers must treat null as "unknown" and apply the safe default.
+    return null;
+  }
+}
+
 function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
   const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
   const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
@@ -598,7 +634,17 @@ function main() {
   // `config.stopReviewGate` continues to gate only the USER-FACING regular
   // Stop path (the interactive block at turn-end that the user opts into
   // via `codex setup --enable-review-gate`).
-  if (!isSubagentStop && !config.stopReviewGate) {
+  // DEC-CONFIG-AUTHORITY-001: read toggles from policy engine, not flat-file state.
+  // readEnforcementConfig returns null on error or missing — fail-CLOSED to "true"
+  // (enforce by default) per DEC-REGULAR-STOP-REVIEW-001.
+  const subagentReviewEnabled = (readEnforcementConfig(cwd, "review_gate_subagent_stop") || "true") === "true";
+  const regularReviewEnabled  = (readEnforcementConfig(cwd, "review_gate_regular_stop")  || "true") === "true";
+
+  if (isSubagentStop && !subagentReviewEnabled) {
+    logNote("Review gate (SubagentStop) disabled by enforcement_config");
+    return;
+  }
+  if (!isSubagentStop && !regularReviewEnabled) {
     logNote(runningTaskNote);
     return;
   }

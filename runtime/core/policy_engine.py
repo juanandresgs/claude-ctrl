@@ -51,7 +51,7 @@ Rationale: Each policy function would otherwise need its own DB connection
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from runtime.core.policy_utils import (
@@ -87,6 +87,7 @@ class PolicyContext:
     test_state: Optional[dict]  # test_state record, or None
     binding: Optional[dict]  # workflow_binding record, or None
     dispatch_phase: Optional[str]  # derived from completions, or None
+    enforcement_config: dict = field(default_factory=dict)  # DEC-CONFIG-AUTHORITY-001
 
 
 @dataclass
@@ -539,6 +540,29 @@ def build_context(
         if row:
             dispatch_phase = f"{row['role']}:{row['verdict']}"
 
+    # --- Enforcement config (DEC-CONFIG-AUTHORITY-001) ---
+    # Collapse all enforcement_config rows with scope precedence:
+    # global is the baseline; project= overrides; workflow= overrides project.
+    # Iterating in that order means later writes win in the dict.
+    # Wrapped in try/except so a missing table or import error degrades
+    # gracefully — policies fall back to their built-in defaults.
+    enforcement_config: dict = {}
+    try:
+        from runtime.core import enforcement_config as _ec_mod
+
+        for _row in _ec_mod.list_all(conn):
+            _s = _row["scope"]
+            _k = _row["key"]
+            _v = _row["value"]
+            if _s == "global":
+                enforcement_config.setdefault(_k, _v)
+            elif _s == f"project={project_root}":
+                enforcement_config[_k] = _v  # overrides global
+            elif _s == f"workflow={workflow_id}":
+                enforcement_config[_k] = _v  # overrides project
+    except Exception:
+        pass  # fail-safe: empty dict → policies use built-in defaults
+
     return PolicyContext(
         actor_role=resolved_role,
         actor_id=resolved_id,
@@ -553,6 +577,7 @@ def build_context(
         test_state=test_state,
         binding=binding,
         dispatch_phase=dispatch_phase,
+        enforcement_config=enforcement_config,
     )
 
 

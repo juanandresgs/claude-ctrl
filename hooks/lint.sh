@@ -191,8 +191,8 @@ detect_linter() {
         fi
     fi
 
-    # JavaScript/TypeScript files
-    if [[ "$ext" =~ ^(ts|tsx|js|jsx)$ ]]; then
+    # JavaScript/TypeScript files (including ES module variants mjs/cjs)
+    if [[ "$ext" =~ ^(ts|tsx|js|jsx|mjs|cjs)$ ]]; then
         if [[ -f "$root/biome.json" || -f "$root/biome.jsonc" ]]; then
             echo "biome"
             return

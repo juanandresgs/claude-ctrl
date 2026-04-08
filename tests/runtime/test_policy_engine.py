@@ -590,3 +590,31 @@ def test_dispatch_phase_none_when_workflow_has_no_completions(conn, tmp_path):
     assert ctx.dispatch_phase is None, (
         f"dispatch_phase leaked from a different workflow: {ctx.dispatch_phase}"
     )
+
+
+# ---------------------------------------------------------------------------
+# build_context: enforcement_config is loaded from DB (DEC-CONFIG-AUTHORITY-001)
+# ---------------------------------------------------------------------------
+
+
+def test_build_context_loads_enforcement_config(conn, tmp_path):
+    """build_context() populates ctx.enforcement_config from the DB.
+
+    After ensure_schema() seeds the global defaults, build_context() must
+    surface review_gate_regular_stop == 'true' in the context dict. This is
+    the compound-interaction test crossing enforcement_config storage
+    (schemas.py / enforcement_config.py) and context resolution
+    (policy_engine.build_context).
+    """
+    # ensure_schema() already ran in the conn fixture — seeded defaults are live.
+    ctx = build_context(conn, cwd=str(tmp_path))
+
+    # The seeded global default must be present in the context.
+    assert "review_gate_regular_stop" in ctx.enforcement_config, (
+        "build_context() did not load enforcement_config from the DB. "
+        "Check the enforcement_config loading block in policy_engine.py."
+    )
+    assert ctx.enforcement_config["review_gate_regular_stop"] == "true", (
+        f"Expected seeded default 'true', got "
+        f"{ctx.enforcement_config['review_gate_regular_stop']!r}"
+    )

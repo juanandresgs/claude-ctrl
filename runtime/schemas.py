@@ -317,6 +317,30 @@ CREATE TABLE IF NOT EXISTS obs_runs (
 )
 """
 
+# @decision DEC-CONFIG-AUTHORITY-001
+# Title: Policy engine is the canonical authority for enforcement toggles
+# Status: accepted
+# Rationale: Before this table, enforcement toggles were scattered across
+#   settings.json, the codex plugin's state.json, and hardcoded defaults.
+#   The policy engine had no knowledge of plugin-side toggles. This table
+#   centralises toggle storage in cc_state.db so that cc-policy is the sole
+#   authority. Plugin code (codex setup) becomes a thin shim that delegates
+#   to this module via cc-policy config set. Scope precedence (lookup order):
+#   workflow=<id> → project=<root> → global → None
+ENFORCEMENT_CONFIG_DDL = """
+CREATE TABLE IF NOT EXISTS enforcement_config (
+    scope       TEXT NOT NULL,         -- 'global' | 'project=<root>' | 'workflow=<id>'
+    key         TEXT NOT NULL,         -- e.g. 'review_gate_regular_stop'
+    value       TEXT NOT NULL,         -- string-encoded; callers parse
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (scope, key)
+)
+"""
+
+ENFORCEMENT_CONFIG_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_enforcement_config_key ON enforcement_config (key, scope)
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -340,6 +364,8 @@ ALL_DDL: list[str] = [
     OBS_METRICS_DDL,
     OBS_SUGGESTIONS_DDL,
     OBS_RUNS_DDL,
+    ENFORCEMENT_CONFIG_DDL,
+    ENFORCEMENT_CONFIG_INDEX_DDL,
 ]
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
@@ -504,3 +530,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
               AND  role NOT IN ('planner', 'implementer', 'tester', 'guardian')
             """
         )
+
+        # Seed enforcement_config global defaults if not yet present.
+        # INSERT OR IGNORE means this is idempotent — re-running ensure_schema()
+        # will not overwrite values that have been deliberately changed.
+        # Fail-safe defaults: all review gates on, provider=codex.
+        # (DEC-CONFIG-AUTHORITY-001)
+        _defaults = [
+            ("global", "review_gate_subagent_stop", "true"),
+            ("global", "review_gate_regular_stop", "true"),
+            ("global", "review_gate_provider", "codex"),
+        ]
+        for _scope, _key, _value in _defaults:
+            conn.execute(
+                "INSERT OR IGNORE INTO enforcement_config (scope, key, value, updated_at) "
+                "VALUES (?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+                (_scope, _key, _value),
+            )

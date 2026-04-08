@@ -421,6 +421,49 @@ Hook registration in `../settings.json` → `hooks` object:
 
 ## Testing
 
+### runtime-bridge.sh — Enforcement Config Wrappers (DEC-CONFIG-AUTHORITY-001)
+
+Two wrappers let hook scripts read and write enforcement toggles without
+parsing JSON directly. Both are sourced transitively through `context-lib.sh`.
+
+#### `rt_config_get <key> [scope]`
+
+Reads a value from `enforcement_config` via `cc-policy config get`. Returns
+the string value on success, or the sentinel `__FAIL_CLOSED__` on any error
+(CLI unavailable, table missing, timeout, empty key argument).
+
+```bash
+gate=$(rt_config_get "review_gate_regular_stop")
+```
+
+**Sentinel contract** — callers MUST distinguish three return states:
+
+| Return value | Meaning | Caller action |
+|---|---|---|
+| `"true"` / `"false"` / any string | Key found, value returned | Use the value |
+| `""` (empty) | Key exists, explicitly set to empty | Fall back to built-in default |
+| `"__FAIL_CLOSED__"` | Lookup failed (runtime unavailable) | Default to the **more restrictive** posture (gate ON) |
+
+The fail-closed sentinel prevents silent fail-open behaviour when the policy
+engine is temporarily unavailable. Any caller that receives `__FAIL_CLOSED__`
+MUST treat the gate as enabled.
+
+#### `rt_config_set <key> <value> [scope]`
+
+Writes a value to `enforcement_config` via `cc-policy config set`. The caller
+must have `CLAUDE_AGENT_ROLE=guardian` in the environment; the Python WHO gate
+raises `PermissionError` and returns non-zero for any other role.
+
+```bash
+CLAUDE_AGENT_ROLE=guardian rt_config_set "review_gate_regular_stop" "true"
+rt_config_set "review_gate_provider" "gemini" "project=/my/project"
+```
+
+Returns non-zero on any error (permission denied, missing key/value, CLI
+failure). Callers should check `$?` if the write is load-bearing.
+
+---
+
 ```bash
 # PreToolUse:Write hook
 echo '{"tool_name":"Write","tool_input":{"file_path":"/test.ts"}}' | bash hooks/<name>.sh

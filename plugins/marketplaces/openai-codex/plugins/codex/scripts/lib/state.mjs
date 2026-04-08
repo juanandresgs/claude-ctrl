@@ -481,13 +481,66 @@ export function listJobs(cwd) {
   return loadState(cwd).jobs;
 }
 
+/**
+ * Dual-write shim for stopReviewGate (DEC-REGULAR-STOP-REVIEW-001).
+ *
+ * When a caller sets the stopReviewGate key in state.json, we also propagate
+ * the value to the canonical enforcement_config authority via cc-policy config
+ * set. This keeps state.json as a deprecated dual-write target during the
+ * transition window: new readers use enforcement_config; legacy readers that
+ * still load getConfig() continue to work.
+ *
+ * The dual-write is best-effort: if the cc-policy CLI call fails (e.g. the
+ * runtime is unavailable or the caller lacks guardian role), we log to stderr
+ * but do NOT throw — the primary state.json write must not be blocked by the
+ * secondary propagation.
+ *
+ * @param {string} cwd
+ * @param {string} key
+ * @param {*} value
+ */
+function maybePropagateToEnforcementConfig(cwd, key, value) {
+  if (key !== "stopReviewGate") {
+    return;
+  }
+  // Map state.json bool/string to enforcement_config string value.
+  // "true" / true → "true"; anything else → "false".
+  const canonicalValue = (value === true || value === "true") ? "true" : "false";
+  // execFileSync is imported at the top of this file from "node:child_process".
+  const cliPath = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "..", "..", "..", "..", "..", "..", "runtime", "cli.py"
+  );
+  const env = { ...process.env };
+  if (!env.CLAUDE_POLICY_DB && env.CLAUDE_PROJECT_DIR) {
+    env.CLAUDE_POLICY_DB = `${env.CLAUDE_PROJECT_DIR}/.claude/state.db`;
+  }
+  try {
+    execFileSync(
+      "python3",
+      [cliPath, "config", "set", "review_gate_regular_stop", canonicalValue],
+      { env, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }
+    );
+  } catch {
+    // Best-effort: do not block the primary state.json write (DEC-REGULAR-STOP-REVIEW-001)
+    process.stderr.write(
+      `[state.mjs] dual-write to enforcement_config failed for key=${key}; state.json write proceeds\n`
+    );
+  }
+}
+
 export function setConfig(cwd, key, value) {
-  return updateState(cwd, (state) => {
+  // Primary write: state.json via updateState (atomic, W-CDX-1 lock).
+  const result = updateState(cwd, (state) => {
     state.config = {
       ...state.config,
       [key]: value
     };
   });
+  // Secondary write: propagate stopReviewGate to the canonical enforcement_config
+  // authority (DEC-REGULAR-STOP-REVIEW-001). Best-effort; never throws.
+  maybePropagateToEnforcementConfig(cwd, key, value);
+  return result;
 }
 
 export function getConfig(cwd) {
