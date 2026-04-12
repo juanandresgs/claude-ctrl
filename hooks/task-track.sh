@@ -309,9 +309,18 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         _GA_HAS_PROOF=true
     fi
     if [[ "$_PROOF_BYPASS" != "true" && -n "$_GA_HAS_PROOF" ]]; then
-        if [[ "$PROOF_STATUS" != "verified" ]]; then
-            _write_gate_denied_trace "guardian" "gate-a-proof" "Proof status is '${PROOF_STATUS}' (requires 'verified')" 2>/dev/null || true
-            emit_deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
+        # @decision DEC-PROOF-COMMITTED-001
+        # @title Accept "committed" as a passing proof state at Guardian Gate A
+        # @status accepted
+        # @rationale After a successful Guardian commit, proof state transitions
+        #   verified → committed. If two gates require exactly "verified", the user
+        #   is permanently locked out of further Guardian dispatches (issue #174,
+        #   reported by joel-phyle). "committed" is a superset of "verified" —
+        #   the work has already passed verification AND been committed, so the
+        #   gate must not re-block on it.
+        if [[ "$PROOF_STATUS" != "verified" && "$PROOF_STATUS" != "committed" ]]; then
+            _write_gate_denied_trace "guardian" "gate-a-proof" "Proof status is '${PROOF_STATUS}' (requires 'verified' or 'committed')" 2>/dev/null || true
+            emit_deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified' or 'committed'). Dispatch tester or complete verification before dispatching Guardian."
         fi
     fi
     if [[ "$_PROOF_BYPASS" == "true" || -n "$_GA_HAS_PROOF" ]]; then
