@@ -880,9 +880,9 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
         PROOF_DIR=$(detect_project_root)
     fi
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1; then
-        # --- W2-1: Read proof status via proof_state_get() (with flat-file fallback) ---
+        # --- W2-1: Read proof status via proof_state_get() (SQLite sole authority) ---
         # proof_state_get() returns "status|epoch|updated_at|updated_by" or empty.
-        # Gate logic (deny/allow) is unchanged — only the read path has changed.
+        # Gate accepts "verified" and "committed" as passing states (issue #174).
         # DEC-STATE-UNIFY-004
         #
         # Load state-lib so proof_state_get() is available for SQLite read.
