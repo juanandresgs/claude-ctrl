@@ -56,7 +56,7 @@ track_subagent_start "$PROJECT_ROOT" "$AGENT_TYPE" "$_SESSION_LABEL"
 
 # In scan mode: emit all gate declarations and exit cleanly.
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
-    declare_gate "guardian-proof-gate" "Guardian requires .proof-status = verified" "deny"
+    declare_gate "guardian-proof-gate" "Guardian requires proof-status = verified or committed" "deny"
     declare_gate "tester-impl-gate" "Tester requires implementer to have returned" "advisory"
     declare_gate "implementer-worktree-gate" "Implementer must run in linked worktree, not main checkout" "deny"
     emit_flush
@@ -233,11 +233,10 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
     fi
 fi
 
-# --- Gate A: Guardian requires .proof-status = verified (when active) ---
-# Gate is only active when .proof-status file exists (created by implementer dispatch).
-# Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
-# Checks project-scoped file first, falls back to unscoped for backward compat.
-declare_gate "guardian-proof-gate" "Guardian requires .proof-status = verified" "deny"
+# --- Gate A: Guardian requires proof state = verified or committed ---
+# Gate is only active when proof_state row exists in SQLite (created by implementer dispatch).
+# Missing row = no implementation in progress = allow (fixes bootstrap deadlock).
+declare_gate "guardian-proof-gate" "Guardian requires proof-status = verified or committed" "deny"
 if [[ "$AGENT_TYPE" == "guardian" ]]; then
     _PHASH=$(project_hash "$PROJECT_ROOT")  # keep — needed for guardian marker filename
     # --- M2: Plan-only bypass — documentation merges skip proof-status gate ---
@@ -309,9 +308,18 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         _GA_HAS_PROOF=true
     fi
     if [[ "$_PROOF_BYPASS" != "true" && -n "$_GA_HAS_PROOF" ]]; then
-        if [[ "$PROOF_STATUS" != "verified" ]]; then
-            _write_gate_denied_trace "guardian" "gate-a-proof" "Proof status is '${PROOF_STATUS}' (requires 'verified')" 2>/dev/null || true
-            emit_deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
+        # @decision DEC-PROOF-COMMITTED-001
+        # @title Accept "committed" as a passing proof state at Guardian Gate A
+        # @status accepted
+        # @rationale After a successful Guardian commit, proof state transitions
+        #   verified → committed. If two gates require exactly "verified", the user
+        #   is permanently locked out of further Guardian dispatches (issue #174,
+        #   reported by joel-phyle). "committed" is a superset of "verified" —
+        #   the work has already passed verification AND been committed, so the
+        #   gate must not re-block on it.
+        if [[ "$PROOF_STATUS" != "verified" && "$PROOF_STATUS" != "committed" ]]; then
+            _write_gate_denied_trace "guardian" "gate-a-proof" "Proof status is '${PROOF_STATUS}' (requires 'verified' or 'committed')" 2>/dev/null || true
+            emit_deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified' or 'committed'). Dispatch tester or complete verification before dispatching Guardian."
         fi
     fi
     if [[ "$_PROOF_BYPASS" == "true" || -n "$_GA_HAS_PROOF" ]]; then

@@ -880,9 +880,9 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
         PROOF_DIR=$(detect_project_root)
     fi
     if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1; then
-        # --- W2-1: Read proof status via proof_state_get() (with flat-file fallback) ---
+        # --- W2-1: Read proof status via proof_state_get() (SQLite sole authority) ---
         # proof_state_get() returns "status|epoch|updated_at|updated_by" or empty.
-        # Gate logic (deny/allow) is unchanged — only the read path has changed.
+        # Gate accepts "verified" and "committed" as passing states (issue #174).
         # DEC-STATE-UNIFY-004
         #
         # Load state-lib so proof_state_get() is available for SQLite read.
@@ -897,19 +897,27 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
                 PROOF_STATUS=$(echo "$_pg_result" | cut -d'|' -f1)
             fi
         fi
-        # Flat-file fallback when proof_state_get not available or returned empty
-        if [[ -z "$PROOF_STATUS" ]]; then
-            PROOF_FILE=$(PROJECT_ROOT="$PROOF_DIR" resolve_proof_file)
-            [[ ! -f "$PROOF_FILE" ]] && PROOF_FILE=""
-            if [[ -f "$PROOF_FILE" ]]; then
-                if validate_state_file "$PROOF_FILE" 1; then
-                    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
-                else
-                    PROOF_STATUS="corrupt"
-                fi
-            fi
-        fi
-        if [[ -n "$PROOF_STATUS" && "$PROOF_STATUS" != "verified" ]]; then
+        # Flat-file fallback REMOVED — DEC-STATE-UNIFY-004
+        # W5-2 made SQLite (proof_state_get) the sole proof authority. The flat-file
+        # fallback here read orphaned .proof-status-* dotfiles that no longer exist,
+        # causing validate_state_file() to return "corrupt" and permanently blocking
+        # the guard gate even when no real proof failure had occurred. Keeping a
+        # dead fallback path alongside the live SQLite path created a dual-authority
+        # bug (issue #174, reported by joel-phyle). If proof_state_get() returns
+        # empty, there is no proof record — PROOF_STATUS stays "" and the gate below
+        # skips correctly (gate only fires when PROOF_STATUS is non-empty and
+        # not "verified"/"committed").
+
+        # @decision DEC-PROOF-COMMITTED-001
+        # @title Accept "committed" as a passing proof state at the pre-bash guard gate
+        # @status accepted
+        # @rationale Mirror of the task-track.sh fix (issue #174, joel-phyle). After a
+        #   successful commit, proof state is "committed". Requiring exactly "verified"
+        #   here permanently blocks any subsequent git commit/merge, deadlocking the user.
+        #   "committed" has already passed verification AND been committed — it satisfies
+        #   the gate's intent. DEC-STATE-UNIFY-004 made SQLite the sole proof authority;
+        #   this fix ensures the gate correctly interprets all terminal-passing states.
+        if [[ -n "$PROOF_STATUS" && "$PROOF_STATUS" != "verified" && "$PROOF_STATUS" != "committed" ]]; then
             append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"not verified\"}" "$PROOF_DIR"
             emit_deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
         fi
