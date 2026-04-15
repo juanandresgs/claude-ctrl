@@ -1,0 +1,2 @@
+{"session_id":"seed-session-1","transcript_path":"/tmp/seed-transcript.jsonl","cwd":"/tmp/seed-worktree","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"subagent_type":"implementer","prompt":"seed prompt with contract block"}}
+{"session_id":"seed-session-1","transcript_path":"/tmp/seed-transcript.jsonl","cwd":"/tmp/seed-worktree","agent_id":"seed-agent-1","agent_type":"implementer","hook_event_name":"SubagentStart"}

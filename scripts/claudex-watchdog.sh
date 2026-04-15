@@ -151,6 +151,7 @@ PY
 }
 
 cleanup_watchdog() {
+  trap - EXIT INT TERM
   if [[ "$RUN_ONCE" -eq 1 ]]; then
     return 0
   fi
@@ -305,7 +306,7 @@ restart_auto_submit() {
 
   safe_rm "$AUTO_PID_FILE"
   log "auto-submit not running; restarting daemon"
-  BRAID_ROOT="$BRAID_ROOT" nohup "$AUTO_SUBMIT_SCRIPT" >>"$AUTO_LOG_FILE" 2>&1 &
+  BRAID_ROOT="$BRAID_ROOT" CLAUDEX_STATE_DIR="$PID_DIR" nohup "$AUTO_SUBMIT_SCRIPT" >>"$AUTO_LOG_FILE" 2>&1 &
   local auto_submit_pid="$!"
   sleep 0.2
   if emit_live_pid_from_file "$AUTO_PID_FILE" >/dev/null 2>&1; then
@@ -1118,7 +1119,9 @@ if [[ -n "$EXISTING_WATCHDOG_PID" ]] \
 fi
 
 printf '%s\n' "$$" > "$WATCHDOG_PID_FILE"
-trap cleanup_watchdog EXIT INT TERM
+trap cleanup_watchdog EXIT
+trap 'cleanup_watchdog; exit 130' INT
+trap 'cleanup_watchdog; exit 143' TERM
 
 while true; do
   watchdog_tick

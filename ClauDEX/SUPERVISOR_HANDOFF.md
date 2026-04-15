@@ -15,6 +15,96 @@ The Codex supervisor is the decider for the live ClauDEX bridge loop.
 The supervisor must not invent a new project or a second control plane. It
 stays on the active ClauDEX cutover slice only.
 
+## Open Soak Issues
+
+- Soak Run 2026-04-14 (cutover bundle, worktree claudex-cutover-soak)
+  1. Smoke keyword filter matched zero tests
+     - Repro: `pytest -q tests/runtime/test_braid_v2.py -k 'smoke or quick or trace_export or seat_create'` → 0 passed, 5 deselected.
+     - Impact: false green; smoke gate ineffective.
+     - Suggested fix: drop the `-k` filter; run full file (5 tests, 0.22s) or validate filters with `--collect-only`.
+     - Blocking? No.
+  2. Watchdog pending-review / recovery artifacts missing
+     - Repro: Soak run to `waiting_for_codex`; `.claude/claudex/pending-review.json` and relay-recovery artifacts not written; 5 watchdog tests fail.
+     - Impact: Violates minimum bridge viability in this handoff; supervisor can miss state.
+     - Current verification: `pytest -q tests/runtime/test_claudex_watchdog.py --maxfail=8` now passes locally (24 passed, 29.66s), so this is not currently reproduced in the soak worktree.
+     - Suggested fix if it recurs: inspect `CLAUDEX_STATE_DIR`/lane mismatch first, then restore writing of `pending-review.json` and recovery state on waiting_for_codex/reconcile paths.
+     - Blocking? No, unless reproduced again in the active lane.
+  3. PID-reuse flake in watchdog dedupe test
+     - Repro: watchdog test expects killed PID ≠ running PID; OS reused PID; assertion fails.
+     - Impact: Flaky test only.
+     - Suggested fix: change assertion to identity-based (e.g., start time) or tolerate PID reuse.
+     - Blocking? No.
+  4. dispatch-debug fixture absent in fresh worktree
+     - Repro: `test_dispatch_debug_file_exists_and_has_subagent_start_events` fails because `tests/runtime/dispatch-debug.jsonl` not present in new worktree.
+     - Impact: Test fails on clean clone unless seeded.
+     - Current fix: seeded `tests/fixtures/dispatch-debug.seed.jsonl`; tests use live `runtime/dispatch-debug.jsonl` when present and deterministic seed truth otherwise.
+     - Blocking? No.
+
+### Soak Run 2026-04-14 (instruction 1776218048935-0001-0uqp4e)
+
+- **Smoke keyword filter matches zero tests** (non-blocking, prompt fix)
+  - Repro: `pytest -q tests/runtime/test_braid_v2.py -k 'smoke or quick or trace_export or seat_create'` → `5 deselected in 0.07s`.
+  - Actual test names in `test_braid_v2.py`: `test_bundle_create_and_tree`, `test_adopt_tmux_worker_creates_runtime_rows`, `test_spawn_tmux_supervised_bundle_creates_child_bundle_threads_and_sessions`, `test_observe_tmux_seat_opens_and_clears_gates`, `test_controller_sweep_times_out_attempts_and_opens_findings`.
+  - Impact: Supervisor's fast-smoke step no-ops silently and appears green. A future regression would pass this filter.
+  - Suggested prompt fix: drop the `-k` filter for this file (only 5 tests, all fast) or use `-k 'bundle or adopt_tmux or spawn_tmux or observe_tmux or controller_sweep'`. Recommend the former (run all 5; whole file ran in 0.22s).
+  - Blocking: no.
+
+- **Watchdog pending-review / recovery artifacts not written in 5 tests** (blocking quality, needs investigation)
+  - Repro: `pytest -q tests/runtime/test_claudex_watchdog.py`, failures:
+    - `test_watchdog_nudges_lodged_relay_prompt_before_dispatch_recovery` — `.claude/claudex/relay-prompt-recovery.state.json` missing.
+    - `TestPendingReviewPersistence::test_waiting_for_codex_writes_pending_review_with_full_payload` — `pending-review.json` not written on `waiting_for_codex`.
+    - `TestPendingReviewPersistence::test_completed_inflight_with_response_is_reconciled_to_review_handoff` — no pending-review artifact after reconcile.
+    - `TestPendingReviewClearance::test_non_waiting_state_clears_pending_review_artifact` — setup tick failed to create the artifact.
+    - `TestPendingReviewClearance::test_user_driving_is_handed_back_and_handoff_still_persists` — handoff artifact missing.
+  - Impact: The very artifacts `SUPERVISOR_HANDOFF.md` lists under "Minimum bridge viability" (pending-review.json detection/regeneration) have regressed at the unit level. If the watchdog no longer writes these, the supervisor cannot rely on them either.
+  - Current verification: a fresh local rerun in this worktree passed: `pytest -q tests/runtime/test_claudex_watchdog.py --maxfail=8` → **24 passed**, 29.66s.
+  - Revised assessment: not currently reproduced in the soak worktree; if it recurs, first check whether the watchdog and tests are using different `CLAUDEX_STATE_DIR`/lane roots before changing writer logic.
+  - Blocking: no while the targeted watchdog suite remains green; yes if reproduced in the active lane.
+
+- **PID-reuse flake in watchdog dedupe test** (non-blocking, low-priority test-only fix)
+  - Repro: `pytest -q tests/runtime/test_claudex_watchdog.py::test_watchdog_dedupes_auto_submit_when_pidfile_and_pgrep_disagree` intermittently fails: `assert 64078 not in {64078, 64085}` — macOS reused `proc_a.pid` for the replacement process.
+  - Impact: Flaky CI / noisy soak runs. Not a runtime defect.
+  - Suggested fix: after killing `proc_a`, loop spawning ephemeral throwaway processes until a fresh PID is obtained; or assert on a process-identity marker (argv/env fingerprint) rather than PID equality.
+  - Blocking: no.
+
+- **`test_dispatch_debug_file_exists_and_has_subagent_start_events` requires live dispatches** (non-blocking, test hygiene)
+  - Repro: `pytest tests/runtime/test_subagent_start_payload_shape.py::TestContractCarrierGap::test_dispatch_debug_file_exists_and_has_subagent_start_events` fails in a fresh worktree because `runtime/dispatch-debug.jsonl` does not exist until at least one Agent dispatch has happened in that worktree.
+  - Impact: Soak runs in throwaway worktrees fail this check even when the cutover is healthy; the failure is environmental, not functional.
+  - Fix: seeded `tests/fixtures/dispatch-debug.seed.jsonl`; the test now prefers live `runtime/dispatch-debug.jsonl` and falls back to deterministic captured truth in fresh worktrees.
+  - Blocking: no.
+
+
+- **Auto-submit process pressure / orphan growth** (fixed, operationally blocking while active)
+  - Repro: live soak had many orphaned `claudex-auto-submit.sh` processes spawned by active watchdogs after parent Claude sessions died.
+  - Root cause: `claudex-auto-submit.sh` and `claudex-watchdog.sh` trapped `TERM`/`INT` with cleanup functions that returned instead of exiting, effectively swallowing SIGTERM; watchdog also spawned auto-submit without forwarding `CLAUDEX_STATE_DIR`, allowing lane/pid-file drift.
+  - Fix: signal traps now clean up and exit with signal-like status; watchdog passes `CLAUDEX_STATE_DIR="$PID_DIR"` when spawning auto-submit; watchdog tests force isolated `CLAUDEX_STATE_DIR` so live lanes are not polluted by fake test artifacts.
+  - Verification: `pytest -q tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py --maxfail=8` → **36 passed**, 14.80s; live bridge status shows one active auto-submit pid and one active watchdog pid for the soak lane.
+  - Blocking: no after fix and orphan cleanup.
+
+### Soak Run Test Counts
+
+The first soak counts below are preserved for traceability; final local verification is the current gate.
+
+- `tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py --maxfail=8`: **36 passed**, 14.80s.
+
+- `tests/runtime/test_braid_v2.py` (full file, keyword filter matched nothing): **5 passed**, 0.22s first pass; **5 passed**, 0.33s final pass.
+- `tests/runtime/test_claudex_watchdog.py --maxfail=8` fresh verification: **24 passed**, 29.66s first pass; **24 passed**, 28.27s final pass; **24 passed**, 26.55s under live lane env after isolation fix.
+- `tests/runtime -k '(claudex or braid_v2 or dispatch)'` first-failure run: **33 passed, 1 failed** (watchdog PID dedupe) before `-x` stop, 3792 deselected, 20.44s.
+
+### Suggested Prompt / Hook Improvements
+
+- **Supervisor smoke prompt**: fixed in `.codex/prompts/claudex_supervisor.txt`; braid v2 smoke now runs `pytest -q tests/runtime/test_braid_v2.py` unfiltered.
+- **Supervisor soak prompt**: fixed in `.codex/prompts/claudex_supervisor.txt`; any future `-k` smoke must be proven with `pytest --collect-only -q ... -k ...` before reporting green.
+- **Hook/artifact contract**: keep `tests/runtime/test_claudex_watchdog.py` in the soak gate because `.claude/claudex/pending-review.json` and `.claude/claudex/relay-prompt-recovery.state.json` are canonical supervisor artifacts. If they fail again, treat state-dir/lane drift as the first suspect before adding a second artifact path.
+
+### Follow-up verification 2026-04-14 (post-handoff edits)
+
+- **Confirmed: watchdog failures are env-leak, not regression.** Running `pytest -q tests/runtime/test_claudex_watchdog.py --maxfail=8` with the supervisor's live env (`CLAUDEX_STATE_DIR=$PWD/.claude/claudex/b2r-v2-stable`, `BRAID_ROOT=/tmp/claudex-b2r-v2`) reproduced **8 failed, 1 passed in 9.76s** — the same 5 pending-review/recovery artifact failures plus the PID flake plus 2 `TestBridgeStatusSurface` cases. Unsetting both env vars and rerunning gave **24 passed in 36.75s**.
+- **Net finding**: the watchdog test fixtures do not isolate from an externally-set `CLAUDEX_STATE_DIR`. When the soak shell exports the production lane, the fixtures write/read the production `.claude/claudex/pending-review.json` instead of the per-test tmpdir, and the assertions fail. This is test hygiene, not a watchdog writer regression.
+- **Applied fix (test-only)**: `tests/runtime/test_claudex_watchdog.py` now explicitly passes the fixture `CLAUDEX_STATE_DIR` to watchdog/status/progress subprocesses, making the suite hermetic against supervisor env and removing false-positive lane pollution.
+- **Combined clean-env verification**: `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT pytest -q tests/runtime/test_braid_v2.py tests/runtime/test_claudex_watchdog.py tests/runtime/test_subagent_start_payload_shape.py` → **40 passed, 1 skipped in 35.35s**.
+- No bounded Claude dispatch issued for this follow-up; the env isolation fix and auto-submit process fix are local worktree changes awaiting review/commit.
+
 ## Tonight's Priority Order
 
 The bridge exists to support the cutover, not to become the night's main

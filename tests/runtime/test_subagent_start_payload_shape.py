@@ -71,6 +71,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _CAPTURE = _REPO_ROOT / "runtime" / "dispatch-debug.jsonl"
+_FIXTURE_CAPTURE = _REPO_ROOT / "tests" / "fixtures" / "dispatch-debug.seed.jsonl"
 
 # The six contract fields that drive the runtime-first branch.
 _CONTRACT_FIELDS: frozenset[str] = frozenset(
@@ -83,15 +84,23 @@ _EXPECTED_SA_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def _capture_path() -> Path:
+    """Return live capture when present, otherwise deterministic seed truth."""
+    if _CAPTURE.is_file():
+        return _CAPTURE
+    return _FIXTURE_CAPTURE
+
+
 def _load_real_subagent_start_payloads() -> list[dict]:
-    """Parse dispatch-debug.jsonl; return SubagentStart payloads that have session_id.
+    """Parse dispatch-debug capture; return SubagentStart payloads that have session_id.
 
     Rows without session_id are synthetic test fixtures and are excluded.
     """
-    if not _CAPTURE.is_file():
+    capture = _capture_path()
+    if not capture.is_file():
         return []
     payloads: list[dict] = []
-    with _CAPTURE.open() as fh:
+    with capture.open() as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -110,11 +119,12 @@ def _load_real_subagent_start_payloads() -> list[dict]:
 
 
 def _load_real_pre_tool_agent_payloads() -> list[dict]:
-    """Parse dispatch-debug.jsonl; return PreToolUse:Agent payloads with session_id."""
-    if not _CAPTURE.is_file():
+    """Parse dispatch-debug capture; return PreToolUse:Agent payloads with session_id."""
+    capture = _capture_path()
+    if not capture.is_file():
         return []
     payloads: list[dict] = []
-    with _CAPTURE.open() as fh:
+    with capture.open() as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -154,9 +164,9 @@ class TestSubagentStartPayloadShape:
         self._payloads = p
 
     def test_capture_file_exists(self):
-        assert _CAPTURE.is_file(), (
-            f"runtime/dispatch-debug.jsonl not found at {_CAPTURE}. "
-            "Hook capture must be active to run these tests."
+        assert _capture_path().is_file(), (
+            f"neither runtime/dispatch-debug.jsonl nor fixture {_FIXTURE_CAPTURE} exists. "
+            "Hook capture or seeded captured truth is required to run these tests."
         )
 
     def test_all_payloads_have_session_id(self):
@@ -335,7 +345,9 @@ class TestContractCarrierGap:
 
     def test_dispatch_debug_file_exists_and_has_subagent_start_events(self):
         payloads = _load_real_subagent_start_payloads()
-        assert _CAPTURE.is_file(), "dispatch-debug.jsonl must exist to pin the gap"
+        assert _capture_path().is_file(), (
+            "dispatch-debug capture or seeded fixture must exist to pin the gap"
+        )
         assert len(payloads) > 0, (
             "dispatch-debug.jsonl has no real SubagentStart events — "
             "hook capture must be active for this assertion to have meaning"

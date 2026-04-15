@@ -58,6 +58,7 @@ log() {
 }
 
 cleanup_singleton_lock() {
+  trap - EXIT INT TERM
   local recorded_pid="" current_pid=""
   recorded_pid="$(tr -d '[:space:]' < "${AUTO_LOCK_DIR}/pid" 2>/dev/null || true)"
   current_pid="$(tr -d '[:space:]' < "$AUTO_PID_FILE" 2>/dev/null || true)"
@@ -78,7 +79,9 @@ acquire_singleton_lock() {
     if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
       printf '%s\n' "$$" > "${AUTO_LOCK_DIR}/pid"
       printf '%s\n' "$$" > "$AUTO_PID_FILE"
-      trap cleanup_singleton_lock EXIT INT TERM
+      trap cleanup_singleton_lock EXIT
+      trap 'cleanup_singleton_lock; exit 130' INT
+      trap 'cleanup_singleton_lock; exit 143' TERM
       return 0
     fi
 

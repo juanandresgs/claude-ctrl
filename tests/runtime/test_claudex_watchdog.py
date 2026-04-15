@@ -210,6 +210,7 @@ def _run_watchdog_once(
     env = {
         **os.environ,
         "BRAID_ROOT": str(bridge_env["braid"]),
+        "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
         # Drop poll/grace so the tick stays cheap; --once avoids the loop
         # anyway, but tighten in case a future refactor changes that.
         "CLAUDEX_WATCHDOG_POLL_INTERVAL": "1",
@@ -271,6 +272,7 @@ def _run_progress_monitor_once(
     env = {
         **os.environ,
         "BRAID_ROOT": str(bridge_env["braid"]),
+        "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
         "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
         "CLAUDEX_FAKE_TMUX_CAPTURE": tmux_output,
         "CLAUDEX_FAKE_TMUX_EXIT": str(tmux_exit),
@@ -692,7 +694,7 @@ class TestBridgeStatusSurface:
         assert tick.returncode == 0
         assert bridge_env["pending_review"].exists()
 
-        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"])}
+        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"]), "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"])}
         status = subprocess.run(
             ["bash", str(_STATUS)],
             cwd=str(bridge_env["repo"]),
@@ -712,7 +714,7 @@ class TestBridgeStatusSurface:
 
     def test_status_script_omits_pending_review_when_absent(self, bridge_env):
         # No seeding — no artifact, no pending_review block expected.
-        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"])}
+        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"]), "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"])}
         status = subprocess.run(
             ["bash", str(_STATUS)],
             cwd=str(bridge_env["repo"]),
@@ -854,7 +856,7 @@ class TestProgressMonitorSurface:
             )
         )
 
-        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"])}
+        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"]), "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"])}
         status = subprocess.run(
             ["bash", str(_STATUS)],
             cwd=str(bridge_env["repo"]),
@@ -1024,7 +1026,7 @@ class TestDispatchStallDetection:
         assert payload["tmux_target"] == "fake:1.2"
         assert payload["timeout_count"] >= 3
 
-        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"])}
+        env = {**os.environ, "BRAID_ROOT": str(bridge_env["braid"]), "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"])}
         status = subprocess.run(
             ["bash", str(_STATUS)],
             cwd=str(bridge_env["repo"]),
@@ -1272,6 +1274,7 @@ class TestWatchdogSelfExecOnScriptDrift:
         env = {
             **os.environ,
             "BRAID_ROOT": str(bridge_env["braid"]),
+            "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
             # Tight poll so the test runs fast.
             "CLAUDEX_WATCHDOG_POLL_INTERVAL": "1",
         }

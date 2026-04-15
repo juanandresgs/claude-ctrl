@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -92,9 +94,12 @@ def auto_submit_env(tmp_path):
     )
     fake_tmux.chmod(0o755)
 
+    state_dir = fake_braid / "state"
+    state_dir.mkdir()
     env = {
         **os.environ,
         "BRAID_ROOT": str(fake_braid),
+        "CLAUDEX_STATE_DIR": str(state_dir),
         "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
         "CLAUDEX_FAKE_TMUX_SEND_LOG": str(send_log),
     }
@@ -102,6 +107,7 @@ def auto_submit_env(tmp_path):
         "env": env,
         "run_dir": run_dir,
         "send_log": send_log,
+        "state_dir": state_dir,
     }
 
 
@@ -354,3 +360,40 @@ def test_once_archives_stale_queued_head_with_existing_response(auto_submit_env)
     state = json.loads((run_dir / "auto-submit.state.json").read_text())
     assert state["instruction_id"] == "iid-2"
     assert "Archived 1 stale queued entry" in result.stderr
+
+
+
+def test_long_running_auto_submit_exits_on_sigterm_and_releases_singleton(auto_submit_env):
+    env = {
+        **auto_submit_env["env"],
+        "CLAUDEX_FAKE_TMUX_COMMAND": "zsh",
+        "CLAUDEX_FAKE_TMUX_CAPTURE": "shell not ready",
+        "CLAUDEX_AUTO_SUBMIT_INTERVAL": "10",
+    }
+    proc = subprocess.Popen(
+        ["bash", str(_AUTO_SUBMIT)],
+        cwd=str(_REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.time() + 3
+        pid_file = auto_submit_env["state_dir"] / "auto-submit.pid"
+        while time.time() < deadline and not pid_file.exists():
+            time.sleep(0.05)
+        assert pid_file.exists(), "auto-submit did not publish pid file"
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise AssertionError("auto-submit swallowed SIGTERM and kept running")
+        assert proc.returncode == 143
+        assert not pid_file.exists()
+        assert not (auto_submit_env["state_dir"] / "auto-submit.lock.d").exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
