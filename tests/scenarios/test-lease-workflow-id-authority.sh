@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # test-lease-workflow-id-authority.sh: Verifies that when a lease is issued with
 # an explicit workflow_id that differs from the branch-derived id, all hooks
-# (post-task.sh, check-tester.sh) use the lease's workflow_id — not the branch name.
+# (post-task.sh, check-reviewer.sh) use the lease's workflow_id — not the
+# branch name.
 #
 # Production sequence tested:
-#   1. A tester lease is issued with workflow_id=wf-lease-test (not matching branch)
-#   2. Tester submits a valid completion record under that workflow_id
+#   1. A reviewer lease is issued with workflow_id=wf-lease-test (not matching branch)
+#   2. A valid reviewer completion record is submitted under that workflow_id
 #   3. post-task.sh fires — must use wf-lease-test, not git-repo (branch-derived)
-#   4. check-tester.sh fires — must write eval_state under wf-lease-test
-#   5. Eval state for wf-lease-test == ready_for_guardian
-#   6. Eval state for git-repo (branch-derived) is NOT touched
+#   4. check-reviewer.sh fires with REVIEW_* trailers — must submit a completion
+#      record under wf-lease-test
+#   5. Completion record for wf-lease-test is persisted with role=reviewer
+#   6. No completion record is written under the branch-derived workflow_id
+#
+# Phase 8 Slice 11 retired the legacy ``tester`` role; the WS1 lease-authority
+# invariant is now proven against the ``reviewer`` evaluator, which is the
+# live read-only evaluator after Slice 11 (DEC-PHASE8-SLICE11-001).
+# check-reviewer.sh does NOT write evaluation_state (see its DEC-CHECK-REVIEWER-001
+# docstring); readiness is owned by the reviewer completion/findings path, so
+# the WS1 invariant is proven via the completion_records table rather than
+# evaluation_state.
 #
 # @decision DEC-WS1-TEST-001
 # @title Scenario: lease workflow_id beats branch-derived id in all hook paths
@@ -18,13 +28,14 @@
 #   when a lease is active. This test proves the invariant end-to-end by using
 #   a lease workflow_id that intentionally differs from the branch-derived one.
 #   Without the fix, post-task.sh would emit workflow_id=git-repo; with the fix
-#   it emits workflow_id=wf-lease-test.
+#   it emits workflow_id=wf-lease-test. The completion record persisted by
+#   check-reviewer.sh must also carry the lease workflow_id, not the branch id.
 set -euo pipefail
 
 TEST_NAME="test-lease-workflow-id-authority"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 POST_TASK_HOOK="$REPO_ROOT/hooks/post-task.sh"
-CHECK_TESTER_HOOK="$REPO_ROOT/hooks/check-tester.sh"
+CHECK_REVIEWER_HOOK="$REPO_ROOT/hooks/check-reviewer.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/state.db"
 TMP_GIT="$TMP_DIR/git-repo"
@@ -63,40 +74,56 @@ fi
 # Bootstrap schema
 $CC schema ensure >/dev/null 2>&1
 
-# Issue a tester lease with an explicit workflow_id different from the branch
-ISSUE_OUT=$($CC lease issue-for-dispatch "tester" \
+# Helper: build a reviewer completion payload with valid REVIEW_FINDINGS_JSON.
+make_reviewer_payload() {
+    local verdict="$1"
+    local severity="$2"
+    local title="$3"
+    jq -nc \
+        --arg v "$verdict" \
+        --arg s "$severity" \
+        --arg t "$title" \
+        '{
+            REVIEW_VERDICT: $v,
+            REVIEW_HEAD_SHA: "deadbeef",
+            REVIEW_FINDINGS_JSON: ({findings: [{severity: $s, title: $t, detail: "ok"}]} | tojson)
+        }'
+}
+
+# Issue a reviewer lease with an explicit workflow_id different from the branch
+ISSUE_OUT=$($CC lease issue-for-dispatch "reviewer" \
     --worktree-path "$TMP_GIT" \
     --workflow-id "$LEASE_WF_ID" \
     --allowed-ops '["routine_local"]' 2>/dev/null)
 LEASE_ID=$(printf '%s' "$ISSUE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 
 if [[ -n "$LEASE_ID" ]]; then
-    pass "tester lease issued with workflow_id=$LEASE_WF_ID (id=$LEASE_ID)"
+    pass "reviewer lease issued with workflow_id=$LEASE_WF_ID (id=$LEASE_ID)"
 else
-    fail "tester lease issued — cannot proceed"
+    fail "reviewer lease issued — cannot proceed"
     echo "FAIL: $TEST_NAME — cannot set up test fixtures"
     exit 1
 fi
 
-# Submit a valid tester completion record under the lease workflow_id
-VALID_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"true","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"deadbeef"}'
+# Submit a valid reviewer completion record under the lease workflow_id
+VALID_PAYLOAD=$(make_reviewer_payload "ready_for_guardian" "note" "ok")
 SUBMIT_OUT=$($CC completion submit \
     --lease-id "$LEASE_ID" \
     --workflow-id "$LEASE_WF_ID" \
-    --role "tester" \
+    --role "reviewer" \
     --payload "$VALID_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
 SUBMIT_VALID=$(printf '%s' "$SUBMIT_OUT" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
 
 if [[ "$SUBMIT_VALID" == "true" ]]; then
-    pass "valid tester completion submitted under lease workflow_id"
+    pass "valid reviewer completion submitted under lease workflow_id"
 else
-    fail "valid tester completion submitted (got: $SUBMIT_OUT)"
+    fail "valid reviewer completion submitted (got: $SUBMIT_OUT)"
     echo "FAIL: $TEST_NAME — cannot set up completion record"
     exit 1
 fi
 
-# Run post-task.sh with agent_type=tester and verify dispatch uses lease wf_id
-HOOK_PAYLOAD=$(printf '{"hook_event_name":"SubagentStop","agent_type":"tester"}')
+# Run post-task.sh with agent_type=reviewer and verify dispatch uses lease wf_id
+HOOK_PAYLOAD=$(printf '{"hook_event_name":"SubagentStop","agent_type":"reviewer"}')
 HOOK_OUTPUT=$(printf '%s' "$HOOK_PAYLOAD" \
     | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$POST_TASK_HOOK" 2>/dev/null || true)
 
@@ -128,53 +155,63 @@ else
     fail "post-task hook output is valid JSON (got: $HOOK_OUTPUT)"
 fi
 
-# Re-issue a fresh tester lease for check-tester.sh test
-ISSUE_OUT2=$($CC lease issue-for-dispatch "tester" \
+# Re-issue a fresh reviewer lease for check-reviewer.sh test
+ISSUE_OUT2=$($CC lease issue-for-dispatch "reviewer" \
     --worktree-path "$TMP_GIT" \
     --workflow-id "$LEASE_WF_ID" \
     --allowed-ops '["routine_local"]' 2>/dev/null)
 LEASE_ID2=$(printf '%s' "$ISSUE_OUT2" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 
 if [[ -n "$LEASE_ID2" ]]; then
-    pass "second tester lease issued for check-tester.sh verification"
+    pass "second reviewer lease issued for check-reviewer.sh verification"
 else
-    fail "second tester lease issued"
+    fail "second reviewer lease issued"
 fi
 
-# Build a fake tester response with valid EVAL_* trailers
-TESTER_RESPONSE="Analysis complete.
-EVAL_VERDICT: ready_for_guardian
-EVAL_TESTS_PASS: true
-EVAL_NEXT_ROLE: guardian
-EVAL_HEAD_SHA: deadbeef"
+# Build a fake reviewer response with valid REVIEW_* trailers.
+# REVIEW_FINDINGS_JSON must be a single-line JSON object (check-reviewer.sh
+# parses it with grep -oE '^REVIEW_FINDINGS_JSON:[[:space:]]*\{.*\}').
+FINDINGS_JSON=$(jq -nc '{findings: [{severity: "note", title: "ok", detail: "ok"}]}')
+REVIEWER_RESPONSE="Review complete.
+REVIEW_VERDICT: ready_for_guardian
+REVIEW_HEAD_SHA: deadbeef
+REVIEW_FINDINGS_JSON: $FINDINGS_JSON"
 
-CT_PAYLOAD=$(jq -n \
-    --arg r "$TESTER_RESPONSE" \
-    --arg at "tester" \
-    '{agent_type: $at, response: $r}')
+CR_PAYLOAD=$(jq -n \
+    --arg r "$REVIEWER_RESPONSE" \
+    --arg at "reviewer" \
+    '{agent_type: $at, last_assistant_message: $r}')
 
-# Run check-tester.sh
-CT_OUTPUT=$(printf '%s' "$CT_PAYLOAD" \
-    | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$CHECK_TESTER_HOOK" 2>/dev/null || true)
+# Run check-reviewer.sh
+CR_OUTPUT=$(printf '%s' "$CR_PAYLOAD" \
+    | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$CHECK_REVIEWER_HOOK" 2>/dev/null || true)
 
-echo "  [debug] check-tester output: $CT_OUTPUT"
+echo "  [debug] check-reviewer output: $CR_OUTPUT"
 
-# Verify eval_state was written under the LEASE workflow_id
-EVAL_JSON=$($CC evaluation get "$LEASE_WF_ID" 2>/dev/null || echo '{}')
-EVAL_STATUS=$(printf '%s' "$EVAL_JSON" | jq -r '.status // "not_found"' 2>/dev/null || echo "not_found")
-if [[ "$EVAL_STATUS" == "ready_for_guardian" ]]; then
-    pass "eval_state written under lease workflow_id ($LEASE_WF_ID) = ready_for_guardian"
+# Verify a completion record was written for lease LEASE_ID2 under the LEASE
+# workflow_id (not the branch-derived id). This is the WS1 invariant for the
+# reviewer path: check-reviewer.sh MUST resolve identity via lease_context(),
+# so the persisted completion_record.workflow_id equals the lease's wf_id.
+COMP_JSON=$($CC completion latest --lease-id "$LEASE_ID2" 2>/dev/null || echo '{"found":false}')
+COMP_FOUND=$(printf '%s' "$COMP_JSON" | jq -r '.found // false' 2>/dev/null || echo "false")
+COMP_ROLE=$(printf '%s' "$COMP_JSON" | jq -r '.role // "none"' 2>/dev/null || echo "none")
+COMP_WF=$(printf '%s' "$COMP_JSON" | jq -r '.workflow_id // "none"' 2>/dev/null || echo "none")
+COMP_VALID=$(printf '%s' "$COMP_JSON" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
+
+if [[ "$COMP_FOUND" == "true" && "$COMP_ROLE" == "reviewer" && "$COMP_WF" == "$LEASE_WF_ID" && "$COMP_VALID" == "true" ]]; then
+    pass "completion record persisted under lease workflow_id ($LEASE_WF_ID) with role=reviewer, valid=true"
 else
-    fail "eval_state written under lease workflow_id — got status=$EVAL_STATUS for $LEASE_WF_ID"
+    fail "completion record persisted under lease workflow_id — got found=$COMP_FOUND role=$COMP_ROLE workflow_id=$COMP_WF valid=$COMP_VALID"
 fi
 
-# Verify eval_state for the BRANCH-DERIVED id was NOT written
-EVAL_JSON_BRANCH=$($CC evaluation get "$BRANCH_DERIVED_WF" 2>/dev/null || echo '{}')
-EVAL_STATUS_BRANCH=$(printf '%s' "$EVAL_JSON_BRANCH" | jq -r '.status // "not_found"' 2>/dev/null || echo "not_found")
-if [[ "$EVAL_STATUS_BRANCH" == "not_found" || "$EVAL_STATUS_BRANCH" == "idle" ]]; then
-    pass "eval_state NOT written under branch-derived workflow_id ($BRANCH_DERIVED_WF)"
+# Verify no completion record was written under the BRANCH-DERIVED workflow_id
+COMP_JSON_BRANCH=$($CC completion latest --workflow-id "$BRANCH_DERIVED_WF" 2>/dev/null || echo '{"found":false}')
+COMP_FOUND_BRANCH=$(printf '%s' "$COMP_JSON_BRANCH" | jq -r '.found // false' 2>/dev/null || echo "false")
+if [[ "$COMP_FOUND_BRANCH" != "true" ]]; then
+    pass "no completion record written under branch-derived workflow_id ($BRANCH_DERIVED_WF)"
 else
-    fail "eval_state must NOT be written under branch-derived id — got $EVAL_STATUS_BRANCH for $BRANCH_DERIVED_WF"
+    COMP_BRANCH_ROLE=$(printf '%s' "$COMP_JSON_BRANCH" | jq -r '.role // "none"' 2>/dev/null || echo "none")
+    fail "completion record must NOT be written under branch-derived id — got role=$COMP_BRANCH_ROLE for $BRANCH_DERIVED_WF"
 fi
 
 # --- Results ---

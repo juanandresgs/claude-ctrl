@@ -91,16 +91,16 @@ def test_emit_and_query_round_trip_full_fields(conn):
 def test_query_with_role_filter_returns_only_matching_rows(conn):
     """EC-2: Query with role filter returns only matching rows (uses indexed role column)."""
     obs.emit_metric(conn, "m", 1.0, role="implementer")
-    obs.emit_metric(conn, "m", 2.0, role="tester")
+    obs.emit_metric(conn, "m", 2.0, role="reviewer")
     obs.emit_metric(conn, "m", 3.0, role="implementer")
 
     impl_rows = obs.query_metrics(conn, "m", role="implementer")
     assert len(impl_rows) == 2
     assert all(r["role"] == "implementer" for r in impl_rows)
 
-    tester_rows = obs.query_metrics(conn, "m", role="tester")
-    assert len(tester_rows) == 1
-    assert tester_rows[0]["value"] == pytest.approx(2.0)
+    reviewer_rows = obs.query_metrics(conn, "m", role="reviewer")
+    assert len(reviewer_rows) == 1
+    assert reviewer_rows[0]["value"] == pytest.approx(2.0)
 
 
 def test_query_returns_empty_for_unknown_metric(conn):
@@ -135,7 +135,7 @@ def test_query_labels_filter(conn):
 def test_emit_batch_inserts_all_rows(conn):
     """EC-3: emit_batch with 5+ metrics — all rows persisted, count matches."""
     metrics = [
-        {"name": "latency", "value": float(i), "labels": {"idx": i}, "role": "tester"}
+        {"name": "latency", "value": float(i), "labels": {"idx": i}, "role": "reviewer"}
         for i in range(6)
     ]
     count = obs.emit_batch(conn, metrics)
@@ -144,7 +144,7 @@ def test_emit_batch_inserts_all_rows(conn):
     assert len(rows) == 6
     for i, r in enumerate(rows):
         assert r["value"] == pytest.approx(float(i))
-        assert r["role"] == "tester"
+        assert r["role"] == "reviewer"
 
 
 def test_emit_batch_empty(conn):

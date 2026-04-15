@@ -8,7 +8,7 @@
 # @rationale The subagent-start.sh hook injects role-specific guidance into
 # every spawned agent. If a named role produces no additionalContext the agent
 # starts without governance instructions. This test validates each role case
-# in the switch statement: planner, Plan, implementer, tester, guardian.
+# in the switch statement: planner, Plan, implementer, guardian, reviewer.
 # Lightweight roles (Bash, Explore) only verify exit 0 — they intentionally
 # produce no output per the hook's design.
 set -euo pipefail
@@ -27,7 +27,7 @@ git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 echo "# MASTER_PLAN.md" > "$TMP_DIR/MASTER_PLAN.md"
 
 # Agent types that must produce additionalContext (named roles)
-NAMED_ROLES=("planner" "Plan" "implementer" "tester" "guardian")
+NAMED_ROLES=("planner" "Plan" "implementer" "guardian" "reviewer")
 # Lightweight types — hook exits 0 but output may be empty
 LIGHT_ROLES=("Bash" "Explore")
 

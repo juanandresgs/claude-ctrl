@@ -112,7 +112,7 @@ def test_expire_stale_mixed_age_only_old_expired(conn):
     """expire_stale only expires markers that exceed TTL."""
     now = int(time.time())
     markers.set_active(conn, "agent-old", "implementer")
-    markers.set_active(conn, "agent-new", "tester")
+    markers.set_active(conn, "agent-new", "reviewer")
     conn.execute(
         "UPDATE agent_markers SET started_at = ? WHERE agent_id = 'agent-old'",
         (now - 14400,),
@@ -331,7 +331,7 @@ def test_compound_crash_recovery_sequence(conn):
     assert markers.get_active(conn) is None
 
     # Step 5: new marker set succeeds cleanly
-    markers.set_active(conn, "agent-new", "tester")
+    markers.set_active(conn, "agent-new", "reviewer")
     active = markers.get_active(conn)
     assert active is not None
     assert active["agent_id"] == "agent-new"

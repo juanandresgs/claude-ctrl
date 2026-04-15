@@ -57,13 +57,16 @@ from runtime.schemas import DEFAULT_LEASE_TTL
 
 ROLE_DEFAULTS: dict[str, dict] = {
     "implementer": {"allowed_ops": ["routine_local"], "requires_eval": True},
-    "tester": {"allowed_ops": [], "requires_eval": False},
     "guardian": {
         "allowed_ops": ["routine_local", "high_risk", "admin_recovery"],
         "requires_eval": True,
     },
     "planner": {"allowed_ops": [], "requires_eval": False},
+    "reviewer": {"allowed_ops": [], "requires_eval": False},
 }
+# Note: the legacy "tester" role was retired in Phase 8 Slice 11 (Tester
+# Bundle 2). It is no longer a known role; unknown roles fall back to
+# ["routine_local"] per issue()'s default branch.
 
 
 # ---------------------------------------------------------------------------
@@ -498,8 +501,8 @@ def claim(
     Returns the claimed lease dict, or None if no active lease found.
 
     If expected_role is provided, the lease's role must match exactly. A
-    mismatch returns None — this prevents a tester from claiming a guardian
-    lease (DEC-LEASE-003).
+    mismatch returns None — this prevents one role from claiming another's
+    lease (e.g. a reviewer claiming a guardian lease; DEC-LEASE-003).
     """
     now = int(time.time())
 

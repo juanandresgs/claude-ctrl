@@ -81,11 +81,11 @@ def conn():
 
 
 def test_on_agent_start_sets_marker_active(conn):
-    on_agent_start(conn, "tester", "agent-abc")
+    on_agent_start(conn, "reviewer", "agent-abc")
     marker = markers.get_active(conn)
     assert marker is not None
     assert marker["agent_id"] == "agent-abc"
-    assert marker["role"] == "tester"
+    assert marker["role"] == "reviewer"
     assert marker["is_active"] == 1
 
 
@@ -98,9 +98,9 @@ def test_on_agent_start_implementer(conn):
 def test_on_agent_start_overwrites_previous_marker(conn):
     """Second start for same agent_id replaces existing marker."""
     on_agent_start(conn, "implementer", "agent-001")
-    on_agent_start(conn, "tester", "agent-001")
+    on_agent_start(conn, "reviewer", "agent-001")
     marker = markers.get_active(conn)
-    assert marker["role"] == "tester"
+    assert marker["role"] == "reviewer"
     assert marker["agent_id"] == "agent-001"
 
 
@@ -110,22 +110,22 @@ def test_on_agent_start_overwrites_previous_marker(conn):
 
 
 def test_on_agent_stop_deactivates_marker(conn):
-    on_agent_start(conn, "tester", "agent-xyz")
-    on_agent_stop(conn, "tester", "agent-xyz")
+    on_agent_start(conn, "reviewer", "agent-xyz")
+    on_agent_stop(conn, "reviewer", "agent-xyz")
     marker = markers.get_active(conn)
     assert marker is None
 
 
 def test_on_agent_stop_noop_when_no_marker(conn):
     """Deactivating a non-existent marker should not raise."""
-    on_agent_stop(conn, "tester", "agent-nonexistent")
+    on_agent_stop(conn, "reviewer", "agent-nonexistent")
     # No exception = pass
 
 
 def test_on_agent_stop_does_not_affect_other_markers(conn):
     """Stopping agent-A should not deactivate agent-B."""
     on_agent_start(conn, "implementer", "agent-A")
-    on_agent_start(conn, "tester", "agent-B")
+    on_agent_start(conn, "reviewer", "agent-B")
     on_agent_stop(conn, "implementer", "agent-A")
     # agent-B (most recently started) should still be active
     marker = markers.get_active(conn)
@@ -178,8 +178,8 @@ def test_dispatch_agent_start_via_cli(db_path):
 
 def test_dispatch_agent_stop_via_cli(db_path):
     """dispatch agent-stop deactivates an active marker via the local CLI path."""
-    _cc("dispatch", "agent-start", "tester", "agent-cli-002", db_path=db_path)
-    rc, data = _cc("dispatch", "agent-stop", "tester", "agent-cli-002", db_path=db_path)
+    _cc("dispatch", "agent-start", "reviewer", "agent-cli-002", db_path=db_path)
+    rc, data = _cc("dispatch", "agent-stop", "reviewer", "agent-cli-002", db_path=db_path)
     assert rc == 0, f"non-zero exit: {data}"
     assert data.get("status") == "ok"
     assert data.get("agent_id") == "agent-cli-002"
@@ -211,15 +211,17 @@ def test_dispatch_process_stop_reachable_via_local_cli_path(db_path):
     reachable. This test exercises that exact path by calling the CLI directly
     as a subprocess (the same mechanism post-task.sh uses after the fix).
     """
-    payload = json.dumps({"agent_type": "planner", "project_root": ""})
+    # Phase 6 Slice 4: planner requires lease+completion. Use implementer
+    # (fixed routing → reviewer) for the CLI reachability test.
+    payload = json.dumps({"agent_type": "implementer", "project_root": ""})
     rc, data = _cc("dispatch", "process-stop", db_path=db_path, stdin_text=payload)
     assert rc == 0, f"non-zero exit: {data}"
     # Must contain hookSpecificOutput — this is the contract post-task.sh checks
     assert "hookSpecificOutput" in data, f"missing hookSpecificOutput in: {data}"
     hook_out = data["hookSpecificOutput"]
     assert hook_out.get("hookEventName") == "SubagentStop"
-    # W-GWT-1: planner now routes to guardian (not implementer directly)
-    assert data.get("next_role") == "guardian"
+    # Phase 5: implementer routes to reviewer
+    assert data.get("next_role") == "reviewer"
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +231,12 @@ def test_dispatch_process_stop_reachable_via_local_cli_path(db_path):
 
 def test_on_stop_by_role_deactivates_matching_role(conn):
     """on_stop_by_role deactivates the active marker when role matches."""
-    on_agent_start(conn, "tester", "agent-role-001")
-    result = on_stop_by_role(conn, "tester")
+    on_agent_start(conn, "reviewer", "agent-role-001")
+    result = on_stop_by_role(conn, "reviewer")
     assert result["found"] is True
     assert result["deactivated"] is True
     assert result["agent_id"] == "agent-role-001"
-    assert result["role"] == "tester"
+    assert result["role"] == "reviewer"
     assert markers.get_active(conn) is None
 
 
@@ -249,7 +251,7 @@ def test_on_stop_by_role_noop_when_no_active_marker(conn):
 def test_on_stop_by_role_noop_when_role_mismatch(conn):
     """on_stop_by_role does not deactivate when active role differs from agent_type."""
     on_agent_start(conn, "guardian", "agent-guard-001")
-    result = on_stop_by_role(conn, "tester")  # wrong role
+    result = on_stop_by_role(conn, "reviewer")  # wrong role
     assert result["found"] is False
     assert result["deactivated"] is False
     # guardian marker is still active
@@ -260,7 +262,7 @@ def test_on_stop_by_role_noop_when_role_mismatch(conn):
 
 def test_on_stop_by_role_all_four_roles(conn):
     """on_stop_by_role works for every valid agent role."""
-    for role in ("implementer", "tester", "guardian", "planner"):
+    for role in ("implementer", "reviewer", "guardian", "planner"):
         on_agent_start(conn, role, f"agent-{role}")
         result = on_stop_by_role(conn, role)
         assert result["found"] is True, f"role={role} should match"
@@ -296,7 +298,7 @@ def test_lifecycle_on_stop_via_cli_deactivates_marker(db_path):
 
 def test_lifecycle_on_stop_via_cli_noop_when_no_marker(db_path):
     """lifecycle on-stop returns found=False when no active marker exists."""
-    rc, data = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    rc, data = _cc("lifecycle", "on-stop", "reviewer", db_path=db_path)
     assert rc == 0, f"non-zero exit: {data}"
     assert data.get("found") is False
     assert data.get("deactivated") is False
@@ -306,7 +308,7 @@ def test_lifecycle_on_stop_via_cli_noop_role_mismatch(db_path):
     """lifecycle on-stop does not deactivate a marker with a different role."""
     _cc("dispatch", "agent-start", "guardian", "agent-lc-guard", db_path=db_path)
 
-    rc, data = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    rc, data = _cc("lifecycle", "on-stop", "reviewer", db_path=db_path)
     assert rc == 0, f"non-zero exit: {data}"
     assert data.get("found") is False
     assert data.get("deactivated") is False
@@ -337,11 +339,11 @@ def test_on_stop_by_role_scoped_to_project_root(conn):
     could be missed because the globally-newest belonged to project B.
     """
     # Start two tester markers in two different projects
-    markers.set_active(conn, "agent-A", "tester", project_root="/repo/A", workflow_id=None)
-    markers.set_active(conn, "agent-B", "tester", project_root="/repo/B", workflow_id=None)
+    markers.set_active(conn, "agent-A", "reviewer", project_root="/repo/A", workflow_id=None)
+    markers.set_active(conn, "agent-B", "reviewer", project_root="/repo/B", workflow_id=None)
 
     # Stop tester in project A only — must leave B's marker intact
-    result = on_stop_by_role(conn, "tester", project_root="/repo/A")
+    result = on_stop_by_role(conn, "reviewer", project_root="/repo/A")
     assert result["found"] is True
     assert result["deactivated"] is True
     assert result["agent_id"] == "agent-A"
@@ -378,11 +380,11 @@ def test_on_stop_by_role_scoped_ignores_stale_other_project(conn):
 
 def test_on_stop_by_role_scoped_with_workflow_id(conn):
     """project_root + workflow_id narrow the scope further within a project."""
-    markers.set_active(conn, "agent-wf1", "tester", project_root="/repo/A", workflow_id="wf-001")
-    markers.set_active(conn, "agent-wf2", "tester", project_root="/repo/A", workflow_id="wf-002")
+    markers.set_active(conn, "agent-wf1", "reviewer", project_root="/repo/A", workflow_id="wf-001")
+    markers.set_active(conn, "agent-wf2", "reviewer", project_root="/repo/A", workflow_id="wf-002")
 
     # Stop only wf-001 in project A — wf-002 must survive
-    result = on_stop_by_role(conn, "tester", project_root="/repo/A", workflow_id="wf-001")
+    result = on_stop_by_role(conn, "reviewer", project_root="/repo/A", workflow_id="wf-001")
     assert result["found"] is True
     assert result["agent_id"] == "agent-wf1"
 
@@ -468,15 +470,15 @@ def test_lifecycle_on_stop_compound_check_hook_sequence(db_path):
     replaces the bash-side query-and-decide pattern in all four hooks.
     """
     # Step 1: start marker (as subagent-start.sh would)
-    _cc("dispatch", "agent-start", "tester", "agent-compound-001", db_path=db_path)
+    _cc("dispatch", "agent-start", "reviewer", "agent-compound-001", db_path=db_path)
 
     # Confirm active
     _, active_before = _cc("marker", "get-active", db_path=db_path)
     assert active_before.get("found") is True
-    assert active_before.get("role") == "tester"
+    assert active_before.get("role") == "reviewer"
 
-    # Step 2: check-tester.sh calls lifecycle on-stop (the new single authority)
-    rc, stop_result = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    # Step 2: the reviewer stop adapter calls lifecycle on-stop (the new single authority)
+    rc, stop_result = _cc("lifecycle", "on-stop", "reviewer", db_path=db_path)
     assert rc == 0
     assert stop_result.get("deactivated") is True
 
@@ -485,7 +487,7 @@ def test_lifecycle_on_stop_compound_check_hook_sequence(db_path):
     assert active_after.get("found") is False
 
     # Step 4: idempotent — second call is a no-op, not an error
-    rc2, second = _cc("lifecycle", "on-stop", "tester", db_path=db_path)
+    rc2, second = _cc("lifecycle", "on-stop", "reviewer", db_path=db_path)
     assert rc2 == 0
     assert second.get("found") is False
     assert second.get("deactivated") is False

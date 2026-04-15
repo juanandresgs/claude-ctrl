@@ -51,6 +51,7 @@ import json
 import time
 from typing import Optional
 
+from runtime.core.authority_registry import READ_ONLY_REVIEW
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -59,6 +60,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     Logic:
       1. Skip if meta-repo.
       2. Classify the command; skip if it is not a real git op.
+      2b. If READ_ONLY_REVIEW in capabilities: deny unconditionally (Phase 3).
       3. If no lease in context: deny with guidance to issue a lease.
       4. Belt-and-suspenders role check: if lease.role doesn't match actor_role, deny.
       5. If lease expired: deny with effects to expire stale leases.
@@ -78,6 +80,20 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # Meta-repo bypass.
     if request.context.is_meta_repo:
         return None
+
+    # Phase 3 capability gate: read-only stages (reviewer) must not run git
+    # operations regardless of lease contents. Changes and landing must route
+    # through implementer and guardian respectively.
+    if READ_ONLY_REVIEW in request.context.capabilities:
+        return PolicyDecision(
+            action="deny",
+            reason=(
+                "Read-only stage cannot run git operations. "
+                "Source changes must route through an implementer; "
+                "git landing must route through a guardian."
+            ),
+            policy_name="bash_git_who",
+        )
 
     lease = request.context.lease
 

@@ -133,16 +133,16 @@ case "$EVAL_STATUS" in
         VERIFICATION_NOTE="Evaluation state: ready_for_guardian — Guardian may proceed."
         ;;
     needs_changes)
-        VERIFICATION_NOTE="Evaluation state: needs_changes — Tester found issues. Address them before re-dispatching Tester."
+        VERIFICATION_NOTE="Evaluation state: needs_changes — Reviewer found issues. Address them before re-dispatching Reviewer."
         ;;
     blocked_by_plan)
-        VERIFICATION_NOTE="Evaluation state: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner to resolve."
+        VERIFICATION_NOTE="Evaluation state: blocked_by_plan — Reviewer flagged a plan gap. Dispatch Planner to resolve."
         ;;
     pending)
-        VERIFICATION_NOTE="Evaluation state: pending — dispatch Tester to evaluate this implementation."
+        VERIFICATION_NOTE="Evaluation state: pending — dispatch Reviewer to evaluate this implementation."
         ;;
     *)
-        VERIFICATION_NOTE="Evaluation state: idle — dispatch Tester after implementation evidence is prepared."
+        VERIFICATION_NOTE="Evaluation state: idle — dispatch Reviewer after implementation evidence is prepared."
         ;;
 esac
 
@@ -286,7 +286,8 @@ fi
 # @status accepted
 # @rationale The completion contract (DEC-IMPL-CONTRACT-001) requires a structured
 #   record in SQLite so dispatch_engine can read it in process_agent_stop(). This
-#   check performs the bash-side parse using the same trailer pattern as check-tester.sh
+#   check performs the bash-side parse using the same trailer-matching pattern
+#   used by the other SubagentStop adapters (e.g. check-reviewer.sh, check-guardian.sh)
 #   and submits via _local_cc_policy completion submit. Lease-first workflow identity
 #   (reusing _ASSESS_LEASE_CTX from Check 7) ensures the record is filed under the
 #   same workflow_id the dispatch engine resolves. When no active lease is found the

@@ -12,21 +12,23 @@ _ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from runtime.core.authority_registry import capabilities_for
 from runtime.core.policy_engine import PolicyContext, PolicyRequest
 
 
 def make_context(*, is_meta_repo=False, project_root="/project",
                  workflow_id="feature-test", lease=None, scope=None,
                  eval_state=None, test_state=None, binding=None,
-                 branch="feature/test") -> PolicyContext:
+                 branch="feature/test", actor_role="implementer") -> PolicyContext:
     return PolicyContext(
-        actor_role="implementer", actor_id="agent-test",
+        actor_role=actor_role, actor_id="agent-test",
         workflow_id=workflow_id,
         worktree_path="/project/.worktrees/feature-test",
         branch=branch, project_root=project_root,
         is_meta_repo=is_meta_repo, lease=lease, scope=scope,
         eval_state=eval_state, test_state=test_state, binding=binding,
         dispatch_phase=None,
+        capabilities=capabilities_for(actor_role),
     )
 
 

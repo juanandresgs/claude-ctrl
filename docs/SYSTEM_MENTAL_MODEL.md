@@ -91,7 +91,7 @@ These are no longer authoritative:
          +---------------------------------------------------------------+
                                                                  |
                                                       check-implementer.sh
-                                                      check-tester.sh
+                                                      check-reviewer.sh
                                                       check-guardian.sh
                                                       post-task.sh
                                                                  |
@@ -159,19 +159,18 @@ Implementer
 post-task
     |
     +--> evaluation_state = pending
-    +--> next role: tester
+    +--> next role: reviewer
 
-Tester
+Reviewer
     |
     | cannot write source
     | runs tests + live verification
     | must emit machine-parsed trailers:
-    |   EVAL_VERDICT
-    |   EVAL_TESTS_PASS
-    |   EVAL_NEXT_ROLE
-    |   EVAL_HEAD_SHA
+    |   REVIEW_VERDICT
+    |   REVIEW_HEAD_SHA
+    |   REVIEW_FINDINGS_JSON
     v
-check-tester.sh
+check-reviewer.sh (SubagentStop evaluator adapter)
     |
     +--> validates trailers fail-closed
     +--> writes completion_record
@@ -216,9 +215,9 @@ If a leased path is in play, the workflow identity comes from the lease, not fro
 
 This matters because multi-worktree and detached-head flows no longer depend on name guessing.
 
-### 2. Tester output now materially governs landing
+### 2. Reviewer output now materially governs landing
 
-Tester is not just advisory anymore. `check-tester.sh` parses structured trailers and writes `evaluation_state`.
+Evaluator output is not just advisory anymore. The SubagentStop evaluator adapter (`check-reviewer.sh` in the current live chain; Phase 8 Slice 10 retired the legacy tester evaluator adapter, and Slice 11 removed the `tester` role from the runtime entirely) parses structured trailers and writes `evaluation_state`.
 
 Guardian cannot land unless:
 
@@ -238,7 +237,7 @@ The write and git hooks now enforce role boundaries at action time:
 
 - Planner: governance / planning surfaces
 - Implementer: source changes
-- Tester: verification, no source authority
+- Reviewer: verification, no source authority
 - Guardian: permanent repo mutations only
 
 ### 5. Visibility reads runtime truth
@@ -253,10 +252,10 @@ You should expect the following behavior:
 - Unleased git operations in enforced paths are denied immediately.
 - Guardian cannot commit, merge, or push without the right lease and scope.
 - Guardian cannot land with failing or stale test state.
-- Guardian cannot land if Tester cleared a different SHA than the one currently checked out.
-- If code changes after Tester clears it, readiness goes back to pending.
-- Tester verdicts route work back to Implementer, Planner, or forward to Guardian in a deterministic way.
-- Missing or malformed tester trailers fail closed.
+- Guardian cannot land if the Reviewer cleared a different SHA than the one currently checked out.
+- If code changes after the Reviewer clears it, readiness goes back to pending.
+- Reviewer verdicts route work back to Implementer, Planner, or forward to Guardian in a deterministic way.
+- Missing or malformed reviewer trailers fail closed.
 - The system should produce fewer confusing "it fell back to something else" cases.
 
 ## Operator Cheat Sheet
@@ -271,12 +270,12 @@ You should expect the following behavior:
 
 - Owns source changes
 - Does not own landing
-- Completion reopens evaluation and hands off to Tester
+- Completion reopens evaluation and hands off to Reviewer
 
-### Tester
+### Reviewer
 
 - Owns the verification verdict
-- Must emit valid `EVAL_*` trailers
+- Must emit valid `REVIEW_*` trailers
 - Can send the workflow back to Implementer, back to Planner, or forward to Guardian
 
 ### Guardian

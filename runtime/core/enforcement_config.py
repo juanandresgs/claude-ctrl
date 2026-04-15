@@ -13,11 +13,14 @@ Rationale: Before this module, enforcement toggles were scattered across
 Scope precedence (lookup order):
   workflow=<id>  →  project=<root>  →  global  →  None
 
-WHO gate: guardian remains the writer for enforcement-sensitive toggles.
+WHO gate: write authority is resolved via ``authority_registry.capabilities_for()``
+  and the ``CAN_SET_CONTROL_CONFIG`` capability. The authority registry
+  (DEC-CLAUDEX-AUTHORITY-REGISTRY-001) declares planner as the sole stage
+  carrying this capability — guardian stages (provision / land) do not carry it.
   The sole exception is ``review_gate_regular_stop``: it is a user-facing
   session-end preference, so the orchestrator/user path (empty actor_role)
   may write it directly. This keeps the canonical authority in the runtime
-  without forcing plugin setup through a guardian lease.
+  without forcing plugin setup through a planner dispatch.
 
 @decision DEC-REGULAR-STOP-REVIEW-001
 Title: Regular Stop review gate toggled via enforcement_config, not state.json
@@ -39,9 +42,11 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
+from runtime.core.authority_registry import CAN_SET_CONTROL_CONFIG, capabilities_for
+
 
 class PermissionError(Exception):
-    """Raised when a non-guardian actor attempts to set a config value.
+    """Raised when an actor without CAN_SET_CONTROL_CONFIG attempts to set a config value.
 
     Named PermissionError (shadows the builtin in this module) so callers
     can catch it with a descriptive name. Import as
@@ -93,18 +98,19 @@ def set_(
 ) -> None:
     """Set a config value with the configured WHO gate.
 
-    Guardian remains the writer for enforcement-sensitive keys. The sole
-    exception is ``review_gate_regular_stop``, which may also be written by
-    the orchestrator/user path (empty actor_role) because it is a user-facing
-    regular-Stop preference.
+    Actors with CAN_SET_CONTROL_CONFIG may write enforcement-sensitive keys.
+    The sole exception is ``review_gate_regular_stop``, which may also be
+    written by the orchestrator/user path (empty actor_role) because it is a
+    user-facing regular-Stop preference.
 
     Uses UPSERT so re-setting an existing key updates updated_at atomically.
     """
     if key == "review_gate_regular_stop" and (actor_role is None or actor_role == ""):
-        pass
-    elif actor_role != "guardian":
+        pass  # user-facing preference; orchestrator/user path exempt
+    elif CAN_SET_CONTROL_CONFIG not in capabilities_for(actor_role or ""):
         raise PermissionError(
-            f"Only guardian role may set enforcement_config (got actor_role={actor_role!r})"
+            f"Actor {actor_role!r} lacks {CAN_SET_CONTROL_CONFIG} capability "
+            f"(required to write enforcement_config)"
         )
     with conn:
         conn.execute(

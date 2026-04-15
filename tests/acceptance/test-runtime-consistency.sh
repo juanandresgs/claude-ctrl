@@ -102,12 +102,14 @@ assert_eq "proof round-trip: found is true" "true" "$found"
 # ---------------------------------------------------------------------------
 printf '\n-- 2: marker round-trip (CLI write -> CLI read)\n'
 
-policy marker set "agent-rt-001" "tester" >/dev/null
+# Phase 8 Slice 11 retired the legacy ``tester`` role; the marker round-trip
+# is exercised against ``reviewer`` (the live read-only evaluator).
+policy marker set "agent-rt-001" "reviewer" >/dev/null
 result=$(policy marker get-active)
 
 role=$(printf '%s' "$result" | jq -r '.role // empty')
 agent_id=$(printf '%s' "$result" | jq -r '.agent_id // empty')
-assert_eq "marker round-trip: role is tester"           "tester"       "$role"
+assert_eq "marker round-trip: role is reviewer"         "reviewer"     "$role"
 assert_eq "marker round-trip: agent_id matches"         "agent-rt-001" "$agent_id"
 assert_eq "marker round-trip: found is true"            "true" \
     "$(printf '%s' "$result" | jq -r '.found // false')"
@@ -140,23 +142,29 @@ policy worktree register "/tmp/rt-wt-a" "feature/rt-a" --ticket "TKT-014" >/dev/
 cycle_json=$(policy dispatch cycle-start "INIT-RT-TEST")
 
 # DEC-WS6-001: dispatch_status is derived from the latest completion record via
-# determine_next_role(role, verdict), not from dispatch_queue. Issue a tester
+# determine_next_role(role, verdict), not from dispatch_queue. Issue a reviewer
 # lease and submit a completion with verdict=ready_for_guardian so the snapshot
-# returns dispatch_status=guardian.
+# returns dispatch_status=guardian. (Phase 8 Slice 11 retired ``tester``; the
+# reviewer is the live read-only evaluator after Slice 11.)
 RT_WORKFLOW="wf-rt-dispatch-test"
 policy workflow bind "$RT_WORKFLOW" "$TMP_DIR" "feature/rt-test" >/dev/null 2>&1 || true
 policy workflow scope-set "$RT_WORKFLOW" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1 || true
-TESTER_LEASE_OUT=$(policy lease issue-for-dispatch "tester" \
+REVIEWER_LEASE_OUT=$(policy lease issue-for-dispatch "reviewer" \
     --worktree-path "$TMP_DIR" \
     --workflow-id "$RT_WORKFLOW" \
     --allowed-ops '["routine_local"]' 2>/dev/null || echo '{}')
-TESTER_LEASE_ID=$(printf '%s' "$TESTER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
-if [[ -n "$TESTER_LEASE_ID" ]]; then
-    COMP_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"true","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"abc123"}'
+REVIEWER_LEASE_ID=$(printf '%s' "$REVIEWER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
+if [[ -n "$REVIEWER_LEASE_ID" ]]; then
+    COMP_PAYLOAD=$(jq -nc \
+        '{
+            REVIEW_VERDICT: "ready_for_guardian",
+            REVIEW_HEAD_SHA: "abc123",
+            REVIEW_FINDINGS_JSON: ({findings: [{severity: "note", title: "ok", detail: "ok"}]} | tojson)
+        }')
     policy completion submit \
-        --lease-id "$TESTER_LEASE_ID" \
+        --lease-id "$REVIEWER_LEASE_ID" \
         --workflow-id "$RT_WORKFLOW" \
-        --role "tester" \
+        --role "reviewer" \
         --payload "$COMP_PAYLOAD" >/dev/null 2>&1 || true
 fi
 
@@ -164,7 +172,7 @@ snap=$(policy statusline snapshot)
 
 assert_eq "snapshot: status ok"           "ok"       "$(printf '%s' "$snap" | jq -r '.status')"
 # W-CONV-4: proof_status/proof_workflow removed from snapshot
-assert_eq "snapshot: active_agent tester" "tester"   "$(printf '%s' "$snap" | jq -r '.active_agent')"
+assert_eq "snapshot: active_agent reviewer" "reviewer" "$(printf '%s' "$snap" | jq -r '.active_agent')"
 assert_jq_true "snapshot: worktree_count >= 1" "$snap" "(.worktree_count >= 1)"
 assert_eq "snapshot: dispatch_status guardian" "guardian" \
     "$(printf '%s' "$snap" | jq -r '.dispatch_status')"

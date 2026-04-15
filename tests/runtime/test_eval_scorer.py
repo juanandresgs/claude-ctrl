@@ -44,7 +44,9 @@ def conn():
     c.close()
 
 
-# Realistic evaluator output that follows agents/tester.md format exactly.
+# Realistic evaluator output matching the canonical evaluator format.
+# (Historical note: the format originated in agents/tester.md, which was
+# deleted in Phase 8 Slice 10 when the tester role was retired.)
 SAMPLE_EVALUATOR_OUTPUT = """\
 ## What Was Built
 
@@ -589,9 +591,10 @@ def test_score_scenario_empty_output():
 
 
 def test_extract_confidence_from_real_tester_format():
-    r"""Regression: _extract_confidence_level must parse the canonical tester.md bold format.
+    r"""Regression: _extract_confidence_level must parse the canonical evaluator bold format.
 
-    The canonical format emitted by agents/tester.md is:
+    The canonical format (originally emitted by the retired ``agents/tester.md``
+    template, deleted in Phase 8 Slice 10) is:
         **Confidence Level:** **High** — all items met.
 
     The regex previously used [:\s]+ which does not include '*', so it failed

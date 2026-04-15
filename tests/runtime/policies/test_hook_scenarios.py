@@ -391,15 +391,6 @@ def test_pre_write_hook_cases(tmp_path, case):
             "reason_substring": "planner",
         },
         {
-            "id": "write-guard-tester-deny",
-            "hook_path": _WRITE_GUARD_HOOK,
-            "role": "tester",
-            "file_path": "src/app.ts",
-            "content": "export const x = 1;\n",
-            "expected_decision": "deny",
-            "reason_substring": "tester",
-        },
-        {
             "id": "plan-guard-planner-allow",
             "hook_path": _PLAN_GUARD_HOOK,
             "role": "planner",

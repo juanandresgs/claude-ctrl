@@ -22,14 +22,14 @@ Rationale: post-task.sh contained ~200 lines of routing logic in bash including
   is determined. Releasing before routing made completion records unreachable
   because leases.get_current() only returns active leases.
 
-  Key invariant from DEC-COMPLETION-001: routing for tester and guardian is
+  Key invariant from DEC-COMPLETION-001: routing for reviewer and guardian is
   exclusively via completions.determine_next_role(). No case statement maps
   verdicts to roles in this module — that table lives only in completions.py.
 
-  Key invariant from DEC-EVAL-001: eval_state is written to 'pending' only for
-  the implementer role (post-task.sh was the sole writer for this transition).
-  Tester and guardian do not write eval_state here; check-tester.sh owns the
-  ready_for_guardian write.
+  Phase 5 (DEC-PHASE5-ROUTING-001): implementer routes to reviewer. The
+  tester role is retired (Phase 8 Slice 11) — it is no longer a known
+  runtime type and stop events that carry ``agent_type="tester"`` are
+  handled by the generic unknown-type path (silent exit).
 
 @decision DEC-STOP-ASSESS-002
 Title: agent_complete vs agent_stopped gating via stop_assessment event
@@ -50,7 +50,7 @@ Rationale: The heuristic (DEC-STOP-ASSESS-001) detects interrupted implementers
   via future-tense trailing signals — a narrow proxy. When IMPL_STATUS and
   IMPL_HEAD_SHA trailers are present and valid, the structured contract is
   authoritative for agent_complete vs agent_stopped. The heuristic is fallback
-  only when no valid completion record exists. Routing (implementer → tester)
+  only when no valid completion record exists. Routing (implementer → reviewer)
   is unchanged — the contract affects stop quality, not routing.
 
   Implementation: stop-event emission is deferred past the implementer role block
@@ -83,19 +83,33 @@ Rationale: Guardian is the sole worktree lifecycle authority (INIT-GUARD-WT). Th
   extracts it and sets result["worktree_path"], the suggestion builder encodes it in the
   AUTO_DISPATCH line, and cli.py serializes it in the passthrough dict (DEC-GUARD-WT-003).
 
-  On rework cycles (tester needs_changes -> implementer), the worktree already exists.
+  On rework cycles (reviewer needs_changes -> implementer), the worktree already exists.
   dispatch_engine reads worktree_path from workflow_bindings via workflows.get_binding()
   and encodes it in the needs_changes AUTO_DISPATCH suggestion so the orchestrator can
   pass it to the re-dispatched implementer (DEC-GUARD-WT-004).
+
+@decision DEC-PHASE5-STOP-REVIEW-SEPARATION-001
+Title: Codex stop-review gate is non-authoritative for workflow dispatch
+Status: accepted
+Rationale: The Codex stop-review gate (W-AD-3 / DEC-AD-002) was originally wired
+  into the auto_dispatch decision path to allow a Codex supervisor to halt the
+  workflow chain for human review. Phase 5 separates this: workflow auto_dispatch
+  is determined by runtime workflow facts only (next_role present, no PROCESS ERROR,
+  not interrupted). The stop-review gate remains wired in settings.json for
+  user-facing review (the hook still runs, the systemMessage still surfaces) but
+  its VERDICT: BLOCK no longer overrides auto_dispatch or injects CODEX BLOCK into
+  the workflow suggestion. _check_codex_gate has been deleted — no runtime consumer
+  remains.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from typing import Optional
 
-from runtime.core import completions, evaluation, events, leases
+from runtime.core import completions, dispatch_shadow, events, leases
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -116,14 +130,14 @@ def process_agent_stop(
     Args:
         conn:         Open SQLite connection with schema applied.
         agent_type:   Role string from the hook input (planner, implementer,
-                      tester, guardian). Unknown types return silently.
+                      reviewer, guardian). Unknown types return silently.
         project_root: Filesystem path to the project root. Used to resolve the
                       active lease via worktree path when no explicit lease_id
                       is supplied. May be empty string when unavailable.
 
     Returns:
         dict with:
-          next_role   str | None  — None means cycle complete or unknown type.
+          next_role   str | None  — None means terminal planner verdict or unknown type.
           workflow_id str         — resolved from active lease or empty string.
           suggestion  str         — human-readable dispatch hint for
                                     additionalContext in hookSpecificOutput.
@@ -137,10 +151,8 @@ def process_agent_stop(
         "error": None,
         "events": [],
         "auto_dispatch": False,
-        "codex_blocked": False,
-        "codex_reason": "",
         # W-GWT-1: guardian_mode distinguishes provision (planner→guardian) from
-        # merge (tester→guardian). Populated by the planner block only.
+        # merge (reviewer→guardian). Populated by the planner block only.
         "guardian_mode": "",
         # W-GWT-1: worktree_path is extracted from the guardian completion record
         # payload (provisioned verdict) or from workflow_bindings (rework path).
@@ -154,7 +166,7 @@ def process_agent_stop(
 
     # Exit silently for unknown types — hooks must not interfere with inputs
     # they do not own.
-    _known_types = {"planner", "implementer", "tester", "guardian"}
+    _known_types = {"planner", "implementer", "guardian", "reviewer"}
     if normalised not in _known_types:
         return result
 
@@ -183,43 +195,101 @@ def process_agent_stop(
     # ---------------------------------------------------------------------------
     # Role-specific routing
     # ---------------------------------------------------------------------------
-    if normalised == "planner":
-        # W-GWT-1 (DEC-GUARD-WT-001): Route planner -> guardian for worktree
-        # provisioning. Guardian determines its mode from guardian_mode field.
-        result["next_role"] = "guardian"
-        result["guardian_mode"] = "provision"
-        # workflow_id at planner stop is best-effort (DEC-GUARD-WT-006 R3).
-        # _resolve_lease_context() already ran above; if it yielded a
-        # workflow_id (planner held a pre-issued lease), use it. If not, try
-        # the branch-derived fallback. Either way, routing is not gated on it —
-        # the orchestrator has workflow_id from its plan context and passes it
-        # as a CLI argument to the provision command.
-        if not workflow_id:
-            try:
-                from runtime.core import policy_utils
+    # Phase 6 Slice 4: planner verdict extracted for the suggestion builder.
+    # Terminal verdicts (goal_complete, needs_user_decision, blocked_external)
+    # route to None; the suggestion builder emits explicit signals so the
+    # orchestrator knows the reason.
+    _planner_verdict = ""
 
-                workflow_id = policy_utils.current_workflow_id(project_root)
-                result["workflow_id"] = workflow_id
+    if normalised == "planner":
+        # Phase 6 Slice 4: planner routing consumes structured completion record
+        # via _route_from_completion → determine_next_role("planner", PLAN_VERDICT)
+        # → stage_registry. Replaces unconditional planner→guardian(provision).
+        next_role, error = _route_from_completion(
+            conn,
+            role="planner",
+            workflow_id=workflow_id,
+            active_lease_id=active_lease_id,
+        )
+        result["next_role"] = next_role
+        result["error"] = error
+        # W-GWT-1: when planner routes to guardian (next_work_item verdict),
+        # set guardian_mode=provision so guardian knows to provision a worktree.
+        if next_role == "guardian" and not error:
+            result["guardian_mode"] = "provision"
+        # Extract planner verdict for terminal suggestion signals.
+        if not error and active_lease_id:
+            try:
+                _pcomp = completions.latest(conn, lease_id=active_lease_id)
+                if _pcomp and _pcomp.get("role") == "planner":
+                    _planner_verdict = _pcomp.get("verdict", "")
             except Exception:
-                pass  # Best-effort; omit from suggestion if unavailable.
+                pass
+
+        # Phase 6 Slice 6: autonomy-budget enforcement for planner continuation.
+        # When planner routes to guardian (next_work_item verdict), check the
+        # goal contract's autonomy budget. If budget is exhausted, goal is
+        # not active, or no goal contract exists, suppress auto-dispatch and
+        # surface a user-boundary signal. Fail closed: if the budget check
+        # raises, do NOT auto-dispatch guardian — surface an error instead.
+        # goal_continuation is the sole budget authority — hooks must not
+        # duplicate this logic.
+        if next_role == "guardian" and not error and workflow_id:
+            try:
+                from runtime.core import goal_continuation as gc
+
+                cont = gc.check_continuation_budget(conn, workflow_id=workflow_id)
+                if not cont.allowed:
+                    result["next_role"] = None
+                    result["guardian_mode"] = ""
+                    result["budget_exhausted"] = True
+                    result["budget_signal"] = cont.signal
+            except Exception as exc:
+                # Fail closed: budget authority failure must not allow
+                # ungatted auto-dispatch to guardian.
+                result["next_role"] = None
+                result["guardian_mode"] = ""
+                result["budget_exhausted"] = True
+                result["budget_signal"] = "BUDGET_CHECK_FAILED"
+                result["error"] = (
+                    f"PROCESS ERROR: BUDGET_CHECK_FAILED — "
+                    f"Goal-continuation budget check failed: {exc}"
+                )
+
+        # Phase 6 Slice 6: update goal status for terminal planner verdicts.
+        if _planner_verdict and not error and workflow_id:
+            try:
+                from runtime.core import goal_continuation as gc
+
+                gc.update_goal_status_for_verdict(
+                    conn, workflow_id=workflow_id, verdict=_planner_verdict
+                )
+            except Exception:
+                pass  # Goal-status update is best-effort.
 
     elif normalised == "implementer":
-        result["next_role"] = "tester"
-        # Set eval_state = pending so the tester knows fresh work awaits.
-        # This is the sole post-task writer for the pending transition
-        # (DEC-EVAL-001). Skip for the claude meta-repo (no workflow to track).
+        # Phase 5 (DEC-PHASE5-ROUTING-001): implementer routes to reviewer.
+        # (The previous tester-readiness coupling that wrote
+        # evaluation_state=pending here was removed in Phase 5; the tester
+        # role itself was retired in Phase 8 Slice 11.)
+        result["next_role"] = "reviewer"
+
+        # Populate worktree_path so the reviewer runs in the same worktree
+        # as the implementer. Read from the active lease or workflow binding.
         if workflow_id:
             try:
-                evaluation.set_status(conn, workflow_id, "pending")
-                evt_id = events.emit(conn, type="eval_pending", detail=workflow_id)
-                result["events"].append({"type": "eval_pending", "id": evt_id})
+                from runtime.core import workflows
+
+                binding = workflows.get_binding(conn, workflow_id)
+                if binding:
+                    result["worktree_path"] = binding.get("worktree_path") or ""
             except Exception:
-                pass  # Best-effort; routing is not gated on eval write.
+                pass  # Advisory; routing is not gated on the binding lookup.
 
         # Check for structured completion contract (DEC-IMPL-CONTRACT-001).
         # When present and valid, trust IMPL_STATUS over the stop-assessment
         # heuristic. When absent or invalid, the heuristic from above still
-        # applies. Routing (→ tester) is unchanged in all cases.
+        # applies. Routing (→ reviewer) is unchanged in all cases.
         if active_lease_id:
             try:
                 impl_comp = completions.latest(conn, lease_id=active_lease_id)
@@ -246,20 +316,22 @@ def process_agent_stop(
             except Exception:
                 pass  # Contract lookup is best-effort; never block routing.
 
-    elif normalised == "tester":
+    elif normalised == "reviewer":
         next_role, error = _route_from_completion(
             conn,
-            role="tester",
+            role="reviewer",
             workflow_id=workflow_id,
             active_lease_id=active_lease_id,
         )
         result["next_role"] = next_role
         result["error"] = error
-        # W-GWT-1 rework path (DEC-GUARD-WT-004): when tester routes to
-        # implementer (needs_changes), the worktree already exists. Read
-        # worktree_path from workflow_bindings so the orchestrator can pass
-        # it in the implementer re-dispatch context. Best-effort — routing
-        # is not gated on the binding lookup.
+        # Rework path: when reviewer routes to implementer (needs_changes),
+        # the worktree already exists. Read worktree_path from workflow
+        # bindings so the orchestrator can pass it in the implementer
+        # re-dispatch context. (The legacy tester needs_changes path that
+        # originally sourced this pattern was retired in Phase 8 Slice 11;
+        # reviewer needs_changes is now the sole producer of this
+        # DEC-GUARD-WT-004 re-dispatch shape.)
         if next_role == "implementer" and workflow_id and not error:
             try:
                 from runtime.core import workflows
@@ -302,8 +374,8 @@ def process_agent_stop(
     #   - no PROCESS ERROR occurred
     #   - agent was not interrupted mid-task
     #
-    # False for: interrupted agents, routing errors, terminal states
-    # (cycle complete after guardian committed/merged), unknown agent types.
+    # False for: interrupted agents, routing errors, planner terminal states
+    # (goal_complete / blocked_external), unknown agent types.
     # ---------------------------------------------------------------------------
     result["auto_dispatch"] = (
         result["next_role"] is not None
@@ -313,17 +385,12 @@ def process_agent_stop(
     )
 
     # ---------------------------------------------------------------------------
-    # Codex stop-review gate (W-AD-3 — DEC-AD-002)
-    #
-    # Only runs when auto_dispatch is already True — no point querying the gate
-    # if routing already blocked. Advisory: errors never block routing.
+    # DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Codex stop-review gate is NOT
+    # consulted for workflow auto-dispatch decisions. auto_dispatch is
+    # determined by runtime workflow facts only (next_role present, no error,
+    # not interrupted). The stop-review gate remains wired in settings.json
+    # for user-facing review but is non-authoritative for workflow routing.
     # ---------------------------------------------------------------------------
-    if result["auto_dispatch"]:
-        codex_blocked, codex_reason = _check_codex_gate(conn, workflow_id)
-        if codex_blocked:
-            result["auto_dispatch"] = False
-            result["codex_blocked"] = True
-            result["codex_reason"] = codex_reason
 
     # ---------------------------------------------------------------------------
     # Build suggestion for hookSpecificOutput additionalContext
@@ -336,7 +403,7 @@ def process_agent_stop(
     # Encoding rules:
     #   planner -> guardian:     AUTO_DISPATCH: guardian (mode=provision, workflow_id=W)
     #   guardian -> implementer: AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
-    #   tester needs_changes:    AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
+    #   reviewer needs_changes:  AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
     #   all other transitions:   AUTO_DISPATCH: <role> (workflow_id=W)
     # ---------------------------------------------------------------------------
     if result["error"]:
@@ -352,7 +419,7 @@ def process_agent_stop(
 
         # Build the structured parameter block (W-GWT-1).
         # planner -> guardian: encode mode=provision
-        # guardian/tester -> implementer with worktree: encode worktree_path
+        # guardian/reviewer -> implementer with worktree: encode worktree_path
         params: list[str] = []
         guardian_mode = result.get("guardian_mode", "")
         worktree_path = result.get("worktree_path", "")
@@ -366,21 +433,43 @@ def process_agent_stop(
             suggestion += f" ({', '.join(params)})"
 
         result["suggestion"] = suggestion
-    elif normalised == "guardian" and not result["error"]:
-        # Terminal state — cycle complete.
-        try:
-            events.emit(
-                conn, type="cycle_complete", detail="Guardian completed — dispatch cycle done"
-            )
-        except Exception:
-            pass
+    elif normalised == "planner" and not result["error"]:
+        # Planner terminal or budget-gated state: next_role=None.
+        # Phase 6 Slice 6: budget_signal takes precedence over terminal signals
+        # when the planner verdict was next_work_item but budget enforcement
+        # suppressed auto-dispatch.
+        budget_signal = result.get("budget_signal", "")
+        if budget_signal:
+            result["suggestion"] = budget_signal
+        else:
+            # Terminal planner verdicts emit explicit signals:
+            #   goal_complete       → GOAL_COMPLETE (all work items done)
+            #   needs_user_decision → USER_DECISION_REQUIRED (user input needed)
+            #   blocked_external    → BLOCKED_EXTERNAL (external dependency)
+            _PLANNER_TERMINAL_SIGNALS = {
+                "goal_complete": "GOAL_COMPLETE",
+                "needs_user_decision": "USER_DECISION_REQUIRED",
+                "blocked_external": "BLOCKED_EXTERNAL",
+            }
+            signal = _PLANNER_TERMINAL_SIGNALS.get(_planner_verdict, "")
+            if signal:
+                result["suggestion"] = signal
+        if _planner_verdict == "goal_complete":
+            try:
+                events.emit(
+                    conn,
+                    type="cycle_complete",
+                    detail="Planner goal_complete — all work items done",
+                )
+            except Exception:
+                pass
+    elif normalised == "guardian" and not result["error"] and not result["next_role"]:
+        # Guardian terminal state (should not occur with stage_registry routing,
+        # but retained as a safety net for unknown verdicts).
         result["suggestion"] = ""
 
-    # Append Codex block reason when gate fired.
-    if result.get("codex_blocked"):
-        result["suggestion"] = (result["suggestion"] or "") + (
-            f"\nCODEX BLOCK: {result['codex_reason']}"
-        )
+    # DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Codex block reason no longer
+    # appended to workflow suggestion. Stop-review is a separate lane.
 
     # Append interruption warning to suggestion when check-* hooks flagged an
     # interrupted stop. Advisory only — does not change routing.
@@ -395,64 +484,34 @@ def process_agent_stop(
     except NameError:
         pass  # is_interrupted not set if emit block raised before assignment.
 
+    # ---------------------------------------------------------------------------
+    # Shadow observer emission (DEC-CLAUDEX-DISPATCH-SHADOW-001)
+    #
+    # Best-effort side-channel that records what the target ClauDEX stage
+    # registry would have decided for this same (role, verdict) pair. Zero
+    # routing effect: wrapped in a broad try/except, never mutates ``result``,
+    # never reads from anything except the completion record that the live
+    # path already consulted. When the live path errored, skipped altogether
+    # since there is no routing decision to compare against.
+    # ---------------------------------------------------------------------------
+    try:
+        if result["error"] is None:
+            _emit_shadow_stage_decision(
+                conn,
+                live_role=normalised,
+                result=result,
+                active_lease_id=active_lease_id,
+                workflow_id=workflow_id,
+            )
+    except Exception:
+        pass  # Shadow emission must never affect live routing (DEC-CLAUDEX-DISPATCH-SHADOW-001).
+
     return result
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_codex_gate(
-    conn: sqlite3.Connection,
-    workflow_id: str,
-) -> tuple[bool, str]:
-    """Check if the Codex stop-review gate blocked auto-dispatch (W-AD-3).
-
-    Queries the events table for the most recent codex_stop_review event
-    for the current workflow within a 60-second window. Returns (blocked, reason).
-
-    The gate is advisory: any exception during lookup is swallowed and the
-    function returns (False, "") so routing is never blocked by a gate error.
-
-    Args:
-        conn:        Open SQLite connection with schema applied.
-        workflow_id: Current workflow_id. The Codex hook writes it into
-                     events.source as ``workflow:<id>`` and the gate only
-                     consults events carrying that exact scope key.
-
-    Returns:
-        (blocked, reason) — blocked is True only when the most recent
-        codex_stop_review event within 60 seconds contains "VERDICT: BLOCK".
-        reason is the human review reason from the detail string, with any
-        ``workflow=<id> |`` prefix stripped away.
-    """
-    if not workflow_id:
-        return False, ""
-
-    source_key = f"workflow:{workflow_id}"
-
-    try:
-        recent = events.query(
-            conn,
-            type="codex_stop_review",
-            source=source_key,
-            since=int(time.time()) - 60,
-            limit=1,
-        )
-        for evt in recent:
-            detail = evt.get("detail") or ""
-            if "VERDICT: BLOCK" in detail:
-                # Strip the verdict prefix, then drop the workflow marker segment
-                # when the hook wrote the compatibility format:
-                #   VERDICT: BLOCK — workflow=<id> | <reason>
-                reason = detail.split("VERDICT: BLOCK", 1)[1].strip().lstrip("\u2014- ").strip()
-                if reason.startswith("workflow=") and "|" in reason:
-                    reason = reason.split("|", 1)[1].strip()
-                return True, reason or "Codex review blocked"
-    except Exception:
-        pass  # Advisory; never block routing on gate errors (DEC-AD-003).
-    return False, ""
 
 
 def _resolve_stop_assessment_wf_id(
@@ -587,7 +646,7 @@ def _route_from_completion(
 
     Returns:
         (next_role, error) — exactly one will be non-None on failure,
-        next_role may be None for cycle-complete terminal states.
+        next_role may be None for planner terminal verdicts or unknown combos.
     """
     if not workflow_id:
         # No workflow_id resolvable at all — cannot route.
@@ -598,7 +657,7 @@ def _route_from_completion(
         return None, error
 
     if not active_lease_id:
-        # No active lease — tester/guardian must run under a lease.
+        # No active lease — reviewer/guardian must run under a lease.
         error = (
             f"PROCESS ERROR: {role.capitalize()} completed without an active lease for "
             f"workflow {workflow_id}. Cannot route."
@@ -775,5 +834,81 @@ def _safe_release(conn: sqlite3.Connection, lease_id: str) -> None:
     """Release a lease without raising. Fire-and-forget."""
     try:
         leases.release(conn, lease_id)
+    except Exception:
+        pass
+
+
+def _emit_shadow_stage_decision(
+    conn: sqlite3.Connection,
+    *,
+    live_role: str,
+    result: dict,
+    active_lease_id: str,
+    workflow_id: str,
+) -> None:
+    """Emit a ``shadow_stage_decision`` audit event for the current routing.
+
+    DEC-CLAUDEX-DISPATCH-SHADOW-001: this is the Phase 1 shadow observer.
+    It records what the target ClauDEX stage registry would have routed for
+    the same (live_role, verdict) pair so later parity analysis can classify
+    known divergences without affecting any live routing.
+
+    Best-effort contract:
+      * Never raises (caller is already wrapped in try/except).
+      * Never mutates ``result`` or any runtime state outside the events
+        table.
+      * Reads only the completion record that the live path already
+        consulted. Completion records persist after lease release, so this
+        is a safe pure read.
+
+    The event detail is JSON-encoded with a stable field set produced by
+    ``dispatch_shadow.compute_shadow_decision``.
+    """
+    # Look up the live verdict from the completion record. All routing roles
+    # now have structured completion records (planner added Phase 6 Slice 4).
+    live_verdict = ""
+    if live_role in ("planner", "implementer", "guardian", "reviewer") and active_lease_id:
+        try:
+            comp = completions.latest(conn, lease_id=active_lease_id)
+            if comp and comp.get("role") == live_role:
+                live_verdict = comp.get("verdict") or ""
+        except Exception:
+            pass  # Best-effort; absence just means no verdict to compare.
+
+    # All routing roles require a verdict for meaningful shadow comparison.
+    # Absence of a verdict means the live path did not finish routing
+    # (contract missing / invalid); skip emission.
+    if not live_verdict:
+        return
+
+    decision = dispatch_shadow.compute_shadow_decision(
+        live_role=live_role,
+        live_verdict=live_verdict,
+        live_next_role=result.get("next_role"),
+        guardian_mode=result.get("guardian_mode", "") or "",
+    )
+
+    # Augment with workflow identity so downstream analysis can scope by
+    # workflow without re-joining tables.
+    payload = dict(decision)
+    payload["workflow_id"] = workflow_id or ""
+
+    try:
+        detail = json.dumps(payload, sort_keys=True)
+    except (TypeError, ValueError):
+        return  # Unserialisable payload — drop silently.
+
+    source = f"workflow:{workflow_id}" if workflow_id else None
+    evt_id = events.emit(
+        conn,
+        type="shadow_stage_decision",
+        source=source,
+        detail=detail,
+    )
+    # Expose the event id in result["events"] for tests / diagnostics, but
+    # do NOT add it to any routing-affecting field. auto_dispatch and
+    # next_role are already finalised above.
+    try:
+        result["events"].append({"type": "shadow_stage_decision", "id": evt_id})
     except Exception:
         pass

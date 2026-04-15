@@ -5,7 +5,7 @@ set -euo pipefail
 # SubagentStart hook — matcher: (all agent types)
 #
 # Injects current project state into every subagent so Planner,
-# Implementer, Tester, and Guardian agents always have fresh context:
+# Implementer, Guardian, and Reviewer agents always have fresh context:
 #   - Current git branch and dirty state
 #   - MASTER_PLAN.md existence and active phase
 #   - Active worktrees
@@ -19,6 +19,7 @@ source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
+SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
@@ -56,7 +57,7 @@ _local_cc_policy() {
 # The schemas.py cleanup migration handles markers that already accumulated.
 _IS_DISPATCH_ROLE=false
 case "${AGENT_TYPE:-}" in
-    planner|Plan|implementer|tester|guardian)
+    planner|Plan|implementer|guardian|reviewer)
         _IS_DISPATCH_ROLE=true
         ;;
 esac
@@ -89,6 +90,111 @@ if [[ -n "$_LEASE_ID" ]]; then
 else
     CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
 fi
+
+# ---------------------------------------------------------------------------
+# Carrier consume: augment HOOK_INPUT with contract fields written by
+# pre-agent.sh (PreToolUse:Agent) into pending_agent_requests
+# (DEC-CLAUDEX-SA-CARRIER-001).
+#
+# Atomically reads and deletes the row keyed by (session_id, agent_type).
+# When the row exists, the six contract fields are merged into HOOK_INPUT
+# so the _HAS_CONTRACT check below sees them as payload-native fields and
+# the runtime-first path fires in production — not just in tests.
+# ---------------------------------------------------------------------------
+if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
+    _CARRIER_MODULE="$_HOOK_DIR/../runtime/core/pending_agent_requests.py"
+    _CARRIER_DB="${CLAUDE_POLICY_DB:-}"
+    if [[ -z "$_CARRIER_DB" && -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+        _CARRIER_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
+        _CARRIER_JSON=$(python3 "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$AGENT_TYPE" 2>/dev/null || echo "")
+        if [[ -n "$_CARRIER_JSON" ]]; then
+            HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
+            # Claim delivery only when the carrier-backed correlation path matched
+            # (DEC-CLAUDEX-HOOK-WIRING-001). A bare SubagentStart with no carrier
+            # row must NOT claim a pending attempt — there is no PreToolUse proof.
+            # Best-effort: never blocks subagent start.
+            _local_cc_policy dispatch attempt-claim \
+                --session-id "$SESSION_ID" \
+                --agent-type "$AGENT_TYPE" \
+                >/dev/null 2>&1 || true
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Runtime-first path: SubagentStart prompt-pack envelope delivery
+# (DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-001)
+#
+# When the incoming payload carries the full six-field request contract,
+# delegate entirely to the runtime compiler. This hook is a thin transport
+# adapter only — all validation and prompt-pack assembly live in
+# runtime.core.prompt_pack (build_subagent_start_prompt_pack_response).
+#
+# If the runtime returns an invalid report, surface it clearly as an error
+# additionalContext. Do NOT fall back to the shell-built guidance path:
+# the contract was present, so the caller expected runtime-produced output
+# and the legacy path would silently inject unrelated guidance.
+# ---------------------------------------------------------------------------
+_HAS_CONTRACT=$(echo "$HOOK_INPUT" | jq -r '
+  if (has("workflow_id") and has("stage_id") and has("goal_id") and
+      has("work_item_id") and has("decision_scope") and has("generated_at"))
+  then "yes" else "no" end
+' 2>/dev/null || echo "no")
+
+if [[ "$_HAS_CONTRACT" == "yes" ]]; then
+    _PP_PAYLOAD=$(echo "$HOOK_INPUT" | jq -c \
+        '{workflow_id, stage_id, goal_id, work_item_id, decision_scope, generated_at}')
+    _RT_STDERR_FILE=$(mktemp)
+    _RT_STDOUT=$(_local_cc_policy prompt-pack subagent-start \
+        --payload "$_PP_PAYLOAD" 2>"$_RT_STDERR_FILE") && _RT_RC=0 || _RT_RC=$?
+    _RT_STDERR=$(cat "$_RT_STDERR_FILE"); rm -f "$_RT_STDERR_FILE"
+
+    _RT_HEALTHY=$(echo "$_RT_STDOUT" | jq -r '.healthy // "false"' 2>/dev/null || echo "false")
+
+    if [[ "$_RT_HEALTHY" == "true" ]]; then
+        # Success: print the runtime-produced envelope verbatim and exit.
+        echo "$_RT_STDOUT" | jq '.envelope'
+        exit 0
+    else
+        # Invalid or error: do NOT fall back to legacy guidance path.
+        # Emit a clear error in additionalContext so the agent can see what failed.
+        _ERR_VIOLATIONS=$(echo "$_RT_STDOUT" | jq -r '
+          if (.violations | length) > 0 then
+            "Violations: " + (.violations | join("; "))
+          else "" end
+        ' 2>/dev/null || echo "")
+        _ERR_BACKEND=$(echo "$_RT_STDERR" | jq -r '.message // empty' 2>/dev/null || echo "")
+        _ERR_PARTS=("Runtime prompt-pack compile failed for this SubagentStart.")
+        [[ -n "$_ERR_VIOLATIONS" ]] && _ERR_PARTS+=("$_ERR_VIOLATIONS")
+        [[ -n "$_ERR_BACKEND" ]] && _ERR_PARTS+=("Backend error: $_ERR_BACKEND")
+        _ERR_CTX=$(printf '%s\n' "${_ERR_PARTS[@]}" | jq -Rs .)
+        cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStart",
+    "additionalContext": $_ERR_CTX
+  }
+}
+EOF
+        exit 0
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Legacy compatibility path (transitional, non-authoritative).
+# This path runs only when the incoming payload does NOT carry the full
+# six-field request contract. It assembles context from shell helpers and
+# git state.
+#
+# This is NOT a fallback for failed runtime compiles. It is reached only
+# when the contract was never present — typically pre-Phase 3 dispatch
+# paths that have not yet been updated to inject the request contract.
+#
+# TODO(Phase 3): Remove this path once all dispatch paths inject the full
+# request contract at invocation time.
+# ---------------------------------------------------------------------------
 
 CTX_LINE="Context:"
 [[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"
@@ -135,7 +241,7 @@ case "$AGENT_TYPE" in
         # Bind workflow to runtime so guard.sh Check 12 and later roles can
         # discover the worktree path without inferring from CWD or git state.
         # WS1: if a lease was claimed, use the lease's workflow_id for the binding
-        # so that all subsequent hooks (check-tester, check-guardian, guard.sh)
+        # so that all subsequent hooks (check-reviewer, check-guardian, guard.sh)
         # see the same workflow_id. Branch-derived id is the fallback only when
         # no lease was claimed.
         _WF_ID=""
@@ -166,28 +272,11 @@ case "$AGENT_TYPE" in
         if [[ "$RESEARCH_EXISTS" == "true" ]]; then
             CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
         fi
-        CONTEXT_PARTS+=("HANDOFF: Implementers do not own proof-of-work anymore. Gather test output, capture how to run the feature, and hand off to Tester for independent verification before Guardian commits.")
-        ;;
-    tester)
-        # Inject current evaluation state so the tester knows the context.
-        # proof_state write removed (TKT-024): evaluation_state is the authority.
-        if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-            _EVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
-            _EVAL_STATUS=$(rt_eval_get "$_EVAL_WF" 2>/dev/null || echo "idle")
-            CONTEXT_PARTS+=("Evaluation state: workflow=$_EVAL_WF status=$_EVAL_STATUS")
-        fi
-        CONTEXT_PARTS+=("Role: Tester — you are the separation between builder and judge. Verify in the SAME worktree, do not modify source, surface exact evidence.")
-        CONTEXT_PARTS+=("Scope: Read the implementer's changes, run tests, perform at least one live or real-entry-point verification, and spot-check one adjacent or compound interaction.")
-        CONTEXT_PARTS+=("REQUIRED OUTPUT TRAILERS: Your final response MUST include these lines verbatim (replace values):")
-        CONTEXT_PARTS+=("  EVAL_VERDICT: ready_for_guardian|needs_changes|blocked_by_plan")
-        CONTEXT_PARTS+=("  EVAL_TESTS_PASS: true|false")
-        CONTEXT_PARTS+=("  EVAL_NEXT_ROLE: guardian|implementer|planner")
-        CONTEXT_PARTS+=("  EVAL_HEAD_SHA: <current HEAD git sha>")
-        CONTEXT_PARTS+=("These trailers are machine-parsed by check-tester.sh to set evaluation_state. Missing or invalid trailers fail-closed to needs_changes.")
+        CONTEXT_PARTS+=("HANDOFF: Implementers do not own proof-of-work anymore. Gather test output, capture how to run the feature, and hand off to Reviewer for independent verification before Guardian commits.")
         ;;
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
-        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Tester via EVAL_VERDICT trailer).")
+        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Reviewer via REVIEW_VERDICT trailer).")
         # Inject test status (WS3: via rt_test_state_get from SQLite authority)
         _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
@@ -195,6 +284,21 @@ case "$AGENT_TYPE" in
         if [[ "$_TS_STATUS" == "fail" ]]; then
             CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($_TS_FAILS failures). Do NOT commit/merge until tests pass.")
         fi
+        ;;
+    reviewer)
+        # Inject current evaluation state so the reviewer knows the context.
+        if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+            _EVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
+            _EVAL_STATUS=$(rt_eval_get "$_EVAL_WF" 2>/dev/null || echo "idle")
+            CONTEXT_PARTS+=("Evaluation state: workflow=$_EVAL_WF status=$_EVAL_STATUS")
+        fi
+        CONTEXT_PARTS+=("Role: Reviewer — you are the read-only technical readiness authority. Inspect the diff, run and verify required tests where possible, and produce structured findings. Do NOT modify source code or land git operations.")
+        CONTEXT_PARTS+=("Scope: Read the implementer's changes, run tests, assess code quality, security, and architectural conformance. Produce per-finding structured assessments.")
+        CONTEXT_PARTS+=("REQUIRED OUTPUT TRAILERS: Your final response MUST include these lines verbatim (replace values):")
+        CONTEXT_PARTS+=("  REVIEW_VERDICT: ready_for_guardian|needs_changes|blocked_by_plan")
+        CONTEXT_PARTS+=("  REVIEW_HEAD_SHA: <current HEAD git sha>")
+        CONTEXT_PARTS+=("  REVIEW_FINDINGS_JSON: {\"findings\": [{\"severity\": \"<blocking|concern|note>\", \"title\": \"<short title>\", \"detail\": \"<explanation>\"}]}")
+        CONTEXT_PARTS+=("These trailers are machine-parsed by check-reviewer.sh. Invalid or missing REVIEW_* trailers produce an invalid completion and post-task will not auto-dispatch.")
         ;;
     Bash|Explore)
         # Lightweight agents — minimal context

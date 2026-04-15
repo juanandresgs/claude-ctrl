@@ -9,7 +9,7 @@
 #   1. An implementer lease is issued with an explicit workflow_id
 #   2. check-implementer.sh runs with IMPL_STATUS=complete → submits valid record
 #   3. post-task.sh fires → process_agent_stop → reads contract → agent_complete
-#   4. next_role = tester (routing unchanged)
+#   4. next_role = reviewer (routing unchanged)
 #   5. Malformed IMPL_STATUS → invalid record, impl_contract_invalid event emitted
 #   6. Missing trailers → no record submitted, heuristic fallback applies
 #
@@ -20,7 +20,7 @@
 #   (IMPL_STATUS + IMPL_HEAD_SHA) is the authoritative source for agent_complete
 #   vs agent_stopped when present and valid. This test exercises the full path
 #   from check-implementer.sh trailer parsing through dispatch_engine routing,
-#   confirming that routing stays fixed at implementer → tester regardless.
+#   confirming that routing stays fixed at implementer → reviewer regardless.
 set -euo pipefail
 
 TEST_NAME="test-implementer-completion-contract"
@@ -54,7 +54,7 @@ echo "=== $TEST_NAME ==="
 $CC schema ensure >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
-# Test 1: Valid IMPL_STATUS=complete → agent_complete event, next_role=tester
+# Test 1: Valid IMPL_STATUS=complete → agent_complete event, next_role=reviewer
 # ---------------------------------------------------------------------------
 LEASE_WF_ID="wf-impl-contract-scenario-001"
 ISSUE_OUT=$($CC lease issue-for-dispatch "implementer" \
@@ -106,7 +106,7 @@ else
     fail "completion record stored — valid=$COMP_VALID verdict=$COMP_VERDICT"
 fi
 
-# Run post-task.sh — should emit agent_complete (not agent_stopped), next_role=tester
+# Run post-task.sh — should emit agent_complete (not agent_stopped), next_role=reviewer
 HOOK_PAYLOAD=$(printf '{"hook_event_name":"SubagentStop","agent_type":"implementer"}')
 HOOK_OUTPUT=$(printf '%s' "$HOOK_PAYLOAD" \
     | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$POST_TASK_HOOK" 2>/dev/null || true)
@@ -115,10 +115,10 @@ echo "  [debug] post-task output: $HOOK_OUTPUT"
 
 if printf '%s' "$HOOK_OUTPUT" | jq '.' >/dev/null 2>&1; then
     PT_CTX=$(printf '%s' "$HOOK_OUTPUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
-    if [[ "$PT_CTX" == *"tester"* ]]; then
-        pass "dispatch context suggests tester (routing correct)"
+    if [[ "$PT_CTX" == *"reviewer"* ]]; then
+        pass "dispatch context suggests reviewer (routing correct)"
     else
-        fail "dispatch context suggests tester — got: $PT_CTX"
+        fail "dispatch context suggests reviewer — got: $PT_CTX"
     fi
 else
     fail "post-task hook output is valid JSON (got: $HOOK_OUTPUT)"
@@ -186,13 +186,13 @@ else
     fail "impl_contract_invalid event emitted — found $INVALID_COUNT events"
 fi
 
-# Routing still → tester even for invalid contract
+# Routing still → reviewer even for invalid contract
 if printf '%s' "$HOOK_OUTPUT2" | jq '.' >/dev/null 2>&1; then
     PT_CTX2=$(printf '%s' "$HOOK_OUTPUT2" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
-    if [[ "$PT_CTX2" == *"tester"* ]]; then
-        pass "dispatch still routes to tester for invalid contract"
+    if [[ "$PT_CTX2" == *"reviewer"* ]]; then
+        pass "dispatch still routes to reviewer for invalid contract"
     else
-        fail "dispatch routes to tester for invalid contract — got: $PT_CTX2"
+        fail "dispatch routes to reviewer for invalid contract — got: $PT_CTX2"
     fi
 else
     fail "post-task hook output is valid JSON for bad-contract case"
@@ -234,17 +234,17 @@ else
     fail "no completion record submitted for missing-trailer case — got role=$COMP_ROLE"
 fi
 
-# Run post-task.sh — routing still → tester (heuristic fallback, no interruption signal)
+# Run post-task.sh — routing still → reviewer (heuristic fallback, no interruption signal)
 HOOK_PAYLOAD3=$(printf '{"hook_event_name":"SubagentStop","agent_type":"implementer"}')
 HOOK_OUTPUT3=$(printf '%s' "$HOOK_PAYLOAD3" \
     | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$POST_TASK_HOOK" 2>/dev/null || true)
 
 if printf '%s' "$HOOK_OUTPUT3" | jq '.' >/dev/null 2>&1; then
     PT_CTX3=$(printf '%s' "$HOOK_OUTPUT3" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
-    if [[ "$PT_CTX3" == *"tester"* ]]; then
-        pass "dispatch routes to tester with no trailers (heuristic fallback)"
+    if [[ "$PT_CTX3" == *"reviewer"* ]]; then
+        pass "dispatch routes to reviewer with no trailers (heuristic fallback)"
     else
-        fail "dispatch routes to tester with no trailers — got: $PT_CTX3"
+        fail "dispatch routes to reviewer with no trailers — got: $PT_CTX3"
     fi
 else
     fail "post-task hook output is valid JSON for no-trailer case"

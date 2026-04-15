@@ -89,8 +89,9 @@ When reviewing captured payloads, check these fields against what the hooks
 parse:
 
 **SubagentStart** — hooks/subagent-start.sh reads:
-- `.agent_type` — string: `planner`, `Plan`, `implementer`, `tester`,
-  `guardian`, `Bash`, `Explore`, or other
+- `.agent_type` — string: `planner`, `Plan`, `implementer`, `reviewer`,
+  `guardian`, `Bash`, `Explore`, or other. Phase 8 Slice 11 retired the legacy
+  `tester` value; it must not appear in new captures (DEC-PHASE8-SLICE11-001).
 
 **SubagentStop** — hooks/check-*.sh reads:
 - `.agent_type` — same values as SubagentStart

@@ -16,8 +16,9 @@
 # @decision DEC-GUARD-AUTOLAND
 # @title Guardian auto-land policy: tiered approval model
 # @status accepted
-# @rationale ready_for_guardian is the tester-issued autoverify-HIGH equivalent.
-#   Requiring additional user approval after tester clearance wastes tokens and
+# @rationale ready_for_guardian is the evaluator-issued autoverify-HIGH equivalent
+#   (reviewer after Phase 8 Slice 11; historically the tester stop hook).
+#   Requiring additional user approval after evaluator clearance wastes tokens and
 #   creates a redundant approval loop. Local commit/merge auto-lands when all
 #   conditions are met. Push/rebase/reset/force and destructive ops still require
 #   explicit user approval. guard.sh mechanical enforcement is unchanged — only

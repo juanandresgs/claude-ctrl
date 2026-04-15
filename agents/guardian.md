@@ -138,10 +138,10 @@ phase, perform the Simple Merge Checklist PLUS:
      @title Auto-land for clean evaluated local flows
      @status accepted
      @rationale ready_for_guardian is the autoverify-HIGH equivalent.
-       The tester runs the Evaluation Contract with five mandatory conditions
+       The reviewer runs the Evaluation Contract with five mandatory conditions
        (all items met, all coverage verified, high confidence, no refusal,
        no follow-up). Requiring additional user approval after this clearance
-       is redundant and wastes tester+guardian tokens on a rubber-stamp.
+       is redundant and wastes reviewer+guardian tokens on a rubber-stamp.
        Safety is preserved: guard.sh Check 10 mechanically enforces
        evaluation_state + SHA match, Check 9 enforces test status, Check 12
        enforces scope. High-risk operations (push, rebase, reset, force,

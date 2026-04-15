@@ -60,13 +60,13 @@ def conn_with_metrics(conn):
     for v in [30.0, 35.0, 32.0, 28.0, 40.0]:
         obs.emit_metric(conn, "agent_duration_s", v, role="implementer", session_id="sess-impl-1")
     for v in [15.0, 18.0, 12.0]:
-        obs.emit_metric(conn, "agent_duration_s", v, role="tester", session_id="sess-test-1")
+        obs.emit_metric(conn, "agent_duration_s", v, role="reviewer", session_id="sess-test-1")
 
     # Test results
     for _ in range(7):
-        obs.emit_metric(conn, "test_result", 1.0, role="tester")
+        obs.emit_metric(conn, "test_result", 1.0, role="reviewer")
     for _ in range(3):
-        obs.emit_metric(conn, "test_result", 0.0, role="tester")
+        obs.emit_metric(conn, "test_result", 0.0, role="reviewer")
 
     # Guard denials
     obs.emit_metric(conn, "guard_denial", 1.0, labels={"policy": "branch-guard"})
@@ -113,10 +113,10 @@ def test_cross_analysis_agent_stats_populated(conn_with_metrics):
     result = obs.cross_analysis(conn_with_metrics)
     agent_stats = result["agent_stats"]
     assert isinstance(agent_stats, list)
-    # At least implementer and tester should appear
+    # At least implementer and reviewer should appear
     roles_found = {row["role"] for row in agent_stats}
     assert "implementer" in roles_found
-    assert "tester" in roles_found
+    assert "reviewer" in roles_found
     # Each entry has required keys
     for entry in agent_stats:
         assert "role" in entry
@@ -278,15 +278,15 @@ def test_pattern_detection_slow_agent_increasing(conn):
 def test_pattern_detection_slow_agent_flat_not_flagged(conn):
     """Flat agent durations (slope ~0) do NOT trigger slow_agent."""
     for _ in range(5):
-        obs.emit_metric(conn, "agent_duration_s", 30.0, role="tester")
+        obs.emit_metric(conn, "agent_duration_s", 30.0, role="reviewer")
 
     patterns = obs.pattern_detection(conn)
     slow_patterns = [p for p in patterns if p["pattern_type"] == "slow_agent"]
-    tester_pattern = next(
-        (p for p in slow_patterns if "tester" in str(p.get("description", ""))),
+    reviewer_pattern = next(
+        (p for p in slow_patterns if "reviewer" in str(p.get("description", ""))),
         None,
     )
-    assert tester_pattern is None
+    assert reviewer_pattern is None
 
 
 # ---------------------------------------------------------------------------

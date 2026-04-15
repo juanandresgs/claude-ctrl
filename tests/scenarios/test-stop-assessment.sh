@@ -119,7 +119,7 @@ Let me check the existing implementation to understand the current state."
 
 # Clean response: test evidence present, no future-tense trailing signal.
 CLEAN_RESPONSE="Implementation complete.
-PASS: 5 tests passed. All checks green. Ready for tester review."
+PASS: 5 tests passed. All checks green. Ready for reviewer."
 
 # ===========================================================================
 # Case A: No lease, feature branch — branch-derived workflow_id on both sides
@@ -395,7 +395,7 @@ git -C "$CASE_E_DIR" config user.name "Test" 2>/dev/null
 
 CLAUDE_POLICY_DB="$CASE_E_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 
-CLEAN_E_RESPONSE="Implementation complete. All tests pass. Ready for tester review."
+CLEAN_E_RESPONSE="Implementation complete. All tests pass. Ready for reviewer."
 
 CASE_E_OUT=$(run_hook_chain "$CASE_E_DIR" "$CASE_E_DB" "$CLEAN_E_RESPONSE")
 

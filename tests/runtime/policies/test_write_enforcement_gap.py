@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import tempfile
 
+from runtime.core.authority_registry import capabilities_for
 from runtime.core.policies.write_enforcement_gap import enforcement_gap
 from runtime.core.policy_engine import PolicyContext, PolicyRequest
 
@@ -26,9 +27,9 @@ from runtime.core.policy_engine import PolicyContext, PolicyRequest
 # ---------------------------------------------------------------------------
 
 
-def _make_context(project_root: str) -> PolicyContext:
+def _make_context(project_root: str, actor_role: str = "implementer") -> PolicyContext:
     return PolicyContext(
-        actor_role="implementer",
+        actor_role=actor_role,
         actor_id="agent-1",
         workflow_id="wf-1",
         worktree_path=project_root,
@@ -41,6 +42,7 @@ def _make_context(project_root: str) -> PolicyContext:
         test_state=None,
         binding=None,
         dispatch_phase=None,
+        capabilities=capabilities_for(actor_role),
     )
 
 

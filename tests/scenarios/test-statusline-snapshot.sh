@@ -115,10 +115,12 @@ assert_eq "last_review.reviewed is false"   "$snap" ".last_review.reviewed" "fal
 echo ""
 echo "-- 3: active_agent reflects active marker"
 
-policy marker set "agent-sc-001" "tester" >/dev/null
+# Phase 8 Slice 11: use a live role (reviewer) — ``tester`` is retired and
+# markers set with role="tester" are rejected by ensure_schema cleanup.
+policy marker set "agent-sc-001" "reviewer" >/dev/null
 
 snap=$(policy statusline snapshot)
-assert_eq "active_agent is tester"            "$snap" ".active_agent"    "tester"
+assert_eq "active_agent is reviewer"          "$snap" ".active_agent"    "reviewer"
 assert_eq "active_agent_id is agent-sc-001"   "$snap" ".active_agent_id" "agent-sc-001"
 
 # ---------------------------------------------------------------------------

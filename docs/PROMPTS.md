@@ -5,8 +5,8 @@
 - `CLAUDE.md` is the orchestrator prompt.
 - `agents/planner.md`
 - `agents/implementer.md`
-- `agents/tester.md`
 - `agents/guardian.md`
+- `agents/reviewer.md`
 - `agents/shared-protocols.md`
 
 ## Goals

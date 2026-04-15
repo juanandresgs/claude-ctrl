@@ -47,6 +47,37 @@ configuration, and plans into one coherent control plane. Note technical debt or
    dispatch phase, worktree ownership, approval state, and policy evaluation
    should not be derivable from multiple competing paths.
 
+## Default Architecture Approach
+
+For control-plane problems, the default approach is to preserve architecture by
+constraint, not by convention.
+
+- Treat authority ownership as code. If a surface is authoritative, there must
+  be a single module, registry, or schema that owns it.
+- Treat `settings.json`, hook docs, prompt role lists, and config defaults as
+  derived surfaces. They must be generated from or validated against the owning
+  authority.
+- Keep shell hooks transport-only wherever possible. If a hook starts making
+  routing, config, or semantic decisions that the runtime already knows how to
+  make, that is drift.
+- Prefer capability-based enforcement over repeated role-name checks. Roles may
+  describe workflow position; capabilities determine what is allowed.
+- Every authority change must be a bundle: source authority change, invariant
+  tests, doc update, and removal of the superseded path in the same change.
+- Do not accept "temporary" parallel authorities. Transitional dual-write or
+  compatibility mirrors are allowed only when one side is explicitly declared
+  non-authoritative and the removal path is part of the same migration plan.
+- When repo docs conflict with official harness behavior or installed truth,
+  treat the docs as drift to be corrected, not as a reason to preserve the old
+  model.
+- Guard architecture files mechanically. Routing, schemas, policy engine,
+  hook wiring, and authority docs should only be edited under an explicit
+  architecture-scoped workflow with matching invariant coverage.
+
+The goal is not to keep the current design frozen. The goal is to make later
+changes extend the declared authority model instead of quietly creating a new
+one beside it.
+
 ## Migration Rule
 
 When migrating a subsystem from the bootstrap kernel into the new modular

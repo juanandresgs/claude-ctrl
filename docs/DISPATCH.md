@@ -3,16 +3,21 @@
 The canonical role flow is:
 
 1. `planner`
-2. `implementer`
-3. `tester`
-4. `guardian`
+2. `guardian` (provision)
+3. `implementer`
+4. `reviewer`
+5. `guardian` (merge)
 
 ## Rules
 
 - The orchestrator does not write source code directly.
-- Implementer builds and hands off.
-- Tester verifies and owns evidence.
-- Guardian is the only role allowed to commit, merge, or push.
+- Planner writes the Evaluation Contract and Scope Manifest.
+- Guardian (provision) issues the implementer lease and provisions the worktree.
+- Implementer builds in the worktree and hands off.
+- Reviewer verifies against the Evaluation Contract and owns findings.
+- Guardian (merge) is the only role allowed to commit, merge, or push.
+- Phase 8 Slice 11: the legacy `tester` role is retired — `reviewer` is the
+  sole evaluator of technical readiness.
 
 ## Current Enforcement Surface
 
@@ -31,7 +36,7 @@ policies in priority order (first deny wins):
 | 100 | `branch_guard` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
 | 200 | `write_who` | Only the `implementer` role may write source files. |
 | 250 | `enforcement_gap` | Deny writes to extensions with unresolved linter gaps (count > 1). |
-| 300 | `plan_guard` | Only the `planner` role may write governance markdown. `CLAUDE_PLAN_MIGRATION=1` overrides. |
+| 300 | `plan_guard` | Only actors with `CAN_WRITE_GOVERNANCE` may write governance markdown or constitution-level files. `CLAUDE_PLAN_MIGRATION=1` overrides. |
 | 400 | `plan_exists` | Source writes (20+ lines) require MASTER_PLAN.md. Staleness check. |
 | 500 | `plan_immutability` | Permanent MASTER_PLAN.md sections cannot be rewritten (via planctl.py). |
 | 600 | `decision_log` | Decision log entries are append-only (via planctl.py). |
@@ -76,7 +81,7 @@ policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/prompt-submit.sh` | Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. Note: prompt-driven proof verification ("verified" reply) was removed in TKT-024 — readiness is now set exclusively by `check-tester.sh` via `evaluation_state`. |
+| `hooks/prompt-submit.sh` | Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. Note: prompt-driven proof verification ("verified" reply) was removed in TKT-024 — readiness is now set exclusively by the active SubagentStop evaluator adapter (`check-reviewer.sh` in the current live chain) via `evaluation_state`. Phase 8 Slice 10 retired the legacy tester evaluator producer. |
 
 ## Auto-Dispatch (Live)
 
@@ -86,8 +91,8 @@ on stdout when a clean transition is ready. `post-task.sh` passes this signal
 through to the SubagentStop hook output. The orchestrator reads `AUTO_DISPATCH:`
 directives and chains the next role immediately without asking the user.
 
-The canonical planner → implementer → tester → guardian flow chains
-automatically when:
+The canonical planner → guardian(provision) → implementer → reviewer →
+guardian(merge) flow chains automatically when:
 
 - The stopping agent emits valid structured trailers (e.g. `EVAL_VERDICT`,
   `IMPL_STATUS`).
@@ -101,13 +106,17 @@ ops (push, rebase, force) — gated by `bash_approval_gate` policy.
 The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in
 `settings.json` for both `SubagentStop` and regular `Stop`. Repo settings are
 the sole wiring authority; the vendored plugin no longer self-registers a
-separate `Stop` hook. On `SubagentStop` the gate may emit `VERDICT: BLOCK` to
-halt the chain for human review.
+separate `Stop` hook. The gate is a **user-facing review lane only** — its
+`VERDICT: BLOCK` does not affect workflow `auto_dispatch` or `next_role`
+(DEC-PHASE5-STOP-REVIEW-SEPARATION-001). On `SubagentStop` the gate emits a
+`systemMessage` for orchestrator context but workflow dispatch decisions are
+determined by runtime workflow facts (completion records, lease state, routing
+table) exclusively.
 
 ### Properties that remain prompt-level (not mechanically blocked)
 
 - **Orchestrator direct dispatch denial.** The orchestrator can still dispatch
-  any agent type at any time. No hook prevents skipping the planner or tester.
+  any agent type at any time. No hook prevents skipping the planner or reviewer.
   Role sequencing is driven by `AUTO_DISPATCH:` signal compliance, not a hard
   block on out-of-order dispatch.
 - **Typed runtime dispatch queue.** `dispatch_queue` exists (INIT-002/TKT-009)

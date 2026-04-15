@@ -14,6 +14,7 @@ Production sequence:
 
 from __future__ import annotations
 
+from runtime.core.authority_registry import capabilities_for
 from runtime.core.policies.write_who import write_who
 from runtime.core.policy_engine import PolicyContext, PolicyRequest
 
@@ -37,6 +38,7 @@ def _make_context(actor_role: str = "", project_root: str = "/proj") -> PolicyCo
         test_state=None,
         binding=None,
         dispatch_phase=None,
+        capabilities=capabilities_for(actor_role),
     )
 
 
@@ -170,3 +172,55 @@ def test_registry_write_who_passes_implementer():
     decision = reg.evaluate(req)
     # write_who returns None -> registry default allow
     assert decision.action == "allow"
+
+
+# ---------------------------------------------------------------------------
+# Capability-gate invariant tests (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_capability_gate_not_role_string():
+    """Capability presence — not the role string — controls authorization.
+
+    A context with role="unknown_role" but CAN_WRITE_SOURCE injected should
+    pass. This proves the policy uses context.capabilities, not actor_role.
+    """
+    import dataclasses
+    from runtime.core.authority_registry import CAN_WRITE_SOURCE
+
+    ctx = dataclasses.replace(
+        _make_context(actor_role="unknown_role"),
+        capabilities=frozenset({CAN_WRITE_SOURCE}),
+    )
+    req = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={"file_path": "/proj/app.py"},
+        context=ctx,
+        cwd="/proj",
+    )
+    assert write_who(req) is None
+
+
+def test_implementer_without_capability_is_denied():
+    """Implementer role string alone is not sufficient — capability must be present.
+
+    Simulates a context where the role name is "implementer" but capabilities
+    is empty (e.g., build_context() returned an unknown/unmapped role).
+    """
+    import dataclasses
+
+    ctx = dataclasses.replace(
+        _make_context(actor_role="implementer"),
+        capabilities=frozenset(),
+    )
+    req = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={"file_path": "/proj/app.py"},
+        context=ctx,
+        cwd="/proj",
+    )
+    result = write_who(req)
+    assert result is not None
+    assert result.action == "deny"

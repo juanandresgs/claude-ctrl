@@ -74,11 +74,15 @@ all context from the filesystem (git state, MASTER_PLAN.md, proof files).
 - `planner` — Planner agent
 - `Plan` — Planner agent (alternate casing used by runtime)
 - `implementer` — Implementer agent
-- `tester` — Tester agent
+- `reviewer` — Reviewer agent (read-only evaluator; live after Phase 8 Slice 11)
 - `guardian` — Guardian agent
 - `Bash` — Bash subagent (lightweight)
 - `Explore` — Explore subagent (lightweight)
 - *(any other value)* — falls through to default case, emits agent_type string
+
+Phase 8 Slice 11 retired the legacy `tester` agent role; it is no longer a
+live runtime payload value and must not appear in new captures
+(DEC-PHASE8-SLICE11-001).
 
 **[unconfirmed]**: Whether runtime uses `planner` or `Plan` in practice.
 Whether `Bash` and `Explore` are actual runtime values or placeholders.
@@ -100,7 +104,7 @@ The hook outputs nothing (exits 0 silently) for `Bash` and `Explore` types.
 ## SubagentStop
 
 **Hooks:** `hooks/check-planner.sh`, `hooks/check-implementer.sh`,
-`hooks/check-tester.sh`, `hooks/check-guardian.sh`
+`hooks/check-reviewer.sh`, `hooks/check-guardian.sh`
 **Trigger:** Subagent completion, matched by agent type
 
 | Field | Type | Required | Notes |

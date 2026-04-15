@@ -60,7 +60,7 @@ def test_enqueue_and_next_pending(conn):
 
 
 def test_start_transitions_to_active(conn):
-    qid = dispatch.enqueue(conn, "tester")
+    qid = dispatch.enqueue(conn, "reviewer")
     dispatch.start(conn, qid)
     # next_pending should now return None (item is no longer pending)
     assert dispatch.next_pending(conn) is None

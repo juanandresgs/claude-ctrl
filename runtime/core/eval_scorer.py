@@ -1,8 +1,15 @@
 """Behavioral Evaluation Framework — scorer and output parser.
 
 Parses raw evaluator output (EVAL_VERDICT trailers, evidence sections,
-coverage tables) from agents/tester.md format, then computes weighted scores
-against ground truth from scenario YAML files.
+coverage tables) using the canonical evaluator trailer format, then computes
+weighted scores against ground truth from scenario YAML files.
+
+The trailer and coverage-table format parsed here was originally documented
+in agents/tester.md; Phase 8 Slice 10 deleted that prompt when the tester
+role was retired, and Phase 8 Slice 11 completed the runtime cleanup. The
+format itself is retained as part of this scorer (it is the ground-truth
+input contract for scored eval runs), and the format is canonical to this
+module — it is not defined by any live role prompt in the repo.
 
 This module is read-only with respect to databases. It never writes to
 state.db or eval_results.db — the caller persists results via
@@ -33,8 +40,8 @@ Rationale: DEC-EVAL-012 explicitly defers LLM-as-judge to avoid the
 @decision DEC-EVAL-SCORER-003
 Title: Coverage table parsing uses a 4-column markdown table pattern
 Status: accepted
-Rationale: The tester agent emits a fixed-schema Coverage table per
-  agents/tester.md: Area | Tier | Status | Evidence. Parsing assumes this
+Rationale: The evaluator agent emits a fixed-schema Coverage table in the
+  canonical format: Area | Tier | Status | Evidence. Parsing assumes this
   4-column layout and skips rows that don't conform. This is intentionally
   strict — a table with a different number of columns is not a Coverage table
   and is skipped rather than silently misinterpreted. Malformed rows are
@@ -47,7 +54,7 @@ import re
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# Constants — trailer field names (single authority, matches tester.md)
+# Constants — trailer field names (single authority for the legacy EVAL_* trailer format)
 # ---------------------------------------------------------------------------
 
 _TRAILER_FIELDS = ("EVAL_VERDICT", "EVAL_TESTS_PASS", "EVAL_NEXT_ROLE", "EVAL_HEAD_SHA")
@@ -74,7 +81,7 @@ def parse_trailer(raw_output: str) -> dict:
     a dict with all four canonical trailer keys; absent fields are None.
 
     Args:
-        raw_output: Full raw text output from the tester agent.
+        raw_output: Full raw text output from the evaluator agent.
 
     Returns:
         Dict with keys: EVAL_VERDICT, EVAL_TESTS_PASS, EVAL_NEXT_ROLE,
@@ -109,7 +116,7 @@ def extract_evidence(raw_output: str) -> str:
     document. Strips the heading line itself.
 
     Args:
-        raw_output: Full raw text output from the tester agent.
+        raw_output: Full raw text output from the evaluator agent.
 
     Returns:
         The body text of the "What I Observed" section, or empty string
@@ -160,7 +167,7 @@ def extract_coverage(raw_output: str) -> list[dict]:
     exactly 4 pipe-delimited cells.
 
     Args:
-        raw_output: Full raw text output from the tester agent.
+        raw_output: Full raw text output from the evaluator agent.
 
     Returns:
         List of dicts with keys: area, tier, status, evidence.
@@ -377,7 +384,7 @@ def score_scenario(raw_output: str, ground_truth: dict, scoring_weights: dict) -
     (capped so total never goes below 0.0).
 
     Args:
-        raw_output:      Full raw text output from the tester agent.
+        raw_output:      Full raw text output from the evaluator agent.
         ground_truth:    Ground truth section from the scenario YAML.
         scoring_weights: Scoring weights section from the scenario YAML.
 
@@ -466,8 +473,8 @@ def _extract_confidence_level(raw_output: str) -> Optional[str]:
         return None
 
     # Match "Confidence Level:" followed optionally by bold markers and the value.
-    # [:\s*]+ consumes the full ":** **" sequence emitted by the canonical tester.md
-    # bold format: **Confidence Level:** **High** — the * characters between colon
+    # [:\s*]+ consumes the full ":** **" sequence emitted by the canonical
+    # evaluator bold format: **Confidence Level:** **High** — the * characters between colon
     # and the level word must be included in the character class or the regex
     # stalls between the closing ** of "Level:**" and the opening ** of "**High**".
     pattern = re.compile(

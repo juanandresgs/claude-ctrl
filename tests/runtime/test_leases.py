@@ -106,7 +106,7 @@ def test_issue_returns_lease_with_uuid_id(conn):
 
 def test_issue_sets_expires_at_correctly(conn):
     ttl = 3600
-    lease = leases.issue(conn, role="tester", ttl=ttl)
+    lease = leases.issue(conn, role="reviewer", ttl=ttl)
     assert lease["expires_at"] == lease["issued_at"] + ttl
 
 
@@ -135,7 +135,7 @@ def test_issue_revokes_existing_active_for_same_worktree(conn):
     """Uniqueness invariant: second issue for same worktree revokes first."""
     wt = "/repo/feature-x"
     lease1 = leases.issue(conn, role="implementer", worktree_path=wt)
-    lease2 = leases.issue(conn, role="tester", worktree_path=wt)
+    lease2 = leases.issue(conn, role="reviewer", worktree_path=wt)
 
     # First lease should now be revoked.
     first = leases.get(conn, lease1["lease_id"])
@@ -191,7 +191,7 @@ def test_claim_revokes_existing_active_lease_for_same_agent(conn):
     lease_a = leases.issue(conn, role="implementer", worktree_path="/repo/wt-a")
     leases.claim(conn, agent_id="agent-1", worktree_path="/repo/wt-a")
 
-    lease_b = leases.issue(conn, role="tester", worktree_path="/repo/wt-b")
+    lease_b = leases.issue(conn, role="reviewer", worktree_path="/repo/wt-b")
     # Claiming lease_b with agent-1 should revoke lease_a for that agent.
     leases.claim(conn, agent_id="agent-1", lease_id=lease_b["lease_id"])
 
@@ -213,7 +213,7 @@ def test_claim_by_lease_id_takes_priority(conn):
 
 def test_get_current_priority_lease_id_over_agent(conn):
     lease1 = leases.issue(conn, role="implementer", worktree_path="/repo/wt1")
-    lease2 = leases.issue(conn, role="tester", worktree_path="/repo/wt2")
+    lease2 = leases.issue(conn, role="reviewer", worktree_path="/repo/wt2")
     leases.claim(conn, "agent-x", lease_id=lease2["lease_id"])
 
     # lease_id should win over agent_id.
@@ -223,7 +223,7 @@ def test_get_current_priority_lease_id_over_agent(conn):
 
 def test_get_current_priority_agent_over_worktree(conn):
     leases.issue(conn, role="implementer", worktree_path="/repo/wt1")
-    lease2 = leases.issue(conn, role="tester", worktree_path="/repo/wt2")
+    lease2 = leases.issue(conn, role="reviewer", worktree_path="/repo/wt2")
     leases.claim(conn, "agent-x", lease_id=lease2["lease_id"])
 
     result = leases.get_current(conn, agent_id="agent-x", worktree_path="/repo/wt1")
@@ -232,7 +232,7 @@ def test_get_current_priority_agent_over_worktree(conn):
 
 def test_get_current_priority_worktree_over_workflow(conn):
     lease1 = leases.issue(conn, role="implementer", worktree_path="/repo/wt1", workflow_id="wf-1")
-    leases.issue(conn, role="tester", worktree_path="/repo/wt2", workflow_id="wf-2")
+    leases.issue(conn, role="reviewer", worktree_path="/repo/wt2", workflow_id="wf-2")
 
     result = leases.get_current(conn, worktree_path="/repo/wt1", workflow_id="wf-2")
     assert result["lease_id"] == lease1["lease_id"]
@@ -472,7 +472,7 @@ def test_concurrent_worktrees_no_collision(conn):
     )
     lease_b = leases.issue(
         conn,
-        role="tester",
+        role="reviewer",
         worktree_path="/repo/b",
         workflow_id="wf-b",
         allowed_ops=["routine_local"],
@@ -688,13 +688,15 @@ def test_role_safe_defaults_guardian(conn):
     assert "admin_recovery" in allowed
 
 
-def test_role_safe_defaults_tester(conn):
-    """issue(role='tester') must produce an empty allowed_ops list."""
+def test_role_safe_defaults_tester_retired(conn):
+    """Phase 8 Slice 11: tester is no longer a known role in ROLE_DEFAULTS.
+    issue(role='tester') falls back to the unknown-role default of
+    ['routine_local'] — the same path as any other unknown role string."""
     import json
 
     lease = leases.issue(conn, role="tester")
     allowed = json.loads(lease["allowed_ops_json"])
-    assert allowed == []
+    assert allowed == ["routine_local"]
 
 
 def test_role_safe_defaults_implementer(conn):
@@ -715,6 +717,15 @@ def test_role_safe_defaults_planner(conn):
     assert allowed == []
 
 
+def test_role_safe_defaults_reviewer(conn):
+    """issue(role='reviewer') must produce an empty allowed_ops list — reviewer is read-only."""
+    import json
+
+    lease = leases.issue(conn, role="reviewer")
+    allowed = json.loads(lease["allowed_ops_json"])
+    assert allowed == []
+
+
 def test_role_safe_defaults_unknown_role(conn):
     """issue(role='unknown') falls back to ['routine_local'] for safety."""
     import json
@@ -728,7 +739,7 @@ def test_role_safe_defaults_explicit_override(conn):
     """Explicit allowed_ops= overrides ROLE_DEFAULTS regardless of role."""
     import json
 
-    lease = leases.issue(conn, role="tester", allowed_ops=["routine_local"])
+    lease = leases.issue(conn, role="reviewer", allowed_ops=["routine_local"])
     allowed = json.loads(lease["allowed_ops_json"])
     assert allowed == ["routine_local"]
 
@@ -740,23 +751,23 @@ def test_role_safe_defaults_explicit_override(conn):
 
 def test_claim_expected_role_match(conn):
     """Claim with expected_role matching the lease role succeeds."""
-    leases.issue(conn, role="tester", worktree_path="/repo/wt-tester")
+    leases.issue(conn, role="reviewer", worktree_path="/repo/wt-reviewer")
     result = leases.claim(
-        conn, agent_id="agent-t", worktree_path="/repo/wt-tester", expected_role="tester"
+        conn, agent_id="agent-r", worktree_path="/repo/wt-reviewer", expected_role="reviewer"
     )
     assert result is not None
-    assert result["agent_id"] == "agent-t"
-    assert result["role"] == "tester"
+    assert result["agent_id"] == "agent-r"
+    assert result["role"] == "reviewer"
 
 
 def test_claim_expected_role_mismatch(conn):
     """Claim with expected_role not matching the lease role returns None.
 
-    This is the key safety invariant: a tester cannot claim a guardian lease.
+    This is the key safety invariant: a reviewer cannot claim a guardian lease.
     """
     leases.issue(conn, role="guardian", worktree_path="/repo/wt-guardian")
     result = leases.claim(
-        conn, agent_id="agent-t", worktree_path="/repo/wt-guardian", expected_role="tester"
+        conn, agent_id="agent-r", worktree_path="/repo/wt-guardian", expected_role="reviewer"
     )
     assert result is None
 

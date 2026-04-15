@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, FrozenSet, Optional
 
 from runtime.core.command_intent import BashCommandIntent, build_bash_command_intent
 from runtime.core.policy_utils import (
@@ -89,6 +89,11 @@ class PolicyContext:
     binding: Optional[dict]  # workflow_binding record, or None
     dispatch_phase: Optional[str]  # derived from completions, or None
     enforcement_config: dict = field(default_factory=dict)  # DEC-CONFIG-AUTHORITY-001
+    # Resolved capability set for actor_role — populated by build_context() via
+    # authority_registry.capabilities_for(resolved_role). Policy functions use
+    # this field instead of raw role-name string comparisons so that capability
+    # gates are the single authority for authorization decisions.
+    capabilities: FrozenSet[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -391,7 +396,7 @@ def build_context(
     @status accepted
     @rationale The original fallback selected ANY active lease matching
       worktree_path, regardless of role. This meant an orchestrator (actor_role="")
-      or tester could silently inherit a guardian lease just by sharing the same
+      or a non-guardian role could silently inherit a guardian lease just by sharing the same
       worktree directory, bypassing WHO enforcement entirely. The fix: when
       actor_role is non-empty, restrict the fallback query to leases WHERE
       role = actor_role. When actor_role is empty (orchestrator), the fallback
@@ -421,7 +426,7 @@ def build_context(
     if lease is None and actor_role:
         # Role-aware fallback (DEC-PE-EGAP-BUILD-CTX-001): only pick up a
         # worktree-matched lease when it belongs to the actor's own role.
-        # This prevents an orchestrator (actor_role="") or a tester from
+        # This prevents an orchestrator (actor_role="") or a non-guardian role from
         # inheriting a guardian lease that happens to share the same worktree_path.
         row = conn.execute(
             "SELECT * FROM dispatch_leases WHERE status = 'active' "
@@ -584,6 +589,8 @@ def build_context(
     except Exception:
         pass  # fail-safe: empty dict → policies use built-in defaults
 
+    from runtime.core.authority_registry import capabilities_for as _capabilities_for
+
     return PolicyContext(
         actor_role=resolved_role,
         actor_id=resolved_id,
@@ -599,6 +606,7 @@ def build_context(
         binding=binding,
         dispatch_phase=dispatch_phase,
         enforcement_config=enforcement_config,
+        capabilities=_capabilities_for(resolved_role),
     )
 
 

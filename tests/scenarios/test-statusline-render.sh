@@ -261,11 +261,13 @@ fi
 echo ""
 echo "-- 8: active agent — HUD shows agent role"
 
-policy marker set "agent-sl-001" "tester" >/dev/null
+# Phase 8 Slice 11: use a live role (reviewer) — ``tester`` is retired and
+# markers set with role="tester" are rejected by ensure_schema cleanup.
+policy marker set "agent-sl-001" "reviewer" >/dev/null
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "tester"; then
-    echo "  PASS: agent role 'tester' present in HUD"
+if printf '%s' "$output" | grep -q "reviewer"; then
+    echo "  PASS: agent role 'reviewer' present in HUD"
 else
     echo "  FAIL: agent role missing; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
@@ -322,7 +324,7 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-for segment in "test-model" "$workspace_name" "tester" "worktree" "tks" "eval"; do
+for segment in "test-model" "$workspace_name" "reviewer" "worktree" "tks" "eval"; do
     if printf '%s' "$output" | grep -q "$segment"; then
         echo "  PASS: segment '$segment' present in compound HUD"
     else

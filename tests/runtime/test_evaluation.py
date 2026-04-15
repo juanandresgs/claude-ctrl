@@ -198,11 +198,12 @@ def test_invalidate_blocked_by_plan_is_noop(conn):
 def test_full_evaluator_lifecycle(conn):
     """Exercise the real production sequence across multiple state transitions.
 
-    Production sequence:
+    Production sequence (Phase 8 Slice 11: reviewer replaces retired ``tester``):
       1. implementer completes → post-task.sh writes pending
-      2. tester evaluates → check-tester.sh writes ready_for_guardian + head_sha
+      2. evaluator (reviewer, historically the tester stop hook) writes
+         ready_for_guardian + head_sha
       3. source write detected → track.sh calls invalidate_if_ready → pending
-      4. tester re-evaluates → ready_for_guardian again
+      4. evaluator re-runs → ready_for_guardian again
       5. guard.sh checks eval_status == ready_for_guardian AND head_sha matches
 
     This test crosses get(), set_status(), and invalidate_if_ready() in the

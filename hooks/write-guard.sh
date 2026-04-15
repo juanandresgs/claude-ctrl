@@ -3,7 +3,7 @@
 # PreToolUse hook — matcher: Write|Edit
 #
 # Only the implementer agent role may write source files. All other roles
-# (orchestrator/empty, planner, Plan, tester, guardian) are denied with a
+# (orchestrator/empty, planner, Plan, reviewer, guardian) are denied with a
 # message directing them to dispatch an implementer. Non-source files are
 # not governed here; TKT-004 handles governance markdown separately.
 #
@@ -23,7 +23,7 @@
 #
 # Denies when:
 #   - File has a recognized source extension (SOURCE_EXTENSIONS)
-#   - Active role is NOT implementer (empty, planner, Plan, tester, guardian)
+#   - Active role is NOT implementer (empty, planner, Plan, reviewer, guardian)
 #
 # Does NOT fire for:
 #   - Non-source files (config, docs, markdown, JSON, YAML)
@@ -72,7 +72,7 @@ if [[ "$ROLE" == "implementer" ]]; then
     exit 0
 fi
 
-# DENY: all other roles — orchestrator (empty), planner, Plan, tester, guardian
+# DENY: all other roles — orchestrator (empty), planner, Plan, reviewer, guardian
 if [[ -z "$ROLE" ]]; then
     ROLE_LABEL="orchestrator (no active agent)"
 else

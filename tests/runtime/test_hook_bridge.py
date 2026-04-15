@@ -142,14 +142,27 @@ class TestContextRoleCommand:
         assert code == 0
         assert out.get("role") == "guardian"
 
-    def test_context_role_with_tester_marker(self, db, project_dir):
-        """context role resolves 'tester' marker correctly."""
+    def test_context_role_tester_marker_is_deactivated_by_schema_cleanup(
+        self, db, project_dir
+    ):
+        """Phase 8 Slice 11: tester is no longer a dispatch-significant role.
+
+        ``ensure_schema()`` (DEC-CONV-002) deactivates any active marker whose
+        role is not in the retained set ({planner, implementer, reviewer,
+        guardian}). A marker set with ``role=tester`` is immediately
+        deactivated on the next CLI invocation, so ``context role`` returns
+        an empty role — confirming tester is no longer honoured as an actor
+        identity anywhere in the runtime.
+        """
         run_cli_json(["marker", "set", "agent-ts-001", "tester", "--project-root", project_dir], db)
         code, out = run_cli_json(
             ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
         )
         assert code == 0
-        assert out.get("role") == "tester"
+        assert out.get("role") == "", (
+            "tester marker must be deactivated by ensure_schema cleanup — "
+            f"got role={out.get('role')!r}"
+        )
 
     def test_context_role_with_planner_marker(self, db, project_dir):
         """context role resolves 'planner' marker correctly."""
@@ -184,6 +197,87 @@ class TestContextRoleCommand:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Local CLI: context capability-contract returns correct projection
+# ---------------------------------------------------------------------------
+
+
+class TestContextCapabilityContract:
+    """Verify that ``cc-policy context capability-contract --stage <stage>``
+    returns a correct JSON projection from authority_registry.resolve_contract()."""
+
+    def test_planner_contract_grants_governance_and_config(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "planner"], db
+        )
+        assert code == 0, f"unexpected failure: {out}"
+        data = out["data"]
+        assert data["stage"] == "planner"
+        assert "can_write_governance" in data["granted"]
+        assert "can_set_control_config" in data["granted"]
+        assert data["read_only"] is False
+
+    def test_reviewer_contract_is_read_only_and_denies_write_source_and_land(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "reviewer"], db
+        )
+        assert code == 0, f"unexpected failure: {out}"
+        data = out["data"]
+        assert data["stage"] == "reviewer"
+        assert data["read_only"] is True
+        assert "can_write_source" in data["denied"]
+        assert "can_land_git" in data["denied"]
+
+    def test_implementer_contract_grants_write_source(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "implementer"], db
+        )
+        assert code == 0
+        data = out["data"]
+        assert data["stage"] == "implementer"
+        assert "can_write_source" in data["granted"]
+
+    def test_guardian_land_contract_grants_land_git(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "guardian:land"], db
+        )
+        assert code == 0
+        data = out["data"]
+        assert data["stage"] == "guardian:land"
+        assert "can_land_git" in data["granted"]
+
+    def test_plan_alias_canonicalizes_to_planner(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "Plan"], db
+        )
+        assert code == 0, f"unexpected failure: {out}"
+        data = out["data"]
+        assert data["stage"] == "planner"
+
+    def test_unknown_stage_exits_nonzero(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "ghost_stage"], db
+        )
+        assert code != 0
+
+    def test_sink_stage_exits_nonzero(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "terminal"], db
+        )
+        assert code != 0
+
+    def test_output_has_stable_data_keys(self, db):
+        code, out = run_cli_json(
+            ["context", "capability-contract", "--stage", "planner"], db
+        )
+        assert code == 0
+        data = out["data"]
+        assert set(data.keys()) == {"stage", "granted", "denied", "read_only"}
+        # granted and denied must be sorted lists
+        assert data["granted"] == sorted(data["granted"])
+        assert data["denied"] == sorted(data["denied"])
+
+
+# ---------------------------------------------------------------------------
 # 2. Hook source code: check-*.sh must use local CLI path
 # ---------------------------------------------------------------------------
 
@@ -204,7 +298,6 @@ class TestHookLocalCLIPattern:
     CHECK_HOOKS = [
         "check-implementer.sh",
         "check-guardian.sh",
-        "check-tester.sh",
         "check-planner.sh",
     ]
 
@@ -279,6 +372,89 @@ class TestHookLocalCLIPattern:
         assert 'python3 "$_LOCAL_RUNTIME_CLI"' in content, (
             f'{hook_name} missing: python3 "$_LOCAL_RUNTIME_CLI" inside _local_cc_policy wrapper.'
         )
+
+
+# ---------------------------------------------------------------------------
+# 2b. check-planner.sh structural assertions (Phase 6 slice 3)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckPlannerHookStructure:
+    """Structural assertions on hooks/check-planner.sh.
+
+    Proves the hook parses PLAN_VERDICT/PLAN_SUMMARY trailers and calls
+    rt_completion_submit with role planner. These are source-level checks,
+    not execution tests — the hook is advisory (exit 0) so we verify intent
+    via string matching rather than full subprocess invocation.
+    """
+
+    @staticmethod
+    def _hook_content() -> str:
+        hook_path = _HOOKS_DIR / "check-planner.sh"
+        assert hook_path.exists(), "hooks/check-planner.sh not found"
+        return hook_path.read_text(encoding="utf-8")
+
+    def test_check_planner_wired_in_settings(self):
+        """check-planner.sh must be wired for SubagentStop planner|Plan."""
+        import json
+        settings_path = _HOOKS_DIR.parent / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        hooks = settings.get("hooks", {})
+        subagent_stop = hooks.get("SubagentStop", [])
+        # settings.json uses {matcher, hooks: [...]} groups
+        found = False
+        for group in subagent_stop:
+            if not isinstance(group, dict):
+                continue
+            matcher = group.get("matcher", "")
+            inner_hooks = group.get("hooks", [])
+            if "planner" in matcher.lower():
+                for h in inner_hooks:
+                    if isinstance(h, dict) and "check-planner.sh" in h.get("command", ""):
+                        found = True
+                        break
+        assert found, "check-planner.sh not wired for SubagentStop planner matcher"
+
+    def test_parses_plan_verdict(self):
+        content = self._hook_content()
+        assert "PLAN_VERDICT" in content, "check-planner.sh must parse PLAN_VERDICT"
+        assert "grep" in content and "PLAN_VERDICT" in content
+
+    def test_parses_plan_summary(self):
+        content = self._hook_content()
+        assert "PLAN_SUMMARY" in content, "check-planner.sh must parse PLAN_SUMMARY"
+
+    def test_calls_rt_completion_submit_planner(self):
+        content = self._hook_content()
+        assert 'rt_completion_submit' in content, (
+            "check-planner.sh must call rt_completion_submit"
+        )
+        assert '"planner"' in content, (
+            "check-planner.sh must pass role 'planner' to rt_completion_submit"
+        )
+
+    def test_advisory_exit_zero(self):
+        """Hook must always exit 0 (advisory)."""
+        content = self._hook_content()
+        lines = content.strip().splitlines()
+        last_line = lines[-1].strip()
+        assert last_line == "exit 0", (
+            f"check-planner.sh must end with 'exit 0', got: {last_line!r}"
+        )
+
+    def test_no_exit_nonzero(self):
+        """Hook must not have any non-zero exit calls."""
+        content = self._hook_content()
+        executable_lines = [
+            line.strip()
+            for line in content.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        for line in executable_lines:
+            if line.startswith("exit ") and line != "exit 0":
+                raise AssertionError(
+                    f"check-planner.sh has non-zero exit: {line!r}"
+                )
 
 
 # ---------------------------------------------------------------------------

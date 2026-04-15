@@ -3,7 +3,9 @@ set -euo pipefail
 
 # SubagentStop:planner — deterministic validation of planner output.
 # Replaces AI agent hook. Checks MASTER_PLAN.md exists and has required structure.
-# Advisory only (exit 0 always). Reports findings via additionalContext.
+# Parses PLAN_VERDICT and PLAN_SUMMARY trailers, submits a structured completion
+# record via rt_completion_submit (Phase 6 slice 3). completions.py is the
+# schema authority — this hook is advisory only (exit 0 always).
 #
 # DECISION: Deterministic planner validation. Rationale: AI agent hooks have
 # non-deterministic runtime and cascade risk. Every check here is a grep/stat
@@ -86,6 +88,68 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Parse PLAN_* trailers (Phase 6 slice 3)
+# Each trailer must appear on its own line as: TRAILER_NAME: value
+# ---------------------------------------------------------------------------
+
+_PLAN_VERDICT=""
+_PLAN_SUMMARY=""
+
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    _PLAN_VERDICT=$(printf '%s' "$RESPONSE_TEXT" \
+        | grep -oE '^PLAN_VERDICT:[[:space:]]*[a-z_]+' \
+        | head -1 \
+        | sed 's/PLAN_VERDICT:[[:space:]]*//' || true)
+    _PLAN_SUMMARY=$(printf '%s' "$RESPONSE_TEXT" \
+        | grep -oE '^PLAN_SUMMARY:[[:space:]]*.*' \
+        | head -1 \
+        | sed 's/PLAN_SUMMARY:[[:space:]]*//' || true)
+fi
+
+# Advisory: flag missing trailers but do not invent fallback values.
+# The completion validator in completions.py fail-closes on missing fields.
+if [[ -z "$_PLAN_VERDICT" ]]; then
+    ISSUES+=("No PLAN_VERDICT trailer found")
+fi
+if [[ -z "$_PLAN_SUMMARY" ]]; then
+    ISSUES+=("No PLAN_SUMMARY trailer found")
+fi
+
+# --- Completion contract submission ---
+# Submit a structured completion record for the planner role.
+# If there is no active lease, do not invent a fallback — no completion record
+# is submitted. Current live dispatch_engine routes planner unconditionally to
+# guardian(provision) until Slice 4 wires completion consumption.
+# Advisory: report but remain exit 0.
+if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    _PL_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+    _PL_LEASE_FOUND=$(printf '%s' "$_PL_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    if [[ "$_PL_LEASE_FOUND" == "true" ]]; then
+        _PL_LEASE_ID=$(printf '%s' "$_PL_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
+        _PL_WF_ID=$(printf '%s' "$_PL_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    else
+        _PL_LEASE_ID=""
+        _PL_WF_ID=""
+    fi
+    [[ -z "$_PL_WF_ID" ]] && _PL_WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+
+    if [[ -n "$_PL_LEASE_ID" ]]; then
+        _PL_PAYLOAD=$(jq -n \
+            --arg v "${_PLAN_VERDICT:-}" \
+            --arg s "${_PLAN_SUMMARY:-}" \
+            '{PLAN_VERDICT:$v, PLAN_SUMMARY:$s}')
+        _PL_RESULT=$(rt_completion_submit "$_PL_LEASE_ID" "$_PL_WF_ID" "planner" "$_PL_PAYLOAD")
+        _PL_VALID=$(printf '%s' "${_PL_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
+        if [[ "$_PL_VALID" != "true" ]]; then
+            _PL_MISSING=$(printf '%s' "$_PL_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
+            ISSUES+=("COMPLETION CONTRACT ERROR: Planner completion INVALID. Missing: $_PL_MISSING.")
+        fi
+    else
+        ISSUES+=("No active lease found — planner completion not submitted. Live dispatch remains unconditional until Slice 4.")
+    fi
+fi
+
 # Build context message
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
     CONTEXT="Planner validation: ${#ISSUES[@]} issue(s) found."
@@ -93,7 +157,7 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
         CONTEXT+="\n- $issue"
     done
 else
-    CONTEXT="Planner validation: MASTER_PLAN.md looks good ($PHASE_COUNT phases defined)."
+    CONTEXT="Planner validation: MASTER_PLAN.md looks good ($PHASE_COUNT phases defined). verdict=${_PLAN_VERDICT:-none}."
 fi
 
 # Persist findings via runtime event store (flat file .agent-findings removed).

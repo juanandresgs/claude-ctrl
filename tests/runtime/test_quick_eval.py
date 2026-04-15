@@ -188,7 +188,7 @@ def test_python_source_file_rejected(conn, monkeypatch):
 
     assert result["eligible"] is False
     assert "runtime/core/quick_eval.py" in result["reason"]
-    assert "requires full tester" in result["reason"]
+    assert "requires full reviewer" in result["reason"]
     assert result["eval_written"] is False
 
 

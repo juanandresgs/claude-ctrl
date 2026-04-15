@@ -9,18 +9,21 @@ Rationale: post-task.sh contained ~200 lines of routing logic in bash. This modu
   becomes a thin wrapper (~20 lines) that pipes JSON through cc-policy dispatch
   process-stop and echoes the hookSpecificOutput result.
 
-  Compound-interaction test (test_full_tester_to_guardian_production_sequence)
-  exercises the real production path:
+  Compound-interaction tests exercise the real production path:
     lease issue → completion submit → process_agent_stop →
-    eval_state pending for implementer → routing resolved from completion record →
-    lease released after routing.
+    routing resolved from completion record → lease released after routing.
+
+  Phase 5 (DEC-PHASE5-ROUTING-001): implementer routes to reviewer (not tester).
+  Tester is neutralized as a live workflow-routing authority — stop releases
+  the lease but does not auto-dispatch.
 """
 
+import json
 import sqlite3
 
 import pytest
 
-from runtime.core import completions, evaluation, leases
+from runtime.core import completions, decision_work_registry as dwr, evaluation, leases
 from runtime.core.dispatch_engine import process_agent_stop
 from runtime.core.policy_utils import current_workflow_id
 from runtime.schemas import ensure_schema
@@ -69,21 +72,6 @@ def _codex_workflow_source(project_root: str) -> str:
     return f"workflow:{current_workflow_id(project_root)}"
 
 
-def _submit_valid_tester_completion(conn, lease_id, workflow_id):
-    return completions.submit(
-        conn,
-        lease_id=lease_id,
-        workflow_id=workflow_id,
-        role="tester",
-        payload={
-            "EVAL_VERDICT": "ready_for_guardian",
-            "EVAL_TESTS_PASS": "yes",
-            "EVAL_NEXT_ROLE": "guardian",
-            "EVAL_HEAD_SHA": "abc123",
-        },
-    )
-
-
 def _submit_valid_guardian_completion(conn, lease_id, workflow_id, verdict="committed"):
     return completions.submit(
         conn,
@@ -97,120 +85,277 @@ def _submit_valid_guardian_completion(conn, lease_id, workflow_id, verdict="comm
     )
 
 
+def _submit_valid_planner_completion(conn, lease_id, workflow_id, verdict="next_work_item"):
+    """Submit a valid planner completion record (Phase 6 Slice 4)."""
+    return completions.submit(
+        conn,
+        lease_id=lease_id,
+        workflow_id=workflow_id,
+        role="planner",
+        payload={
+            "PLAN_VERDICT": verdict,
+            "PLAN_SUMMARY": "Test planner summary",
+        },
+    )
+
+
+def _insert_goal(conn, goal_id, budget=5, status="active"):
+    """Insert an active goal contract so planner→guardian budget check passes.
+
+    Phase 6 Slice 6: goal_continuation.check_continuation_budget() denies
+    auto-dispatch when no active goal contract exists. Tests that expect
+    planner (next_work_item) to route to guardian must insert a goal first.
+    """
+    return dwr.insert_goal(
+        conn,
+        dwr.GoalRecord(
+            goal_id=goal_id,
+            desired_end_state="Test goal",
+            status=status,
+            autonomy_budget=budget,
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
-# planner → implementer (fixed transition)
+# planner routing via completion record (Phase 6 Slice 4)
 # ---------------------------------------------------------------------------
 
 
-def test_planner_routes_to_guardian(conn, project_root):
-    """W-GWT-1: Planner now routes to guardian (not implementer) for worktree provisioning."""
+def test_planner_next_work_item_routes_to_guardian(conn, project_root):
+    """Phase 6 Slice 4: planner (next_work_item) → guardian via _route_from_completion."""
+    wf_id = "wf-planner-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="next_work_item")
     result = process_agent_stop(conn, "planner", project_root)
     assert result["next_role"] == "guardian"
     assert result["error"] is None
 
 
 def test_planner_alias_plan_routes_to_guardian(conn, project_root):
-    """Tolerate 'Plan' capitalisation (matches bash case statement) — W-GWT-1."""
+    """Tolerate 'Plan' capitalisation — routes same as 'planner'."""
+    wf_id = "wf-planner-alias-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="next_work_item")
     result = process_agent_stop(conn, "Plan", project_root)
     assert result["next_role"] == "guardian"
     assert result["error"] is None
 
 
+def test_planner_goal_complete_routes_to_none(conn, project_root):
+    """Phase 6 Slice 4: planner (goal_complete) → None (terminal)."""
+    wf_id = "wf-planner-gc-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="goal_complete")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["next_role"] is None
+    assert result["error"] is None
+    assert result["auto_dispatch"] is False
+
+
+def test_planner_needs_user_decision_routes_to_none(conn, project_root):
+    """Phase 6 Slice 4: planner (needs_user_decision) → None (user input needed)."""
+    wf_id = "wf-planner-ud-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="needs_user_decision")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["next_role"] is None
+    assert result["error"] is None
+    assert result["auto_dispatch"] is False
+
+
+def test_planner_blocked_external_routes_to_none(conn, project_root):
+    """Phase 6 Slice 4: planner (blocked_external) → None (external dependency)."""
+    wf_id = "wf-planner-be-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="blocked_external")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["next_role"] is None
+    assert result["error"] is None
+    assert result["auto_dispatch"] is False
+
+
+def test_planner_no_lease_returns_error(conn, project_root):
+    """Phase 6 Slice 4: planner without lease → PROCESS ERROR."""
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+    assert result["next_role"] is None
+
+
+def test_planner_no_completion_record_returns_error(conn, project_root):
+    """Phase 6 Slice 4: planner with lease but no completion → PROCESS ERROR."""
+    wf_id = "wf-planner-nocomp-001"
+    _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+
+
+def test_planner_invalid_completion_returns_error(conn, project_root):
+    """Phase 6 Slice 4: planner with invalid completion → PROCESS ERROR."""
+    wf_id = "wf-planner-invalid-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="planner",
+        payload={"PLAN_VERDICT": "bogus_verdict", "PLAN_SUMMARY": "test"},
+    )
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+
+
+def test_planner_lease_released_after_routing(conn, project_root):
+    """Lease must be status='released' after planner process_agent_stop completes."""
+    wf_id = "wf-planner-release-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
+    process_agent_stop(conn, "planner", project_root)
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "released"
+
+
+def test_planner_goal_complete_suggestion_signal(conn, project_root):
+    """Phase 6 Slice 4: goal_complete verdict → GOAL_COMPLETE signal in suggestion."""
+    wf_id = "wf-planner-gc-sig-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="goal_complete")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert "GOAL_COMPLETE" in result["suggestion"]
+
+
+def test_planner_needs_user_decision_suggestion_signal(conn, project_root):
+    """Phase 6 Slice 4: needs_user_decision verdict → USER_DECISION_REQUIRED signal."""
+    wf_id = "wf-planner-ud-sig-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="needs_user_decision")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert "USER_DECISION_REQUIRED" in result["suggestion"]
+
+
+def test_planner_blocked_external_suggestion_signal(conn, project_root):
+    """Phase 6 Slice 4: blocked_external verdict → BLOCKED_EXTERNAL signal."""
+    wf_id = "wf-planner-be-sig-001"
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id, verdict="blocked_external")
+    result = process_agent_stop(conn, "planner", project_root)
+    assert "BLOCKED_EXTERNAL" in result["suggestion"]
+
+
+def test_full_planner_completion_production_sequence(conn, project_root):
+    """Compound-interaction: planner lease → completion submit → dispatch routing.
+
+    Production sequence (Phase 6 Slice 4):
+      1. Orchestrator issues planner lease.
+      2. check-planner.sh submits completion record with PLAN_VERDICT=next_work_item.
+      3. post-task.sh fires → process_agent_stop() routes via _route_from_completion.
+      4. Routing: planner → guardian (mode=provision).
+      5. auto_dispatch=True, suggestion starts with AUTO_DISPATCH: guardian.
+    """
+    wf_id = "wf-planner-prod-001"
+    _insert_goal(conn, wf_id)
+
+    # Step 1: lease issued
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    assert lease["status"] == "active"
+
+    # Step 2: completion submitted (mirrors check-planner.sh)
+    comp = _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
+    assert comp["valid"] is True
+    assert comp["verdict"] == "next_work_item"
+
+    # Step 3+4: process_agent_stop routes via completion
+    result = process_agent_stop(conn, "planner", project_root)
+    assert result["next_role"] == "guardian"
+    assert result["error"] is None
+    assert result["workflow_id"] == wf_id
+    assert result.get("guardian_mode") == "provision"
+
+    # Step 5: auto_dispatch
+    assert result["auto_dispatch"] is True
+    assert result["suggestion"].startswith("AUTO_DISPATCH: guardian")
+    assert "mode=provision" in result["suggestion"]
+
+    # Lease released after routing
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "released"
+
+
 # ---------------------------------------------------------------------------
-# implementer → tester (fixed transition) + eval_state = pending
+# implementer → reviewer (Phase 5: DEC-PHASE5-ROUTING-001)
 # ---------------------------------------------------------------------------
 
 
-def test_implementer_routes_to_tester(conn, project_root):
+def test_implementer_routes_to_reviewer(conn, project_root):
+    """Phase 5: implementer routes to reviewer, not tester."""
     _issue_lease(conn, "implementer", workflow_id="wf-impl-001")
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     assert result["error"] is None
 
 
-def test_implementer_sets_eval_pending(conn, project_root):
-    """When a workflow_id is resolvable, eval_state is set to pending."""
+def test_implementer_does_not_set_eval_pending(conn, project_root):
+    """Phase 5: eval_state=pending is no longer written on implementer stop."""
     wf_id = "wf-impl-002"
     _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     process_agent_stop(conn, "implementer", project_root)
     state = evaluation.get(conn, wf_id)
-    assert state is not None
-    assert state["status"] == "pending"
+    # No eval_state row should exist — the write was removed in Phase 5.
+    assert state is None or state.get("status") != "pending"
 
 
-def test_implementer_no_lease_still_routes_to_tester(conn, project_root):
-    """Implementer→tester routing is fixed — no lease needed for routing."""
+def test_implementer_no_lease_still_routes_to_reviewer(conn, project_root):
+    """Phase 5: implementer→reviewer routing is fixed — no lease needed."""
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     assert result["error"] is None
+
+
+def test_implementer_includes_worktree_path_for_reviewer(conn, project_root):
+    """Phase 5: implementer stop populates worktree_path for reviewer dispatch."""
+    from runtime.core import workflows
+
+    wf_id = "wf-impl-wt-001"
+    worktree = "/some/project/.worktrees/feature-impl-reviewer"
+    workflows.bind_workflow(conn, workflow_id=wf_id, worktree_path=worktree, branch="feature/impl-reviewer")
+    _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "reviewer"
+    assert result.get("worktree_path") == worktree
 
 
 # ---------------------------------------------------------------------------
-# tester routing via completion record
+# tester — retired (Phase 8 Slice 11): not a known runtime role
 # ---------------------------------------------------------------------------
 
 
-def test_tester_valid_completion_routes_to_guardian(conn, project_root):
-    wf_id = "wf-tester-001"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    _submit_valid_tester_completion(conn, lease["lease_id"], wf_id)
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["next_role"] == "guardian"
-    assert result["error"] is None
-
-
-def test_tester_needs_changes_routes_to_implementer(conn, project_root):
-    wf_id = "wf-tester-002"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    completions.submit(
-        conn,
-        lease_id=lease["lease_id"],
-        workflow_id=wf_id,
-        role="tester",
-        payload={
-            "EVAL_VERDICT": "needs_changes",
-            "EVAL_TESTS_PASS": "no",
-            "EVAL_NEXT_ROLE": "implementer",
-            "EVAL_HEAD_SHA": "abc123",
-        },
-    )
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["next_role"] == "implementer"
-    assert result["error"] is None
-
-
-def test_tester_invalid_completion_record_returns_error(conn, project_root):
-    """Completion record exists but is invalid (missing required fields)."""
-    wf_id = "wf-tester-003"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    # Insert a completion with an invalid verdict so valid=0
-    completions.submit(
-        conn,
-        lease_id=lease["lease_id"],
-        workflow_id=wf_id,
-        role="tester",
-        payload={"EVAL_VERDICT": "bogus_verdict"},  # invalid
-    )
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["error"] is not None
-    assert "PROCESS ERROR" in result["error"]
-    assert result["next_role"] is None or result["next_role"] == ""
-
-
-def test_tester_no_completion_record_returns_error(conn, project_root):
-    """Lease exists but tester wrote no completion record."""
-    wf_id = "wf-tester-004"
+def test_tester_stop_does_not_auto_dispatch(conn, project_root):
+    """Phase 8 Slice 11: tester is not a known runtime role.
+    process_agent_stop(conn, 'tester', ...) must not auto-dispatch to any
+    role regardless of whether a lease exists."""
+    wf_id = "wf-tester-retired-001"
     _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
     result = process_agent_stop(conn, "tester", project_root)
-    assert result["error"] is not None
-    assert "PROCESS ERROR" in result["error"]
+    assert result["next_role"] is None or result["next_role"] == ""
+    assert result["auto_dispatch"] is False
 
 
-def test_tester_no_lease_returns_error(conn, project_root):
-    """Tester must run under a lease — no active lease is a process error."""
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["error"] is not None
-    assert "PROCESS ERROR" in result["error"]
+def test_tester_stop_does_not_mutate_lease(conn, project_root):
+    """Phase 8 Slice 11: tester is not a known runtime role, so
+    process_agent_stop(conn, 'tester', ...) takes no routing action and
+    therefore does not release the lease — the lease lifecycle is owned by
+    known-role branches only."""
+    wf_id = "wf-tester-retired-002"
+    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
+    process_agent_stop(conn, "tester", project_root)
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -218,14 +363,13 @@ def test_tester_no_lease_returns_error(conn, project_root):
 # ---------------------------------------------------------------------------
 
 
-def test_guardian_committed_cycle_complete(conn, project_root):
-    """Guardian with 'committed' verdict → None (cycle complete)."""
+def test_guardian_committed_routes_to_planner(conn, project_root):
+    """Phase 6 Slice 5: guardian committed → planner (post-guardian continuation)."""
     wf_id = "wf-guardian-001"
     lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
     _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="committed")
     result = process_agent_stop(conn, "guardian", project_root)
-    # next_role is None or empty string — both mean cycle complete
-    assert not result["next_role"]
+    assert result["next_role"] == "planner"
     assert result["error"] is None
 
 
@@ -239,12 +383,13 @@ def test_guardian_denied_routes_to_implementer(conn, project_root):
     assert result["error"] is None
 
 
-def test_guardian_merged_cycle_complete(conn, project_root):
+def test_guardian_merged_routes_to_planner(conn, project_root):
+    """Phase 6 Slice 5: guardian merged → planner (post-guardian continuation)."""
     wf_id = "wf-guardian-003"
     lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
     _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="merged")
     result = process_agent_stop(conn, "guardian", project_root)
-    assert not result["next_role"]
+    assert result["next_role"] == "planner"
     assert result["error"] is None
 
 
@@ -259,16 +404,6 @@ def test_guardian_no_completion_record_returns_error(conn, project_root):
 # ---------------------------------------------------------------------------
 # Lease release after routing (DEC-ROUTING-002)
 # ---------------------------------------------------------------------------
-
-
-def test_tester_lease_released_after_routing(conn, project_root):
-    """Lease must be status='released' after process_agent_stop completes."""
-    wf_id = "wf-release-001"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    _submit_valid_tester_completion(conn, lease["lease_id"], wf_id)
-    process_agent_stop(conn, "tester", project_root)
-    refreshed = leases.get(conn, lease["lease_id"])
-    assert refreshed["status"] == "released"
 
 
 def test_guardian_lease_released_after_routing(conn, project_root):
@@ -311,22 +446,27 @@ def test_unknown_agent_type_returns_none(conn, project_root):
 
 
 def test_suggestion_contains_next_role(conn, project_root):
-    """W-GWT-1: planner now routes to guardian, suggestion must mention guardian."""
+    """Planner (next_work_item) → suggestion must mention guardian."""
+    wf_id = "wf-sug-planner-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert "guardian" in result["suggestion"]
 
 
-def test_suggestion_empty_when_cycle_complete(conn, project_root):
+def test_guardian_committed_suggestion_auto_dispatch_planner(conn, project_root):
+    """Phase 6 Slice 5: guardian committed → suggestion starts with AUTO_DISPATCH: planner."""
     wf_id = "wf-sug-001"
     lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
     _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="committed")
     result = process_agent_stop(conn, "guardian", project_root)
-    # cycle complete — suggestion should be empty or mention completion
-    assert result["next_role"] is None or result["next_role"] == ""
+    assert result["next_role"] == "planner"
+    assert result["suggestion"].startswith("AUTO_DISPATCH: planner")
 
 
 # ---------------------------------------------------------------------------
-# Compound integration: full tester→guardian production sequence
+# Compound integration: neutralized tester production sequence (Phase 5)
 # ---------------------------------------------------------------------------
 
 
@@ -349,35 +489,35 @@ def _submit_valid_implementer_completion(conn, lease_id, workflow_id, status="co
 
 
 def test_implementer_valid_contract_emits_agent_complete(conn, project_root):
-    """Valid IMPL_STATUS=complete contract → agent_complete event, routing unchanged."""
+    """Valid IMPL_STATUS=complete contract → agent_complete event, routing → reviewer."""
     wf_id = "wf-impl-contract-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     assert result["error"] is None
     complete_events = [e for e in result["events"] if e["type"] == "agent_complete"]
     assert len(complete_events) >= 1
 
 
 def test_implementer_partial_contract_emits_agent_stopped(conn, project_root):
-    """Valid IMPL_STATUS=partial contract → agent_stopped event, routing still → tester."""
+    """Valid IMPL_STATUS=partial contract → agent_stopped event, routing still → reviewer."""
     wf_id = "wf-impl-contract-002"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="partial")
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     stopped_events = [e for e in result["events"] if e["type"] == "agent_stopped"]
     assert len(stopped_events) >= 1
 
 
 def test_implementer_blocked_contract_emits_agent_stopped(conn, project_root):
-    """Valid IMPL_STATUS=blocked contract → agent_stopped event, routing still → tester."""
+    """Valid IMPL_STATUS=blocked contract → agent_stopped event, routing still → reviewer."""
     wf_id = "wf-impl-contract-003"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     stopped_events = [e for e in result["events"] if e["type"] == "agent_stopped"]
     assert len(stopped_events) >= 1
 
@@ -395,7 +535,7 @@ def test_implementer_invalid_contract_not_trusted(conn, project_root):
         payload={"IMPL_STATUS": "bogus_status", "IMPL_HEAD_SHA": "abc123"},
     )
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"  # routing unchanged
+    assert result["next_role"] == "reviewer"  # routing unchanged
     invalid_events = [e for e in result["events"] if e["type"] == "impl_contract_invalid"]
     assert len(invalid_events) >= 1
 
@@ -407,7 +547,7 @@ def test_implementer_contract_uses_lease_workflow_id(conn, project_root):
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["workflow_id"] == wf_id
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     complete_events = [e for e in result["events"] if e["type"] == "agent_complete"]
     assert len(complete_events) >= 1
 
@@ -418,7 +558,7 @@ def test_implementer_no_trailers_heuristic_fallback(conn, project_root):
     When no IMPL_STATUS/IMPL_HEAD_SHA trailers are present the check-implementer.sh
     Check 8 submits nothing. dispatch_engine finds no completion record for the lease
     and falls through to the heuristic (DEC-IMPL-CONTRACT-001). Routing is still
-    → tester (unchanged). No impl_contract_invalid event is emitted because there
+    → reviewer (unchanged). No impl_contract_invalid event is emitted because there
     is nothing malformed — there is simply no record.
 
     This is the backward-compatibility path: old implementers that predate the
@@ -428,7 +568,7 @@ def test_implementer_no_trailers_heuristic_fallback(conn, project_root):
     _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     # No completion record submitted — simulates missing trailers.
     result = process_agent_stop(conn, "implementer", project_root)
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     assert result["error"] is None
     # No impl_contract_invalid event — missing record is not the same as malformed.
     invalid_events = [e for e in result["events"] if e["type"] == "impl_contract_invalid"]
@@ -445,11 +585,10 @@ def test_full_implementer_contract_production_sequence(conn, project_root):
       3. post-task.sh fires → process_agent_stop() (dispatch_engine) runs.
       4. dispatch_engine reads completion record for lease_id (completions domain).
       5. Valid contract (IMPL_STATUS=complete) overrides heuristic → agent_complete event.
-      6. Routing → tester (fixed transition, unchanged by contract).
-      7. eval_state set to pending (evaluation domain).
-      8. auto_dispatch=True because not interrupted.
+      6. Routing → reviewer (Phase 5: implementer routes to reviewer, not tester).
+      7. auto_dispatch=True because not interrupted.
 
-    All three domain boundaries (leases / completions / evaluation) are crossed.
+    Domain boundaries crossed: leases / completions (evaluation no longer written here).
     """
     wf_id = "wf-impl-prod-seq-001"
 
@@ -467,8 +606,8 @@ def test_full_implementer_contract_production_sequence(conn, project_root):
     # Step 3+4+5+6: process_agent_stop
     result = process_agent_stop(conn, "implementer", project_root)
 
-    # Step 6: routing → tester
-    assert result["next_role"] == "tester"
+    # Step 6: routing → reviewer (Phase 5)
+    assert result["next_role"] == "reviewer"
     assert result["error"] is None
     assert result["workflow_id"] == wf_id
 
@@ -478,27 +617,18 @@ def test_full_implementer_contract_production_sequence(conn, project_root):
     stopped_events = [e for e in result["events"] if e["type"] == "agent_stopped"]
     assert len(stopped_events) == 0
 
-    # Step 7: eval_state = pending written
-    from runtime.core import evaluation
-
-    state = evaluation.get(conn, wf_id)
-    assert state is not None
-    assert state["status"] == "pending"
-
-    # Step 8: auto_dispatch=True
+    # Step 7: auto_dispatch=True
     assert result["auto_dispatch"] is True
-    assert result["suggestion"].startswith("AUTO_DISPATCH: tester")
+    assert result["suggestion"].startswith("AUTO_DISPATCH: reviewer")
 
 
-def test_full_tester_to_guardian_production_sequence(conn, project_root):
-    """Compound-interaction test exercising the real production path:
+def test_full_tester_role_retired_production_sequence(conn, project_root):
+    """Phase 8 Slice 11: tester is not a known runtime role.
 
-    1. Orchestrator issues a lease for tester.
-    2. Tester submits a valid completion record.
-    3. post-task.sh fires → process_agent_stop runs for tester.
-    4. Routing reads the completion record → next_role=guardian.
-    5. Lease is released.
-    6. Eval state is NOT set to pending (only implementer sets pending).
+    Legacy compound test converted from the pre-Phase-5 tester→guardian
+    production sequence. After Bundle 2, a completion submit with
+    role='tester' returns role_not_enforced; the stop releases the lease
+    and does not auto-dispatch.
     """
     wf_id = "wf-compound-001"
 
@@ -506,27 +636,33 @@ def test_full_tester_to_guardian_production_sequence(conn, project_root):
     lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
     assert lease["status"] == "active"
 
-    # Step 2: submit valid completion
-    comp_result = _submit_valid_tester_completion(conn, lease["lease_id"], wf_id)
-    assert comp_result["valid"] is True
-    assert comp_result["verdict"] == "ready_for_guardian"
+    # Step 2: attempt to submit a tester completion — must be rejected as
+    # role_not_enforced because tester is no longer a known schema.
+    comp_result = completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="tester",
+        payload={
+            "EVAL_VERDICT": "ready_for_guardian",
+            "EVAL_TESTS_PASS": "yes",
+            "EVAL_NEXT_ROLE": "guardian",
+            "EVAL_HEAD_SHA": "abc123",
+        },
+    )
+    assert comp_result["valid"] is False
+    assert "role_not_enforced" in comp_result["missing_fields"]
 
-    # Step 3+4: process_agent_stop
+    # Step 3: process_agent_stop — tester is unknown in Phase 8 Slice 11
     result = process_agent_stop(conn, "tester", project_root)
 
-    assert result["error"] is None
-    assert result["next_role"] == "guardian"
-    assert result["workflow_id"] == wf_id
-    assert "guardian" in result["suggestion"]
+    # Tester does not route — next_role is None, no auto-dispatch
+    assert result["next_role"] is None or result["next_role"] == ""
+    assert result["auto_dispatch"] is False
 
-    # Step 5: lease released
+    # Lease remains active because no known-role branch handled the stop
     refreshed = leases.get(conn, lease["lease_id"])
-    assert refreshed["status"] == "released"
-
-    # Step 6: no eval_state set for tester (only implementer does this)
-    # eval state should not exist unless pre-existing
-    eval_state = evaluation.get(conn, wf_id)
-    assert eval_state is None or eval_state["status"] != "pending"
+    assert refreshed["status"] == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +682,11 @@ def test_full_tester_to_guardian_production_sequence(conn, project_root):
 
 
 def test_planner_stop_auto_dispatch(conn, project_root):
-    """Planner stop → auto_dispatch=True, next_role=guardian (W-GWT-1)."""
+    """Planner (next_work_item) → auto_dispatch=True, next_role=guardian."""
+    wf_id = "wf-ad-planner-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
     assert result["next_role"] == "guardian"
@@ -560,7 +700,7 @@ def test_implementer_stop_auto_dispatch(conn, project_root):
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["auto_dispatch"] is True
-    assert result["next_role"] == "tester"
+    assert result["next_role"] == "reviewer"
     assert result["error"] is None
 
 
@@ -572,72 +712,27 @@ def test_implementer_stop_interrupted_no_auto_dispatch(conn, project_root):
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="partial")
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["auto_dispatch"] is False
-    assert result["next_role"] == "tester"  # routing unchanged
+    assert result["next_role"] == "reviewer"  # routing unchanged
 
 
-def test_tester_ready_for_guardian_auto_dispatch(conn, project_root):
-    """Tester stop (ready_for_guardian) → auto_dispatch=True, next_role=guardian."""
-    wf_id = "wf-ad-tester-001"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    _submit_valid_tester_completion(conn, lease["lease_id"], wf_id)
+def test_tester_never_auto_dispatches_after_slice_11(conn, project_root):
+    """Phase 8 Slice 11: tester is not a known runtime role. No matter what
+    payload accompanies the stop, process_agent_stop must not auto-dispatch."""
+    wf_id = "wf-ad-tester-unknown"
+    _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
     result = process_agent_stop(conn, "tester", project_root)
-    assert result["auto_dispatch"] is True
-    assert result["next_role"] == "guardian"
-    assert result["error"] is None
+    assert result["auto_dispatch"] is False
+    assert result["next_role"] is None or result["next_role"] == ""
 
 
-def test_tester_needs_changes_auto_dispatch(conn, project_root):
-    """Tester stop (needs_changes) → auto_dispatch=True, next_role=implementer."""
-    wf_id = "wf-ad-tester-002"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    completions.submit(
-        conn,
-        lease_id=lease["lease_id"],
-        workflow_id=wf_id,
-        role="tester",
-        payload={
-            "EVAL_VERDICT": "needs_changes",
-            "EVAL_TESTS_PASS": "no",
-            "EVAL_NEXT_ROLE": "implementer",
-            "EVAL_HEAD_SHA": "abc123",
-        },
-    )
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["auto_dispatch"] is True
-    assert result["next_role"] == "implementer"
-    assert result["error"] is None
-
-
-def test_tester_blocked_by_plan_auto_dispatch(conn, project_root):
-    """Tester stop (blocked_by_plan) → auto_dispatch=True, next_role=planner."""
-    wf_id = "wf-ad-tester-003"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    completions.submit(
-        conn,
-        lease_id=lease["lease_id"],
-        workflow_id=wf_id,
-        role="tester",
-        payload={
-            "EVAL_VERDICT": "blocked_by_plan",
-            "EVAL_TESTS_PASS": "no",
-            "EVAL_NEXT_ROLE": "planner",
-            "EVAL_HEAD_SHA": "abc123",
-        },
-    )
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["auto_dispatch"] is True
-    assert result["next_role"] == "planner"
-    assert result["error"] is None
-
-
-def test_guardian_committed_no_auto_dispatch(conn, project_root):
-    """Guardian stop (committed) → auto_dispatch=False (terminal, next_role=None)."""
+def test_guardian_committed_auto_dispatch_to_planner(conn, project_root):
+    """Phase 6 Slice 5: guardian committed → auto_dispatch=True, next_role=planner."""
     wf_id = "wf-ad-guardian-001"
     lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
     _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="committed")
     result = process_agent_stop(conn, "guardian", project_root)
-    assert result["auto_dispatch"] is False
-    assert not result["next_role"]  # None or empty → terminal
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "planner"
     assert result["error"] is None
 
 
@@ -653,9 +748,9 @@ def test_guardian_denied_auto_dispatch(conn, project_root):
 
 
 def test_error_no_auto_dispatch(conn, project_root):
-    """Routing error (no lease for tester) → auto_dispatch=False."""
-    # No lease → PROCESS ERROR for tester
-    result = process_agent_stop(conn, "tester", project_root)
+    """Routing error (no lease for reviewer) → auto_dispatch=False."""
+    # No lease → PROCESS ERROR for reviewer
+    result = process_agent_stop(conn, "reviewer", project_root)
     assert result["auto_dispatch"] is False
     assert result["error"] is not None
     assert "PROCESS ERROR" in result["error"]
@@ -663,6 +758,10 @@ def test_error_no_auto_dispatch(conn, project_root):
 
 def test_suggestion_auto_dispatch_prefix(conn, project_root):
     """When auto_dispatch=True, suggestion starts with 'AUTO_DISPATCH: '."""
+    wf_id = "wf-sug-ad-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
     assert result["suggestion"].startswith("AUTO_DISPATCH: ")
@@ -671,7 +770,7 @@ def test_suggestion_auto_dispatch_prefix(conn, project_root):
 def test_suggestion_canonical_prefix_when_false(conn, project_root):
     """When auto_dispatch=False and non-terminal (interrupted impl), suggestion format unchanged.
 
-    For the interrupted implementer case: auto_dispatch=False and next_role=tester,
+    For the interrupted implementer case: auto_dispatch=False and next_role=reviewer,
     so the suggestion should start with 'Canonical flow suggests' (not AUTO_DISPATCH).
     The interruption warning is appended after.
     """
@@ -686,186 +785,191 @@ def test_suggestion_canonical_prefix_when_false(conn, project_root):
 
 
 def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
-    """Compound-interaction test: full planner→guardian→impl→tester→guardian chain
+    """Compound-interaction test: full planner→guardian→impl→reviewer→guardian chain
     verifying auto_dispatch at each transition boundary.
 
     W-GWT-1: planner now routes to guardian (provision mode), not implementer directly.
+    Phase 5: implementer routes to reviewer, tester is no longer in the live chain.
 
     Production sequence exercised:
       planner stop → auto_dispatch=True (guardian suggested, mode=provision)
-      implementer stop (complete) → auto_dispatch=True (tester suggested)
-      tester stop (ready_for_guardian) → auto_dispatch=True (guardian suggested)
-      guardian stop (committed) → auto_dispatch=False (terminal)
+      implementer stop (complete) → auto_dispatch=True (reviewer suggested)
+      reviewer stop (ready_for_guardian) → auto_dispatch=True (guardian suggested)
+      guardian stop (committed) → auto_dispatch=True (planner, post-guardian continuation)
     """
     wf_id = "wf-ad-cycle-001"
+    _insert_goal(conn, wf_id)
 
-    # --- Planner stop → guardian (W-GWT-1) ---
+    # --- Planner stop → guardian (Phase 6 Slice 4: completion-driven) ---
+    planner_lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, planner_lease["lease_id"], wf_id)
     r_planner = process_agent_stop(conn, "planner", project_root)
     assert r_planner["auto_dispatch"] is True
     assert r_planner["next_role"] == "guardian"
     assert r_planner["suggestion"].startswith("AUTO_DISPATCH: guardian")
 
-    # --- Implementer stop (complete contract) ---
+    # --- Implementer stop (complete contract) → reviewer (Phase 5) ---
     impl_lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, impl_lease["lease_id"], wf_id, status="complete")
     r_impl = process_agent_stop(conn, "implementer", project_root)
     assert r_impl["auto_dispatch"] is True
-    assert r_impl["next_role"] == "tester"
-    assert r_impl["suggestion"].startswith("AUTO_DISPATCH: tester")
+    assert r_impl["next_role"] == "reviewer"
+    assert r_impl["suggestion"].startswith("AUTO_DISPATCH: reviewer")
 
-    # --- Tester stop (ready_for_guardian) ---
-    tester_lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    _submit_valid_tester_completion(conn, tester_lease["lease_id"], wf_id)
-    r_tester = process_agent_stop(conn, "tester", project_root)
-    assert r_tester["auto_dispatch"] is True
-    assert r_tester["next_role"] == "guardian"
-    assert r_tester["suggestion"].startswith("AUTO_DISPATCH: guardian")
+    # --- Reviewer stop (ready_for_guardian) → guardian ---
+    reviewer_lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(conn, reviewer_lease["lease_id"], wf_id)
+    r_reviewer = process_agent_stop(conn, "reviewer", project_root)
+    assert r_reviewer["auto_dispatch"] is True
+    assert r_reviewer["next_role"] == "guardian"
+    assert r_reviewer["suggestion"].startswith("AUTO_DISPATCH: guardian")
 
-    # --- Guardian stop (committed → terminal) ---
+    # --- Guardian stop (committed → planner, Phase 6 Slice 5) ---
     guardian_lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
     _submit_valid_guardian_completion(conn, guardian_lease["lease_id"], wf_id, verdict="committed")
     r_guardian = process_agent_stop(conn, "guardian", project_root)
-    assert r_guardian["auto_dispatch"] is False
-    assert not r_guardian["next_role"]
-    assert r_guardian["suggestion"] == ""
+    assert r_guardian["auto_dispatch"] is True
+    assert r_guardian["next_role"] == "planner"
+    assert r_guardian["suggestion"].startswith("AUTO_DISPATCH: planner")
 
 
 # ---------------------------------------------------------------------------
-# W-AD-3: Codex stop-review gate (_check_codex_gate integration)
-# ---------------------------------------------------------------------------
-# @decision DEC-AD-002
-# Title: Codex stop-review gate communicates via events table
-# Status: accepted
-# Rationale: The Codex gate hook writes a workflow-scoped codex_stop_review
-#   event and dispatch_engine reads the most recent such event within a
-#   60-second window for the current workflow only.
-#   BLOCK verdict sets auto_dispatch=False and appends the block reason to
-#   suggestion. Errors in the lookup are advisory — never block routing.
-#   This keeps dispatch_engine as the sole auto_dispatch decision authority
-#   while Codex acts as a pure event emitter.
+# DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Stop-review gate is non-authoritative
+# for workflow dispatch. These tests prove that codex_stop_review events cannot
+# affect workflow routing or auto_dispatch decisions.
 # ---------------------------------------------------------------------------
 
 
-def test_codex_gate_no_event_auto_dispatch_stays_true(conn, project_root):
-    """No codex_stop_review event → auto_dispatch stays True for clear transition.
+def test_stop_review_block_does_not_affect_auto_dispatch(conn, project_root):
+    """Separation invariant: a recent BLOCK codex_stop_review event leaves
+    auto_dispatch=True for a clear workflow transition.
 
-    W-GWT-1: planner now routes to guardian, not implementer.
-    """
-    # Planner stop — clear transition, no Codex event in DB
-    result = process_agent_stop(conn, "planner", project_root)
-    assert result["auto_dispatch"] is True
-    assert result["next_role"] == "guardian"
-    assert result["error"] is None
-    # Confirm no codex_blocked key set to True
-    assert not result.get("codex_blocked")
-
-
-def test_codex_gate_allow_auto_dispatch_stays_true(conn, project_root):
-    """ALLOW verdict → auto_dispatch stays True.
-
-    W-GWT-1: planner now routes to guardian, not implementer.
+    This is the primary proof point for DEC-PHASE5-STOP-REVIEW-SEPARATION-001.
+    Uses implementer (complete contract) as the clean auto-dispatch case.
     """
     from runtime.core import events as ev
 
-    wf_id = current_workflow_id(project_root)
+    wf_id = "wf-sep-ad-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
     ev.emit(
         conn,
         type="codex_stop_review",
-        source=_codex_workflow_source(project_root),
+        source=f"workflow:{wf_id}",
+        detail=f"VERDICT: BLOCK — workflow={wf_id} | Insufficient test coverage",
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    # auto_dispatch must be True — stop-review cannot override it
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "reviewer"
+    assert result["error"] is None
+    # codex_blocked must not be present in result
+    assert "codex_blocked" not in result
+    assert "codex_reason" not in result
+    # Suggestion must NOT contain CODEX BLOCK
+    assert "CODEX BLOCK" not in result["suggestion"]
+
+
+def test_stop_review_block_does_not_affect_next_role(conn, project_root):
+    """Separation invariant: codex_stop_review BLOCK cannot change next_role.
+
+    Exercises implementer→reviewer transition with a BLOCK event present.
+    """
+    from runtime.core import events as ev
+
+    wf_id = "wf-sep-impl-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+
+    ev.emit(
+        conn,
+        type="codex_stop_review",
+        source=f"workflow:{wf_id}",
+        detail=f"VERDICT: BLOCK — workflow={wf_id} | review concern",
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    # next_role must be reviewer regardless of stop-review event
+    assert result["next_role"] == "reviewer"
+    assert result["auto_dispatch"] is True
+    assert result["error"] is None
+
+
+def test_stop_review_allow_does_not_affect_dispatch(conn, project_root):
+    """Separation invariant: ALLOW codex_stop_review has no effect on dispatch.
+
+    Uses implementer (complete contract) as the clean auto-dispatch case.
+    """
+    from runtime.core import events as ev
+
+    wf_id = "wf-sep-allow-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    ev.emit(
+        conn,
+        type="codex_stop_review",
+        source=f"workflow:{wf_id}",
         detail=f"VERDICT: ALLOW — workflow={wf_id} | work looks good",
     )
-    result = process_agent_stop(conn, "planner", project_root)
+    result = process_agent_stop(conn, "implementer", project_root)
     assert result["auto_dispatch"] is True
-    assert result["next_role"] == "guardian"
-    assert not result.get("codex_blocked")
+    assert result["next_role"] == "reviewer"
+    assert "codex_blocked" not in result
 
 
-def test_codex_gate_block_overrides_auto_dispatch(conn, project_root):
-    """BLOCK verdict → auto_dispatch becomes False, suggestion includes block reason.
+def test_stop_review_absent_dispatch_unchanged(conn, project_root):
+    """Separation invariant: absence of codex_stop_review events has no effect.
 
-    W-GWT-1: planner now routes to guardian, not implementer.
+    Uses implementer (complete contract) as the clean auto-dispatch case.
+    """
+    wf_id = "wf-sep-absent-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["auto_dispatch"] is True
+    assert result["next_role"] == "reviewer"
+    assert result["error"] is None
+    assert "codex_blocked" not in result
+
+
+def test_stop_review_result_has_no_codex_fields(conn, project_root):
+    """Separation invariant: process_agent_stop result dict does not contain
+    codex_blocked or codex_reason fields.
+
+    Uses implementer (complete contract) as the clean auto-dispatch case.
     """
     from runtime.core import events as ev
 
-    wf_id = current_workflow_id(project_root)
-    block_reason = "Insufficient test coverage for edge cases"
+    wf_id = "wf-sep-nofields-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
     ev.emit(
         conn,
         type="codex_stop_review",
-        source=_codex_workflow_source(project_root),
-        detail=f"VERDICT: BLOCK — workflow={wf_id} | {block_reason}",
+        source=f"workflow:{wf_id}",
+        detail=f"VERDICT: BLOCK — workflow={wf_id} | should be invisible",
     )
-    result = process_agent_stop(conn, "planner", project_root)
-    assert result["auto_dispatch"] is False
-    assert result["next_role"] == "guardian"
-    assert result["error"] is None
-    assert result.get("codex_blocked") is True
-    assert result.get("codex_reason") == block_reason
-    assert "CODEX BLOCK" in result["suggestion"]
-    assert block_reason in result["suggestion"]
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert "codex_blocked" not in result, "codex_blocked must not appear in result"
+    assert "codex_reason" not in result, "codex_reason must not appear in result"
 
 
-def test_codex_gate_block_on_already_false(conn, project_root):
-    """auto_dispatch already False (error) + BLOCK verdict → stays False, no double-negative."""
+def test_stop_review_block_on_error_path_still_no_effect(conn, project_root):
+    """Separation invariant: BLOCK + error path → no codex fields, error is from routing."""
     from runtime.core import events as ev
 
     wf_id = current_workflow_id(project_root)
-    # Emit a BLOCK verdict
     ev.emit(
         conn,
         type="codex_stop_review",
         source=_codex_workflow_source(project_root),
         detail=f"VERDICT: BLOCK — workflow={wf_id} | test reason",
     )
-    # Tester with no lease → PROCESS ERROR → auto_dispatch=False already
-    result = process_agent_stop(conn, "tester", project_root)
+    # Reviewer with no lease → PROCESS ERROR
+    result = process_agent_stop(conn, "reviewer", project_root)
     assert result["auto_dispatch"] is False
     assert result["error"] is not None
     assert "PROCESS ERROR" in result["error"]
-    # codex_blocked should NOT be set since auto_dispatch was already False before gate check
-    assert not result.get("codex_blocked")
-
-
-def test_codex_gate_stale_event_ignored(conn, project_root):
-    """Event >60s old → ignored, auto_dispatch stays True.
-
-    W-GWT-1: planner now routes to guardian, not implementer.
-    """
-    wf_id = current_workflow_id(project_root)
-    # Insert a BLOCK event with a created_at timestamp 120 seconds in the past
-    stale_ts = int(__import__("time").time()) - 120
-    conn.execute(
-        "INSERT INTO events (type, source, detail, created_at) VALUES (?, ?, ?, ?)",
-        (
-            "codex_stop_review",
-            _codex_workflow_source(project_root),
-            f"VERDICT: BLOCK — workflow={wf_id} | stale reason",
-            stale_ts,
-        ),
-    )
-    conn.commit()
-
-    result = process_agent_stop(conn, "planner", project_root)
-    # Stale event must be ignored
-    assert result["auto_dispatch"] is True
-    assert result["next_role"] == "guardian"
-    assert not result.get("codex_blocked")
-
-
-def test_codex_gate_wrong_workflow_ignored(conn, project_root):
-    """A newer BLOCK verdict for another workflow must not block this workflow."""
-    from runtime.core import events as ev
-
-    ev.emit(
-        conn,
-        type="codex_stop_review",
-        source="workflow:wf-other",
-        detail="VERDICT: BLOCK — workflow=wf-other | wrong workflow",
-    )
-    result = process_agent_stop(conn, "planner", project_root)
-    assert result["auto_dispatch"] is True
-    assert result["next_role"] == "guardian"
-    assert not result.get("codex_blocked")
+    assert "codex_blocked" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -901,13 +1005,21 @@ def _submit_valid_guardian_completion_provisioned(conn, lease_id, workflow_id, w
 
 
 def test_planner_guardian_mode_is_provision(conn, project_root):
-    """Planner stop sets guardian_mode='provision' in result."""
+    """Planner (next_work_item) sets guardian_mode='provision' in result."""
+    wf_id = "wf-gwt-planner-mode-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert result.get("guardian_mode") == "provision"
 
 
 def test_planner_auto_dispatch_to_guardian(conn, project_root):
-    """Planner stop → auto_dispatch=True, suggestion starts AUTO_DISPATCH: guardian."""
+    """Planner (next_work_item) → auto_dispatch=True, suggestion starts AUTO_DISPATCH: guardian."""
+    wf_id = "wf-gwt-planner-ad-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert result["auto_dispatch"] is True
     assert result["suggestion"].startswith("AUTO_DISPATCH: guardian")
@@ -915,23 +1027,20 @@ def test_planner_auto_dispatch_to_guardian(conn, project_root):
 
 def test_planner_suggestion_encodes_mode(conn, project_root):
     """Planner AUTO_DISPATCH suggestion encodes mode=provision."""
+    wf_id = "wf-gwt-planner-enc-001"
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert "mode=provision" in result["suggestion"]
-
-
-def test_planner_no_lease_still_routes_to_guardian(conn, project_root):
-    """Planner without a lease still routes to guardian (best-effort workflow_id)."""
-    # No lease issued — planner routing is fixed (no lease required)
-    result = process_agent_stop(conn, "planner", project_root)
-    assert result["next_role"] == "guardian"
-    assert result["error"] is None
-    assert result.get("guardian_mode") == "provision"
 
 
 def test_planner_with_lease_resolves_workflow_id(conn, project_root):
     """When planner has an active lease, workflow_id is resolved from it."""
     wf_id = "wf-gwt-planner-lease-001"
-    _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert result["next_role"] == "guardian"
     assert result["workflow_id"] == wf_id
@@ -941,7 +1050,9 @@ def test_planner_with_lease_resolves_workflow_id(conn, project_root):
 def test_planner_suggestion_encodes_workflow_id_when_known(conn, project_root):
     """When workflow_id is resolved at planner stop, suggestion encodes it."""
     wf_id = "wf-gwt-planner-wf-001"
-    _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _insert_goal(conn, wf_id)
+    lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, lease["lease_id"], wf_id)
     result = process_agent_stop(conn, "planner", project_root)
     assert wf_id in result["suggestion"]
 
@@ -981,60 +1092,24 @@ def test_guardian_provisioned_auto_dispatch_true(conn, project_root):
     assert result["next_role"] == "implementer"
 
 
-def test_tester_needs_changes_suggestion_encodes_worktree_path(conn, project_root):
-    """Tester needs_changes auto-dispatch encodes worktree_path from workflow_bindings."""
+def test_tester_with_bound_workflow_still_no_routing(conn, project_root):
+    """Phase 8 Slice 11: even with a bound workflow worktree, a tester stop
+    does not route — tester is not a known runtime role."""
     from runtime.core import workflows
 
     wf_id = "wf-gwt-nc-wt-001"
     worktree = "/some/project/.worktrees/feature-impl-001"
-    # Register workflow binding (simulates guardian provisioning step)
     workflows.bind_workflow(
         conn,
         workflow_id=wf_id,
         worktree_path=worktree,
         branch="feature/impl-001",
     )
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    completions.submit(
-        conn,
-        lease_id=lease["lease_id"],
-        workflow_id=wf_id,
-        role="tester",
-        payload={
-            "EVAL_VERDICT": "needs_changes",
-            "EVAL_TESTS_PASS": "no",
-            "EVAL_NEXT_ROLE": "implementer",
-            "EVAL_HEAD_SHA": "abc123",
-        },
-    )
+    _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
     result = process_agent_stop(conn, "tester", project_root)
-    assert result["next_role"] == "implementer"
-    assert result["error"] is None
-    assert worktree in result["suggestion"]
-    assert result.get("worktree_path") == worktree
-
-
-def test_tester_needs_changes_no_binding_still_routes(conn, project_root):
-    """Tester needs_changes routes correctly even when workflow_bindings has no entry."""
-    wf_id = "wf-gwt-nc-nobind-001"
-    lease = _issue_lease_at(conn, "tester", project_root, workflow_id=wf_id)
-    completions.submit(
-        conn,
-        lease_id=lease["lease_id"],
-        workflow_id=wf_id,
-        role="tester",
-        payload={
-            "EVAL_VERDICT": "needs_changes",
-            "EVAL_TESTS_PASS": "no",
-            "EVAL_NEXT_ROLE": "implementer",
-            "EVAL_HEAD_SHA": "abc123",
-        },
-    )
-    result = process_agent_stop(conn, "tester", project_root)
-    assert result["next_role"] == "implementer"
-    assert result["error"] is None
-    # worktree_path is empty/missing when no binding exists — that's acceptable
-    assert result.get("worktree_path", "") == ""
+    # Tester is retired — no routing, no auto-dispatch
+    assert result["next_role"] is None or result["next_role"] == ""
+    assert result["auto_dispatch"] is False
 
 
 def test_full_planner_guardian_implementer_chain(conn, project_root):
@@ -1050,9 +1125,12 @@ def test_full_planner_guardian_implementer_chain(conn, project_root):
     Crosses leases / completions / dispatch_engine domain boundaries.
     """
     wf_id = "wf-gwt-chain-001"
+    _insert_goal(conn, wf_id)
     worktree = "/some/project/.worktrees/feature-gwt-chain"
 
-    # Step 1: Planner stop → routes to guardian
+    # Step 1: Planner stop → routes to guardian (Phase 6 Slice 4: completion-driven)
+    planner_lease = _issue_lease_at(conn, "planner", project_root, workflow_id=wf_id)
+    _submit_valid_planner_completion(conn, planner_lease["lease_id"], wf_id)
     r_planner = process_agent_stop(conn, "planner", project_root)
     assert r_planner["next_role"] == "guardian"
     assert r_planner["auto_dispatch"] is True
@@ -1075,3 +1153,136 @@ def test_full_planner_guardian_implementer_chain(conn, project_root):
     # Step 5: Suggestion encodes worktree_path
     assert worktree in r_guardian["suggestion"]
     assert r_guardian["suggestion"].startswith("AUTO_DISPATCH: implementer")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Reviewer routing via completion record
+# ---------------------------------------------------------------------------
+
+
+def _submit_valid_reviewer_completion(conn, lease_id, workflow_id, verdict="ready_for_guardian"):
+    """Submit a valid reviewer completion with the three required fields."""
+    return completions.submit(
+        conn,
+        lease_id=lease_id,
+        workflow_id=workflow_id,
+        role="reviewer",
+        payload={
+            "REVIEW_VERDICT": verdict,
+            "REVIEW_HEAD_SHA": "sha-reviewer-001",
+            "REVIEW_FINDINGS_JSON": json.dumps({
+                "findings": [
+                    {"severity": "note", "title": "Minor style", "detail": "Nit pick"},
+                ],
+            }),
+        },
+    )
+
+
+def test_reviewer_ready_for_guardian_routes_to_guardian(conn, project_root):
+    """Reviewer (ready_for_guardian) → guardian via _route_from_completion."""
+    wf_id = "wf-reviewer-001"
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(conn, lease["lease_id"], wf_id, verdict="ready_for_guardian")
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["next_role"] == "guardian"
+    assert result["error"] is None
+    assert result["auto_dispatch"] is True
+    assert result["suggestion"].startswith("AUTO_DISPATCH: guardian")
+
+
+def test_reviewer_needs_changes_routes_to_implementer_with_worktree(conn, project_root):
+    """Reviewer (needs_changes) → implementer with worktree_path from workflow_bindings."""
+    from runtime.core import workflows
+
+    wf_id = "wf-reviewer-nc-001"
+    worktree = "/some/project/.worktrees/feature-reviewer-nc"
+    workflows.bind_workflow(
+        conn,
+        workflow_id=wf_id,
+        worktree_path=worktree,
+        branch="feature/reviewer-nc",
+    )
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(conn, lease["lease_id"], wf_id, verdict="needs_changes")
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    assert result["auto_dispatch"] is True
+    assert result.get("worktree_path") == worktree
+    assert worktree in result["suggestion"]
+
+
+def test_reviewer_needs_changes_no_binding_still_routes(conn, project_root):
+    """Reviewer (needs_changes) routes correctly even without a workflow binding."""
+    wf_id = "wf-reviewer-nc-nobind-001"
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(conn, lease["lease_id"], wf_id, verdict="needs_changes")
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["next_role"] == "implementer"
+    assert result["error"] is None
+    assert result.get("worktree_path", "") == ""
+
+
+def test_reviewer_blocked_by_plan_routes_to_planner(conn, project_root):
+    """Reviewer (blocked_by_plan) → planner via _route_from_completion."""
+    wf_id = "wf-reviewer-bp-001"
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(conn, lease["lease_id"], wf_id, verdict="blocked_by_plan")
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["next_role"] == "planner"
+    assert result["error"] is None
+    assert result["auto_dispatch"] is True
+
+
+def test_reviewer_no_completion_record_returns_error(conn, project_root):
+    """Reviewer with lease but no completion record → PROCESS ERROR (same as tester)."""
+    wf_id = "wf-reviewer-nocomp-001"
+    _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+    assert result["next_role"] is None or result["next_role"] == ""
+
+
+def test_reviewer_invalid_completion_returns_error(conn, project_root):
+    """Reviewer completion with invalid verdict → PROCESS ERROR."""
+    wf_id = "wf-reviewer-invalid-001"
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="reviewer",
+        payload={"REVIEW_VERDICT": "bogus_verdict"},
+    )
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+
+
+def test_reviewer_no_lease_returns_error(conn, project_root):
+    """Reviewer without a lease → PROCESS ERROR."""
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["error"] is not None
+    assert "PROCESS ERROR" in result["error"]
+
+
+def test_reviewer_lease_released_after_routing(conn, project_root):
+    """Lease must be status='released' after reviewer process_agent_stop completes."""
+    wf_id = "wf-reviewer-release-001"
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(conn, lease["lease_id"], wf_id)
+    process_agent_stop(conn, "reviewer", project_root)
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "released"
+
+
+def test_implementer_routes_to_reviewer_phase5(conn, project_root):
+    """Phase 5: implementer routes to reviewer (was tester before Phase 5)."""
+    wf_id = "wf-regression-impl-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["next_role"] == "reviewer"
+    assert result["error"] is None

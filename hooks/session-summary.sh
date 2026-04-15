@@ -133,9 +133,9 @@ else
     elif [[ "$TEST_RESULT" != "pass" ]]; then
         NEXT_ACTION="Run tests to verify implementation before committing."
     elif [[ "$GIT_DIRTY_COUNT" -gt 0 ]]; then
-        NEXT_ACTION="Dispatch Tester for evaluation. Guardian can commit when the Tester issues EVAL_VERDICT=ready_for_guardian."
+        NEXT_ACTION="Dispatch Reviewer for evaluation. Guardian can commit when the Reviewer issues REVIEW_VERDICT=ready_for_guardian."
     else
-        NEXT_ACTION="If evaluation_state is ready_for_guardian, use Guardian to merge or commit. Otherwise dispatch Tester first."
+        NEXT_ACTION="If the reviewer completion verdict is ready_for_guardian, use Guardian to merge or commit. Otherwise dispatch Reviewer first."
     fi
 fi
 

@@ -31,12 +31,13 @@ Rationale: Keeps eval execution concerns (YAML load, fixture setup, policy
 Title: run_deterministic() reads actor_role from scenario setup section
 Status: accepted
 Rationale: Gate scenarios test policy enforcement for multiple roles. The
-  write-who-deny scenario verifies the deny path (actor_role="tester"); the
+  write-who-deny scenario verifies the deny path (actor_role="reviewer"); the
   impl-source-allow scenario verifies the allow path (actor_role="implementer").
   Rather than seeding state.db with a live marker (which would require full
   schema bootstrap in the fixture), we build a PolicyContext directly with the
-  actor_role specified in scenario.setup.actor_role (defaulting to "tester" when
-  absent, preserving backward compatibility). This is valid because build_context()
+  actor_role specified in scenario.setup.actor_role (defaulting to "reviewer"
+  when absent, preserving the pre-Phase-8 behaviour of testing the deny path
+  for a non-implementer role). This is valid because build_context()
   is the production path for resolving actor_role from DB state, but policy
   functions receive a PolicyContext — they do not re-query the DB. Injecting
   actor_role directly tests the policy function's logic without needing a live DB.
@@ -59,7 +60,7 @@ Status: accepted
 Rationale: The scoring pipeline (eval_scorer) was previously unused — the
   scoring, expected_evidence, and expected_defects fields in scenario YAML were
   dead data. For deterministic scenarios the raw_output is a policy decision
-  string (not tester agent output), so the full score_scenario() pipeline
+  string (not evaluator agent output), so the full score_scenario() pipeline
   (which parses EVAL_VERDICT trailers and coverage tables from agent prose) does
   not apply. Instead run_scenario() calls score_verdict() directly and passes
   the structured scores into record_score(). Live scenarios will use the full
@@ -278,7 +279,7 @@ def run_deterministic(
     """Execute a deterministic scenario via the policy engine.
 
     Builds a synthetic PolicyContext with actor_role read from the scenario's
-    setup section (scenario.setup.actor_role), defaulting to "tester" if not
+    setup section (scenario.setup.actor_role), defaulting to "reviewer" if not
     specified. Constructs a PolicyRequest for a Write tool use on a source
     file inside the fixture, then calls the default policy registry.
 
@@ -315,11 +316,15 @@ def run_deterministic(
             src_rel = "src/hello.py"
         target_file = str(fixture_path / src_rel)
 
-        # Read actor_role from scenario setup section; default to "tester" so
-        # all existing scenarios without a setup section are unchanged (deny path).
+        # Read actor_role from scenario setup section; default to "reviewer" so
+        # all existing deny-path scenarios without an explicit setup section
+        # continue to exercise the non-implementer deny branch after the
+        # Phase 8 Slice 11 tester retirement.
         # DEC-EVAL-RUNNER-002: injecting actor_role directly, not via DB.
         setup: dict = scenario.get("setup") or {}
-        actor_role: str = setup.get("actor_role", "tester")
+        actor_role: str = setup.get("actor_role", "reviewer")
+
+        from runtime.core.authority_registry import capabilities_for as _capabilities_for
 
         context = PolicyContext(
             actor_role=actor_role,
@@ -335,6 +340,7 @@ def run_deterministic(
             test_state=None,
             binding=None,
             dispatch_phase=None,
+            capabilities=_capabilities_for(actor_role),
         )
 
         # event_type must be "Write" (not "PreToolUse") because write_who and
@@ -346,8 +352,9 @@ def run_deterministic(
         # Content must be >= 20 lines to avoid the write_plan_exists fast-mode
         # bypass (< 20 lines → "feedback" before the plan check runs). Using a
         # realistic-length file ensures all write-path policies evaluate normally
-        # for both the deny (write_who catches tester before plan check) and the
-        # allow (write_who passes implementer, plan check runs to completion) paths.
+        # for both the deny (write_who catches the non-implementer role before
+        # the plan check) and the allow (write_who passes implementer, plan
+        # check runs to completion) paths.
         _synthetic_content = "# synthetic eval write — deterministic gate scenario\n" + (
             "# padding line\n" * 24
         )
@@ -485,7 +492,7 @@ def run_scenario(
 
         # Score — DEC-EVAL-RUNNER-004:
         # For deterministic mode the raw_output is a policy decision string,
-        # not tester agent prose, so the full score_scenario() (which parses
+        # not evaluator agent prose, so the full score_scenario() (which parses
         # EVAL_VERDICT trailers and coverage tables) does not apply. Use
         # score_verdict() directly and leave the live-specific scores as None.
         v_score = eval_scorer.score_verdict(verdict_actual, verdict_expected)

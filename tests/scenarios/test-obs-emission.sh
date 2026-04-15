@@ -64,7 +64,7 @@ CLAUDE_PROJECT_DIR="$TMP_DIR" \
     bash -c "
         source '$HOOKS_DIR/log.sh'
         source '$HOOKS_DIR/context-lib.sh'
-        rt_obs_metric test_single_emit 42.0 '{\"tag\":\"s1\"}' '' 'tester'
+        rt_obs_metric test_single_emit 42.0 '{\"tag\":\"s1\"}' '' 'reviewer'
     " 2>/dev/null
 
 count=$(obs_count "test_single_emit")

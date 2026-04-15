@@ -55,7 +55,7 @@ Test-first. Your dispatch may include `TEST_SCOPE: full|minimal|none`:
 
 ### Write Tests That Prove Production Works
 
-The tester will audit your test suite's substance. Write tests the tester can't indict.
+The reviewer will audit your test suite's substance. Write tests the reviewer can't indict.
 Mocks are acceptable ONLY for external boundaries.
 
 Before declaring tests complete, answer three questions:

@@ -215,3 +215,119 @@ def test_nested_shell_git_push_still_denied_without_lease():
     assert decision is not None
     assert decision.action == "deny"
     assert decision.policy_name == "bash_git_who"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: READ_ONLY_REVIEW capability gate
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_read_only_denies_git_commit_even_with_valid_lease():
+    """Reviewer with READ_ONLY_REVIEW capability is denied git commit
+    even when a lease with routine_local is present."""
+    lease = _make_lease(allowed_ops=["routine_local"])
+    lease["role"] = "reviewer"
+    ctx = make_context(actor_role="reviewer", lease=lease)
+    req = make_request("git commit -m 'should not happen'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "read-only" in decision.reason.lower()
+    assert decision.policy_name == "bash_git_who"
+
+
+def test_reviewer_read_only_denies_git_merge():
+    """Reviewer is denied git merge regardless of lease."""
+    lease = _make_lease(allowed_ops=["routine_local"])
+    lease["role"] = "reviewer"
+    ctx = make_context(actor_role="reviewer", lease=lease)
+    req = make_request("git merge feature/foo", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "read-only" in decision.reason.lower()
+
+
+def test_reviewer_read_only_denies_git_push():
+    """Reviewer is denied git push even with a permissive lease."""
+    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
+    lease["role"] = "reviewer"
+    ctx = make_context(actor_role="reviewer", lease=lease)
+    req = make_request("git push origin main", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "read-only" in decision.reason.lower()
+
+
+def test_arbitrary_role_with_read_only_review_injected_is_denied():
+    """The gate keys off READ_ONLY_REVIEW capability, not the role string.
+    An arbitrary role name with the capability injected must be denied."""
+    from runtime.core.authority_registry import (
+        CAN_EMIT_DISPATCH_TRANSITION,
+        READ_ONLY_REVIEW,
+    )
+    from runtime.core.policy_engine import PolicyContext
+
+    lease = _make_lease(allowed_ops=["routine_local"])
+    lease["role"] = "custom_auditor"
+    ctx = PolicyContext(
+        actor_role="custom_auditor",
+        actor_id="agent-test",
+        workflow_id="feature-test",
+        worktree_path="/project/.worktrees/feature-test",
+        branch="feature/test",
+        project_root="/project",
+        is_meta_repo=False,
+        lease=lease,
+        scope=None,
+        eval_state=None,
+        test_state=None,
+        binding=None,
+        dispatch_phase=None,
+        capabilities=frozenset({READ_ONLY_REVIEW, CAN_EMIT_DISPATCH_TRANSITION}),
+    )
+    req = make_request("git commit -m 'audit trail'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "read-only" in decision.reason.lower()
+
+
+def test_implementer_with_valid_lease_still_allowed_for_commit():
+    """Implementer with CAN_WRITE_SOURCE and a valid lease for routine_local
+    is still allowed — the READ_ONLY_REVIEW gate must not affect non-reviewer
+    stages."""
+    lease = _make_lease(allowed_ops=["routine_local"])
+    lease["role"] = "implementer"
+    ctx = make_context(actor_role="implementer", lease=lease)
+    req = make_request("git commit -m 'feat: add thing'", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_meta_repo_bypass_unaffected_by_read_only():
+    """Meta-repo bypass fires before the READ_ONLY_REVIEW check —
+    reviewer in meta-repo is not denied."""
+    ctx = make_context(actor_role="reviewer", is_meta_repo=True, lease=None)
+    req = make_request("git commit -m 'config update'", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_reviewer_non_git_command_still_skipped():
+    """READ_ONLY_REVIEW gate only fires for classified git ops.
+    Non-git commands are skipped regardless of capability."""
+    ctx = make_context(actor_role="reviewer", lease=None)
+    req = make_request("ls -la", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_reviewer_git_status_still_skipped():
+    """git status is classified as 'unclassified' — skipped before
+    READ_ONLY_REVIEW gate fires."""
+    ctx = make_context(actor_role="reviewer", lease=None)
+    req = make_request("git status", context=ctx)
+    decision = check(req)
+    assert decision is None

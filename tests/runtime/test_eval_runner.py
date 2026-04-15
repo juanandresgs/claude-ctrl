@@ -380,13 +380,14 @@ def test_run_deterministic_implementer_role_allows_source_write(project_tmp):
         eval_runner.cleanup_fixture(path)
 
 
-def test_run_deterministic_default_actor_role_is_tester(project_tmp):
-    """Bug 1 regression: scenario without setup.actor_role defaults to 'tester' (deny)."""
+def test_run_deterministic_default_actor_role_is_reviewer(project_tmp):
+    """Phase 8 Slice 11: scenario without setup.actor_role defaults to
+    'reviewer' (deny) — tester was retired in Bundle 2."""
     scenario = eval_runner.load_scenario(WRITE_WHO_DENY_YAML)
     path = eval_runner.setup_fixture("clean-hello-world", FIXTURES_DIR, project_tmp)
     try:
         result = eval_runner.run_deterministic(scenario, path, REPO_ROOT)
-        # write-who-deny has no setup.actor_role — defaults to tester → deny
+        # write-who-deny has no setup.actor_role — defaults to reviewer → deny
         assert result["verdict"] == "deny"
         assert result["error"] is None
     finally:

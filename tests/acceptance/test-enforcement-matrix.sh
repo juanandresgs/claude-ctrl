@@ -8,10 +8,13 @@
 #   none (orch.)  |    DENY      |      DENY       |  DENY   |   pass
 #   planner       |    DENY      |      ALLOW      |  DENY   |   pass
 #   implementer   |    ALLOW     |      DENY       |  DENY   |   pass
-#   tester        |    DENY      |      DENY       |  DENY   |   pass
+#   reviewer      |    DENY      |      DENY       |  DENY   |   pass
 #   guardian      |    DENY      |      DENY       |  ALLOW* |   pass
 #
 #   *Guardian git allow requires proof=verified + test-status=pass.
+#
+#   Phase 8 Slice 11 retired the legacy ``tester`` role; the read-only
+#   evaluator row is now owned by ``reviewer`` (DEC-PHASE8-SLICE11-001).
 #
 # @decision DEC-ACC-002
 # @title Enforcement matrix covers every WHO x action cell independently
@@ -204,15 +207,16 @@ assert_deny  "implementer: governance write denied" "$(run_governance_write "$pr
 assert_deny  "implementer: git op denied"           "$(run_git_op           "$proj" "implementer")"
 
 # ---------------------------------------------------------------------------
-# Row 4: tester
+# Row 4: reviewer (Phase 8 Slice 11 replaces retired ``tester``; reviewer is
+# the live read-only evaluator)
 # ---------------------------------------------------------------------------
-printf '\n=== Row 4: tester ===\n'
-proj=$(make_project "tester")
-set_role "$proj" "tester"
+printf '\n=== Row 4: reviewer ===\n'
+proj=$(make_project "reviewer")
+set_role "$proj" "reviewer"
 
-assert_deny  "tester: source write denied"     "$(run_source_write     "$proj")"
-assert_deny  "tester: governance write denied" "$(run_governance_write "$proj")"
-assert_deny  "tester: git op denied"           "$(run_git_op           "$proj" "tester")"
+assert_deny  "reviewer: source write denied"     "$(run_source_write     "$proj")"
+assert_deny  "reviewer: governance write denied" "$(run_governance_write "$proj")"
+assert_deny  "reviewer: git op denied"           "$(run_git_op           "$proj" "reviewer")"
 
 # ---------------------------------------------------------------------------
 # Row 5: guardian

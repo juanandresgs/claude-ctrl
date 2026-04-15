@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-06 (INIT-GUARD-WT R3: planner lease decoupled, enriched AUTO_DISPATCH contract, provision order reversed)
+Last updated: 2026-04-09 (ClauDEX Addendum: DEC-CLAUDEX-ARCH-001 — agent-agnostic recursive supervision becomes a runtime-owned domain; tmux is demoted to a transport adapter and MCP/provider-native control becomes an interchangeable adapter rather than a second authority; INIT-ENFORCE Addendum: W-ENFORCE-RCA-15 — `enforcement_config` table added, regular Stop review flipped to on-by-default, policy engine becomes canonical config authority; W-ENFORCE-RCA-14 — SubagentStop review path made unconditional in `stop-review-gate-hook.mjs`; W-ENFORCE-RCA-11 — `hookEventName` restored in `_handle_evaluate` JSON output; W-ENFORCE-RCA-6 — `.mjs/.cjs/.mts/.cts` added to SOURCE_EXTENSIONS)
 
 ## Identity
 
@@ -27,6 +27,12 @@ governs.
   `.statusline-cache`, `.audit-log`) have been eliminated from hot paths.
   `.agent-findings` remains active (written by check-guardian.sh, read by
   prompt-submit.sh and compact-preserve.sh).
+- The current ClauDEX supervision surfaces in [`.codex/`](.codex/),
+  [ClauDEX/](ClauDEX/), and `scripts/claudex-*` are containment scaffolding to
+  keep Codex in the driver seat during cutover. They are not the target
+  permanent authority. The target model is a runtime-owned supervision fabric
+  with transport adapters (`tmux`, MCP, or provider-native control) behind one
+  canonical state machine.
 - The statusline HUD reads from `cc-policy statusline snapshot` -- a runtime
   projection, not a separate authority.
 - Dispatch emission flows through `post-task.sh` into the `dispatch_queue` and
@@ -122,6 +128,20 @@ into the new mainline.
   cutover are live. Flat-file shared-state authorities have been deleted. The
   dispatch queue exists but is not yet enforced as the sole dispatch path --
   enforcement moves to INIT-003 after the queue proves stable through use.
+- `2026-04-09 — DEC-CLAUDEX-ARCH-001` Agent-agnostic recursive supervision is
+  a runtime-owned domain. The canonical control plane will model agent
+  sessions, seats, supervision threads, dispatch attempts, and delivery
+  claim/ack in runtime state. `tmux` is the universal execution/attachment
+  adapter for arbitrary CLI agents, not the authority for queue state, health,
+  or completion. MCP or provider-native APIs are preferred structured adapters
+  when available, but they plug into the same runtime-owned state machine.
+- `2026-04-11 — DEC-CLAUDEX-BREAKGLASS-001` Interaction-gate breakglass
+  escalation is split across two authorities: `braid-v2` runtime owns gate
+  detection, escalation routing, review delivery, grant consumption, and
+  resume/fail evidence; the policy engine owns approval hierarchy, grant
+  issuance, scope, expiry, and audit. Approval grants are narrow temporary
+  exception leases bound to a concrete bundle/seat/session/gate, not global
+  bypass flags.
 
 ### Hook-layer decisions
 
@@ -508,10 +528,12 @@ into the new mainline.
   worktree creation, which routes to implementer.
 - `2026-04-06 — DEC-GUARD-WT-002` Worktree provisioning is a runtime function,
   not a dispatch_engine side effect. dispatch_engine remains pure (no git side
-  effects). `cc-policy worktree provision` wraps registration + lease issuance.
-  Guardian runs `git worktree add` directly via bash. Uses register()'s ON
-  CONFLICT as sole concurrency guard (no list_active pre-check). See
-  DEC-GUARD-WT-008 (revised).
+  effects, no lease writes — R3 restored full purity). `cc-policy worktree
+  provision` handles the entire sequence: `git worktree add` (subprocess),
+  DB registration, Guardian lease, implementer lease, workflow binding.
+  Guardian calls one CLI command, does not run git worktree add separately.
+  Uses register()'s ON CONFLICT as sole concurrency guard (no list_active
+  pre-check). See DEC-GUARD-WT-008 (R3: filesystem-first).
 - `2026-04-06 — DEC-GUARD-WT-003` Worktree path injection via dispatch result
   enrichment. Guardian's completion record includes WORKTREE_PATH in payload.
   dispatch_engine reads it from completion record and includes it in result.
@@ -561,6 +583,171 @@ into the new mainline.
   `git worktree remove` + `worktrees.remove()`. No `list_active()` pre-check
   (TOCTOU). `register()`'s `ON CONFLICT(path) DO UPDATE` remains the DB-level
   idempotency guard.
+- `2026-04-06 — DEC-ENFORCE-001` **Replace `_GIT_OP_RE` with
+  `classify_git_op()` call.** The regex only covered commit/merge/push,
+  missing worktree remove, branch -d/-D, rebase, reset, clean. Using the
+  canonical Python classifier in `bash_git_who.py` eliminates the regex sync
+  burden. The bash mirror in `context-lib.sh` is updated in parallel; the
+  Python version in `leases.py` is authoritative when they disagree. Parity
+  is enforced by scenario tests.
+- `2026-04-06 — DEC-ENFORCE-002` **Role-scoped lease resolution.** When
+  `build_context()` finds a lease by worktree_path (no actor_id match), it now
+  validates that actor_role matches the lease's role. Empty actor_role (the
+  orchestrator case) gets lease=None. This prevents the orchestrator from
+  inheriting Guardian permissions.
+- `2026-04-06 — DEC-ENFORCE-003` **Fail-closed safety wrapper.** New
+  `hooks/lib/hook-safety.sh` provides `_run_fail_closed`. Any hook crash is
+  caught, converted to deny JSON + observatory event + exit 0. Works within
+  Claude Code's "non-zero = does not block" contract by ensuring hooks NEVER
+  exit non-zero.
+- `2026-04-06 — DEC-ENFORCE-004` **Auto-review heredoc crash fix.** The
+  `analyze_substitutions()` function now checks for heredocs in extracted
+  `$()` inner content before recursing, preventing the paren-depth counter
+  crash that exited non-zero and silently allowed the command.
+- `2026-04-07 — DEC-SOURCEEXT-001` **Modern JS module variants added to
+  SOURCE_EXTENSIONS.** `mjs`, `cjs`, `mts`, `cts` are added to both the Python
+  authority (`runtime/core/policy_utils.py:SOURCE_EXTENSIONS`) and the shell
+  mirror (`hooks/context-lib.sh:SOURCE_EXTENSIONS`). Rationale: every
+  write-side WHO gate (`branch_guard`, `write_who`, `doc_gate`, `plan_guard`,
+  `test_gate_pretool`, `mock_gate`) classifies via `is_source_file()`. Without
+  the modern ESM/CJS/TS-module extensions, modules in those formats bypass
+  the entire write-side enforcement chain — directly reproduced by editing
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+  on main without policy intervention. The hard-coded source-extension regex
+  in `hooks/check-implementer.sh:68` is intentionally NOT touched here; it
+  is a separate, bigger refactor (unify into the shared helper) tracked as
+  ENFORCE-RCA-9.
+- `2026-04-07 — DEC-EVAL-HOOKOUT-001` **PreToolUse hook output must include
+  `hookEventName`.** The `hookSpecificOutput` dict emitted by
+  `runtime/cli.py:_handle_evaluate` (lines ~1296-1321) MUST set
+  `"hookEventName": "PreToolUse"` in all three branches (`deny`, `feedback`,
+  `allow`). Rationale: the Claude Code hook output contract documented at
+  `hooks/HOOKS.md:28-34` requires `hookEventName` as a peer of
+  `permissionDecision`; without it, Claude Code's harness silently discards
+  the entire `hookSpecificOutput` block and the underlying tool call executes
+  unblocked. Commit `3be693f` (PE-W1, 2026-04-03) introduced
+  `_handle_evaluate` without the field, and from that moment every deny
+  emitted by `branch_guard`, `write_who`, `bash_main_sacred`, `bash_git_who`,
+  `doc_gate`, `plan_guard`, `test_gate_pretool`, `mock_gate`, and
+  `enforcement_gap` via the `cc-policy evaluate` path was a no-op — the
+  policy-engine metric fired but the harness never honored the deny. This
+  defect is the empirically-verified root cause of the four-day "orchestrators
+  bypassing dispatch" complaint. The crash-deny path in
+  `hooks/lib/hook-safety.sh:56` was the only correctly-shaped deny in the
+  system because it injects `hookEventName` as a literal string. The cell at
+  `runtime/cli.py:533` (the `process-stop` handler) already includes
+  `hookEventName`, demonstrating that the contract is known and the omission
+  in `_handle_evaluate` was a localized regression rather than a systemic
+  misunderstanding. Verified independently by a parallel Codex rescue probe
+  (session `019d69bd-fcc6-7012-b435-9d6398fc0ad1`) which returned
+  `"VERDICT: JSON shape MISSING hookEventName at runtime/cli.py:1298"` in
+  53 seconds. The fix is enforced going forward by extending
+  `tests/runtime/policies/test_hook_scenarios.py` to assert
+  `hookEventName == "PreToolUse"` on every deny payload, so any future drop
+  of the field fails CI rather than silently disabling enforcement.
+- `2026-04-07 — DEC-ENFORCE-REVIEW-GATE-002` **SubagentStop review path is
+  unconditional; `config.stopReviewGate` gates only the user-facing regular
+  Stop path.** The early-return at
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs:591-596`
+  currently bails out for BOTH the SubagentStop and regular Stop branches
+  when `config.stopReviewGate === false`. Because `config.stopReviewGate`
+  defaults to false and is only toggled on by the user via
+  `codex-companion.mjs setup --enable-review-gate`, the SubagentStop branch
+  (lines 613-646, which writes `codex_stop_review` events via
+  `emitCodexReviewEventSync` at line 622) never runs in a default install.
+  The downstream consumer `runtime/core/dispatch_engine.py:_check_codex_gate`
+  (lines 406-445) looks for those events within a 60-second window to set
+  `codex_blocked=True` and suppress `AUTO_DISPATCH` on BLOCK verdicts; with
+  the events table empty, the gate silently always-allows. The SubagentStop
+  review path is part of **dispatch-chain integrity** — it is an enforcement
+  surface, not a user-facing convenience — and must run on every SubagentStop
+  regardless of the flag. The user-facing regular-Stop path (interactive
+  block at turn-end that the user opts into via
+  `codex setup --enable-review-gate`) retains the flag as its opt-in gate.
+  The fix flips the condition to
+  `if (!isSubagentStop && !config.stopReviewGate)` — a single-line logic
+  change plus a rationale comment block. Verified live in RCA-11 chain
+  verification: the orchestrator observed zero `codex_stop_review` rows in
+  the events table despite the hook being wired into all four SubagentStop
+  matchers in `settings.json`. User verbatim direction: *"The stop review
+  from codex setup isn't the one we want, we want it enforced at the stops
+  and the subagent returns in our own mechanism so make sure to understand
+  that properly."*
+- `2026-04-07 — DEC-CONFIG-AUTHORITY-001` **Policy engine is the canonical
+  authority for enforcement configuration.** A new SQLite table
+  `enforcement_config(scope TEXT, key TEXT, value TEXT, updated_at INTEGER,
+  PRIMARY KEY (scope, key))` with index on `(key, scope)` is added to
+  `runtime/schemas.py:ALL_DDL`. Defaults are seeded at table-creation time
+  and mirrored in `runtime/core/enforcement_config.py` as fail-safe fallback
+  constants. Scoping follows the `(scope, key)` convention already used by
+  `workflow_scope` and the policy engine's scope resolution: lookups fall
+  back from `workflow=<workflow_id>` → `project=<project_root>` → `global`
+  → built-in default. `build_context()` (runtime/core/policy_engine.py:328)
+  loads rows for the current scope in a single indexed query and exposes
+  them on a new `PolicyContext.enforcement_config: dict` field so policies
+  and hook bridges read config without any additional I/O. A new
+  `cc-policy config {get,set,list}` CLI domain mirrors the existing
+  `evaluation`, `marker`, and `workflow` domains. Mutations through `set`
+  are WHO-gated: `runtime/core/enforcement_config.set` raises
+  `PermissionError` when `actor_role` is not `"guardian"`, surfaced by the
+  CLI as a JSON error. This prevents the orchestrator (actor_role="") or
+  any subagent from self-toggling its own enforcement constraints — a
+  structural requirement because `build_context()` already refuses to
+  elevate an actor_role=empty caller into any role with write privileges.
+  The previous authority — the Codex plugin's `state.json.stopReviewGate`
+  field written by `codex-companion.mjs setup --enable-review-gate` — is
+  deprecated as the canonical source for review-gate toggles; the plugin
+  retains a transitional dual-write shim in `lib/state.mjs:setConfig` that
+  ALSO calls `cc-policy config set review_gate_regular_stop …` so the UI
+  shortcut keeps working for one release. After that release the plugin's
+  own `stopReviewGate` field will be deleted. Rationale: RCA-15 (regular
+  Stop review default-on) is pointless if the config authority is still a
+  plugin-local JSON blob — every cycle the Codex plugin rewrites
+  `state.json` would reintroduce the old default. Flipping the default
+  without first moving the authority leaves dual-authority for at least
+  one cycle, which violates the single-source-of-truth Sacred Practice.
+  This decision was converged with Codex against five architectural
+  questions (Q1-Q5) and Codex confirmed there is no higher-priority
+  blocker; this IS the shortest path to the north-star "policy engine is
+  canonical" state. The three architectural risks Codex identified
+  (scoping drift, fail-open wrapper suppression, Node hooks bypassing
+  project scoping via missing `CLAUDE_POLICY_DB`) are mitigated by: the
+  `(scope, key)` schema from day one; an explicit `__FAIL_CLOSED__`
+  sentinel return from `rt_config_get` in `hooks/lib/runtime-bridge.sh`;
+  and a mandatory `CLAUDE_POLICY_DB = <CLAUDE_PROJECT_DIR>/.claude/state.db`
+  assignment in `stop-review-gate-hook.mjs` before every shell-out to
+  `cc-policy`, mirroring the existing `cc_policy()` pattern at
+  `hooks/lib/runtime-bridge.sh:23-29`.
+- `2026-04-07 — DEC-REGULAR-STOP-REVIEW-001` **Regular-Stop Codex review is
+  enforced by default.** Seed value for `review_gate_regular_stop` in the
+  newly-created `enforcement_config` table is `true`, scope `global`. The
+  current default (`config.stopReviewGate === false` in the Codex plugin
+  `state.json`) is the failure state — it means the regular-Stop review
+  code path in `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+  (the user-facing turn-end gate, lines ~656-end) never runs unless the
+  user explicitly opted in via `codex setup --enable-review-gate`. The
+  `stop-review-gate-hook.mjs` main function at line 577 is retargeted to
+  read `review_gate_subagent_stop` and `review_gate_regular_stop` from
+  `cc-policy config get` (both seeded to `true`) instead of from
+  `getConfig(workspaceRoot).stopReviewGate`. This flips the default on
+  immediately, with no advisory week, because an advisory week adds zero
+  signal beyond what the SubagentStop path (already unconditional per
+  DEC-ENFORCE-REVIEW-GATE-002) already provides, and because the
+  regular-Stop review is the enforcement surface that covers the very
+  turn type the orchestrator operates on — every user-initiated session
+  stop. Codex concurred that this is a "flip and ship" default. If the
+  user wants to disable regular-Stop review locally, the procedure is
+  `cc-policy config set review_gate_regular_stop false` (requires
+  guardian lease; the orchestrator can request this via the normal
+  guardian dispatch path). This decision is tested by live-dispatch
+  verification in the W-ENFORCE-RCA-15 Evaluation Contract: after the
+  patch lands, `cc-policy config get review_gate_regular_stop` returns
+  `true` in clean installs, AND a regular Stop in this session fires
+  the Codex review (verifiable by a `codex_stop_review` event landing
+  in the events table within 60s of session stop). The fix is a pure
+  default flip combined with the config-source retarget from
+  DEC-CONFIG-AUTHORITY-001 — it is not a behavioral rewrite of the
+  review path itself; that code (lines 656-end) stays intact.
 
 ## Active Initiatives
 
@@ -2455,7 +2642,9 @@ Case F: Very short response (edge case)
   normalization). Live marker list accumulates stale Explore/general-purpose
   entries. Live DB shows duplicate workflow forms for the same conceptual
   work. Statusline shows contradictory proof/eval readiness.
-- **Handoff:** `docs/HANDOFF_2026-04-05_SYSTEM_EVAL.md`
+- **Handoff:** source handoff retired in Phase 8 Slice 6 (2026-04-13);
+  conclusions, corrections, and the 6-packet priority order are preserved
+  in this INIT-CONV section and W-CONV-1 through W-CONV-7 below.
 - **North star:** One authority per operational fact: one canonical
   `project_root`, one canonical `workflow_id`, one canonical active-agent
   identity, one readiness authority, one dispatch routing authority, one
@@ -4205,6 +4394,13 @@ docs/DISPATCH.md diff shows the gap removal and new section.
 - None (prompt and documentation changes only)
 
 ##### W-AD-3: Codex Stop-Review Gate at SubagentStop
+
+> **Superseded by DEC-PHASE5-STOP-REVIEW-SEPARATION-001 (Phase 5 Slice 2).**
+> The stop-review gate no longer influences workflow `auto_dispatch` or
+> `next_role`. `_check_codex_gate` has been deleted. The gate hook is retained
+> in `settings.json` for user-facing review observability only — its
+> `codex_stop_review` events are not consumed by the dispatch engine.
+> The specification below is preserved for historical context.
 
 - **Weight:** M
 - **Gate:** review
@@ -6660,16 +6856,15 @@ and reviewed by the user (gate: approve).
   table maps `("guardian", "provisioned") -> "implementer"`.
 
 - `DEC-GUARD-WT-002` **Worktree provisioning is a runtime function, not a
-  dispatch_engine side effect.** dispatch_engine must remain a pure routing
-  decision engine (no git side effects). The actual `git worktree add` and
-  `worktrees.register()` + `leases.issue()` calls happen inside the Guardian
-  agent, which has bash access. A new `cc-policy worktree provision` CLI
-  subcommand wraps the reservation + registration + implementer lease
-  issuance + workflow binding atomically so the Guardian does not need to
-  call multiple CLI commands. The git worktree creation itself is a bash
-  command the Guardian executes between reservation and final registration.
-  See DEC-GUARD-WT-008 for the idempotency and partial-failure cleanup
-  pattern.
+  dispatch_engine side effect (REVISED R3).** dispatch_engine must remain
+  a pure routing decision engine (no git side effects, no lease writes).
+  The `cc-policy worktree provision` CLI subcommand handles the entire
+  provision sequence atomically: filesystem creation (`git worktree add`
+  via subprocess), DB registration, Guardian lease at PROJECT_ROOT
+  (DEC-GUARD-WT-006 R3), implementer lease at worktree_path, and workflow
+  binding. The Guardian calls this single CLI command — it does not need
+  to run `git worktree add` separately. See DEC-GUARD-WT-008 for the
+  filesystem-first order and partial-failure cleanup pattern.
 
 - `DEC-GUARD-WT-003` **Worktree path injection via dispatch result
   enrichment (REVISED).** When Guardian completes provisioning, its
@@ -7107,8 +7302,8 @@ no leases (pure routing). No existing test regressions.
 
 **Required files/directories:**
 - `runtime/core/completions.py` (routing table must change)
-- `runtime/core/dispatch_engine.py` (planner block, guardian lease,
-  worktree_path enrichment, guardian_mode must change)
+- `runtime/core/dispatch_engine.py` (planner block, worktree_path
+  enrichment, guardian_mode, suggestion encoding must change)
 - `runtime/cli.py` (serialization must add worktree_path and
   guardian_mode)
 - `hooks/check-guardian.sh` (WORKTREE_PATH parsing must be added)
@@ -7143,8 +7338,10 @@ no leases (pure routing). No existing test regressions.
 - **Weight:** L
 - **Gate:** approve (user must approve Guardian prompt changes)
 - **Deps:** W-GWT-1 (routing must send planner -> guardian first)
-- **Integration:** `runtime/cli.py` (new worktree provision subcommand),
-  `runtime/core/worktrees.py` (register), `runtime/core/leases.py` (issue),
+- **Integration:** `runtime/cli.py` (new worktree provision subcommand
+  with filesystem-first order, Guardian lease at PROJECT_ROOT per
+  DEC-GUARD-WT-006 R3), `runtime/core/worktrees.py` (register),
+  `runtime/core/leases.py` (issue -- Guardian + implementer leases),
   `runtime/core/workflows.py` (bind_workflow -- binding at provision time),
   `agents/guardian.md` (provision mode instructions)
 
@@ -7396,6 +7593,21 @@ tests pass.
      no programmatic parser needed. Examples:
      `AUTO_DISPATCH: guardian (mode=provision, workflow_id=W, feature_name=F)`
      `AUTO_DISPATCH: implementer (worktree_path=/path, workflow_id=W)`
+   - **Launch-in-worktree requirement:** When `AUTO_DISPATCH` includes
+     `worktree_path`, the orchestrator MUST set the implementer agent's
+     working directory to that path (not merely mention it in prompt
+     text). This is a dispatch/launch concern, not a prompt concern.
+     subagent-start.sh derives PROJECT_ROOT from the agent's cwd
+     (line 82: lease claim, line 133: workflow bind). If the implementer
+     launches at the repo root instead of the worktree, it will:
+     (1) claim a lease against the repo root, not the worktree,
+     (2) bind workflow to the repo root, not the worktree,
+     (3) write source code on main, violating Sacred Practice #2.
+     The orchestrator must pass `worktree_path` as the `cwd` parameter
+     on the Agent tool call (or equivalent launch mechanism) so the
+     implementer's PROJECT_ROOT resolves to the worktree directory.
+     This makes subagent-start.sh's lease claim, workflow bind, and
+     branch guard all operate against the correct root automatically.
 
 **Tests:**
 - Scenario test: subagent-start.sh for implementer with active lease
@@ -7423,6 +7635,13 @@ tests pass.
 - `test_claude_md_enriched_auto_dispatch`: CLAUDE.md describes the
   enriched `AUTO_DISPATCH: <role> (key=value, key=value)` format with
   examples showing worktree_path and workflow_id metadata
+- `test_claude_md_launch_in_worktree_requirement`: CLAUDE.md explicitly
+  states that when AUTO_DISPATCH includes worktree_path, the orchestrator
+  MUST set the implementer's working directory (cwd) to that path — not
+  merely include it in prompt text. Verify the text contains language
+  about cwd/working directory being the worktree_path, and explains the
+  consequences of launching at repo root (wrong lease, wrong workflow
+  bind, writes on main)
 
 **Required real-path checks:**
 - Run subagent-start.sh with implementer agent_type and an active
@@ -7457,8 +7676,11 @@ tests pass.
 Implementer prompt contains no worktree creation instructions.
 subagent-start.sh injects worktree path from lease context. No agent
 prompt except guardian.md references `git worktree add`. CLAUDE.md
-describes the updated dispatch chain. All existing subagent-start
-scenario tests pass.
+describes the updated dispatch chain including the launch-in-worktree
+requirement: when AUTO_DISPATCH includes worktree_path, the orchestrator
+must set the implementer's working directory (cwd) to that path, not
+merely include it in prompt text. All existing subagent-start scenario
+tests pass.
 
 ###### Scope Manifest for W-GWT-3
 
@@ -7536,6 +7758,3341 @@ Wave 3: W-GWT-3  (implementer cleanup + hook update + docs -- requires provision
 | `tests/runtime/test_worktree_provision.py` | W-GWT-2 | New: provision CLI tests (incl. idempotency, binding) |
 | `tests/scenarios/test-guardian-provision.sh` | W-GWT-2 | New: guardian provision scenario |
 | `tests/scenarios/test-implementer-worktree-context.sh` | W-GWT-3 | New: implementer context scenario |
+
+### INIT-ENFORCE: Hook Enforcement Breach Remediation
+
+- **Status:** planned (2026-04-06)
+- **Goal:** Close four enforcement gaps that allowed the orchestrator to execute
+  Guardian-only git operations (commit on main, worktree remove, branch delete)
+  without being blocked. Harden the hook system so that internal hook failures
+  can never silently degrade to "allow."
+- **Current truth:** The orchestrator ran `git commit` on main, `git worktree
+  remove`, and `git branch -d` without being denied. Root cause is a
+  four-gap breach: (1) `bash_git_who` regex only gates commit/merge/push,
+  ignoring worktree lifecycle, branch deletion, rebase, and reset;
+  (2) `build_context()` lease resolution is role-blind, letting the
+  orchestrator inherit any Guardian lease sharing the same worktree_path;
+  (3) auto-review.sh crashes on heredoc commands (`$(cat <<'EOF'...)`),
+  exiting non-zero and hitting the hook contract's "non-zero = does not
+  block" rule; (4) `set -euo pipefail` in all enforcement hooks means any
+  unexpected crash exits non-zero, which per the Claude Code contract means
+  "hook error, does not block," silently degrading to allow.
+- **Scope:** Policy engine regex expansion and role-scoped lease resolution
+  in Python; heredoc crash fix in auto-review.sh; reusable fail-closed
+  safety wrapper in a new `hooks/lib/hook-safety.sh`; integration of the
+  wrapper into `pre-bash.sh`, `pre-write.sh`, and `auto-review.sh`; observatory
+  event emission for crash-denials.
+- **Exit criteria:** (1) `bash_git_who` denies `git worktree remove`,
+  `git branch -d/-D`, `git rebase`, `git reset` without a valid role-matched
+  lease. (2) `build_context()` only assigns a lease when the caller's
+  `actor_role` matches the lease's `role` field (or actor_role is empty and
+  falls through to marker inference). (3) auto-review.sh handles heredoc
+  commands without crashing. (4) All three enforcement hooks (`pre-bash.sh`,
+  `pre-write.sh`, `auto-review.sh`) use the fail-closed wrapper so any
+  internal crash emits a deny + observatory event + exit 0. (5) All existing
+  tests pass with zero regressions.
+- **Dependencies:** INIT-PE (completed), INIT-OBS (W-OBS-2 landed)
+- **Dominant constraints:** Cannot change Claude Code's hook contract
+  (non-zero = does not block). Must maintain backward compatibility with
+  existing `settings.json` hook registration. Must not break policy engine
+  evaluate flow. Observatory events must use existing `rt_event_emit`
+  infrastructure. Lease role filtering must not break legitimate subagent use
+  (Guardian, Implementer, Tester all hold leases).
+
+#### Problem Decomposition
+
+**Who has this problem:** Every user of this governance system. An
+orchestrator (or any non-Guardian caller) can bypass WHO enforcement for
+destructive git operations. This undermines the core Sacred Practice that
+"Guardian is sole git authority."
+
+**How often:** Every session where the orchestrator issues git commands that
+fall outside the narrow commit/merge/push regex, or where the orchestrator
+shares a worktree_path with a Guardian lease, or where a heredoc-style commit
+message triggers the auto-review crash.
+
+**Cost:** Complete enforcement bypass. The hook system claims protection it
+cannot deliver. This violates Principle 8: "Docs must not claim protection
+that the running system cannot actually enforce."
+
+#### Architecture Decisions
+
+##### DEC-ENFORCE-001: Expand `_GIT_OP_RE` to cover all Guardian-only operations
+
+**Options considered:**
+1. Expand `_GIT_OP_RE` inline to match all git subcommands that classify_git_op
+   covers (worktree remove, branch -d/-D, rebase, reset, clean, etc.)
+2. Replace the regex gate entirely with a call to `classify_git_op()` and deny
+   when the result is anything other than `"unclassified"`
+
+**Recommendation:** Option 2. `classify_git_op()` is already the canonical
+classifier. The regex `_GIT_OP_RE` is a redundant, weaker gate that must be
+kept in sync with the classifier. Replacing the regex with a classifier call
+eliminates the sync burden and guarantees that any command `classify_git_op()`
+deems non-unclassified is subject to WHO enforcement. The new pattern:
+call `classify_git_op()` first; if result is `"unclassified"`, skip (no
+lease needed for read-only git ops). If non-unclassified, proceed to lease
+validation.
+
+**Additional expansion needed:** `classify_git_op()` currently does not cover
+`git worktree remove`, `git branch -d/-D`, or `git clean`. These must be
+added to the classifier as `high_risk` operations in both the Python version
+(`leases.py`) and the bash performance mirror (`context-lib.sh`). The Python
+version is authoritative; the bash version must produce identical results.
+This eliminates the third classification point (`_GIT_OP_RE`) and reduces
+the system from three classifiers to two (Python canonical + bash mirror),
+with parity enforced by scenario tests.
+
+**Decision:** Option 2 adopted.
+
+##### DEC-ENFORCE-002: Role-scoped lease resolution in build_context()
+
+**Options considered:**
+1. When falling back to worktree_path-based lease lookup (no actor_id match),
+   add a role filter: `WHERE role = ?` using actor_role.
+2. When falling back, load the lease but then check that actor_role matches
+   the lease's role before assigning it to context. If mismatch, set lease=None.
+3. Add a separate `lease_role` field to PolicyContext and let each policy
+   decide whether role mismatch is relevant.
+
+**Trade-offs:**
+- Option 1 fails when actor_role is empty (common for the orchestrator, which
+  has no marker). An empty-role query would match nothing, which is actually
+  correct behavior (orchestrator should NOT get a lease), but it changes
+  semantics for legitimate subagents whose marker hasn't been read yet.
+- Option 2 is safest: load the lease, then validate. When actor_role is empty,
+  the lease is not assigned (orchestrator gets lease=None, which is correct).
+  When actor_role matches, the lease is assigned as before. This preserves
+  existing behavior for implementer/tester/guardian and blocks the orchestrator.
+- Option 3 pushes complexity to every policy function. Not worth it.
+
+**Decision:** Option 2 adopted. The check is: if `actor_role` is non-empty and
+the lease's `role` field is non-empty and they differ, discard the lease
+(set to None). If either is empty, keep current behavior (empty actor_role
+means unknown caller, which should NOT inherit a leased role).
+
+**Refinement:** When actor_role is empty AND we found a lease by worktree_path,
+we currently assign `resolved_role = lease["role"]`. This is the exact
+inheritance bug. The fix: when actor_role is empty, do NOT assign the lease.
+The orchestrator has no role marker and no actor_id, so it should fall through
+to lease=None, which produces a deny from bash_git_who. Legitimate subagents
+always have actor_role set (from marker or env var).
+
+##### DEC-ENFORCE-003: Fail-closed safety wrapper for all enforcement hooks
+
+**Options considered:**
+1. Remove `set -euo pipefail` from hooks and add explicit error handling.
+2. Keep `set -euo pipefail` for development safety but wrap the main logic
+   in a `_run_fail_closed` function that traps ERR/EXIT and emits deny+exit 0
+   on any unexpected failure.
+3. Create a library function in `hooks/lib/hook-safety.sh` that any hook can
+   source and use.
+
+**Trade-offs:**
+- Option 1 removes a useful development guard. Unset variables would silently
+  expand to empty string, masking bugs.
+- Option 2+3 are complementary. The wrapper temporarily disables `set -e`
+  via `set +e`, calls the main function, captures the exit code, re-enables
+  `set -e`, and on non-zero exit emits deny JSON + observatory event + exit 0.
+  The hook's own `set -euo pipefail` remains for development discipline on the
+  code paths that don't crash.
+- Option 3 makes the pattern reusable across pre-bash.sh, pre-write.sh, and
+  auto-review.sh.
+
+**Decision:** Options 2+3 adopted. New file `hooks/lib/hook-safety.sh` provides
+`_run_fail_closed <hook_name> <main_function>`. The function:
+1. Temporarily disables `set -e` via `set +e`.
+2. Calls main_function, captures its exit code.
+3. Re-enables `set -e` via `set -e`.
+4. If exit code is 0: no-op (the function already emitted its output).
+5. If exit code is non-zero: emits a deny JSON payload via stdout, emits an
+   observatory event via `rt_event_emit "hook_crash_deny"` with crash context
+   (hook name, exit code, stderr snippet), and exits 0 so the Claude Code
+   contract interprets the output as a valid hook response (deny).
+
+Subshells are not used because they cannot pass stdout output back to the
+parent without temp files, adding failure modes. The `set +e` / `set -e`
+toggle runs the function in the same process, preserving natural stdout flow.
+
+**Integration pattern:**
+```bash
+# In pre-bash.sh:
+source "$HOOKS_DIR/lib/hook-safety.sh"
+_hook_main() { ... existing logic ... }
+_run_fail_closed "pre-bash" _hook_main
+```
+
+The existing `set -euo pipefail` at the top of each hook remains, but the
+`_run_fail_closed` wrapper catches any crash that escapes, ensuring the hook
+NEVER exits non-zero.
+
+##### DEC-ENFORCE-004: Auto-review heredoc crash fix
+
+The crash occurs because `is_safe()` line 91 uses `grep -qE '<<\s*[A-Za-z_"'"'"']'`
+to detect heredocs and returns 1 (risky). This is correct behavior -- heredocs
+cannot be statically analyzed so they are classified as risky. The real problem
+is that the `$( )` inside the git commit command triggers `analyze_substitutions()`
+which tries to parse the heredoc content recursively, and the paren-depth counter
+fails when the heredoc crosses the `$()` boundary.
+
+The fix: In `is_safe()`, the heredoc check (Phase 1, line 91) already fires
+BEFORE command substitution analysis. It sets risk and returns 1 (risky).
+The crash happens when the heredoc check does NOT match (e.g., the heredoc is
+inside a `$()` that was extracted by `analyze_substitutions()`). The inner
+content `cat <<'EOF'...` is then passed to `is_safe()` recursively, where
+the heredoc check DOES match, but by then the `set -euo pipefail` has caused
+an intermediate failure in the paren-depth counter.
+
+**Fix approach:** The heredoc detection in `is_safe()` is already correct for
+top-level commands. The crash path is inside `analyze_substitutions()` where
+the `$()` parser extracts inner content that includes heredoc markers. The
+fix is to run the heredoc check on the inner content BEFORE recursing into
+`is_safe()`, and if a heredoc is detected, return 1 (risky) immediately
+without further parsing.
+
+Additionally, even if the fix is imperfect, Gap 4's `_run_fail_closed` wrapper
+ensures any remaining crash path is caught and converted to a deny.
+
+#### State Authority Map
+
+| State Domain | Canonical Authority | Read By | Written By |
+|---|---|---|---|
+| Lease records | `dispatch_leases` table in state.db | `build_context()`, bash_git_who, bash_eval_readiness, bash_approval_gate | `leases.issue()`, `leases.claim()`, `leases.release()` |
+| Actor role | `agent_markers` table (via `get_active`) | `build_context()`, `current_active_agent_role()` | `subagent-start.sh` via `rt_marker_set()` |
+| Git op classification | `classify_git_op()` in leases.py (canonical Python); `classify_git_op()` in context-lib.sh (bash performance mirror, must produce identical results) | bash_git_who policy (Python), shell hooks and scenario tests (bash) | N/A (pure functions, both updated in W-ENFORCE-1) |
+| Hook crash telemetry | `events` table (existing, `hook_crash_deny` event type) | Observatory dashboards, `cc_policy event` queries | `_run_fail_closed()` via `rt_event_emit()` |
+| Policy evaluation | `PolicyRegistry.evaluate()` | pre-bash.sh, pre-write.sh | Policy functions (pure, no writes) |
+
+#### Work Items
+
+##### W-ENFORCE-1: Expand git op classification and WHO regex (Python)
+
+**Weight:** M
+**Gate:** review (user sees test output)
+**Deps:** none
+**Integration:** `runtime/core/leases.py` (classify_git_op), `runtime/core/policies/bash_git_who.py` (check function), `tests/runtime/policies/test_bash_git_who.py`, `tests/runtime/test_leases.py` (if exists)
+
+**Changes:**
+
+1. **`runtime/core/leases.py` `classify_git_op()`**: Add patterns:
+   - `git worktree remove` / `git worktree prune` -> `high_risk`
+   - `git branch -d` / `git branch -D` -> `high_risk`
+   - `git clean` -> `high_risk`
+   - Place these BEFORE the existing `unclassified` fallback.
+
+2. **`runtime/core/policies/bash_git_who.py`**: Replace `_GIT_OP_RE` gate
+   with `classify_git_op()` call:
+   ```python
+   op_class = classify_git_op(command)
+   if op_class == "unclassified":
+       return None  # read-only git ops, no lease needed
+   ```
+   Then proceed with existing lease validation using the already-computed
+   `op_class`. Remove the second `classify_git_op()` call (line 92) since
+   we already have the result.
+
+3. **`context-lib.sh` `classify_git_op()` (bash version)**: Add matching
+   patterns for worktree remove, branch -d/-D, and clean. The bash classifier
+   is a performance-motivated mirror of the Python classifier in `leases.py`.
+   It exists because shell hooks and scenario tests call it directly to avoid
+   Python startup overhead. **Both classifiers must produce identical results
+   for all inputs.** The Python version in `leases.py` is the canonical
+   authority; the bash version must be updated to match whenever the Python
+   version changes. A parity test (see below) enforces this.
+
+**Evaluation Contract (W-ENFORCE-1):**
+
+- **Required tests:**
+  - `tests/runtime/policies/test_bash_git_who.py`: New tests for
+    `git worktree remove`, `git branch -d`, `git branch -D`, `git rebase`,
+    `git reset`, `git clean` -- all must return deny when no lease.
+  - `tests/runtime/policies/test_bash_git_who.py`: New test that
+    `git worktree list`, `git branch`, `git status`, `git log` still return
+    None (skip, no enforcement).
+  - `tests/runtime/test_leases.py` or inline: New tests for
+    `classify_git_op()` covering worktree remove -> high_risk, branch -d ->
+    high_risk, clean -> high_risk.
+  - All existing tests in `test_bash_git_who.py` must continue to pass.
+  - `tests/scenarios/test-auto-review.sh` Group 7: extend existing bash
+    `classify_git_op` tests with new cases (worktree remove, branch -d/-D,
+    clean) to verify bash/Python parity.
+- **Required real-path checks:** Run `cc-policy evaluate` with a synthetic
+  JSON payload containing `git worktree remove /path` and verify the policy
+  engine returns deny.
+- **Required authority invariants:** `classify_git_op()` in `leases.py`
+  (Python) is the canonical classifier. The bash version in `context-lib.sh`
+  is a performance mirror that must produce identical results. Both must be
+  updated together. The parity test in Group 7 of `test-auto-review.sh`
+  enforces this.
+- **Required integration points:** `bash_git_who.py` still works with
+  `bash_eval_readiness.py` and `bash_approval_gate.py` in the priority chain.
+- **Forbidden shortcuts:** Do not add a second regex alongside
+  `classify_git_op()`. Do not bypass `classify_git_op()` with hardcoded
+  subcommand lists in the policy function.
+- **Ready-for-guardian definition:** All new and existing unit tests pass.
+  `classify_git_op("git worktree remove /path")` returns `"high_risk"`.
+  `classify_git_op("git branch -d feature")` returns `"high_risk"`.
+  The policy denies these commands when no lease is present.
+
+**Scope Manifest (W-ENFORCE-1):**
+
+- **Allowed files:** `runtime/core/leases.py`, `runtime/core/policies/bash_git_who.py`, `hooks/context-lib.sh`, `tests/runtime/policies/test_bash_git_who.py`, `tests/runtime/test_leases.py`, `tests/scenarios/test-auto-review.sh` (Group 7 parity tests)
+- **Required files:** `runtime/core/leases.py`, `runtime/core/policies/bash_git_who.py`, `hooks/context-lib.sh`, `tests/runtime/policies/test_bash_git_who.py`
+- **Forbidden touch points:** `runtime/core/policy_engine.py` (Gap 2 scope), `hooks/pre-bash.sh` (Gap 3/4 scope), `hooks/auto-review.sh` (Gap 3 scope), `hooks/lib/hook-safety.sh` (Gap 4 scope)
+- **Expected state authorities touched:** `classify_git_op()` (extended), `bash_git_who.check()` (modified gate logic)
+
+---
+
+##### W-ENFORCE-2: Role-scoped lease resolution in build_context() (Python)
+
+**Weight:** M
+**Gate:** review
+**Deps:** none (independent of W-ENFORCE-1)
+**Integration:** `runtime/core/policy_engine.py` (build_context), `tests/runtime/test_policy_engine.py`
+
+**Changes:**
+
+1. **`runtime/core/policy_engine.py` `build_context()` lines 386-393**: After
+   loading a lease by worktree_path, validate role alignment before assigning:
+   ```python
+   if lease is None:
+       row = conn.execute(
+           "SELECT * FROM dispatch_leases WHERE status = 'active' "
+           "AND (worktree_path = ? OR worktree_path = ?) LIMIT 1",
+           (cwd, project_root),
+       ).fetchone()
+       if row:
+           candidate = dict(row)
+           # DEC-ENFORCE-002: role-scoped lease resolution.
+           # Only assign the lease if the caller's role matches the lease's
+           # role, or if the caller has an explicit actor_id (already tried above).
+           # An empty actor_role (orchestrator) must NOT inherit a leased role.
+           candidate_role = candidate.get("role", "")
+           if actor_role and candidate_role and actor_role != candidate_role:
+               lease = None  # role mismatch — do not inherit
+           elif not actor_role:
+               lease = None  # unknown caller — do not inherit leased identity
+           else:
+               lease = candidate
+   ```
+
+2. **Downstream effect on `resolved_role` (lines 396-404):** Currently, when
+   lease is loaded, `resolved_role` is set from `lease["role"]` if not already
+   set. With the fix, if the lease is discarded due to role mismatch,
+   `resolved_role` stays empty, which is correct -- the orchestrator has no
+   role and should not be assigned one from a lease it doesn't own.
+
+**Evaluation Contract (W-ENFORCE-2):**
+
+- **Required tests:**
+  - New test: `build_context()` with actor_role="" and an active lease for
+    worktree_path should return context with lease=None.
+  - New test: `build_context()` with actor_role="implementer" and a Guardian
+    lease for worktree_path should return context with lease=None.
+  - New test: `build_context()` with actor_role="guardian" and a Guardian lease
+    for worktree_path should return context with lease=that_lease.
+  - New test: `build_context()` with actor_id matching a lease should still
+    return that lease regardless of role (actor_id match is the primary path).
+  - All existing `test_policy_engine.py` tests must pass.
+- **Required real-path checks:** Run the full policy evaluation pipeline with
+  a synthetic orchestrator payload (no actor_role, no actor_id) targeting a
+  worktree_path that has a Guardian lease. Verify the result is deny (no lease
+  assigned).
+- **Required authority invariants:** Lease is the sole source of WHO identity.
+  Marker fallback is secondary. The invariant "one active lease per
+  worktree_path" is preserved (we don't modify lease issuance).
+- **Required integration points:** `bash_git_who.py`, `bash_eval_readiness.py`,
+  `bash_approval_gate.py` all read `context.lease`. They must still receive
+  a valid lease when the caller is the correct role.
+- **Forbidden shortcuts:** Do not add role filtering to the SQL query (breaks
+  when actor_role is empty but actor_id is valid). Do not add a separate
+  `is_orchestrator()` check (fragile, not future-proof).
+- **Ready-for-guardian definition:** All new and existing tests pass. An
+  orchestrator-like caller (empty actor_role, empty actor_id) sharing a
+  worktree_path with an active Guardian lease gets `context.lease = None`.
+  A Guardian caller with matching actor_role gets the lease as before.
+
+**Scope Manifest (W-ENFORCE-2):**
+
+- **Allowed files:** `runtime/core/policy_engine.py`, `tests/runtime/test_policy_engine.py`
+- **Required files:** `runtime/core/policy_engine.py`, `tests/runtime/test_policy_engine.py`
+- **Forbidden touch points:** `runtime/core/leases.py` (W-ENFORCE-1 scope), `runtime/core/policies/bash_git_who.py` (W-ENFORCE-1 scope), `hooks/` (Gaps 3/4 scope)
+- **Expected state authorities touched:** `build_context()` lease resolution logic (modified)
+
+---
+
+##### W-ENFORCE-3: Fail-closed safety wrapper (shell, new file)
+
+**Weight:** M
+**Gate:** review
+**Deps:** none (independent of W-ENFORCE-1 and W-ENFORCE-2)
+**Integration:** New file `hooks/lib/hook-safety.sh`. Will be sourced by
+pre-bash.sh, pre-write.sh, auto-review.sh in W-ENFORCE-4.
+
+**Changes:**
+
+1. **Create `hooks/lib/hook-safety.sh`**: Provides `_run_fail_closed` function:
+   ```bash
+   # _run_fail_closed <hook_name> <function_name>
+   # Executes function_name. If it exits non-zero (crash), emits:
+   #   1. A deny JSON on stdout (hookSpecificOutput with permissionDecision=deny)
+   #   2. An observatory event (hook_crash_deny) with crash context
+   #   3. exit 0 (so Claude Code treats the output as a valid hook response)
+   ```
+   Implementation approach:
+   - Temporarily disable `set -e` (`set +e`)
+   - Call the function, capture exit code
+   - Re-enable `set -e` (`set -e`)
+   - If exit code != 0: emit deny JSON + observatory event + exit 0
+   - If exit code == 0: no-op (function already emitted its output)
+
+2. **Observatory integration:** Use `rt_event_emit "hook_crash_deny"` with a
+   detail JSON containing `hook_name`, `exit_code`, and a truncated stderr
+   snippet (max 500 chars). This requires `context-lib.sh` to be sourced
+   before `hook-safety.sh` (it already is, since context-lib.sh sources
+   runtime-bridge.sh which defines rt_event_emit).
+
+**Evaluation Contract (W-ENFORCE-3):**
+
+- **Required tests:**
+  - New test: `tests/scenarios/test-hook-safety.sh` that sources
+    `hook-safety.sh` and verifies:
+    - A function that exits 0 passes through normally
+    - A function that exits 1 produces deny JSON on stdout
+    - A function that exits 1 emits deny JSON with correct hookSpecificOutput
+      structure (parseable by jq, has permissionDecision=deny)
+    - The wrapper itself exits 0 even when the inner function crashes
+  - Verify the deny JSON output matches the Claude Code PreToolUse hook
+    contract (contains `hookSpecificOutput.permissionDecision`).
+- **Required real-path checks:** Source the wrapper in a test environment and
+  trigger a crash. Verify stdout contains valid deny JSON and the exit code
+  is 0.
+- **Required authority invariants:** The wrapper does not modify any state
+  beyond emitting the observatory event. It does not read or write leases,
+  markers, or evaluation state.
+- **Required integration points:** `rt_event_emit` must be available (sourced
+  via context-lib.sh -> runtime-bridge.sh). If not available (bootstrap race),
+  the wrapper must still emit deny JSON and exit 0 without the observatory
+  event.
+- **Forbidden shortcuts:** Do not use a subshell for the main function call
+  (subshells cannot pass output back to the parent's stdout without temp
+  files, adding failure modes). Use `set +e` / `set -e` toggle instead.
+- **Ready-for-guardian definition:** `test-hook-safety.sh` passes. The wrapper
+  produces valid deny JSON on crash. The wrapper exits 0 on crash. The
+  wrapper does not interfere with normal (exit 0) hook execution.
+
+**Scope Manifest (W-ENFORCE-3):**
+
+- **Allowed files:** `hooks/lib/hook-safety.sh` (NEW), `tests/scenarios/test-hook-safety.sh` (NEW)
+- **Required files:** `hooks/lib/hook-safety.sh` (NEW), `tests/scenarios/test-hook-safety.sh` (NEW)
+- **Forbidden touch points:** `hooks/pre-bash.sh`, `hooks/pre-write.sh`, `hooks/auto-review.sh` (W-ENFORCE-4 scope), `runtime/` (W-ENFORCE-1/2 scope)
+- **Expected state authorities touched:** `events` table (new event type `hook_crash_deny`; table already exists in `runtime/schemas.py` EVENTS_DDL)
+
+---
+
+##### W-ENFORCE-4: Integrate safety wrapper + fix heredoc crash (shell)
+
+**Weight:** M
+**Gate:** review
+**Deps:** W-ENFORCE-3 (safety wrapper must exist first)
+**Integration:** `hooks/pre-bash.sh`, `hooks/pre-write.sh`, `hooks/auto-review.sh`
+
+**Changes:**
+
+1. **`hooks/auto-review.sh`**: Fix the heredoc crash in
+   `analyze_substitutions()`. When the inner content extracted from `$()`
+   contains a heredoc marker (`<<`), return 1 (risky) immediately without
+   recursing into `is_safe()`. Add the heredoc check as the first line of
+   the inner-content analysis loop (after `if [[ -n "$inner" ]]; then`):
+   ```bash
+   if echo "$inner" | grep -qE '<<\s*[A-Za-z_"'"'"']'; then
+       set_risk "Command substitution contains heredoc — cannot statically analyze"
+       return 1
+   fi
+   ```
+
+2. **`hooks/pre-bash.sh`**: Wrap the main logic in `_run_fail_closed`:
+   - Source `hooks/lib/hook-safety.sh` after context-lib.sh
+   - Move lines 41-127 (HOOK_INPUT through exit 0) into `_hook_main()`
+   - Replace with: `_run_fail_closed "pre-bash" _hook_main`
+   - The existing fail-closed logic (lines 93-107) is still valuable as an
+     inner defense; the wrapper is the outer safety net.
+
+3. **`hooks/pre-write.sh`**: Same wrapper pattern:
+   - Source `hooks/lib/hook-safety.sh` after context-lib.sh
+   - Move lines 36-109 into `_hook_main()`
+   - Replace with: `_run_fail_closed "pre-write" _hook_main`
+   - **Behavioral change:** The current inner fail-closed path (lines 79-98)
+     emits deny JSON and `exit 2`. Under the wrapper, that `exit 2` would be
+     caught and the wrapper would emit a second deny JSON. Fix: change the
+     inner fail-closed `exit 2` to `exit 0` (the deny JSON is already on
+     stdout; the wrapper sees exit 0 and passes through). This aligns the
+     inner fail-closed with the outer wrapper's contract: deny = JSON on
+     stdout + exit 0. The wrapper only fires on crashes that did NOT produce
+     deny JSON.
+   - **Test update required:** `tests/runtime/policies/test_write_adapter.py`
+     currently asserts `result.returncode != 0` at lines 121-122, 176, 213,
+     and 249. These four assertions must be changed to `result.returncode == 0`
+     because the hook now always exits 0 (deny is signaled via JSON payload,
+     not exit code). The JSON assertions in those same tests remain correct --
+     they already validate deny payload structure.
+
+4. **`hooks/auto-review.sh`**: Wrap the main execution block:
+   - Source `hooks/lib/hook-safety.sh` (requires also sourcing context-lib.sh
+     for rt_event_emit access; currently auto-review.sh only sources log.sh)
+   - Move lines 30-894 (HOOK_INPUT through advise call) into `_hook_main()`
+   - Replace with: `_run_fail_closed "auto-review" _hook_main`
+   - Note: auto-review.sh currently only sources log.sh. To get
+     `rt_event_emit`, it must also source context-lib.sh. However, this adds
+     ~200ms Python startup overhead. Alternative: make the observatory event
+     optional in `_run_fail_closed` (if `rt_event_emit` is not defined, skip
+     the event but still emit deny + exit 0). This is safer -- the wrapper
+     works even without the full runtime bridge.
+
+**Evaluation Contract (W-ENFORCE-4):**
+
+- **Required tests:**
+  - `tests/scenarios/test-auto-review.sh`: Add test case for a command
+    containing heredoc inside `$()`:
+    ```
+    git commit -m "$(cat <<'EOF'\nCommit message\nEOF\n)"
+    ```
+    Verify the hook outputs advisory JSON (not crash), exit code 0.
+  - Run existing `test-auto-review.sh` and `test-auto-review-quoted-pipes.sh`
+    -- all must pass (no regressions).
+  - New test: Force a crash in pre-bash.sh (e.g., by setting COMMAND to a
+    value that triggers a jq parse error in EVAL_INPUT construction). Verify
+    the hook outputs deny JSON and exits 0.
+  - New test: Force a crash in pre-write.sh similarly. Verify deny JSON and
+    exit 0.
+  - `tests/runtime/policies/test_write_adapter.py`: Update four assertions
+    that expect `returncode != 0` to expect `returncode == 0` (lines 121-122,
+    176, 213, 249). The deny JSON assertions remain unchanged. Run the full
+    test file to confirm no regressions.
+- **Required real-path checks:** Run the pre-bash.sh hook with a heredoc
+  commit command. Verify it does not crash (exit 0) and the output is valid
+  JSON.
+- **Required authority invariants:** The hooks' functional behavior (allow/deny
+  decisions) must not change for non-crash paths. The wrapper only activates
+  on unexpected failures.
+- **Required integration points:** `settings.json` hook registration is
+  unchanged. Hook timeout values are unchanged. The fail-closed wrapper
+  must complete within the hook timeout (5s for auto-review, 10s for
+  pre-bash/pre-write).
+- **Forbidden shortcuts:** Do not remove `set -euo pipefail` from hooks.
+  Do not add `|| true` to any command in the main logic. Do not move
+  auto-review.sh into the policy engine (it serves a different purpose:
+  user-facing auto-approval, not WHO enforcement).
+- **Ready-for-guardian definition:** All existing scenario tests pass.
+  Heredoc commit command does not crash auto-review.sh. A simulated crash
+  in each hook produces valid deny JSON and exit 0. No regression in hook
+  timing (wrapper adds < 1ms overhead on the happy path).
+
+**Scope Manifest (W-ENFORCE-4):**
+
+- **Allowed files:** `hooks/pre-bash.sh`, `hooks/pre-write.sh`, `hooks/auto-review.sh`, `tests/scenarios/test-auto-review.sh`, `tests/scenarios/test-hook-safety-integration.sh` (NEW), `tests/runtime/policies/test_write_adapter.py`
+- **Required files:** `hooks/auto-review.sh` (heredoc fix + wrapper), `hooks/pre-bash.sh` (wrapper), `hooks/pre-write.sh` (wrapper), `tests/runtime/policies/test_write_adapter.py` (exit code assertion update)
+- **Forbidden touch points:** `runtime/core/` (W-ENFORCE-1/2 scope), `hooks/lib/hook-safety.sh` (W-ENFORCE-3 scope, already landed), `settings.json` (no registration changes)
+- **Expected state authorities touched:** None (hooks are stateless adapters; the wrapper only adds crash recovery)
+
+#### Wave Structure
+
+```
+Wave 1: W-ENFORCE-1, W-ENFORCE-2, W-ENFORCE-3  (independent, max width 3)
+Wave 2: W-ENFORCE-4                              (depends on W-ENFORCE-3)
+```
+
+**Critical path:** W-ENFORCE-3 -> W-ENFORCE-4 (safety wrapper must exist
+before hooks can integrate it).
+
+W-ENFORCE-1 and W-ENFORCE-2 are fully independent of each other and of
+the shell work. They can proceed in parallel with W-ENFORCE-3.
+
+#### Risk Assessment
+
+| Gap | Severity | Fix | Work Item |
+|---|---|---|---|
+| Gap 1: `bash_git_who` regex too narrow | CRITICAL | Replace regex with `classify_git_op()` call; expand classifier to cover worktree remove, branch -d/-D, clean | W-ENFORCE-1 |
+| Gap 2: Role-blind lease resolution | CRITICAL | Validate role alignment before assigning worktree_path-matched lease; discard lease when actor_role is empty | W-ENFORCE-2 |
+| Gap 3: auto-review.sh heredoc crash | HIGH | Add heredoc check before recursing in `analyze_substitutions()`; wrap in `_run_fail_closed` | W-ENFORCE-4 |
+| Gap 4: `set -euo pipefail` defeats fail-closed | HIGH | Reusable `_run_fail_closed` wrapper catches any crash -> deny + observatory event + exit 0 | W-ENFORCE-3, W-ENFORCE-4 |
+
+#### File-Level Change Summary
+
+| File | Wave | Change Type |
+|------|------|-------------|
+| `runtime/core/leases.py` | W-ENFORCE-1 | Modify: expand `classify_git_op()` with worktree remove, branch -d/-D, clean patterns |
+| `runtime/core/policies/bash_git_who.py` | W-ENFORCE-1 | Modify: replace `_GIT_OP_RE` with `classify_git_op()` call |
+| `hooks/context-lib.sh` | W-ENFORCE-1 | Modify: expand bash `classify_git_op()` with matching patterns |
+| `tests/runtime/policies/test_bash_git_who.py` | W-ENFORCE-1 | Modify: add test cases for new git ops |
+| `tests/scenarios/test-auto-review.sh` | W-ENFORCE-1 | Modify: extend Group 7 with parity tests for new classifier patterns |
+| `runtime/core/policy_engine.py` | W-ENFORCE-2 | Modify: role-scoped lease resolution in `build_context()` |
+| `tests/runtime/test_policy_engine.py` | W-ENFORCE-2 | Modify: add role-scoped lease tests |
+| `hooks/lib/hook-safety.sh` | W-ENFORCE-3 | NEW: reusable fail-closed wrapper |
+| `tests/scenarios/test-hook-safety.sh` | W-ENFORCE-3 | NEW: wrapper unit tests |
+| `hooks/auto-review.sh` | W-ENFORCE-4 | Modify: heredoc fix + safety wrapper |
+| `hooks/pre-bash.sh` | W-ENFORCE-4 | Modify: safety wrapper integration |
+| `hooks/pre-write.sh` | W-ENFORCE-4 | Modify: safety wrapper integration |
+| `tests/scenarios/test-auto-review.sh` | W-ENFORCE-4 | Modify: add heredoc test case |
+| `tests/runtime/policies/test_write_adapter.py` | W-ENFORCE-4 | Modify: update exit code assertions (!=0 to ==0) |
+
+#### Addendum: Post-Landing RCA Findings (2026-04-07)
+
+After the four W-ENFORCE waves landed, a follow-up RCA on the orchestrator
+write that escaped to main (`stop-review-gate-hook.mjs`) identified four
+additional gaps in the write-side enforcement chain. These are tracked as
+ENFORCE-RCA-6 through ENFORCE-RCA-9. Each is a separate, narrow work item
+that ships independently. The first one — W-ENFORCE-RCA-6 — is also the
+end-to-end smoke test of the post-W-GWT-3 dispatch chain
+(`planner -> guardian(provision) -> implementer -> tester -> guardian(merge)`),
+which is why it ships before the others.
+
+##### W-ENFORCE-RCA-6: Add `.mjs/.cjs/.mts/.cts` to SOURCE_EXTENSIONS
+
+- **GitHub issue:** #27
+- **Decision:** DEC-SOURCEEXT-001
+- **Weight:** S (8 lines source change + ~30 lines test)
+- **Gate:** review (Guardian merge after tester PASS)
+- **Deps:** none
+- **Wave:** standalone (Wave 1 of the post-RCA addendum series)
+- **Worktree:** Guardian-provisioned, branch `feature/enforce-rca-6-source-ext`
+- **Critical context:** This is Fix 2 of a four-fix campaign. It is
+  intentionally first because (a) it is a 2-line widening with clear blast
+  radius, (b) it lets us exercise the full dispatch chain as a smoke test,
+  and (c) the other fixes depend on dispatch working.
+
+**Problem statement.** Every write-side WHO policy
+(`branch_guard`, `write_who`, `doc_gate`, `plan_guard`, `test_gate_pretool`,
+`mock_gate`, `enforcement_gap`) classifies write targets via
+`runtime.core.policy_utils.is_source_file()`. The classifier reads
+`SOURCE_EXTENSIONS`, which currently lists `js, jsx, ts, tsx` but NOT the
+modern ESM/CJS/TS-module variants `mjs, cjs, mts, cts`. Result: a Write to
+any `.mjs/.cjs/.mts/.cts` file falls into the catch-all `default: allow`
+policy regardless of branch, role, lease, or scope. This is the single most
+load-bearing gap in the post-W-ENFORCE write-side chain. Verified by direct
+`cc-policy evaluate` call against
+`plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+on main: returns `{action: allow, policy_name: default}` instead of the
+expected `{action: deny, policy_name: branch_guard}`.
+
+**Goal.** `is_source_file()` (Python and shell) recognizes all four modern
+JS module variants. The reproduction command flips from `allow/default` to
+`deny/branch_guard`. No other behavior changes.
+
+**Non-goals.**
+- NOT touching `hooks/check-implementer.sh:68`, which carries its own
+  hard-coded source-extension regex. That is a third authority and unifying
+  it into the shared helper is a separate refactor — tracked as ENFORCE-RCA-9.
+- NOT bundling ENFORCE-RCA-7, ENFORCE-RCA-8, or any #26-extension scoping
+  work. Each gets its own dispatch chain.
+- NOT touching any other policy file, hook, dispatch engine, or settings.json.
+- NOT modifying any of the 7 dirty files currently on main (the implementer
+  works in a Guardian-provisioned worktree branched from the latest main HEAD).
+
+**State authorities touched.**
+- `runtime/core/policy_utils.py:SOURCE_EXTENSIONS` (Python, authoritative)
+- `hooks/context-lib.sh:SOURCE_EXTENSIONS` (shell mirror, must stay in sync
+  per the DEC-PE-W2-* parity pattern)
+- No runtime state, no DB writes, no event emission. `is_source_file` is a
+  pure classifier.
+
+**Adjacent components that inherit the fix automatically (no changes
+needed).** `runtime/core/policies/write_who.py`, `write_branch.py`
+(branch_guard), `write_doc_gate.py`, `write_plan_guard.py`,
+`write_test_gate.py`, `write_mock_gate.py`, `write_enforcement_gap.py`. All
+of these call `is_source_file()` and inherit the new extensions.
+
+**Evaluation Contract (executed verbatim by the tester before
+`ready_for_guardian`).**
+
+1. `runtime.core.policy_utils.is_source_file("x.mjs")` returns `True`.
+   Verified by a new unit test in `tests/runtime/test_policy_utils.py`.
+2. `runtime.core.policy_utils.is_source_file("x.cjs")`,
+   `runtime.core.policy_utils.is_source_file("x.mts")`, and
+   `runtime.core.policy_utils.is_source_file("x.cts")` all return `True`.
+   Verified by parametrized or per-extension unit tests in the same file.
+3. The shell function `is_source_file` in `hooks/context-lib.sh` matches
+   `.mjs/.cjs/.mts/.cts`. Verified by a scenario test under
+   `tests/scenarios/` that sources `context-lib.sh` and asserts the function
+   returns success (exit 0) for each extension.
+4. Direct `cc-policy evaluate` call with `tool_input.file_path` pointing at
+   the `.mjs` fixture on main returns
+   `{"action":"deny","policy_name":"branch_guard"}` (currently returns
+   `{"action":"allow","policy_name":"default"}`). The exact reproduction
+   command is in the section below.
+5. The full Python test suite (`pytest tests/`) and the shell scenario
+   suite both pass with zero regressions versus the head SHA the implementer
+   started from.
+6. No behavior change for any extension NOT in `{mjs, cjs, mts, cts}`. The
+   existing `test_is_source_file_all_extensions` test must still pass
+   unmodified, and all existing `is_source_file_*` cases must still pass.
+
+**Forbidden shortcuts.**
+- Do NOT add a wildcard match (e.g., `.*js$`) — extensions must be
+  enumerated to keep the deny set explicit and auditable.
+- Do NOT add the extensions only to the Python side. The shell mirror is
+  load-bearing for any hook that runs before the Python policy engine
+  (e.g., the legacy enforcement-gap detector path).
+- Do NOT touch `check-implementer.sh:68`. If the implementer feels tempted,
+  STOP and escalate — that is ENFORCE-RCA-9.
+- Do NOT silently fix any other divergence found between the two
+  SOURCE_EXTENSIONS lists. If divergence exists outside the four extensions,
+  flag it in the implementation report and leave it for a follow-up.
+- Do NOT update `runtime/core/policy_utils.py` line 74 comment to mention a
+  new line number that does not match the actual shell file location after
+  the edit. Re-verify the cross-reference comment after editing both files.
+
+**Ready-for-guardian definition.** All six Evaluation Contract checks pass
+on a single, named head SHA inside the implementer's worktree, and the
+tester has captured (a) raw `pytest tests/runtime/test_policy_utils.py -v`
+output showing the four new tests passing, (b) raw output of the new
+scenario test, (c) raw output of the reproduction command BEFORE the fix
+on the worktree's parent SHA returning `allow/default` and AFTER the fix on
+the worktree HEAD returning `deny/branch_guard`, and (d) raw `pytest tests/`
+exit-0 output. The tester then sets `ready_for_guardian` via
+`cc-policy workflow ready-set`. Guardian merges after SHA-match verification.
+
+**Scope Manifest (the orchestrator must write this to runtime via
+`cc-policy workflow scope-set` BEFORE dispatching the implementer).**
+
+Allowed files (the implementer may read or write only these):
+- `runtime/core/policy_utils.py`
+- `hooks/context-lib.sh`
+- `tests/runtime/test_policy_utils.py`
+- `tests/scenarios/test-source-extensions.sh` (NEW; see test plan below)
+
+Required files (all four must change; otherwise the work is incomplete):
+- `runtime/core/policy_utils.py` — add 4 entries to `SOURCE_EXTENSIONS`
+  frozenset (lines 77-100). Update the cross-reference comment at line 74
+  to match the post-edit `hooks/context-lib.sh` line if it shifts.
+- `hooks/context-lib.sh` — add 4 entries to the
+  `SOURCE_EXTENSIONS='ts|tsx|...'` pipe-delimited string at line 164.
+- `tests/runtime/test_policy_utils.py` — add 4 new unit tests
+  (one per extension) plus an explicit assertion that `mjs, cjs, mts, cts`
+  are all members of `SOURCE_EXTENSIONS`.
+- `tests/scenarios/test-source-extensions.sh` — NEW scenario test that
+  sources `hooks/context-lib.sh`, calls `is_source_file` against each of
+  the four extensions, asserts success, then runs the reproduction command
+  against a fixture `.mjs` path and asserts `deny/branch_guard`.
+
+Forbidden touch points (any modification triggers immediate scope violation
+and tester rejection):
+- `settings.json`
+- Any file under `runtime/core/policies/`
+- Any other file under `runtime/core/`
+- Any other file under `hooks/`
+- `hooks/check-implementer.sh` (explicitly — this is ENFORCE-RCA-9)
+- Any file under `runtime/core/dispatch/` or `runtime/cli.py`
+- Any of the 7 currently-dirty files on main (`MASTER_PLAN.md`,
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`,
+  `settings.json`, `runtime/cc_state.db`, `traces/`,
+  `hooks/block-worktree-create.sh`)
+
+Expected state authorities touched: NONE at runtime. Source-only edits to
+the SOURCE_EXTENSIONS classifier sets.
+
+**Test plan (concrete, executable).**
+
+1. *Extend `tests/runtime/test_policy_utils.py`.* Add four new tests
+   immediately after `test_is_source_file_sh` (line 59), before
+   `test_is_source_file_json_false`. Use the existing one-liner pattern:
+
+   ```python
+   def test_is_source_file_mjs():
+       assert is_source_file("module.mjs") is True
+
+
+   def test_is_source_file_cjs():
+       assert is_source_file("legacy.cjs") is True
+
+
+   def test_is_source_file_mts():
+       assert is_source_file("typed.mts") is True
+
+
+   def test_is_source_file_cts():
+       assert is_source_file("typed.cts") is True
+   ```
+
+   The existing `test_is_source_file_all_extensions` test (line 66) iterates
+   over `SOURCE_EXTENSIONS` — it will pick up the new entries automatically
+   and provides the parametric coverage. No edit to that test is needed.
+
+2. *Create `tests/scenarios/test-source-extensions.sh`* (NEW). Pattern after
+   the existing scenario test conventions in that directory. Contents
+   (paraphrased — the implementer writes the actual file):
+
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+   PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+   source "$PROJECT_ROOT/hooks/context-lib.sh"
+
+   # Phase 1: shell mirror parity for each extension
+   for ext in mjs cjs mts cts; do
+       if ! is_source_file "fixture.$ext"; then
+           echo "FAIL: shell is_source_file rejected .$ext" >&2
+           exit 1
+       fi
+   done
+
+   # Phase 2: end-to-end policy reproduction — must return deny/branch_guard
+   FIXTURE="$PROJECT_ROOT/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs"
+   RESULT=$(jq -n --arg path "$FIXTURE" \
+       '{"event_type":"Write","tool_name":"Write","tool_input":{"file_path":$path},"cwd":"'"$PROJECT_ROOT"'","actor_role":"","actor_id":""}' \
+       | python3 "$PROJECT_ROOT/runtime/cli.py" evaluate \
+       | jq -r '.action + "/" + .policy_name')
+
+   if [[ "$RESULT" != "deny/branch_guard" ]]; then
+       echo "FAIL: expected deny/branch_guard, got $RESULT" >&2
+       exit 1
+   fi
+   echo "PASS: source-extension scenario"
+   ```
+
+   The fixture file `stop-review-gate-hook.mjs` already exists on main
+   (it is one of the dirty files) and the test only reads its path — no
+   write occurs, so the dirty-file constraint is not violated. If the
+   fixture is committed/cleaned before the test runs, replace the path
+   with any other `.mjs` file path that exists in the worktree (e.g.,
+   `tests/scenarios/fixtures/example.mjs` if such a fixture exists, or
+   create one inside `tests/scenarios/fixtures/` — that path is allowed
+   under the test scope).
+
+3. *Run the suite.* Inside the worktree:
+   ```bash
+   pytest tests/runtime/test_policy_utils.py -v
+   pytest tests/
+   bash tests/scenarios/test-source-extensions.sh
+   ```
+   All three must exit 0. The tester captures and reports raw stdout for
+   each.
+
+**Reproduction command (canonical, runs identically before and after the
+fix to prove the flip).**
+
+```bash
+cd /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork
+jq -n --arg path "$PWD/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs" \
+  '{"event_type":"Write","tool_name":"Write","tool_input":{"file_path":$path},"cwd":"'"$PWD"'","actor_role":"","actor_id":""}' \
+| python3 runtime/cli.py evaluate | jq '{action, policy_name}'
+```
+
+- Expected on the parent SHA (before the fix):
+  `{"action":"allow","policy_name":"default"}`
+- Expected on the worktree HEAD (after the fix):
+  `{"action":"deny","policy_name":"branch_guard"}`
+
+The Planner has already executed this command on `main` at HEAD `11e4fcd`
+and confirmed the `allow/default` result, so the BEFORE state is documented
+at plan time. The implementer must re-run it from the worktree branch
+point and from the post-fix worktree HEAD to capture the matched flip pair.
+
+**Risk assessment.**
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Implementer touches `check-implementer.sh` "while we're here" | Medium | Forbidden in Scope Manifest; explicit STOP-and-escalate instruction; tester rejects on scope violation |
+| Implementer adds wildcard regex instead of enumerated extensions | Low | Forbidden in Evaluation Contract; tester rejects |
+| Python and shell lists drift (only one updated) | Medium | Required Files lists both; scenario test asserts shell side; unit test asserts Python side; both must be green |
+| Reproduction fixture file moves/disappears | Low | Test plan documents fallback to a `tests/scenarios/fixtures/` path |
+| Some other policy ALSO denies before `branch_guard` and the assertion fails on `deny/<other_policy>` | Low | If the assertion fails with `deny/<other>` instead of `allow/default`, that is still a SUCCESS for the underlying intent — flag as a gap in the test, not in the fix; tester decides whether to relax assertion to `action == deny` or to investigate which policy fired first |
+
+**Wave structure.**
+
+Single wave, single work item, single implementer dispatch.
+
+```
+Wave 1: W-ENFORCE-RCA-6  (independent, no deps)
+```
+
+**Dispatch chain (this is the smoke test for W-GWT-3 dispatch).**
+
+1. Orchestrator writes the Scope Manifest to runtime via
+   `cc-policy workflow scope-set --workflow-id enforce-rca-6 --allowed
+   runtime/core/policy_utils.py,hooks/context-lib.sh,tests/runtime/test_policy_utils.py,tests/scenarios/test-source-extensions.sh
+   --forbidden settings.json,hooks/check-implementer.sh`
+2. Orchestrator dispatches Guardian (provision) with
+   `workflow_id=enforce-rca-6, branch=feature/enforce-rca-6-source-ext`.
+3. Guardian provisions the worktree and issues the implementer lease.
+4. Orchestrator dispatches the implementer into the worktree with the full
+   Evaluation Contract and Scope Manifest in the dispatch context.
+5. Implementer makes the four edits, runs the reproduction + test commands
+   inside the worktree, and reports completion with the head SHA.
+6. Tester evaluates against the Evaluation Contract, captures raw output,
+   and sets `ready_for_guardian` via `cc-policy workflow ready-set` if all
+   six checks pass.
+7. Guardian merges (commit + merge to main) after SHA-match verification.
+
+If any step in the chain fails or produces an `AUTO_DISPATCH` directive
+that is not honored, that is a smoke-test failure for W-GWT-3 itself and
+must be reported to the user before resuming the four-fix campaign.
+
+**File-level change summary.**
+
+| File | Change Type | Lines |
+|---|---|---|
+| `runtime/core/policy_utils.py` | Modify: 4 entries added to `SOURCE_EXTENSIONS` frozenset | +4 |
+| `hooks/context-lib.sh` | Modify: 4 entries appended to `SOURCE_EXTENSIONS` pipe string | +0/~1 |
+| `tests/runtime/test_policy_utils.py` | Modify: 4 new one-line tests | +12 |
+| `tests/scenarios/test-source-extensions.sh` | NEW: shell scenario test | +~30 |
+
+Total: ~46 lines net. No file reaches the 50-line `@decision` annotation
+threshold, but `DEC-SOURCEEXT-001` is pre-assigned and may be referenced in
+either source file's commit message regardless.
+
+**Open questions.** None. The plan is executable as-is. If the implementer
+or tester finds an unstated ambiguity, it must be escalated to the user
+rather than resolved silently.
+
+##### W-ENFORCE-RCA-11: Restore `hookEventName` in `cc-policy evaluate` JSON output
+
+- **GitHub issue:** TBD (file before dispatch)
+- **Decision:** DEC-EVAL-HOOKOUT-001
+- **Weight:** S (3 dict-literal edits in one Python function + 1 test
+  helper extension; ~15 net source lines, ~10 net test lines)
+- **Gate:** review (Guardian merge after tester PASS)
+- **Deps:** none. Specifically NOT bundled with W-ENFORCE-RCA-6 (already
+  landed at `4a3ebb5`) and NOT bundled with the future ENFORCE-RCA-12
+  (CLI self-privilege via `marker set` and `lease issue-for-dispatch`,
+  out of scope for this work item).
+- **Wave:** standalone (Wave 2 of the post-RCA addendum series; ships
+  immediately, single dispatch chain)
+- **Worktree:** Guardian-provisioned, branch
+  `feature/enforce-rca-11-hook-event-name`
+- **Critical context:** This is the empirically-verified root cause of the
+  multi-day "orchestrators bypassing dispatch" complaint. Latent for 4+
+  days since `3be693f` (PE-W1, 2026-04-03). The Planner has already
+  drafted, applied, and tested the exact patch in main's working tree
+  (uncommitted, present in the orchestrator's local `runtime/cli.py` only)
+  and confirmed `git commit` is now correctly denied by `bash_git_who`
+  with the full pytest suite at `1441 passed, 1 xpassed, 0 failures`.
+  This work item exists to land that patch through the canonical dispatch
+  chain, lock the contract in with a regression test, and ship the
+  decision-log entry — NOT to re-derive the fix.
+
+**Problem statement.** `runtime/cli.py:_handle_evaluate` builds a
+`hookSpecificOutput` dict and returns it as the JSON body of every
+`cc-policy evaluate` call. The Claude Code hook output contract documented
+at `hooks/HOOKS.md:28-34` requires that this dict include
+`"hookEventName": "PreToolUse"` as a peer of `permissionDecision`. Commit
+`3be693f` (PE-W1, 2026-04-03) introduced `_handle_evaluate` without that
+field. As a result, every deny returned by `branch_guard`, `write_who`,
+`bash_main_sacred`, `bash_git_who`, `doc_gate`, `plan_guard`,
+`test_gate_pretool`, `mock_gate`, and `enforcement_gap` via the
+`cc-policy evaluate` path is silently discarded by Claude Code's harness:
+the policy-engine metric increments, the deny event is logged, and the
+underlying tool call executes anyway. The defect has been latent for four
+days and is the root cause of the orchestrator bypass complaint. Verified
+in two ways: (a) by direct `cc-policy evaluate` call against
+`tool_name=Bash, command="git commit --allow-empty -m test"` on main as
+orchestrator, which returns `action=deny, blockingHook=bash_git_who` in
+the JSON body but Claude Code still executes the commit; (b) by the
+parallel Codex rescue probe (session `019d69bd-fcc6-7012-b435-9d6398fc0ad1`)
+which returned
+`VERDICT: JSON shape MISSING hookEventName at runtime/cli.py:1298`
+within 53 seconds. The crash-deny path at `hooks/lib/hook-safety.sh:56`
+is the only deny shape in the system that has been firing correctly,
+because it constructs the JSON literally with `hookEventName` baked in.
+The `process-stop` handler at `runtime/cli.py:533` also includes the
+field — confirming the omission in `_handle_evaluate` is a localized
+regression, not a misunderstanding of the contract.
+
+**Goal.** `runtime/cli.py:_handle_evaluate` emits
+`"hookEventName": "PreToolUse"` in all three `hookSpecificOutput` branches
+(`deny`, `feedback`, `allow`). The contract is locked in by extending the
+existing parametrized scenario tests in
+`tests/runtime/policies/test_hook_scenarios.py` to assert the field's
+presence on every deny payload, so any future regression fails CI rather
+than silently disabling enforcement. The decision is recorded as
+`DEC-EVAL-HOOKOUT-001`. The fix is delivered through the canonical
+`planner -> guardian(provision) -> implementer -> tester -> guardian(merge)`
+dispatch chain on the post-W-GWT-3 system.
+
+**Non-goals.**
+- NOT touching `hooks/pre-bash.sh`, `hooks/pre-write.sh`, or any other
+  caller of `cc-policy evaluate`. They print this function's stdout
+  verbatim and inherit the fix automatically.
+- NOT touching any policy file under `runtime/core/policies/`. The deny
+  decisions are already correct; only the JSON envelope was wrong.
+- NOT touching `hooks/lib/hook-safety.sh`. Its crash-deny path already
+  includes `hookEventName` as a literal string and is the only deny shape
+  that has been working correctly; do not "harmonize" it.
+- NOT touching `runtime/cli.py:533` (the `process-stop` handler). It
+  already includes `hookEventName: "SubagentStop"` and is correct as-is.
+- NOT bundling W-ENFORCE-RCA-6 (`.mjs/.cjs/.mts/.cts` source extensions),
+  which already landed at `4a3ebb5`.
+- NOT bundling the future W-ENFORCE-RCA-12 (CLI self-privilege via
+  `marker set` and `lease issue-for-dispatch`). That is a separate work
+  item the Planner will file after W-ENFORCE-RCA-11 lands.
+- NOT touching MASTER_PLAN.md, settings.json, or any of the currently
+  dirty files on main beyond what is required for the source + test fix.
+  In particular, the implementer must NOT amend the planner's addendum
+  while in the worktree — MASTER_PLAN.md edits remain a planner-only
+  authority.
+- NOT introducing a new policy, a new hook, a new dispatch path, or a
+  new architectural surface. This is a single-function correctness fix.
+
+**State authorities touched.**
+- `runtime/cli.py:_handle_evaluate` (the canonical Python authority for
+  shaping the `cc-policy evaluate` stdout envelope; no DB writes, no
+  runtime state mutation, pure JSON construction).
+- No SQLite tables, no event emission, no marker writes. The function
+  reads `decision.action`, `decision.reason`, and `decision.policy_name`
+  off an already-built `PolicyDecision` and shapes the response. The fix
+  changes only the shape, not the underlying decision.
+
+**Adjacent components that inherit the fix automatically (no changes
+needed but the implementer must not break them).**
+- `hooks/pre-bash.sh:141` — calls `cc-policy evaluate` and prints the
+  stdout verbatim to Claude Code. After the fix, every deny/allow/feedback
+  it relays will carry `hookEventName` and Claude Code will honor the
+  permissionDecision.
+- `hooks/pre-write.sh:122` — same caller pattern for Write/Edit. Same
+  inherited fix.
+- `hooks/lib/hook-safety.sh:56` — already correct; do not touch.
+- `runtime/cli.py:533` (the `process-stop` handler) — already correct;
+  do not touch.
+
+**Evaluation Contract (executed verbatim by the tester before
+`ready_for_guardian`; copied from the planner brief).**
+
+1. `runtime/cli.py:_handle_evaluate` emits
+   `hookEventName: "PreToolUse"` in all three `hookSpecificOutput`
+   branches (deny, feedback, allow).
+2. Direct `cc-policy evaluate` call with
+   `event_type=PreToolUse, tool_name=Bash,
+   tool_input.command="git commit --allow-empty -m test"`
+   on main, `actor_role=""` returns a JSON whose
+   `.hookSpecificOutput.hookEventName == "PreToolUse"`.
+3. Live canary `git commit --allow-empty -m test` on main as orchestrator
+   (no lease, no marker) is denied by `pre-bash.sh` with
+   `blockingHook: bash_git_who`. Tester pastes the exact stderr.
+4. `python3 -m pytest tests/` returns `1441 passed, 1 xpassed` or better.
+5. New scenario test OR extension of
+   `tests/runtime/policies/test_hook_scenarios.py` that asserts
+   `hookEventName == "PreToolUse"` in deny responses, so this contract
+   is locked in against regressions.
+6. `DEC-EVAL-HOOKOUT-001` annotation is present inline in `cli.py`
+   (already drafted at lines 1297-1304 of the working-tree patch),
+   with rationale pointing at `hooks/HOOKS.md:28-34` contract.
+
+**Forbidden shortcuts.**
+- Do NOT add `hookEventName` only to the `deny` branch. The Claude Code
+  hook contract requires it on every `hookSpecificOutput` dict regardless
+  of decision; the `allow` and `feedback` branches must carry it too,
+  and the regression test must cover at least one allow case.
+- Do NOT add a "fallback" that injects `hookEventName` in the calling
+  hook script (`pre-bash.sh`, `pre-write.sh`). That creates a second
+  authority for the JSON envelope shape. The Python function is the
+  single source of truth. Any caller-side patching is forbidden.
+- Do NOT change the `permissionDecision`, `permissionDecisionReason`, or
+  `blockingHook` keys. The deny shape is otherwise correct and downstream
+  observers (auto-review, observatory, scenario tests) parse those exact
+  names.
+- Do NOT silently fix any other JSON-shape divergence found in
+  neighboring functions while in the worktree. If divergence exists,
+  flag it in the implementation report and leave it for a follow-up
+  work item.
+- Do NOT bundle the future W-ENFORCE-RCA-12 self-privilege fix. That is
+  a separate dispatch chain.
+- Do NOT skip the live canary in step 3 of the Evaluation Contract. The
+  pytest suite alone is necessary but not sufficient — the canary is the
+  end-to-end proof that Claude Code honors the deny.
+
+**Ready-for-guardian definition.** All six Evaluation Contract checks
+pass on a single, named head SHA inside the implementer's worktree, and
+the tester has captured (a) raw `pytest tests/runtime/policies/test_hook_scenarios.py -v`
+output showing the new `hookEventName` assertion passing, (b) raw output
+of the direct `cc-policy evaluate` reproduction in step 2 showing the
+field present, (c) raw stderr of the live canary `git commit` deny in
+step 3, (d) raw `python3 -m pytest tests/` exit-0 output with the
+`1441 passed, 1 xpassed` (or better) summary line. The tester then sets
+`ready_for_guardian` via `cc-policy workflow ready-set`. Guardian merges
+after SHA-match verification.
+
+**Scope Manifest (the orchestrator MUST write this to runtime via
+`cc-policy workflow scope-set` BEFORE dispatching the implementer).**
+
+Allowed files (the implementer may read or write only these):
+- `runtime/cli.py`
+- `tests/runtime/policies/test_hook_scenarios.py`
+
+Required files (both must change; otherwise the work is incomplete):
+- `runtime/cli.py` — replace the three `hook_output = {...}` dict
+  literals in `_handle_evaluate` (current HEAD lines 1297-1305) so each
+  branch carries `"hookEventName": "PreToolUse"` as the first key. Add
+  the `ENFORCE-RCA-11 / DEC-EVAL-HOOKOUT-001` rationale comment block
+  immediately above the `if decision.action == "deny":` line, citing
+  `hooks/HOOKS.md` lines 28-34 as the contract source.
+- `tests/runtime/policies/test_hook_scenarios.py` — extend the
+  `_assert_hook_result` helper (current lines 193-217) so every payload
+  parsed via `_parse_stdout` is checked for
+  `payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"` on
+  both deny and non-deny paths whenever a payload exists. Equivalently,
+  add a small dedicated helper `_hook_event_name(payload)` and assert
+  on it inside `_assert_hook_result`. The implementer chooses the cleaner
+  shape but the assertion must run on every parametrized case in
+  `test_pre_write_hook_cases` and `test_pre_bash_hook_cases` (or
+  whichever scenario tests parse the JSON envelope).
+
+Forbidden touch points (any modification triggers immediate scope
+violation and tester rejection):
+- `hooks/pre-bash.sh` (caller; inherits the fix)
+- `hooks/pre-write.sh` (caller; inherits the fix)
+- `hooks/lib/hook-safety.sh` (already correct)
+- Any file under `runtime/core/policies/`
+- Any other file under `runtime/core/`
+- Any other file under `hooks/`
+- `hooks/check-implementer.sh` (out of scope; ENFORCE-RCA-9)
+- `hooks/HOOKS.md` (the contract source — read-only reference; do NOT
+  edit)
+- `MASTER_PLAN.md` (planner-only authority)
+- `settings.json`
+- `runtime/cc_state.db`
+- Any file under `traces/`
+- Any of the currently-dirty files on main
+  (`MASTER_PLAN.md`,
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`,
+  `settings.json`, `runtime/cc_state.db`,
+  `runtime/dispatch-debug.jsonl`, `traces/`,
+  `hooks/block-worktree-create.sh`)
+- `runtime/cli.py:533` (the `process-stop` handler — already correct)
+
+Expected state authorities touched: NONE at runtime. Source-only edits
+to the JSON envelope shape and the scenario test helper.
+
+**Critical pre-implementation note (must be relayed verbatim in the
+dispatch context).** The orchestrator's main working tree currently
+contains the uncommitted `cli.py` patch — that is what allows enforcement
+to fire correctly in the planner's session right now. Guardian will
+provision a fresh worktree from main HEAD (`929f8dc6` at plan time),
+which does NOT contain the fix. Therefore the implementer's own
+`pre-bash.sh` and `pre-write.sh` chain inside the new worktree will
+NOT enforce correctly until the patch is in place. The implementer
+MUST apply the `_handle_evaluate` patch as the FIRST file edit in the
+worktree, BEFORE running any test command, BEFORE any other Read/Write
+exploration, and BEFORE any pytest invocation. Once the three dict
+literals carry `hookEventName`, the worktree's own enforcement chain
+becomes self-consistent and the rest of the test plan is safe to
+execute. Failure to apply the patch first means the implementer's own
+session may execute commands that should have been blocked, producing
+false-positive completion signals.
+
+**Test plan (concrete, executable).**
+
+1. *Apply the source patch FIRST.* Before any other action in the
+   worktree, edit `runtime/cli.py` to replace the three current
+   `hook_output = {...}` dict literals in `_handle_evaluate` with the
+   versions below. This is required first so the worktree's own
+   enforcement chain is self-consistent for the rest of the test plan.
+
+   Verbatim source patch (replace the existing block at the current
+   HEAD location of `_handle_evaluate` after the `finally: conn.close()`
+   line):
+
+   ```python
+   # Build hookSpecificOutput per Claude hook contract.
+   # ENFORCE-RCA-11 / DEC-EVAL-HOOKOUT-001: hookEventName is REQUIRED by
+   # the Claude Code hook output contract documented at
+   # hooks/HOOKS.md:28-34. Without it, Claude Code silently discards the
+   # permissionDecision and the underlying tool call executes unblocked.
+   # PE-W1 (3be693f, 2026-04-03) created this dict without hookEventName,
+   # so every deny emitted by branch_guard / write_who / bash_main_sacred
+   # / bash_git_who / doc_gate / plan_guard / test_gate_pretool /
+   # mock_gate / enforcement_gap via the cc-policy evaluate path was a
+   # no-op for four days — the metric fired but the harness never honored
+   # the deny. Setting it to "PreToolUse" matches the spec.
+   if decision.action == "deny":
+       hook_output = {
+           "hookEventName": "PreToolUse",
+           "permissionDecision": "deny",
+           "permissionDecisionReason": decision.reason,
+           "blockingHook": decision.policy_name,
+       }
+   elif decision.action == "feedback":
+       hook_output = {
+           "hookEventName": "PreToolUse",
+           "additionalContext": decision.reason,
+       }
+   else:
+       hook_output = {
+           "hookEventName": "PreToolUse",
+           "permissionDecision": "allow",
+       }
+   ```
+
+2. *Extend the regression test.* In
+   `tests/runtime/policies/test_hook_scenarios.py`, locate the
+   `_assert_hook_result` helper (currently lines 193-217) and add an
+   assertion that every parsed `hookSpecificOutput` payload carries
+   `hookEventName == "PreToolUse"`. The minimal patch (paraphrased —
+   the implementer writes the actual code):
+
+   ```python
+   def _hook_event_name(payload: dict | None) -> str | None:
+       if payload is None:
+           return None
+       return payload.get("hookSpecificOutput", {}).get("hookEventName")
+
+
+   def _assert_hook_result(
+       result: subprocess.CompletedProcess[str],
+       *,
+       expected_decision: str,
+       reason_substring: str | None = None,
+   ) -> None:
+       assert result.returncode == 0, (
+           f"hook exited with {result.returncode}\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+       )
+
+       payload = _parse_stdout(result.stdout)
+       decision = _decision(payload)
+
+       # ENFORCE-RCA-11 / DEC-EVAL-HOOKOUT-001: every hookSpecificOutput
+       # payload must include hookEventName per the Claude Code hook
+       # output contract (hooks/HOOKS.md:28-34). Locking the contract in
+       # at the assertion layer prevents any future regression of the
+       # PE-W1 defect.
+       if payload is not None and "hookSpecificOutput" in payload:
+           assert _hook_event_name(payload) == "PreToolUse", (
+               f"hookSpecificOutput missing hookEventName=PreToolUse: payload={payload!r}"
+           )
+
+       if expected_decision == "deny":
+           assert payload is not None, "deny path must emit hookSpecificOutput JSON"
+           assert decision == "deny", f"expected deny, got {decision!r} payload={payload!r}"
+           if reason_substring is not None:
+               assert reason_substring in _reason(payload), (
+                   f"deny reason missing {reason_substring!r}: {_reason(payload)!r}"
+               )
+           return
+
+       assert decision != "deny", (
+           f"expected non-deny path, got payload={payload!r}\nstderr={result.stderr!r}"
+       )
+   ```
+
+   The assertion runs on every parametrized case in
+   `test_pre_write_hook_cases` and the bash-side scenario tests
+   automatically because they all flow through `_assert_hook_result`.
+   No new parametrize entries are required, and no fixture data
+   changes are required.
+
+3. *Run the suites.* Inside the worktree, after step 1 and step 2:
+
+   ```bash
+   python3 -m pytest tests/runtime/policies/test_hook_scenarios.py -v
+   python3 -m pytest tests/
+   ```
+
+   Both must exit 0. The first invocation must show the
+   `_hook_event_name` assertion path executed in every parametrized
+   case (visible in the verbose output as the parametrized case ids).
+   The second must report `1441 passed, 1 xpassed` or better, matching
+   the planner-confirmed baseline.
+
+4. *Direct `cc-policy evaluate` reproduction (Evaluation Contract step 2).*
+   From the worktree root, with no role marker set:
+
+   ```bash
+   jq -n '{
+     "event_type":"PreToolUse",
+     "tool_name":"Bash",
+     "tool_input":{"command":"git commit --allow-empty -m test"},
+     "cwd":"'"$PWD"'",
+     "actor_role":"",
+     "actor_id":""
+   }' \
+     | python3 runtime/cli.py evaluate \
+     | jq '.hookSpecificOutput'
+   ```
+
+   Expected output:
+
+   ```json
+   {
+     "hookEventName": "PreToolUse",
+     "permissionDecision": "deny",
+     "permissionDecisionReason": "<bash_git_who reason text>",
+     "blockingHook": "bash_git_who"
+   }
+   ```
+
+5. *Live canary (Evaluation Contract step 3).* From the orchestrator's
+   own session on main (NOT inside the implementer's worktree — this
+   step is the tester's end-to-end proof and runs after merge or as a
+   pre-merge sanity check on a stash of the patch into main's working
+   tree if necessary), with no lease and no role marker:
+
+   ```bash
+   git commit --allow-empty -m "ENFORCE-RCA-11 canary: must be denied"
+   ```
+
+   Expected: `pre-bash.sh` denies with stderr containing
+   `blockingHook: bash_git_who` (or the equivalent rendered form). The
+   tester pastes the raw stderr verbatim. If the commit succeeds, the
+   fix is incomplete and the implementer must investigate before
+   marking ready.
+
+**Reproduction command (canonical, runs identically before and after
+the fix to prove the flip).**
+
+```bash
+jq -n '{
+  "event_type":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"git commit --allow-empty -m test"},
+  "cwd":"'"$PWD"'",
+  "actor_role":"",
+  "actor_id":""
+}' | python3 runtime/cli.py evaluate | jq '.hookSpecificOutput.hookEventName'
+```
+
+- Expected on the parent SHA (HEAD `929f8dc6`, before the fix): `null`
+- Expected on the worktree HEAD (after the fix): `"PreToolUse"`
+
+The Planner has executed the equivalent direct test on the
+working-tree-patched main session and confirmed the post-fix flip plus
+the full pytest baseline (`1441 passed, 1 xpassed, 0 failures`). The
+implementer must re-run the reproduction from inside the worktree both
+before applying the patch (to capture the BEFORE `null` result) and
+after (to capture the AFTER `"PreToolUse"` result) so the tester can
+report the matched flip pair.
+
+**Risk assessment.**
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Implementer applies the patch but forgets to add the regression test | Medium | Required Files lists both files; tester rejects ready if the test file is unchanged |
+| Implementer extends the test only for the deny path and not the allow path | Medium | The `_assert_hook_result` helper runs on every parametrized case, so adding the assertion at the helper layer covers both paths automatically; the test plan documents this explicitly |
+| Implementer forgets to apply the source patch FIRST and runs pytest in a self-inconsistent worktree | Medium | Critical pre-implementation note in the dispatch context; tester verifies the implementer's reported file-edit order in the implementation report |
+| Implementer "harmonizes" `hooks/lib/hook-safety.sh` or `runtime/cli.py:533` (process-stop) | Low | Forbidden in Scope Manifest; both are explicitly already-correct authorities |
+| Implementer adds `hookEventName` only to the `deny` branch | Low | Evaluation Contract step 1 requires all three branches; tester rejects |
+| Implementer touches `pre-bash.sh` or `pre-write.sh` to "double-check" the field at the caller | Low | Forbidden in Scope Manifest; the Python function is the single authority |
+| Live canary (step 3) executes successfully despite the patch | Low | If the canary commits, the fix is provably incomplete; the tester must escalate, NOT mark ready |
+| Implementer accidentally edits `MASTER_PLAN.md` while in the worktree | Low | Forbidden in Scope Manifest; planner-only authority |
+| Future ENFORCE-RCA-12 (CLI self-privilege) accidentally bundled | Low | Non-goals list explicitly excludes it; planner files it as a separate work item after this lands |
+
+**Wave structure.**
+
+Single wave, single work item, single implementer dispatch.
+
+```
+Wave 2: W-ENFORCE-RCA-11  (independent of W-ENFORCE-RCA-6 which is
+                           already landed at 4a3ebb5)
+```
+
+**Dispatch chain.**
+
+1. Orchestrator writes the Scope Manifest to runtime via
+   `cc-policy workflow scope-set --workflow-id enforce-rca-11
+   --allowed runtime/cli.py,tests/runtime/policies/test_hook_scenarios.py
+   --forbidden hooks/pre-bash.sh,hooks/pre-write.sh,hooks/lib/hook-safety.sh,hooks/HOOKS.md,MASTER_PLAN.md,settings.json,runtime/cc_state.db`
+2. Orchestrator dispatches Guardian (provision) with
+   `workflow_id=enforce-rca-11,
+   branch=feature/enforce-rca-11-hook-event-name`. Guardian provisions
+   a fresh worktree from main HEAD (`929f8dc6` at plan time, or
+   whatever main HEAD is at provision time) and issues the implementer
+   lease.
+3. Orchestrator dispatches the implementer into the worktree with the
+   full Evaluation Contract, the full Scope Manifest, the verbatim
+   source patch, and the verbatim test extension above. The dispatch
+   context MUST include the critical pre-implementation note that the
+   implementer must apply the source patch as the FIRST file edit
+   before any test invocation.
+4. Implementer applies the patch, extends the test helper, runs the
+   reproduction commands and the full pytest suite inside the worktree,
+   captures all output, and reports completion with the head SHA.
+5. Tester evaluates against the Evaluation Contract, runs the live
+   canary, captures raw output, and sets `ready_for_guardian` via
+   `cc-policy workflow ready-set` if all six checks pass.
+6. Guardian merges (commit + merge to main) after SHA-match
+   verification. Commit message MUST reference `ENFORCE-RCA-11` in the
+   title and `DEC-EVAL-HOOKOUT-001` in the body.
+
+If any step in the chain fails, the orchestrator must report the
+failure verbatim to the user before retrying. Specifically: if the
+implementer's pytest run reports fewer than 1441 passing tests, that
+is a regression and the implementer must investigate before marking
+complete.
+
+**File-level change summary.**
+
+| File | Change Type | Lines |
+|---|---|---|
+| `runtime/cli.py` | Modify: 3 dict-literal branches in `_handle_evaluate` get `hookEventName` key + 8-line rationale comment block | +~15 |
+| `tests/runtime/policies/test_hook_scenarios.py` | Modify: add `_hook_event_name` helper + assertion in `_assert_hook_result` + rationale comment | +~10 |
+
+Total: ~25 lines net. Neither file crosses any new `@decision`
+threshold individually (cli.py is already a 2748-line file with
+existing `@decision` annotations). `DEC-EVAL-HOOKOUT-001` is
+pre-assigned and is referenced inline in the cli.py rationale comment
+block AND must appear in the Guardian commit message body.
+
+**Open questions.** None. The plan is executable as-is. The exact
+source patch and test extension are inlined above. If the implementer
+or tester finds an unstated ambiguity, it must be escalated to the
+user rather than resolved silently.
+
+##### W-ENFORCE-RCA-14: SubagentStop review path must be unconditional
+
+- **GitHub issue:** TBD (file before dispatch)
+- **Decision:** DEC-ENFORCE-REVIEW-GATE-002
+- **Weight:** S (4-line logic change + inline DEC rationale comment block
+  in one `.mjs` file; ~12 net source lines)
+- **Gate:** review (Guardian merge after tester PASS)
+- **Deps:** none. Specifically NOT bundled with W-ENFORCE-RCA-12 (CLI
+  self-privilege via `marker set` and `lease issue-for-dispatch`, GitHub
+  issue #31) or W-ENFORCE-RCA-13 (git regex greedy matching, GitHub
+  issue #32). Each gets its own dispatch chain.
+- **Wave:** standalone (Wave 3 of the post-RCA addendum series; ships
+  immediately, single dispatch chain)
+- **Worktree:** Guardian-provisioned, branch
+  `feature/enforce-rca-14-review-gate-subagent-path` (or whatever the
+  provision CLI derives from `--feature-name enforce-rca-14`; accept the
+  derived name as authoritative — see RCA-11 precedent)
+
+**Critical context.** Today's enforcement RCA campaign
+(ENFORCE-RCA-6/7/8/10/11/12/13) landed and the Planner verified the full
+dispatch chain end-to-end via the RCA-11 work item. During verification
+the user noticed that the Codex stop-review gate — which was supposed to
+run on every SubagentStop and write verdicts into the
+`dispatch_engine` events table — was NOT firing. The Planner investigated
+and confirmed:
+
+1. `stop-review-gate-hook.mjs` is correctly wired into `settings.json` for
+   all four SubagentStop matchers (planner, implementer, tester, guardian).
+2. The hook correctly distinguishes SubagentStop from regular Stop via
+   `const isSubagentStop = Boolean(input.agent_type)` at line 583.
+3. When `isSubagentStop === true`, the SubagentStop branch (lines 613-646)
+   correctly runs the Codex review, writes a `codex_stop_review` event via
+   `emitCodexReviewEventSync(cwd, workflowId, verdict, reason)` at line
+   622, and emits a `systemMessage` with the verdict.
+4. `runtime/core/dispatch_engine.py:_check_codex_gate` (lines 406-445)
+   consumes that event within a 60-second window and sets
+   `codex_blocked=True` to suppress `AUTO_DISPATCH` if the verdict was
+   `BLOCK`. The consumer is correct.
+5. **The bug.** At `stop-review-gate-hook.mjs:591-596` there is an early
+   return that bails out for BOTH the SubagentStop and regular Stop
+   branches whenever `config.stopReviewGate === false`:
+
+   ```js
+   if (!config.stopReviewGate) {
+     if (!isSubagentStop) { logNote(runningTaskNote); }
+     return;
+   }
+   ```
+
+   `config.stopReviewGate` is the user-facing toggle controlled via
+   `codex-companion.mjs setup --enable-review-gate`. It defaults to false.
+   When false (the default on every machine that has not run
+   `codex setup --enable-review-gate`), the SubagentStop branch never
+   runs, the `events` table stays empty, and `_check_codex_gate` silently
+   always-allows because there is nothing to consume.
+
+This is a latent defect that has been silently disabling one of the
+dispatch-chain integrity gates for the entire post-RCA-11 verification
+window. It is invisible to the user because the hook still fires at the
+shell level, the Python policy engine still evaluates, and `AUTO_DISPATCH`
+continues to work as expected — it just works *without* the Codex gate
+doing any work. The events table silence is the only observable tell and
+is not surfaced in the statusline or in the dispatch-debug JSONL.
+
+**Problem statement.** The SubagentStop review path in
+`stop-review-gate-hook.mjs` is incorrectly gated behind the user-facing
+`config.stopReviewGate` flag. Because the flag defaults to false, the
+path never runs on a default install, which means:
+
+- `codex_stop_review` events never land in the `events` table.
+- `dispatch_engine._check_codex_gate` never finds anything to consume and
+  silently always-allows `AUTO_DISPATCH`.
+- The dispatch-chain integrity gate that was supposed to catch a
+  misbehaving subagent by blocking the next dispatch is a no-op.
+
+The user's verbatim direction is that the SubagentStop review path is
+enforcement infrastructure, not a user-facing convenience, and must run
+unconditionally: *"The stop review from codex setup isn't the one we
+want, we want it enforced at the stops and the subagent returns in our
+own mechanism so make sure to understand that properly."* The
+`config.stopReviewGate` flag retains its meaning for the user-facing
+regular-Stop path only.
+
+**Goal.** `stop-review-gate-hook.mjs` early-returns only when
+`isSubagentStop === false && config.stopReviewGate === false`. Every
+SubagentStop event runs through the review path regardless of the flag.
+The user-facing regular-Stop path continues to require
+`config.stopReviewGate === true` to run. The decision is recorded inline
+in the hook as `DEC-ENFORCE-REVIEW-GATE-002` with a rationale comment
+block that explains the split between dispatch-chain integrity
+(SubagentStop, unconditional) and user-facing convenience (regular Stop,
+opt-in).
+
+**Non-goals.**
+- NOT touching `runtime/core/dispatch_engine.py`. The consumer at
+  `_check_codex_gate` is already correct; it just never had anything to
+  consume. Inheriting this fix unblocks it automatically.
+- NOT touching `runtime/cli.py`. The CLI's `events-emit` path is inherited
+  and correct.
+- NOT touching `settings.json`. The SubagentStop hook chain is already
+  wired for all four matchers.
+- NOT touching `codex-companion.mjs` setup code. The
+  `--enable-review-gate` flag retains its semantics for the user-facing
+  regular-Stop path. No CLI behavior change.
+- NOT touching any `hooks/check-*.sh`, `hooks/post-task.sh`,
+  `hooks/pre-bash.sh`, `hooks/pre-write.sh`, or any other shell hook. All
+  are inherited.
+- NOT touching any file under `runtime/core/policies/`. No policy change.
+- NOT bundling W-ENFORCE-RCA-12 (CLI self-privilege, GitHub #31) or
+  W-ENFORCE-RCA-13 (git regex greedy, GitHub #32). Each is its own
+  dispatch chain.
+- NOT introducing a new config flag, a new hook, a new policy, or a new
+  dispatch path. This is a single-line logic flip with a rationale
+  comment.
+- NOT touching `MASTER_PLAN.md` from the worktree — planner-only
+  authority.
+
+**State authorities touched.**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+  (the sole source authority for the hook's early-return gate).
+- No SQLite tables are modified directly by this patch. Indirectly, the
+  `events` table will begin receiving `codex_stop_review` rows on every
+  SubagentStop once the patch lands — that is the intended runtime
+  observable and is the basis for Evaluation Contract step 3.
+
+**Adjacent components that inherit the fix automatically (no changes
+needed but the implementer must not break them).**
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs:622`
+  — `emitCodexReviewEventSync(cwd, workflowId, verdict, reason)` writes
+  the event that feeds `dispatch_engine`. Inherited; do not modify.
+- `runtime/core/dispatch_engine.py:406-445` — `_check_codex_gate` consumer
+  that reads from the events table with a 60-second window. Inherited; do
+  not modify.
+- `runtime/core/dispatch_engine.py:321-326` — the call site that invokes
+  `_check_codex_gate` after `auto_dispatch = True`. Inherited; do not
+  modify.
+- `settings.json` SubagentStop hook chain entries for planner,
+  implementer, tester, and guardian. Inherited; do not modify.
+- `codex-companion.mjs setup --enable-review-gate` — continues to toggle
+  `config.stopReviewGate` for the user-facing regular-Stop path only.
+  Semantic meaning shifts to "opt-in to user-facing Stop review"; no code
+  change.
+
+**Evaluation Contract (executed verbatim by the tester before
+`ready_for_guardian`; copied from the user brief).**
+
+1. After the patch,
+   `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+   early-returns only when
+   `isSubagentStop === false && config.stopReviewGate === false`. Verify
+   by reading the file and pasting the exact new lines.
+2. When `config.stopReviewGate === false` AND `isSubagentStop === true`,
+   the hook proceeds past line ~591 into the Guardian-landing check
+   (line 600) and then into the `runStopReview` call (line 610). Verify
+   by reading the file and tracing the control flow.
+3. **Live end-to-end test.** Dispatch any subagent through the full
+   chain. Verify a `codex_stop_review` event row appears in the `events`
+   table via
+   `cc-policy event query --type codex_stop_review --limit 1` with
+   `created_at > <now - 120>`. The verdict may be `ALLOW` or `BLOCK` —
+   we are testing that the mechanism FIRES, not any particular outcome.
+   Tester pastes the raw CLI output.
+4. `python3 -m pytest tests/` passes with `1441 passed, 1 xpassed` or
+   better. This is a `.mjs` file not a Python file, so pytest does not
+   exercise it directly, but we want to catch any unintended ripple.
+5. `DEC-ENFORCE-REVIEW-GATE-002` annotation is present inline in the
+   hook file as a rationale comment block immediately above the new
+   conditional.
+
+**Forbidden shortcuts.**
+- Do NOT add a new config flag (e.g. `config.dispatchChainReviewGate`)
+  to "make the split opt-in." The user's direction is explicit: the
+  dispatch-chain path is unconditional. Adding a flag reintroduces the
+  same silent-disable failure mode on any machine that does not set the
+  new flag to true. Inline, hard-coded unconditional behavior is the
+  only correct shape.
+- Do NOT move the SubagentStop branch into a separate helper function
+  "for clarity" and then gate the helper with the same flag by accident.
+  The fix is a single-line condition flip; do not reshape the function.
+- Do NOT also "harmonize" the regular-Stop path by changing its behavior
+  in any way. The regular-Stop path's existing gate on
+  `config.stopReviewGate` is correct for the user-facing interactive
+  block.
+- Do NOT touch `runtime/core/dispatch_engine.py:_check_codex_gate` to
+  "make it more tolerant" of an empty events table. The consumer is
+  correct; its silence was a symptom, not a cause.
+- Do NOT add a scenario test that depends on a real Codex CLI
+  invocation. If the implementer elects to add a scenario test (optional,
+  see Scope Manifest below), it must feed the hook a synthetic
+  `SubagentStop` JSON input directly to node and assert on the
+  early-return behavior without requiring the Codex binary.
+- Do NOT bundle W-ENFORCE-RCA-12 or W-ENFORCE-RCA-13 in the same
+  dispatch chain. Each is a separate work item with a separate Evaluation
+  Contract.
+- Do NOT touch `MASTER_PLAN.md` while in the worktree. Planner-only
+  authority.
+
+**Ready-for-guardian definition.** All five Evaluation Contract checks
+pass on a single, named head SHA inside the implementer's worktree, and
+the tester has captured:
+
+- (a) raw file excerpt showing the new condition
+  `if (!isSubagentStop && !config.stopReviewGate) { ... return; }` and
+  the `DEC-ENFORCE-REVIEW-GATE-002` rationale comment block,
+- (b) raw `cc-policy event query --type codex_stop_review --limit 1`
+  output showing at least one row with `created_at` within the last
+  120 seconds and the dispatch exercise that produced it,
+- (c) raw `python3 -m pytest tests/` exit-0 output with the
+  `1441 passed, 1 xpassed` (or better) summary line.
+
+The tester then sets `ready_for_guardian` via
+`cc-policy workflow ready-set`. Guardian merges after SHA-match
+verification. Commit message MUST reference `ENFORCE-RCA-14` in the
+title and `DEC-ENFORCE-REVIEW-GATE-002` in the body.
+
+**Scope Manifest (the orchestrator MUST write this to runtime via
+`cc-policy workflow scope-set` BEFORE dispatching the implementer).**
+
+Allowed files (exactly these; the implementer may read or write only
+these source paths):
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+
+Optional / contingent (the implementer's judgment on whether to add; if
+added, it lives in the same worktree and same commit):
+- `tests/scenarios/test-review-gate-subagent-stop.sh` (NEW, optional) — a
+  node-based scenario test that feeds the hook a synthetic SubagentStop
+  JSON input with `agent_type=implementer` and
+  `config.stopReviewGate=false`, and asserts the hook does NOT
+  early-return. If the implementer elects to add it, the test must not
+  depend on a real Codex binary and must not write to `runtime/cc_state.db`.
+
+Required files (at least this one must change; otherwise the work is
+incomplete):
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+  — replace the 4-line early-return block at current HEAD lines 591-596
+  with the 9-line replacement from the verbatim source patch below,
+  preserving surrounding whitespace and the trailing blank line before
+  line 598's `// For guardian SubagentStop` comment.
+
+Forbidden touch points (any modification triggers immediate scope
+violation and tester rejection):
+- `runtime/core/dispatch_engine.py`
+- `runtime/cli.py`
+- Any file under `runtime/core/policies/`
+- Any other file under `runtime/core/`
+- Any file under `hooks/` (including but not limited to `pre-bash.sh`,
+  `pre-write.sh`, `check-implementer.sh`, `post-task.sh`,
+  `lib/hook-safety.sh`, `lib/runtime-bridge.sh`)
+- `settings.json`
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`
+  (the setup CLI — its `--enable-review-gate` behavior is unchanged)
+- Any other file under `plugins/marketplaces/openai-codex/plugins/codex/scripts/`
+- `MASTER_PLAN.md` (planner-only authority)
+- `runtime/cc_state.db`
+- Any file under `traces/`
+- Any of the currently-dirty files on main
+  (`MASTER_PLAN.md`,
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+  is the ONE exception — it IS the required file),
+  `settings.json`, `runtime/cc_state.db`,
+  `runtime/dispatch-debug.jsonl`, `traces/`,
+  `hooks/block-worktree-create.sh`)
+
+Expected state authorities touched: NONE at patch time. After the patch
+lands and the live dispatch exercise in Evaluation Contract step 3 runs,
+the `events` table will receive a `codex_stop_review` row — this is the
+intended runtime observable and the basis for readiness.
+
+**Critical pre-implementation note (must be relayed verbatim in the
+dispatch context).** The orchestrator's main working tree currently
+contains an uncommitted diagnostic version of
+`stop-review-gate-hook.mjs` (one of the 12 dirty files flagged in the
+SubagentStart warning). Guardian will provision a fresh worktree from
+main HEAD, which does NOT contain any uncommitted diagnostic changes and
+DOES contain the exact buggy early-return block at lines 591-596 that
+the patch targets. The implementer must apply the patch against the
+clean main HEAD copy in the worktree, NOT against any stashed diagnostic
+version. If the line numbers in the worktree do not match 591-596 at
+the moment the implementer opens the file, the implementer must
+re-locate the exact block
+
+```js
+  if (!config.stopReviewGate) {
+    if (!isSubagentStop) {
+      logNote(runningTaskNote);
+    }
+    return;
+  }
+```
+
+by literal content match (not line number) and apply the patch there.
+
+**Verbatim source patch.** Replace the block above with:
+
+```js
+  // ENFORCE-RCA-14 / DEC-ENFORCE-REVIEW-GATE-002: the SubagentStop review path
+  // is part of dispatch-chain integrity — it writes codex_stop_review events
+  // that dispatch_engine._check_codex_gate consumes for AUTO_DISPATCH routing
+  // decisions. It MUST run on every SubagentStop regardless of the user-facing
+  // `config.stopReviewGate` flag, otherwise the events table stays empty and
+  // the dispatch engine gate silently always-allows.
+  //
+  // `config.stopReviewGate` continues to gate only the USER-FACING regular
+  // Stop path (the interactive block at turn-end that the user opts into
+  // via `codex setup --enable-review-gate`).
+  if (!isSubagentStop && !config.stopReviewGate) {
+    logNote(runningTaskNote);
+    return;
+  }
+```
+
+That is the entire source-code change. No other files need to be
+touched for the fix itself.
+
+**Test plan (concrete, executable).**
+
+1. *Apply the source patch.* Open
+   `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+   in the worktree. Locate the buggy early-return block by literal
+   content (not line number). Replace it with the verbatim source patch
+   above.
+
+2. *Static verification (Evaluation Contract steps 1 and 2 and 5).* Read
+   the file and confirm:
+   - The new condition reads
+     `if (!isSubagentStop && !config.stopReviewGate)`.
+   - The `DEC-ENFORCE-REVIEW-GATE-002` rationale comment block is present
+     immediately above the condition.
+   - The SubagentStop branch at lines ~613-646 is unchanged.
+   - The Guardian-landing check at ~line 600 is unchanged.
+   - The `runStopReview` call at ~line 610 is unchanged.
+
+3. *Optional scenario test.* If the implementer elects to add
+   `tests/scenarios/test-review-gate-subagent-stop.sh`, it must:
+   - Launch `node` directly against
+     `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+     with a synthetic SubagentStop JSON input on stdin
+     (`{"agent_type":"implementer","cwd":"...","workflow_id":"test"}`).
+   - Set an environment variable or mock to force
+     `config.stopReviewGate === false`.
+   - Assert the hook does NOT early-return by checking that it attempts
+     to invoke `runStopReview` (use a stub codex binary on PATH that
+     echoes a PASS verdict so the test does not require a real Codex
+     install).
+   - Exit 0 on success, non-zero with a clear message on failure.
+
+4. *Run the full pytest suite (Evaluation Contract step 4).*
+
+   ```bash
+   python3 -m pytest tests/
+   ```
+
+   Must exit 0 with `1441 passed, 1 xpassed` or better.
+
+5. *Live dispatch exercise (Evaluation Contract step 3).* After the
+   patch is applied and pytest is green, trigger a real subagent
+   dispatch through the full chain (the simplest reproduction is for
+   the orchestrator to dispatch a trivial implementer for an adjacent
+   tiny change, OR for the tester to use an existing SubagentStop fixture
+   if one exists). Within 120 seconds, run:
+
+   ```bash
+   cc-policy event query --type codex_stop_review --limit 1
+   ```
+
+   Expected: at least one row with `created_at` within the last 120
+   seconds. The verdict may be `ALLOW` or `BLOCK`. The tester pastes the
+   raw CLI output into the tester report. If the query returns zero
+   rows, the fix did not land correctly; the implementer must
+   investigate before marking ready.
+
+**Reproduction command (canonical; runs identically before and after
+the fix to prove the flip).**
+
+```bash
+cc-policy event query --type codex_stop_review --limit 1
+```
+
+- Expected on the parent SHA (before the fix, in a default install where
+  `config.stopReviewGate === false`): zero rows, or only stale rows from
+  a prior user-enabled run.
+- Expected on the worktree HEAD (after the fix, after a subagent
+  dispatch): at least one new row with a recent `created_at`.
+
+**Risk assessment.**
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Implementer flips the condition incorrectly (e.g. `(isSubagentStop \|\| !config.stopReviewGate)`) | Low | Verbatim source patch inlined above; tester verifies the exact literal match |
+| Implementer adds a new config flag "for symmetry" | Low | Forbidden Shortcuts explicitly bans this; tester rejects |
+| Implementer reshapes the function (extracts helper, renames variable) | Low | Scope Manifest requires a 4-line logic change + comment block only; tester rejects any broader refactor |
+| Line numbers drift between the brief and the worktree HEAD | Medium | Implementer locates the buggy block by literal content match, not line number; the critical pre-implementation note covers this |
+| Live dispatch exercise hangs because no subagent is available to dispatch | Medium | Tester uses a trivial `echo`-only implementer dispatch or an existing SubagentStop fixture; alternative: tester invokes the hook directly via node with a synthetic JSON input and a stub Codex binary on PATH |
+| `events` table row was pre-existing from a user-enabled run | Low | Tester filters by `created_at > <now - 120>` via the `--limit 1` output's timestamp; any stale row is rejected |
+| Implementer accidentally edits the dirty-main version of the hook instead of the worktree copy | Low | Critical pre-implementation note explicitly says fresh worktree; Guardian provisions from clean main HEAD |
+| Pytest regression from an unrelated `.mjs` touchpoint | Low | The `.mjs` file is not imported by any Python path; if pytest regresses, the regression is unrelated and must be investigated before marking ready |
+| Future W-ENFORCE-RCA-12 (CLI self-privilege) accidentally bundled | Low | Non-goals list explicitly excludes it; planner files it as a separate work item |
+| Future W-ENFORCE-RCA-13 (git regex greedy) accidentally bundled | Low | Non-goals list explicitly excludes it; planner files it as a separate work item |
+
+**Wave structure.**
+
+Single wave, single work item, single implementer dispatch.
+
+```
+Wave 3: W-ENFORCE-RCA-14  (independent of W-ENFORCE-RCA-11 which is
+                           dispatched in Wave 2; independent of the
+                           future W-ENFORCE-RCA-12 and W-ENFORCE-RCA-13
+                           which are separate chains)
+```
+
+**Dispatch chain.**
+
+1. Orchestrator writes the Scope Manifest to runtime via
+
+   ```bash
+   cc-policy workflow scope-set --workflow-id enforce-rca-14 \
+     --allowed plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs \
+     --forbidden runtime/core/dispatch_engine.py,runtime/cli.py,settings.json,hooks/pre-bash.sh,hooks/pre-write.sh,hooks/check-implementer.sh,hooks/post-task.sh,MASTER_PLAN.md,runtime/cc_state.db,plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+   ```
+
+2. Orchestrator dispatches Guardian (provision) with
+   `workflow_id=enforce-rca-14,
+   feature_name=enforce-rca-14`. Guardian provisions a fresh worktree
+   from main HEAD and issues the implementer lease. Accept whatever
+   branch name Guardian derives (RCA-11 precedent:
+   `feature/enforce-rca-14`).
+3. Orchestrator dispatches the implementer into the worktree with the
+   full Evaluation Contract, the full Scope Manifest, the verbatim
+   source patch, and the critical pre-implementation note that the
+   implementer must locate the buggy block by literal content match
+   (not line number) because the orchestrator's main copy is dirty.
+4. Implementer applies the patch, runs the full pytest suite inside the
+   worktree, captures all output, and reports completion with the head
+   SHA and the before/after file excerpt of the patched region.
+5. Tester evaluates against the Evaluation Contract, runs the live
+   dispatch exercise to verify the `codex_stop_review` event lands in
+   the events table, captures raw output, and sets
+   `ready_for_guardian` via `cc-policy workflow ready-set` if all five
+   checks pass.
+6. Guardian merges (commit + merge to main) after SHA-match
+   verification. Commit message MUST reference `ENFORCE-RCA-14` in the
+   title and `DEC-ENFORCE-REVIEW-GATE-002` in the body.
+
+If any step in the chain fails, the orchestrator must report the
+failure verbatim to the user before retrying. Specifically: if the
+live dispatch exercise in step 5 produces zero `codex_stop_review`
+rows, the fix is provably incomplete and the tester must NOT set
+`ready_for_guardian` — escalate instead.
+
+**File-level change summary.**
+
+| File | Change Type | Lines |
+|---|---|---|
+| `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs` | Modify: 4-line early-return block replaced with 9-line conditional + 10-line DEC rationale comment block | +~14/-4 |
+| `tests/scenarios/test-review-gate-subagent-stop.sh` (optional) | NEW: node-based scenario test with synthetic SubagentStop JSON input and stub Codex binary | +~40 (if added) |
+
+Total: ~10-50 lines net depending on whether the optional scenario test
+is added. The source file is already tracked as dirty on main
+(diagnostic changes from today's RCA verification); those dirty changes
+are irrelevant — Guardian provisions from clean main HEAD and the
+implementer applies the patch to the clean copy. `DEC-ENFORCE-REVIEW-GATE-002`
+is pre-assigned and is referenced inline in the rationale comment block
+AND must appear in the Guardian commit message body.
+
+**Open questions.** None. The plan is executable as-is. The exact source
+patch is inlined above. If the implementer or tester finds an unstated
+ambiguity, it must be escalated to the user rather than resolved
+silently.
+
+##### W-ENFORCE-RCA-15: Policy-engine canonical config + regular Stop review enforcement
+
+- **Status:** planned, awaiting Guardian provision (2026-04-07)
+- **DEC-IDs pre-assigned:** `DEC-CONFIG-AUTHORITY-001`,
+  `DEC-REGULAR-STOP-REVIEW-001`
+- **Branch name suggestion:** `enforce-rca-15-config-canonical`
+  (Guardian provision with
+  `--feature-name enforce-rca-15-config-canonical` produces
+  `feature/enforce-rca-15-config-canonical`)
+- **Weight:** L (multi-file change touching schema, CLI, policy engine,
+  shell bridge, two Node files, and tests; fits comfortably in a single
+  implementer dispatch because every file change is mechanical once the
+  table shape is agreed)
+- **Gate:** approve (Guardian merge after tester + live dispatch
+  verification, user approval required for push/merge per normal chain)
+- **Dependencies:** none within INIT-ENFORCE. Independent of the open
+  follow-ups #31 (RCA-12), #32 (RCA-13), #33 (tester workflow_id), #34
+  (worktree remove). Codex confirmed no higher-priority blocker.
+- **Codex convergence:** `Q1` table shape (`enforcement_config` with
+  seeded defaults + policy-code fail-safes), `Q2` WHO gate on
+  `cc-policy config set` (guardian lease required), `Q3` immediate flip
+  (no advisory week), `Q4` keep `--enable-review-gate` as UI shortcut
+  that delegates to the policy engine, `Q5` no higher-priority blocker —
+  all five answers converged before planning. This section encodes the
+  converged architecture verbatim.
+
+**Problem statement.** The Codex review gate is the only surface that
+converts in-session orchestrator output into a `codex_stop_review` event
+that `dispatch_engine._check_codex_gate` (runtime/core/dispatch_engine.py:406-445)
+can consume. Today it is gated by `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs:getConfig(workspaceRoot).stopReviewGate`
+— a plugin-local JSON field that defaults to `false` and is only
+toggled on by the user running `codex setup --enable-review-gate`.
+W-ENFORCE-RCA-14 fixed the SubagentStop side by making it unconditional
+(DEC-ENFORCE-REVIEW-GATE-002). The regular-Stop side — which gates the
+user-facing turn-end review on every session stop — is still off by
+default and still reads from plugin-local JSON. Two problems compound:
+(a) the regular-Stop gate's default is wrong, and (b) the config
+authority for review-gate toggles is a plugin flat file rather than
+the policy engine, so any fix that only flips the default perpetuates
+the dual-authority problem. Fixing (a) without (b) leaves dual
+authority for at least one cycle — violating the Single Source of
+Truth Sacred Practice. The two MUST ship together.
+
+**Goals (measurable).**
+
+1. A new `enforcement_config` SQLite table exists in the canonical
+   schema with `(scope, key, value, updated_at)` columns, PK on
+   `(scope, key)`, and an index on `(key, scope)`; seeded with
+   `review_gate_subagent_stop=true`, `review_gate_regular_stop=true`,
+   `review_gate_provider=codex` at scope `global`.
+2. `cc-policy config {get,set,list}` CLI domain exists, with `set`
+   WHO-gated to guardian-role callers.
+3. `PolicyContext.enforcement_config` field is populated by
+   `build_context()` in one indexed read per call.
+4. `stop-review-gate-hook.mjs` reads both toggles from `cc-policy config
+   get` and sets `CLAUDE_POLICY_DB` from `CLAUDE_PROJECT_DIR` before
+   every shell-out; plugin `state.json.stopReviewGate` is no longer the
+   canonical source for review-gate toggles.
+5. `plugins/.../lib/state.mjs:setConfig` dual-writes to
+   `cc-policy config set review_gate_regular_stop` whenever the UI
+   toggles `stopReviewGate`, preserving the `--enable-review-gate`
+   shortcut for one release.
+6. `python3 -m pytest tests/` returns `1441 passed, 1 xpassed` or
+   better (current baseline from post-RCA-14 chain) — no regressions.
+   ~6 new unit/scenario tests added.
+7. Live verification: `cc-policy config get review_gate_regular_stop`
+   returns `true` on a fresh install, and a regular Stop event in this
+   session produces a `codex_stop_review` row within 60s.
+
+**Non-goals (explicit exclusions).**
+
+- Do NOT bundle any other open RCA. #31 (RCA-12 CLI self-privilege),
+  #32 (RCA-13 git regex greedy), #33 (tester workflow_id), #34
+  (worktree remove) each get their own chain.
+- Do NOT touch other policy files under `runtime/core/policies/`. The
+  policy engine is the config loader, not the config consumer, in this
+  work item. Policies that want to read these toggles in later work
+  will do so by reading `ctx.enforcement_config[key]`.
+- Do NOT modify `settings.json`, `MASTER_PLAN.md` (planner updates it,
+  implementer must not), or any file outside the Scope Manifest.
+- Do NOT delete the plugin's own `stopReviewGate` field in this commit.
+  The dual-write shim buys one release of backward compatibility; the
+  deletion is a follow-up tracked as a TODO inline in `state.mjs`.
+- Do NOT add new policies; the config plumbing is standalone.
+
+**Ordered patch sequence (Codex's 5-step verbatim).** The implementer
+MUST apply these in order. Target line numbers reflect the clean main
+HEAD that Guardian provisions; they are approximate anchors because
+the implementer's worktree is fresh from main.
+
+1. **Schema and runtime module (new table + new module).**
+   - `runtime/schemas.py` around line 320: add `ENFORCEMENT_CONFIG_DDL`
+     constant near the other DDLs (insertion point is between the
+     existing DDL constants and the `ALL_DDL` list), then append
+     `ENFORCEMENT_CONFIG_DDL` to `ALL_DDL` immediately after
+     `OBS_RUNS_DDL`. Add `ENFORCEMENT_CONFIG_INDEXES_DDL: list[str]`
+     list with the `(key, scope)` index and wire it into the schema
+     bootstrap path that existing indexed tables use (follow
+     `OBS_SUGGESTIONS_INDEXES_DDL` at line 303 as the pattern).
+     Exact DDL:
+
+     ```python
+     ENFORCEMENT_CONFIG_DDL = """
+     CREATE TABLE IF NOT EXISTS enforcement_config (
+         scope       TEXT NOT NULL,
+         key         TEXT NOT NULL,
+         value       TEXT NOT NULL,
+         updated_at  INTEGER NOT NULL,
+         PRIMARY KEY (scope, key)
+     )
+     """
+     ENFORCEMENT_CONFIG_INDEXES_DDL: list[str] = [
+         """CREATE INDEX IF NOT EXISTS idx_enforcement_config_key_scope
+            ON enforcement_config (key, scope)""",
+     ]
+     ```
+
+     Seeding of the three default rows happens in
+     `runtime/core/enforcement_config.py` on module import / on table
+     creation (idempotent INSERT OR IGNORE), not inline in the DDL,
+     so that the fail-safe fallback constants in the module are the
+     single source of truth for default values.
+
+   - `runtime/core/enforcement_config.py` (NEW file): exports
+     `DEFAULTS: dict[str, str]` constants (the three seeded rows), and
+     functions `get(conn, key, *, scope='global')`, `set(conn, key,
+     value, *, scope='global', actor_role=None)`, `list(conn, *,
+     scope=None)`, and `seed_defaults(conn)` (called lazily from
+     `get`/`set`/`list` to make the module idempotent with fresh DBs).
+     The `get` function implements fallback: `workflow=<wf_id>` →
+     `project=<project_root>` → `global` → `DEFAULTS[key]` → `None`.
+     The `set` function raises `PermissionError("config set requires
+     guardian role, got %r" % actor_role)` when `actor_role != 'guardian'`.
+     `list` returns a list of dicts ordered by `(scope, key)`.
+
+2. **Policy engine integration.**
+   - `runtime/core/policy_engine.py:69` (the `@dataclass class
+     PolicyContext`): add a new field
+     `enforcement_config: dict[str, str]` with default
+     `field(default_factory=dict)` (import `field` from dataclasses
+     if not already imported).
+   - `runtime/core/policy_engine.py:328` (the `build_context`
+     function): at the end of the context assembly (just before the
+     `return PolicyContext(...)`), call a new helper
+     `_load_enforcement_config(conn, project_root, workflow_id)` that
+     selects every row from `enforcement_config` where scope is one of
+     `('global', f'project={project_root}', f'workflow={workflow_id}')`,
+     then collapses them into a single dict by key with precedence
+     `workflow > project > global`. Pass the resulting dict into
+     `PolicyContext(enforcement_config=...)`. Exactly one indexed read.
+
+3. **CLI domain.**
+   - `runtime/cli.py` around line 2681 (inside `build_parser()` — the
+     domain-subparser section that follows the obs domain): add a new
+     `config` subparser with three actions `get`, `set`, `list`.
+     Mirror the structure of `_handle_evaluation` (line 122) and
+     `_handle_workflow` (line 669) exactly. For `config set`, the
+     handler MUST call `build_context()` to resolve `actor_role`
+     identically to how `_handle_evaluate` resolves it (it already
+     passes actor_role in from the hook JSON payload), then pass that
+     `actor_role` into `enforcement_config.set()`. When
+     `PermissionError` is raised, surface via `_err({"error":
+     "permission_denied", "reason": str(e)})`.
+   - `runtime/cli.py:main()` at line 2681: add the dispatch
+     `if args.domain == "config": return _handle_config(args)` in the
+     same block that routes `evaluation`, `marker`, `workflow`, etc.
+
+4. **Shell bridge.**
+   - `hooks/lib/runtime-bridge.sh` (after the existing eval/marker/
+     workflow wrapper sections): add `rt_config_get <key> [scope]`
+     and `rt_config_set <key> <value> [scope]`. `rt_config_get` must
+     emit the literal string `__FAIL_CLOSED__` (choose a sentinel in
+     the implementation; `__FAIL_CLOSED__` is the recommended value)
+     on ANY non-zero exit from `cc_policy` OR on an empty JSON
+     response, NOT empty string — callers must be able to distinguish
+     "not set" (empty) from "lookup failed" (sentinel). Document the
+     sentinel in `hooks/HOOKS.md` under a new `## Runtime bridge
+     sentinels` subsection. Follow `rt_eval_get` (line 53) as the
+     structural template. `rt_config_set` calls `cc_policy config set
+     …` with stdin-provided JSON payload that includes the
+     current session's `actor_role` (the CLI handler will reject
+     non-guardian calls).
+
+5. **Node plugin retarget.**
+   - `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs:577`
+     (`function main()`): immediately after `const workspaceRoot =
+     resolveWorkspaceRoot(cwd);` and BEFORE `const config =
+     getConfig(workspaceRoot);`, introduce a helper call
+     `readEnforcementConfig(workspaceRoot)` that shells out to
+     `python3 <cliPath> config get <key> --json` with the env
+     `CLAUDE_POLICY_DB = ${workspaceRoot}/.claude/state.db` (mirroring
+     the bash `cc_policy()` pattern at
+     `hooks/lib/runtime-bridge.sh:23-29`). Parse both toggles:
+     `reviewGateSubagentStop` and `reviewGateRegularStop`. Replace
+     the existing `if (!isSubagentStop && !config.stopReviewGate)`
+     guard at line 601 with `if (!isSubagentStop &&
+     !reviewGateRegularStop)`. Leave the DEC-ENFORCE-REVIEW-GATE-002
+     comment block intact (it still documents why the SubagentStop
+     branch is unconditional) but reference the new config source in
+     an appended note. Also: if the CLI shell-out fails, treat the
+     response as the sentinel "fail closed" value — for a DEFAULT-ON
+     toggle, fail-closed means the review gate STILL runs (because
+     running the review is the safe side of the fence), NOT skips.
+     Document this inversion inline.
+   - `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs:484`
+     (`export function setConfig(cwd, key, value)`): add a dual-write
+     shim — when `key === "stopReviewGate"`, after the existing
+     `updateState(cwd, …)` call, ALSO shell out to `python3 <cliPath>
+     config set review_gate_regular_stop <value> --scope global` with
+     `CLAUDE_POLICY_DB = ${cwd}/.claude/state.db`. Add an inline
+     comment:
+     `// TODO(DEC-CONFIG-AUTHORITY-001): dual-write transitional.`
+     `// Delete after one release; stopReviewGate is no longer canonical.`
+     Catch the shell-out failure and log it with `logNote()` — do NOT
+     let a CLI error break the `setConfig` call, because the plugin
+     UI must keep working in offline/degraded states.
+
+**Seeded defaults table (schema + enforcement_config module mirror).**
+
+| key | value | scope | rationale |
+|---|---|---|---|
+| `review_gate_subagent_stop` | `true` | `global` | Already enforced unconditionally per DEC-ENFORCE-REVIEW-GATE-002. Captured in the table so policies / hooks can introspect it without re-implementing the "it's always on" fact. |
+| `review_gate_regular_stop` | `true` | `global` | The RCA-15 flip. Was `false` (via plugin `state.json`). This commit makes it `true` by default — every fresh install enforces regular-Stop Codex review out of the box. |
+| `review_gate_provider` | `codex` | `global` | Primary review provider. Gemini is the fallback when Codex is unavailable, handled inside `stop-review-gate-hook.mjs` already — this config is read by the hook to decide which provider to attempt first. |
+
+**Evaluation Contract (11 checks — executable acceptance).**
+
+Each item is measurable and must be verified by the tester before
+`ready_for_guardian` is set. The tester will run each check, capture
+raw output, and include it in the handoff to Guardian.
+
+1. `runtime/schemas.py:ALL_DDL` list contains `ENFORCEMENT_CONFIG_DDL`,
+   and the new DDL creates a table with columns `(scope TEXT, key
+   TEXT, value TEXT, updated_at INTEGER, PRIMARY KEY (scope, key))`.
+   Verified by `python3 -c "from runtime.schemas import ALL_DDL;
+   assert any('enforcement_config' in d for d in ALL_DDL)"` and by
+   inspecting the column list via `sqlite3 <db> '.schema
+   enforcement_config'` after running `cc-policy schema ensure`.
+2. `runtime/core/enforcement_config.py` exports `get`, `set`, `list`,
+   `seed_defaults`, and `DEFAULTS`. The `DEFAULTS` dict contains the
+   three keys from the seeded-defaults table with the exact values
+   shown. The `set` function raises `PermissionError` when
+   `actor_role` is not `'guardian'`.
+3. `runtime/cli.py` has a `config` domain reachable via
+   `cc-policy config get`, `cc-policy config set`, `cc-policy config
+   list`. `set` reads `actor_role` from `build_context()` and
+   surfaces `PermissionError` as `_err(…)` JSON. Verified by
+   `cc-policy config get review_gate_regular_stop` returning
+   `{"value": "true"}` (or equivalent JSON shape) after the patch
+   lands on a fresh DB, and by
+   `cc-policy config set review_gate_regular_stop false` returning
+   `{"error": "permission_denied", …}` when called without a
+   guardian lease.
+4. `runtime/core/policy_engine.PolicyContext` has a new field
+   `enforcement_config: dict[str, str]` (default empty dict). `grep`
+   on the file finds the field declaration.
+5. `build_context()` at `runtime/core/policy_engine.py:328` loads
+   `enforcement_config` rows for `('global', 'project=…',
+   'workflow=…')` in a single indexed read and collapses them into
+   the new `PolicyContext.enforcement_config` field with precedence
+   `workflow > project > global`. Verified by
+   `tests/runtime/test_policy_engine.py` adding a test that seeds
+   rows at two scopes and asserts the field on the returned
+   context reflects the correct collapse.
+6. `hooks/lib/runtime-bridge.sh` has `rt_config_get` and
+   `rt_config_set` wrappers. `rt_config_get` returns the literal
+   string `__FAIL_CLOSED__` (or chosen sentinel) when `cc-policy`
+   exits non-zero. `hooks/HOOKS.md` documents the sentinel under
+   `## Runtime bridge sentinels`.
+7. `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+   reads `review_gate_subagent_stop` and `review_gate_regular_stop`
+   from `cc-policy config get` (NOT from
+   `getConfig(workspaceRoot).stopReviewGate`). Sets
+   `CLAUDE_POLICY_DB = ${workspaceRoot}/.claude/state.db` in the env
+   for every shell-out. Plugin `state.json.stopReviewGate` is not
+   read in the regular-Stop gate decision. Verified by `grep` on
+   the file asserting no `config.stopReviewGate` reference remains
+   and that `CLAUDE_POLICY_DB` is set before `execFileSync`/`spawnSync`.
+8. `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs:484`
+   `setConfig` shim: when `key === "stopReviewGate"`, ALSO calls
+   `cc-policy config set review_gate_regular_stop …` with
+   `CLAUDE_POLICY_DB` scoped to `cwd`. Inline TODO comment
+   references `DEC-CONFIG-AUTHORITY-001`. Verified by `grep` and
+   by a unit test that calls `setConfig(…, "stopReviewGate",
+   false)` and asserts the config table row updated.
+9. `python3 -m pytest tests/` returns `1441 passed, 1 xpassed` or
+   better. New tests added:
+   - `tests/runtime/test_enforcement_config.py`:
+     - `test_default_seeding_populates_three_rows` — after
+       `seed_defaults(conn)`, `list(conn)` returns three rows with
+       the seeded keys/values/scope.
+     - `test_get_scope_fallback_workflow_project_global` — seeds
+       the same key at three scopes, asserts `get` with
+       `scope='workflow=wf1'` returns the workflow value,
+       `scope='project=/p'` returns the project value, `scope='global'`
+       returns the global value; asserts fallback ordering with a key
+       only at `global`.
+     - `test_set_requires_guardian_role` — calls `set` with
+       `actor_role='guardian'` (succeeds), `actor_role='implementer'`
+       (raises `PermissionError`), `actor_role=''` (raises
+       `PermissionError`).
+     - `test_list_orders_rows_deterministically` — inserts three
+       rows at mixed scopes, asserts `list` returns them in
+       `(scope, key)` order.
+   - `tests/runtime/test_policy_engine.py`: extend with
+     `test_build_context_loads_enforcement_config` — seed rows at
+     global + project, call `build_context(conn, cwd=…,
+     project_root='/p', …)`, assert the returned
+     `ctx.enforcement_config` reflects the project-over-global
+     collapse.
+   - Optional: `tests/runtime/test_cli_config_domain.py` with
+     scenario tests for `cc-policy config get/set/list` including
+     a WHO-gated `set` denial test. Recommended but not required
+     if the unit tests fully cover the domain logic.
+10. **Live verification.** After the patch lands in the worktree and
+    pytest passes, the tester runs:
+    - `cc-policy config get review_gate_regular_stop` → returns
+      `true`
+    - `cc-policy config get review_gate_subagent_stop` → returns
+      `true`
+    - Trigger a regular Stop event in the session (the tester does
+      this by issuing a normal assistant completion in its own
+      session, which fires the regular-Stop hook chain).
+    - Within 60 seconds, `cc-policy event list --name
+      codex_stop_review --limit 1` (or equivalent query) returns at
+      least one new row with a `VERDICT:` detail field. Raw output
+      captured and attached to the handoff.
+    If zero `codex_stop_review` rows appear within 60s, the fix is
+    incomplete and the tester MUST NOT set `ready_for_guardian` —
+    escalate to the user.
+11. **DEC annotations.** Both DEC-IDs are referenced inline in the
+    implementation:
+    - `DEC-CONFIG-AUTHORITY-001` appears in the docstring of
+      `runtime/core/enforcement_config.py` AND in the comment block
+      above the `cc-policy config` handler in `runtime/cli.py` AND
+      in the inline TODO in `plugins/.../lib/state.mjs:setConfig`.
+    - `DEC-REGULAR-STOP-REVIEW-001` appears in the comment block
+      near the patched guard in `stop-review-gate-hook.mjs` AND
+      in the seeded-defaults constant docstring in
+      `runtime/core/enforcement_config.py`.
+    Both IDs must appear verbatim in the Guardian commit message
+    body; `ENFORCE-RCA-15` must appear in the commit title.
+
+**Scope Manifest.**
+
+Allowed / required files (the implementer must modify ALL of these
+and MUST NOT touch anything else). The orchestrator writes this
+manifest to the runtime before dispatch via:
+
+```bash
+cc-policy workflow scope-set --workflow-id enforce-rca-15 \
+  --allowed runtime/schemas.py,runtime/core/enforcement_config.py,runtime/core/policy_engine.py,runtime/cli.py,hooks/lib/runtime-bridge.sh,plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs,plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs,tests/runtime/test_enforcement_config.py,tests/runtime/test_policy_engine.py,hooks/HOOKS.md \
+  --forbidden settings.json,MASTER_PLAN.md,runtime/core/policies/,runtime/core/dispatch_engine.py,hooks/pre-bash.sh,hooks/pre-write.sh,hooks/check-implementer.sh,hooks/post-task.sh,runtime/cc_state.db,plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+```
+
+| Path | Change | Rationale |
+|---|---|---|
+| `runtime/schemas.py` | Modify: add `ENFORCEMENT_CONFIG_DDL`, `ENFORCEMENT_CONFIG_INDEXES_DDL`, append to `ALL_DDL`, wire indexes into `ensure_schema()` path | Canonical DDL authority |
+| `runtime/core/enforcement_config.py` | NEW file | Module implementing `get`/`set`/`list`/`seed_defaults`/`DEFAULTS` with WHO gate |
+| `runtime/core/policy_engine.py` | Modify: add `enforcement_config` field to `PolicyContext`; extend `build_context()` with a single indexed read | PolicyContext integration, no extra I/O per evaluate |
+| `runtime/cli.py` | Modify: add `config` subparser + `_handle_config()` handler; dispatch in `main()` | CLI surface |
+| `hooks/lib/runtime-bridge.sh` | Modify: add `rt_config_get`, `rt_config_set` | Shell-side bridge with fail-closed sentinel |
+| `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs` | Modify: retarget config source to `cc-policy config get`, set `CLAUDE_POLICY_DB` before shell-out, flip the regular-Stop guard condition | The actual enforcement flip |
+| `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs` | Modify: `setConfig` dual-write shim for `stopReviewGate` | Backward compat for one release |
+| `tests/runtime/test_enforcement_config.py` | NEW file | Unit coverage for DDL + get/set/list + WHO gate |
+| `tests/runtime/test_policy_engine.py` | Modify: add `test_build_context_loads_enforcement_config` | Integration with PolicyContext |
+| `hooks/HOOKS.md` | Modify: add `## Runtime bridge sentinels` subsection | Document `__FAIL_CLOSED__` convention |
+
+Forbidden touch points (implementer MUST NOT modify):
+
+- `settings.json` (hook wiring is already correct)
+- `MASTER_PLAN.md` (planner updates only)
+- `runtime/core/policies/` (this work item is plumbing, not a new policy)
+- `runtime/core/dispatch_engine.py` (the consumer side is already correct)
+- `hooks/pre-bash.sh`, `hooks/pre-write.sh`, `hooks/check-implementer.sh`,
+  `hooks/post-task.sh` (these read/write other domains, untouched)
+- `runtime/cc_state.db` (generated artifact)
+- `plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`
+  (the UI shortcut surface continues to call `setConfig` — and
+  `setConfig`'s dual-write handles the rest)
+- Any file outside the Allowed list above
+
+Expected state authorities touched:
+
+- **`enforcement_config`** (NEW SQLite table; written by
+  `runtime/core/enforcement_config.py`, read by `build_context()` and
+  `cc-policy config get`). This is the canonical authority DEC-CONFIG-AUTHORITY-001
+  establishes.
+- **`events`** (read-only verification via `cc-policy event list
+  --name codex_stop_review`). No writes from this work item — the
+  writes happen in `stop-review-gate-hook.mjs:emitCodexReviewEventSync`
+  which is unchanged in behavior (DEC-ENFORCE-REVIEW-GATE-002 already
+  made it unconditional).
+- **Plugin `state.json`** (read-only for non-review-gate fields;
+  review-gate fields are now dual-written via the transitional shim
+  and will be removed in a follow-up release).
+- **`PolicyContext`** (new `enforcement_config` dict field populated
+  by `build_context()` in one indexed read; zero impact on existing
+  consumers).
+
+**Risk table.**
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Config scoping drift — a later commit adds config rows without the `(scope, key)` convention and introduces per-project drift | Medium | Schema enforces PK on `(scope, key)` and the `set()` function requires scope as a keyword arg with default `'global'`; the `seed_defaults()` function is the only place that writes scope-unqualified rows, and those are all explicitly scoped to `'global'`. CI test `test_get_scope_fallback_workflow_project_global` asserts the fallback chain is correct, so regressions break tests. |
+| Fail-open via wrapper error suppression — `rt_config_get` returns empty string on CLI failure, and a policy treats empty as "permission allowed" | High if uncaught | Return `__FAIL_CLOSED__` sentinel instead of empty on ANY failure path. Document in `HOOKS.md`. In the Node hook, fail-closed for a DEFAULT-ON toggle means the review gate STILL runs (safe side). Unit test in `test_enforcement_config.py` does not cover the shell wrapper directly, but the inversion is documented inline and verified by the live dispatch exercise in Evaluation Contract item 10 — zero `codex_stop_review` rows on regular Stop means something is fail-opening and the tester escalates. |
+| Node hooks bypass project scoping by inheriting parent env `CLAUDE_POLICY_DB` unset or wrong | High if uncaught | Mandatory explicit assignment in `stop-review-gate-hook.mjs` and in `lib/state.mjs` dual-write shim BEFORE every `execFileSync`. Mirror the bash `cc_policy()` pattern at `runtime/lib/runtime-bridge.sh:23-29`. The tester verifies this by reading the Node file and grepping for `CLAUDE_POLICY_DB` before every `execFileSync` in the touched files. |
+| Regressions in existing `build_context()` callers — adding a new field changes the dataclass shape and any positional constructor call breaks | Low | The new field has `default_factory=dict`, so it is keyword-optional. All existing callers already use keyword arguments. A pytest run of the full suite (Evaluation Contract item 9) catches any positional-call regression immediately. |
+| WHO gate bypass — orchestrator or another subagent manages to call `cc-policy config set` without a guardian lease | Low | `_handle_config()` resolves `actor_role` via `build_context()` just like `_handle_evaluate` does (which has been hardened through INIT-PE + INIT-ENFORCE); the `PermissionError` originates from the domain layer not the CLI, so even direct Python imports of `enforcement_config.set()` are gated. Three cases tested in `test_set_requires_guardian_role`: `'guardian'` (allowed), `'implementer'` (denied), `''` (denied). |
+| Plugin `state.json.stopReviewGate` field still read somewhere outside the two touched files | Medium | Implementer MUST `grep -rn "stopReviewGate" plugins/marketplaces/openai-codex/plugins/codex/` before completion, report every hit, and confirm each is either in a touched file, in a comment, or in a doc. Tester verifies by re-running the grep. |
+| Dual-write shim silently fails in offline / degraded state and the plugin UI toggle appears to work but the canonical config is stale | Medium | `setConfig` logs the shell-out failure via `logNote()` with an unmistakable message (`"[config-shim] cc-policy config set failed: …"`). User-visible log preserves debuggability. The dual-write is transitional and will be deleted in one release, so permanent fragility is bounded. |
+| Implementer attempts to touch `settings.json` because the hook wiring "looks wrong" | Low | Scope Manifest explicitly forbids it. The `workflow scope-set` command above forbids it at the runtime level. If the implementer believes `settings.json` must change, the correct path is to escalate to the orchestrator, not to modify it unilaterally. |
+
+**State-authority map (what reads / writes what).**
+
+| Domain | Canonical authority | Writers | Readers |
+|---|---|---|---|
+| `enforcement_config` table | NEW — `runtime/core/enforcement_config.py` | `cc-policy config set` (WHO-gated to guardian), `seed_defaults()` on first use, `lib/state.mjs:setConfig` dual-write shim (transitional) | `cc-policy config get/list`, `build_context()` via `PolicyContext.enforcement_config`, `stop-review-gate-hook.mjs` via `rt_config_get` / direct `execFileSync` |
+| Plugin `state.json.stopReviewGate` | Deprecated — `lib/state.mjs:setConfig` dual-writes to canonical. Will be deleted one release after this commit. | `lib/state.mjs:setConfig` (UI shortcut) | (previously) `stop-review-gate-hook.mjs` — NO LONGER after this commit |
+| `events.codex_stop_review` | `emitCodexReviewEventSync` in `stop-review-gate-hook.mjs` — unchanged | Same as before (no change in this work item) | `dispatch_engine._check_codex_gate` — unchanged |
+| `PolicyContext.enforcement_config` | In-memory dict built per `build_context()` call | `build_context()` via `_load_enforcement_config()` | Any policy that later opts into reading config-driven toggles; this work item adds no such policy |
+| `workflow_scope` | Unchanged — `runtime/core/workflow.py` | Orchestrator via `cc-policy workflow scope-set` | `pre-write.sh`, `check-implementer.sh`, etc. The NEW work item writes to this domain at dispatch time (the `scope-set` command above) to advertise the Scope Manifest. |
+
+**Critical implementer warnings.**
+
+1. **Dirty main worktree.** The orchestrator's main working tree has 12
+   uncommitted files including `runtime/cli.py` (the RCA-11
+   hookEventName diagnostic, now identical to HEAD post-RCA-11),
+   `hooks/context-lib.sh` (realpath fix), `settings.json` (debug
+   capture wiring), etc. The implementer's fresh worktree will be
+   provisioned from clean main HEAD and will NOT have any of these
+   files modified. Do not assume. Apply the patch by file, not by
+   diff against the dirty main.
+
+2. **`CLAUDE_POLICY_DB` env scoping is MANDATORY in Node code.** The
+   bash `cc_policy()` function at `hooks/lib/runtime-bridge.sh:23-29`
+   sets `CLAUDE_POLICY_DB` from `CLAUDE_PROJECT_DIR` automatically.
+   Node code does not inherit that behavior. Every `execFileSync` or
+   `spawnSync` call to `python3 …/cli.py …` in
+   `stop-review-gate-hook.mjs` and `lib/state.mjs` MUST set
+   `env: { ...process.env, CLAUDE_POLICY_DB:
+   path.join(workspaceRoot, '.claude/state.db') }` BEFORE the call.
+   Without this, the CLI resolves to the default `~/.claude/state.db`
+   and reintroduces per-project vs global DB drift, which is
+   Codex risk #3.
+
+3. **WHO gate test coverage is non-optional.** The
+   `test_set_requires_guardian_role` test in
+   `test_enforcement_config.py` MUST cover all three cases:
+   `actor_role='guardian'` (allowed), `actor_role='implementer'`
+   (denied with `PermissionError`), `actor_role=''` (denied with
+   `PermissionError`). Do not ship without all three. An empty
+   actor_role is the orchestrator case and it is the most dangerous
+   bypass vector because `build_context()` ALREADY refuses to
+   elevate an empty-role caller via the lease fallback path
+   (DEC-PE-EGAP-BUILD-CTX-001); the config setter must enforce the
+   same contract at the write boundary.
+
+4. **The `_load_enforcement_config()` helper is one indexed query, not
+   three.** Use a single `SELECT * FROM enforcement_config WHERE
+   scope IN (?, ?, ?)` with the three scope strings, then collapse
+   in Python. Do NOT issue three separate queries — `build_context()`
+   is already on the hot path and performance matters here.
+
+5. **Fail-closed semantics are inverted for default-on toggles.** For
+   `review_gate_regular_stop=true`, "fail closed" means the review
+   gate STILL RUNS on lookup failure, because running the review is
+   the safe side of the fence. For a hypothetical default-off
+   toggle, "fail closed" would mean the gated operation is DENIED.
+   The Node hook implementation must encode this inversion
+   correctly and the comment must explain it, otherwise a later
+   engineer who sees `__FAIL_CLOSED__` → "skip review" will regress
+   the fix.
+
+6. **Do NOT bundle any other open RCA.** The follow-ups
+   #31 (RCA-12 CLI self-privilege), #32 (RCA-13 git regex greedy),
+   #33 (tester workflow_id), and #34 (worktree remove) each get
+   their own chain. Even if the implementer notices a two-line fix
+   to #32 while editing an adjacent file, the fix does not belong
+   in this commit — file a separate task via `/backlog`.
+
+**Wave structure.**
+
+```
+Wave 4: W-ENFORCE-RCA-15  (independent of W-ENFORCE-RCA-11, RCA-14,
+                           and the parked RCA-12/13 follow-ups;
+                           third end-to-end chain of this session)
+```
+
+Single wave, single work item, single implementer dispatch. Third
+end-to-end chain of the session; the first two (RCA-11 and RCA-14)
+verified the dispatch chain works under the post-RCA-11
+`hookEventName` fix. This chain additionally validates the new
+policy-engine-canonical config story end-to-end.
+
+**Dispatch chain.**
+
+1. Orchestrator writes the Scope Manifest to runtime via
+
+   ```bash
+   cc-policy workflow scope-set --workflow-id enforce-rca-15 \
+     --allowed runtime/schemas.py,runtime/core/enforcement_config.py,runtime/core/policy_engine.py,runtime/cli.py,hooks/lib/runtime-bridge.sh,plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs,plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs,tests/runtime/test_enforcement_config.py,tests/runtime/test_policy_engine.py,hooks/HOOKS.md \
+     --forbidden settings.json,MASTER_PLAN.md,runtime/core/policies/,runtime/core/dispatch_engine.py,hooks/pre-bash.sh,hooks/pre-write.sh,hooks/check-implementer.sh,hooks/post-task.sh,runtime/cc_state.db,plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+   ```
+
+2. Orchestrator dispatches Guardian (provision) with
+   `workflow_id=enforce-rca-15,
+   feature_name=enforce-rca-15-config-canonical`. Guardian provisions
+   a fresh worktree from main HEAD and issues the implementer lease.
+   Accept whatever branch name Guardian derives (expected:
+   `feature/enforce-rca-15-config-canonical`).
+3. Orchestrator dispatches the implementer into the worktree with
+   the full Evaluation Contract, the full Scope Manifest, the
+   verbatim ordered patch sequence (5 steps from Codex), and the
+   six critical implementer warnings above. Integration-surface
+   context in the dispatch: state domains touched =
+   `enforcement_config` (new), `PolicyContext` (new field),
+   `workflow_scope` (via the manifest write in step 1); adjacent
+   components that read/write those domains = `build_context()`,
+   every hook that sources `runtime-bridge.sh`, the two touched
+   `.mjs` files; canonical authority for
+   `review_gate_regular_stop` = `enforcement_config` table;
+   removal targets = plugin `state.json.stopReviewGate` (deferred
+   one release via dual-write shim, to be deleted in the follow-up).
+4. Implementer applies the patch, runs the full pytest suite inside
+   the worktree, captures all output, and reports completion with
+   the head SHA, the before/after file excerpt of each patched
+   region, and the pytest summary line.
+5. Tester evaluates against the 11 Evaluation Contract items, runs
+   the live dispatch exercise (contract item 10) to verify
+   `cc-policy config get review_gate_regular_stop` returns `true`
+   AND a `codex_stop_review` event lands in the events table
+   within 60s of a regular Stop. Captures raw output for every
+   check. Sets `ready_for_guardian` via `cc-policy workflow
+   ready-set` only if all 11 checks pass.
+6. Guardian merges (commit + merge to main) after SHA-match
+   verification. Commit message MUST reference `ENFORCE-RCA-15` in
+   the title and BOTH `DEC-CONFIG-AUTHORITY-001` AND
+   `DEC-REGULAR-STOP-REVIEW-001` in the body.
+
+If any step in the chain fails, the orchestrator must report the
+failure verbatim to the user before retrying. Specifically: if the
+live dispatch exercise in step 5 produces zero `codex_stop_review`
+rows, the fix is provably incomplete and the tester MUST NOT set
+`ready_for_guardian` — escalate instead. Same escalation rule if
+`cc-policy config get review_gate_regular_stop` returns anything
+other than `true` on a fresh DB.
+
+**File-level change summary.**
+
+| File | Change Type | Est. Lines |
+|---|---|---|
+| `runtime/schemas.py` | Modify: new DDL constant, new indexes list, append to `ALL_DDL`, wire indexes into ensure_schema bootstrap | +~20 |
+| `runtime/core/enforcement_config.py` | NEW file | +~120 |
+| `runtime/core/policy_engine.py` | Modify: field + `_load_enforcement_config()` helper + call in `build_context()` | +~35 |
+| `runtime/cli.py` | Modify: `config` subparser + `_handle_config()` handler + dispatch in `main()` | +~80 |
+| `hooks/lib/runtime-bridge.sh` | Modify: `rt_config_get` + `rt_config_set` wrappers | +~35 |
+| `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs` | Modify: `readEnforcementConfig()` helper + `CLAUDE_POLICY_DB` env + guard flip + comment block | +~60/-5 |
+| `plugins/marketplaces/openai-codex/plugins/codex/scripts/lib/state.mjs` | Modify: dual-write shim in `setConfig` | +~25 |
+| `tests/runtime/test_enforcement_config.py` | NEW file | +~140 (four+ unit tests) |
+| `tests/runtime/test_policy_engine.py` | Modify: extend with one new test | +~35 |
+| `hooks/HOOKS.md` | Modify: add `## Runtime bridge sentinels` section | +~15 |
+
+Total: ~570 net additions, ~5 deletions. Larger than RCA-14 (single
+conditional flip) but each file change is mechanical; the bulk of
+the diff is the new module, the new tests, and the new CLI handler.
+No architectural decisions remain — Codex converged every open
+question before planning.
+
+**Open questions.** None. The plan is executable as-is. The
+ordered patch sequence, the Evaluation Contract, the Scope
+Manifest, the risk mitigations, and the live verification protocol
+are all inlined above. If the implementer or tester finds an
+unstated ambiguity, escalate to the user rather than resolve
+silently. The pre-assigned DEC-IDs are final.
+
+### INIT-PHASE0: Hook-Authority Cleanup Before Reviewer-Stage Refactor
+
+- **Status:** planned (2026-04-07)
+- **Base commit:** `c7a3109` on `fix/enforce-rca-13-git-shell-classifier`
+- **Goal:** Re-establish a single trustworthy hook/config authority surface
+  so the downstream `implementer -> reviewer -> guardian` cut (Phase 1+) does
+  not inherit silent regressions. This initiative is hook-authority hygiene
+  ONLY. It must not absorb or pre-implement any reviewer-stage scope.
+- **Forbidden surface (Phase 1+ territory — DO NOT TOUCH in any P0 work item):**
+  `runtime/core/dispatch_engine.py`, `runtime/core/completions.py`,
+  `runtime/core/policies/bash_eval_readiness.py`, reviewer-provider extensions
+  in `runtime/core/enforcement_config.py`, tester-routing replacement, any
+  introduction of a `reviewer` stage, any `workflow_review_*` config keys, any
+  `cc-policy review run|submit` provider runner. Until the reviewer cut lands,
+  Phase 0 continues to use the existing tester-based canonical chain
+  (planner -> guardian provision -> implementer -> tester -> guardian merge).
+- **Allowed problem space:** hook wiring correctness, hook-contract accuracy,
+  drift between `hooks/HOOKS.md` and the official Claude Code docs, missing
+  tracked files referenced from `settings.json`, the auto-review.sh authority
+  decision, verification gaps in hook-path tests, gitignore hygiene for
+  runtime artifacts, leaked-fixture marker cleanup, and backlog filing for
+  out-of-scope defects discovered in flight.
+
+#### Empirical baseline (sources: official Claude Code docs + `runtime/dispatch-debug.jsonl`)
+
+The decisions below are grounded in the following measurements taken at base
+commit `c7a3109` against the live installed harness:
+
+- **Official docs (https://code.claude.com/docs/en/hooks)** list the canonical
+  hook event catalog. Confirmed events relevant to Phase 0:
+  - `WorktreeCreate` IS a real event. Fires on `--worktree` CLI flag or
+    `isolation: "worktree"`. Exit code 2 (or any non-zero) blocks creation.
+    Does NOT support matchers — always fires.
+  - `WorktreeRemove` IS a real event but cannot block.
+  - `EnterWorktree` is NOT in the documented event list AND NOT in the
+    documented PreToolUse tool-name matcher list. The documented PreToolUse
+    matchers are: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Agent`,
+    `WebFetch`, `WebSearch`, `AskUserQuestion`, `ExitPlanMode`, plus MCP tool
+    name patterns. `EnterWorktree` appears nowhere.
+  - Matching hooks within an event run **in parallel**, deduplicated by
+    command string.
+  - `PreToolUse` exit code 2 blocks the tool call AND feeds `stderr` to
+    Claude.
+- **`runtime/dispatch-debug.jsonl` (1303 lines, 651 hook events captured at
+  c7a3109):** 0 events with `tool_name == "EnterWorktree"`, 0 events with
+  `hook_event_name == "WorktreeCreate"`, 0 events with `hook_event_name ==
+  "EnterWorktree"`. The capture window contains 547 PreToolUse:Bash, 38
+  PreToolUse:Agent, 39 SubagentStart, 28 SubagentStop, and 0 of any
+  worktree-specific tool/event. Of the 38 Agent invocations, **zero** carried
+  an `isolation` field — meaning the orchestrator never exercised the
+  `isolation: "worktree"` path that would have triggered `WorktreeCreate`.
+  Absence of `WorktreeCreate` events from the JSONL is therefore consistent
+  with both "the harness emits the event but no Agent triggered it" AND with
+  "the event surface is dead" — the JSONL alone does not discriminate. The
+  official docs DO discriminate: `WorktreeCreate` is documented and verified
+  as a real surface; `EnterWorktree` is not.
+- **Repo state at c7a3109:** `hooks/block-worktree-create.sh` is referenced
+  twice from `settings.json` (lines 92-102 `WorktreeCreate` block,
+  lines 103-113 `PreToolUse: matcher: "EnterWorktree"` block) but is currently
+  **untracked** in git. `git log -- hooks/block-worktree-create.sh` returns
+  empty. This is the highest-priority cleanup target.
+- **`hooks/HOOKS.md` drift:** Three known divergences are catalogued in
+  `~/.claude/projects/.../memory/project_hooks_md_drift.md` and confirmed in
+  the live file:
+  1. `HOOKS.md:9` says "Non-zero = hook error (logged, does not block)"; the
+     official docs say PreToolUse exit-2 blocks.
+  2. `HOOKS.md:155` says "Hooks within the same event run sequentially in
+     array order"; the official docs say "All matching hooks run in parallel,
+     and identical handlers are deduplicated automatically."
+  3. `HOOKS.md:136-279` documents `auto-review.sh` as part of the live
+     `PreToolUse:Bash` chain; the c7a3109 diff (verified via `git show`)
+     replaced `auto-review.sh` in that chain with the
+     `dispatch-debug.jsonl` capture writer. The file is still tracked
+     (`hooks/auto-review.sh`, 36 KB) but has zero live wiring.
+  Phase 0 work item P0-H must produce a complete delta against the official
+  docs, not just patch these three. The delta produced during planning is
+  documented inline in P0-H below.
+- **The leaked fixture marker:** The repo-local state DB at
+  `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`
+  contains an active row in `agent_markers`:
+  `agent_id='foo', role='tester', is_active=1, status='active',
+  project_root='/private/tmp/project', workflow_id=NULL, started_at=1775612185`.
+  Schema (verified): columns are `agent_id, role, started_at, stopped_at,
+  is_active, workflow_id, status, project_root` (note: column is `is_active`,
+  not `active`, and `started_at` is epoch seconds — implementer must use these
+  exact names). This is a unit-test fixture that wrote to the live project DB
+  instead of an isolated test DB. The marker is deactivatable with one UPDATE;
+  the underlying root cause (test fixtures using the live DB) is a separate
+  backlog target tracked under P0-G.
+
+#### Goals and non-goals
+
+**Goals:**
+1. Eliminate every speculative hook surface from `settings.json` that lacks
+   evidence in either the official docs or the empirical capture.
+2. Make every repo-owned hook command referenced from `settings.json` resolve
+   to a tracked file, enforced by a failing test on regression.
+3. Make `hooks/HOOKS.md` no longer claim authority over harness semantics
+   where it disagrees with the official docs. Internal-mechanism documentation
+   stays; external-contract documentation is removed and replaced with a
+   pointer to the official docs.
+4. Resolve the fate of `hooks/auto-review.sh` (and its three scenario tests)
+   so the repo no longer carries an orphan file plus stale documentation.
+5. Identify the verification gap in `tests/scenarios/test-codex-gate-stop.sh`
+   (the production-sequence test that bypasses the actual `.mjs` emitter) and
+   either close it in Phase 0 or file it as backlog with an exact target.
+6. Add `.gitignore` coverage for the four runtime artifacts currently sitting
+   uncommitted in the working tree.
+7. Deactivate the leaked `foo` fixture marker and file the underlying
+   fixture-isolation defect as backlog.
+
+**Non-goals:**
+- Any reviewer-stage routing change. (Phase 1+.)
+- Any new policy in `runtime/core/policies/`. The Phase 0 evaluation contract
+  scope manifests forbid touching `runtime/core/policies/` precisely so this
+  initiative cannot accidentally leak into policy-engine work.
+- Any modification to `runtime/core/dispatch_engine.py` or
+  `runtime/core/completions.py`. These are reviewer-cut surfaces and are
+  forbidden in every Phase 0 work item.
+- Backporting any auto-review.sh classification logic into the policy engine.
+  If P0-C decommissions auto-review.sh and a future need surfaces, that
+  backport is a separate initiative.
+- Fixing the test-codex-gate-stop.sh production-sequence gap if the fix
+  requires changes outside `tests/scenarios/`. P0-E is allowed to identify
+  and document the gap; the actual `.mjs` invocation harness build is
+  explicitly permitted to slip to backlog.
+
+#### Architecture Decisions
+
+##### DEC-PHASE0-001: `WorktreeCreate` wiring is verified-live and stays
+
+**Sources of truth checked:**
+1. Official Claude Code docs at `https://code.claude.com/docs/en/hooks` —
+   `WorktreeCreate` is listed as a real event. Exit-2 blocks. No matcher.
+2. `runtime/dispatch-debug.jsonl` capture window (651 events) — 0 hits, but
+   also 0 `Agent` invocations carrying `isolation: "worktree"`, so the
+   trigger was never exercised. Absence is non-falsifying.
+3. `hooks/HOOKS.md` — does not document the event (drift item, captured in
+   P0-H delta).
+
+**Decision:** Keep the `WorktreeCreate` block in `settings.json` (lines
+92-102 of c7a3109). Track `hooks/block-worktree-create.sh` (currently
+untracked) so the wiring resolves to a real file. Add a hook-path
+verification test that invokes `block-worktree-create.sh` directly with a
+synthetic stdin payload and asserts `exit 2` plus the deny message on stderr.
+Do NOT attempt to also exercise the harness end of the contract — that
+requires triggering `isolation: "worktree"`, which the orchestrator is now
+prohibited from doing per `DEC-GUARD-WT-005`. The hook-script test suffices
+to prove "if the harness emits this event, our hook denies it".
+
+##### DEC-PHASE0-002: `PreToolUse: matcher="EnterWorktree"` is unsupported and removed
+
+**Sources of truth checked:**
+1. Official Claude Code docs — `EnterWorktree` is NOT in the event list AND
+   NOT in the PreToolUse tool-matcher list. The documented PreToolUse matchers
+   are `Bash, Edit, Write, Read, Glob, Grep, Agent, WebFetch, WebSearch,
+   AskUserQuestion, ExitPlanMode` plus MCP regex patterns.
+2. `runtime/dispatch-debug.jsonl` capture window — 0 hits across 651 events,
+   including 38 PreToolUse:Agent and 547 PreToolUse:Bash. If `EnterWorktree`
+   were a real PreToolUse tool name, the dispatch-debug capture would have
+   logged it (the capture writer is wired on PreToolUse:Bash, PreToolUse:Task,
+   and PreToolUse:Agent — not on PreToolUse:EnterWorktree, but the capture
+   writer would still be matched if the harness had emitted PreToolUse with
+   tool_name=EnterWorktree on any wired matcher; it never has).
+3. `hooks/HOOKS.md` — silent on `EnterWorktree`. (Drift item.)
+
+**Decision:** Remove the entire `PreToolUse: matcher="EnterWorktree"` block
+from `settings.json` (lines 103-113 of c7a3109). This is dead config. The
+worktree-authority policy is preserved through (a) the live `WorktreeCreate`
+event hook (DEC-PHASE0-001), (b) the existing `bash_worktree_creation` policy
+that denies `git worktree add` from non-Guardian roles via `pre-bash.sh`, and
+(c) the `bash_worktree_nesting` policy. No protection is lost.
+
+##### DEC-PHASE0-003: `auto-review.sh` is decommissioned
+
+**Sources of truth checked:**
+1. `git show c7a3109 -- settings.json` confirms `auto-review.sh` was removed
+   from `PreToolUse:Bash` in c7a3109 and replaced with the dispatch-debug
+   logger.
+2. `hooks/auto-review.sh` is still tracked (36 KB, 840 lines per HOOKS.md).
+   Three scenario tests still exist: `tests/scenarios/test-auto-review.sh`,
+   `tests/scenarios/test-auto-review-heredoc.sh`,
+   `tests/scenarios/test-auto-review-quoted-pipes.sh`.
+3. `hooks/HOOKS.md:136, :166, :264-279` still documents auto-review.sh as
+   live. (Drift item P0-H captures.)
+4. `tests/runtime/policies/test_enforcement_gaps.py:14` references
+   `auto-review.sh heredoc crash (bash-level test in test_auto_review_heredoc.sh)`
+   — Gap 3 from INIT-ENFORCE is anchored on a hook the production chain no
+   longer runs.
+5. Operational history: `DEC-ENFORCE-004` patched a heredoc-induced
+   non-zero-exit fail-open in this same file. The classification engine
+   duplicated UX logic that could (and did) crash, on top of the policy
+   engine's hard-security boundaries.
+
+**Trade-off considered (the alternative branch):**
+- *Restore + rewire.* Re-add `auto-review.sh` to `PreToolUse:Bash` after
+  `pre-bash.sh`. Re-document in HOOKS.md. Keep all three scenario tests.
+  Extend `tests/runtime/test_hook_config.py` to assert it is wired.
+  Cost: re-introduces the parallel-mechanism failure mode the policy engine
+  was meant to eliminate (Sacred Practice #12). Exposes us to the same class
+  of crash bugs DEC-ENFORCE-004 was forced to patch. Re-couples UX-layer
+  classification to the security-layer chain.
+
+**Decision: Decommission.** Delete `hooks/auto-review.sh` and the three
+scenario tests. Remove HOOKS.md sections that document it (folded into P0-H).
+Update `tests/runtime/policies/test_enforcement_gaps.py` to drop the Gap 3
+reference comment. The policy engine via `pre-bash.sh` continues to handle
+hard security boundaries; permission UX falls back to the harness's native
+allow/deny prompt for any command not pre-approved in
+`settings.json:permissions.allow`. If a future need for tier-based UX
+classification surfaces, the right home is a new policy in
+`runtime/core/policies/`, not a parallel shell hook. That work, if it
+happens, is its own initiative — not Phase 0.
+
+##### DEC-PHASE0-004: `hooks/HOOKS.md` is reduced in scope, not rewritten
+
+**Sources of truth checked:**
+- Official Claude Code docs as the canonical harness contract.
+- Repo internals (bash policies, plan-check, state files, runtime bridge,
+  hook-safety wrapper) which are NOT documented in the official docs because
+  they belong to this project, not to Claude Code.
+
+**Trade-off considered (the alternative branches):**
+- *Full rewrite to match official docs.* Cost: HOOKS.md becomes a second
+  source of truth for harness semantics, immediately starts drifting again
+  the next time the official docs change. Violates Sacred Practice #12.
+- *Delete HOOKS.md entirely.* Cost: loses the legitimate internal-mechanism
+  documentation (bash policy table, state-file inventory, runtime bridge
+  sentinel contract, escalating-gate pattern, enforcement coverage, etc.)
+  which has no equivalent in the official docs.
+
+**Decision: Reduce scope.** Strip every claim about harness semantics from
+HOOKS.md. Replace with a banner at the top of the file pointing to
+`https://code.claude.com/docs/en/hooks` as the sole authority for: hook event
+catalog, exit-code semantics, parallel/sequential execution, JSON schemas,
+matcher syntax. Retain the sections that describe THIS repo's internal
+mechanisms: shared libraries (`log.sh`, `context-lib.sh`,
+`runtime-bridge.sh`), bash policy behaviors, plan-check scoring, state-file
+inventory, enforcement coverage, the escalating-gate pattern, and the
+runtime-bridge sentinel contract (`__FAIL_CLOSED__`). Remove every section
+about `auto-review.sh` (folded into P0-C decommission). Add a "Last verified
+against official docs on" date stamp.
+
+##### DEC-PHASE0-005: Hook config invariant test is extended, not rewritten
+
+`tests/runtime/test_hook_config.py` currently asserts only that
+`stop-review-gate-hook.mjs` is wired into `Stop` and every `SubagentStop`
+matcher (47 lines, single test function). It does not enforce the more
+general invariant: every `$HOME/.claude/hooks/*.sh` command referenced from
+`settings.json` must resolve to a tracked file in `hooks/`.
+
+**Decision:** Add a second test function in the same file
+(`test_repo_owned_hook_commands_resolve_to_tracked_files`) that walks every
+hook entry in `settings.json`, parses out commands matching the pattern
+`$HOME/.claude/hooks/<name>.sh`, and asserts (a) the file exists at
+`hooks/<name>.sh` relative to repo root and (b) `git ls-files hooks/<name>.sh`
+returns a non-empty result. Commands that do not match the pattern (the
+node entrypoints like `node $HOME/.claude/plugins/.../stop-review-gate-hook.mjs`,
+the inline shell capture writer `{ cat; echo; } >> ...`) are explicitly
+excluded — the test only governs **repo-owned shell hooks**. This is the
+mechanical guard that would have caught `block-worktree-create.sh` being
+untracked at c7a3109.
+
+##### DEC-PHASE0-006: Hook-path verification gap is identified, fix is partial
+
+`tests/scenarios/test-codex-gate-stop.sh` exercises the dispatch-side of the
+codex stop-review gate (it emits `codex_stop_review` events directly via
+`cc-policy event emit` and asserts `dispatch process-stop` reads them), but
+it never invokes the actual emitter — the file
+`plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`.
+The production sequence is `Claude harness fires SubagentStop -> .mjs hook
+runs -> hook emits the event -> dispatch_engine reads the event`. The
+existing scenario test only covers the second-half of that chain.
+
+**Decision:** This is real coverage debt. Phase 0 acknowledges it but does
+NOT close it, because closing it requires building a Node-side test harness
+that simulates a `SubagentStop` payload, invokes the `.mjs` file as a
+subprocess with a stdin JSON payload, and asserts the resulting events-table
+row. That is materially larger than the rest of Phase 0 combined and would
+delay the hygiene cleanup.
+
+**Phase 0 deliverable for P0-E:** A backlog issue with the exact target
+file (`plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`),
+the exact gap description (production-sequence test missing for the .mjs
+emitter half of the codex stop-review path), the exact existing test that
+covers the dispatch half (`tests/scenarios/test-codex-gate-stop.sh`), and a
+sketch of the proposed Node-subprocess scenario test. This issue is filed
+under labels `phase-0-followup, hook-authority, test-coverage`. Phase 0 does
+not block on it.
+
+##### DEC-PHASE0-007: Runtime artifact gitignore additions are scoped
+
+Four artifacts are currently uncommitted in the working tree:
+- `runtime/cc_state.db` — runtime SQLite state (per-session); never committed.
+- `runtime/dispatch-debug.jsonl` — dispatch capture log; the log writer is
+  wired in `settings.json:144,159,174,234,251,276,301,326`.
+- `runtime/prebash-trace.log` — pre-bash trace log emitted by `pre-bash.sh`.
+- `traces/` — historical capture directory used by the capture
+  infrastructure (DEC-CAP-001/002).
+
+**Decision:** Add these four entries to `.gitignore` under a new section
+`# Runtime capture artifacts`. Do not commit any existing instance. Do NOT
+extend the gitignore to cover anything else: this work item is artifact
+hygiene, not architectural. The existing `state.db`, `state.db-shm`,
+`state.db-wal` entries (lines 8-10 of `.gitignore`) cover top-level state
+DBs; the new entries are explicit because the `runtime/` versions are at
+non-root paths.
+
+##### DEC-PHASE0-008: Leaked fixture marker is deactivated, root cause is backlog
+
+The active `agent_id='foo'` row in
+`/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`'s
+`agent_markers` table is a fixture leak — a unit test created the marker
+against the live project DB instead of an isolated test DB. Implementer for
+P0-G runs:
+```sql
+UPDATE agent_markers
+SET is_active = 0, status = 'expired', stopped_at = strftime('%s','now')
+WHERE agent_id = 'foo' AND project_root = '/private/tmp/project';
+```
+against `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`.
+
+**Decision:** Phase 0 deactivates the marker (one-shot cleanup). The
+underlying defect (test fixtures writing to the live state DB) is filed as a
+separate backlog issue with the exact symptoms and the schema columns
+verified during planning (`agent_id, role, started_at, stopped_at,
+is_active, workflow_id, status, project_root`). The fix to test isolation is
+NOT Phase 0 work because it touches `tests/runtime/conftest.py` and other
+test-infrastructure code, which is a meaningfully bigger surface than P0-G's
+hygiene mandate.
+
+#### HOOKS.md ↔ official docs delta (input to P0-H)
+
+This is the complete delta produced during Phase 0 planning. Three items
+were already known going in (catalogued as the "verified divergences"); the
+remaining items were discovered during the planning audit.
+
+| # | HOOKS.md location | HOOKS.md claim | Official docs (https://code.claude.com/docs/en/hooks) | Action in P0-H |
+|---|---|---|---|---|
+| 1 | line 9 | "Non-zero = hook error (logged, does not block)." | "PreToolUse exit code 2 blocks the tool call" (and similarly for SubagentStop, Stop, UserPromptSubmit, TaskCreated, TaskCompleted, Elicitation, ElicitationResult, WorktreeCreate, ConfigChange). | Strip the blanket claim. Replace with a pointer: "Exit code 2 has event-specific blocking semantics — see the official docs." |
+| 2 | line 155 | "Hooks within the same event run sequentially in array order from settings.json. A deny from any PreToolUse hook stops the tool call — later hooks in the chain don't run." | "All matching hooks run in parallel, and identical handlers are deduplicated automatically." | Strip the claim. Replace with: "All matching hooks run in parallel per the official docs. The pre-bash and pre-write chains rely on first-deny-wins inside the policy engine, NOT on bash-script ordering." Adjust any internal description that depended on sequential-order semantics. |
+| 3 | lines 136, 166, 264-279 | `auto-review.sh` is documented as live in PreToolUse:Bash and as a 840-line three-tier classifier. | Not applicable to official docs. The c7a3109 diff removed `auto-review.sh` from the live wiring; the file is an orphan and is decommissioned by P0-C. | Delete every reference to `auto-review.sh`. Delete the "Key auto-review.sh Behaviors" section (lines 264-279). |
+| 4 | line 21 | `SubagentStart/SubagentStop hooks receive {"subagent_type": "planner|implementer|tester|guardian", ...}. Stop hooks receive {"response": "..."}.` | Stop hooks receive `last_assistant_message` (verified empirically: 651 captured events show `last_assistant_message` as the field name). The repo memory `reference_claude_code_hook_schema.md` confirms: "Response body is `last_assistant_message`, NOT `.assistant_response`." Both keys appear in the JSONL because `assistant_response` is a legacy field. | Update the schema description to name `last_assistant_message` as the canonical field and note `assistant_response` as a legacy alias. |
+| 5 | lines 23-56 | Documents three PreToolUse stdout response shapes (deny, rewrite, advisory) with `hookSpecificOutput.permissionDecision`. | Official docs include additional event-specific output schemas not represented in HOOKS.md, including `hookSpecificOutput.worktreePath` for `WorktreeCreate`. | Add a brief mention that PreToolUse is one of many events with hook-specific output shapes; refer to the official docs for the complete catalog. Do NOT attempt to enumerate all events — that creates new drift surface. |
+| 6 | line 415 | "Event names: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, SubagentStart, SubagentStop, PreCompact, Stop, SessionEnd" | Official catalog includes 26 events, of which the local list misses: PermissionRequest, PermissionDenied, PostToolUseFailure, TaskCreated, TaskCompleted, StopFailure, TeammateIdle, InstructionsLoaded, ConfigChange, CwdChanged, FileChanged, WorktreeCreate, WorktreeRemove, PostCompact, Elicitation, ElicitationResult. | Strip the local enumeration entirely. Replace with a pointer to the official event reference. |
+| 7 | line 416 | "matcher: Pipe-delimited tool names for PreToolUse/PostToolUse, agent types for SubagentStop, event subtypes for SessionStart/Notification. Optional — omit to match all." | The official PreToolUse/PostToolUse matcher list is `Bash, Edit, Write, Read, Glob, Grep, Agent, WebFetch, WebSearch, AskUserQuestion, ExitPlanMode` plus MCP regex patterns. `WorktreeCreate` and `WorktreeRemove` explicitly do not support matchers. | Replace with a pointer to the official matcher reference. Note explicitly: "`Task` is a legacy alias for the Agent tool name; `EnterWorktree` is not a real matcher (DEC-PHASE0-002)." |
+| 8 | line 28 (deny output schema) | Schema example uses `hookEventName: "PreToolUse"` inside `hookSpecificOutput`. | This is correct per official docs and per ENFORCE-RCA-11 (which restored `hookEventName` to `_handle_evaluate` JSON output). No drift. | No action needed. (Listed for completeness so the audit is exhaustive.) |
+| 9 | lines 297-299 (feedback loops table) | "lint.sh — Linter finds fixable issues" "plan-validate.sh — MASTER_PLAN.md fails structural validation" "forward-motion.sh — Response ends with bare completion". The table claims these are PostToolUse exit-2 feedback loops. | The official docs say PostToolUse cannot block. Exit code 2 in PostToolUse is documented as "additionalContext fed to model" not "blocks the tool call." | The HOOKS.md description is approximately right (it says "feedback loop, model retries") but the framing is misleading. Clarify: PostToolUse exit-2 surfaces stderr to Claude as additionalContext; it does not block. The model deciding to retry is a model-side behavior, not a hook-enforced retry. |
+| 10 | lines 195-197 (Stop hooks) | Documents `surface.sh, session-summary.sh, forward-motion.sh` as the Stop chain. | The Stop chain in `settings.json:358-383` now also includes the `stop-review-gate-hook.mjs` invocation (added by ENFORCE-RCA-15). HOOKS.md does not mention this. | Add a brief entry for the stop-review gate to the Stop hook table, or — preferred — add a single sentence pointing the reader at `settings.json` as the authority for live hook chain order, and remove the per-hook tables entirely (they are continuously drifting against `settings.json`). |
+| 11 | line 103 (context-lib.sh table) | Documents helpers like `read_evaluation_status`, `current_workflow_id`, etc. | These are repo-internal, not in the official docs. No drift. | Keep as-is. This is the kind of internal-mechanism documentation HOOKS.md should retain. |
+
+**Total drift items: 9 substantive (#1-7, #9, #10), 2 accurate-but-listed-for-completeness (#8, #11).**
+
+#### Work items
+
+The eight work items below each become a discrete dispatch chain. Each chain
+runs through the canonical sequence (planner -> guardian provision ->
+implementer -> tester -> guardian merge) on a Guardian-provisioned worktree
+off `fix/enforce-rca-13-git-shell-classifier` (NOT off main — Phase 0 lands
+on top of c7a3109).
+
+##### P0-A: Hook surface audit (planning artifact only)
+
+- **Status:** completed during this planning pass (verdict captured in
+  DEC-PHASE0-001 and DEC-PHASE0-002)
+- **Goal:** Determine the live status of `WorktreeCreate` and
+  `PreToolUse:EnterWorktree` against the installed harness.
+- **Verdict:** `WorktreeCreate` = verified-live (official docs).
+  `PreToolUse: matcher="EnterWorktree"` = unsupported (absent from official
+  docs). Empirical capture in `dispatch-debug.jsonl` (651 events) is
+  consistent with both verdicts and adds no further evidence.
+- **No implementer dispatch.** The verdicts feed P0-B's wiring decisions.
+
+##### P0-B: Worktree interception cleanup
+
+- **Status:** planned
+- **Goal:** Apply DEC-PHASE0-001 and DEC-PHASE0-002 to the repo: track
+  `hooks/block-worktree-create.sh`, remove the dead `EnterWorktree` matcher
+  from `settings.json`, add a hook-script test for `block-worktree-create.sh`.
+- **Acceptance criteria:**
+  - `git ls-files hooks/block-worktree-create.sh` returns the file.
+  - `settings.json` contains the `WorktreeCreate` block (unchanged from
+    c7a3109 lines 92-102).
+  - `settings.json` contains NO `PreToolUse` block with
+    `matcher: "EnterWorktree"`.
+  - A new scenario test `tests/scenarios/test-block-worktree-create.sh`
+    pipes a synthetic JSON payload to `bash hooks/block-worktree-create.sh`
+    and asserts (a) exit status 2, (b) stderr contains "DENIED:
+    Harness-managed worktree creation is disabled", (c) stderr names the
+    correct guardian provisioning command.
+  - The test is invoked from `tests/scenarios/run-all-scenarios.sh` (or the
+    canonical scenario runner — implementer verifies the actual filename
+    before adding the entry).
+- **Dependencies:** None. (P0-A is a planning artifact only.)
+- **Adjacent components:** `bash_worktree_creation.py`,
+  `bash_worktree_nesting.py`, the `worktrees` SQLite table. Do NOT modify
+  these — the worktree-authority policy is preserved through them.
+- **Carve-out note for #34 (`cc-policy worktree remove is DB-only`):** P0-B
+  must NOT touch the `cc-policy worktree remove` implementation. #34 is
+  adjacent surface, explicitly forbidden in the scope manifest, will be
+  handled in its own chain.
+- **Decision Log placeholder:** `DEC-PHASE0-WIRING-001` (to be assigned by
+  the implementer/tester at completion).
+
+##### P0-C: Auto-review.sh decommission
+
+- **Status:** planned
+- **Goal:** Apply DEC-PHASE0-003: delete `hooks/auto-review.sh`, delete the
+  three orphan scenario tests, remove HOOKS.md sections that document it,
+  remove the Gap 3 reference comment in `test_enforcement_gaps.py`.
+- **Acceptance criteria:**
+  - `hooks/auto-review.sh` does not exist (`git ls-files | grep auto-review.sh`
+    returns empty).
+  - `tests/scenarios/test-auto-review.sh`,
+    `tests/scenarios/test-auto-review-heredoc.sh`,
+    `tests/scenarios/test-auto-review-quoted-pipes.sh` do not exist.
+  - `grep -rn "auto-review" hooks/HOOKS.md` returns zero hits (HOOKS.md
+    cleanup is partially overlapping with P0-H, but the three sections that
+    specifically document auto-review.sh are removed in this work item).
+  - `tests/runtime/policies/test_enforcement_gaps.py:14` no longer references
+    `auto-review.sh heredoc crash` (the Gap 3 docstring line is updated to
+    note the gap is decommissioned; the test_lease_role_mismatch_denied_end_to_end
+    test and other Gap 1/2/4/5 tests are NOT touched).
+  - `python3 -m pytest tests/runtime -q` reports zero new failures vs the
+    pre-change baseline.
+  - Full scenario suite (`bash tests/scenarios/run-all-scenarios.sh` or the
+    canonical runner) reports zero new failures.
+- **Dependencies:** None. Independent of P0-B and P0-D.
+- **Removal targets:** `hooks/auto-review.sh`, three scenario tests, three
+  HOOKS.md sections.
+- **Decision Log placeholder:** `DEC-PHASE0-AUTOREVIEW-001`.
+
+##### P0-D: Hook config invariant test
+
+- **Status:** planned
+- **Goal:** Apply DEC-PHASE0-005: extend `tests/runtime/test_hook_config.py`
+  with the general invariant test.
+- **Acceptance criteria:**
+  - New test function `test_repo_owned_hook_commands_resolve_to_tracked_files`
+    exists in `tests/runtime/test_hook_config.py`.
+  - The test parses every command in `settings.json` under `hooks.*.hooks[].command`,
+    extracts paths matching the regex `^\$HOME/\.claude/hooks/([A-Za-z0-9_-]+\.sh)$`
+    (or equivalent), and for each match: (a) asserts the file exists at
+    `<repo_root>/hooks/<name>.sh`, (b) asserts
+    `subprocess.run(["git", "ls-files", "hooks/<name>.sh"], cwd=repo_root,
+    capture_output=True, text=True).stdout.strip()` is non-empty.
+  - Commands not matching the pattern (node entrypoints, inline shell
+    capture writers `{ cat; echo; } >> ...`) are EXCLUDED via the regex.
+    The test must NOT fail on `node $HOME/.claude/plugins/.../stop-review-gate-hook.mjs`.
+  - The test additionally asserts that `hooks/block-worktree-create.sh` is
+    one of the tracked files (this is the specific invariant for P0-B's
+    wiring decision).
+  - Running the test against c7a3109 (without P0-B's tracking commit)
+    FAILS — proving the test would catch the regression. Implementer
+    verifies this manually before submission.
+  - Running the test after P0-B lands PASSES.
+- **Dependencies:** P0-B (`block-worktree-create.sh` must be tracked before
+  this test can pass; the planner sequencing recommendation puts P0-D AFTER
+  P0-B).
+- **Decision Log placeholder:** `DEC-PHASE0-INVARIANT-001`.
+
+##### P0-E: Hook-path verification gap (backlog filing only)
+
+- **Status:** planned (low effort — filing only)
+- **Goal:** Apply DEC-PHASE0-006: file the production-sequence test gap as a
+  backlog issue with full target-file detail. Phase 0 does NOT close the gap.
+- **Acceptance criteria:**
+  - A new GitHub issue exists titled along the lines of
+    "test-codex-gate-stop.sh bypasses .mjs emitter — production-sequence
+    coverage missing". Labels: `phase-0-followup`, `hook-authority`,
+    `test-coverage`.
+  - The issue body identifies: (a) the existing test
+    `tests/scenarios/test-codex-gate-stop.sh`, (b) the exact gap (the test
+    emits `codex_stop_review` events directly via `cc-policy event emit`
+    instead of invoking the .mjs hook subprocess), (c) the target file that
+    should be exercised
+    (`plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`),
+    (d) a sketch of the proposed Node-subprocess scenario test
+    (`echo '<json>' | node ...stop-review-gate-hook.mjs`, then assert events
+    table contents), (e) the rationale for slipping it from Phase 0
+    (materially larger surface than the rest of Phase 0 combined).
+  - No source files are modified for P0-E. The work item is a backlog file
+    operation only.
+- **Dependencies:** None.
+- **Decision Log placeholder:** `DEC-PHASE0-COVERAGE-001`.
+
+##### P0-F: Runtime artifact gitignore
+
+- **Status:** planned
+- **Goal:** Apply DEC-PHASE0-007: add four entries to `.gitignore`.
+- **Acceptance criteria:**
+  - `.gitignore` contains a new section `# Runtime capture artifacts` with
+    exactly these four lines (in this order):
+    ```
+    runtime/cc_state.db
+    runtime/dispatch-debug.jsonl
+    runtime/prebash-trace.log
+    traces/
+    ```
+  - `git status --short runtime/cc_state.db runtime/dispatch-debug.jsonl
+    runtime/prebash-trace.log traces/` after the change reports zero
+    untracked entries (the existing files are now ignored).
+  - No existing `.gitignore` lines are modified or removed.
+- **Dependencies:** None. Independent of all other P0 work.
+- **Decision Log placeholder:** `DEC-PHASE0-IGNORE-001`.
+
+##### P0-G: Leaked fixture marker cleanup + backlog filing
+
+- **Status:** planned
+- **Goal:** Apply DEC-PHASE0-008: deactivate the leaked `foo` marker AND
+  file the underlying fixture-isolation defect as backlog.
+- **Acceptance criteria:**
+  - After implementer runs the cleanup, the query
+    `SELECT count(*) FROM agent_markers WHERE agent_id='foo' AND is_active=1`
+    against `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`
+    returns 0.
+  - The deactivation uses an UPDATE (not a DELETE) — the historical row is
+    preserved as evidence with `is_active=0, status='expired',
+    stopped_at=<epoch>`. Implementer must use the verified column names
+    (`is_active`, NOT `active`; `started_at`/`stopped_at` are epoch
+    seconds).
+  - A new GitHub issue is filed titled along the lines of
+    "tests/runtime fixtures write to live state.db instead of isolated DB
+    (root cause of leaked `foo` marker)". Labels: `phase-0-followup`,
+    `hook-authority`, `test-isolation`. Body identifies: the symptom
+    (leaked `foo` marker discovered in P0-G), the schema columns observed,
+    the candidate root cause (test fixtures missing `CLAUDE_POLICY_DB`
+    isolation), the recommended fix scope (`tests/runtime/conftest.py` or
+    equivalent harness), the explicit reason it slipped from Phase 0
+    (test-infrastructure surface is bigger than P0-G's hygiene mandate).
+- **Dependencies:** None.
+- **Decision Log placeholder:** `DEC-PHASE0-MARKER-001`.
+
+##### P0-H: HOOKS.md authority reset
+
+- **Status:** planned
+- **Goal:** Apply DEC-PHASE0-004: reduce HOOKS.md scope to internal-mechanism
+  documentation, remove harness-semantics claims, point readers to the
+  official docs.
+- **Acceptance criteria:**
+  - HOOKS.md begins with a banner block (max 5 lines) stating the official
+    docs at `https://code.claude.com/docs/en/hooks` are the sole authority
+    for: hook event catalog, exit-code semantics, parallel/sequential
+    execution, JSON input/output schemas, matcher syntax. Banner includes a
+    "Last verified against official docs on 2026-04-07" date stamp.
+  - The 11 delta items in the HOOKS.md drift table above are all addressed:
+    items #1-#7, #9, #10 are removed or rewritten per the table; #8 and #11
+    are unchanged.
+  - The "Key auto-review.sh Behaviors" section (lines 264-279 of c7a3109)
+    is deleted (overlapping with P0-C).
+  - The "Execution Order (Session Lifecycle)" diagram (lines 129-153) is
+    either deleted or replaced with a pointer that "live hook order is
+    defined in `settings.json`; this document does not duplicate it."
+  - The "settings.json Registration" section (lines 392-418) is replaced
+    with a one-line pointer to the official settings docs and the example
+    block is removed.
+  - Internal-mechanism sections (Shared Libraries, Bash Policy Behaviors,
+    plan-check.sh, State Files, Runtime bridge sentinels, Enforcement
+    Coverage, Escalating Gates, Feedback Loops as feedback semantics ONLY)
+    are RETAINED.
+  - `grep -rn "hooks/HOOKS.md" hooks/ runtime/ tests/` shows no
+    cross-reference broken — any internal references that pointed to a
+    deleted section are updated to point to the official docs instead.
+- **Dependencies:** P0-A (verdicts), P0-C (auto-review.sh decommission must
+  land before HOOKS.md can lose its auto-review.sh sections cleanly).
+- **Decision Log placeholder:** `DEC-PHASE0-HOOKSMD-001`.
+
+#### Sequencing
+
+Phase 0 work items break into three groups by dependency:
+
+**Independent (can run in parallel after Phase 0 starts):**
+- P0-B (worktree wiring cleanup)
+- P0-C (auto-review.sh decommission)
+- P0-E (backlog filing — file-only, no source edits)
+- P0-F (gitignore additions)
+- P0-G (fixture marker deactivation + backlog)
+
+**Sequenced (must follow specific predecessors):**
+- P0-D (hook config invariant test) — must follow P0-B (because the test
+  asserts `block-worktree-create.sh` is tracked, and that tracking happens
+  in P0-B).
+- P0-H (HOOKS.md authority reset) — must follow P0-C (because P0-H removes
+  HOOKS.md sections that describe auto-review.sh, which P0-C is decommissioning).
+
+**Critical path:** `P0-B -> P0-D` and `P0-C -> P0-H`. Both critical paths
+have length 2. Maximum parallel width is 5 work items in the first wave
+(P0-B, P0-C, P0-E, P0-F, P0-G), then 2 in the second wave (P0-D, P0-H).
+
+**Recommended dispatch order if running serially (one chain at a time):**
+P0-F -> P0-G -> P0-E -> P0-B -> P0-C -> P0-D -> P0-H. Rationale: cheap
+hygiene first (gitignore, marker, backlog) to clear the working tree and
+get fast wins; then the wiring cleanup pair (P0-B then P0-D) which has the
+strongest mechanical guard once landed; then the documentation pair (P0-C
+then P0-H) which is the largest text surface.
+
+#### State-authority map (Phase 0 scope only)
+
+| Domain | Canonical authority | Phase 0 writers | Phase 0 readers |
+|---|---|---|---|
+| `settings.json` | Sole hook wiring authority | P0-B (removes EnterWorktree matcher) | P0-D (the new invariant test) |
+| `hooks/HOOKS.md` | Internal mechanism documentation only (after P0-H) | P0-C (removes auto-review.sh sections), P0-H (full reset) | none in Phase 0 |
+| `hooks/block-worktree-create.sh` | New repo-tracked file after P0-B | P0-B (tracks the file via git add) | P0-D (asserts trackedness), P0-B test |
+| `tests/runtime/test_hook_config.py` | Hook wiring invariant test | P0-D (extends with the new test function) | none |
+| `tests/scenarios/test-block-worktree-create.sh` (NEW) | Hook-script behavior test for block-worktree-create.sh | P0-B (creates) | scenario runner |
+| `.gitignore` | Repo gitignore | P0-F | git |
+| `agent_markers` table in `.claude/state.db` | runtime/core agent markers domain | P0-G (one UPDATE) | the runtime |
+| GitHub issues | Backlog tracking | P0-E (codex .mjs gap), P0-G (fixture isolation) | future planners |
+| `tests/runtime/policies/test_enforcement_gaps.py` | Enforcement gap tests (Gaps 1-5) | P0-C (removes Gap 3 docstring reference only) | none |
+
+#### Forbidden touch points (universal across every Phase 0 work item)
+
+These files MUST NOT be modified by any P0 implementer. The orchestrator
+writes the Scope Manifest to runtime via `cc-policy workflow scope-set`
+before each implementer dispatch with these in the `--forbidden` list:
+
+```
+runtime/core/dispatch_engine.py
+runtime/core/completions.py
+runtime/core/policies/bash_eval_readiness.py
+runtime/core/policies/
+runtime/core/enforcement_config.py
+hooks/pre-bash.sh
+hooks/pre-write.sh
+hooks/check-implementer.sh
+hooks/check-tester.sh
+hooks/check-guardian.sh
+hooks/post-task.sh
+runtime/cc_state.db
+plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs
+```
+
+The reviewer-cut surface (`dispatch_engine`, `completions`,
+`bash_eval_readiness`, `enforcement_config` reviewer extensions, the codex
+.mjs hook) is forbidden because Phase 1+ owns those files. The check-*
+hooks and post-task.sh are forbidden because they own dispatch routing
+which will be replaced when the reviewer stage lands; touching them now
+risks Phase 0 holding state Phase 1 must throw away.
+
+#### Per-work-item Scope Manifests (verbatim, for `cc-policy workflow scope-set`)
+
+Each manifest is provided as the JSON arrays the orchestrator passes to
+`cc-policy workflow scope-set <workflow-id> --allowed <json> --required
+<json> --forbidden <json> --authorities <json>`. Workflow IDs are in the
+form `phase0-<work-item-letter>` (for example `phase0-b`). The `--forbidden`
+array is identical across every work item (the universal Phase 0 forbidden
+touch points listed immediately above) plus per-item additions where
+relevant.
+
+**Why scope-set is NOT pre-written by the planner:** `cc-policy workflow
+scope-set` requires a prior `cc-policy workflow bind <id> <worktree_path>
+<branch>` call (verified empirically: scope-set against `phase0-a` returned
+`workflow_id 'phase0-a' not found in workflow_bindings. Call bind_workflow
+first.`). `bind` requires the worktree path and branch, which are only
+determined when Guardian provisions the worktree. The planner therefore
+captures the scope manifests as canonical text in this section; the
+orchestrator copies the matching JSON arrays into a `cc-policy workflow
+scope-set` invocation immediately after Guardian provision (after `bind`)
+and immediately before implementer dispatch. This split keeps the planner
+deliverable fully specified while honoring the bind-then-scope ordering
+the runtime enforces.
+
+##### P0-B scope manifest
+- `--allowed`:
+  `["hooks/block-worktree-create.sh","settings.json","tests/scenarios/test-block-worktree-create.sh","tests/scenarios/run-all-scenarios.sh"]`
+  (the runner filename is verified by the implementer before submission;
+  if the canonical runner has a different name, the manifest is updated by
+  the orchestrator before dispatch)
+- `--required`:
+  `["hooks/block-worktree-create.sh","settings.json","tests/scenarios/test-block-worktree-create.sh"]`
+- `--forbidden`: universal Phase 0 forbidden list above.
+- `--authorities`: `["settings.json","worktree_authority_policy"]`
+- **Required evidence:** official docs section on `WorktreeCreate` and on
+  PreToolUse matchers (DEC-PHASE0-001 and DEC-PHASE0-002 verdicts);
+  empirical zero-hit count from `runtime/dispatch-debug.jsonl`.
+- **Evaluation Contract (P0-B):**
+  1. `git ls-files hooks/block-worktree-create.sh` returns the path.
+  2. `python3 -c "import json; s=json.load(open('settings.json'));
+     wc=s['hooks'].get('WorktreeCreate'); assert wc and any('block-worktree-create.sh' in h['command'] for g in wc for h in g['hooks']), 'WorktreeCreate wiring missing'"`
+     succeeds.
+  3. `python3 -c "import json; s=json.load(open('settings.json'));
+     pt=s['hooks']['PreToolUse']; assert not any(g.get('matcher')=='EnterWorktree' for g in pt), 'EnterWorktree matcher still present'"`
+     succeeds.
+  4. `bash tests/scenarios/test-block-worktree-create.sh` exits 0 (the test
+     itself asserts the hook exits 2 for synthetic input).
+  5. `bash tests/scenarios/run-all-scenarios.sh` (or the canonical runner)
+     reports zero new failures vs the pre-change baseline. Implementer
+     captures the baseline output before starting and the post-change output
+     after.
+  6. `python3 -m pytest tests/runtime/test_hook_config.py -q` reports zero
+     new failures (the existing single test must still pass).
+- **Ready-for-guardian definition:** all six checks above produce green raw
+  output, captured by the tester in EVAL_TESTS_PASS=true with EVAL_HEAD_SHA
+  matching the implementer's commit.
+
+##### P0-C scope manifest
+- `--allowed`:
+  `["hooks/auto-review.sh","tests/scenarios/test-auto-review.sh","tests/scenarios/test-auto-review-heredoc.sh","tests/scenarios/test-auto-review-quoted-pipes.sh","hooks/HOOKS.md","tests/runtime/policies/test_enforcement_gaps.py"]`
+- `--required`:
+  `["hooks/auto-review.sh","tests/scenarios/test-auto-review.sh","tests/scenarios/test-auto-review-heredoc.sh","tests/scenarios/test-auto-review-quoted-pipes.sh","hooks/HOOKS.md","tests/runtime/policies/test_enforcement_gaps.py"]`
+  (all must change — the four files are deleted, HOOKS.md and
+  test_enforcement_gaps.py are edited)
+- `--forbidden`: universal Phase 0 forbidden list. Note that the policy
+  engine itself is forbidden — this work item does NOT add a replacement
+  policy; auto-review.sh is removed without backfill.
+- `--authorities`: `["hooks_documentation","tests_scenarios"]`
+- **Required evidence:** `git show c7a3109 -- settings.json` confirming
+  auto-review.sh removal from live wiring; the four-line history of
+  auto-review.sh in `git log -- hooks/auto-review.sh`; DEC-ENFORCE-004
+  history showing the heredoc crash.
+- **Evaluation Contract (P0-C):**
+  1. `test ! -f hooks/auto-review.sh && echo OK` succeeds.
+  2. `test ! -f tests/scenarios/test-auto-review.sh && test ! -f
+     tests/scenarios/test-auto-review-heredoc.sh && test ! -f
+     tests/scenarios/test-auto-review-quoted-pipes.sh && echo OK` succeeds.
+  3. `grep -n "auto-review" hooks/HOOKS.md` returns zero hits.
+  4. `grep -n "auto-review.sh heredoc crash" tests/runtime/policies/test_enforcement_gaps.py`
+     returns zero hits (the docstring line is updated; the actual Gap 3
+     test is preserved or rewritten to note the gap is decommissioned).
+  5. `python3 -m pytest tests/runtime -q` matches the pre-change baseline
+     (zero new failures, possibly one fewer pass if the Gap 3 docstring
+     reference was wired into a parametric test — implementer captures
+     before/after).
+  6. `bash tests/scenarios/run-all-scenarios.sh` reports zero new failures
+     and three fewer passes (the three deleted scenario tests).
+  7. `git ls-files hooks/auto-review.sh tests/scenarios/test-auto-review*.sh`
+     returns empty.
+- **Ready-for-guardian definition:** all seven checks produce green raw
+  output. Implementer captures pytest summary lines before and after.
+
+##### P0-D scope manifest
+- `--allowed`: `["tests/runtime/test_hook_config.py"]`
+- `--required`: `["tests/runtime/test_hook_config.py"]`
+- `--forbidden`: universal Phase 0 forbidden list. Note specifically that
+  `settings.json` is in the universal-forbidden list — P0-D only READS
+  settings.json from inside the test, never modifies it.
+- `--authorities`: `["hook_wiring_invariant"]`
+- **Required evidence:** `settings.json` content as it stands after P0-B
+  lands. Implementer must base off the post-P0-B state, not c7a3109
+  directly.
+- **Evaluation Contract (P0-D):**
+  1. The new test function
+     `test_repo_owned_hook_commands_resolve_to_tracked_files` exists in
+     `tests/runtime/test_hook_config.py`.
+  2. `python3 -m pytest tests/runtime/test_hook_config.py -q` reports
+     2 passed (the original test plus the new one). No regressions.
+  3. The new test parses `settings.json` via `json.load`, walks every
+     `hooks.<event>[].hooks[].command`, and matches commands of the form
+     `$HOME/.claude/hooks/<name>.sh`. Implementer demonstrates this by
+     running the test in verbose mode and showing the parsed list includes
+     at least: `session-init.sh`, `prompt-submit.sh`, `block-worktree-create.sh`,
+     `test-gate.sh`, `mock-gate.sh`, `pre-write.sh`, `doc-gate.sh`,
+     `pre-bash.sh`, `pre-agent.sh`, `lint.sh`, `track.sh`, `code-review.sh`,
+     `plan-validate.sh`, `test-runner.sh`, `notify.sh`, `subagent-start.sh`,
+     `check-planner.sh`, `check-implementer.sh`, `check-tester.sh`,
+     `check-guardian.sh`, `post-task.sh`, `compact-preserve.sh`, `surface.sh`,
+     `session-summary.sh`, `forward-motion.sh`, `session-end.sh`.
+  4. The new test does NOT raise on the node entrypoint
+     `node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+     or on the inline shell capture writer
+     `{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl`.
+     Implementer demonstrates this by running the test against the current
+     `settings.json` and showing it passes.
+  5. **Regression-catching demonstration:** Implementer shows that if
+     `hooks/block-worktree-create.sh` is temporarily deleted (or
+     `git rm`-ed in a scratch tree), the new test fails with a clear
+     message naming the missing file. Implementer reverts the deletion
+     before submitting.
+- **Ready-for-guardian definition:** all five checks produce green raw
+  output, including the regression-catching demonstration.
+
+##### P0-E scope manifest
+- `--allowed`: `[]` (no source edits — backlog filing only)
+- `--required`: `[]`
+- `--forbidden`: universal Phase 0 forbidden list AND every source file in
+  the repo. P0-E may ONLY invoke `gh issue create`.
+- `--authorities`: `["github_issues"]`
+- **Required evidence:** `tests/scenarios/test-codex-gate-stop.sh` content
+  (the implementer reads it but does not modify it);
+  `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
+  (read-only).
+- **Evaluation Contract (P0-E):**
+  1. `gh issue list --label phase-0-followup --label hook-authority --label test-coverage --json number,title`
+     returns at least one issue whose title matches the gap description.
+  2. `gh issue view <number>` shows: (a) reference to
+     `tests/scenarios/test-codex-gate-stop.sh`, (b) reference to the
+     `.mjs` target file, (c) sketch of proposed Node-subprocess test.
+  3. `git status` shows ZERO modified files. P0-E touches no source.
+- **Ready-for-guardian definition:** the issue exists and the working tree
+  is clean.
+
+##### P0-F scope manifest
+- `--allowed`: `[".gitignore"]`
+- `--required`: `[".gitignore"]`
+- `--forbidden`: universal Phase 0 forbidden list.
+- `--authorities`: `["gitignore"]`
+- **Required evidence:** `git status --short` showing the four runtime
+  artifacts as untracked at start; the post-change `git status` showing
+  them gone.
+- **Evaluation Contract (P0-F):**
+  1. `grep -n "Runtime capture artifacts" .gitignore` returns one line.
+  2. `grep -n "runtime/cc_state.db" .gitignore && grep -n
+     "runtime/dispatch-debug.jsonl" .gitignore && grep -n
+     "runtime/prebash-trace.log" .gitignore && grep -n "^traces/$"
+     .gitignore` all return one line each.
+  3. `git status --short runtime/cc_state.db runtime/dispatch-debug.jsonl
+     runtime/prebash-trace.log traces/` returns empty.
+  4. `git diff .gitignore` shows ONLY additions — no existing lines
+     removed.
+- **Ready-for-guardian definition:** all four checks pass with raw output.
+
+##### P0-G scope manifest
+- `--allowed`: `[]` (no source edits — DB write + backlog filing only)
+- `--required`: `[]`
+- `--forbidden`: universal Phase 0 forbidden list AND every source file.
+  P0-G may invoke `sqlite3` against
+  `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`
+  AND may invoke `gh issue create`.
+- `--authorities`: `["agent_markers","github_issues"]`
+- **Required evidence:** the verified row in `agent_markers` (captured
+  during planning); the verified column names (`is_active`, `started_at`,
+  `stopped_at`).
+- **Evaluation Contract (P0-G):**
+  1. Before-state: `sqlite3
+     /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db
+     "SELECT count(*) FROM agent_markers WHERE agent_id='foo' AND
+     is_active=1"` returns 1.
+  2. After cleanup: same query returns 0.
+  3. The historical row is preserved: `sqlite3 ... "SELECT agent_id, role,
+     status, is_active, stopped_at FROM agent_markers WHERE agent_id='foo'"`
+     returns one row with `status='expired'`, `is_active=0`,
+     `stopped_at` non-NULL.
+  4. `gh issue list --label phase-0-followup --label hook-authority --label
+     test-isolation` returns at least one matching issue.
+  5. `gh issue view <number>` shows: (a) reference to the leaked `foo`
+     marker symptom, (b) the verified schema columns, (c) candidate root
+     cause statement (test fixtures using live DB), (d) recommended fix
+     scope (`tests/runtime/conftest.py` or equivalent).
+  6. `git status` shows ZERO modified source files. The DB file is in
+     `.claude/` which is already gitignored at line 12.
+- **Ready-for-guardian definition:** all six checks produce green raw
+  output.
+
+##### P0-H scope manifest
+- `--allowed`: `["hooks/HOOKS.md"]`
+- `--required`: `["hooks/HOOKS.md"]`
+- `--forbidden`: universal Phase 0 forbidden list. Specifically NOTE that
+  `settings.json` is in the universal-forbidden list — P0-H must NOT touch
+  settings.json even if it spots a fix while editing HOOKS.md (those fixes
+  belong in P0-B or in a new backlog issue).
+- `--authorities`: `["hooks_documentation"]`
+- **Required evidence:** the 11-item HOOKS.md drift table above; the
+  official docs at `https://code.claude.com/docs/en/hooks` (cached during
+  planning) and `https://code.claude.com/docs/en/settings`.
+- **Evaluation Contract (P0-H):**
+  1. `head -10 hooks/HOOKS.md` shows the new banner block referencing the
+     official docs URL and a "Last verified against official docs on
+     2026-04-07" date stamp.
+  2. `grep -n "Non-zero = hook error" hooks/HOOKS.md` returns zero hits
+     (drift item #1 removed).
+  3. `grep -n "sequentially in array order" hooks/HOOKS.md` returns zero
+     hits (drift item #2 removed).
+  4. `grep -n "auto-review" hooks/HOOKS.md` returns zero hits (drift item
+     #3 + P0-C overlap).
+  5. `grep -ni "assistant_response" hooks/HOOKS.md` returns either zero
+     hits OR a line that explicitly notes it as a legacy alias and names
+     `last_assistant_message` as canonical (drift item #4).
+  6. `grep -n "Event names:" hooks/HOOKS.md` either returns zero hits OR
+     returns a line that points to the official docs without enumerating
+     events (drift item #6).
+  7. `grep -n "Pipe-delimited tool names" hooks/HOOKS.md` either returns
+     zero hits OR returns a line clarifying the source of the matcher list
+     and noting EnterWorktree is not real (drift item #7).
+  8. `grep -nA3 "feedback loop" hooks/HOOKS.md` either returns the
+     PostToolUse-cannot-block clarification or removes the misleading
+     framing (drift item #9).
+  9. The "Shared Libraries" section, "Bash Policy Behaviors" section,
+     "plan-check.sh" section, "State Files" section, and
+     "Runtime bridge sentinels" section are RETAINED (grep returns
+     non-empty for each).
+  10. `grep -rn "hooks/HOOKS.md" hooks/ runtime/ tests/ scripts/` shows no
+      broken cross-references — any prior reference to a deleted section
+      is updated to point to the official docs.
+- **Ready-for-guardian definition:** all 10 checks produce green raw
+  output. Tester additionally spot-checks that no internal-mechanism
+  documentation was lost (sections retained match the list above).
+
+#### Quality gate (planner self-check)
+
+- Every guardian-bound work item (P0-B, P0-C, P0-D, P0-F, P0-G, P0-H) has
+  an Evaluation Contract with executable acceptance criteria. **Pass.**
+- Every guardian-bound work item has a Scope Manifest with explicit file
+  boundaries. **Pass.**
+- The reviewer-cut surface is forbidden in EVERY work item via the
+  universal Phase 0 forbidden list. **Pass.**
+- No work item depends on prose completion language; every check in every
+  Evaluation Contract is a runnable command with a measurable result.
+  **Pass.**
+- Dependencies between work items are minimal (P0-B before P0-D, P0-C
+  before P0-H) and the critical path is length 2. **Pass.**
+- The Phase 0 plan does not reference any of the reviewer-stage scope
+  (`reviewer` role, `workflow_review_*` keys, `cc-policy review run`,
+  modifications to `dispatch_engine.py` or `completions.py`). **Pass.**
+- No prose claim about hook contract is unsupported by either the official
+  docs or the empirical capture. **Pass.**
+
+#### Open questions
+
+None. Every decision called out in the planner brief has been resolved with
+explicit rationale (DEC-PHASE0-001 through DEC-PHASE0-008) and inline
+evidence. If the implementer or tester for any P0 work item discovers an
+ambiguity, escalate to the orchestrator before resolving silently.
 
 ## Completed Initiatives
 
@@ -7691,6 +11248,9 @@ needed due to fail-open adapters, stale tests, and bridge integration bugs.
 - Search sidecar remains parked from hot-path authority until the kernel
   acceptance suite is green twice consecutively. Observatory is actively
   planned under INIT-OBS.
+- `braid-v2` breakglass escalation remains planned work. The authority split is
+  now decided, but schema, CLI, adapter, and policy-grant wiring should wait
+  until the current real-agent soak and controller cutover slices are complete.
 - Daemon promotion and multi-client coordination stay parked until CLI mode is a
   proven stable interface.
 - Upstream synchronization remains manual and selective; no merge/rebase flow

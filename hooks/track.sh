@@ -45,7 +45,7 @@ rt_obs_metric files_changed "$_tk_file_count" "" "" "" & disown
 
 # --- Invalidate evaluation_state when source files change after clearance ---
 # If evaluation_state is ready_for_guardian and source code changes, the
-# evaluator clearance is stale. Reset to pending so a new tester pass is
+# evaluator clearance is stale. Reset to pending so a new reviewer pass is
 # required before Guardian can proceed. (TKT-024: proof invalidation removed)
 #
 # @decision DEC-EVAL-005
@@ -58,18 +58,19 @@ rt_obs_metric files_changed "$_tk_file_count" "" "" "" & disown
 if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
     # WS1: use lease_context() to derive workflow_id from the active lease.
     # When a lease is active its workflow_id is authoritative over branch-derived id.
-    # This ensures invalidation targets the same workflow_id the tester cleared,
+    # This ensures invalidation targets the same workflow_id the evaluator (reviewer) cleared,
     # not the branch-derived id which may differ when a lease is active.
     #
     # @decision DEC-WS1-TRACK-001
     # @title track.sh uses lease-first identity for eval invalidation
     # @status accepted
     # @rationale Without this fix, a source write fires rt_eval_invalidate against
-    #   the branch-derived workflow_id (e.g. "feature-my-branch") while the tester
+    #   the branch-derived workflow_id (e.g. "feature-my-branch") while the evaluator
     #   clearance lives under the lease workflow_id (e.g. "wf-abc123"). The
     #   invalidation is a no-op against the wrong id, so the stale ready_for_guardian
     #   state persists and Guardian can merge un-evaluated code. Lease-first identity
-    #   (matching the pattern in check-guardian.sh and check-tester.sh) closes this.
+    #   (matching the pattern in check-guardian.sh and other SubagentStop adapters)
+    #   closes this.
     _TK_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
     _TK_LEASE_FOUND=$(printf '%s' "$_TK_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
     if [[ "$_TK_LEASE_FOUND" == "true" ]]; then

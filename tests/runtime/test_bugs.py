@@ -469,9 +469,9 @@ def test_file_bug_full_pipeline(conn, tmp_path):
         title="pipeline integration failure",
         body="something went wrong between components",
         scope="global",
-        source_component="hooks/check-tester.sh",
-        file_path="hooks/check-tester.sh",
-        evidence="observed wrong state transition during tester stop",
+        source_component="hooks/check-reviewer.sh",
+        file_path="hooks/check-reviewer.sh",
+        evidence="observed wrong state transition during reviewer stop",
         todo_sh_path=todo_sh,
     )
 

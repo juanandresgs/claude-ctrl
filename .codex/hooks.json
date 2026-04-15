@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/stop_supervisor.py\"",
+            "timeout": 30,
+            "statusMessage": "Re-arming ClauDEX supervisor"
+          }
+        ]
+      }
+    ]
+  }
+}

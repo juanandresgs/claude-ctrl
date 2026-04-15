@@ -46,7 +46,7 @@ def start_trace(
         conn:       Open SQLite connection with trace tables present.
         session_id: Caller-assigned identifier — typically CLAUDE_SESSION_ID
                     or a synthetic ID for testing.
-        agent_role: Optional role string (implementer, tester, planner, etc.).
+        agent_role: Optional role string (implementer, reviewer, planner, etc.).
         ticket:     Optional ticket reference (e.g. "TKT-013").
 
     Returns:

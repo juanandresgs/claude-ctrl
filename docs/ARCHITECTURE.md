@@ -93,9 +93,10 @@ Fail-closed with wrapped hookSpecificOutput on all paths.
 
 **SubagentStop:**
 
-- `hooks/check-{planner,implementer,tester,guardian}.sh` -- Agent-specific
+- `hooks/check-{planner,implementer,reviewer,guardian}.sh` -- Agent-specific
   validation. Deactivate markers via `cc-policy lifecycle on-stop`. Role
-  detection via local `runtime/cli.py context role`.
+  detection via local `runtime/cli.py context role`. Phase 8 Slice 10 retired
+  `check-tester.sh`; Slice 11 removed the `tester` role from the runtime.
 - `hooks/post-task.sh` -- Completion routing via `cc-policy dispatch
   process-stop`. Returns next-role suggestion in hookSpecificOutput.
 

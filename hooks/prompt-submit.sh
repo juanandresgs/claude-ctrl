@@ -24,13 +24,15 @@ SESSION_ID=$(canonical_session_id)
 
 # --- Proof verification removed (TKT-024) ---
 # User prompt "verified" no longer flips readiness state.
-# Guardian eligibility is now gated on evaluation_state == "ready_for_guardian"
-# written exclusively by check-tester.sh based on EVAL_* trailers.
+# Guardian eligibility is now gated on reviewer completion_records and
+# evaluation_state, written by SubagentStop hooks (check-reviewer.sh et al).
 # @decision DEC-EVAL-004
 # @title prompt-submit.sh no longer writes any readiness state
 # @status accepted
 # @rationale Ceremony (user typing "verified") is not technical proof.
-#   evaluation_state, written by check-tester.sh, is the sole authority.
+#   evaluation_state, written by SubagentStop check hooks, is the sole authority.
+#   (Phase 8 Slice 10 retired the legacy tester producer path; the same rule
+#   applies to the reviewer-driven readiness pipeline.)
 
 # --- First-prompt mitigation for session-init bug (Issue #10373) ---
 PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${SESSION_ID}"

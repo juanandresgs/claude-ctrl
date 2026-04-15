@@ -18,7 +18,8 @@
 # @rationale Before WS2, guard.sh reset eval state to idle immediately when a
 #   merge command passed the eval gate — before the merge actually ran. Any
 #   subsequent denial (scope check, approval missing) would leave eval=idle with
-#   no landing. The tester had to re-run. WS2 moves the reset to check-guardian.sh
+#   no landing. The evaluator (reviewer after Phase 8 Slice 11; historically
+#   the tester stop hook) had to re-run. WS2 moves the reset to check-guardian.sh
 #   conditioned on LANDING_RESULT, so only confirmed landings consume clearance.
 set -euo pipefail
 
@@ -55,7 +56,7 @@ $CC schema ensure >/dev/null 2>&1
 
 WF_ID="feature-ws2-test"
 
-# Set evaluation_state to ready_for_guardian (simulating tester clearance)
+# Set evaluation_state to ready_for_guardian (simulating reviewer/evaluator clearance)
 $CC evaluation set "$WF_ID" "ready_for_guardian" --head-sha "abc123" >/dev/null 2>&1
 
 EVAL_BEFORE=$($CC evaluation get "$WF_ID" 2>/dev/null | jq -r '.status // "not_found"' 2>/dev/null || echo "not_found")

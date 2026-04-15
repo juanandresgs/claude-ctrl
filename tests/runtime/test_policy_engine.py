@@ -534,7 +534,7 @@ def test_dispatch_phase_is_workflow_scoped(conn, tmp_path):
         """INSERT INTO completion_records
            (lease_id, workflow_id, role, verdict, valid, payload_json, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        ("lease-a", "workflow-A", "tester", "ready_for_guardian", 1, "{}", now - 10),
+        ("lease-a", "workflow-A", "reviewer", "ready_for_guardian", 1, "{}", now - 10),
     )
     conn.execute(
         """INSERT INTO completion_records
@@ -544,7 +544,7 @@ def test_dispatch_phase_is_workflow_scoped(conn, tmp_path):
     )
     conn.commit()
 
-    # Context for workflow A: must get A's record (tester:ready_for_guardian),
+    # Context for workflow A: must get A's record (reviewer:ready_for_guardian),
     # NOT workflow B's newer record (implementer:complete).
     ctx_a = build_context(
         conn,
@@ -552,7 +552,7 @@ def test_dispatch_phase_is_workflow_scoped(conn, tmp_path):
         actor_role="guardian",
         actor_id="agent-a",
     )
-    assert ctx_a.dispatch_phase == "tester:ready_for_guardian", (
+    assert ctx_a.dispatch_phase == "reviewer:ready_for_guardian", (
         f"Expected workflow-A's phase but got: {ctx_a.dispatch_phase}"
     )
 
@@ -603,7 +603,7 @@ def test_dispatch_phase_none_when_workflow_has_no_completions(conn, tmp_path):
         """INSERT INTO completion_records
            (lease_id, workflow_id, role, verdict, valid, payload_json, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        ("lease-other", "workflow-OTHER", "tester", "ready_for_guardian", 1, "{}", now),
+        ("lease-other", "workflow-OTHER", "reviewer", "ready_for_guardian", 1, "{}", now),
     )
     conn.commit()
 
@@ -614,7 +614,7 @@ def test_dispatch_phase_none_when_workflow_has_no_completions(conn, tmp_path):
         actor_id="agent-new",
     )
     # workflow-NEW has no completions → dispatch_phase must be None,
-    # not "tester:ready_for_guardian" from workflow-OTHER.
+    # not "reviewer:ready_for_guardian" from workflow-OTHER.
     assert ctx.dispatch_phase is None, (
         f"dispatch_phase leaked from a different workflow: {ctx.dispatch_phase}"
     )

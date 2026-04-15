@@ -543,12 +543,12 @@ function runStopReview(cwd, input = {}) {
 
 // ── SubagentStop verdict emitter ─────────────────────────────────────
 //
-// Writes a codex_stop_review event to the runtime events table so that
-// dispatch_engine._check_codex_gate() can read the verdict and override
-// auto_dispatch when BLOCK. This path must NOT emit decision:block to
-// hookSpecificOutput — that is reserved for the Stop event path where
-// Claude itself is the actor being blocked. At SubagentStop, dispatch_engine
-// is the sole auto_dispatch authority; this hook is a pure event emitter.
+// Writes a codex_stop_review event to the runtime events table for
+// user-facing review observability. The dispatch engine does NOT read
+// these events — workflow auto_dispatch is determined by runtime workflow
+// facts only (DEC-PHASE5-STOP-REVIEW-SEPARATION-001). This path must NOT
+// emit decision:block to hookSpecificOutput — that is reserved for the
+// Stop event path where Claude itself is the actor being blocked.
 //
 // @decision DEC-AD-002
 // Title: Codex gate communicates verdict via events table, not hookSpecificOutput
@@ -603,9 +603,9 @@ function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
   const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
   const args = [cliPath, "event", "emit", "codex_stop_review"];
   if (workflowId) {
-    // ENFORCE-RCA-16: dispatch_engine gates by exact workflow scope, not the
-    // latest global codex_stop_review event. Keep workflow=<id> in detail for
-    // statusline compatibility, but the authoritative scope key is source.
+    // ENFORCE-RCA-16: source key scopes events per-workflow for review
+    // observability, statusline, and supervisory consumers — the dispatch
+    // engine does not read these events (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
     args.push("--source", `workflow:${workflowId}`);
   }
   args.push("--detail", detail);
@@ -637,11 +637,11 @@ function main() {
     : null;
 
   // ENFORCE-RCA-14 / DEC-ENFORCE-REVIEW-GATE-002: the SubagentStop review path
-  // is part of dispatch-chain integrity — it writes codex_stop_review events
-  // that dispatch_engine._check_codex_gate consumes for AUTO_DISPATCH routing
-  // decisions. It MUST run on every SubagentStop regardless of the user-facing
-  // `config.stopReviewGate` flag, otherwise the events table stays empty and
-  // the dispatch engine gate silently always-allows.
+  // writes codex_stop_review events for user-facing review observability. The
+  // dispatch engine does NOT read these events — workflow auto_dispatch is
+  // determined by runtime workflow facts only (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
+  // The SubagentStop path still runs unconditionally so the events table stays
+  // populated for supervisory review tooling.
   //
   // `config.stopReviewGate` continues to gate only the USER-FACING regular
   // Stop path (the interactive block at turn-end that the user opts into
@@ -680,7 +680,7 @@ function main() {
     const agentType = String(input.agent_type || "unknown").toLowerCase();
     const provider = review.provider || "unknown";
 
-    // Write verdict to events table for dispatch_engine
+    // Write verdict to events table for review observability/statusline/supervisory consumers
     const verdict = review.ok || review.infraFailure ? "ALLOW" : "BLOCK";
     const reason = review.infraFailure
       ? `infra failure: ${review.reason}`

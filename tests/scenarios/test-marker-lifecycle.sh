@@ -47,11 +47,9 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" \
 # Pre-provision schema in scoped test DB
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" schema ensure >/dev/null 2>&1
 
-# Seed proof-status via runtime so check-tester proof-state check is satisfied.
-# workflow id is based on current branch — after git init the branch is
-# typically "main" or "master"; seed both to be portable.
-CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$CLI" proof set "main" "pending" >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$CLI" proof set "master" "pending" >/dev/null 2>&1
+# Phase 8 Slice 10 retired the tester stop hook and its proof-state dependency.
+# Reviewer/implementer/guardian/planner stop hooks no longer consult proof state
+# for marker deactivation, so no seeding is required here.
 
 FAILURES=0
 
@@ -118,24 +116,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 2: check-tester deactivates tester marker
+# Test 2: check-reviewer deactivates reviewer marker
+# (Phase 8 Slice 11 retired ``tester``; the reviewer is the live read-only
+# evaluator after Slice 11, so the SubagentStop deactivation lifecycle is
+# proven against its hook. DEC-PHASE8-SLICE11-001.)
 # ---------------------------------------------------------------------------
-set_marker "agent-test-tstr" "tester"
+set_marker "agent-test-rvw" "reviewer"
 
 found_before=$(get_active_found)
 if [[ "$found_before" != "True" ]]; then
-    echo "  FAIL: [2] pre-condition: expected active tester marker, got found=$found_before"
+    echo "  FAIL: [2] pre-condition: expected active reviewer marker, got found=$found_before"
     FAILURES=$((FAILURES + 1))
 fi
 
-run_check_hook "check-tester.sh" "tester"
+run_check_hook "check-reviewer.sh" "reviewer"
 
 found_after=$(get_active_found)
 if [[ "$found_after" != "False" ]]; then
-    echo "  FAIL: [2] check-tester did not deactivate marker (found=$found_after)"
+    echo "  FAIL: [2] check-reviewer did not deactivate marker (found=$found_after)"
     FAILURES=$((FAILURES + 1))
 else
-    echo "  PASS: [2] check-tester deactivated tester marker"
+    echo "  PASS: [2] check-reviewer deactivated reviewer marker"
 fi
 
 # ---------------------------------------------------------------------------
@@ -236,7 +237,7 @@ export CLI TEST_DB PROJ_A PROJ_B
 
 # Write two markers with different project roots
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" marker set \
-    "agent-scoped-a" "tester" \
+    "agent-scoped-a" "reviewer" \
     --project-root "$PROJ_A" \
     >/dev/null 2>&1
 
@@ -266,8 +267,8 @@ role_b=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$CLI" marker get-active --project-
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('role',''))" 2>/dev/null \
     || echo "")
 
-if [[ "$role_a" != "tester" || "$role_b" != "implementer" ]]; then
-    echo "  FAIL: [7] scoped markers: expected tester/implementer by project_root, got A=$role_a B=$role_b"
+if [[ "$role_a" != "reviewer" || "$role_b" != "implementer" ]]; then
+    echo "  FAIL: [7] scoped markers: expected reviewer/implementer by project_root, got A=$role_a B=$role_b"
     FAILURES=$((FAILURES + 1))
 else
     echo "  PASS: [7] scoped markers: project_root-scoped get-active returns the correct role"

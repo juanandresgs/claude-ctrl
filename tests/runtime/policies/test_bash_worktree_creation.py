@@ -25,19 +25,17 @@ Production trigger: PreToolUse Bash hook — any command containing
 
 from __future__ import annotations
 
-import dataclasses
-
 from runtime.core.policies.bash_worktree_creation import check
 from tests.runtime.policies.conftest import make_context, make_request
 
 
 def _ctx(role: str):
-    """Return a PolicyContext with the given actor_role, all else default.
+    """Return a PolicyContext with the given actor_role and matching capabilities.
 
-    conftest.make_context() hard-codes actor_role="implementer". We use
-    dataclasses.replace() to patch it for role-specific test cases.
+    Uses make_context(actor_role=role) so that capabilities are populated from
+    authority_registry.capabilities_for(role) — matching production build_context().
     """
-    return dataclasses.replace(make_context(), actor_role=role)
+    return make_context(actor_role=role)
 
 
 # ---------------------------------------------------------------------------
@@ -229,3 +227,60 @@ def test_register_wires_policy():
     info = next(p for p in policies if p.name == "bash_worktree_creation")
     assert info.priority == 350
     assert "Bash" in info.event_types or "PreToolUse" in info.event_types
+
+
+# ---------------------------------------------------------------------------
+# Capability-gate invariant tests (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_guardian_alias_resolves_via_capability():
+    """Live "guardian" role resolves to CAN_PROVISION_WORKTREE via alias.
+
+    capabilities_for("guardian") must return a set containing
+    CAN_PROVISION_WORKTREE so that the live lease role name passes the gate.
+    """
+    from runtime.core.authority_registry import CAN_PROVISION_WORKTREE, capabilities_for
+
+    caps = capabilities_for("guardian")
+    assert CAN_PROVISION_WORKTREE in caps
+
+
+def test_capability_gate_not_role_string():
+    """Capability presence — not the role string — controls authorization.
+
+    A context with role="unknown_role" but CAN_PROVISION_WORKTREE injected
+    should pass. Proves the policy uses context.capabilities.
+    """
+    import dataclasses
+    from runtime.core.authority_registry import CAN_PROVISION_WORKTREE
+
+    ctx = dataclasses.replace(
+        _ctx("unknown_role"),
+        capabilities=frozenset({CAN_PROVISION_WORKTREE}),
+    )
+    req = make_request(
+        "git worktree add .worktrees/feature-foo -b feature/foo",
+        context=ctx,
+    )
+    assert check(req) is None
+
+
+def test_guardian_without_capability_is_denied():
+    """Guardian role string alone is not sufficient — capability must be present.
+
+    Simulates a context where the role is "guardian" but capabilities is empty.
+    """
+    import dataclasses
+
+    ctx = dataclasses.replace(
+        _ctx("guardian"),
+        capabilities=frozenset(),
+    )
+    req = make_request(
+        "git worktree add .worktrees/feature-foo -b feature/foo",
+        context=ctx,
+    )
+    result = check(req)
+    assert result is not None
+    assert result.action == "deny"

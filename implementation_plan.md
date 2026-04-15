@@ -54,7 +54,7 @@ claude-ctrl-hardFork/
     subagent-start.sh
     check-planner.sh
     check-implementer.sh
-    check-tester.sh
+    check-reviewer.sh
     check-guardian.sh
     HOOKS.md
     lib/
@@ -71,6 +71,7 @@ claude-ctrl-hardFork/
   runtime/
     core/
       __init__.py
+      agent_sessions.py
       config.py
       db.py
       events.py
@@ -78,6 +79,8 @@ claude-ctrl-hardFork/
       dispatch.py
       markers.py
       statusline.py
+      supervision.py
+      transport_adapters.py
       worktrees.py
       policy.py
     cli.py
@@ -119,7 +122,20 @@ claude-ctrl-hardFork/
 - Every hot-path hook must be readable in one sitting, with a hard target of
   fewer than 300 lines per entrypoint.
 
-### 3. Typed Runtime Layer
+### 3. Agent-Agnostic Supervision Fabric
+
+- Supervision is a runtime-owned workflow domain, not a property of a specific
+  bridge or provider.
+- The runtime models agent sessions, seats, supervision threads, dispatch
+  attempts, and review handoffs in canonical state.
+- `tmux` is an execution/attachment adapter for arbitrary interactive CLI
+  agents; it is never the authority for delivery, progress, or health.
+- MCP or agent-native APIs are preferred adapters when a provider exposes
+  structured control, but they plug into the same runtime-owned state machine.
+- Pane scraping, relay sentinels, pid files, and helper logs are diagnostics or
+  transitional transport only, never canonical truth.
+
+### 4. Typed Runtime Layer
 
 - The runtime is the authoritative owner of shared workflow state and
   concurrency.
@@ -128,7 +144,7 @@ claude-ctrl-hardFork/
 - The CLI becomes the stable contract; the daemon later exposes the same
   operations over a Unix socket without changing hook semantics.
 
-### 4. Sidecar Layer
+### 5. Sidecar Layer
 
 - Search and observatory exist as read-only consumers in `sidecars/`.
 - Sidecars never sit on deny paths.
@@ -145,6 +161,8 @@ The runtime owns exactly these core domains:
 4. `agent_markers`
 5. `events`
 6. `worktrees`
+7. `agent_sessions`
+8. `supervision_threads`
 
 The successor runtime also owns all workflow coordination state. Flat files,
 breadcrumb files, session-local marker files, and cache files are not permitted
@@ -156,6 +174,35 @@ The runtime does not own:
 - plan markdown content
 - docs rendering
 - feature flags for optional sidecars
+
+### Agent-Agnostic Supervision Contract
+
+The successor runtime owns recursive supervision as a first-class domain.
+
+- A `session` identifies one running agent instance bound to one workflow and
+  one transport adapter.
+- A `seat` identifies the session's role in the control plane:
+  `worker`, `supervisor`, `reviewer`, or `observer`.
+- A `supervision_thread` records that one seat is attached to another for
+  review, steering, or autopilot recursion.
+- A `dispatch_attempt` tracks instruction issuance, delivery claim,
+  acknowledgment, timeout, retry ceiling, and terminal disposition.
+- A `transport_adapter` is an implementation detail behind the runtime
+  contract. The runtime may bind a seat to `tmux`, MCP, or another provider
+  adapter without changing authority ownership.
+
+Transport adapters must implement the same canonical operations:
+
+- bind a session to a live target
+- dispatch a structured instruction
+- record or relay delivery claim
+- acknowledge completion, timeout, or rejection
+- surface transcript or response artifacts
+- emit heartbeat and liveness signals
+- interrupt or stop a bound seat when policy requires it
+
+No adapter may infer health from pane text alone. A run is healthy only when
+the runtime sees recent state transition or a current claimed dispatch attempt.
 
 ### No Flatfiles Or Breadcrumbs
 
@@ -222,6 +269,25 @@ cc-policy worktree sweep
 cc-policy event emit --type <event_name> --workflow <id> --actor <role> --payload <json>
 cc-policy event query --type <event_name> --workflow <id> --limit <n>
 ```
+
+### Supervision CLI Extension
+
+After the bootstrap CLI is stable, recursive supervision extends the runtime
+contract with seat- and transport-aware operations such as:
+
+```bash
+cc-policy supervise session-bind --workflow <id> --provider <claude|codex|gemini|generic_cli> --transport <tmux|mcp|native> --target <opaque>
+cc-policy supervise seat-open --session <id> --role <worker|supervisor|reviewer|observer>
+cc-policy supervise thread-open --controller-seat <id> --subject-seat <id> --mode <review|autopilot|analysis>
+cc-policy supervise dispatch --seat <id> --payload <json>
+cc-policy supervise claim --attempt <id> --seat <id>
+cc-policy supervise ack --attempt <id> --seat <id> --status <accepted|completed|rejected|timed_out>
+cc-policy supervise heartbeat --seat <id>
+cc-policy supervise interrupt --seat <id>
+```
+
+These commands replace blind send-and-infer bridge loops. Delivery, progress,
+and timeout handling become runtime facts rather than tmux heuristics.
 
 ### Runtime Defaults
 
@@ -413,6 +479,39 @@ Must include:
 - authority-count merge audit
 - phase-completing merge checklist
 - approval execution model
+
+## Approval and Breakglass Authority Split
+
+The successor control plane must keep repository approval policy and live
+harness gate handling separate.
+
+Runtime-owned supervision must own:
+
+- live interaction-gate detection and classification
+- escalation request routing
+- delivery of bounded review artifacts to the next supervising seat
+- grant consumption and resolution attempts
+- resume, cancel, fail, and expiry handling
+- trace and trajectory evidence for the full chain
+
+The shared policy engine must own:
+
+- whether a gate type is eligible for escalation
+- which authority may approve it
+- grant scope, TTL, and single-use semantics
+- audit requirements
+- final allow, deny, or require-user decisions
+
+Breakglass approvals are temporary exception leases tied to a concrete
+bundle/seat/session/gate, not global bypass flags.
+
+Guardian remains the approval authority for repo-risking git operations.
+Breakglass is the separate approval surface for live harness and tool prompts.
+
+Every harness adapter must expose a typed gate taxonomy and typed resolution
+actions to the runtime. Transport tricks such as tmux key sends may still be
+used, but they are adapter mechanics only and must never become the
+authoritative representation of approval state.
 
 ## Bootstrap Plan Discipline
 

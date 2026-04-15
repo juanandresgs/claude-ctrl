@@ -17,7 +17,12 @@
 # @title prompt-submit.sh no longer writes any readiness state
 # @status accepted
 # @rationale Ceremony is not technical proof. evaluation_state is the
-#   sole authority and is written only by check-tester.sh.
+#   sole authority and is written only by the evaluator stop hook
+#   (historically the tester stop hook; retired in Phase 8 Slice 10.
+#   Phase 8 Slice 11 retired the ``tester`` role entirely — reviewer
+#   readiness is owned by the reviewer completion/findings/convergence
+#   path and does not write evaluation_state). Either way,
+#   prompt-submit.sh never writes readiness state.
 set -euo pipefail
 
 TEST_NAME="test-prompt-submit-no-verified"
@@ -42,7 +47,7 @@ git -C "$TMP_DIR" checkout -b "$BRANCH" -q
 # Provision schema — evaluation_state and proof_state both idle
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 
-# Simulate old pre-cutover state: proof_state=pending (as if tester had set it)
+# Simulate old pre-cutover state: proof_state=pending (as if the evaluator had set it)
 # In the old flow this would be flipped to "verified" by the prompt.
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     proof set "$WF_ID" "pending" >/dev/null 2>&1

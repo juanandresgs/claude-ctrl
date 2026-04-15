@@ -5,7 +5,7 @@ Provides durable, deduplicated bug tracking backed by:
   - GitHub Issues via todo.sh as the durable external authority
 
 This module is THE single entry point for recording bugs discovered during
-hook execution, test runs, or tester reviews. It ensures:
+hook execution, test runs, or evaluator reviews. It ensures:
   1. Every bug gets a deterministic fingerprint (dedup key)
   2. Every filing attempt is persisted in SQLite regardless of GitHub success
   3. Failed filings are retryable via retry_failed()

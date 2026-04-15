@@ -102,16 +102,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "EnterWorktree",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/block-worktree-create.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "Write|Edit",
         "hooks": [
           {
@@ -294,7 +284,7 @@
         ]
       },
       {
-        "matcher": "tester",
+        "matcher": "guardian",
         "hooks": [
           {
             "type": "command",
@@ -303,7 +293,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/check-tester.sh",
+            "command": "$HOME/.claude/hooks/check-guardian.sh",
             "timeout": 5
           },
           {
@@ -319,7 +309,7 @@
         ]
       },
       {
-        "matcher": "guardian",
+        "matcher": "reviewer",
         "hooks": [
           {
             "type": "command",
@@ -328,7 +318,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/check-guardian.sh",
+            "command": "$HOME/.claude/hooks/check-reviewer.sh",
             "timeout": 5
           },
           {
@@ -398,7 +388,8 @@
     "command": "$HOME/.claude/scripts/statusline.sh"
   },
   "enabledPlugins": {
-    "codex@openai-codex": true
+    "codex@openai-codex": true,
+    "lua-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -414,10 +405,10 @@
       }
     }
   },
+  "effortLevel": "high",
   "autoUpdatesChannel": "latest",
   "skipDangerousModePermissionPrompt": true,
   "installation": {
     "method": "native"
-  },
-  "effortLevel": "high"
+  }
 }

@@ -9,8 +9,9 @@ Title: Policy engine is the canonical authority for enforcement toggles
 Status: accepted
 Rationale: enforcement_config replaces the scattered toggle authorities
   (settings.json, codex state.json). These tests confirm the single-authority
-  invariant: only guardian may write, all readers go through the same get()
-  with scope precedence (workflow > project > global > None).
+  invariant: only actors with CAN_SET_CONTROL_CONFIG (currently planner) may
+  write, all readers go through the same get() with scope precedence
+  (workflow > project > global > None).
 
 @decision DEC-REGULAR-STOP-REVIEW-001
 Title: Regular Stop review gate toggled via enforcement_config, not state.json
@@ -72,11 +73,23 @@ def test_get_unknown_key_returns_none(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_set_as_guardian_writes_value(conn):
-    """Guardian role may write enforcement_config; value is readable back."""
-    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="guardian")
+def test_set_as_planner_writes_value(conn):
+    """Planner role (CAN_SET_CONTROL_CONFIG) may write enforcement_config; value is readable back."""
+    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="planner")
     value = ec.get(conn, "review_gate_regular_stop")
     assert value == "false"
+
+
+def test_set_as_guardian_raises_permission_error(conn):
+    """Guardian role no longer has CAN_SET_CONTROL_CONFIG — must be denied."""
+    with pytest.raises(ECPermissionError):
+        ec.set_(conn, "review_gate_regular_stop", "false", actor_role="guardian")
+
+
+def test_set_as_planner_alias_writes_value(conn):
+    """The live harness alias 'Plan' must resolve to planner and be allowed."""
+    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="Plan")
+    assert ec.get(conn, "review_gate_regular_stop") == "false"
 
 
 def test_set_as_implementer_raises_permission_error(conn):
@@ -105,11 +118,11 @@ def test_set_subagent_stop_as_orchestrator_raises_permission_error(conn):
 def test_workflow_scope_overrides_project_overrides_global(conn):
     """Scope precedence: workflow= beats project= beats global."""
     # Write at all three scopes with distinct values.
-    ec.set_(conn, "review_gate_provider", "codex", scope="global", actor_role="guardian")
+    ec.set_(conn, "review_gate_provider", "codex", scope="global", actor_role="planner")
     ec.set_(
-        conn, "review_gate_provider", "gemini", scope="project=/my/project", actor_role="guardian"
+        conn, "review_gate_provider", "gemini", scope="project=/my/project", actor_role="planner"
     )
-    ec.set_(conn, "review_gate_provider", "openai", scope="workflow=wf-123", actor_role="guardian")
+    ec.set_(conn, "review_gate_provider", "openai", scope="workflow=wf-123", actor_role="planner")
 
     # No scope qualifiers → global
     assert ec.get(conn, "review_gate_provider") == "codex"
@@ -145,7 +158,31 @@ def test_list_all_returns_seeded_rows(conn):
 
 def test_list_all_scope_filter(conn):
     """list_all(scope='global') returns only global-scoped rows."""
-    ec.set_(conn, "my_key", "val", scope="project=/foo", actor_role="guardian")
+    ec.set_(conn, "my_key", "val", scope="project=/foo", actor_role="planner")
     global_rows = ec.list_all(conn, scope="global")
     for row in global_rows:
         assert row["scope"] == "global", f"Expected scope=global, got {row['scope']!r}"
+
+
+# ---------------------------------------------------------------------------
+# 5. Invariant: WHO gate derives from authority_registry, not a hard-coded role
+# ---------------------------------------------------------------------------
+
+
+def test_who_gate_derives_from_authority_registry(conn):
+    """The WHO gate is mechanically tied to authority_registry — not a hard-coded role."""
+    from runtime.core import authority_registry as ar
+
+    # Only stages with CAN_SET_CONTROL_CONFIG can write
+    allowed_stages = ar.stages_with_capability(ar.CAN_SET_CONTROL_CONFIG)
+    assert len(allowed_stages) == 1, f"Expected exactly one stage, got {allowed_stages}"
+    assert allowed_stages[0] == "planner"
+
+    # Planner can write
+    ec.set_(conn, "test_key", "val", actor_role="planner")
+    assert ec.get(conn, "test_key") == "val"
+
+    # No other active stage can write
+    for stage in ("guardian:provision", "guardian:land", "implementer", "reviewer"):
+        with pytest.raises(ECPermissionError):
+            ec.set_(conn, "test_key_2", "val", actor_role=stage)

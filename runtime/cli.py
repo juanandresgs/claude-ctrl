@@ -36,6 +36,9 @@ import runtime.core.dispatch as dispatch_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
+import runtime.core.hook_doc_validation as hook_doc_validation_mod
+import runtime.core.hook_manifest as hook_manifest_mod
+import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
 import runtime.core.eval_report as eval_report_mod
 import runtime.core.eval_runner as eval_runner_mod
 import runtime.core.eval_scorer as eval_scorer_mod
@@ -48,6 +51,7 @@ import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.proof as proof_mod
 import runtime.core.quick_eval as quick_eval_mod
+import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
 import runtime.core.tokens as tokens_mod
@@ -302,6 +306,1006 @@ def _handle_event(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown event action: {args.action}")
+
+
+def _handle_hook(args) -> int:
+    """Handle ``cc-policy hook`` subcommands (read-only hook tools).
+
+    Two actions are currently supported:
+
+    * ``validate-settings`` (DEC-CLAUDEX-HOOK-MANIFEST-001) —
+      compares repo-owned hook adapter entries in ``settings.json``
+      against ``runtime.core.hook_manifest.HOOK_MANIFEST``, reports
+      drift in both directions plus any repo-owned adapter paths
+      that do not resolve to tracked files on disk.
+    * ``doc-check`` (DEC-CLAUDEX-HOOK-DOC-VALIDATION-001) — reads a
+      candidate ``hooks/HOOKS.md`` from disk, pipes it through
+      ``runtime.core.hook_doc_validation.validate_hook_doc`` against
+      the runtime-compiled hook-doc projection, and reports drift.
+
+    Both commands are strictly read-only — they do not rewrite
+    ``settings.json`` or ``hooks/HOOKS.md``, do not execute any
+    hook adapter, do not write to the runtime DB, and do not emit
+    any event.
+    """
+    if args.action == "validate-settings":
+        from pathlib import Path
+
+        settings_path_str = getattr(args, "settings_path", None)
+        # Default: the settings.json at the repo root (parent of runtime/).
+        if settings_path_str:
+            settings_path = Path(settings_path_str).resolve()
+        else:
+            settings_path = (_PROJECT_ROOT / "settings.json").resolve()
+
+        if not settings_path.is_file():
+            return _err(
+                f"hook validate-settings: settings file not found at {settings_path}"
+            )
+
+        try:
+            with settings_path.open() as f:
+                settings = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            return _err(
+                f"hook validate-settings: failed to read {settings_path}: {exc}"
+            )
+
+        # Determine the repo root that adapter_paths resolve relative to.
+        # When --settings-path is given we trust the file's parent
+        # directory; otherwise we use the computed _PROJECT_ROOT.
+        if settings_path_str:
+            repo_root = settings_path.parent
+        else:
+            repo_root = _PROJECT_ROOT
+
+        # Filesystem existence check: for every repo-owned adapter that
+        # settings.json references, verify the file exists. This is the
+        # part of the validation that cannot live in the pure helper.
+        settings_entries = hook_manifest_mod.extract_repo_owned_entries(settings)
+        missing_paths: list[str] = []
+        seen: set[str] = set()
+        for _event, _matcher, adapter_path in settings_entries:
+            if adapter_path in seen:
+                continue
+            seen.add(adapter_path)
+            full = (repo_root / adapter_path).resolve()
+            if not full.is_file():
+                missing_paths.append(adapter_path)
+
+        report = hook_manifest_mod.validate_settings(
+            settings,
+            missing_files=tuple(sorted(missing_paths)),
+        )
+
+        payload = {
+            "report": report,
+            "settings_path": str(settings_path),
+            "repo_root": str(repo_root),
+        }
+
+        if report["healthy"]:
+            return _ok(payload)
+        # Unhealthy: print structured JSON to stdout (CI-friendly) and
+        # return exit code 1. Follows the same convention as
+        # ``cc-policy shadow parity-invariant``.
+        payload["status"] = "violation"
+        print(json.dumps(payload))
+        return 1
+
+    if args.action == "doc-check":
+        import time as _time
+        from pathlib import Path
+
+        doc_path_str = getattr(args, "doc_path", None)
+        if doc_path_str:
+            doc_path = Path(doc_path_str).resolve()
+        else:
+            doc_path = (_PROJECT_ROOT / "hooks" / "HOOKS.md").resolve()
+
+        if not doc_path.is_file():
+            return _err(
+                f"hook doc-check: hook doc not found at {doc_path}"
+            )
+
+        try:
+            candidate = doc_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return _err(
+                f"hook doc-check: failed to read {doc_path}: {exc}"
+            )
+
+        # ``repo_root`` in the payload is always ``_PROJECT_ROOT`` —
+        # the runtime compiles the expected body from the currently
+        # loaded ``HOOK_MANIFEST``, which lives under the running
+        # repo, not under ``--doc-path``'s parent. ``doc_path``
+        # tells the user which file the candidate came from;
+        # ``repo_root`` tells them which manifest it was compared
+        # against.
+        repo_root = _PROJECT_ROOT
+
+        # ``generated_at`` is required by the validator but does
+        # NOT affect the content hash (the hash is derived from the
+        # rendered body, which is independent of the timestamp).
+        # Passing ``int(time.time())`` keeps the CLI usable in
+        # production while leaving drift detection deterministic
+        # across repeated calls.
+        report = hook_doc_validation_mod.validate_hook_doc(
+            candidate,
+            generated_at=int(_time.time()),
+        )
+
+        payload = {
+            "report": report,
+            "doc_path": str(doc_path),
+            "repo_root": str(repo_root),
+        }
+
+        if report["healthy"]:
+            return _ok(payload)
+        payload["status"] = "violation"
+        print(json.dumps(payload))
+        return 1
+
+    return _err(f"unknown hook action: {args.action}")
+
+
+def _handle_constitution(args) -> int:
+    """Handle ``cc-policy constitution`` subcommands (read-only registry inspection).
+
+    Actions:
+
+    * ``list``: Emit the full constitution registry contents as JSON —
+      concrete paths and planned area slugs with counts.
+    * ``validate``: Check that every concrete constitution path exists
+      on disk. Exits 0 when healthy, non-zero when any path is missing.
+
+    Both commands are strictly read-only — they do not mutate the
+    registry, the filesystem, or the runtime DB.
+    """
+    from runtime.core import constitution_registry as cr
+
+    if args.action == "list":
+        concrete = [
+            {"name": e.name, "path": e.path, "rationale": e.rationale}
+            for e in cr.concrete_entries()
+        ]
+        planned = [
+            {"name": e.name, "rationale": e.rationale}
+            for e in cr.planned_areas()
+        ]
+        return _ok({
+            "concrete_count": len(concrete),
+            "planned_count": len(planned),
+            "concrete_paths": sorted(cr.CONCRETE_PATHS),
+            "planned_areas": [e.name for e in cr.planned_areas()],
+            "concrete_entries": concrete,
+            "planned_entries": planned,
+        })
+
+    if args.action == "validate":
+        repo_root = Path(getattr(args, "repo_root", None) or _PROJECT_ROOT)
+        missing = []
+        for entry in cr.concrete_entries():
+            full = repo_root / entry.path  # type: ignore[operator]
+            if not full.is_file():
+                missing.append(entry.path)
+
+        payload = {
+            "concrete_count": len(cr.concrete_entries()),
+            "planned_count": len(cr.planned_areas()),
+            "missing_concrete_paths": missing,
+            "planned_areas": [e.name for e in cr.planned_areas()],
+            "healthy": len(missing) == 0,
+            "repo_root": str(repo_root),
+        }
+
+        if payload["healthy"]:
+            return _ok(payload)
+        payload["status"] = "unhealthy"
+        print(json.dumps(payload))
+        return 1
+
+    return _err(f"unknown constitution action: {args.action}")
+
+
+def _handle_decision(args) -> int:
+    """Handle ``cc-policy decision`` subcommands (read-only projection surfaces).
+
+    @decision DEC-CLAUDEX-DECISION-DIGEST-CLI-001
+    Title: cc-policy decision digest is the sole CLI surface that renders the decision-digest projection from the canonical runtime registry
+    Status: proposed (shadow-mode, Phase 7 Slice 14 — decision-digest CLI read-only surface)
+    Rationale: Phase 7 Slice 13 introduced
+      ``runtime.core.decision_digest_projection`` as a pure builder that
+      turns a sequence of ``DecisionRecord`` instances into a
+      ``DecisionDigest`` projection. Slice 14 bridges the canonical
+      decision store to the pure builder via a read-only CLI subcommand
+      so operators and CI can inspect the digest without hand-editing
+      markdown and without writing a digest file. The surface is
+      strictly read-only: it opens the runtime DB via a SQLite URI with
+      ``mode=ro`` (no directory creation, no WAL, no schema bootstrap),
+      lists decisions via
+      ``runtime.core.decision_work_registry.list_decisions``, and feeds
+      the resulting records through
+      ``render_decision_digest`` / ``build_decision_digest_projection``.
+      A missing / unwritable DB surfaces as a clean JSON error from
+      ``_err()``, never as an unhandled ``sqlite3.OperationalError`` and
+      never as a newly-created DB file. No DB writes, no filesystem
+      writes, no schema creation, no events, no mutations.
+
+    Imports for the projection builder and decision-work registry are
+    function-scoped rather than module-scoped so the module-load graph
+    of ``runtime/cli.py`` does not acquire a build-time dependency on
+    either authority. This keeps the shadow-only module-level import
+    discipline of both authorities intact; AST discipline tests pin the
+    module-level invariant explicitly while allowing function-scope use
+    inside this handler.
+
+    Actions:
+
+    * ``digest``: Read decisions from the runtime DB (with optional
+      ``--status`` / ``--scope`` filters), render the decision-digest
+      body via the pure builder, and emit a JSON payload containing the
+      rendered body, the structured projection, the metadata envelope,
+      the included decision ids, the cutoff epoch, and the filters used.
+    * ``digest-check`` (Phase 7 Slice 15): Read decisions from the
+      runtime DB with the same filter/read-only semantics, read a
+      candidate digest file from ``--candidate-path`` (UTF-8, read-only),
+      feed both through the pure validator
+      :func:`decision_digest_projection.validate_decision_digest`, and
+      emit a JSON payload carrying the stable report shape. Exits ``0``
+      when the candidate body matches the projection; exits ``1`` with
+      ``status=violation`` when drift is detected so CI and pre-merge
+      gates can key off the exit code without re-parsing the body.
+    """
+    # Function-scope imports intentional — see module docstring and the
+    # AST discipline tests in test_decision_digest_projection.py /
+    # test_decision_work_registry.py. Both actions share the projection
+    # builder / validator + DB registry, so we import once at the
+    # handler boundary and share the read-only open helper across
+    # branches.
+    if args.action not in {"digest", "digest-check"}:
+        return _err(f"unknown decision action: {args.action}")
+
+    from runtime.core import decision_digest_projection as ddp
+    from runtime.core import decision_work_registry as dwr
+
+    # Shared read-only DB open with ``mode=ro`` primary and
+    # ``mode=ro&immutable=1`` fallback (see DEC-CLAUDEX-DECISION-DIGEST-CLI-001
+    # and Phase 7 Slice 14 correction #2). Both ``digest`` and
+    # ``digest-check`` use the exact same read-only open semantics so
+    # there is a single authority for how this CLI touches the DB.
+    # ``db_read_mode`` is surfaced in the successful payload on both
+    # branches so operators can see which path served the request.
+    import sqlite3 as _sqlite3
+
+    def _read_decisions_ro(status_filter, scope_filter, *, subcommand):
+        """Open the runtime DB read-only and return ``(decisions, db_read_mode)``.
+
+        ``subcommand`` is the CLI subcommand name (``"digest"`` or
+        ``"digest-check"``) used only to shape the error message so
+        callers see which surface failed. Returns ``None`` and an
+        ``_err()``-style JSON error code via the nested helper when
+        both open attempts fail.
+        """
+        db_path = default_db_path()
+
+        def _try_read(uri: str):
+            connection = _sqlite3.connect(uri, uri=True)
+            try:
+                connection.row_factory = _sqlite3.Row
+                return dwr.list_decisions(
+                    connection,
+                    status=status_filter,
+                    scope=scope_filter,
+                )
+            finally:
+                connection.close()
+
+        ro_uri = f"file:{db_path}?mode=ro"
+        immutable_uri = f"file:{db_path}?mode=ro&immutable=1"
+
+        try:
+            return _try_read(ro_uri), "ro", None
+        except _sqlite3.Error as exc:
+            first_error = exc
+            try:
+                return _try_read(immutable_uri), "ro_immutable", None
+            except _sqlite3.Error as exc2:
+                return None, None, (
+                    f"decision {subcommand}: failed to read DB at "
+                    f"{db_path} read-only; mode=ro: {first_error}; "
+                    f"mode=ro+immutable=1: {exc2}"
+                )
+
+    # --cutoff-epoch validation (shared). Argparse delivers the raw
+    # string so we can emit a JSON error (consistent with _err())
+    # rather than argparse's stderr error path.
+    subcommand = args.action
+    raw_cutoff = getattr(args, "cutoff_epoch", "0")
+    try:
+        cutoff_epoch = int(raw_cutoff)
+    except (TypeError, ValueError):
+        return _err(
+            f"decision {subcommand}: --cutoff-epoch must be an int; "
+            f"got {raw_cutoff!r}"
+        )
+    if cutoff_epoch < 0:
+        return _err(
+            f"decision {subcommand}: --cutoff-epoch must be non-negative"
+        )
+
+    status_filter = getattr(args, "status", None)
+    scope_filter = getattr(args, "scope", None)
+    filters = {"status": status_filter, "scope": scope_filter}
+
+    if args.action == "digest":
+        # --generated-at validation. Default is the current epoch; the
+        # caller may pin an explicit timestamp for deterministic output.
+        raw_generated = getattr(args, "generated_at", None)
+        if raw_generated is None:
+            import time as _time
+
+            generated_at = int(_time.time())
+        else:
+            try:
+                generated_at = int(raw_generated)
+            except (TypeError, ValueError):
+                return _err(
+                    f"decision digest: --generated-at must be an int; "
+                    f"got {raw_generated!r}"
+                )
+            if generated_at < 0:
+                return _err(
+                    "decision digest: --generated-at must be non-negative"
+                )
+
+        decisions, db_read_mode, err = _read_decisions_ro(
+            status_filter, scope_filter, subcommand="digest"
+        )
+        if err is not None:
+            return _err(err)
+
+        try:
+            rendered_body = ddp.render_decision_digest(
+                decisions, cutoff_epoch=cutoff_epoch
+            )
+            projection = ddp.build_decision_digest_projection(
+                decisions,
+                generated_at=generated_at,
+                cutoff_epoch=cutoff_epoch,
+            )
+        except ValueError as exc:
+            return _err(f"decision digest: {exc}")
+
+        metadata = projection.metadata
+        payload = {
+            "healthy": True,
+            "rendered_body": rendered_body,
+            "projection": {
+                "decision_ids": list(projection.decision_ids),
+                "cutoff_epoch": projection.cutoff_epoch,
+                "content_hash": projection.content_hash,
+            },
+            "metadata": {
+                "generator_version": metadata.generator_version,
+                "generated_at": metadata.generated_at,
+                "stale_condition": {
+                    "rationale": metadata.stale_condition.rationale,
+                    "watched_authorities": list(
+                        metadata.stale_condition.watched_authorities
+                    ),
+                    "watched_files": list(
+                        metadata.stale_condition.watched_files
+                    ),
+                },
+                "source_versions": [
+                    [kind, ver] for (kind, ver) in metadata.source_versions
+                ],
+                "provenance": [
+                    {
+                        "source_kind": ref.source_kind,
+                        "source_id": ref.source_id,
+                        "source_version": ref.source_version,
+                    }
+                    for ref in metadata.provenance
+                ],
+            },
+            "decision_count": len(projection.decision_ids),
+            "decision_ids": list(projection.decision_ids),
+            "cutoff_epoch": projection.cutoff_epoch,
+            "filters": filters,
+            "repo_root": str(_PROJECT_ROOT),
+            "db_read_mode": db_read_mode,
+        }
+        return _ok(payload)
+
+    # ----------------------- digest-check -----------------------------
+    # Phase 7 Slice 15 — read-only decision-digest body drift validation.
+    from pathlib import Path
+
+    candidate_path_str = getattr(args, "candidate_path", None)
+    if not candidate_path_str:
+        return _err(
+            "decision digest-check: --candidate-path is required"
+        )
+    candidate_path = Path(candidate_path_str).resolve()
+    if not candidate_path.is_file():
+        return _err(
+            f"decision digest-check: candidate not found at {candidate_path}"
+        )
+    try:
+        candidate = candidate_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _err(
+            f"decision digest-check: failed to read {candidate_path}: {exc}"
+        )
+
+    decisions, db_read_mode, err = _read_decisions_ro(
+        status_filter, scope_filter, subcommand="digest-check"
+    )
+    if err is not None:
+        return _err(err)
+
+    try:
+        report = ddp.validate_decision_digest(
+            candidate, decisions, cutoff_epoch=cutoff_epoch
+        )
+    except ValueError as exc:
+        return _err(f"decision digest-check: {exc}")
+
+    payload = {
+        "report": report,
+        "candidate_path": str(candidate_path),
+        "decision_count": len(report["decision_ids"]),
+        "decision_ids": list(report["decision_ids"]),
+        "cutoff_epoch": cutoff_epoch,
+        "filters": filters,
+        "db_read_mode": db_read_mode,
+        "repo_root": str(_PROJECT_ROOT),
+    }
+
+    if report["healthy"]:
+        return _ok(payload)
+    # Drift: structured JSON on stdout (CI-friendly) + exit code 1.
+    # Matches the convention used by ``cc-policy hook doc-check`` and
+    # ``cc-policy shadow parity-invariant``.
+    payload["status"] = "violation"
+    print(json.dumps(payload))
+    return 1
+
+
+def _handle_prompt_pack(args) -> int:
+    """Handle ``cc-policy prompt-pack`` subcommands (read-only prompt-pack tools).
+
+    Actions:
+
+    * ``check`` (DEC-CLAUDEX-PROMPT-PACK-CHECK-CLI-001): reads a
+      candidate prompt-pack body from ``--candidate-path`` and
+      caller-supplied compiler inputs from ``--inputs-path`` (a
+      JSON file with ``workflow_id``, ``stage_id``, ``layers``,
+      ``generated_at``, and optional ``manifest_version``), then
+      delegates to
+      :func:`runtime.core.prompt_pack_validation.validate_prompt_pack`
+      and reports drift.
+
+    * ``compile`` (DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001): calls
+      the existing single compiler authority
+      :func:`runtime.core.prompt_pack.compile_prompt_pack_for_stage`
+      in **id mode only** (``--goal-id`` + ``--work-item-id``
+      resolved through
+      :func:`runtime.core.workflow_contract_capture.capture_workflow_contracts`)
+      and prints a JSON payload containing the rendered prompt-pack
+      body, the structured :class:`PromptPack` identity fields,
+      the content hash, and the projection metadata. ``LookupError``
+      and ``ValueError`` from the compiler surface as CLI errors
+      with a ``prompt-pack compile:`` prefix — the two error
+      classes are left distinguishable via the underlying
+      exception message, not collapsed into a single shape.
+
+    * ``subagent-start`` (DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001):
+      thin adapter over
+      :func:`runtime.core.prompt_pack.build_subagent_start_prompt_pack_response`.
+      Accepts a ``--payload`` JSON string carrying the six
+      request-contract fields (``workflow_id``, ``stage_id``,
+      ``goal_id``, ``work_item_id``, ``decision_scope``,
+      ``generated_at``). On success, prints the helper's report
+      shape (``status``, ``healthy``, ``violations``, ``envelope``)
+      as JSON to stdout. Invalid payloads return the same structural
+      ``invalid`` report from the helper. Compile-path errors
+      (``LookupError``/``ValueError``) surface on stderr with a
+      ``prompt-pack subagent-start:`` prefix.
+
+    All three actions are strictly read-only — they do not rewrite
+    any file, do not write to the runtime DB, do not emit any event,
+    and do not execute any prompt-pack consumer. All comparison
+    and compile logic lives in the pure library modules; the CLI
+    layer only handles argument binding, connection management,
+    and payload shaping.
+    """
+    if args.action == "check":
+        from pathlib import Path
+
+        candidate_path = Path(args.candidate_path).resolve()
+        inputs_path = Path(args.inputs_path).resolve()
+
+        if not candidate_path.is_file():
+            return _err(
+                f"prompt-pack check: candidate file not found at {candidate_path}"
+            )
+        if not inputs_path.is_file():
+            return _err(
+                f"prompt-pack check: inputs file not found at {inputs_path}"
+            )
+
+        try:
+            candidate = candidate_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return _err(
+                f"prompt-pack check: failed to read candidate {candidate_path}: {exc}"
+            )
+
+        try:
+            with inputs_path.open() as f:
+                inputs = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            return _err(
+                f"prompt-pack check: failed to read inputs {inputs_path}: {exc}"
+            )
+
+        # Validate the top-level inputs shape before delegating to
+        # the compiler. The validator itself raises ValueError on
+        # deep layer / identifier errors; we catch those below.
+        if not isinstance(inputs, dict):
+            return _err(
+                f"prompt-pack check: inputs JSON must be an object; "
+                f"got {type(inputs).__name__}"
+            )
+
+        workflow_id = inputs.get("workflow_id")
+        if not isinstance(workflow_id, str) or not workflow_id:
+            return _err(
+                "prompt-pack check: inputs.workflow_id must be a non-empty string"
+            )
+
+        stage_id = inputs.get("stage_id")
+        if not isinstance(stage_id, str) or not stage_id:
+            return _err(
+                "prompt-pack check: inputs.stage_id must be a non-empty string"
+            )
+
+        layers = inputs.get("layers")
+        if not isinstance(layers, dict):
+            return _err(
+                f"prompt-pack check: inputs.layers must be an object; "
+                f"got {type(layers).__name__ if layers is not None else 'missing'}"
+            )
+
+        generated_at = inputs.get("generated_at")
+        # ``bool`` is a subclass of ``int`` in Python — reject it
+        # explicitly so ``"generated_at": true`` doesn't slip
+        # through as an integer.
+        if isinstance(generated_at, bool) or not isinstance(generated_at, int):
+            return _err(
+                f"prompt-pack check: inputs.generated_at must be an int; "
+                f"got {type(generated_at).__name__}"
+            )
+        if generated_at < 0:
+            return _err(
+                "prompt-pack check: inputs.generated_at must be non-negative"
+            )
+
+        manifest_version = inputs.get("manifest_version")
+        if manifest_version is not None and (
+            not isinstance(manifest_version, str) or not manifest_version
+        ):
+            return _err(
+                "prompt-pack check: inputs.manifest_version must be a "
+                "non-empty string when present"
+            )
+
+        kwargs = {
+            "workflow_id": workflow_id,
+            "stage_id": stage_id,
+            "layers": layers,
+            "generated_at": generated_at,
+        }
+        if manifest_version is not None:
+            kwargs["manifest_version"] = manifest_version
+
+        try:
+            report = prompt_pack_validation_mod.validate_prompt_pack(
+                candidate, **kwargs
+            )
+        except ValueError as exc:
+            # The pure validator raises ValueError for deep layer /
+            # identifier shape problems. Surface that as a CLI
+            # error rather than a drift report, because it means
+            # the caller's inputs are malformed, not that the
+            # candidate drifted from a valid expected body.
+            return _err(f"prompt-pack check: invalid inputs: {exc}")
+
+        payload = {
+            "report": report,
+            "candidate_path": str(candidate_path),
+            "inputs_path": str(inputs_path),
+            "repo_root": str(_PROJECT_ROOT),
+        }
+
+        # Phase 7 Slice 12 — optional metadata validation gate.
+        # @decision DEC-CLAUDEX-PROMPT-PACK-CHECK-CLI-METADATA-001
+        # Title: --metadata-path extends check with metadata-drift validation; overall exit is 0 only when both body and metadata healthy
+        # Status: proposed (Phase 7 Slice 12)
+        # Rationale: Phase 7 Slice 11 made the compiled metadata
+        # envelope meaningful by deriving watched_files from the full
+        # concrete constitution set. A body-only checker cannot detect
+        # a candidate whose body is current while its metadata has
+        # been tampered with or left stale. Activating metadata
+        # validation requires an explicit operator opt-in via
+        # --metadata-path; when active, inputs.watched_files must be
+        # present and well-shaped — otherwise the CLI errors rather
+        # than silently falling back to the direct-builder default.
+        metadata_path_str = getattr(args, "metadata_path", None)
+        if metadata_path_str is not None:
+            metadata_path = Path(metadata_path_str).resolve()
+            if not metadata_path.is_file():
+                return _err(
+                    f"prompt-pack check: metadata file not found at "
+                    f"{metadata_path}"
+                )
+
+            try:
+                with metadata_path.open() as f:
+                    candidate_metadata = json.load(f)
+            except (OSError, json.JSONDecodeError) as exc:
+                return _err(
+                    f"prompt-pack check: failed to read metadata "
+                    f"{metadata_path}: {exc}"
+                )
+            if not isinstance(candidate_metadata, dict):
+                return _err(
+                    f"prompt-pack check: metadata JSON must be an "
+                    f"object; got {type(candidate_metadata).__name__}"
+                )
+
+            watched_files_raw = inputs.get("watched_files")
+            if watched_files_raw is None:
+                return _err(
+                    "prompt-pack check: --metadata-path requires "
+                    "inputs.watched_files to be present"
+                )
+            if not isinstance(watched_files_raw, list):
+                return _err(
+                    f"prompt-pack check: inputs.watched_files must be a "
+                    f"list of non-empty strings; got "
+                    f"{type(watched_files_raw).__name__}"
+                )
+            for wf in watched_files_raw:
+                if not isinstance(wf, str) or not wf:
+                    return _err(
+                        "prompt-pack check: inputs.watched_files "
+                        "must be a list of non-empty strings"
+                    )
+            watched_files_tuple = tuple(watched_files_raw)
+
+            metadata_kwargs = {
+                "workflow_id": workflow_id,
+                "stage_id": stage_id,
+                "layers": layers,
+                "generated_at": generated_at,
+                "watched_files": watched_files_tuple,
+            }
+            if manifest_version is not None:
+                metadata_kwargs["manifest_version"] = manifest_version
+
+            try:
+                metadata_report = (
+                    prompt_pack_validation_mod.validate_prompt_pack_metadata(
+                        candidate_metadata, **metadata_kwargs
+                    )
+                )
+            except ValueError as exc:
+                return _err(
+                    f"prompt-pack check: invalid metadata inputs: {exc}"
+                )
+
+            payload["metadata_report"] = metadata_report
+            payload["metadata_path"] = str(metadata_path)
+
+            overall_healthy = bool(report["healthy"]) and bool(
+                metadata_report["healthy"]
+            )
+            if overall_healthy:
+                return _ok(payload)
+            payload["status"] = "violation"
+            print(json.dumps(payload))
+            return 1
+
+        if report["healthy"]:
+            return _ok(payload)
+        payload["status"] = "violation"
+        print(json.dumps(payload))
+        return 1
+
+    if args.action == "compile":
+        # @decision DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001
+        # Title: cc-policy prompt-pack compile is the operator-preview surface on top of the single compiler authority
+        # Status: proposed (shadow-mode, Phase 2 prompt-pack operator preview)
+        # Rationale: The compile helper is already the single
+        # compiler authority (DEC-CLAUDEX-PROMPT-PACK-COMPILE-FOR-
+        # STAGE-001) and already supports id-mode resolution
+        # (DEC-CLAUDEX-PROMPT-PACK-COMPILE-MODE-SELECTION-001).
+        # This CLI surface is a thin adapter: it collects argv,
+        # opens a runtime connection, calls the helper in id mode,
+        # and prints a JSON payload rich enough for an operator to
+        # preview the compiled result without re-running the
+        # compiler. It does not duplicate any compile logic.
+        #
+        # Function-scope import deliberately — the module-level
+        # CLI import surface continues to forbid any direct
+        # ``runtime.core.prompt_pack`` import, so the shadow-only
+        # discipline guard can walk only ``tree.body`` (the
+        # module-level statements) and still pin that the compiler
+        # is not promoted to an always-loaded CLI dependency.
+        from runtime.core import prompt_pack as prompt_pack_mod
+
+        workflow_id = args.workflow_id
+        stage_id = args.stage_id
+        goal_id = args.goal_id
+        work_item_id = args.work_item_id
+        decision_scope = args.decision_scope
+        generated_at = args.generated_at
+
+        if generated_at < 0:
+            return _err(
+                "prompt-pack compile: --generated-at must be non-negative"
+            )
+
+        # When --finding flags are given, pass the explicit tuple.
+        # When absent (empty list from argparse default), pass None
+        # so the state capture reads live findings from the ledger.
+        raw_findings = getattr(args, "finding", None) or []
+        findings = tuple(raw_findings) if raw_findings else None
+        current_branch = getattr(args, "current_branch", None) or None
+        worktree_path = getattr(args, "worktree_path", None) or None
+        manifest_version = (
+            getattr(args, "manifest_version", None)
+            or prompt_pack_mod.MANIFEST_VERSION
+        )
+
+        # Function-scope imports of the other shadow-kernel helpers
+        # — needed because the CLI also re-renders the body for the
+        # operator-preview payload. Putting them next to the
+        # ``prompt_pack`` import above keeps the module-load graph
+        # unchanged and lets the shadow-discipline guard continue
+        # to pin the allowed import surface narrowly.
+        from runtime.core import prompt_pack_decisions as _ppd
+        from runtime.core import prompt_pack_resolver as _ppr
+        from runtime.core import prompt_pack_state as _pps
+        from runtime.core import workflow_contract_capture as _wcap
+
+        conn = _get_conn()
+        try:
+            try:
+                pack = prompt_pack_mod.compile_prompt_pack_for_stage(
+                    conn,
+                    workflow_id=workflow_id,
+                    stage_id=stage_id,
+                    goal_id=goal_id,
+                    work_item_id=work_item_id,
+                    decision_scope=decision_scope,
+                    generated_at=generated_at,
+                    unresolved_findings=findings,
+                    current_branch=current_branch,
+                    worktree_path=worktree_path,
+                    manifest_version=manifest_version,
+                )
+            except LookupError as exc:
+                return _err(f"prompt-pack compile: {exc}")
+            except ValueError as exc:
+                return _err(f"prompt-pack compile: {exc}")
+
+            # Re-render the prompt-pack body from the same
+            # canonical layer resolution so the operator can
+            # inspect the exact text the compiled PromptPack
+            # represents. ``compile_prompt_pack_for_stage`` stores
+            # the hash of this body on the PromptPack; recomputing
+            # the layers here is deterministic and deliberately
+            # avoids a second compiler authority. If the two ever
+            # disagreed that would be a correctness bug in
+            # build_prompt_pack, which the test suite already pins.
+            goal_contract, work_item_contract = (
+                _wcap.capture_workflow_contracts(
+                    conn, goal_id=goal_id, work_item_id=work_item_id
+                )
+            )
+            workflow_summary = _ppr.workflow_summary_from_contracts(
+                workflow_id=workflow_id,
+                goal=goal_contract,
+                work_item=work_item_contract,
+            )
+            decision_records = _ppd.capture_relevant_decisions(
+                conn, scope=decision_scope
+            )
+            decision_summary = _ppr.local_decision_summary_from_records(
+                decisions=decision_records
+            )
+            snapshot = _pps.capture_runtime_state_snapshot(
+                conn,
+                workflow_id=workflow_id,
+                unresolved_findings=findings,
+                work_item_id=work_item_id,
+                current_branch=current_branch,
+                worktree_path=worktree_path,
+            )
+            runtime_state_summary = _ppr.runtime_state_summary_from_snapshot(
+                snapshot=snapshot
+            )
+            layers = _ppr.resolve_prompt_pack_layers(
+                stage=stage_id,
+                workflow_summary=workflow_summary,
+                decision_summary=decision_summary,
+                runtime_state_summary=runtime_state_summary,
+            )
+            rendered_body = prompt_pack_mod.render_prompt_pack(
+                workflow_id=workflow_id,
+                stage_id=stage_id,
+                layers=layers,
+            )
+        finally:
+            conn.close()
+
+        # Structured operator-preview payload. Mirrors the shape
+        # ``prompt_pack_validation`` callers already expect for
+        # PromptPack fields, plus the rendered body and the
+        # decoded metadata.
+        #
+        # @decision DEC-CLAUDEX-PROMPT-PACK-METADATA-SERIALISER-SINGLE-AUTHORITY-001
+        # Title: CLI compile routes metadata shape through the public prompt_pack_validation.serialise_prompt_pack_metadata helper
+        # Status: proposed (Phase 7 Slice 12 correction)
+        # Rationale: Slice 12 introduced the rebuild-via-compiler
+        # metadata validator whose expected output is shaped by
+        # ``serialise_prompt_pack_metadata``. If this CLI path also
+        # constructed the metadata dict inline, there would be two
+        # authorities for the on-wire metadata shape and a later
+        # field addition in one place would silently drift from the
+        # other. Calling the public helper makes the serialiser the
+        # single authority for the JSON shape of
+        # ``pack.metadata`` — the CLI emits exactly what the
+        # validator rebuilds.
+        payload = {
+            "workflow_id": pack.workflow_id,
+            "stage_id": pack.stage_id,
+            "layer_names": list(pack.layer_names),
+            "content_hash": pack.content_hash,
+            "rendered_body": rendered_body,
+            "metadata": prompt_pack_validation_mod.serialise_prompt_pack_metadata(
+                pack.metadata
+            ),
+            "inputs": {
+                "goal_id": goal_id,
+                "work_item_id": work_item_id,
+                "decision_scope": decision_scope,
+                "unresolved_findings": list(findings) if findings is not None else None,
+                "current_branch": current_branch,
+                "worktree_path": worktree_path,
+                "manifest_version": manifest_version,
+            },
+            # Phase 7 Slice 2: derived revalidation contract. Writing
+            # ``rendered_body`` and ``validation_inputs`` to files and
+            # invoking ``cc-policy prompt-pack check`` must produce
+            # exit 0 with ``healthy=True`` and matching hash. This
+            # closes the derived-surface freshness gap: a compiled
+            # artifact can be revalidated from the compile output
+            # alone without the caller reconstructing layers.
+            #
+            # Phase 7 Slice 12: extended ``validation_inputs`` with
+            # ``watched_files`` so metadata-path revalidation (the new
+            # ``prompt-pack check --metadata-path`` mode) can rebuild
+            # the expected ``stale_condition.watched_files`` tuple
+            # without the caller reconstructing the full concrete
+            # constitution set. The value is sourced from
+            # ``pack.metadata.stale_condition.watched_files`` in
+            # deterministic order — the same authority the compile
+            # path already derived from
+            # ``prompt_pack_resolver.constitution_watched_files()``.
+            "validation_inputs": {
+                "workflow_id": workflow_id,
+                "stage_id": stage_id,
+                "layers": {k: v for k, v in layers.items()},
+                "generated_at": generated_at,
+                "manifest_version": manifest_version,
+                "watched_files": list(
+                    pack.metadata.stale_condition.watched_files
+                ),
+            },
+        }
+        return _ok(payload)
+
+    if args.action == "subagent-start":
+        # @decision DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001
+        # Title: subagent-start CLI is a thin adapter over build_subagent_start_prompt_pack_response
+        # Status: proposed (Phase 2 hook-adapter reduction)
+        # Rationale: Function-scope import keeps the module-level import surface clean.
+        # The helper owns all validation and compilation logic; the CLI only handles
+        # argparse binding, JSON decode, connection management, and exit-code shaping.
+        from runtime.core import prompt_pack as prompt_pack_mod
+
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as exc:
+            return _err(f"prompt-pack subagent-start: payload is not valid JSON: {exc}")
+
+        conn = _get_conn()
+        try:
+            try:
+                report = prompt_pack_mod.build_subagent_start_prompt_pack_response(conn, payload)
+            except (LookupError, ValueError) as exc:
+                return _err(f"prompt-pack subagent-start: {exc}")
+        finally:
+            conn.close()
+
+        if report["healthy"]:
+            return _ok(report)
+        print(json.dumps(report))
+        return 1
+
+    return _err(f"unknown prompt-pack action: {args.action}")
+
+
+def _handle_shadow(args) -> int:
+    """Handle ``cc-policy shadow`` subcommands (read-only shadow observer tools).
+
+    DEC-CLAUDEX-SHADOW-PARITY-001: the actions here are strictly read-only —
+    no emits, no writes, no migrations. Two actions are supported:
+
+    * ``parity-report`` — aggregate recent ``shadow_stage_decision`` events
+      into a JSON summary by reason code. Always exits 0.
+    * ``parity-invariant`` — same aggregation, but exits non-zero when the
+      report shows any ``has_unspecified_divergence`` or ``has_unknown_reason``
+      condition. Output format includes the full report plus a structured
+      ``invariant`` dict with ``healthy``, ``violations``, and ``details``
+      fields so CI consumers can render the failure without re-parsing.
+    """
+    conn = _get_conn()
+    try:
+        if args.action == "parity-report":
+            rows = events_mod.query(
+                conn,
+                type="shadow_stage_decision",
+                source=getattr(args, "source", None),
+                since=getattr(args, "since", None),
+                limit=getattr(args, "limit", 200),
+            )
+            report = shadow_parity_mod.summarize(rows)
+            return _ok({"report": report})
+
+        if args.action == "parity-invariant":
+            rows = events_mod.query(
+                conn,
+                type="shadow_stage_decision",
+                source=getattr(args, "source", None),
+                since=getattr(args, "since", None),
+                limit=getattr(args, "limit", 200),
+            )
+            report = shadow_parity_mod.summarize(rows)
+            invariant = shadow_parity_mod.check_invariants(report)
+            payload = {
+                "report": report,
+                "invariant": invariant,
+            }
+            if invariant["healthy"]:
+                return _ok(payload)
+            # Unhealthy: print structured JSON to stdout (CI-friendly) and
+            # return non-zero. This is a deliberate departure from _err(),
+            # which writes to stderr — the full report is useful either way
+            # and consumers should always be able to parse stdout.
+            payload["status"] = "violation"
+            print(json.dumps(payload))
+            return 1
+    finally:
+        conn.close()
+    return _err(f"unknown shadow action: {args.action}")
 
 
 def _provision_worktree(
@@ -568,7 +1572,7 @@ def _handle_dispatch(args) -> int:
             return _ok(result)
 
         elif args.action == "process-stop":
-            # Read JSON from stdin: {"agent_type": "tester", "project_root": "/path"}
+            # Read JSON from stdin: {"agent_type": "reviewer", "project_root": "/path"}
             import json as _json
 
             raw = sys.stdin.read()
@@ -599,8 +1603,6 @@ def _handle_dispatch(args) -> int:
                     "next_role": result["next_role"],
                     "workflow_id": result["workflow_id"],
                     "auto_dispatch": result.get("auto_dispatch", False),
-                    "codex_blocked": result.get("codex_blocked", False),
-                    "codex_reason": result.get("codex_reason", ""),
                     # W-GWT-1 (DEC-GUARD-WT-003, DEC-GUARD-WT-007): pass through
                     # worktree_path and guardian_mode so callers (post-task.sh,
                     # orchestrator) can read them from the structured result without
@@ -633,6 +1635,79 @@ def _handle_dispatch(args) -> int:
         elif args.action == "agent-stop":
             lifecycle_mod.on_agent_stop(conn, args.agent_type, args.agent_id)
             return _ok({"agent_id": args.agent_id, "agent_type": args.agent_type})
+
+        elif args.action == "agent-prompt":
+            # DEC-CLAUDEX-AGENT-PROMPT-001: runtime-owned Agent dispatch prompt producer.
+            # Resolves six contract fields from runtime state and returns a
+            # prompt_prefix containing the CLAUDEX_CONTRACT_BLOCK: line on line 1.
+            from runtime.core.agent_prompt import build_agent_dispatch_prompt as _build_ap
+
+            try:
+                result = _build_ap(
+                    conn,
+                    workflow_id=args.workflow_id,
+                    stage_id=args.stage_id,
+                    goal_id=getattr(args, "goal_id", None),
+                    work_item_id=getattr(args, "work_item_id", None),
+                    decision_scope=getattr(args, "decision_scope", "kernel"),
+                    generated_at=getattr(args, "generated_at", None),
+                )
+            except ValueError as exc:
+                return _err(f"dispatch agent-prompt: {exc}")
+            return _ok(result)
+
+        elif args.action == "attempt-issue":
+            # @decision DEC-CLAUDEX-HOOK-WIRING-001
+            # Title: attempt-issue CLI wires PreToolUse:Agent to dispatch_attempts.issue
+            # Status: accepted
+            # Rationale: pre-agent.sh calls this at PreToolUse:Agent time when a
+            #   CLAUDEX_CONTRACT_BLOCK is present.  dispatch_hook.record_agent_dispatch()
+            #   upserts agent_sessions + seats and issues a pending attempt in one call.
+            from runtime.core.dispatch_hook import record_agent_dispatch as _ra_dispatch
+
+            try:
+                result = _ra_dispatch(
+                    conn,
+                    args.session_id,
+                    args.agent_type,
+                    args.instruction or "",
+                    workflow_id=args.workflow_id or None,
+                    timeout_at=args.timeout_at or None,
+                )
+            except (ValueError, Exception) as exc:
+                return _err(f"dispatch attempt-issue: {exc}")
+            return _ok(result)
+
+        elif args.action == "attempt-claim":
+            # @decision DEC-CLAUDEX-HOOK-WIRING-001
+            # Title: attempt-claim CLI wires SubagentStart to dispatch_attempts.claim
+            # Status: accepted
+            # Rationale: subagent-start.sh calls this after consuming the carrier row.
+            #   dispatch_hook.record_subagent_delivery() finds the most recent pending
+            #   attempt for the seat and advances it to 'delivered'.  Returns
+            #   {"found": false} when no pending attempt exists (best-effort no-op).
+            from runtime.core.dispatch_hook import record_subagent_delivery as _ra_delivery
+
+            try:
+                result = _ra_delivery(conn, args.session_id, args.agent_type)
+            except (ValueError, Exception) as exc:
+                return _err(f"dispatch attempt-claim: {exc}")
+            if result is None:
+                return _ok({"found": False, "attempt": None})
+            return _ok({"found": True, "attempt": result})
+
+        elif args.action == "attempt-expire-stale":
+            # Sweep pending/delivered attempts whose timeout_at has elapsed.
+            # Called by scripts/claudex-watchdog.sh on every tick so timed-out
+            # attempts are cleaned up without a manual caller.
+            # Returns {"expired": N} — N=0 is normal when nothing is stale.
+            from runtime.core.dispatch_attempts import expire_stale as _expire_stale
+
+            try:
+                n = _expire_stale(conn)
+            except Exception as exc:
+                return _err(f"dispatch attempt-expire-stale: {exc}")
+            return _ok({"expired": n})
 
     finally:
         conn.close()
@@ -1424,7 +2499,7 @@ def _handle_evaluate_quick(args) -> int:
     Title: evaluate quick exits 1 on ineligible diffs
     Status: accepted
     Rationale: Shell callers (orchestrator scripts) rely on exit code to
-      branch: 0=approved, 1=needs full tester. Emitting error JSON to
+      branch: 0=approved, 1=needs full reviewer. Emitting error JSON to
       stderr follows the cc-policy convention (_err returns exit code 1).
       The full result dict is always in the JSON payload regardless of
       exit code so callers can log the reason.
@@ -1514,6 +2589,20 @@ def _handle_context(args) -> int:
                 "workflow_id": ctx.workflow_id or "",
             }
         )
+
+    if args.action == "capability-contract":
+        from runtime.core.authority_registry import resolve_contract
+
+        stage = args.stage
+        contract = resolve_contract(stage)
+        if contract is None:
+            from runtime.core.stage_registry import ACTIVE_STAGES
+
+            return _err(
+                f"Unknown or sink stage {stage!r}; "
+                f"valid active stages: {sorted(ACTIVE_STAGES)}"
+            )
+        return _ok({"data": contract.as_prompt_projection()})
 
     return _err(f"unknown context action: {args.action}")
 
@@ -2144,6 +3233,351 @@ def build_parser() -> argparse.ArgumentParser:
     eq.add_argument("--since", type=int)
     eq.add_argument("--limit", type=int, default=50)
 
+    # hook — read-only ClauDEX hook manifest tooling
+    # (DEC-CLAUDEX-HOOK-MANIFEST-001)
+    hook_p = subparsers.add_parser(
+        "hook",
+        help="ClauDEX hook manifest tools (read-only)",
+    )
+    hook_sub = hook_p.add_subparsers(dest="action", required=True)
+    hook_validate = hook_sub.add_parser(
+        "validate-settings",
+        help=(
+            "Validate settings.json repo-owned hook wiring against "
+            "runtime.core.hook_manifest; non-zero exit on drift or invalid "
+            "adapter files"
+        ),
+    )
+    hook_validate.add_argument(
+        "--settings-path",
+        default=None,
+        help=(
+            "Path to the settings.json to validate. Defaults to the repo "
+            "root's settings.json."
+        ),
+    )
+
+    hook_doc_check = hook_sub.add_parser(
+        "doc-check",
+        help=(
+            "Validate hooks/HOOKS.md against the runtime-compiled "
+            "hook-doc projection; non-zero exit on drift "
+            "(DEC-CLAUDEX-HOOK-DOC-VALIDATION-001)"
+        ),
+    )
+    hook_doc_check.add_argument(
+        "--doc-path",
+        default=None,
+        help=(
+            "Path to the hook doc to validate. Defaults to the repo "
+            "root's hooks/HOOKS.md."
+        ),
+    )
+
+    # constitution — read-only constitution registry inspection/validation
+    const_p = subparsers.add_parser(
+        "constitution",
+        help="Constitution registry tools (read-only)",
+    )
+    const_sub = const_p.add_subparsers(dest="action", required=True)
+    const_sub.add_parser(
+        "list",
+        help="List all constitution-level entries (concrete + planned) as JSON",
+    )
+    const_validate = const_sub.add_parser(
+        "validate",
+        help=(
+            "Validate that all concrete constitution paths exist on disk; "
+            "non-zero exit when any path is missing"
+        ),
+    )
+    const_validate.add_argument(
+        "--repo-root",
+        default=None,
+        help=(
+            "Path to the repo root for file-existence checks. Defaults to "
+            "the project root."
+        ),
+    )
+
+    # decision — read-only decision-digest CLI projection surface
+    # (DEC-CLAUDEX-DECISION-DIGEST-CLI-001, Phase 7 Slice 14)
+    dec_p = subparsers.add_parser(
+        "decision",
+        help="Decision registry projections (read-only)",
+    )
+    dec_sub = dec_p.add_subparsers(dest="action", required=True)
+    dec_digest = dec_sub.add_parser(
+        "digest",
+        help=(
+            "Render the decision-digest projection from the canonical "
+            "decision records stored in the runtime registry"
+        ),
+    )
+    dec_digest.add_argument(
+        "--cutoff-epoch",
+        default="0",
+        help=(
+            "Inclusive lower bound on DecisionRecord.updated_at. "
+            "Decisions older than this epoch are dropped from the "
+            "projection. Default: 0 (include all)."
+        ),
+    )
+    dec_digest.add_argument(
+        "--generated-at",
+        default=None,
+        help=(
+            "Unix epoch timestamp to stamp on the projection metadata. "
+            "Default: current time."
+        ),
+    )
+    dec_digest.add_argument(
+        "--status",
+        default=None,
+        help="Filter decisions by DecisionRecord.status (optional)",
+    )
+    dec_digest.add_argument(
+        "--scope",
+        default=None,
+        help="Filter decisions by DecisionRecord.scope (optional)",
+    )
+
+    # decision digest-check — Phase 7 Slice 15 read-only drift validation
+    dec_digest_check = dec_sub.add_parser(
+        "digest-check",
+        help=(
+            "Validate a candidate decision-digest body against the "
+            "projection rendered from the canonical decision records; "
+            "exits 0 when healthy and 1 with status=violation on drift"
+        ),
+    )
+    dec_digest_check.add_argument(
+        "--candidate-path",
+        required=True,
+        help=(
+            "Path to the candidate decision-digest file (UTF-8 text). "
+            "Read-only — the CLI never writes to this path."
+        ),
+    )
+    dec_digest_check.add_argument(
+        "--cutoff-epoch",
+        default="0",
+        help=(
+            "Inclusive lower bound on DecisionRecord.updated_at applied "
+            "before rendering the expected body. Default: 0 (include all)."
+        ),
+    )
+    dec_digest_check.add_argument(
+        "--status",
+        default=None,
+        help="Filter decisions by DecisionRecord.status (optional)",
+    )
+    dec_digest_check.add_argument(
+        "--scope",
+        default=None,
+        help="Filter decisions by DecisionRecord.scope (optional)",
+    )
+
+    # prompt-pack — read-only ClauDEX prompt-pack drift validation
+    # (DEC-CLAUDEX-PROMPT-PACK-CHECK-CLI-001)
+    pp_p = subparsers.add_parser(
+        "prompt-pack",
+        help="ClauDEX prompt-pack tools (read-only)",
+    )
+    pp_sub = pp_p.add_subparsers(dest="action", required=True)
+    pp_check = pp_sub.add_parser(
+        "check",
+        help=(
+            "Validate a candidate prompt-pack body against the "
+            "runtime-compiled expected projection; non-zero exit "
+            "on drift (DEC-CLAUDEX-PROMPT-PACK-VALIDATION-001)"
+        ),
+    )
+    pp_check.add_argument(
+        "--candidate-path",
+        required=True,
+        help="Path to the candidate prompt-pack body file",
+    )
+    pp_check.add_argument(
+        "--inputs-path",
+        required=True,
+        help=(
+            "Path to a JSON file supplying the compiler inputs: "
+            "workflow_id (string), stage_id (string), layers "
+            "(object), generated_at (int), and optional "
+            "manifest_version (string). When --metadata-path is "
+            "also supplied, this inputs object must additionally "
+            "include watched_files (list of non-empty strings)"
+        ),
+    )
+    # Phase 7 Slice 12 — optional metadata drift gate
+    # (DEC-CLAUDEX-PROMPT-PACK-METADATA-VALIDATION-001).
+    pp_check.add_argument(
+        "--metadata-path",
+        default=None,
+        help=(
+            "Optional path to a JSON file containing the candidate "
+            "prompt-pack metadata envelope (the ``metadata`` object "
+            "from ``cc-policy prompt-pack compile``). When supplied, "
+            "the CLI additionally validates the metadata against "
+            "the compiler-rebuilt expected metadata; overall exit "
+            "is 0 only when both body and metadata reports are "
+            "healthy. Requires inputs.watched_files (list of non-"
+            "empty strings) to be present"
+        ),
+    )
+
+    # prompt-pack compile — read-only operator-preview surface on top
+    # of the single compiler authority
+    # (DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001). id mode only.
+    pp_compile = pp_sub.add_parser(
+        "compile",
+        help=(
+            "Compile a prompt pack via the single compiler authority "
+            "in id mode and print the rendered body + identity fields "
+            "as JSON (read-only, DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001)"
+        ),
+    )
+    pp_compile.add_argument(
+        "--workflow-id",
+        required=True,
+        help="Workflow identifier (runtime.core.workflows)",
+    )
+    pp_compile.add_argument(
+        "--stage-id",
+        required=True,
+        help="Stage identifier (runtime.core.stage_registry)",
+    )
+    pp_compile.add_argument(
+        "--goal-id",
+        required=True,
+        help="goal_contracts.goal_id to resolve via workflow_contract_capture",
+    )
+    pp_compile.add_argument(
+        "--work-item-id",
+        required=True,
+        help="work_items.work_item_id to resolve via workflow_contract_capture",
+    )
+    pp_compile.add_argument(
+        "--decision-scope",
+        required=True,
+        help="Exact-match scope string for the decision capture query",
+    )
+    pp_compile.add_argument(
+        "--generated-at",
+        type=int,
+        required=True,
+        help="Unix epoch seconds stamped into ProjectionMetadata.generated_at",
+    )
+    pp_compile.add_argument(
+        "--finding",
+        action="append",
+        default=[],
+        help=(
+            "Unresolved finding identifier (repeatable). When provided, "
+            "overrides live findings from the reviewer findings ledger. "
+            "When absent, open findings are read from the ledger automatically"
+        ),
+    )
+    pp_compile.add_argument(
+        "--current-branch",
+        default=None,
+        help=(
+            "Optional explicit current branch override — takes precedence "
+            "over the workflow binding's branch column"
+        ),
+    )
+    pp_compile.add_argument(
+        "--worktree-path",
+        default=None,
+        help=(
+            "Optional explicit worktree path override — takes precedence "
+            "over the workflow binding's worktree_path column"
+        ),
+    )
+    pp_compile.add_argument(
+        "--manifest-version",
+        default=None,
+        help=(
+            "Optional manifest version string stamped into the prompt "
+            "pack's ProjectionMetadata.source_versions and provenance. "
+            "Defaults to runtime.core.prompt_pack.MANIFEST_VERSION"
+        ),
+    )
+
+    # prompt-pack subagent-start — thin adapter over the composition helper
+    # (DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001)
+    pp_sa = pp_sub.add_parser(
+        "subagent-start",
+        help=(
+            "Build a SubagentStart hook envelope from a JSON payload "
+            "(read-only, DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001)"
+        ),
+    )
+    pp_sa.add_argument(
+        "--payload",
+        required=True,
+        help=(
+            "JSON object carrying the six request-contract fields at top level: "
+            "workflow_id, stage_id, goal_id, work_item_id, decision_scope (strings), "
+            "generated_at (int unix epoch seconds)"
+        ),
+    )
+
+    # shadow — read-only ClauDEX shadow observer reporting
+    # (DEC-CLAUDEX-SHADOW-PARITY-001)
+    shadow_p = subparsers.add_parser(
+        "shadow",
+        help="ClauDEX shadow observer tools (read-only)",
+    )
+    shadow_sub = shadow_p.add_subparsers(dest="action", required=True)
+    sr_parity = shadow_sub.add_parser(
+        "parity-report",
+        help="Aggregate recent shadow_stage_decision events into a JSON summary",
+    )
+    sr_parity.add_argument(
+        "--source",
+        default=None,
+        help="Filter by events.source (e.g. 'workflow:wf-foo')",
+    )
+    sr_parity.add_argument(
+        "--since",
+        type=int,
+        default=None,
+        help="Earliest created_at (unix epoch seconds) to include",
+    )
+    sr_parity.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum number of shadow_stage_decision rows to aggregate (default 200)",
+    )
+
+    sr_invariant = shadow_sub.add_parser(
+        "parity-invariant",
+        help=(
+            "Exit non-zero if shadow_stage_decision events show any "
+            "unspecified_divergence or unknown reason code"
+        ),
+    )
+    sr_invariant.add_argument(
+        "--source",
+        default=None,
+        help="Filter by events.source (e.g. 'workflow:wf-foo')",
+    )
+    sr_invariant.add_argument(
+        "--since",
+        type=int,
+        default=None,
+        help="Earliest created_at (unix epoch seconds) to include",
+    )
+    sr_invariant.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum number of shadow_stage_decision rows to inspect (default 200)",
+    )
+
     # worktree
     wt_p = subparsers.add_parser("worktree", help="Worktree registry")
     wt_sub = wt_p.add_subparsers(dest="action", required=True)
@@ -2199,7 +3633,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lc_onstop.add_argument(
         "agent_type",
-        help="Role to match for deactivation (implementer, tester, guardian, planner)",
+        help="Role to match for deactivation (implementer, reviewer, guardian, planner)",
     )
     # ENFORCE-RCA-6-ext/#26: scoped deactivation prevents the handler from
     # grabbing a globally-newer active marker from an unrelated project and
@@ -2237,9 +3671,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process an agent stop event (JSON on stdin). Returns hookSpecificOutput.",
     )
 
+    # agent-prompt: runtime-owned producer for Agent tool prompt bodies
+    # (DEC-CLAUDEX-AGENT-PROMPT-001). Emits prompt_prefix containing the
+    # CLAUDEX_CONTRACT_BLOCK: line so pre-agent.sh can extract the six contract
+    # fields at PreToolUse:Agent time.
+    dap = dp_sub.add_parser(
+        "agent-prompt",
+        help=(
+            "Produce an Agent tool prompt prefix containing a CLAUDEX_CONTRACT_BLOCK line. "
+            "Resolves goal_id and work_item_id from runtime state when omitted."
+        ),
+    )
+    dap.add_argument("--workflow-id", dest="workflow_id", required=True)
+    dap.add_argument("--stage-id", dest="stage_id", required=True)
+    dap.add_argument("--goal-id", dest="goal_id", default=None)
+    dap.add_argument("--work-item-id", dest="work_item_id", default=None)
+    dap.add_argument("--decision-scope", dest="decision_scope", default="kernel")
+    dap.add_argument("--generated-at", dest="generated_at", type=int, default=None)
+
     # agent-start / agent-stop: marker lifecycle
     das = dp_sub.add_parser("agent-start", help="Mark agent as active (set marker)")
-    das.add_argument("agent_type", help="Role (implementer, tester, guardian, planner)")
+    das.add_argument("agent_type", help="Role (implementer, reviewer, guardian, planner)")
     das.add_argument("agent_id", help="Unique agent identifier")
     # W-CONV-2: optional scoping so subagent-start.sh can write project-scoped markers
     das.add_argument(
@@ -2259,6 +3711,64 @@ def build_parser() -> argparse.ArgumentParser:
     dae.add_argument("agent_type", help="Role (for symmetry; not used in deactivation query)")
     dae.add_argument("agent_id", help="Unique agent identifier")
 
+    # attempt-issue: PreToolUse:Agent → issue a pending dispatch_attempts row
+    # (DEC-CLAUDEX-HOOK-WIRING-001)
+    daip = dp_sub.add_parser(
+        "attempt-issue",
+        help=(
+            "Issue a pending dispatch attempt at PreToolUse:Agent time. "
+            "Upserts agent_sessions + seats on the fly."
+        ),
+    )
+    daip.add_argument(
+        "--session-id", dest="session_id", required=True,
+        help="Orchestrator session_id from PreToolUse payload",
+    )
+    daip.add_argument(
+        "--agent-type", dest="agent_type", required=True,
+        help="tool_input.subagent_type from PreToolUse payload",
+    )
+    daip.add_argument(
+        "--instruction", dest="instruction", default="",
+        help="Diagnostic label (e.g. the CLAUDEX_CONTRACT_BLOCK line). Not the full prompt.",
+    )
+    daip.add_argument(
+        "--workflow-id", dest="workflow_id", default=None,
+        help="Optional workflow binding extracted from the contract block",
+    )
+    daip.add_argument(
+        "--timeout-at", dest="timeout_at", type=int, default=None,
+        help="Optional Unix timestamp for stale-attempt sweep",
+    )
+
+    # attempt-claim: SubagentStart → claim delivery on the most recent pending attempt
+    # (DEC-CLAUDEX-HOOK-WIRING-001)
+    dacp = dp_sub.add_parser(
+        "attempt-claim",
+        help=(
+            "Claim delivery of the most recent pending attempt at SubagentStart time. "
+            "Returns {found: false} when no pending attempt exists."
+        ),
+    )
+    dacp.add_argument(
+        "--session-id", dest="session_id", required=True,
+        help="session_id from SubagentStart payload",
+    )
+    dacp.add_argument(
+        "--agent-type", dest="agent_type", required=True,
+        help="agent_type from SubagentStart payload",
+    )
+
+    # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
+    # Called by scripts/claudex-watchdog.sh on every tick.
+    dp_sub.add_parser(
+        "attempt-expire-stale",
+        help=(
+            "Sweep pending/delivered dispatch attempts past their timeout_at "
+            "and transition them to timed_out. Returns {expired: N}."
+        ),
+    )
+
     # statusline
     sl_p = subparsers.add_parser("statusline", help="Runtime-backed statusline snapshot")
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
@@ -2271,7 +3781,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr_start = tr_sub.add_parser("start", help="Begin a new trace for a session")
     tr_start.add_argument("session_id")
     tr_start.add_argument(
-        "--role", dest="role", default=None, help="Agent role (implementer, tester, planner, ...)"
+        "--role", dest="role", default=None, help="Agent role (implementer, reviewer, planner, ...)"
     )
     tr_start.add_argument("--ticket", default=None, help="Ticket reference (e.g. TKT-013)")
 
@@ -2415,7 +3925,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls_sub = ls_p.add_subparsers(dest="action", required=True)
 
     ls_issue = ls_sub.add_parser("issue-for-dispatch", help="Issue a new dispatch lease")
-    ls_issue.add_argument("role", help="Agent role (implementer, tester, guardian, planner)")
+    ls_issue.add_argument("role", help="Agent role (implementer, reviewer, guardian, planner)")
     ls_issue.add_argument("--workflow-id", dest="workflow_id", default=None)
     ls_issue.add_argument("--worktree-path", dest="worktree_path", default=None)
     ls_issue.add_argument("--branch", default=None)
@@ -2508,7 +4018,7 @@ def build_parser() -> argparse.ArgumentParser:
         "route",
         help="Determine the next role given (role, verdict) using the canonical routing table",
     )
-    co_route.add_argument("role", help="Completing role (tester, guardian, implementer, planner)")
+    co_route.add_argument("role", help="Completing role (reviewer, guardian, implementer, planner)")
     co_route.add_argument("verdict", help="Verdict string from the completion record")
 
     # sidecar
@@ -2565,6 +4075,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Return {role, agent_id, workflow_id} resolved via lease -> marker -> env var. "
             "Used by SubagentStop hooks to get the stopping agent's identity."
         ),
+    )
+    cap_contract_p = ctx_sub.add_parser(
+        "capability-contract",
+        help="Return the capability contract for a stage as JSON (read-only projection).",
+    )
+    cap_contract_p.add_argument(
+        "--stage",
+        required=True,
+        help="Stage identifier (e.g. 'planner', 'reviewer', 'guardian:land') or live alias (e.g. 'Plan').",
     )
 
     # policy — list and explain registered policies
@@ -2688,7 +4207,7 @@ def build_parser() -> argparse.ArgumentParser:
     obs_emit.add_argument("value", type=float, help="Scalar metric value")
     obs_emit.add_argument("--labels", default=None, help="JSON object of label key/value pairs")
     obs_emit.add_argument("--session-id", dest="session_id", default=None)
-    obs_emit.add_argument("--role", default=None, help="Agent role (implementer, tester, ...)")
+    obs_emit.add_argument("--role", default=None, help="Agent role (implementer, reviewer, ...)")
 
     obs_sub.add_parser(
         "emit-batch",
@@ -2813,6 +4332,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_marker(args)
     if args.domain == "event":
         return _handle_event(args)
+    if args.domain == "hook":
+        return _handle_hook(args)
+    if args.domain == "constitution":
+        return _handle_constitution(args)
+    if args.domain == "decision":
+        return _handle_decision(args)
+    if args.domain == "prompt-pack":
+        return _handle_prompt_pack(args)
+    if args.domain == "shadow":
+        return _handle_shadow(args)
     if args.domain == "worktree":
         return _handle_worktree(args)
     if args.domain == "lifecycle":

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-full-lifecycle.sh — Simulates a complete planner->implementer->tester
+# test-full-lifecycle.sh — Simulates a complete planner->implementer->reviewer
 # ->guardian dispatch cycle and verifies every enforcement point along the way.
 #
 # Production sequence exercised:
@@ -13,17 +13,17 @@
 #       - Set marker role=implementer
 #       - Source write: ALLOWED
 #       - Governance write: DENIED
-#       - post-task.sh fired with agent_type=implementer -> tester enqueued
-#   4. Tester phase:
-#       - Set marker role=tester
-#       - Source write: DENIED
-#       - post-task.sh fired with agent_type=tester -> guardian enqueued
+#       - post-task.sh fired with agent_type=implementer -> reviewer enqueued
+#   4. Reviewer phase (Phase 8 Slice 11: reviewer replaces retired tester):
+#       - Set marker role=reviewer
+#       - Source write: DENIED (read-only stage)
+#       - post-task.sh fired with agent_type=reviewer -> guardian enqueued
 #   5. Guardian phase:
 #       - Set marker role=guardian
 #       - Set proof=verified, test-status=pass
 #       - Git op: ALLOWED
 #       - post-task.sh fired with agent_type=guardian -> cycle complete
-#   6. Verify dispatch queue progressed: planner->implementer->tester->guardian
+#   6. Verify dispatch queue progressed: planner->implementer->reviewer->guardian
 #   7. Verify events recorded for each agent_complete
 #   8. Cleanup
 #
@@ -31,11 +31,13 @@
 # @title Full lifecycle test exercises the complete dispatch cycle end-to-end
 # @status accepted
 # @rationale The production system is a state machine: planner->implementer->
-#   tester->guardian. Unit tests and matrix tests verify individual cells.
-#   The lifecycle test verifies the transitions: that each phase correctly
-#   denies what it should, produces the right dispatch suggestion, and leaves
-#   the runtime in the correct state for the next phase. This is the compound
-#   interaction test that crosses all component boundaries.
+#   reviewer->guardian. Phase 8 Slice 11 retired the legacy ``tester`` role;
+#   the reviewer is the live read-only evaluator after Slice 11. Unit tests
+#   and matrix tests verify individual cells. The lifecycle test verifies the
+#   transitions: that each phase correctly denies what it should, produces the
+#   right dispatch suggestion, and leaves the runtime in the correct state for
+#   the next phase. This is the compound interaction test that crosses all
+#   component boundaries.
 #
 # Usage:  bash tests/acceptance/test-full-lifecycle.sh
 # Exit:   0 all pass, 1 any fail
@@ -208,42 +210,48 @@ out=$(run_guard "$GIT_PAYLOAD")
 assert_deny  "implementer: git op denied"           "$out"
 
 post=$(run_post_task "implementer")
-assert_contains "implementer post-task: suggests tester" "$post" "tester"
+assert_contains "implementer post-task: suggests reviewer" "$post" "reviewer"
 
 # ---------------------------------------------------------------------------
-# Phase 4: tester — issue lease + submit completion record so post-task routes
+# Phase 4: reviewer — issue lease + submit completion record so post-task routes
+# (Phase 8 Slice 11 retired ``tester``; reviewer is the live read-only evaluator.)
 # ---------------------------------------------------------------------------
-printf '\n-- Phase: tester\n'
-set_role "tester"
+printf '\n-- Phase: reviewer\n'
+set_role "reviewer"
 
 out=$(run_pre_write "$SOURCE_PAYLOAD")
-assert_deny  "tester: source write denied"    "$out"
+assert_deny  "reviewer: source write denied"    "$out"
 
 out=$(run_guard "$GIT_PAYLOAD")
-assert_deny  "tester: git op denied"          "$out"
+assert_deny  "reviewer: git op denied"          "$out"
 
-# A3: all git ops require a lease. post-task.sh reads the active tester lease
+# A3: all git ops require a lease. post-task.sh reads the active reviewer lease
 # to determine workflow_id and route to guardian. Issue the lease before running
 # post-task so the routing logic finds it.
-TESTER_LEASE_OUT=$(policy lease issue-for-dispatch "tester" \
+REVIEWER_LEASE_OUT=$(policy lease issue-for-dispatch "reviewer" \
     --worktree-path "$TMP_DIR" \
     --workflow-id "$WORKFLOW_ID" \
     --allowed-ops '["routine_local"]' 2>/dev/null || echo '{}')
-TESTER_LEASE_ID=$(printf '%s' "$TESTER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
+REVIEWER_LEASE_ID=$(printf '%s' "$REVIEWER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 
-# Submit a valid tester completion record (verdict=ready_for_guardian) so
+# Submit a valid reviewer completion record (verdict=ready_for_guardian) so
 # post-task.sh routes to guardian instead of defaulting to implementer.
-if [[ -n "$TESTER_LEASE_ID" ]]; then
-    VALID_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"true","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"abc123"}'
+if [[ -n "$REVIEWER_LEASE_ID" ]]; then
+    VALID_PAYLOAD=$(jq -nc \
+        '{
+            REVIEW_VERDICT: "ready_for_guardian",
+            REVIEW_HEAD_SHA: "abc123",
+            REVIEW_FINDINGS_JSON: ({findings: [{severity: "note", title: "ok", detail: "ok"}]} | tojson)
+        }')
     policy completion submit \
-        --lease-id "$TESTER_LEASE_ID" \
+        --lease-id "$REVIEWER_LEASE_ID" \
         --workflow-id "$WORKFLOW_ID" \
-        --role "tester" \
+        --role "reviewer" \
         --payload "$VALID_PAYLOAD" >/dev/null 2>&1 || true
 fi
 
-post=$(run_post_task "tester")
-assert_contains "tester post-task: suggests guardian" "$post" "guardian"
+post=$(run_post_task "reviewer")
+assert_contains "reviewer post-task: suggests guardian" "$post" "guardian"
 
 # ---------------------------------------------------------------------------
 # Phase 5: guardian — issue lease + set all gates then allow git op
@@ -300,14 +308,19 @@ printf '\n-- Verify dispatch queue and events\n'
 # DEC-WS6-001: dispatch_queue is no longer the routing authority.
 # post-task.sh no longer enqueues into dispatch_queue. Instead, routing is
 # derived from the latest completion record via determine_next_role().
-# The tester phase submitted a valid completion with verdict=ready_for_guardian,
-# so the latest completion record should show role=tester, verdict=ready_for_guardian.
-latest_comp=$(policy completion latest 2>/dev/null || echo '{}')
+# The reviewer phase submitted a valid completion with verdict=ready_for_guardian,
+# so the reviewer's completion record should show role=reviewer,
+# verdict=ready_for_guardian. (Phase 8 Slice 11 retired ``tester``.)
+# Note: the guardian phase submits its own completion record last, so we
+# filter for the reviewer completion explicitly rather than reading the
+# absolute latest.
+latest_comp=$(policy completion list --role reviewer 2>/dev/null \
+    | jq -r '.items[0] // {}' 2>/dev/null || echo '{}')
 comp_role=$(printf '%s' "$latest_comp" | jq -r '.role // empty')
 comp_verdict=$(printf '%s' "$latest_comp" | jq -r '.verdict // empty')
 # valid is stored as SQLite integer (1/0); jq emits it as a number
 comp_valid=$(printf '%s' "$latest_comp" | jq -r '.valid // 0')
-assert_eq "completion record: latest role is tester" "tester" "$comp_role"
+assert_eq "completion record: reviewer role present" "reviewer" "$comp_role"
 assert_eq "completion record: verdict is ready_for_guardian" "ready_for_guardian" "$comp_verdict"
 assert_eq "completion record: valid" "1" "$comp_valid"
 

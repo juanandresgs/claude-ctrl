@@ -55,8 +55,8 @@ _fail_closed_exit_handler() {
         # This MUST go to stdout so Claude Code sees it as a valid deny decision.
         printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"HOOK CRASH — enforcement hook crashed before completing evaluation. Fail-closed safety deny. DO NOT retry this command. Report this crash to the user. (exit_code='"${_exit_code}"')","blockingHook":"hook-safety-crash-deny"}}'
         # Emit observatory crash metric (best-effort, never block the deny path).
-        # Guard: _obs_accum may not be defined if context-lib.sh was not sourced
-        # (e.g. auto-review.sh only sources log.sh). Never crash the deny path.
+        # Guard: _obs_accum may not be defined if context-lib.sh was not
+        # sourced by the caller. Never crash the deny path.
         if type -t _obs_accum >/dev/null 2>&1; then
             _obs_accum hook_crash 1 '{"hook":"hook-safety","reason":"crash_before_response"}' 2>/dev/null || true
         fi

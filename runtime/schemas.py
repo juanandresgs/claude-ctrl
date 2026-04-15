@@ -341,6 +341,306 @@ ENFORCEMENT_CONFIG_INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS idx_enforcement_config_key ON enforcement_config (key, scope)
 """
 
+# ---------------------------------------------------------------------------
+# ClauDEX canonical decision/work registry (shadow-only persistence surface)
+#
+# @decision DEC-CLAUDEX-DW-REGISTRY-001
+# Title: decisions + work_items SQLite tables are the first canonical persistence layer for the decision/work registry
+# Status: proposed (shadow-mode, Phase 1 constitutional kernel)
+# Rationale: CUTOVER_PLAN §Decision and Work Record Architecture requires
+#   runtime-owned machine-readable records for decisions, work items,
+#   scope manifests, evaluation contracts, supersessions, authority
+#   changes, and landed-commit links. This slice establishes the
+#   narrow persistence substrate for the first two entity kinds
+#   (decisions and work items) so later slices can migrate markdown
+#   `@decision` annotations, render decision digests, and link git
+#   trailers to canonical records without rebuilding the schema.
+#
+#   Status enums are enforced at the Python layer
+#   (runtime/core/decision_work_registry.py) rather than via SQL CHECK
+#   so error messages stay human-readable JSON, matching the repo
+#   convention (see PROOF_STATUSES / EVALUATION_STATUSES above).
+#
+#   Supersession is modelled via two self-referential columns:
+#     * decisions.supersedes    — the predecessor this decision replaces
+#     * decisions.superseded_by — the successor that replaced this one
+#   Both are nullable TEXT to avoid SQLite foreign-key bootstrap ordering
+#   headaches; referential integrity is enforced by the domain-layer
+#   `supersede_decision()` helper, which runs the whole operation in a
+#   single transaction.
+# ---------------------------------------------------------------------------
+
+DECISIONS_DDL = """
+CREATE TABLE IF NOT EXISTS decisions (
+    decision_id   TEXT    PRIMARY KEY,
+    title         TEXT    NOT NULL,
+    status        TEXT    NOT NULL,
+    rationale     TEXT    NOT NULL,
+    version       INTEGER NOT NULL,
+    author        TEXT    NOT NULL,
+    scope         TEXT    NOT NULL,
+    supersedes    TEXT,
+    superseded_by TEXT,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+)
+"""
+
+DECISIONS_INDEX_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions (status)
+"""
+
+DECISIONS_INDEX_SCOPE_DDL = """
+CREATE INDEX IF NOT EXISTS idx_decisions_scope ON decisions (scope)
+"""
+
+DECISIONS_INDEX_SUPERSEDES_DDL = """
+CREATE INDEX IF NOT EXISTS idx_decisions_supersedes ON decisions (supersedes)
+"""
+
+WORK_ITEMS_DDL = """
+CREATE TABLE IF NOT EXISTS work_items (
+    work_item_id    TEXT    PRIMARY KEY,
+    goal_id         TEXT    NOT NULL,
+    title           TEXT    NOT NULL,
+    status          TEXT    NOT NULL,
+    version         INTEGER NOT NULL,
+    author          TEXT    NOT NULL,
+    scope_json      TEXT    NOT NULL DEFAULT '{}',
+    evaluation_json TEXT    NOT NULL DEFAULT '{}',
+    head_sha        TEXT,
+    reviewer_round  INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+)
+"""
+
+WORK_ITEMS_INDEX_GOAL_DDL = """
+CREATE INDEX IF NOT EXISTS idx_work_items_goal ON work_items (goal_id)
+"""
+
+WORK_ITEMS_INDEX_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items (status)
+"""
+
+# ---------------------------------------------------------------------------
+# ClauDEX canonical goal-contract persistence (shadow-only)
+#
+# @decision DEC-CLAUDEX-GOAL-CONTRACTS-001
+# Title: goal_contracts SQLite table is the narrow persistence substrate for contracts.GoalContract
+# Status: proposed (shadow-mode, Phase 2 prompt-pack workflow-contract persistence)
+# Rationale: The Phase 2 capstone helper
+#   ``runtime.core.prompt_pack.compile_prompt_pack_for_stage`` still
+#   requires callers to pass a typed ``contracts.GoalContract`` /
+#   ``contracts.WorkItemContract`` pair by hand because no persistence
+#   layer exists for goal contracts. The work-item side already has
+#   ``work_items`` (DEC-CLAUDEX-DW-REGISTRY-001); this slice mirrors
+#   that pattern for goal contracts so a later prompt-pack workflow
+#   capture helper can resolve a ``workflow_id`` (or ``goal_id``) to
+#   the typed records the capstone already accepts.
+#
+#   Field mapping (mirrors ``contracts.GoalContract``):
+#     * goal_id, desired_end_state, status            → simple columns
+#     * autonomy_budget                                → INTEGER, default 0
+#     * continuation_rules / stop_conditions /
+#       escalation_boundaries / user_decision_boundaries
+#                                                      → JSON-encoded TEXT
+#                                                        (mirrors the
+#                                                        ``scope_json`` /
+#                                                        ``evaluation_json``
+#                                                        pattern in
+#                                                        work_items)
+#     * created_at / updated_at                        → INTEGER NOT NULL
+#
+#   Statuses are enforced at the Python layer against
+#   ``runtime.core.contracts.GOAL_STATUSES`` so the error message stays
+#   human-readable JSON (matching every other status family in this
+#   file). The table carries no SQL CHECK constraint.
+# ---------------------------------------------------------------------------
+
+GOAL_CONTRACTS_DDL = """
+CREATE TABLE IF NOT EXISTS goal_contracts (
+    goal_id                       TEXT    PRIMARY KEY,
+    desired_end_state             TEXT    NOT NULL,
+    status                        TEXT    NOT NULL,
+    autonomy_budget               INTEGER NOT NULL DEFAULT 0,
+    continuation_rules_json       TEXT    NOT NULL DEFAULT '[]',
+    stop_conditions_json          TEXT    NOT NULL DEFAULT '[]',
+    escalation_boundaries_json    TEXT    NOT NULL DEFAULT '[]',
+    user_decision_boundaries_json TEXT    NOT NULL DEFAULT '[]',
+    created_at                    INTEGER NOT NULL,
+    updated_at                    INTEGER NOT NULL
+)
+"""
+
+GOAL_CONTRACTS_INDEX_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_goal_contracts_status ON goal_contracts (status)
+"""
+
+# ---------------------------------------------------------------------------
+# pending_agent_requests — SubagentStart contract carrier
+# (DEC-CLAUDEX-SA-CARRIER-001)
+#
+# Design notes:
+#   * Real SubagentStart harness payloads carry only six harness fields;
+#     the six contract fields (workflow_id … generated_at) are absent.
+#   * The orchestrator embeds those fields as a CLAUDEX_CONTRACT_BLOCK
+#     marker in tool_input.prompt at Agent-call time.
+#   * pre-agent.sh (PreToolUse:Agent) extracts the block and writes a row
+#     here, keyed by (session_id, agent_type).
+#   * subagent-start.sh reads and atomically deletes the row at SubagentStart
+#     time, merging the six fields into HOOK_INPUT so the runtime-first path
+#     fires in production.
+#   * File sidecars are explicitly rejected: a tmp file is a second
+#     non-runtime authority for a control-plane fact
+#     (DEC-CLAUDEX-SA-PAYLOAD-SHAPE-001).
+# ---------------------------------------------------------------------------
+
+PENDING_AGENT_REQUESTS_DDL = """
+CREATE TABLE IF NOT EXISTS pending_agent_requests (
+    session_id     TEXT    NOT NULL,
+    agent_type     TEXT    NOT NULL,
+    workflow_id    TEXT    NOT NULL,
+    stage_id       TEXT    NOT NULL,
+    goal_id        TEXT    NOT NULL,
+    work_item_id   TEXT    NOT NULL,
+    decision_scope TEXT    NOT NULL,
+    generated_at   INTEGER NOT NULL,
+    written_at     INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_type)
+)
+"""
+
+# ---------------------------------------------------------------------------
+# ClauDEX Phase 2b — Agent-Agnostic Supervision Domain
+#
+# @decision DEC-CLAUDEX-SUPERVISION-DOMAIN-001
+# Title: agent_sessions, seats, supervision_threads, dispatch_attempts are the
+#        runtime-owned schema authority for the supervision fabric
+# Status: accepted
+# Rationale: CUTOVER_PLAN §Phase 2b requires the runtime to own dispatch claim/ack,
+#   seat binding, supervision-thread state, and timeout policy. The current bridge
+#   stack stores this truth in tmux pane ids, relay sentinels, helper pids, and
+#   queue files — none of which is a canonical runtime authority.
+#
+#   This slice establishes the four core tables that will replace those surfaces:
+#
+#   agent_sessions  — one live agent instance bound to a workflow and transport.
+#                     `transport` identifies the adapter class (e.g. 'tmux', 'mcp',
+#                     'claude_code'); `transport_handle` is the provider-specific
+#                     handle (pane id, MCP session id, etc.) as a diagnostics field
+#                     only — it is NOT authority.
+#   seats           — named role within a session: 'worker', 'supervisor',
+#                     'reviewer', 'observer'. Seats are the unit of supervision
+#                     relationships, not raw pane ids.
+#   supervision_threads
+#                   — an explicit relationship where one seat steers or audits
+#                     another. Thread type encodes the relationship intent:
+#                     'analysis', 'review', 'autopilot', 'observer'.
+#   dispatch_attempts
+#                   — one issued instruction with delivery claim, acknowledgment,
+#                     retry, and timeout state. This table will become the sole
+#                     authority for "did the worker actually receive the task?" —
+#                     replacing queue-file timestamps, sentinel echoes, and
+#                     pane-text heuristics once adapters are wired.
+#
+#   This slice is schema-only. No adapter contracts, claim/ack helpers, or
+#   recovery loops are added here. Those are Phase 2b subsequent slices once
+#   these tables are the accepted schema authority.
+#
+#   Status enums are enforced at the Python layer (AGENT_SESSION_STATUSES,
+#   SEAT_STATUSES, SUPERVISION_THREAD_STATUSES, DISPATCH_ATTEMPT_STATUSES) to
+#   match the existing convention in this file.
+# ---------------------------------------------------------------------------
+
+AGENT_SESSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id       TEXT    PRIMARY KEY,
+    workflow_id      TEXT,
+    transport        TEXT    NOT NULL,
+    transport_handle TEXT,
+    status           TEXT    NOT NULL DEFAULT 'active',
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+)
+"""
+
+AGENT_SESSIONS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_workflow
+    ON agent_sessions (workflow_id) WHERE workflow_id IS NOT NULL
+"""
+
+AGENT_SESSIONS_INDEX_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions (status)
+"""
+
+SEATS_DDL = """
+CREATE TABLE IF NOT EXISTS seats (
+    seat_id    TEXT    PRIMARY KEY,
+    session_id TEXT    NOT NULL REFERENCES agent_sessions(session_id),
+    role       TEXT    NOT NULL,
+    status     TEXT    NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+)
+"""
+
+SEATS_INDEX_SESSION_DDL = """
+CREATE INDEX IF NOT EXISTS idx_seats_session ON seats (session_id)
+"""
+
+SEATS_INDEX_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_seats_status ON seats (status)
+"""
+
+SUPERVISION_THREADS_DDL = """
+CREATE TABLE IF NOT EXISTS supervision_threads (
+    thread_id          TEXT    PRIMARY KEY,
+    supervisor_seat_id TEXT    NOT NULL REFERENCES seats(seat_id),
+    worker_seat_id     TEXT    NOT NULL REFERENCES seats(seat_id),
+    thread_type        TEXT    NOT NULL,
+    status             TEXT    NOT NULL DEFAULT 'active',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+)
+"""
+
+SUPERVISION_THREADS_INDEX_SUPERVISOR_DDL = """
+CREATE INDEX IF NOT EXISTS idx_supervision_threads_supervisor
+    ON supervision_threads (supervisor_seat_id)
+"""
+
+SUPERVISION_THREADS_INDEX_WORKER_DDL = """
+CREATE INDEX IF NOT EXISTS idx_supervision_threads_worker
+    ON supervision_threads (worker_seat_id)
+"""
+
+DISPATCH_ATTEMPTS_DDL = """
+CREATE TABLE IF NOT EXISTS dispatch_attempts (
+    attempt_id          TEXT    PRIMARY KEY,
+    seat_id             TEXT    NOT NULL REFERENCES seats(seat_id),
+    workflow_id         TEXT,
+    instruction         TEXT    NOT NULL,
+    status              TEXT    NOT NULL DEFAULT 'pending',
+    delivery_claimed_at INTEGER,
+    acknowledged_at     INTEGER,
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    timeout_at          INTEGER,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+)
+"""
+
+DISPATCH_ATTEMPTS_INDEX_SEAT_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_seat_status
+    ON dispatch_attempts (seat_id, status)
+"""
+
+DISPATCH_ATTEMPTS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_workflow
+    ON dispatch_attempts (workflow_id) WHERE workflow_id IS NOT NULL
+"""
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     PROOF_STATE_DDL,
@@ -366,7 +666,111 @@ ALL_DDL: list[str] = [
     OBS_RUNS_DDL,
     ENFORCEMENT_CONFIG_DDL,
     ENFORCEMENT_CONFIG_INDEX_DDL,
+    # ClauDEX Phase 1 canonical decision/work registry
+    # (DEC-CLAUDEX-DW-REGISTRY-001). Indexes are listed individually
+    # because CREATE INDEX IF NOT EXISTS is idempotent and the
+    # existing ALL_DDL style puts per-table indexes inline.
+    DECISIONS_DDL,
+    DECISIONS_INDEX_STATUS_DDL,
+    DECISIONS_INDEX_SCOPE_DDL,
+    DECISIONS_INDEX_SUPERSEDES_DDL,
+    WORK_ITEMS_DDL,
+    WORK_ITEMS_INDEX_GOAL_DDL,
+    WORK_ITEMS_INDEX_STATUS_DDL,
+    # ClauDEX Phase 2 canonical goal-contract persistence
+    # (DEC-CLAUDEX-GOAL-CONTRACTS-001).
+    GOAL_CONTRACTS_DDL,
+    GOAL_CONTRACTS_INDEX_STATUS_DDL,
+    # ClauDEX Phase 2 SubagentStart contract carrier
+    # (DEC-CLAUDEX-SA-CARRIER-001).
+    PENDING_AGENT_REQUESTS_DDL,
+    # ClauDEX Phase 2b supervision fabric schema authority
+    # (DEC-CLAUDEX-SUPERVISION-DOMAIN-001).
+    AGENT_SESSIONS_DDL,
+    AGENT_SESSIONS_INDEX_WORKFLOW_DDL,
+    AGENT_SESSIONS_INDEX_STATUS_DDL,
+    SEATS_DDL,
+    SEATS_INDEX_SESSION_DDL,
+    SEATS_INDEX_STATUS_DDL,
+    SUPERVISION_THREADS_DDL,
+    SUPERVISION_THREADS_INDEX_SUPERVISOR_DDL,
+    SUPERVISION_THREADS_INDEX_WORKER_DDL,
+    DISPATCH_ATTEMPTS_DDL,
+    DISPATCH_ATTEMPTS_INDEX_SEAT_STATUS_DDL,
+    DISPATCH_ATTEMPTS_INDEX_WORKFLOW_DDL,
 ]
+
+# ---------------------------------------------------------------------------
+# ClauDEX Phase 4 — Reviewer Findings Ledger
+#
+# @decision DEC-CLAUDEX-REVIEWER-FINDINGS-SCHEMA-001
+# Title: reviewer_findings table is the runtime-owned structured findings ledger
+# Status: accepted
+# Rationale: CUTOVER_PLAN §Phase 4 requires the runtime to represent reviewer
+#   completions and findings natively. Reviewer findings need a persistent,
+#   structured ledger so that convergence state, invalidation on post-review
+#   source changes, and prompt-pack compilation have a canonical data source.
+#   This table stores individual findings (one row per finding) rather than a
+#   blob per completion, enabling per-finding status transitions (open →
+#   resolved/waived) and per-finding queries by severity, file, or round.
+#
+#   Status/severity vocabularies are enforced at the domain layer
+#   (FINDING_STATUSES, FINDING_SEVERITIES) following the existing convention.
+# ---------------------------------------------------------------------------
+
+REVIEWER_FINDINGS_DDL = """
+CREATE TABLE IF NOT EXISTS reviewer_findings (
+    finding_id     TEXT    PRIMARY KEY,
+    workflow_id    TEXT    NOT NULL,
+    work_item_id   TEXT,
+    reviewer_round INTEGER NOT NULL DEFAULT 0,
+    head_sha       TEXT,
+    severity       TEXT    NOT NULL,
+    status         TEXT    NOT NULL,
+    title          TEXT    NOT NULL,
+    detail         TEXT    NOT NULL,
+    file_path      TEXT,
+    line           INTEGER,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+)
+"""
+
+REVIEWER_FINDINGS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_reviewer_findings_workflow
+    ON reviewer_findings (workflow_id, work_item_id)
+"""
+
+REVIEWER_FINDINGS_INDEX_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_reviewer_findings_status
+    ON reviewer_findings (status)
+"""
+
+REVIEWER_FINDINGS_INDEX_SEVERITY_DDL = """
+CREATE INDEX IF NOT EXISTS idx_reviewer_findings_severity
+    ON reviewer_findings (severity)
+"""
+
+# Append Phase 4 reviewer findings DDL to the master list.
+ALL_DDL.extend([
+    REVIEWER_FINDINGS_DDL,
+    REVIEWER_FINDINGS_INDEX_WORKFLOW_DDL,
+    REVIEWER_FINDINGS_INDEX_STATUS_DDL,
+    REVIEWER_FINDINGS_INDEX_SEVERITY_DDL,
+])
+
+# Reviewer finding status vocabulary (DEC-CLAUDEX-REVIEWER-FINDINGS-SCHEMA-001).
+# Enforced at domain layer in runtime/core/reviewer_findings.py.
+#   open     — finding identified, not yet addressed
+#   resolved — finding addressed by implementer or confirmed fixed
+#   waived   — finding acknowledged but intentionally deferred or accepted
+FINDING_STATUSES: frozenset[str] = frozenset({"open", "resolved", "waived"})
+
+# Reviewer finding severity vocabulary.
+#   blocking — must be resolved before guardian landing
+#   concern  — should be resolved but does not block landing
+#   note     — informational observation, no action required
+FINDING_SEVERITIES: frozenset[str] = frozenset({"blocking", "concern", "note"})
 
 # Valid status values — enforced at the domain layer, not via SQL CHECK
 # so that the error message is human-readable JSON rather than a constraint
@@ -402,6 +806,64 @@ APPROVAL_OP_TYPES: frozenset[str] = frozenset(
 
 # Lease lifecycle statuses — enforced at domain layer, not SQL CHECK.
 LEASE_STATUSES: frozenset[str] = frozenset({"active", "released", "revoked", "expired"})
+
+# ClauDEX canonical decision lifecycle statuses (DEC-CLAUDEX-DW-REGISTRY-001).
+# Enforced at the domain layer in runtime/core/decision_work_registry.py.
+#   proposed   — authored but not yet accepted
+#   accepted   — active decision, current authority
+#   rejected   — rejected before acceptance; kept for audit
+#   superseded — replaced by a later accepted decision (supersedes/superseded_by)
+#   deprecated — retired without a direct successor
+DECISION_STATUSES: frozenset[str] = frozenset(
+    {
+        "proposed",
+        "accepted",
+        "rejected",
+        "superseded",
+        "deprecated",
+    }
+)
+
+# ClauDEX Phase 2b supervision fabric status constants
+# (DEC-CLAUDEX-SUPERVISION-DOMAIN-001). Enforced at domain layer, not SQL CHECK.
+#
+#   agent_sessions: active — live and accepting dispatches
+#                   completed — session ended normally
+#                   dead — transport confirmed unreachable
+#                   orphaned — session lost contact without clean shutdown
+AGENT_SESSION_STATUSES: frozenset[str] = frozenset(
+    {"active", "completed", "dead", "orphaned"}
+)
+
+#   seats: active — seat is operating
+#          released — seat cleanly gave up its role
+#          dead — seat host is unreachable
+SEAT_STATUSES: frozenset[str] = frozenset({"active", "released", "dead"})
+
+# Named roles a seat may occupy (DEC-CLAUDEX-SUPERVISION-DOMAIN-001).
+SEAT_ROLES: frozenset[str] = frozenset({"worker", "supervisor", "reviewer", "observer"})
+
+#   supervision_threads: active — thread relationship is live
+#                        completed — thread ended normally (e.g. reviewer gave verdict)
+#                        abandoned — supervisor seat went dead before completing
+SUPERVISION_THREAD_STATUSES: frozenset[str] = frozenset(
+    {"active", "completed", "abandoned"}
+)
+
+# Thread type vocabulary for supervision_threads.
+SUPERVISION_THREAD_TYPES: frozenset[str] = frozenset(
+    {"analysis", "review", "autopilot", "observer"}
+)
+
+#   dispatch_attempts: pending — issued, not yet claimed by transport
+#                      delivered — transport adapter recorded delivery claim
+#                      acknowledged — agent confirmed receipt
+#                      timed_out — timeout_at exceeded without ack
+#                      failed — non-retryable delivery failure
+#                      cancelled — revoked before delivery
+DISPATCH_ATTEMPT_STATUSES: frozenset[str] = frozenset(
+    {"pending", "delivered", "acknowledged", "timed_out", "failed", "cancelled"}
+)
 
 # Default lease time-to-live: 2 hours.
 DEFAULT_LEASE_TTL: int = 7200
@@ -505,6 +967,33 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists — no-op
 
+        # Migrate work_items: add reviewer_round column if missing.
+        # Old DBs (pre-DEC-CLAUDEX-WORK-ITEM-REVIEWER-ROUND-001) created
+        # the work_items table without reviewer_round, but the
+        # WorkItemRecord dataclass and contracts.WorkItemContract both
+        # carry that field. ALTER TABLE adds it with default 0 so
+        # existing rows remain valid (start at the first reviewer
+        # round) and new code paths can read / write it without
+        # special-casing migration state.
+        #
+        # @decision DEC-CLAUDEX-WORK-ITEM-REVIEWER-ROUND-001
+        # Title: work_items.reviewer_round persists the inner-loop reviewer cycle counter
+        # Status: proposed (shadow-mode, Phase 2 prompt-pack workflow-contract bridge)
+        # Rationale: contracts.WorkItemContract carries reviewer_round
+        #   as part of the inner-loop convergence shape, but the
+        #   work_items SQLite table did not. A future
+        #   work_item_contract_codec must round-trip every contract
+        #   field; without this column it would have to invent
+        #   reviewer_round, which would create a second authority for
+        #   the reviewer cycle counter. Adding the column here is the
+        #   single-authority fix.
+        try:
+            conn.execute(
+                "ALTER TABLE work_items ADD COLUMN reviewer_round INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists — no-op
+
         # Cleanup migration (W-CONV-2): deactivate any active markers whose role
         # is NOT a dispatch-significant role. Explore, Bash, and general-purpose
         # agents accumulated ghost markers before the subagent-start.sh filter
@@ -516,10 +1005,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         # Status: accepted
         # Rationale: Accumulated Explore/Bash/unknown markers with is_active=1
         #   were returned by get_active() as the "newest active" marker, silently
-        #   overriding the real implementer/tester/guardian role. The cleanup
+        #   overriding the real implementer/reviewer/guardian role. The cleanup
         #   runs every time ensure_schema() is called (idempotent: rows already
         #   stopped are not touched). Dispatch-significant roles are whitelisted;
-        #   everything else is deactivated with status='stopped'.
+        #   everything else is deactivated with status='stopped'. Phase 8
+        #   Slice 11 removed the legacy ``tester`` role from the retained set —
+        #   stale tester markers are now deactivated on ensure_schema().
         conn.execute(
             """
             UPDATE agent_markers
@@ -527,7 +1018,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                    status     = 'stopped',
                    stopped_at = COALESCE(stopped_at, CAST(strftime('%s', 'now') AS INTEGER))
             WHERE  is_active  = 1
-              AND  role NOT IN ('planner', 'implementer', 'tester', 'guardian')
+              AND  role NOT IN ('planner', 'implementer', 'reviewer', 'guardian')
             """
         )
 

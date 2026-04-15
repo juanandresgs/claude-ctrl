@@ -32,13 +32,15 @@ from __future__ import annotations
 
 from typing import Optional
 
+from runtime.core.authority_registry import CAN_PROVISION_WORKTREE
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
-    """Deny `git worktree add` when the current role is not guardian.
+    """Deny `git worktree add` from actors lacking CAN_PROVISION_WORKTREE.
 
-    Guardian is exempt because it is the sole worktree lifecycle authority.
+    Actors with CAN_PROVISION_WORKTREE (guardian:provision and the live
+    "guardian" alias) are exempt — they ARE the worktree lifecycle authority.
     All other roles must receive a provisioned worktree via the dispatch chain
     (planner -> guardian(provision) -> implementer).
 
@@ -62,9 +64,9 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not is_worktree_add:
         return None
 
-    # Guardian is the sole worktree lifecycle authority — exempt.
-    actor_role = request.context.actor_role or ""
-    if actor_role == "guardian":
+    # Guardian (both provision mode and the live "guardian" alias) carries
+    # CAN_PROVISION_WORKTREE — the sole worktree lifecycle authority.
+    if CAN_PROVISION_WORKTREE in request.context.capabilities:
         return None
 
     return PolicyDecision(

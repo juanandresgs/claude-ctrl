@@ -46,6 +46,13 @@ tasks/
 .todo-count
 .worktrees/
 worktrees/
+runtime/cc_state.db
+runtime/dispatch-debug.jsonl
+runtime/prebash-trace.log
+traces/
+stats-cache.json
+watch_*
+ClauDEX/braid-v2/state/
 
 # Ephemeral state reviews
 CURRENT_STATE_REVIEW.md
@@ -55,3 +62,13 @@ plugins/marketplaces/claude-plugins-official/
 
 # Secrets
 .env
+
+# Ephemeral braid / policy snapshot caches (not cutover scope)
+.b2r/
+.b2r-policy-v2-85/
+.b2r-v2-stable/
+.session-start-epoch
+ide/
+
+# Session forensics archive — preserved out of band, not part of cutover
+ClauDEX/session-forensics/

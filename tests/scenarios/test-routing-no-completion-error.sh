@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # test-routing-no-completion-error.sh: Verifies that post-task.sh emits a
-# PROCESS ERROR when a tester lease exists but no completion record was filed.
+# PROCESS ERROR when a reviewer lease exists but no completion record was filed.
 #
 # Production sequence tested:
-#   1. A tester lease is issued
-#   2. No completion record is submitted (tester failed to fulfill contract)
-#   3. post-task.sh fires with agent_type=tester
+#   1. A reviewer lease is issued
+#   2. No completion record is submitted (reviewer failed to fulfill contract)
+#   3. post-task.sh fires with agent_type=reviewer
 #   4. Hook reads the active lease, finds no completion record
 #   5. Hook emits PROCESS ERROR in additionalContext (no guardian enqueued)
 #   6. Lease is released (cleanup even on error)
+#
+# Phase 8 Slice 11 retired the legacy ``tester`` role; the
+# lease-without-completion PROCESS ERROR contract is now tested against the
+# reviewer evaluator, which is the live evaluator after Slice 11.
 #
 # @decision DEC-DISPATCH-TEST-003
 # @title Scenario test: missing completion record surfaces PROCESS ERROR
 # @status accepted
 # @rationale Confirms the no-fallback invariant: when a lease exists but has no
 #   completion record, the hook must NOT silently fall through to an eval_state
-#   read. It must surface PROCESS ERROR so the orchestrator knows the tester
+#   read. It must surface PROCESS ERROR so the orchestrator knows the reviewer
 #   did not fulfill its contract.
 set -euo pipefail
 
@@ -48,26 +52,26 @@ echo "=== $TEST_NAME ==="
 # --- Bootstrap schema ---
 $CC schema ensure >/dev/null 2>&1
 
-# --- Issue a tester lease (no completion record will be submitted) ---
+# --- Issue a reviewer lease (no completion record will be submitted) ---
 WF_ID="feature-test-no-completion"
-ISSUE_OUT=$($CC lease issue-for-dispatch "tester" \
+ISSUE_OUT=$($CC lease issue-for-dispatch "reviewer" \
     --worktree-path "$TMP_GIT" \
     --workflow-id "$WF_ID" \
     --allowed-ops '["routine_local"]' 2>/dev/null)
 LEASE_ID=$(printf '%s' "$ISSUE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 
 if [[ -n "$LEASE_ID" ]]; then
-    pass "tester lease issued (id=$LEASE_ID)"
+    pass "reviewer lease issued (id=$LEASE_ID)"
 else
-    fail "tester lease issued — cannot proceed"
+    fail "reviewer lease issued — cannot proceed"
     echo "FAIL: $TEST_NAME"
     exit 1
 fi
 
 # Intentionally do NOT submit a completion record.
 
-# --- Run post-task.sh with agent_type=tester ---
-HOOK_PAYLOAD=$(printf '{"hook_event_name":"SubagentStop","agent_type":"tester"}')
+# --- Run post-task.sh with agent_type=reviewer ---
+HOOK_PAYLOAD=$(printf '{"hook_event_name":"SubagentStop","agent_type":"reviewer"}')
 HOOK_OUTPUT=$(printf '%s' "$HOOK_PAYLOAD" \
     | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$HOOK" 2>/dev/null || true)
 
@@ -82,7 +86,7 @@ if echo "$HOOK_OUTPUT" | jq '.' >/dev/null 2>&1; then
         fail "output contains PROCESS ERROR (got ctx: $CTX)"
     fi
     if [[ "$CTX" == *"guardian"* && "$CTX" != *"PROCESS ERROR"* ]]; then
-        fail "output must not suggest guardian (tester did not complete)"
+        fail "output must not suggest guardian (reviewer did not complete)"
     else
         pass "output does not spuriously suggest guardian"
     fi

@@ -82,7 +82,7 @@ def test_create_run_live_mode(conn):
 
 
 def test_create_run_with_metadata(conn):
-    meta = '{"initiator": "tester-agent", "wave": 1}'
+    meta = '{"initiator": "reviewer-agent", "wave": 1}'
     run = eval_metrics.create_run(conn, mode="deterministic", metadata=meta)
     row = eval_metrics.get_run(conn, run)
     assert row["metadata_json"] == meta

@@ -3,18 +3,20 @@
 @decision DEC-PE-W2-TEST-004
 Title: plan_guard tests use hand-crafted PolicyContext and env var manipulation
 Status: accepted
-Rationale: plan_guard is a pure function of context.actor_role, the file path
-  classification (is_governance_markdown), and the CLAUDE_PLAN_MIGRATION env
-  var. No subprocess calls, no disk I/O. All tests use in-memory fixtures and
-  monkeypatch for env var control.
+Rationale: plan_guard is a pure function of context.capabilities, the file path
+  classification (is_governance_markdown + is_constitution_level), and the
+  CLAUDE_PLAN_MIGRATION env var. No subprocess calls, no disk I/O. All tests
+  use in-memory fixtures and monkeypatch for env var control.
 
 Production sequence:
   Claude Write/Edit -> pre-write.sh -> cc-policy evaluate ->
-  plan_guard(request) -> deny if not planner writing governance markdown.
+  plan_guard(request) -> deny if actor lacks CAN_WRITE_GOVERNANCE writing
+  governance markdown or constitution-level file.
 """
 
 from __future__ import annotations
 
+from runtime.core.authority_registry import capabilities_for
 from runtime.core.policies.write_plan_guard import plan_guard
 from runtime.core.policy_engine import PolicyContext, PolicyRequest
 
@@ -38,6 +40,7 @@ def _make_context(actor_role: str = "", project_root: str = "/proj") -> PolicyCo
         test_state=None,
         binding=None,
         dispatch_phase=None,
+        capabilities=capabilities_for(actor_role),
     )
 
 
@@ -181,3 +184,140 @@ def test_registry_plan_guard_fires_only_for_governance_files():
     # Governance file by planner — allowed
     planner_req = _req("/proj/MASTER_PLAN.md", role="planner")
     assert reg.evaluate(planner_req).action == "allow"
+
+
+# ---------------------------------------------------------------------------
+# Capability-gate invariant tests (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_Plan_alias_resolves_via_capability():
+    """'Plan' alias (capitalized) is resolved through _LIVE_ROLE_ALIASES.
+
+    capabilities_for("Plan") must return a set containing CAN_WRITE_GOVERNANCE,
+    so plan_guard allows it. This test proves the alias resolution, not just
+    the role-string check.
+    """
+    from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE, capabilities_for
+
+    caps = capabilities_for("Plan")
+    assert CAN_WRITE_GOVERNANCE in caps
+    # The policy itself allows "Plan" via capability
+    assert plan_guard(_req("/proj/MASTER_PLAN.md", role="Plan")) is None
+
+
+def test_capability_gate_not_role_string():
+    """Capability presence — not the role string — controls authorization.
+
+    A context with role="unknown_role" but CAN_WRITE_GOVERNANCE injected
+    should pass. Proves the policy uses context.capabilities.
+    """
+    import dataclasses
+    from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE
+
+    ctx = dataclasses.replace(
+        _make_context(actor_role="unknown_role"),
+        capabilities=frozenset({CAN_WRITE_GOVERNANCE}),
+    )
+    req = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={"file_path": "/proj/MASTER_PLAN.md"},
+        context=ctx,
+        cwd="/proj",
+    )
+    assert plan_guard(req) is None
+
+
+def test_planner_without_capability_is_denied():
+    """Planner role string alone is not sufficient — capability must be present."""
+    import dataclasses
+
+    ctx = dataclasses.replace(
+        _make_context(actor_role="planner"),
+        capabilities=frozenset(),
+    )
+    req = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={"file_path": "/proj/MASTER_PLAN.md"},
+        context=ctx,
+        cwd="/proj",
+    )
+    result = plan_guard(req)
+    assert result is not None
+    assert result.action == "deny"
+
+
+# ---------------------------------------------------------------------------
+# Constitution-level file enforcement (Phase 7 Slice 6)
+# ---------------------------------------------------------------------------
+
+
+def test_implementer_denied_for_constitution_level_source_file():
+    """Implementer is denied for a non-markdown constitution file."""
+    result = plan_guard(_req("/proj/runtime/cli.py", role="implementer"))
+    assert result is not None
+    assert result.action == "deny"
+    assert "constitution-level" in result.reason
+    assert result.policy_name == "plan_guard"
+
+
+def test_implementer_denied_for_constitution_level_stage_registry():
+    """Another non-markdown constitution file."""
+    result = plan_guard(_req("/proj/runtime/core/stage_registry.py", role="implementer"))
+    assert result is not None
+    assert result.action == "deny"
+    assert "constitution-level" in result.reason
+
+
+def test_planner_allowed_for_constitution_level_source_file():
+    """Planner (CAN_WRITE_GOVERNANCE) is allowed for constitution files."""
+    assert plan_guard(_req("/proj/runtime/cli.py", role="planner")) is None
+
+
+def test_Plan_allowed_for_constitution_level_source_file():
+    """'Plan' alias also works for constitution files."""
+    assert plan_guard(_req("/proj/runtime/core/stage_registry.py", role="Plan")) is None
+
+
+def test_plan_migration_env_bypasses_constitution_check(monkeypatch):
+    """CLAUDE_PLAN_MIGRATION=1 bypasses constitution-level enforcement."""
+    monkeypatch.setenv("CLAUDE_PLAN_MIGRATION", "1")
+    assert plan_guard(_req("/proj/runtime/cli.py", role="implementer")) is None
+
+
+def test_unrelated_source_file_unaffected_by_constitution_check():
+    """Files not in the constitution registry remain ungated by plan_guard."""
+    assert plan_guard(_req("/proj/runtime/core/some_other_module.py", role="implementer")) is None
+    assert plan_guard(_req("/proj/src/main.py", role="implementer")) is None
+
+
+def test_constitution_check_uses_registry_not_hardcoded_list():
+    """The policy delegates to constitution_registry.is_constitution_level,
+    so any file added to the registry is automatically gated."""
+    from runtime.core.constitution_registry import CONCRETE_PATHS
+
+    # Verify at least one non-markdown path is gated.
+    non_md = [p for p in CONCRETE_PATHS if not p.endswith(".md")]
+    assert len(non_md) > 0, "registry must have non-markdown concrete entries"
+    sample = non_md[0]
+    result = plan_guard(_req(f"/proj/{sample}", role="implementer"))
+    assert result is not None
+    assert result.action == "deny"
+
+
+def test_constitution_relative_path_also_works():
+    """Relative paths (no project_root prefix) are also checked."""
+    # Use a request with no project_root prefix on the path.
+    req = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={"file_path": "runtime/cli.py"},
+        context=_make_context(actor_role="implementer", project_root="/proj"),
+        cwd="/proj",
+    )
+    result = plan_guard(req)
+    assert result is not None
+    assert result.action == "deny"
+    assert "constitution-level" in result.reason

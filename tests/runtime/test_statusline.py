@@ -154,7 +154,7 @@ def test_snapshot_reflects_active_agent(conn):
 
 def test_snapshot_no_active_agent_after_deactivate(conn):
     """After deactivate(), active_agent fields go None."""
-    markers_mod.set_active(conn, "agent-007", "tester")
+    markers_mod.set_active(conn, "agent-007", "reviewer")
     markers_mod.deactivate(conn, "agent-007")
     snap = statusline.snapshot(conn)
     assert snap["active_agent"] is None
@@ -214,48 +214,59 @@ def test_snapshot_reflects_active_dispatch_cycle(conn):
     assert snap["dispatch_cycle_id"] == cid
 
 
-def test_snapshot_dispatch_status_from_completion_tester_ready(conn):
+def test_snapshot_dispatch_status_from_completion_reviewer_ready(conn):
     """dispatch_status is derived from completion records, not dispatch_queue.
 
-    DEC-WS6-001: A tester completion with verdict 'ready_for_guardian' must
+    DEC-WS6-001: A reviewer completion with verdict 'ready_for_guardian' must
     produce dispatch_status == 'guardian'. The queue is not consulted.
+    Phase 8 Slice 11: tester role retired — reviewer is the sole evaluator.
     """
+    import json as _json
     completions_mod.submit(
         conn,
         lease_id="lease-001",
         workflow_id="wf-ws6",
-        role="tester",
+        role="reviewer",
         payload={
-            "EVAL_VERDICT": "ready_for_guardian",
-            "EVAL_TESTS_PASS": "yes",
-            "EVAL_NEXT_ROLE": "guardian",
-            "EVAL_HEAD_SHA": "abc123",
+            "REVIEW_VERDICT": "ready_for_guardian",
+            "REVIEW_HEAD_SHA": "abc123",
+            "REVIEW_FINDINGS_JSON": _json.dumps({
+                "findings": [
+                    {"severity": "note", "title": "ok", "detail": "looks good"},
+                ],
+            }),
         },
     )
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] == "guardian"
     assert snap["dispatch_workflow"] == "wf-ws6"
-    assert snap["dispatch_from_role"] == "tester"
+    assert snap["dispatch_from_role"] == "reviewer"
     assert snap["dispatch_from_verdict"] == "ready_for_guardian"
 
 
-def test_snapshot_dispatch_status_from_completion_tester_needs_changes(conn):
-    """Tester completion with 'needs_changes' routes back to implementer."""
+def test_snapshot_dispatch_status_from_completion_reviewer_needs_changes(conn):
+    """Reviewer completion with 'needs_changes' routes back to implementer.
+    Phase 8 Slice 11: tester role retired — reviewer is the sole evaluator.
+    """
+    import json as _json
     completions_mod.submit(
         conn,
         lease_id="lease-002",
         workflow_id="wf-ws6b",
-        role="tester",
+        role="reviewer",
         payload={
-            "EVAL_VERDICT": "needs_changes",
-            "EVAL_TESTS_PASS": "no",
-            "EVAL_NEXT_ROLE": "implementer",
-            "EVAL_HEAD_SHA": "def456",
+            "REVIEW_VERDICT": "needs_changes",
+            "REVIEW_HEAD_SHA": "def456",
+            "REVIEW_FINDINGS_JSON": _json.dumps({
+                "findings": [
+                    {"severity": "blocking", "title": "bug", "detail": "fix this"},
+                ],
+            }),
         },
     )
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] == "implementer"
-    assert snap["dispatch_from_role"] == "tester"
+    assert snap["dispatch_from_role"] == "reviewer"
     assert snap["dispatch_from_verdict"] == "needs_changes"
 
 
@@ -354,35 +365,41 @@ def test_snapshot_at_is_current_epoch(conn):
 def test_snapshot_full_production_sequence(conn):
     """Exercises the complete production state sequence through snapshot().
 
-    Production path (DEC-WS6-001 / W-CONV-4): tester submits a valid completion
+    Production path (DEC-WS6-001 / W-CONV-4): reviewer submits a valid completion
     with ready_for_guardian -> implementer marker is set -> worktree registered
     -> dispatch cycle active -> proof written to storage (not displayed) ->
     events emitted.  snapshot() must reflect all of these in a single call.
     dispatch_status must be derived from the completion record (not the queue).
     proof_state must NOT appear in the snapshot (W-CONV-4).
+    Phase 8 Slice 11: tester retired — reviewer is the sole evaluator.
 
     This is the compound-interaction test: completions.py, markers.py,
     worktrees.py, dispatch.py, proof.py (storage only), events.py, and
     statusline.py all collaborate — snapshot() synthesizes them into one
     coherent projection with proof display removed.
     """
+    import json as _json
+
     # 1. Start a dispatch cycle
     cid = dispatch_mod.start_cycle(conn, "INIT-002")
 
-    # 2. Submit a valid tester completion — this is now the routing authority
+    # 2. Submit a valid reviewer completion — this is now the routing authority
     #    (DEC-WS6-001). The queue is NOT enqueued; dispatch_status is derived
-    #    from this record via determine_next_role("tester", "ready_for_guardian")
+    #    from this record via determine_next_role("reviewer", "ready_for_guardian")
     #    => "guardian".
     completions_mod.submit(
         conn,
         lease_id="lease-tkt011",
         workflow_id="TKT-011",
-        role="tester",
+        role="reviewer",
         payload={
-            "EVAL_VERDICT": "ready_for_guardian",
-            "EVAL_TESTS_PASS": "yes",
-            "EVAL_NEXT_ROLE": "guardian",
-            "EVAL_HEAD_SHA": "abc123",
+            "REVIEW_VERDICT": "ready_for_guardian",
+            "REVIEW_HEAD_SHA": "abc123",
+            "REVIEW_FINDINGS_JSON": _json.dumps({
+                "findings": [
+                    {"severity": "note", "title": "ok", "detail": "approved"},
+                ],
+            }),
         },
     )
 
@@ -414,7 +431,7 @@ def test_snapshot_full_production_sequence(conn):
     # dispatch_status comes from completion record, not queue (DEC-WS6-001)
     assert snap["dispatch_status"] == "guardian"
     assert snap["dispatch_workflow"] == "TKT-011"
-    assert snap["dispatch_from_role"] == "tester"
+    assert snap["dispatch_from_role"] == "reviewer"
     assert snap["dispatch_from_verdict"] == "ready_for_guardian"
     assert snap["dispatch_initiative"] == "INIT-002"
     assert snap["dispatch_cycle_id"] == cid
@@ -479,7 +496,7 @@ class TestPartialFailureReporting:
 
         # Populate eval and markers before dropping worktrees.
         eval_mod.set_status(c, "wf-partial", "pending")
-        markers_mod.set_active(c, "agent-partial", "tester")
+        markers_mod.set_active(c, "agent-partial", "reviewer")
 
         c.execute("DROP TABLE worktrees")
         c.commit()
@@ -489,7 +506,7 @@ class TestPartialFailureReporting:
 
         # Sections before the fault must still be present.
         assert snap["eval_status"] == "pending"
-        assert snap["active_agent"] == "tester"
+        assert snap["active_agent"] == "reviewer"
         # Worktrees section failed — count stays at safe default.
         assert snap["worktree_count"] == 0
 

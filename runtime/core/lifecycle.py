@@ -45,7 +45,7 @@ def on_agent_start(
 
     Args:
         conn:         Open SQLite connection with schema applied.
-        agent_type:   Role string (implementer, tester, guardian, planner).
+        agent_type:   Role string (implementer, reviewer, guardian, planner).
         agent_id:     Unique agent identifier (e.g. session UUID or pid).
         project_root: Optional canonical project root (normalize_path applied
                       by caller). Stored in agent_markers.project_root.
@@ -126,7 +126,7 @@ def on_stop_by_role(
 
     Args:
         conn:         Open SQLite connection with schema applied.
-        agent_type:   Role string to match (implementer, tester, guardian, planner).
+        agent_type:   Role string to match (implementer, reviewer, guardian, planner).
         project_root: Optional canonical project root to scope the lookup.
                       When None, falls back to unscoped global query.
         workflow_id:  Optional workflow_id to further scope within a project.

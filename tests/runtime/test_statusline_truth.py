@@ -96,7 +96,7 @@ class TestGetActiveWithAge:
         future_time = int(time.time()) + 3600
         conn.execute(
             "INSERT INTO agent_markers (agent_id, role, started_at, is_active) VALUES (?, ?, ?, 1)",
-            ("agent-future", "tester", future_time),
+            ("agent-future", "reviewer", future_time),
         )
         conn.commit()
         result = get_active_with_age(conn)
@@ -117,9 +117,9 @@ class TestSnapshotMarkerAge:
         assert result["marker_age_seconds"] is None
 
     def test_snapshot_active_agent_still_present(self, conn):
-        set_active(conn, "agent-1", "tester")
+        set_active(conn, "agent-1", "reviewer")
         result = snapshot(conn)
-        assert result["active_agent"] == "tester"
+        assert result["active_agent"] == "reviewer"
 
     def test_snapshot_marker_age_matches_old_marker(self, conn):
         # Compound-interaction: write old marker → read snapshot → verify age field.
@@ -162,8 +162,13 @@ class TestProofStateRemovedFromDisplay:
     These tests prove that the display surface is clean regardless of what the
     proof_state table contains.
 
-    Production sequence: check-tester.sh writes evaluation_state → Guardian
-    reads snapshot → snapshot must carry only eval_status, not proof_status.
+    Production sequence: the evaluator stop hook writes evaluation_state →
+    Guardian reads snapshot → snapshot must carry only eval_status, not
+    proof_status. (Historically check-tester.sh; retired in Phase 8 Slice 10.
+    Phase 8 Slice 11 retired the ``tester`` role entirely — reviewer readiness
+    is owned by the reviewer completion/findings/convergence path and does
+    not write evaluation_state. The invariant on this surface — clean of
+    proof_state — remains unchanged.)
     This is the compound-interaction test: proof.py (storage), statusline.py
     (projection), and evaluation_state (readiness authority) cross boundaries
     in a single snapshot() call to verify that proof display was excised.

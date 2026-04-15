@@ -29,6 +29,50 @@ This system prefers enforced truth over narrated confidence:
 - runtime and tests over prose
 - deletion of superseded paths, not coexistence
 
+## Architecture Preservation
+
+Architecture is not preserved by reminders. It is preserved by making
+divergence mechanically difficult.
+
+When working on control-plane problems, follow these rules:
+
+- **Encode authority, don't imply it.** Workflow identity, stage routing,
+  review readiness, hook wiring, config defaults, and git authority must each
+  have one explicit owner module or registry. If a fact can be derived from
+  two places, that is a bug.
+- **Generate or validate derived surfaces from the authority.** `settings.json`,
+  hook docs, role lists, and config defaults must be generated from or
+  validated against the same authority surface. Never hand-edit a derived
+  surface without updating the source authority and its invariants.
+- **Hooks are adapters, not policy engines.** Hooks may capture input, call the
+  runtime, and return the harness-shaped response. They must not become silent
+  alternate authorities for routing, role inference, config defaults, or
+  business logic already owned by Python.
+- **Capability gates beat role folklore.** Policy should key off explicit
+  capabilities such as `can_write_source`, `read_only_reviewer`,
+  `can_land_git`, `can_set_config`, not ad-hoc role checks duplicated across
+  bash and Python.
+- **Architecture changes must ship as bundles.** Any change that modifies an
+  authority surface must include:
+  1. the source authority change
+  2. invariant test updates
+  3. doc or generated-surface updates
+  4. removal or bypass of the superseded path in the same change
+- **No parallel authorities as a transition aid.** "Keep the old path just in
+  case" is how drift becomes permanent. If a migration cannot remove the old
+  authority yet, it is not complete.
+- **Guard the constitution.** Changes to stage routing, policy engine, hook
+  wiring, schemas, and authority docs require explicit plan scope, decision
+  annotation, and invariant coverage. Treat unscoped edits in those files as
+  suspect.
+- **Docs are claims, not proof.** When harness semantics are load-bearing,
+  verify against official docs and installed behavior. Repo docs must be kept
+  aligned, but they are not authoritative when they drift.
+
+When you discover architectural drift, do not patch the symptom alone. Update
+the owning authority, the derived surfaces, and the invariants together so the
+same class of mistake becomes harder to reintroduce.
+
 ## What Matters
 
 This tells you how to think.
@@ -89,7 +133,7 @@ Session HUD state or subagent markers do not prove the actor behind the current 
 
 ### Integration Surface Context
 
-When dispatching an implementer or tester, the orchestrator MUST include in the dispatch context:
+When dispatching an implementer or reviewer, the orchestrator MUST include in the dispatch context:
 
 - **State domains touched**: Which state this task reads/writes (e.g., proof state, event log, audit trail, worktree roster)
 - **Adjacent components**: Which other files, hooks, or agents read/write those same domains — these are the integration surfaces the implementer must not silently diverge from
@@ -100,6 +144,44 @@ When dispatching an implementer or tester, the orchestrator MUST include in the 
 
 This context is what prevents parallel mechanisms. Without it, every implementer starts from a partial map and builds based on what they discover — producing agents that each build their own version of what already exists. Transmitting the system model is how the orchestrator serves as the connective tissue between ephemeral agents who cannot see each other's work. This is a sacred responsibility — the orchestrator's system awareness is the only thing that survives across agent lifetimes.
 
+### ClauDEX Contract Injection
+
+Before issuing any Agent tool call that dispatches a role (planner, implementer,
+guardian, reviewer), the orchestrator MUST:
+
+1. Call the producer CLI:
+   ```bash
+   cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <stage_id>
+   ```
+   `<workflow_id>` is the active workflow identifier. `<stage_id>` is the role being
+   dispatched (`planner`, `implementer`, `guardian`, `reviewer`). Optionally pass
+   `--goal-id`, `--work-item-id`, `--decision-scope` to override runtime-resolved
+   defaults.
+
+2. Take the `prompt_prefix` field from the returned JSON and prepend it verbatim
+   as the first content of the Agent tool's `prompt` parameter:
+   - `prompt_prefix` begins with `CLAUDEX_CONTRACT_BLOCK:{...}` on line 1
+   - That line must remain at column 0 — do not indent, reformat, or wrap it
+   - Append task instructions after the prefix unchanged
+
+3. **Set `subagent_type` explicitly on every Agent tool call that participates
+   in the ClauDEX delivery path.** The `pre-agent.sh` hook only writes the
+   carrier row and issues a `dispatch_attempts` entry when `tool_input.subagent_type`
+   is non-empty in the PreToolUse payload. When `subagent_type` is omitted, the
+   harness carries an empty string and the entire delivery-tracking path is
+   silently skipped — no carrier row, no `dispatch_attempts` row. Use the role
+   name as the value: `"Explore"`, `"Plan"`, `"general-purpose"`, etc.
+   Live-verified 2026-04-09: dispatch with `subagent_type="Explore"` produced a
+   `dispatch_attempts` row at `delivered`; omitting `subagent_type` produces no row.
+
+4. If the CLI returns a non-zero exit code or `"status": "error"`, report the
+   error and halt the dispatch until the issue is resolved.
+
+**Verification:** After wiring, confirm by inspecting `runtime/dispatch-debug.jsonl`.
+A correctly wired dispatch shows an entry where `tool_input.prompt` starts with
+`CLAUDEX_CONTRACT_BLOCK:` on line 1. Do not claim production reachability without
+a live capture showing this.
+
 ### Uncertainty Reporting
 
 If you cannot prove where the work landed, what exact head SHA was evaluated, and whether the test suite completed in isolation, you must report uncertainty instead of completion. Confident prose is not a substitute for verifiable state.
@@ -108,16 +190,16 @@ If you cannot prove where the work landed, what exact head SHA was evaluated, an
 
 When a SubagentStop hook output contains `AUTO_DISPATCH: <role>`, dispatch that agent immediately without asking the user. The dispatch engine has already verified the transition is safe (no errors, no interruption, clear next_role).
 
-**Canonical chain (W-GWT-3):** `planner → guardian (provision) → implementer → tester → guardian (merge)`. Guardian appears twice: once to provision the worktree and issue the implementer lease, once to merge after the tester approves. The orchestrator must NOT skip the provision step — implementers do not self-provision worktrees.
+**Canonical chain (W-GWT-3, Phase 5):** `planner → guardian (provision) → implementer → reviewer → guardian (merge)`. Guardian appears twice: once to provision the worktree and issue the implementer lease, once to merge after the reviewer approves. The orchestrator must NOT skip the provision step — implementers do not self-provision worktrees. Tester is no longer in the live dispatch chain (neutralized in Phase 5 slice 1).
 
 **Enriched AUTO_DISPATCH format:** The dispatch signal may carry key=value pairs:
 ```
 AUTO_DISPATCH: guardian (mode=provision, workflow_id=feature-foo, branch=feature/foo)
 AUTO_DISPATCH: implementer (worktree_path=/project/.worktrees/feature-foo, workflow_id=feature-foo)
-AUTO_DISPATCH: tester (worktree_path=/project/.worktrees/feature-foo)
+AUTO_DISPATCH: reviewer (worktree_path=/project/.worktrees/feature-foo)
 AUTO_DISPATCH: guardian (mode=merge, workflow_id=feature-foo)
 ```
-When `worktree_path` is present, the orchestrator MUST set the implementer's (or tester's) working directory to that path in the dispatch context. The Agent tool MUST NOT use `isolation: "worktree"` — the worktree is already provisioned.
+When `worktree_path` is present, the orchestrator MUST set the implementer's (or reviewer's) working directory to that path in the dispatch context. The Agent tool MUST NOT use `isolation: "worktree"` — the worktree is already provisioned.
 
 **Do not ask permission for auto-dispatch transitions.** After each role completes, read the hook output and act on `AUTO_DISPATCH:` directives immediately.
 
@@ -125,7 +207,8 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 - Hook output contains `BLOCKED`, `ERROR`, or `PROCESS ERROR`
 - The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
 - Guardian needs user approval for high-risk ops (push, rebase, force) — these are gated by `bash_approval_gate` policy, not by the orchestrator
-- Codex stop-review gate returns `VERDICT: BLOCK` (when enabled)
+
+Note: The Codex stop-review gate (`stop-review-gate-hook.mjs`) remains wired in `settings.json` for user-facing review but is **non-authoritative for workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001). Its `VERDICT: BLOCK` does not affect `auto_dispatch` or `next_role`.
 
 **After the chain completes** (guardian terminal state or error), report what each role did so the user sees the outcome.
 
@@ -175,8 +258,8 @@ Add `@decision` annotations to significant files (50+ lines). Hooks enforce the 
 |----------|-------------|
 | `agents/planner.md` | Planning a new project or feature |
 | `agents/implementer.md` | Implementing code in a worktree |
-| `agents/tester.md` | Evaluating implementation quality, completeness, and readiness for Guardian |
 | `agents/guardian.md` | Committing, merging, branch management |
+| `agents/reviewer.md` | Read-only technical review, structured findings, REVIEW_* trailers |
 
 ## Knowledge Search
 

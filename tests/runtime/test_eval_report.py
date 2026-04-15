@@ -89,7 +89,7 @@ def seeded_run(eval_conn):
     eval_metrics.record_score(
         eval_conn,
         run_id=run_id,
-        scenario_id="tester-ready-verdict",
+        scenario_id="reviewer-ready-verdict",
         category="judgment",
         verdict_expected="ready_for_guardian",
         verdict_actual="ready_for_guardian",
@@ -100,7 +100,7 @@ def seeded_run(eval_conn):
     eval_metrics.record_score(
         eval_conn,
         run_id=run_id,
-        scenario_id="tester-evidence-missing",
+        scenario_id="reviewer-evidence-missing",
         category="judgment",
         verdict_expected="needs_changes",
         verdict_actual=None,

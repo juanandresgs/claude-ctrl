@@ -20,7 +20,7 @@ Rationale: Before W-CONV-2, get_active() returned the globally newest active
   marker with no project or workflow scoping. Explore/Bash/general-purpose
   agents also created markers, so the "newest active" could be a lightweight
   agent that was never deactivated, silently overriding the real
-  implementer/tester/guardian role in build_context().
+  implementer/reviewer/guardian role in build_context().
 
   Three changes fix this:
   1. set_active() now accepts optional project_root and workflow_id and
@@ -68,7 +68,7 @@ def set_active(
     Args:
         conn:         Open SQLite connection with schema applied.
         agent_id:     Unique agent identifier (e.g. session UUID or pid).
-        role:         Role string (implementer, tester, guardian, planner).
+        role:         Role string (implementer, reviewer, guardian, planner).
         project_root: Optional canonical project root path (normalize_path applied
                       by caller before passing). Stored in the project_root column
                       so get_active(project_root=X) can filter to this project.

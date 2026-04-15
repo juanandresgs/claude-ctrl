@@ -123,7 +123,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 f"Cannot proceed: evaluation_state for workflow '{workflow_id}' "
-                f"is '{eval_status}'. The tester must emit "
+                f"is '{eval_status}'. The evaluator must emit "
                 "EVAL_VERDICT=ready_for_guardian before local landing can proceed."
             ),
             policy_name="bash_eval_readiness",
@@ -149,7 +149,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 reason=(
                     f"Cannot proceed: evaluation_state head_sha '{stored_sha}' "
                     f"does not match {sha_label} '{compare_head}'. "
-                    "Source changes after evaluator clearance require a new tester pass."
+                    "Source changes after evaluator clearance require a new evaluator pass."
                 ),
                 policy_name="bash_eval_readiness",
             )

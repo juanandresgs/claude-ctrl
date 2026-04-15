@@ -78,9 +78,9 @@ provision_db
 # Emit a handful of mixed metrics to give the analysis something to work with
 obs_cli emit agent_duration_s 12.5 --role implementer >/dev/null
 obs_cli emit agent_duration_s 14.0 --role implementer >/dev/null
-obs_cli emit agent_duration_s 10.0 --role tester >/dev/null
-obs_cli emit test_result 1.0 --role tester >/dev/null
-obs_cli emit test_result 0.0 --role tester >/dev/null
+obs_cli emit agent_duration_s 10.0 --role reviewer >/dev/null
+obs_cli emit test_result 1.0 --role reviewer >/dev/null
+obs_cli emit test_result 0.0 --role reviewer >/dev/null
 obs_cli emit eval_verdict 1.0 >/dev/null
 
 summary_out=$(obs_cli summary)
@@ -205,7 +205,7 @@ provision_db
 
 # Seed a few metrics so generate_report has something to work with
 obs_cli emit agent_duration_s 5.0 --role implementer >/dev/null
-obs_cli emit test_result 1.0 --role tester >/dev/null
+obs_cli emit test_result 1.0 --role reviewer >/dev/null
 
 sidecar_out=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$SIDECAR" 2>/dev/null)
 
@@ -254,7 +254,7 @@ provision_db
 
 # Seed some data first
 obs_cli emit agent_duration_s 7.0 --role implementer >/dev/null
-obs_cli emit agent_duration_s 9.0 --role tester >/dev/null
+obs_cli emit agent_duration_s 9.0 --role reviewer >/dev/null
 obs_cli suggest perf "test suggestion" >/dev/null
 
 metrics_before=$(row_count obs_metrics)

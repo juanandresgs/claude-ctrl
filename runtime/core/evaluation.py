@@ -7,9 +7,11 @@ Status values: idle | pending | needs_changes | ready_for_guardian | blocked_by_
 This module is the sole readiness authority for Guardian commit/merge after
 TKT-024 cutover. proof_state retains zero enforcement effect; nothing gates
 on it. evaluation_state is written exclusively by:
-  - post-task.sh      (implementer completion → pending)
-  - check-tester.sh   (evaluator trailer → verdict status)
-  - track.sh          (source write after clearance → pending via invalidate_if_ready)
+  - post-task.sh       (implementer completion → pending)
+  - check-reviewer.sh  (reviewer REVIEW_* trailer → verdict status; this is
+                        the Phase 8 Slice 11 replacement for the retired
+                        tester evaluator adapter)
+  - track.sh           (source write after clearance → pending via invalidate_if_ready)
 
 @decision DEC-EVAL-001
 Title: evaluation_state is the sole Guardian readiness authority (TKT-024)
@@ -111,7 +113,7 @@ def invalidate_if_ready(conn: sqlite3.Connection, workflow_id: str) -> bool:
     when the row was not ready_for_guardian (no-op).
 
     This is the mechanism that enforces: source changes after evaluator
-    clearance invalidate readiness, requiring a new tester pass.
+    clearance invalidate readiness, requiring a new evaluator pass.
     """
     now = int(time.time())
     with conn:

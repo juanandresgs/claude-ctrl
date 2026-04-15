@@ -83,7 +83,7 @@ def populated_conn(conn):
     worktrees_mod.register(conn, path="/tmp/wt-test", branch="feature/x")
 
     # dispatch_queue
-    dispatch_mod.enqueue(conn, role="tester", ticket="TKT-015")
+    dispatch_mod.enqueue(conn, role="reviewer", ticket="TKT-015")
 
     # traces + trace_manifest
     traces_mod.start_trace(conn, "sess-populate", agent_role="implementer", ticket="TKT-015")
@@ -184,7 +184,7 @@ class TestObservatory:
     def test_health_detects_dispatch_backlog(self, conn):
         """More than 10 pending dispatches triggers dispatch_backlog issue."""
         for i in range(11):
-            dispatch_mod.enqueue(conn, role="tester", ticket=f"TKT-{i:03d}")
+            dispatch_mod.enqueue(conn, role="reviewer", ticket=f"TKT-{i:03d}")
         obs = Observatory("observatory", conn)
         obs.observe()
         health = obs._compute_health()
@@ -352,7 +352,7 @@ class TestSidecarProductionSequence:
         events_mod.emit(conn, type="session_start", source="session-init.sh",
                         detail="session compound started")
         worktrees_mod.register(conn, path="/tmp/wt-compound", branch="feature/compound")
-        dispatch_mod.enqueue(conn, role="tester", ticket="TKT-015")
+        dispatch_mod.enqueue(conn, role="reviewer", ticket="TKT-015")
         traces_mod.start_trace(conn, "sess-compound", agent_role="implementer",
                                ticket="TKT-015")
         traces_mod.add_manifest_entry(conn, "sess-compound", "file_write",

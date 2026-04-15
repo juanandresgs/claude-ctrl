@@ -35,7 +35,7 @@ def register_all(registry: PolicyRegistry) -> None:
       100  branch_guard       -- block source writes on main/master
       200  write_who          -- only implementer may write source files
       250  enforcement_gap    -- deny persistent linter gaps
-      300  plan_guard         -- only planner may write governance markdown
+      300  plan_guard         -- requires CAN_WRITE_GOVERNANCE for governance markdown or constitution-level files
       400  plan_exists        -- MASTER_PLAN.md must exist + staleness gate
       500  plan_immutability  -- permanent sections may not be rewritten
       600  decision_log       -- decision log entries are append-only

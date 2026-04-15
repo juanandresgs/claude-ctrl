@@ -1,4 +1,4 @@
-"""write_who policy — only the implementer role may write source files.
+"""write_who policy — only stages with CAN_WRITE_SOURCE may write source files.
 
 Mirrors: hooks/write-guard.sh (98 lines)
 
@@ -12,6 +12,17 @@ Rationale: The original shell hook (write-guard.sh) closed the gap where any
   which build_context() resolves from the active lease, agent_marker, or
   CLI-injected actor_role field. Priority 200 matches the second position in
   the CHECKS list in pre-write.sh (after branch_guard at 100).
+
+@decision DEC-PE-W2-CAP-001
+Title: write_who uses CAN_WRITE_SOURCE capability gate (Phase 3 migration)
+Status: accepted
+Rationale: Raw role-name checks ("implementer") are a policy-scattered
+  authority for write authorization. Migrating to capability gates means the
+  authority_registry is the single place that declares which stages may write
+  source files. New stages or aliases only need to be declared there.
+  context.capabilities is populated by build_context() via
+  authority_registry.capabilities_for(resolved_role) so this policy remains
+  a pure function with no I/O.
 """
 
 from __future__ import annotations
@@ -19,12 +30,13 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from runtime.core.authority_registry import CAN_WRITE_SOURCE
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import is_skippable_path, is_source_file
 
 
 def write_who(request: PolicyRequest) -> Optional[PolicyDecision]:
-    """Deny source-file writes from any role other than 'implementer'.
+    """Deny source-file writes from any actor lacking CAN_WRITE_SOURCE capability.
 
     Skip conditions (return None):
       - No file_path in tool_input
@@ -49,12 +61,11 @@ def write_who(request: PolicyRequest) -> Optional[PolicyDecision]:
     if is_skippable_path(file_path):
         return None
 
-    role = request.context.actor_role or ""
-
-    if role == "implementer":
+    if CAN_WRITE_SOURCE in request.context.capabilities:
         return None  # Authorized
 
     # All other roles: deny
+    role = request.context.actor_role or ""
     role_label = role if role else "orchestrator (no active agent)"
 
     return PolicyDecision(

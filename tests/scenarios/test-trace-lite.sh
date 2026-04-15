@@ -155,7 +155,7 @@ fi
 # Test 6: trace recent — returns newest first, respects limit
 # -----------------------------------------------------------------------
 # Create a second session to test ordering
-$CC trace start "$SESSION_B" --role tester >/dev/null 2>&1
+$CC trace start "$SESSION_B" --role reviewer >/dev/null 2>&1
 
 recent_result=$($CC trace recent --limit 5 2>/dev/null)
 recent_status=$(echo "$recent_result" | jq -r '.status // empty' 2>/dev/null)

@@ -186,11 +186,11 @@ def test_get_trace_returns_none_for_unknown(conn):
 
 
 def test_get_trace_returns_trace_with_empty_manifest(conn):
-    traces.start_trace(conn, "sess-030", agent_role="tester", ticket="TKT-013")
+    traces.start_trace(conn, "sess-030", agent_role="reviewer", ticket="TKT-013")
     result = traces.get_trace(conn, "sess-030")
     assert result is not None
     assert result["session_id"] == "sess-030"
-    assert result["agent_role"] == "tester"
+    assert result["agent_role"] == "reviewer"
     assert result["ticket"] == "TKT-013"
     assert result["manifest"] == []
 

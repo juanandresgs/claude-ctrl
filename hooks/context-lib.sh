@@ -433,7 +433,7 @@ is_claude_meta_repo() {
 # @decision DEC-WF-003
 # @title get_workflow_binding is the canonical worktree identity lookup
 # @status accepted
-# @rationale Later roles (tester, guardian) must read the worktree path from
+# @rationale Later roles (reviewer, guardian) must read the worktree path from
 #   the runtime binding rather than inferring from CWD or git state. This
 #   function is the single canonical entry point. It derives workflow_id via
 #   current_workflow_id (branch-based), queries the runtime for the

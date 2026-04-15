@@ -61,7 +61,37 @@ if [[ "$TOOL_NAME" != "Agent" && "$TOOL_NAME" != "Task" ]]; then
 fi
 
 # Allow Agent calls without isolation=worktree (the common case).
+# Before exiting, attempt to extract a CLAUDEX_CONTRACT_BLOCK from the prompt
+# and write it to pending_agent_requests so subagent-start.sh can consume it
+# at SubagentStart time (DEC-CLAUDEX-SA-CARRIER-001).
 if [[ "$ISOLATION" != "worktree" ]]; then
+    _PROMPT_TEXT=$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.prompt // empty' 2>/dev/null || echo "")
+    _SESSION_ID=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+    _SUBAGENT_TYPE=$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || echo "")
+    if [[ -n "$_PROMPT_TEXT" && -n "$_SESSION_ID" && -n "$_SUBAGENT_TYPE" ]]; then
+        _BLOCK_LINE=$(printf '%s' "$_PROMPT_TEXT" | grep '^CLAUDEX_CONTRACT_BLOCK:' 2>/dev/null | head -1 || echo "")
+        if [[ -n "$_BLOCK_LINE" ]]; then
+            _CONTRACT_JSON=$(printf '%s' "$_BLOCK_LINE" | sed 's/^CLAUDEX_CONTRACT_BLOCK://')
+            _CARRIER_MODULE="$(dirname "$0")/../runtime/core/pending_agent_requests.py"
+            _CARRIER_DB="${CLAUDE_POLICY_DB:-}"
+            if [[ -z "$_CARRIER_DB" && -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+                _CARRIER_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+            fi
+            if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
+                python3 "$_CARRIER_MODULE" write "$_CARRIER_DB" "$_SESSION_ID" "$_SUBAGENT_TYPE" "$_CONTRACT_JSON" >/dev/null 2>&1 || true
+                # Issue a pending dispatch_attempts row for delivery tracking
+                # (DEC-CLAUDEX-HOOK-WIRING-001). Best-effort: never blocks dispatch.
+                _LOCAL_RUNTIME_CLI="$(dirname "$0")/../runtime/cli.py"
+                _DISPATCH_WF_ID=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.workflow_id // empty' 2>/dev/null || echo "")
+                CLAUDE_POLICY_DB="$_CARRIER_DB" python3 "$_LOCAL_RUNTIME_CLI" dispatch attempt-issue \
+                    --session-id "$_SESSION_ID" \
+                    --agent-type "$_SUBAGENT_TYPE" \
+                    --instruction "$_BLOCK_LINE" \
+                    ${_DISPATCH_WF_ID:+--workflow-id "$_DISPATCH_WF_ID"} \
+                    >/dev/null 2>&1 || true
+            fi
+        fi
+    fi
     exit 0
 fi
 

@@ -51,7 +51,7 @@ Enforces governance markdown authority (DEC-FORK-014).
   to write governance markdown for permanent-section migrations.
 - **Exemption:** Files under `.claude/` are not considered governance markdown
   (meta-infrastructure is self-governed).
-- **Deny behavior:** All other roles (implementer, tester, guardian, orchestrator
+- **Deny behavior:** All other roles (implementer, reviewer, guardian, orchestrator
   with no role) receive a deny with a message directing them to dispatch a
   planner agent.
 
