@@ -394,6 +394,84 @@ def test_build_context_has_project_root(conn, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# DEC-PE-LEASE-DENY-DIAG-001: worktree_lease_suppressed_roles probe
+# ---------------------------------------------------------------------------
+
+
+def _seed_active_lease(conn, *, worktree_path, role, lease_id="lease-diag-1"):
+    """Seed a minimal active lease row for the suppressed-roles probe tests."""
+    import time as _t
+    now = int(_t.time())
+    conn.execute(
+        "INSERT INTO dispatch_leases (lease_id, agent_id, role, workflow_id, "
+        "worktree_path, branch, allowed_ops_json, blocked_ops_json, "
+        "requires_eval, head_sha, approval_scope_json, next_step, status, "
+        "issued_at, expires_at, released_at, metadata_json) VALUES "
+        "(?, NULL, ?, NULL, ?, 'feature/x', '[\"routine_local\"]', '[]', 0, "
+        "NULL, NULL, 'probe test', 'active', ?, ?, NULL, NULL)",
+        (lease_id, role, worktree_path, now, now + 3600),
+    )
+    conn.commit()
+
+
+def test_build_context_no_suppressed_roles_when_no_lease(conn, tmp_path):
+    """Empty DB → suppressed_roles is empty AND lease is None."""
+    ctx = build_context(conn, cwd=str(tmp_path), actor_role="implementer")
+    assert ctx.lease is None
+    assert ctx.worktree_lease_suppressed_roles == frozenset()
+
+
+def test_build_context_orchestrator_sees_suppressed_guardian_lease(conn, tmp_path):
+    """actor_role="" (orchestrator) + guardian lease on worktree → lease stays
+    None BUT suppressed_roles reports {"guardian"}. This is the diagnostic
+    hook — the enforcement decision is unchanged; only visibility changes."""
+    from runtime.core.policy_utils import normalize_path as _np
+    wt = _np(str(tmp_path))
+    _seed_active_lease(conn, worktree_path=wt, role="guardian")
+    ctx = build_context(conn, cwd=str(tmp_path), actor_role="", actor_id="")
+    # Enforcement posture unchanged: orchestrator still has no attached lease.
+    assert ctx.lease is None
+    # Diagnostic surface populated.
+    assert "guardian" in ctx.worktree_lease_suppressed_roles
+
+
+def test_build_context_mismatched_role_sees_suppressed_other_role(conn, tmp_path):
+    """actor_role="implementer" + only a guardian lease on worktree →
+    role-filtered fallback rejects it, lease stays None, suppressed_roles
+    still reports the guardian so bash_git_who can explain the mismatch."""
+    from runtime.core.policy_utils import normalize_path as _np
+    wt = _np(str(tmp_path))
+    _seed_active_lease(conn, worktree_path=wt, role="guardian")
+    ctx = build_context(conn, cwd=str(tmp_path), actor_role="implementer")
+    assert ctx.lease is None
+    assert "guardian" in ctx.worktree_lease_suppressed_roles
+
+
+def test_build_context_matching_role_attaches_lease_and_skips_probe(conn, tmp_path):
+    """actor_role="guardian" + guardian lease → lease IS attached, and
+    suppressed_roles is empty (probe only runs when lease is None)."""
+    from runtime.core.policy_utils import normalize_path as _np
+    wt = _np(str(tmp_path))
+    _seed_active_lease(conn, worktree_path=wt, role="guardian")
+    ctx = build_context(conn, cwd=str(tmp_path), actor_role="guardian")
+    assert ctx.lease is not None
+    assert ctx.lease.get("role") == "guardian"
+    # No probe run when lease attached — field stays empty.
+    assert ctx.worktree_lease_suppressed_roles == frozenset()
+
+
+def test_build_context_multiple_suppressed_roles_collected(conn, tmp_path):
+    """Multiple role leases on the same worktree → all roles collected."""
+    from runtime.core.policy_utils import normalize_path as _np
+    wt = _np(str(tmp_path))
+    _seed_active_lease(conn, worktree_path=wt, role="guardian", lease_id="l-g")
+    _seed_active_lease(conn, worktree_path=wt, role="implementer", lease_id="l-i")
+    ctx = build_context(conn, cwd=str(tmp_path), actor_role="reviewer")
+    assert ctx.lease is None
+    assert ctx.worktree_lease_suppressed_roles == frozenset({"guardian", "implementer"})
+
+
+# ---------------------------------------------------------------------------
 # default_registry: empty in W1, fail-closed on register_all errors
 # ---------------------------------------------------------------------------
 

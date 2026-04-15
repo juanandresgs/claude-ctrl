@@ -46,6 +46,27 @@ Rationale: Each policy function would otherwise need its own DB connection
   without a database (inject a hand-crafted PolicyContext). The tradeoff is
   that build_context() loads fields that some policies won't use; the load
   is cheap (indexed point reads) and the simplicity wins.
+
+@decision DEC-PE-LEASE-DENY-DIAG-001
+Title: worktree_lease_suppressed_roles carries diagnostic-only lease visibility
+Status: accepted
+Rationale: Incident (cutover-maintenance slice 0022/0023): an orchestrator
+  actor hit `bash_git_who` deny with message "No active dispatch lease for
+  this worktree" while an active guardian lease DID exist on that worktree.
+  Root cause was DEC-PE-EGAP-BUILD-CTX-001: the role-blind worktree_path
+  fallback is intentionally skipped when actor_role is empty or mismatched,
+  so `context.lease` stays None even though a lease row is present. The
+  original deny text pointed operators to re-issue a lease, wasting time —
+  issuance was fine; the problem was actor-role attachment.
+  This field is populated by build_context() as a SIBLING to `context.lease`:
+  when lease resolution ends with lease=None, a diagnostic probe collects
+  the role names of any active leases present on the same worktree_path.
+  `bash_git_who` reads this field to emit a distinct deny message that names
+  the actual problem (role mismatch vs. missing lease). Enforcement posture
+  is UNCHANGED — the field never unlocks operations, never attaches a lease
+  to an unrelated actor, and never affects allow/deny outcomes. It is
+  diagnostics/classification only. The probe is a single indexed read on
+  dispatch_leases keyed on worktree_path, so it adds no measurable cost.
 """
 
 from __future__ import annotations
@@ -94,6 +115,16 @@ class PolicyContext:
     # this field instead of raw role-name string comparisons so that capability
     # gates are the single authority for authorization decisions.
     capabilities: FrozenSet[str] = field(default_factory=frozenset)
+    # Roles for which an active lease exists on this worktree_path but was
+    # NOT attached to the context because the caller's actor_role did not
+    # match (or was empty — orchestrator path per DEC-PE-EGAP-BUILD-CTX-001).
+    # Populated by build_context() whenever lease resolution ends with
+    # lease=None; empty when no worktree lease exists at all. Diagnostic-only:
+    # policies MUST NOT treat this as a lease substitute — it exists so
+    # downstream deny messages can distinguish "no lease at all" from
+    # "lease exists but the caller cannot attach it" without relaxing the
+    # enforcement contract. See DEC-PE-LEASE-DENY-DIAG-001.
+    worktree_lease_suppressed_roles: FrozenSet[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -445,6 +476,25 @@ def build_context(
         # lease that authorises write operations.
         pass  # lease stays None — downstream policies will apply no-lease deny
 
+    # --- Diagnostic probe: worktree_lease_suppressed_roles ---
+    # When lease resolution ended with lease=None, probe whether an active
+    # lease EXISTS on this worktree_path under some other role.  The field is
+    # diagnostic-only and used by bash_git_who to emit a clearer deny message
+    # distinguishing "no lease at all" from "lease exists but caller cannot
+    # attach it" — it does NOT change the allow/deny decision. Enforcement
+    # remains governed by the actual lease attachment above.
+    # See DEC-PE-LEASE-DENY-DIAG-001.
+    suppressed_roles: FrozenSet[str] = frozenset()
+    if lease is None:
+        rows = conn.execute(
+            "SELECT role FROM dispatch_leases WHERE status = 'active' "
+            "AND (worktree_path = ? OR worktree_path = ?)",
+            (cwd, project_root),
+        ).fetchall()
+        _roles = {(r["role"] if isinstance(r, sqlite3.Row) else r[0]) or "" for r in rows}
+        _roles.discard("")
+        suppressed_roles = frozenset(_roles)
+
     # --- Resolve role / agent_id from lease or marker ---
     resolved_role = actor_role
     resolved_id = actor_id
@@ -607,6 +657,7 @@ def build_context(
         dispatch_phase=dispatch_phase,
         enforcement_config=enforcement_config,
         capabilities=_capabilities_for(resolved_role),
+        worktree_lease_suppressed_roles=suppressed_roles,
     )
 
 

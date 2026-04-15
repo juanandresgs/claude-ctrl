@@ -19,7 +19,8 @@ from runtime.core.policy_engine import PolicyContext, PolicyRequest
 def make_context(*, is_meta_repo=False, project_root="/project",
                  workflow_id="feature-test", lease=None, scope=None,
                  eval_state=None, test_state=None, binding=None,
-                 branch="feature/test", actor_role="implementer") -> PolicyContext:
+                 branch="feature/test", actor_role="implementer",
+                 worktree_lease_suppressed_roles=frozenset()) -> PolicyContext:
     return PolicyContext(
         actor_role=actor_role, actor_id="agent-test",
         workflow_id=workflow_id,
@@ -29,6 +30,7 @@ def make_context(*, is_meta_repo=False, project_root="/project",
         eval_state=eval_state, test_state=test_state, binding=binding,
         dispatch_phase=None,
         capabilities=capabilities_for(actor_role),
+        worktree_lease_suppressed_roles=frozenset(worktree_lease_suppressed_roles),
     )
 
 

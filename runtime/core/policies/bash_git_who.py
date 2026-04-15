@@ -43,6 +43,21 @@ Rationale: build_context() is the primary defense against role-blind lease
   This prevents a scenario where build_context incorrectly hands a guardian
   lease to an orchestrator — the secondary check catches it even if the primary
   filter has a bug. Defense in depth: two independent checks, either sufficient.
+
+@decision DEC-PE-GIT-WHO-LEASE-DENY-DIAG-001
+Title: bash_git_who distinguishes "no lease" from "lease exists but not attachable"
+Status: accepted
+Rationale: Before this change, both scenarios surfaced identical deny text:
+  "No active dispatch lease for this worktree" — even when an active lease
+  actually existed and the real problem was that the caller's actor_role did
+  not match the lease holder's role. Operators chased "re-issue the lease"
+  remediations that did nothing. bash_git_who now reads the diagnostic field
+  ``context.worktree_lease_suppressed_roles`` (populated by build_context,
+  DEC-PE-LEASE-DENY-DIAG-001) and emits a distinct message naming the real
+  cause: actor-role unresolved (orchestrator) vs. actor-role mismatch
+  (non-owner). Enforcement is IDENTICAL in all three branches — every path
+  still denies. Only the reason text and classification change, so operators
+  can route remediations correctly. No relaxation of lease WHO.
 """
 
 from __future__ import annotations
@@ -98,6 +113,48 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     lease = request.context.lease
 
     if lease is None:
+        # Distinguish "no lease exists at all" (operator must issue one) from
+        # "lease exists on this worktree but the caller cannot attach it
+        # because actor_role is unresolved or mismatched" (operator does not
+        # need to re-issue — they need an actor-role context matching the
+        # existing lease). See DEC-PE-LEASE-DENY-DIAG-001. Enforcement is
+        # identical in both branches — this is diagnostic-only classification
+        # so operators do not waste time on the wrong remediation.
+        suppressed = request.context.worktree_lease_suppressed_roles
+        actor = (request.context.actor_role or "").strip()
+        if suppressed:
+            roles_text = ", ".join(sorted(suppressed))
+            if not actor:
+                # Orchestrator path — DEC-PE-EGAP-BUILD-CTX-001 suppresses
+                # worktree-path lease inheritance when actor_role is empty.
+                reason = (
+                    f"Active lease(s) for role(s) [{roles_text}] exist on "
+                    f"this worktree, but the caller has no resolved actor "
+                    f"role and cannot attach a role-specific lease "
+                    f"(DEC-PE-EGAP-BUILD-CTX-001). Git operations from the "
+                    f"orchestrator are not authorised — dispatch the matching "
+                    f"role via the canonical chain so the lease is consumed "
+                    f"under the correct actor. Do NOT re-issue the lease; "
+                    f"the lease is fine, the caller is not."
+                )
+            else:
+                # Actor role is set but does not match any active lease role
+                # on this worktree.
+                reason = (
+                    f"Active lease(s) for role(s) [{roles_text}] exist on "
+                    f"this worktree, but the caller's actor role "
+                    f"{actor!r} does not match any of them. Only the "
+                    f"lease-holder role may use a role-specific lease "
+                    f"(DEC-PE-EGAP-BUILD-CTX-001). Re-dispatch under the "
+                    f"matching role, or issue a new lease for "
+                    f"{actor!r} if that role is the intended operator."
+                )
+            return PolicyDecision(
+                action="deny",
+                reason=reason,
+                policy_name="bash_git_who",
+                effects={"expire_stale_leases": True},
+            )
         return PolicyDecision(
             action="deny",
             reason=(

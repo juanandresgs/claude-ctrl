@@ -331,3 +331,120 @@ def test_reviewer_git_status_still_skipped():
     req = make_request("git status", context=ctx)
     decision = check(req)
     assert decision is None
+
+
+# ---------------------------------------------------------------------------
+# DEC-PE-GIT-WHO-LEASE-DENY-DIAG-001
+# Distinguish "no lease exists" from "lease exists but not attachable".
+#
+# All three branches below DENY — diagnostic classification only; enforcement
+# is unchanged.  The tests pin the distinct wording so operators cannot mistake
+# one remediation class for the other.
+# ---------------------------------------------------------------------------
+
+
+def test_no_lease_and_no_suppressed_roles_uses_original_wording():
+    """Truly no lease anywhere on the worktree — original 'issue-for-dispatch'
+    remediation text applies."""
+    ctx = make_context(
+        actor_role="implementer",
+        lease=None,
+        worktree_lease_suppressed_roles=frozenset(),
+    )
+    req = make_request("git commit -m 'add feature'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "bash_git_who"
+    # Original wording fragments preserved.
+    assert "No active dispatch lease" in decision.reason
+    assert "issue-for-dispatch" in decision.reason
+    # Must NOT claim a lease exists — there isn't one in this scenario.
+    assert "Active lease(s)" not in decision.reason
+    # Effect preserved (expire_stale_leases sweep).
+    assert decision.effects is not None
+    assert decision.effects.get("expire_stale_leases") is True
+
+
+def test_no_lease_but_worktree_has_guardian_lease_and_empty_actor_role():
+    """Orchestrator path (actor_role="") with a guardian lease present on the
+    worktree — emit explicit actor-role-unresolved diagnostic naming the
+    suppressed role, and must NOT tell operator to re-issue the lease."""
+    ctx = make_context(
+        actor_role="",
+        lease=None,
+        worktree_lease_suppressed_roles=frozenset({"guardian"}),
+    )
+    req = make_request("git commit -m 'checkpoint'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "bash_git_who"
+    # Must name the actual cause — not "missing lease".
+    assert "Active lease(s)" in decision.reason
+    assert "guardian" in decision.reason
+    # Must cite the governing decision so operators can find the rationale.
+    assert "DEC-PE-EGAP-BUILD-CTX-001" in decision.reason
+    # Must steer operators away from the wrong remediation.
+    assert "Do NOT re-issue" in decision.reason
+    # Must distinguish from the real "no lease" message — the literal
+    # original wording must NOT appear here.
+    assert "No active dispatch lease" not in decision.reason
+    # Effect preserved.
+    assert decision.effects is not None
+    assert decision.effects.get("expire_stale_leases") is True
+
+
+def test_no_lease_but_worktree_has_other_role_lease_and_mismatched_actor():
+    """Actor role set (implementer) but worktree only has a guardian lease —
+    emit role-mismatch diagnostic naming both the actor role and the holder
+    role."""
+    ctx = make_context(
+        actor_role="implementer",
+        lease=None,
+        worktree_lease_suppressed_roles=frozenset({"guardian"}),
+    )
+    req = make_request("git commit -m 'impl work'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "bash_git_who"
+    assert "Active lease(s)" in decision.reason
+    assert "guardian" in decision.reason
+    assert "'implementer'" in decision.reason
+    # Must NOT be the orchestrator branch.
+    assert "Do NOT re-issue" not in decision.reason
+    # Must NOT be the original "no lease" text.
+    assert "No active dispatch lease" not in decision.reason
+
+
+def test_multiple_suppressed_roles_listed_sorted():
+    """When multiple role leases exist on the worktree, all are listed in
+    sorted order so the diagnostic is deterministic."""
+    ctx = make_context(
+        actor_role="",
+        lease=None,
+        worktree_lease_suppressed_roles=frozenset({"guardian", "implementer"}),
+    )
+    req = make_request("git commit -m 'x'", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    # Sorted alphabetically: guardian, implementer.
+    assert "[guardian, implementer]" in decision.reason
+
+
+def test_suppressed_roles_ignored_when_lease_actually_attached():
+    """When context.lease IS populated, the suppressed-roles field is
+    irrelevant — normal allow/role-check/op-class paths fire.  This guarantees
+    the new diagnostic cannot regress the happy path."""
+    lease = _make_lease(allowed_ops=["routine_local"])
+    lease["role"] = "guardian"
+    ctx = make_context(
+        actor_role="guardian",
+        lease=lease,
+        worktree_lease_suppressed_roles=frozenset({"guardian"}),
+    )
+    req = make_request("git commit -m 'landing'", context=ctx)
+    decision = check(req)
+    # Valid lease → allow (check returns None).
+    assert decision is None
