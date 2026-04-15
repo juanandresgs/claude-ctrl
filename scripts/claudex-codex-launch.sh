@@ -33,6 +33,9 @@ prepare_local_codex_home() {
   done
 
   cat >"${LOCAL_CODEX_HOME}/config.toml" <<EOF
+model = "${CLAUDEX_CODEX_MODEL:-gpt-5.3-codex}"
+model_reasoning_effort = "${CLAUDEX_CODEX_REASONING_EFFORT:-xhigh}"
+
 [mcp_servers.claude_bridge]
 transport = "stdio"
 command = "node"
@@ -66,6 +69,25 @@ approval_mode = "approve"
 [projects."${ROOT}"]
 trust_level = "trusted"
 EOF
+
+  python3 - "${LOCAL_CODEX_HOME}/version.json" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+
+path = sys.argv[1]
+try:
+    with open(path, 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+except Exception:
+    payload = {}
+payload['latest_version'] = payload.get('latest_version') or '0.120.0'
+payload['last_checked_at'] = payload.get('last_checked_at') or datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+payload['dismissed_version'] = payload.get('latest_version')
+with open(path, 'w', encoding='utf-8') as handle:
+    json.dump(payload, handle, separators=(',', ':'))
+    handle.write('\n')
+PY
 }
 
 archive_and_reset_local_codex_home() {
@@ -95,6 +117,8 @@ fi
 
 mkdir -p "$CLAUDEX_STATE_DIR"
 printf '%s\n' "$BRAID_ROOT" > "${CLAUDEX_STATE_DIR}/braid-root"
+mkdir -p "${ROOT}/.claude/claudex"
+printf '%s\n' "$BRAID_ROOT" > "${ROOT}/.claude/claudex/braid-root"
 
 export CODEX_HOME="$LOCAL_CODEX_HOME"
 export CLAUDEX_SUPERVISOR=1
@@ -126,6 +150,8 @@ EOF
 )"
 
 exec codex \
+  -m "${CLAUDEX_CODEX_MODEL:-gpt-5.3-codex}" \
+  -c "model_reasoning_effort=\"${CLAUDEX_CODEX_REASONING_EFFORT:-xhigh}\"" \
   -c "mcp_servers.claude_bridge.transport=\"stdio\"" \
   -c "mcp_servers.claude_bridge.env.BRAID_ROOT=\"$BRAID_ROOT\"" \
   -c "mcp_servers.claude_bridge.env.BRIDGE_STATE_DIR=\"$BRIDGE_STATE_DIR\"" \

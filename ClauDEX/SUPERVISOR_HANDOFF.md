@@ -81,6 +81,20 @@ stays on the active ClauDEX cutover slice only.
   - Verification: `pytest -q tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py --maxfail=8` → **36 passed**, 14.80s; live bridge status shows one active auto-submit pid and one active watchdog pid for the soak lane.
   - Blocking: no after fix and orphan cleanup.
 
+- **State-record drift: handoff docs said "checkpoint pending" after checkpoint landed** (fixed, documentation-only)
+  - Repro: a stale-state grep over `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md` returned phrases asserting the bundle was still waiting for a checkpoint even though the checkpoint had already landed as `6b8cc5c` and the follow-up process-control fix landed as `d8fdf96`, both pushed to `origin/feat/claudex-cutover`.
+  - Impact: supervisor and future implementers would dispatch another checkpoint-stewardship slice against a lane that has no checkpoint debt; directly contradicts installed truth.
+  - Fix: `ClauDEX/CURRENT_STATE.md` Git Placement + Checkpoint Readiness sections rewritten to reflect `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD `d8fdf96` with `6b8cc5c` as the cutover-bundle commit; `ClauDEX/SUPERVISOR_HANDOFF.md` next-action text rewritten to say the checkpoint is complete and the next action is cutover-plan continuation or lane maintenance.
+  - Blocking: no.
+
+
+- **Codex supervisor model-upgrade prompt / MCP root drift** (fixed, lane maintenance)
+  - Repro: launching `./scripts/claudex-codex-launch.sh` repeatedly showed the GPT-5.4 upgrade prompt; selecting "Use existing model" could crash the pane when the bridge MCP resolved Braid dependencies from `.b2r` instead of the active `/tmp/claudex-b2r-v2` root.
+  - Impact: supervisor pane disappeared or stalled before it could call bridge tools; the worker could keep running but Codex supervision was not stable.
+  - Fix: `scripts/claudex-codex-launch.sh` now writes lane-local config with `model = "gpt-5.3-codex"` and `model_reasoning_effort = "xhigh"`, writes the repo-global `.claude/claudex/braid-root` hint consumed by the MCP wrapper, and records the current Codex version as dismissed in lane-local `version.json`.
+  - Verification: supervisor pane `%955` is running as `gpt-5.3-codex xhigh` and successfully calls `claude_bridge.get_status()` against active run `1776220007-97469-21be1f02`.
+  - Blocking: no after relaunch; commit this follow-up bundle so restarts inherit the fix.
+
 ### Soak Run Test Counts
 
 The first soak counts below are preserved for traceability; final local verification is the current gate.
@@ -366,19 +380,30 @@ has reached the Phase 8 closeout boundary:
   installed-truth evidence — see `ClauDEX/CURRENT_STATE.md`
   "Phase 8 Closeout Status" section.
 
-**Next bounded action: guardian-equivalent checkpoint stewardship, not
-a new cutover slice.** The local ClauDEX cutover bundle is
-uncheckpointed on `fix/enforce-rca-13-git-shell-classifier` (248
-working-tree entries). The supervisor should treat that checkpoint as
-the next bounded action: create or reuse `feat/claudex-cutover`, stage
-the coherent cutover bundle, rerun the focused verification gates,
-commit, and push to the existing private upstream if no destructive git
-action is required. See `ClauDEX/CURRENT_STATE.md` "Checkpoint
-Readiness" section for git state, verification summary, and the 3
-pre-existing unrelated test failures that are **not** Phase 8 blockers.
+**Checkpoint stewardship is complete.** The ClauDEX cutover bundle
+landed as commit `6b8cc5c` (`feat(claudex): cutover bundle - Phases 1-8
+closeout`) and the subsequent auto-submit process-control fix landed as
+`d8fdf96` (`Fix ClauDEX auto-submit process growth`). Both commits are
+pushed to `origin/feat/claudex-cutover`; this soak worktree is on
+`claudesox-local` tracking the same upstream at HEAD `d8fdf96`. No
+checkpoint debt remains.
 
-Do not auto-dispatch a new architecture slice until the checkpoint
-slice is complete or a real git ambiguity has been handed to the user.
+**Next bounded action: checkpoint the follow-up maintenance bundle,
+then resume cutover-plan continuation or lane maintenance.** With
+Phases 1-8 closed and upstream, the only current local work is the
+state-record correction plus the lane-local Codex supervisor launcher
+fix (`ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
+`scripts/claudex-codex-launch.sh`). Once that bundle is reviewed,
+tested, committed, and pushed, the supervisor should either (a) resume
+the `ClauDEX/CUTOVER_PLAN.md` architecture track — the runtime-owned
+agent-session supervision fabric — when ready to open a new slice, or
+(b) stay in steady-state review/steer mode and handle narrow
+maintenance items without opening fresh architecture work. See
+`ClauDEX/CURRENT_STATE.md` "Checkpoint Readiness" section for the
+installed-truth git state and focused gate evidence.
+
+Do not auto-dispatch a new architecture slice unless the cutover plan
+has been re-read and a clearly bounded slice is ready.
 
 For current detail, see `ClauDEX/CURRENT_STATE.md`.
 
