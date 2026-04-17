@@ -114,6 +114,66 @@ def _get_branch_ahead_files(target_dir: str, base_branch: str) -> list[str]:
     return []
 
 
+def _get_tracked_modifications(target_dir: str) -> list[str]:
+    """Return tracked modified/deleted files that ``git commit -a/--all`` auto-stages.
+
+    @decision DEC-PE-W3-010-STAGED-GATE-002
+    Title: bash_workflow_scope covers commit -a / --all auto-stage semantics
+    Status: accepted
+    Rationale: The staged-index gate (DEC-PE-W3-010-STAGED-GATE-001) inspects
+      ``git diff --cached --name-only`` — correct for plain ``git commit`` but
+      incomplete for ``git commit -a`` / ``git commit --all``. Those
+      invocations tell git to auto-stage every tracked file with uncommitted
+      modifications or deletions before writing the commit. At PreToolUse time
+      those files are not yet in the index, so the staged-index-only check
+      would miss them and let a tracked out-of-scope edit slip past.
+
+      This helper returns the tracked modified/deleted set (``git diff
+      --name-only`` against the index, which by default excludes untracked
+      files). The commit-path branch in :func:`check` unions it with the
+      staged-index set when the invocation carries ``-a`` / ``--all`` / any
+      short-flag bundle containing ``a``. Untracked files are NEVER pulled
+      in — ``git commit -a`` itself does not stage untracked files, and the
+      scope policy must not over-sweep beyond what git will actually commit.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", target_dir, "diff", "--name-only"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0:
+            return [f for f in r.stdout.strip().splitlines() if f]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
+
+
+def _commit_stages_all(args: tuple[str, ...]) -> bool:
+    """Return True iff the commit invocation will auto-stage tracked changes.
+
+    Detects ``--all`` (exact long flag) and any short-flag bundle containing
+    ``a`` (``-a``, ``-am``, ``-av``, ``-avm``, …). Long options other than
+    ``--all`` are skipped — notably ``--amend`` does NOT imply auto-staging,
+    so it must not be matched here. Positional args are skipped.
+
+    Kept as a separate pure helper so tests can pin the flag-detection
+    surface without spinning up a real git repo.
+    """
+    for tok in args:
+        if tok == "--all":
+            return True
+        if tok.startswith("--"):
+            continue  # other long options do not auto-stage
+        if not tok.startswith("-") or len(tok) < 2:
+            continue  # positional args / bare "-"
+        # Short-flag bundle: characters after the leading dash.
+        if "a" in tok[1:]:
+            return True
+    return False
+
+
 def _check_compliance(scope: dict, changed_files: list[str]) -> tuple[bool, list[str]]:
     """Replicate workflows.check_scope_compliance logic using pre-loaded scope dict.
 
@@ -202,8 +262,17 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # DEC-PE-W3-010-STAGED-GATE-001: commit gates on the staged index; merge
     # gates on branch-ahead history. See _get_staged_files for the full
     # rationale — branch-ahead gating on commit was the wrong surface.
+    #
+    # DEC-PE-W3-010-STAGED-GATE-002: when ``git commit -a`` / ``--all`` is
+    # used, git auto-stages every tracked file with uncommitted changes at
+    # commit time. At PreToolUse those files are not yet in the index, so
+    # the gate must union the staged set with the tracked-modified set.
+    # Untracked files are NOT swept in — ``-a`` does not stage them.
     if invocation.subcommand == "commit":
         changed_files = _get_staged_files(target_dir)
+        if _commit_stages_all(invocation.args):
+            tracked = _get_tracked_modifications(target_dir)
+            changed_files = sorted(set(changed_files) | set(tracked))
     else:  # merge
         base_branch = request.context.binding.get("base_branch", "main") or "main"
         changed_files = _get_branch_ahead_files(target_dir, base_branch)

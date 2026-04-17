@@ -386,3 +386,183 @@ def test_merge_path_still_uses_branch_ahead_history(tmp_path):
     assert decision.action == "deny"
     assert "FORBIDDEN" in decision.reason
     assert "scripts/bad.sh" in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# DEC-PE-W3-010-STAGED-GATE-002 — git commit -a / --all auto-stage semantics.
+# The commit-path scope gate must union the staged index with the tracked
+# modified/deleted set when the invocation auto-stages (-a / --all / short-
+# flag bundle with 'a'). Untracked files are NEVER swept in. Plain
+# ``git commit`` continues to gate on the staged index only.
+# ---------------------------------------------------------------------------
+
+
+from runtime.core.policies.bash_workflow_scope import _commit_stages_all
+
+
+# _commit_stages_all — pure helper unit tests (no git repo needed)
+
+
+def test_commit_stages_all_short_dash_a():
+    assert _commit_stages_all(("-a",))
+
+
+def test_commit_stages_all_long_all():
+    assert _commit_stages_all(("--all",))
+
+
+def test_commit_stages_all_bundled_short_am():
+    """-am is shorthand for -a -m."""
+    assert _commit_stages_all(("-am", "msg"))
+
+
+def test_commit_stages_all_bundled_short_av():
+    assert _commit_stages_all(("-av",))
+
+
+def test_commit_stages_all_bundled_short_avm():
+    assert _commit_stages_all(("-avm", "msg"))
+
+
+def test_commit_stages_all_plain_message_does_not_match():
+    """-m alone does not auto-stage."""
+    assert not _commit_stages_all(("-m", "msg"))
+
+
+def test_commit_stages_all_amend_does_not_match():
+    """--amend is unrelated to --all."""
+    assert not _commit_stages_all(("--amend",))
+    assert not _commit_stages_all(("--amend", "--no-edit"))
+
+
+def test_commit_stages_all_empty_args():
+    assert not _commit_stages_all(())
+
+
+def test_commit_stages_all_positional_args_ignored():
+    """Positional tokens (paths, refs) must not be matched."""
+    assert not _commit_stages_all(("path/with/a/in/it.txt",))
+
+
+def test_commit_stages_all_other_short_flags_not_matched():
+    for flag in ("-m", "-n", "-q", "-v", "-s", "-S"):
+        assert not _commit_stages_all((flag,)), f"false positive on {flag}"
+
+
+# End-to-end regressions against a real git repo
+
+
+def _modify_tracked_in_branch(repo, relpath, content_first="hist\n",
+                              content_modified="modified\n"):
+    """Commit a file (tracked history), then modify it in the working tree.
+    The modification is NOT staged — it's what ``git commit -a`` would stage.
+    """
+    full = repo / relpath
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content_first)
+    _git(repo, "add", relpath)
+    _git(repo, "commit", "-m", f"baseline {relpath}", "-q")
+    full.write_text(content_modified)
+    # Intentionally do NOT `git add` — leave as tracked-modified.
+
+
+def test_commit_minus_a_denies_out_of_scope_tracked_edit(tmp_path):
+    """An out-of-scope tracked edit (not yet staged) must be denied on
+    ``git commit -a`` — git would auto-stage it, so the scope gate must
+    see it."""
+    repo = _init_repo(tmp_path)
+    # Track an out-of-scope file and modify it; do not stage the modification.
+    _modify_tracked_in_branch(repo, "scripts/legacy.sh")
+    # Nothing explicitly staged.
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["scripts/**"],
+    )
+    req = make_request("git commit -a -m 'sneak'", context=ctx, cwd=str(repo))
+    decision = check(req)
+    assert decision is not None, (
+        "git commit -a must catch out-of-scope tracked edits even when the "
+        "index is empty at PreToolUse time"
+    )
+    assert decision.action == "deny"
+    assert "FORBIDDEN" in decision.reason
+    assert "scripts/legacy.sh" in decision.reason
+
+
+def test_commit_minus_a_allows_in_scope_tracked_edit(tmp_path):
+    """Happy path: tracked in-scope edit passes ``git commit -a``."""
+    repo = _init_repo(tmp_path)
+    _modify_tracked_in_branch(repo, "runtime/core/thing.py")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["scripts/**"],
+    )
+    req = make_request("git commit -am 'ok'", context=ctx, cwd=str(repo))
+    decision = check(req)
+    assert decision is None
+
+
+def test_plain_commit_ignores_unstaged_tracked_edits(tmp_path):
+    """Plain ``git commit`` (no -a) must NOT pull in tracked-but-unstaged
+    edits. Only the explicitly-staged index counts."""
+    repo = _init_repo(tmp_path)
+    # Tracked out-of-scope edit, NOT staged. Plain commit should not see it.
+    _modify_tracked_in_branch(repo, "scripts/legacy.sh")
+    # Stage an in-scope file to make the commit non-empty.
+    _stage(repo, "runtime/core/clean.py", "# ok\n")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["scripts/**"],
+    )
+    req = make_request("git commit -m 'ok'", context=ctx, cwd=str(repo))
+    decision = check(req)
+    assert decision is None, (
+        "Plain git commit must ignore the unstaged tracked edit in scripts/legacy.sh; "
+        "only the staged index (runtime/core/clean.py) counts."
+    )
+
+
+def test_commit_minus_a_ignores_untracked_files(tmp_path):
+    """``git commit -a`` does NOT auto-stage untracked files. The scope
+    gate must not over-sweep — untracked out-of-scope files must not
+    cause the commit-a gate to deny."""
+    repo = _init_repo(tmp_path)
+    # Untracked out-of-scope file (never `git add`-ed).
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "never-tracked.sh").write_text("new\n")
+    # Stage an in-scope file so the commit has something to do.
+    _stage(repo, "runtime/core/clean.py", "# ok\n")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["scripts/**"],
+    )
+    req = make_request("git commit -a -m 'ok'", context=ctx, cwd=str(repo))
+    decision = check(req)
+    assert decision is None, (
+        "git commit -a must not sweep untracked files; scripts/never-tracked.sh "
+        "is untracked and git itself would not stage it."
+    )
+
+
+def test_commit_minus_a_unions_staged_and_tracked(tmp_path):
+    """Realistic mixed case: one in-scope file already staged, one
+    out-of-scope tracked file modified but not staged. With -a, git will
+    stage both at commit time, so the gate must deny on the forbidden one."""
+    repo = _init_repo(tmp_path)
+    _stage(repo, "runtime/core/ok.py", "# staged ok\n")
+    _modify_tracked_in_branch(repo, "scripts/legacy.sh")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["scripts/**"],
+    )
+    req = make_request("git commit -a -m 'mixed'", context=ctx, cwd=str(repo))
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "FORBIDDEN" in decision.reason
+    assert "scripts/legacy.sh" in decision.reason
