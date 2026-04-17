@@ -2,12 +2,9 @@
 
 ## Current Lane Truth (2026-04-17)
 
-- Branch `claudesox-local` at HEAD `f24df96`, **10 commits ahead of** `origin/feat/claudex-cutover`.
-- **28-file staged checkpoint debt present** in the git index: two Bundle E subordinate-notes docs + seven bridge-permission authority slice paths + three authority-doc / time-scoping paths + seven Invariant #15 Bash readiness-invalidation paths + one supervisor Step 4 response-surface fallback edit (`.codex/prompts/claudex_supervisor.txt`) + one handoff-artifact invariant extension (`tests/runtime/test_handoff_artifact_path_invariants.py`) + one Invariant #11 mechanical-pin scan (`tests/runtime/test_decision_ref_resolution.py`) + one Invariant #5 mechanical-pin scanner (`tests/runtime/policies/test_command_intent_single_authority.py`) + one current-lane state-authority scanner pin (`tests/runtime/test_current_lane_state_invariants.py`) + one Invariant #13 symmetric retrieval-layer downstream pin (`tests/runtime/test_retrieval_layer_downstream_invariant.py`) + one dated invariant-coverage-matrix artifact (`ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md`) + one coverage-matrix mechanical pin (`tests/runtime/test_cutover_invariant_coverage_matrix.py`) + one CUTOVER_PLAN phase-closure time-scoping pin (`tests/runtime/test_cutover_plan_phase_closure_invariants.py`, with paired Status annotations added to CUTOVER_PLAN.md). Bridge-parity additions for Invariant #15 are folded into the existing `ClauDEX/bridge/claude-settings.json`, `runtime/core/bridge_permissions.py`, and `tests/runtime/test_bridge_permissions.py` entries, not new files. Runtime gates are green (`evaluation_state` = `ready_for_guardian`, `test_state` = pass, active guardian lease with `["routine_local","high_risk"]`).
-- **Checkpoint commit/push blocker depends on current actor role — runtime gate precedes harness:**
-  - If the acting caller is NOT `guardian:land` (e.g., orchestrator acting as `implementer` after an implementer lease issuance), `runtime/core/policies/bash_git_who.py` (DEC-WHO-LANDING-001) denies FIRST with `"Landing authority required: git commit requires the can_land_git capability. Only guardian:land carries this capability. Current actor '<role>' does not have it."` This is a runtime policy deny surfaced via `pre-bash.sh` → `cc-policy evaluate`.
-  - If the acting caller IS `guardian:land` with an active guardian lease, the runtime path clears (`cc-policy lease validate-op` returns `allowed=true`) and the Claude Code harness Bash permission prompt becomes the remaining gate.
-  - Canonical unblock path: issue a fresh guardian lease via `cc-policy lease issue-for-dispatch guardian --workflow-id <wf> --worktree-path <wt> --branch <branch> --head-sha <sha>` THEN dispatch a guardian subagent with the prompt-pack from `cc-policy dispatch agent-prompt --workflow-id <wf> --stage-id guardian:land`. That subagent inherits guardian role in runtime context and runtime authorizes its `git commit`. The harness prompt remains the outermost gate and may still require user approval at that point.
+- Branch `claudesox-local` at HEAD `d7db4ba`, **11 commits ahead** of `origin/feat/claudex-cutover` (behind-count is time-variant as upstream receives independent pushes).
+- **30-file checkpoint committed** as `d7db4ba` (`feat(cc-policy-who-remediation): bridge-permission authority + WHO notes + time-scoped docs + Invariant #15 Bash readiness invalidation (root + bridge parity)`). Previously staged as 28-file bundle; final commit grew to 30 files after fingerprint-comparison fix for circular invalidation (DEC-EVAL-006) and payload-identity baseline-key stability were folded in during the same slice.
+- **Push to `origin/feat/claudex-cutover` blocked** by `bash_approval_gate` high-risk policy. The commit is local-only. Canonical unblock: `cc-policy approval grant claudesox-local push` then `git push origin claudesox-local:feat/claudex-cutover`.
 - Any "no checkpoint debt remains" wording elsewhere in this file refers to earlier Phase-8 closeout snapshots (typically 2026-04-14) and is NOT current lane truth. Those statements are preserved for historical record only.
 
 This file defines the project-specific Codex supervisor kickoff for the
@@ -87,7 +84,7 @@ stays on the active ClauDEX cutover slice only.
   - **Live broker signal (lane seat):** `$BRAID_ROOT/braid status` reports `Broker: degraded (socket exists but pid 89934 is dead)`. `cat $BRAID_ROOT/runs/braidd.pid` → `89934`; `ps -p 89934` returns empty → the pidfile is stale and the broker daemon is not running. Unix socket file `$BRAID_ROOT/runs/braidd.sock` remains on-disk. This is the mechanical explanation for the supervisor's observed `get_response() = count:0` while on-disk response files and `pending-review.json` carry real content: clients dialing the stale socket get no server response, while filesystem writers (which bypass the broker) continue producing real response artifacts.
   - **State-gating nuance for `pending-review.json`:** at the moment of this lane-seat verification the run was `state="inflight"` and `$CLAUDEX_STATE_DIR/pending-review.json` was **absent** (confirmed via `find $CLAUDEX_STATE_DIR $BRAID_ROOT -name pending-review.json -type f` → no matches). Supervisor-seat verification at the same HEAD moments later (when the run transitioned to `state="waiting_for_codex"`) confirmed the file exists at the lane-local path with matching `run_id` / `instruction_id` and readable `response_path`. Conclusion: `pending-review.json` is **not persistently present** — it is written when the run enters `waiting_for_codex` and may be absent during `inflight`. Any probe or consumer that reads `pending-review.json` must handle absence during `inflight` as a non-error state, not as drift.
   - **Classification:** `broker_or_cache_surface_mismatch`, concrete sub-class `degraded_dead_pid_stale_socket`. Confidence: **HIGH** (env ruled out; `braid status` directly names the class; `ps` confirms dead pid).
-  - **Next action recorded in planning contract:** `1776434532306-0002-c0n153` response contains the bounded-probe planning contract (`cc-policy bridge probe-response-drift` + `cc-policy bridge broker-health` read-only CLIs). That probe slice will execute **after** the 28-file staged checkpoint bundle lands at the harness approval; it will not widen scope before landing.
+  - **Next action recorded in planning contract:** `1776434532306-0002-c0n153` response contains the bounded-probe planning contract (`cc-policy bridge probe-response-drift` + `cc-policy bridge broker-health` read-only CLIs). That probe slice will execute **after** the committed bundle pushes to remote; it will not widen scope before pushing.
 - **Implementation landed (2026-04-17 same-session, instruction `1776435335627-0008-n74wwg`):** the two probe CLIs planned above shipped in Option A form (already-staged files only, no new paths; staged count remained 28). Source in `runtime/core/bridge_permissions.py` (new public functions `probe_broker_health`, `probe_response_surface_drift` + frozen dataclasses `BrokerHealthSnapshot`, `ResponseSurfaceDiagnostic`). CLI wiring in `runtime/cli.py` under the `bridge` subparser. Tests in `tests/runtime/test_bridge_permissions.py` (13 new tests covering the six required classes) + `tests/runtime/test_bridge_validate_settings_cli.py` (5 new end-to-end CLI tests). `pytest -q tests/runtime/test_bridge_permissions.py tests/runtime/test_bridge_validate_settings_cli.py` → 73 passed, 0 failed. Broader smoke including `test_constitution_registry`, `test_current_lane_state_invariants`, `test_handoff_artifact_path_invariants` → 185 passed, 0 failed.
 - **Live classification values observed on this lane (2026-04-17, HEAD `f24df96`):**
   - `python3 -m runtime.cli bridge broker-health` → exit 0, `status="degraded_dead_pid_stale_socket"`, `braidd_pid=89934`, `pid_alive=false`, `socket_exists=true`, `recovery_hint="braid down && braid up"`. This confirms via runtime CLI the same dead-pid / stale-socket finding previously surfaced only by the external `braid status` tool.
@@ -126,9 +123,9 @@ stays on the active ClauDEX cutover slice only.
   `runtime/core/constitution_registry.py`; validated by
   `cc-policy bridge validate-settings` (exits 0).
 - Five git-landing Bash denies removed from `ClauDEX/bridge/claude-settings.json`.
-- **Checkpoint commit/push blocked by harness permission prompt, NOT runtime policy.**
-  `cc-policy lease validate-op allowed=true`; harness layer denies the `git commit`.
-- Staged checkpoint debt intact: **28 files**. Composition:
+- **Checkpoint committed locally as `d7db4ba` (30 files).** Push blocked by
+  `bash_approval_gate` high-risk policy, NOT runtime evaluation or lease gates.
+- Committed bundle composition (**30 files**):
   Bundle E subordinate notes (`CC_POLICY_WHO_REMEDIATION_SPEC.md`,
   `CC_POLICY_WHO_REMEDIATION_EXECUTION_PROMPT.txt`); bridge-permission-slice
   (`runtime/core/bridge_permissions.py`, `runtime/cli.py`,
@@ -166,9 +163,9 @@ stays on the active ClauDEX cutover slice only.
   Invariant #15 (PostToolUse Bash wiring and `REQUIRED_POSTTOOL_BASH_HOOKS`
   + drift tests) are folded into the three already-listed bridge paths — no
   new files for that sub-slice.
-- Lane: `claudesox-local` at HEAD `f24df96`, 10 commits ahead of
-  `origin/feat/claudex-cutover`.
-- Focused test evidence (refreshed 2026-04-17 for full 28-file bundle):
+- Lane: `claudesox-local` at HEAD `d7db4ba`, 11 commits ahead of
+  `origin/feat/claudex-cutover` (behind-count time-variant).
+- Focused test evidence (refreshed 2026-04-17 for full 30-file bundle):
   **309 passed in 8.18s** across the 11-file combined focused suite
   (adds `tests/runtime/test_handoff_artifact_path_invariants.py` and
   `tests/runtime/test_decision_ref_resolution.py` to the prior 9-file
@@ -401,42 +398,27 @@ finds the bridge idle with an empty queue and no pending-review artifact
 (step 3 of Steady-State Behavior). It describes the single bounded slice the
 supervisor should dispatch in that condition.
 
-As of 2026-04-17, the Current Restart Slice is **checkpoint-debt clearance for
-the cc-policy-who-remediation combined bundle**:
+As of 2026-04-17 (post-commit `d7db4ba`), the Current Restart Slice is
+**push-debt clearance for the cc-policy-who-remediation committed bundle**:
 
-- **Lane:** `claudesox-local` at HEAD `f24df96`, 10 commits ahead of
-  `origin/feat/claudex-cutover`.
-- **Staged bundle:** 28 files. Composition matches the
-  "cc-policy-who-remediation Slice 1 (2026-04-17)" entry above in
-  Open Soak Issues (the 28-file list, with supervisor Step 4 response-
-  surface fallback, handoff-artifact invariant pins, Invariant #11
-  `@decision-ref` resolution pin, Invariant #5 `command_intent`
-  sole-authority scanner pin, current-lane state-authority scanner
-  pin, Invariant #13 symmetric retrieval-layer downstream pin, and
-  the dated invariant-coverage-matrix artifact + its mechanical pin
-  now folded into checkpoint scope).
-- **Runtime gates:** `evaluation_state=ready_for_guardian`, `test_state=pass
-  346/346`, a fresh guardian lease with `["routine_local","high_risk"]` (the
-  supervisor is expected to issue a new one at re-dispatch via
-  `cc-policy lease issue-for-dispatch guardian --workflow-id
-  cc-policy-who-remediation ...`).
-- **Intended action on re-dispatch:** issue the guardian lease, dispatch the
-  guardian subagent with the `CLAUDEX_CONTRACT_BLOCK` prefix produced by
-  `cc-policy dispatch agent-prompt --workflow-id cc-policy-who-remediation
-  --stage-id guardian:land`, and invoke
-  `git commit -F tmp/cc-policy-who-remediation/commit-msg-combined.txt`
-  verbatim. Follow with one push attempt to `origin/feat/claudex-cutover`.
-- **Known blocker:** Claude Code harness Bash permission prompt for
-  `git commit` remains the sole gate. Runtime policy returns
-  `allowed=true` for the scoped invocation. Any user approval of that
-  prompt is sufficient to unblock; no runtime or scope changes are needed.
-- **Non-destructive constraint:** do NOT `git reset`, `git stash`,
-  `git restore --staged`, `git commit --amend`, or `git push --force`
-  on this lane. The staged bundle is the checkpoint; preserve it.
+- **Lane:** `claudesox-local` at HEAD `d7db4ba`, 11 commits ahead of
+  `origin/feat/claudex-cutover` (behind-count time-variant).
+- **Committed bundle:** 30 files in commit `d7db4ba`. The original 28-file
+  staged bundle grew to 30 after the Invariant #15 fingerprint-comparison
+  fix (DEC-EVAL-006: `hooks/post-bash.sh` circular invalidation bypass,
+  payload-identity baseline-key stability in `hooks/pre-bash.sh` and
+  `tests/runtime/policies/test_post_bash_eval_invalidation.py`) was folded
+  in during the same slice.
+- **Push blocker:** `bash_approval_gate` high-risk policy denies `git push`.
+  Canonical unblock: `cc-policy approval grant claudesox-local push`.
+- **Intended action on re-dispatch:** grant push approval, then
+  `git push origin claudesox-local:feat/claudex-cutover`.
+- **Non-destructive constraint:** do NOT `git reset`, `git rebase`,
+  `git commit --amend`, or `git push --force` on this lane.
 
-Once the checkpoint lands and pushes, the Current Restart Slice should
-be replaced with the next bounded cutover slice or, if none is queued,
-marked `None — lane in steady-state maintenance`.
+Once the push lands, the Current Restart Slice should be replaced with
+the next bounded cutover slice or, if none is queued, marked
+`None — lane in steady-state maintenance`.
 
 ## Checkpoint Stewardship
 

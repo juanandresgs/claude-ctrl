@@ -1,11 +1,11 @@
 # ClauDEX Current State
 
-Status (current, 2026-04-17): **CHECKPOINT DEBT PRESENT — HARNESS-BLOCKED** — lane carries a **28-file** staged bundle (Bundle E subordinate notes + bridge-permission authority slice + authority-doc reconciliation + time-scoping + Invariant #15 Bash readiness invalidation on both root and bridge surfaces + supervisor Step 4 response-surface fallback + handoff-artifact invariant pins + Invariant #11 `@decision-ref` resolution pin + Invariant #5 `command_intent` sole-authority scanner pin + current-lane state-authority scanner pin) that is runtime-ready but blocked at the Claude Code harness commit-permission prompt. See "cc-policy-who-remediation Slice 1 State (2026-04-17)" below for the authoritative details.
+Status (current, 2026-04-17): **PUSH DEBT PRESENT — APPROVAL-GATED** — lane committed a **30-file** bundle as `d7db4ba` (`feat(cc-policy-who-remediation): bridge-permission authority + WHO notes + time-scoped docs + Invariant #15 Bash readiness invalidation (root + bridge parity)`). Push to `origin/feat/claudex-cutover` is blocked by `bash_approval_gate` high-risk policy. See "cc-policy-who-remediation Slice 1 State (2026-04-17)" below for the authoritative details.
 
 Historical snapshot: as of 2026-04-14 closeout (Phase 8 Slice 12), the ClauDEX cutover bundle had landed and been pushed upstream with no remaining Phase-8 checkpoint debt. That snapshot is preserved in the "Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT" section below; it is not current lane truth.
 
 Historical updated log:
-- 2026-04-17: cc-policy-who-remediation Slice 1 — bridge-permission authority + subordinate WHO notes + authority-doc reconciliation + time-scoping + Invariant #15 Bash readiness invalidation (root + bridge parity) + supervisor Step 4 response-surface fallback + handoff-artifact invariant pins + Invariant #11 `@decision-ref` resolution pin + Invariant #5 `command_intent` sole-authority scanner pin + current-lane state-authority scanner pin + Invariant #13 symmetric retrieval-layer downstream pin + dated invariant-coverage-matrix artifact + coverage-matrix mechanical pin + CUTOVER_PLAN phase-closure time-scoping pin all landed staged; checkpoint debt present, harness-blocked. Staged bundle grew 19 → 21 → 22 → 23 → 24 → 25 → 27 → 28 across the turn sequence (initial 19-bundle → +Step 4 fallback / handoff-invariant pins / refreshed SUPERVISOR_HANDOFF defect entries = 21 → +Invariant #11 scan file = 22 → +Invariant #5 scanner pin file = 23 → +current-lane state-authority scanner pin = 24 → +Invariant #13 symmetric retrieval-layer downstream pin = 25 → +coverage-matrix doc + coverage-matrix mechanical pin pair = 27 → +CUTOVER_PLAN phase-closure time-scoping pin = 28). Intact across each turn; current diffstat reflects the 28-file composition.
+- 2026-04-17: cc-policy-who-remediation Slice 1 — bridge-permission authority + subordinate WHO notes + authority-doc reconciliation + time-scoping + Invariant #15 Bash readiness invalidation (root + bridge parity) + supervisor Step 4 response-surface fallback + handoff-artifact invariant pins + Invariant #11 `@decision-ref` resolution pin + Invariant #5 `command_intent` sole-authority scanner pin + current-lane state-authority scanner pin + Invariant #13 symmetric retrieval-layer downstream pin + dated invariant-coverage-matrix artifact + coverage-matrix mechanical pin + CUTOVER_PLAN phase-closure time-scoping pin + DEC-EVAL-006 fingerprint-comparison fix (circular invalidation bypass + payload-identity baseline-key stability). Staged bundle grew 19 → 28 across turns, then committed as `d7db4ba` (30 files — fingerprint fix added 2 files to the composition). Push to `origin/feat/claudex-cutover` blocked by `bash_approval_gate` high-risk policy; push debt present.
 - 2026-04-14: Phase 5 complete; Phase 6 slices 1-6 complete; Phase 7 slices 1-17 complete; Phase 8 slices 1-12 complete — Slice 10 = Tester Bundle 1 wiring decommission + 0047-fodn2m narrative/pin correction; Slice 11 = Tester Bundle 2 dead-code cleanup + invariant flip (0048-ywlb7d) + correction 0049-lojhjs/0050-hkoa80; Slice 12 = closeout / time-scoping correction; CUTOVER_PLAN planned-area set exhausted; Phase 8 exit criteria met; Final Acceptance Condition 12/12 satisfied against installed truth; accepted bundle landed on `feat/claudex-cutover` as commit `6b8cc5c` and pushed to `origin/feat/claudex-cutover`; follow-up auto-submit process-control fix landed as `d8fdf96` and pushed to the same upstream. That 2026-04-14 snapshot is historical — it does not describe the current lane.
 
 This file is the execution handoff for the current ClauDEX buildout. It is the
@@ -27,21 +27,14 @@ Canonical cutover custody branch (remote):
 
 Soak worktree branch (this lane) — current as of 2026-04-17:
 
-- `claudesox-local` at HEAD `f24df96`, **10 commits ahead of**
-  `origin/feat/claudex-cutover`, with a **28-file staged bundle** (Bundle E
-  subordinate-notes docs + bridge-permission authority slice + authority-doc
-  reconciliation + time-scoping + Invariant #15 Bash readiness invalidation
-  on root and bridge surfaces + supervisor Step 4 response-surface fallback
-  + handoff-artifact invariant pins + Invariant #11 `@decision-ref`
-  resolution pin + Invariant #5 `command_intent` sole-authority scanner
-  pin + current-lane state-authority scanner pin) preserved in the git
-  index. The checkpoint is blocked at
-  the Claude Code harness commit-permission prompt when the actor is
-  `guardian:land` (runtime gates cleared); when the actor is not
-  `guardian:land`, `runtime/core/policies/bash_git_who.py` CAN_LAND_GIT gate
-  (DEC-WHO-LANDING-001) denies first. `cc-policy lease validate-op` returns
-  `allowed=true` for the scoped `git commit` under an active guardian
-  lease.
+- `claudesox-local` at HEAD `d7db4ba`, **11 commits ahead** of
+  `origin/feat/claudex-cutover` (behind-count is time-variant as
+  upstream receives independent pushes). The **30-file cc-policy-who-remediation
+  bundle** is committed locally as `d7db4ba`. Push to
+  `origin/feat/claudex-cutover` is blocked by `bash_approval_gate`
+  high-risk policy. Canonical unblock: `cc-policy approval grant
+  claudesox-local push` then
+  `git push origin claudesox-local:feat/claudex-cutover`.
 
 Soak worktree branch — historical snapshot (2026-04-14 closeout):
 
@@ -85,11 +78,11 @@ Implication (historical, as of 2026-04-14 closeout):
 
 Current implication (2026-04-17):
 
-- Checkpoint debt is present in the lane; the 28-file staged bundle is
-  runtime-ready but harness-blocked. The next clean action is NOT to
-  open a new architecture slice; it is to land the staged bundle (once
-  the harness permission layer permits) or to continue bounded
-  maintenance that does not mutate the staged index.
+- Push debt is present in the lane; the 30-file bundle is committed
+  locally as `d7db4ba` but not yet pushed to remote. The next clean
+  action is to clear the push gate (`cc-policy approval grant
+  claudesox-local push`) and push, or to continue bounded maintenance
+  that does not rewrite history on this lane.
 
 ## cc-policy-who-remediation Slice 1 State (2026-04-17)
 
@@ -98,12 +91,10 @@ Current implication (2026-04-17):
   `runtime/core/constitution_registry.py`; validated by
   `cc-policy bridge validate-settings` (exits 0).
 - Five git-landing Bash denies removed from `ClauDEX/bridge/claude-settings.json`.
-- Checkpoint commit/push is currently blocked by the Claude Code harness
-  permission prompt — **NOT** by runtime policy.
-  `cc-policy lease validate-op` returns `allowed=true` for the scoped `git commit`
-  invocation; the harness layer denies it.
-- Checkpoint debt is preserved intact in the staged git index. The staged
-  bundle contains **28 files**:
+- Checkpoint committed locally as `d7db4ba` (30 files). Push to
+  `origin/feat/claudex-cutover` is blocked by `bash_approval_gate`
+  high-risk policy — **NOT** by runtime evaluation or lease gates.
+- The committed bundle contains **30 files**:
   - two Bundle E subordinate-notes docs
     (`ClauDEX/CC_POLICY_WHO_REMEDIATION_SPEC.md`,
     `ClauDEX/CC_POLICY_WHO_REMEDIATION_EXECUTION_PROMPT.txt`)
@@ -117,12 +108,14 @@ Current implication (2026-04-17):
   - three authority-doc / time-scoping paths
     (`ClauDEX/CURRENT_STATE.md`, `ClauDEX/CUTOVER_PLAN.md`,
     `ClauDEX/SUPERVISOR_HANDOFF.md`)
-  - seven Invariant #15 Bash readiness-invalidation paths
-    (`hooks/post-bash.sh`, `hooks/HOOKS.md`,
-    `runtime/core/hook_manifest.py`, `settings.json`,
+  - nine Invariant #15 Bash readiness-invalidation paths
+    (`hooks/post-bash.sh`, `hooks/pre-bash.sh`, `hooks/context-lib.sh`,
+    `hooks/HOOKS.md`, `runtime/core/hook_manifest.py`, `settings.json`,
     `tests/runtime/policies/test_post_bash_eval_invalidation.py`,
     `tests/runtime/test_hook_manifest.py`,
     `tests/runtime/test_hook_validate_settings.py`)
+    — includes DEC-EVAL-006 fingerprint-comparison fix (circular
+    invalidation bypass) and payload-identity baseline-key stability
   - one supervisor Step 4 response-surface fallback edit
     (`.codex/prompts/claudex_supervisor.txt`) — documents the
     `get_response()` primary / `$CLAUDEX_STATE_DIR/pending-review.json`
@@ -213,9 +206,9 @@ Current implication (2026-04-17):
   in `runtime/core/bridge_permissions.py` + `TestPostToolBashWiringPresent`
   in `tests/runtime/test_bridge_permissions.py`) are folded into those
   three existing staged paths, not new files.
-- Lane: branch `claudesox-local` at HEAD `f24df96`, 10 commits ahead of
-  `origin/feat/claudex-cutover`.
-- Focused test evidence (refreshed 2026-04-17 for full 28-file bundle):
+- Lane: branch `claudesox-local` at HEAD `d7db4ba`, 11 commits ahead of
+  `origin/feat/claudex-cutover` (behind-count time-variant).
+- Focused test evidence (refreshed 2026-04-17 for full 30-file bundle):
   **309 passed in 8.18s** across the 11-file combined focused suite
   (pre-Invariant-#5 snapshot); plus
   `pytest -q tests/runtime/policies/test_command_intent_single_authority.py`
@@ -254,17 +247,11 @@ current lane.
 
 The recommended action is a strict two-step sequence:
 
-1. **Land the 28-file staged checkpoint bundle.** This is blocked ONLY by
-   the Claude Code harness Bash permission prompt on
-   `git commit -F tmp/cc-policy-who-remediation/commit-msg-combined.txt`.
-   Runtime gates are clean (guardian lease active, `evaluation_state =
-   ready_for_guardian`, `test_state = pass`, SHA match). User approval of
-   the `Bash(git commit -F tmp/**)` permission (session-scoped) unblocks
-   this step. Guardian then performs a single non-force push to
-   `origin/feat/claudex-cutover`. Do NOT start a new implementation slice
-   before this step lands — starting an implementer on top of a dirty
-   index reproduces the bundle-coherence hazard class that the
-   2026-04-17 `git stash pop` incident already demonstrated.
+1. **Push the 30-file committed bundle to remote.** The bundle is committed
+   locally as `d7db4ba`. Push is blocked by `bash_approval_gate` high-risk
+   policy. Canonical unblock: `cc-policy approval grant claudesox-local push`
+   then `git push origin claudesox-local:feat/claudex-cutover`. Do NOT start
+   a new implementation slice before the push lands.
 
 2. **Then, bounded probe implementation slice for the
    `waiting_for_codex` response-surface drift** (post-checkpoint
@@ -315,17 +302,14 @@ a classified JSON status, not a traceback). Test coverage:
 tests/runtime/test_bridge_validate_settings_cli.py` → 73 passed, 0
 failed.
 
-**Checkpoint throttle + approval boundary — unchanged.** The two-step
-sequence at the top of this subsection still applies exactly as
-written: land the 28-file staged bundle after the user grants the
-harness Bash approval on `git commit -F tmp/**`, then continue with
-further bounded slices. The probe CLIs' availability in the lane does
-NOT change the checkpoint order, does NOT permit unthrottled retry of
-the harness-blocked commit, and does NOT supersede the
+**Push throttle + approval boundary — unchanged.** The two-step
+sequence at the top of this subsection still applies: push the 30-file
+committed bundle (`d7db4ba`) after `cc-policy approval grant
+claudesox-local push`, then continue with further bounded slices. The
+probe CLIs' availability in the lane does NOT change the push order,
+does NOT permit unthrottled retry, and does NOT supersede the
 `Checkpoint-retry throttle rule` recorded in
-`ClauDEX/SUPERVISOR_HANDOFF.md` § Checkpoint Stewardship. Lane
-fingerprint remains (HEAD `f24df96...`, staged count 28, same denial
-class); no approval-state or lane-state change has been observed.
+`ClauDEX/SUPERVISOR_HANDOFF.md` § Checkpoint Stewardship.
 
 ## Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT
 

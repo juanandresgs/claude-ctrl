@@ -67,11 +67,11 @@ CURRENT_STATE_DOC = _REPO_ROOT / "ClauDEX" / "CURRENT_STATE.md"
 SUPERVISOR_HANDOFF_DOC = _REPO_ROOT / "ClauDEX" / "SUPERVISOR_HANDOFF.md"
 
 # The canonical current-lane checkpoint size.  If the cc-policy-who-
-# remediation staged bundle legitimately grows, a follow-on slice MUST
-# update both this constant and the docs in the same change. 2026-04-17
-# growth path: 19 → 21 → 22 → 23 → 24 → 25 → 27 → 28 (CUTOVER_PLAN
-# phase-closure invariant pin added at 28).
-_CURRENT_STAGED_COUNT = 28
+# remediation bundle legitimately grows, a follow-on slice MUST update
+# both this constant and the docs in the same change. 2026-04-17 growth
+# path: 19 → 21 → 22 → 23 → 24 → 25 → 27 → 28 → 30 (DEC-EVAL-006
+# fingerprint fix added 2 files at commit time).
+_CURRENT_STAGED_COUNT = 30
 _CURRENT_STAGED_TOKEN = f"{_CURRENT_STAGED_COUNT}-file"
 
 # Date anchor required near the current-lane banners.
@@ -103,6 +103,10 @@ _STALE_STAGED_COUNT_PATTERNS: Tuple[str, ...] = (
     r"\b27 files\b",
     r"\b27 staged\b",
     r"\b27 paths\b",
+    r"\b28-file\b",
+    r"\b28 files\b",
+    r"\b28 staged\b",
+    r"\b28 paths\b",
 )
 
 # Context markers (case-insensitive, checked in a character window around the
@@ -123,12 +127,14 @@ _HISTORICAL_CONTEXT_TOKENS: Tuple[str, ...] = (
     "19 \u2192 21 \u2192 22 \u2192 23 \u2192 24",       # arrow-sequence marker (pre-25)
     "19 \u2192 21 \u2192 22 \u2192 23 \u2192 24 \u2192 25",       # arrow-sequence marker (pre-27)
     "19 \u2192 21 \u2192 22 \u2192 23 \u2192 24 \u2192 25 \u2192 27",       # arrow-sequence marker (pre-28)
-    "19 \u2192 21 \u2192 22 \u2192 23 \u2192 24 \u2192 25 \u2192 27 \u2192 28",  # arrow-sequence marker (current)
+    "19 \u2192 21 \u2192 22 \u2192 23 \u2192 24 \u2192 25 \u2192 27 \u2192 28",  # arrow-sequence marker (pre-30)
+    "19 \u2192 21 \u2192 22 \u2192 23 \u2192 24 \u2192 25 \u2192 27 \u2192 28 \u2192 30",  # arrow-sequence marker (current)
     "19 -> 21 -> 22 -> 23",                                  # ascii-arrow variant (pre-24)
     "19 -> 21 -> 22 -> 23 -> 24",                            # ascii-arrow variant (pre-25)
     "19 -> 21 -> 22 -> 23 -> 24 -> 25",                      # ascii-arrow variant (pre-27)
     "19 -> 21 -> 22 -> 23 -> 24 -> 25 -> 27",                # ascii-arrow variant (pre-28)
-    "19 -> 21 -> 22 -> 23 -> 24 -> 25 -> 27 -> 28",          # ascii-arrow variant (current)
+    "19 -> 21 -> 22 -> 23 -> 24 -> 25 -> 27 -> 28",          # ascii-arrow variant (pre-30)
+    "19 -> 21 -> 22 -> 23 -> 24 -> 25 -> 27 -> 28 -> 30",     # ascii-arrow variant (current)
     "grew to 24",
     "bundle grew to 24",
     "grew to 25",
@@ -137,6 +143,10 @@ _HISTORICAL_CONTEXT_TOKENS: Tuple[str, ...] = (
     "bundle grew to 27",
     "grew to 28",
     "bundle grew to 28",
+    "grew to 30",
+    "bundle grew to 30",
+    "staged as 28-file bundle",
+    "Previously staged as 28-file",
 )
 
 _HISTORICAL_CONTEXT_WINDOW = 400  # unused fallback; see _has_historical_context_near
@@ -318,7 +328,7 @@ class TestSupervisorHandoffDocBanner:
     phrasing).
     """
 
-    _REQUIRED_PHRASE = f"{_CURRENT_STAGED_COUNT}-file staged checkpoint debt present"
+    _REQUIRED_PHRASE = f"{_CURRENT_STAGED_COUNT}-file checkpoint committed"
 
     def test_supervisor_handoff_doc_exists(self) -> None:
         assert SUPERVISOR_HANDOFF_DOC.exists(), (
@@ -422,8 +432,8 @@ class TestSanityPins:
 _CLEAN_FIXTURE = """\
 # Fixture Current State
 
-Status (current, 2026-04-17): **CHECKPOINT DEBT PRESENT — HARNESS-BLOCKED** — lane
-carries a **28-file** staged bundle (...)
+Status (current, 2026-04-17): **PUSH DEBT PRESENT — APPROVAL-GATED** — lane
+committed a **30-file** bundle as `d7db4ba` (...).
 
 ## Open Soak Issues
 
@@ -449,12 +459,12 @@ At the time of the stash-pop recovery, the bundle was 19 files.
 _HISTORICAL_22_IN_ACTIVE_WITH_CONTEXT_FIXTURE = """\
 # Fixture Current State
 
-Status (current, 2026-04-17): lane carries a **28-file** staged bundle.
+Status (current, 2026-04-17): lane committed a **30-file** bundle as `d7db4ba`.
 
 The staged bundle grew 19 \u2192 21 \u2192 22 \u2192 23 \u2192 24 \u2192 25 \u2192 27 \u2192 28 across the
 turn sequence; at the time of the Invariant-#11 integration it became 22
-paths, and subsequently grew to 28 with additional invariant-scanner pins,
-the coverage-matrix doc+pin pair, and the CUTOVER_PLAN phase-closure pin.
+paths, and subsequently previously staged as 28-file bundle, then committed as 30 files with
+the DEC-EVAL-006 fingerprint fix at commit time.
 
 ## Open Soak Issues
 """
@@ -471,7 +481,7 @@ _SUPERVISOR_SHAPE_STALE_AFTER_OPEN_SOAK_FIXTURE = """\
 ## Current Lane Truth (2026-04-17)
 
 - Branch `claudesox-local` at HEAD `f24df96`, ahead 10.
-- **28-file staged checkpoint debt present** in the git index.
+- **30-file checkpoint committed** as `d7db4ba`.
 
 ## Purpose
 
@@ -503,7 +513,7 @@ _SUPERVISOR_SHAPE_CLEAN_AFTER_OPEN_SOAK_FIXTURE = """\
 ## Current Lane Truth (2026-04-17)
 
 - Branch `claudesox-local` at HEAD `f24df96`, ahead 10.
-- **28-file staged checkpoint debt present** in the git index.
+- **30-file checkpoint committed** as `d7db4ba`.
 
 ## Purpose
 
@@ -516,7 +526,7 @@ Historical narrative at the time of the incident.
 
 ## Current Restart Slice
 
-- **Staged bundle:** 28 files. Clean supervisor-current guidance below
+- **Committed bundle:** 30 files. Clean supervisor-current guidance below
   the Open Soak Issues section.
 
 ## Historical Phase State Snapshot (as of 2026-04-14)
