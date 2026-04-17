@@ -472,3 +472,73 @@ def test_dispatch_attempts_indexes_exist(conn):
     idx = _index_names(conn, "dispatch_attempts")
     assert "idx_dispatch_attempts_seat_status" in idx
     assert "idx_dispatch_attempts_workflow" in idx
+
+
+# ---------------------------------------------------------------------------
+# 7. Domain-module / schema vocabulary linkage
+#    (DEC-SUPERVISION-THREADS-DOMAIN-001)
+#    The supervision_threads runtime-owned domain module must key off the
+#    same schema vocabulary pinned above — no private copy of the status or
+#    type set, no extra columns beyond the declared DDL.
+# ---------------------------------------------------------------------------
+
+
+def test_supervision_threads_domain_module_imports_and_pins_schema_vocabulary(conn):
+    from runtime.core import supervision_threads as sup_mod
+
+    # Module must expose the declared public API surface.
+    for name in (
+        "attach",
+        "detach",
+        "abandon",
+        "get",
+        "list_for_supervisor",
+        "list_for_worker",
+        "list_active",
+    ):
+        assert hasattr(sup_mod, name), (
+            f"supervision_threads domain module missing public API: {name}"
+        )
+
+    # State-machine transitions must all live within the schema-declared
+    # status vocabulary. No bespoke states.
+    for current, allowed in sup_mod._VALID_TRANSITIONS.items():
+        assert current in SUPERVISION_THREAD_STATUSES
+        for nxt in allowed:
+            assert nxt in SUPERVISION_THREAD_STATUSES
+
+    # A live attach() round-trip must produce a row whose columns match the
+    # schema-declared shape exactly (no silent column drift).
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO agent_sessions (
+            session_id, workflow_id, transport, transport_handle,
+            status, created_at, updated_at
+        ) VALUES ('sess-x', NULL, 'claude_code', NULL, 'active', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO seats (
+            seat_id, session_id, role, status, created_at, updated_at
+        ) VALUES ('seat-x-sup', 'sess-x', 'supervisor', 'active', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO seats (
+            seat_id, session_id, role, status, created_at, updated_at
+        ) VALUES ('seat-x-wrk', 'sess-x', 'worker', 'active', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.commit()
+
+    row = sup_mod.attach(conn, "seat-x-sup", "seat-x-wrk", "analysis")
+    declared_cols = set(_columns(conn, "supervision_threads"))
+    assert set(row.keys()) == declared_cols, (
+        "attach() row keys must match supervision_threads columns exactly"
+    )

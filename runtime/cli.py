@@ -1685,6 +1685,81 @@ def _handle_dispatch(args) -> int:
     return _err(f"unknown dispatch action: {args.action}")
 
 
+def _handle_supervision(args) -> int:
+    """Handler for `cc-policy supervision` subcommands.
+
+    Delegates every action to ``runtime.core.supervision_threads``
+    (DEC-SUPERVISION-THREADS-DOMAIN-001). No supervision-thread state is
+    read or written outside of that domain module.
+    """
+    from runtime.core import supervision_threads as sup_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "attach":
+            try:
+                row = sup_mod.attach(
+                    conn,
+                    args.supervisor_seat_id,
+                    args.worker_seat_id,
+                    args.thread_type,
+                )
+            except ValueError as exc:
+                return _err(f"supervision attach: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "detach":
+            try:
+                row = sup_mod.detach(conn, args.thread_id)
+            except ValueError as exc:
+                return _err(f"supervision detach: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "abandon":
+            try:
+                row = sup_mod.abandon(conn, args.thread_id)
+            except ValueError as exc:
+                return _err(f"supervision abandon: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "get":
+            try:
+                row = sup_mod.get(conn, args.thread_id)
+            except ValueError as exc:
+                return _err(f"supervision get: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "list-for-supervisor":
+            try:
+                rows = sup_mod.list_for_supervisor(
+                    conn,
+                    args.supervisor_seat_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-supervisor: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "list-for-worker":
+            try:
+                rows = sup_mod.list_for_worker(
+                    conn,
+                    args.worker_seat_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-worker: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "list-active":
+            rows = sup_mod.list_active(conn)
+            return _ok({"threads": rows})
+
+    finally:
+        conn.close()
+    return _err(f"unknown supervision action: {args.action}")
+
+
 def _handle_lifecycle(args) -> int:
     """Handler for `cc-policy lifecycle` subcommands.
 
@@ -4235,6 +4310,58 @@ def build_parser() -> argparse.ArgumentParser:
     obs_sub.add_parser("status", help="Return high-level observatory status")
     obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
 
+    # supervision — supervision_threads domain authority
+    # (DEC-SUPERVISION-THREADS-DOMAIN-001). Runtime-owned CRUD + state queries
+    # for recursive-supervision relationships between seats.
+    sup_p = subparsers.add_parser(
+        "supervision",
+        help="Supervision-thread relationships between seats",
+    )
+    sup_sub = sup_p.add_subparsers(dest="action", required=True)
+
+    sup_attach = sup_sub.add_parser(
+        "attach", help="Create a new active supervision_thread row"
+    )
+    sup_attach.add_argument("--supervisor-seat-id", dest="supervisor_seat_id", required=True)
+    sup_attach.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
+    sup_attach.add_argument(
+        "--thread-type",
+        dest="thread_type",
+        required=True,
+        help="One of SUPERVISION_THREAD_TYPES",
+    )
+
+    sup_detach = sup_sub.add_parser(
+        "detach", help="Transition an active thread to completed"
+    )
+    sup_detach.add_argument("--thread-id", dest="thread_id", required=True)
+
+    sup_abandon = sup_sub.add_parser(
+        "abandon", help="Transition an active thread to abandoned (supervisor died)"
+    )
+    sup_abandon.add_argument("--thread-id", dest="thread_id", required=True)
+
+    sup_get = sup_sub.add_parser("get", help="Fetch a supervision_thread row by id")
+    sup_get.add_argument("--thread-id", dest="thread_id", required=True)
+
+    sup_lfs = sup_sub.add_parser(
+        "list-for-supervisor",
+        help="List threads owned by a supervisor seat (optionally filtered by status)",
+    )
+    sup_lfs.add_argument("--supervisor-seat-id", dest="supervisor_seat_id", required=True)
+    sup_lfs.add_argument("--status", dest="status", default=None)
+
+    sup_lfw = sup_sub.add_parser(
+        "list-for-worker",
+        help="List threads targeting a worker seat (optionally filtered by status)",
+    )
+    sup_lfw.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
+    sup_lfw.add_argument("--status", dest="status", default=None)
+
+    sup_sub.add_parser(
+        "list-active", help="List every supervision_thread whose status is active"
+    )
+
     # config — enforcement toggle authority (DEC-CONFIG-AUTHORITY-001)
     config_p = subparsers.add_parser(
         "config", help="Enforcement config: get/set/list toggle values"
@@ -4324,6 +4451,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
+    if args.domain == "supervision":
+        return _handle_supervision(args)
     if args.domain == "statusline":
         return _handle_statusline(args)
     if args.domain == "trace":
