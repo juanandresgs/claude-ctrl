@@ -251,6 +251,116 @@ def test_list_helpers_reject_invalid_status(conn, two_seats):
 
 
 # ---------------------------------------------------------------------------
+# list_for_session / list_for_seat query surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cross_session_seats(conn):
+    """Two sessions, three seats: sess-A has sup+wrk, sess-B has aux worker."""
+    _insert_session(conn, "sess-A")
+    _insert_session(conn, "sess-B")
+    _insert_seat(conn, "seat-A-sup", "sess-A", role="supervisor")
+    _insert_seat(conn, "seat-A-wrk", "sess-A", role="worker")
+    _insert_seat(conn, "seat-B-wrk", "sess-B", role="worker")
+    conn.commit()
+    return {
+        "sess_A": "sess-A",
+        "sess_B": "sess-B",
+        "A_sup": "seat-A-sup",
+        "A_wrk": "seat-A-wrk",
+        "B_wrk": "seat-B-wrk",
+    }
+
+
+def test_list_for_session_returns_threads_touching_session(conn, cross_session_seats):
+    s = cross_session_seats
+    # Intra-session thread: supervisor and worker both in sess-A.
+    t1 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    # Cross-session thread: sup in sess-A, worker in sess-B.
+    t2 = sup_mod.attach(conn, s["A_sup"], s["B_wrk"], "review")
+
+    rows_A = sup_mod.list_for_session(conn, s["sess_A"])
+    ids_A = {r["thread_id"] for r in rows_A}
+    assert ids_A == {t1["thread_id"], t2["thread_id"]}
+
+    rows_B = sup_mod.list_for_session(conn, s["sess_B"])
+    ids_B = {r["thread_id"] for r in rows_B}
+    assert ids_B == {t2["thread_id"]}
+
+
+def test_list_for_session_filters_by_status(conn, cross_session_seats):
+    s = cross_session_seats
+    t1 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    t2 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "review")
+    sup_mod.detach(conn, t2["thread_id"])
+
+    active = sup_mod.list_for_session(conn, s["sess_A"], status="active")
+    assert [r["thread_id"] for r in active] == [t1["thread_id"]]
+
+    completed = sup_mod.list_for_session(conn, s["sess_A"], status="completed")
+    assert [r["thread_id"] for r in completed] == [t2["thread_id"]]
+
+
+def test_list_for_session_dedupes_when_both_seats_share_session(conn, cross_session_seats):
+    s = cross_session_seats
+    # Both sup and wrk belong to sess-A — JOIN would emit two rows without DISTINCT.
+    t1 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    rows = sup_mod.list_for_session(conn, s["sess_A"])
+    assert [r["thread_id"] for r in rows] == [t1["thread_id"]]
+
+
+def test_list_for_session_rejects_empty_session_id(conn):
+    with pytest.raises(ValueError, match="agent_session_id"):
+        sup_mod.list_for_session(conn, "")
+
+
+def test_list_for_session_rejects_invalid_status(conn, cross_session_seats):
+    s = cross_session_seats
+    with pytest.raises(ValueError, match="invalid status"):
+        sup_mod.list_for_session(conn, s["sess_A"], status="bogus")
+
+
+def test_list_for_seat_returns_threads_touching_seat(conn, cross_session_seats):
+    s = cross_session_seats
+    t_as_sup = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    t_as_wrk = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "review")
+
+    rows_sup = sup_mod.list_for_seat(conn, s["A_sup"])
+    assert {r["thread_id"] for r in rows_sup} == {t_as_sup["thread_id"], t_as_wrk["thread_id"]}
+
+    rows_wrk = sup_mod.list_for_seat(conn, s["A_wrk"])
+    assert {r["thread_id"] for r in rows_wrk} == {t_as_sup["thread_id"], t_as_wrk["thread_id"]}
+
+    # Unrelated seat sees nothing.
+    assert sup_mod.list_for_seat(conn, s["B_wrk"]) == []
+
+
+def test_list_for_seat_filters_by_status(conn, cross_session_seats):
+    s = cross_session_seats
+    t1 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    t2 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "review")
+    sup_mod.abandon(conn, t2["thread_id"])
+
+    active = sup_mod.list_for_seat(conn, s["A_sup"], status="active")
+    assert [r["thread_id"] for r in active] == [t1["thread_id"]]
+
+    abandoned = sup_mod.list_for_seat(conn, s["A_sup"], status="abandoned")
+    assert [r["thread_id"] for r in abandoned] == [t2["thread_id"]]
+
+
+def test_list_for_seat_rejects_empty_seat_id(conn):
+    with pytest.raises(ValueError, match="seat_id"):
+        sup_mod.list_for_seat(conn, "")
+
+
+def test_list_for_seat_rejects_invalid_status(conn, cross_session_seats):
+    s = cross_session_seats
+    with pytest.raises(ValueError, match="invalid status"):
+        sup_mod.list_for_seat(conn, s["A_sup"], status="bogus")
+
+
+# ---------------------------------------------------------------------------
 # Vocabulary authority
 # ---------------------------------------------------------------------------
 
@@ -321,6 +431,8 @@ def test_cli_help_lists_supervision_actions(tmp_path):
         "get",
         "list-for-supervisor",
         "list-for-worker",
+        "list-for-session",
+        "list-for-seat",
         "list-active",
     ):
         assert action in proc.stdout, f"'{action}' missing from supervision --help"
@@ -357,3 +469,43 @@ def test_cli_attach_list_detach_roundtrip(tmp_path):
     listed_after = _run_cli(tmp_db, "supervision", "list-active")
     assert listed_after["status"] == "ok"
     assert all(r["thread_id"] != tid for r in listed_after["threads"])
+
+
+def test_cli_list_for_session_and_seat_roundtrip(tmp_path):
+    tmp_db = tmp_path / "cli.sqlite3"
+    sup, wrk = _seed_seats_in_db(tmp_db)
+
+    attached = _run_cli(
+        tmp_db,
+        "supervision", "attach",
+        "--supervisor-seat-id", sup,
+        "--worker-seat-id", wrk,
+        "--thread-type", "analysis",
+    )
+    tid = attached["thread"]["thread_id"]
+
+    by_session = _run_cli(
+        tmp_db, "supervision", "list-for-session",
+        "--agent-session-id", "cli-sess",
+    )
+    assert by_session["status"] == "ok"
+    assert any(r["thread_id"] == tid for r in by_session["threads"])
+
+    by_session_active = _run_cli(
+        tmp_db, "supervision", "list-for-session",
+        "--agent-session-id", "cli-sess",
+        "--status", "active",
+    )
+    assert any(r["thread_id"] == tid for r in by_session_active["threads"])
+
+    by_seat_sup = _run_cli(
+        tmp_db, "supervision", "list-for-seat",
+        "--seat-id", sup,
+    )
+    assert any(r["thread_id"] == tid for r in by_seat_sup["threads"])
+
+    by_seat_wrk = _run_cli(
+        tmp_db, "supervision", "list-for-seat",
+        "--seat-id", wrk,
+    )
+    assert any(r["thread_id"] == tid for r in by_seat_wrk["threads"])

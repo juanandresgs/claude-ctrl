@@ -319,6 +319,74 @@ def list_for_worker(
     return [_row_to_dict(r) for r in rows]
 
 
+def list_for_session(
+    conn: sqlite3.Connection,
+    agent_session_id: str,
+    *,
+    status: Optional[str] = None,
+) -> list[dict]:
+    """Return every thread whose supervisor or worker seat belongs to ``agent_session_id``.
+
+    Joins ``supervision_threads`` against ``seats`` on both
+    ``supervisor_seat_id`` and ``worker_seat_id`` so a thread is included
+    when *either* side is a seat of the requested session.  Rows are
+    de-duplicated and ordered by ``created_at``.
+
+    When ``status`` is provided, rows are filtered to that exact status.
+    """
+    if not agent_session_id:
+        raise ValueError("supervision_threads: agent_session_id must be non-empty")
+    params: tuple
+    sql = """
+        SELECT DISTINCT st.*
+        FROM   supervision_threads st
+        JOIN   seats s
+          ON   s.seat_id IN (st.supervisor_seat_id, st.worker_seat_id)
+        WHERE  s.session_id = ?
+    """
+    if status is not None:
+        _require_status(status)
+        sql += " AND st.status = ?"
+        params = (agent_session_id, status)
+    else:
+        params = (agent_session_id,)
+    sql += " ORDER BY st.created_at"
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def list_for_seat(
+    conn: sqlite3.Connection,
+    seat_id: str,
+    *,
+    status: Optional[str] = None,
+) -> list[dict]:
+    """Return every thread where ``seat_id`` appears as supervisor or worker.
+
+    Supervisor and worker hits are unioned so the caller sees every thread
+    the seat is party to, regardless of direction.  Rows are ordered by
+    ``created_at``.
+
+    When ``status`` is provided, rows are filtered to that exact status.
+    """
+    if not seat_id:
+        raise ValueError("supervision_threads: seat_id must be non-empty")
+    params: tuple
+    sql = """
+        SELECT * FROM supervision_threads
+        WHERE  (supervisor_seat_id = ? OR worker_seat_id = ?)
+    """
+    if status is not None:
+        _require_status(status)
+        sql += " AND status = ?"
+        params = (seat_id, seat_id, status)
+    else:
+        params = (seat_id, seat_id)
+    sql += " ORDER BY created_at"
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 def list_active(conn: sqlite3.Connection) -> list[dict]:
     """Return every thread with ``status == 'active'`` in created_at order."""
     rows = conn.execute(

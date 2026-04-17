@@ -1751,6 +1751,28 @@ def _handle_supervision(args) -> int:
                 return _err(f"supervision list-for-worker: {exc}")
             return _ok({"threads": rows})
 
+        if args.action == "list-for-session":
+            try:
+                rows = sup_mod.list_for_session(
+                    conn,
+                    args.agent_session_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-session: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "list-for-seat":
+            try:
+                rows = sup_mod.list_for_seat(
+                    conn,
+                    args.seat_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-seat: {exc}")
+            return _ok({"threads": rows})
+
         if args.action == "list-active":
             rows = sup_mod.list_active(conn)
             return _ok({"threads": rows})
@@ -4357,6 +4379,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sup_lfw.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
     sup_lfw.add_argument("--status", dest="status", default=None)
+
+    sup_lses = sup_sub.add_parser(
+        "list-for-session",
+        help="List threads whose supervisor or worker seat belongs to a session",
+    )
+    sup_lses.add_argument("--agent-session-id", dest="agent_session_id", required=True)
+    sup_lses.add_argument("--status", dest="status", default=None)
+
+    sup_lst = sup_sub.add_parser(
+        "list-for-seat",
+        help="List threads where a seat appears as supervisor or worker",
+    )
+    sup_lst.add_argument("--seat-id", dest="seat_id", required=True)
+    sup_lst.add_argument("--status", dest="status", default=None)
 
     sup_sub.add_parser(
         "list-active", help="List every supervision_thread whose status is active"

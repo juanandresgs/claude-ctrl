@@ -494,6 +494,8 @@ def test_supervision_threads_domain_module_imports_and_pins_schema_vocabulary(co
         "get",
         "list_for_supervisor",
         "list_for_worker",
+        "list_for_session",
+        "list_for_seat",
         "list_active",
     ):
         assert hasattr(sup_mod, name), (
