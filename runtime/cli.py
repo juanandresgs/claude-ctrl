@@ -32,7 +32,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 import runtime.core.approvals as approvals_mod
 import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
-import runtime.core.dispatch as dispatch_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
@@ -49,7 +48,6 @@ import runtime.core.lifecycle as lifecycle_mod
 import runtime.core.markers as markers_mod
 import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
-import runtime.core.proof as proof_mod
 import runtime.core.quick_eval as quick_eval_mod
 import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.statusline as statusline_mod
@@ -152,31 +150,6 @@ def _handle_config(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown config action: {args.action}")
-
-
-def _handle_proof(args) -> int:
-    conn = _get_conn()
-    try:
-        if args.action == "get":
-            result = proof_mod.get(conn, args.workflow_id)
-            if result is None:
-                return _ok({"workflow_id": args.workflow_id, "status": "idle", "found": False})
-            result["found"] = True
-            return _ok(result)
-
-        elif args.action == "set":
-            proof_mod.set_status(conn, args.workflow_id, args.status)
-            return _ok({"workflow_id": args.workflow_id, "status": args.status})
-
-        elif args.action == "list":
-            rows = proof_mod.list_all(conn)
-            return _ok({"items": rows, "count": len(rows)})
-
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-    return _err(f"unknown proof action: {args.action}")
 
 
 def _handle_evaluation(args) -> int:
@@ -306,6 +279,31 @@ def _handle_event(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown event action: {args.action}")
+
+
+def _handle_doc(args) -> int:
+    """Thin CLI adapter over runtime.core.doc_reference_validation.
+
+    ``cc-policy doc ref-check <path>``:
+        Scan the markdown at ``<path>`` for hook-surface references and
+        diff them against HOOK_MANIFEST. Prints the structured report as
+        JSON. Exits non-zero when drift is detected (unknown adapter
+        paths, unknown events, or unknown event-matcher pairs).
+    """
+    from runtime.core.doc_reference_validation import validate_doc_references_file
+
+    if args.action == "ref-check":
+        path = args.path
+        if not Path(path).is_file():
+            return _err(f"doc ref-check: path not found or not a file: {path}")
+        report = validate_doc_references_file(path)
+        body = report.as_dict()
+        # Non-zero exit on drift; stable JSON body either way.
+        if not report.healthy:
+            return _err(json.dumps(body, sort_keys=True))
+        return _ok(body)
+
+    return _err(f"unknown doc action: {args.action}")
 
 
 def _handle_hook(args) -> int:
@@ -1650,41 +1648,7 @@ def _handle_worktree(args) -> int:
 def _handle_dispatch(args) -> int:
     conn = _get_conn()
     try:
-        if args.action == "enqueue":
-            qid = dispatch_mod.enqueue(
-                conn,
-                role=args.role,
-                ticket=getattr(args, "ticket", None),
-            )
-            return _ok({"id": qid, "role": args.role})
-
-        elif args.action == "next":
-            result = dispatch_mod.next_pending(conn)
-            if result is None:
-                return _ok({"found": False, "item": None})
-            result["found"] = True
-            return _ok(result)
-
-        elif args.action == "start":
-            dispatch_mod.start(conn, args.id)
-            return _ok({"id": args.id})
-
-        elif args.action == "complete":
-            dispatch_mod.complete(conn, args.id)
-            return _ok({"id": args.id})
-
-        elif args.action == "cycle-start":
-            cid = dispatch_mod.start_cycle(conn, args.initiative)
-            return _ok({"id": cid, "initiative": args.initiative})
-
-        elif args.action == "cycle-current":
-            result = dispatch_mod.current_cycle(conn)
-            if result is None:
-                return _ok({"found": False, "cycle": None})
-            result["found"] = True
-            return _ok(result)
-
-        elif args.action == "process-stop":
+        if args.action == "process-stop":
             # Read JSON from stdin: {"agent_type": "reviewer", "project_root": "/path"}
             import json as _json
 
@@ -1809,6 +1773,31 @@ def _handle_dispatch(args) -> int:
                 return _ok({"found": False, "attempt": None})
             return _ok({"found": True, "attempt": result})
 
+        elif args.action == "sweep-dead":
+            # @decision DEC-DEAD-RECOVERY-001
+            from runtime.core import dead_recovery as _dr
+
+            kwargs: dict = {}
+            if getattr(args, "grace_seconds", None) is not None:
+                kwargs["grace_seconds"] = int(args.grace_seconds)
+            try:
+                result = _dr.sweep_all(conn, **kwargs)
+            except ValueError as exc:
+                return _err(f"dispatch sweep-dead: {exc}")
+            return _ok(result)
+
+        elif args.action == "seat-release":
+            # Runtime-owned seat teardown (DEC-SUPERVISION-THREADS-DOMAIN-001
+            # continuation).  Releases the seat and abandons every active
+            # supervision_thread touching it in one transaction per action.
+            from runtime.core.dispatch_hook import release_session_seat as _release
+
+            try:
+                result = _release(conn, args.session_id, args.agent_type)
+            except Exception as exc:
+                return _err(f"dispatch seat-release: {exc}")
+            return _ok(result)
+
         elif args.action == "attempt-expire-stale":
             # Sweep pending/delivered attempts whose timeout_at has elapsed.
             # Called by scripts/claudex-watchdog.sh on every tick so timed-out
@@ -1817,7 +1806,14 @@ def _handle_dispatch(args) -> int:
             from runtime.core.dispatch_attempts import expire_stale as _expire_stale
 
             try:
-                n = _expire_stale(conn)
+                n = _expire_stale(
+                    conn,
+                    fallback_pending_max_age_seconds=(
+                        args.fallback_pending_max_age_seconds
+                        if getattr(args, "fallback_pending_max_age_seconds", 0) > 0
+                        else None
+                    ),
+                )
             except Exception as exc:
                 return _err(f"dispatch attempt-expire-stale: {exc}")
             return _ok({"expired": n})
@@ -1825,6 +1821,237 @@ def _handle_dispatch(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown dispatch action: {args.action}")
+
+
+def _handle_agent_session(args) -> int:
+    """Handler for `cc-policy agent-session` subcommands.
+
+    Thin adapter over ``runtime.core.agent_sessions``
+    (DEC-AGENT-SESSION-DOMAIN-001).  No agent_sessions state is read or
+    written outside of that domain module.  Session creation is
+    intentionally absent — sessions are bootstrapped exclusively
+    through ``dispatch_hook.ensure_session_and_seat``.
+    """
+    from runtime.core import agent_sessions as as_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            try:
+                row = as_mod.get(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session get: {exc}")
+            return _ok({"session": row})
+
+        if args.action == "mark-completed":
+            try:
+                result = as_mod.mark_completed(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session mark-completed: {exc}")
+            return _ok(
+                {
+                    "session": result["row"],
+                    "transitioned": result["transitioned"],
+                }
+            )
+
+        if args.action == "mark-dead":
+            try:
+                result = as_mod.mark_dead(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session mark-dead: {exc}")
+            return _ok(
+                {
+                    "session": result["row"],
+                    "transitioned": result["transitioned"],
+                }
+            )
+
+        if args.action == "mark-orphaned":
+            try:
+                result = as_mod.mark_orphaned(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session mark-orphaned: {exc}")
+            return _ok(
+                {
+                    "session": result["row"],
+                    "transitioned": result["transitioned"],
+                }
+            )
+
+        if args.action == "list-active":
+            rows = as_mod.list_active(conn, workflow_id=args.workflow_id)
+            return _ok({"sessions": rows})
+
+    finally:
+        conn.close()
+    return _err(f"unknown agent-session action: {args.action}")
+
+
+def _handle_seat(args) -> int:
+    """Handler for `cc-policy seat` subcommands.
+
+    Thin adapter over ``runtime.core.seats`` (DEC-SEAT-DOMAIN-001).
+    No seat state is read or written outside of that domain module.
+    Seat creation is intentionally absent — seats are bootstrapped
+    exclusively through ``dispatch_hook.ensure_session_and_seat``.
+    """
+    from runtime.core import seats as seat_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            try:
+                row = seat_mod.get(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"seat get: {exc}")
+            return _ok({"seat": row})
+
+        if args.action == "release":
+            try:
+                result = seat_mod.release(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"seat release: {exc}")
+            return _ok(
+                {"seat": result["row"], "transitioned": result["transitioned"]}
+            )
+
+        if args.action == "mark-dead":
+            try:
+                result = seat_mod.mark_dead(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"seat mark-dead: {exc}")
+            return _ok(
+                {"seat": result["row"], "transitioned": result["transitioned"]}
+            )
+
+        if args.action == "list-for-session":
+            try:
+                rows = seat_mod.list_for_session(
+                    conn, args.session_id, status=args.status
+                )
+            except ValueError as exc:
+                return _err(f"seat list-for-session: {exc}")
+            return _ok({"seats": rows})
+
+        if args.action == "list-active":
+            rows = seat_mod.list_active(conn)
+            return _ok({"seats": rows})
+
+    finally:
+        conn.close()
+    return _err(f"unknown seat action: {args.action}")
+
+
+def _handle_supervision(args) -> int:
+    """Handler for `cc-policy supervision` subcommands.
+
+    Delegates every action to ``runtime.core.supervision_threads``
+    (DEC-SUPERVISION-THREADS-DOMAIN-001). No supervision-thread state is
+    read or written outside of that domain module.
+    """
+    from runtime.core import supervision_threads as sup_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "attach":
+            try:
+                row = sup_mod.attach(
+                    conn,
+                    args.supervisor_seat_id,
+                    args.worker_seat_id,
+                    args.thread_type,
+                )
+            except ValueError as exc:
+                return _err(f"supervision attach: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "detach":
+            try:
+                row = sup_mod.detach(conn, args.thread_id)
+            except ValueError as exc:
+                return _err(f"supervision detach: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "abandon":
+            try:
+                row = sup_mod.abandon(conn, args.thread_id)
+            except ValueError as exc:
+                return _err(f"supervision abandon: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "get":
+            try:
+                row = sup_mod.get(conn, args.thread_id)
+            except ValueError as exc:
+                return _err(f"supervision get: {exc}")
+            return _ok({"thread": row})
+
+        if args.action == "list-for-supervisor":
+            try:
+                rows = sup_mod.list_for_supervisor(
+                    conn,
+                    args.supervisor_seat_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-supervisor: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "list-for-worker":
+            try:
+                rows = sup_mod.list_for_worker(
+                    conn,
+                    args.worker_seat_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-worker: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "list-for-session":
+            try:
+                rows = sup_mod.list_for_session(
+                    conn,
+                    args.agent_session_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-session: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "list-for-seat":
+            try:
+                rows = sup_mod.list_for_seat(
+                    conn,
+                    args.seat_id,
+                    status=args.status,
+                )
+            except ValueError as exc:
+                return _err(f"supervision list-for-seat: {exc}")
+            return _ok({"threads": rows})
+
+        if args.action == "abandon-for-seat":
+            try:
+                count = sup_mod.abandon_for_seat(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"supervision abandon-for-seat: {exc}")
+            return _ok({"abandoned": count})
+
+        if args.action == "abandon-for-session":
+            try:
+                count = sup_mod.abandon_for_session(conn, args.agent_session_id)
+            except ValueError as exc:
+                return _err(f"supervision abandon-for-session: {exc}")
+            return _ok({"abandoned": count})
+
+        if args.action == "list-active":
+            rows = sup_mod.list_active(conn)
+            return _ok({"threads": rows})
+
+    finally:
+        conn.close()
+    return _err(f"unknown supervision action: {args.action}")
 
 
 def _handle_lifecycle(args) -> int:
@@ -3444,16 +3671,6 @@ def build_parser() -> argparse.ArgumentParser:
     # init (backward compat with scaffold)
     subparsers.add_parser("init", help="Alias for schema ensure")
 
-    # proof
-    proof_p = subparsers.add_parser("proof", help="Proof-of-work lifecycle")
-    proof_sub = proof_p.add_subparsers(dest="action", required=True)
-    pg = proof_sub.add_parser("get")
-    pg.add_argument("workflow_id")
-    ps_p = proof_sub.add_parser("set")
-    ps_p.add_argument("workflow_id")
-    ps_p.add_argument("status", choices=["idle", "pending", "verified"])
-    proof_sub.add_parser("list")
-
     # evaluation
     eval_p = subparsers.add_parser("evaluation", help="Evaluator-state readiness authority")
     eval_sub = eval_p.add_subparsers(dest="action", required=True)
@@ -4003,19 +4220,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scope deactivation further to this workflow_id",
     )
 
-    dp_p = subparsers.add_parser("dispatch", help="Dispatch queue and cycles")
+    dp_p = subparsers.add_parser("dispatch", help="Dispatch engine operations")
     dp_sub = dp_p.add_subparsers(dest="action", required=True)
-    deq = dp_sub.add_parser("enqueue")
-    deq.add_argument("role")
-    deq.add_argument("--ticket")
-    dp_sub.add_parser("next")
-    dst = dp_sub.add_parser("start")
-    dst.add_argument("id", type=int)
-    dco = dp_sub.add_parser("complete")
-    dco.add_argument("id", type=int)
-    dcs = dp_sub.add_parser("cycle-start")
-    dcs.add_argument("initiative")
-    dp_sub.add_parser("cycle-current")
 
     # process-stop: reads JSON from stdin, returns hookSpecificOutput
     dp_sub.add_parser(
@@ -4113,18 +4319,88 @@ def build_parser() -> argparse.ArgumentParser:
 
     # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
     # Called by scripts/claudex-watchdog.sh on every tick.
-    dp_sub.add_parser(
+    daes = dp_sub.add_parser(
         "attempt-expire-stale",
         help=(
-            "Sweep pending/delivered dispatch attempts past their timeout_at "
-            "and transition them to timed_out. Returns {expired: N}."
+            "Sweep pending/delivered dispatch attempts past timeout_at and "
+            "optionally expire legacy pending rows with no timeout_at."
         ),
+    )
+    daes.add_argument(
+        "--fallback-pending-max-age-seconds",
+        dest="fallback_pending_max_age_seconds",
+        type=int,
+        default=0,
+        help=(
+            "Optional legacy cleanup threshold: expire pending rows with "
+            "timeout_at NULL older than this many seconds."
+        ),
+    )
+
+    # sweep-dead: runtime-owned dead-loop recovery (DEC-DEAD-RECOVERY-001).
+    # Thin adapter over runtime.core.dead_recovery.sweep_all().  Called by
+    # scripts/claudex-watchdog.sh immediately after attempt-expire-stale so
+    # silent-death cases (no SubagentStop event) are recovered by the
+    # runtime rather than by stop-hook recursion.
+    dsw = dp_sub.add_parser(
+        "sweep-dead",
+        help=(
+            "Mark active seats with past-grace terminal attempts as dead "
+            "and cascade-close their supervision_threads; transition "
+            "every-seat-terminal sessions to completed or dead."
+        ),
+    )
+    dsw.add_argument(
+        "--grace-seconds",
+        dest="grace_seconds",
+        type=int,
+        default=None,
+        help=(
+            "Minimum age (seconds) a terminal dispatch_attempt must reach "
+            "before its seat is eligible for sweeping. Defaults to "
+            "runtime.core.dead_recovery.DEFAULT_GRACE_SECONDS."
+        ),
+    )
+
+    # seat-release: release a seat and abandon its active supervision_threads
+    # (DEC-SUPERVISION-THREADS-DOMAIN-001 continuation).  Thin adapter over
+    # runtime.core.dispatch_hook.release_session_seat().
+    dsr = dp_sub.add_parser(
+        "seat-release",
+        help=(
+            "Release a session seat and abandon every active supervision_thread "
+            "where it is supervisor or worker."
+        ),
+    )
+    dsr.add_argument(
+        "--session-id", dest="session_id", required=True,
+        help="Orchestrator session_id for the seat being released",
+    )
+    dsr.add_argument(
+        "--agent-type", dest="agent_type", required=True,
+        help="Harness agent_type the seat was created for",
     )
 
     # statusline
     sl_p = subparsers.add_parser("statusline", help="Runtime-backed statusline snapshot")
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
     sl_sub.add_parser("snapshot")
+
+    # doc — hook-surface reference validation (Invariant #8,
+    # DEC-DOC-REF-VALIDATION-001)
+    doc_p = subparsers.add_parser(
+        "doc",
+        help="Markdown doc reference validation (read-only)",
+    )
+    doc_sub = doc_p.add_subparsers(dest="action", required=True)
+    doc_ref = doc_sub.add_parser(
+        "ref-check",
+        help=(
+            "Scan a markdown file for hook-surface references and diff "
+            "them against HOOK_MANIFEST. Exit non-zero on drift."
+        ),
+    )
+    doc_ref.add_argument("path", help="Path to the markdown file to validate")
 
     # trace
     tr_p = subparsers.add_parser("trace", help="Trace-lite session manifests and summaries")
@@ -4743,6 +5019,153 @@ def build_parser() -> argparse.ArgumentParser:
     obs_sub.add_parser("status", help="Return high-level observatory status")
     obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
 
+    # agent-session — agent_sessions domain authority
+    # (DEC-AGENT-SESSION-DOMAIN-001).  Read/transition surface over the
+    # runtime-owned session state machine.  Session creation is NOT
+    # exposed here: sessions are bootstrapped exclusively through
+    # dispatch_hook.ensure_session_and_seat (PreToolUse:Agent path).
+    as_p = subparsers.add_parser(
+        "agent-session",
+        help="Agent-session lifecycle + query authority",
+    )
+    as_sub = as_p.add_subparsers(dest="action", required=True)
+
+    as_get = as_sub.add_parser("get", help="Fetch an agent_sessions row by id")
+    as_get.add_argument("--session-id", dest="session_id", required=True)
+
+    as_mc = as_sub.add_parser(
+        "mark-completed", help="Transition an active session to completed"
+    )
+    as_mc.add_argument("--session-id", dest="session_id", required=True)
+
+    as_md = as_sub.add_parser(
+        "mark-dead", help="Transition an active session to dead"
+    )
+    as_md.add_argument("--session-id", dest="session_id", required=True)
+
+    as_mo = as_sub.add_parser(
+        "mark-orphaned", help="Transition an active session to orphaned"
+    )
+    as_mo.add_argument("--session-id", dest="session_id", required=True)
+
+    as_la = as_sub.add_parser(
+        "list-active",
+        help="List every active session (optionally filtered by workflow_id)",
+    )
+    as_la.add_argument("--workflow-id", dest="workflow_id", default=None)
+
+    # seat — seats domain authority (DEC-SEAT-DOMAIN-001).  Read/transition
+    # surface over the runtime-owned seat state machine.  Seat creation is
+    # NOT exposed here: seats are bootstrapped exclusively through
+    # dispatch_hook.ensure_session_and_seat (PreToolUse:Agent path).
+    seat_p = subparsers.add_parser(
+        "seat",
+        help="Seat lifecycle + query authority",
+    )
+    seat_sub = seat_p.add_subparsers(dest="action", required=True)
+
+    seat_get = seat_sub.add_parser("get", help="Fetch a seat row by id")
+    seat_get.add_argument("--seat-id", dest="seat_id", required=True)
+
+    seat_rel = seat_sub.add_parser(
+        "release", help="Transition an active seat to released"
+    )
+    seat_rel.add_argument("--seat-id", dest="seat_id", required=True)
+
+    seat_dead = seat_sub.add_parser(
+        "mark-dead", help="Transition a seat (from active or released) to dead"
+    )
+    seat_dead.add_argument("--seat-id", dest="seat_id", required=True)
+
+    seat_lfs = seat_sub.add_parser(
+        "list-for-session",
+        help="List seats for a session (optionally filtered by status)",
+    )
+    seat_lfs.add_argument("--session-id", dest="session_id", required=True)
+    seat_lfs.add_argument("--status", dest="status", default=None)
+
+    seat_sub.add_parser(
+        "list-active", help="List every seat whose status is active"
+    )
+
+    # supervision — supervision_threads domain authority
+    # (DEC-SUPERVISION-THREADS-DOMAIN-001). Runtime-owned CRUD + state queries
+    # for recursive-supervision relationships between seats.
+    sup_p = subparsers.add_parser(
+        "supervision",
+        help="Supervision-thread relationships between seats",
+    )
+    sup_sub = sup_p.add_subparsers(dest="action", required=True)
+
+    sup_attach = sup_sub.add_parser(
+        "attach", help="Create a new active supervision_thread row"
+    )
+    sup_attach.add_argument("--supervisor-seat-id", dest="supervisor_seat_id", required=True)
+    sup_attach.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
+    sup_attach.add_argument(
+        "--thread-type",
+        dest="thread_type",
+        required=True,
+        help="One of SUPERVISION_THREAD_TYPES",
+    )
+
+    sup_detach = sup_sub.add_parser(
+        "detach", help="Transition an active thread to completed"
+    )
+    sup_detach.add_argument("--thread-id", dest="thread_id", required=True)
+
+    sup_abandon = sup_sub.add_parser(
+        "abandon", help="Transition an active thread to abandoned (supervisor died)"
+    )
+    sup_abandon.add_argument("--thread-id", dest="thread_id", required=True)
+
+    sup_get = sup_sub.add_parser("get", help="Fetch a supervision_thread row by id")
+    sup_get.add_argument("--thread-id", dest="thread_id", required=True)
+
+    sup_lfs = sup_sub.add_parser(
+        "list-for-supervisor",
+        help="List threads owned by a supervisor seat (optionally filtered by status)",
+    )
+    sup_lfs.add_argument("--supervisor-seat-id", dest="supervisor_seat_id", required=True)
+    sup_lfs.add_argument("--status", dest="status", default=None)
+
+    sup_lfw = sup_sub.add_parser(
+        "list-for-worker",
+        help="List threads targeting a worker seat (optionally filtered by status)",
+    )
+    sup_lfw.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
+    sup_lfw.add_argument("--status", dest="status", default=None)
+
+    sup_lses = sup_sub.add_parser(
+        "list-for-session",
+        help="List threads whose supervisor or worker seat belongs to a session",
+    )
+    sup_lses.add_argument("--agent-session-id", dest="agent_session_id", required=True)
+    sup_lses.add_argument("--status", dest="status", default=None)
+
+    sup_lst = sup_sub.add_parser(
+        "list-for-seat",
+        help="List threads where a seat appears as supervisor or worker",
+    )
+    sup_lst.add_argument("--seat-id", dest="seat_id", required=True)
+    sup_lst.add_argument("--status", dest="status", default=None)
+
+    sup_afs = sup_sub.add_parser(
+        "abandon-for-seat",
+        help="Abandon every active thread where a seat is supervisor or worker",
+    )
+    sup_afs.add_argument("--seat-id", dest="seat_id", required=True)
+
+    sup_afses = sup_sub.add_parser(
+        "abandon-for-session",
+        help="Abandon every active thread touching a session (either side)",
+    )
+    sup_afses.add_argument("--agent-session-id", dest="agent_session_id", required=True)
+
+    sup_sub.add_parser(
+        "list-active", help="List every supervision_thread whose status is active"
+    )
+
     # config — enforcement toggle authority (DEC-CONFIG-AUTHORITY-001)
     config_p = subparsers.add_parser(
         "config", help="Enforcement config: get/set/list toggle values"
@@ -4808,8 +5231,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.domain == "schema":
         return _handle_schema(args)
-    if args.domain == "proof":
-        return _handle_proof(args)
     if args.domain == "evaluation":
         return _handle_evaluation(args)
     if args.domain == "marker":
@@ -4824,6 +5245,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_constitution(args)
     if args.domain == "decision":
         return _handle_decision(args)
+    if args.domain == "doc":
+        return _handle_doc(args)
     if args.domain == "prompt-pack":
         return _handle_prompt_pack(args)
     if args.domain == "shadow":
@@ -4834,6 +5257,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
+    if args.domain == "agent-session":
+        return _handle_agent_session(args)
+    if args.domain == "seat":
+        return _handle_seat(args)
+    if args.domain == "supervision":
+        return _handle_supervision(args)
     if args.domain == "statusline":
         return _handle_statusline(args)
     if args.domain == "trace":

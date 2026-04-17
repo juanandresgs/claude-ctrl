@@ -76,6 +76,33 @@ def set_active(
                       Stored alongside project_root for fine-grained scoping.
     """
     now = int(time.time())
+    # Keep one live authority seat per (role, project_root, workflow_id) scope.
+    # Any older active marker in the same scope is deactivated as "replaced"
+    # before the new marker is upserted.
+    clauses = ["is_active = 1", "role = ?", "agent_id <> ?"]
+    params: list[object] = [role, agent_id]
+    if project_root is None:
+        clauses.append("project_root IS NULL")
+    else:
+        clauses.append("project_root = ?")
+        params.append(project_root)
+    if workflow_id is None:
+        clauses.append("workflow_id IS NULL")
+    else:
+        clauses.append("workflow_id = ?")
+        params.append(workflow_id)
+    where = " AND ".join(clauses)
+    with conn:
+        conn.execute(
+            f"""
+            UPDATE agent_markers
+            SET    stopped_at = ?,
+                   is_active  = 0,
+                   status     = 'replaced'
+            WHERE  {where}
+            """,
+            [now, *params],
+        )
     with conn:
         conn.execute(
             """

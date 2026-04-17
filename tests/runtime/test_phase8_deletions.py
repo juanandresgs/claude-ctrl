@@ -737,3 +737,98 @@ def test_phase8_slice11_capture_payload_contract_has_no_live_tester_role() -> No
         f"live agent_type payload value. Phase 8 Slice 11 retired the role; "
         f"the bullet must be removed (a retirement note is permitted)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Post-Phase-8 Category C bundle 1 — proof_state retirement
+# (DEC-CATEGORY-C-PROOF-RETIRE-001)
+# ---------------------------------------------------------------------------
+
+
+def test_post_phase8_category_c_proof_source_is_deleted() -> None:
+    """runtime/core/proof.py must remain deleted under
+    DEC-CATEGORY-C-PROOF-RETIRE-001.
+    """
+    path = REPO_ROOT / "runtime" / "core" / "proof.py"
+    assert not path.exists(), (
+        f"runtime/core/proof.py must remain deleted under "
+        f"DEC-CATEGORY-C-PROOF-RETIRE-001; still present at {path}"
+    )
+
+
+def test_post_phase8_category_c_proof_state_ddl_removed_from_schemas() -> None:
+    """runtime/schemas.py must not declare PROOF_STATE_DDL or a
+    CREATE TABLE statement for proof_state.
+    """
+    import re as _re
+
+    schemas_src = (REPO_ROOT / "runtime" / "schemas.py").read_text(encoding="utf-8")
+    assert "PROOF_STATE_DDL" not in schemas_src, (
+        "runtime/schemas.py must not define PROOF_STATE_DDL after Category C "
+        "bundle 1 retirement"
+    )
+    assert not _re.search(
+        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+proof_state",
+        schemas_src,
+        flags=_re.IGNORECASE,
+    ), (
+        "runtime/schemas.py must not contain a CREATE TABLE IF NOT EXISTS "
+        "proof_state statement"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Post-Phase-8 Category C bundle 2 — dispatch_queue / dispatch_cycles retirement
+# (DEC-CATEGORY-C-DISPATCH-RETIRE-001)
+# ---------------------------------------------------------------------------
+
+
+def test_post_phase8_category_c_dispatch_source_is_deleted() -> None:
+    """runtime/core/dispatch.py must remain deleted under
+    DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+    """
+    path = REPO_ROOT / "runtime" / "core" / "dispatch.py"
+    assert not path.exists(), (
+        f"runtime/core/dispatch.py must remain deleted under "
+        f"DEC-CATEGORY-C-DISPATCH-RETIRE-001; still present at {path}"
+    )
+
+
+def test_post_phase8_category_c_dispatch_queue_ddl_removed_from_schemas() -> None:
+    """runtime/schemas.py must not declare DISPATCH_QUEUE_DDL or a
+    CREATE TABLE for dispatch_queue.
+    """
+    import re as _re
+
+    schemas_src = (REPO_ROOT / "runtime" / "schemas.py").read_text(encoding="utf-8")
+    assert "DISPATCH_QUEUE_DDL" not in schemas_src, (
+        "runtime/schemas.py must not define DISPATCH_QUEUE_DDL after retirement"
+    )
+    assert not _re.search(
+        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+dispatch_queue",
+        schemas_src,
+        flags=_re.IGNORECASE,
+    ), (
+        "runtime/schemas.py must not contain a CREATE TABLE IF NOT EXISTS "
+        "dispatch_queue statement"
+    )
+
+
+def test_post_phase8_category_c_dispatch_cycles_ddl_removed_from_schemas() -> None:
+    """runtime/schemas.py must not declare DISPATCH_CYCLES_DDL or a
+    CREATE TABLE for dispatch_cycles.
+    """
+    import re as _re
+
+    schemas_src = (REPO_ROOT / "runtime" / "schemas.py").read_text(encoding="utf-8")
+    assert "DISPATCH_CYCLES_DDL" not in schemas_src, (
+        "runtime/schemas.py must not define DISPATCH_CYCLES_DDL after retirement"
+    )
+    assert not _re.search(
+        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+dispatch_cycles",
+        schemas_src,
+        flags=_re.IGNORECASE,
+    ), (
+        "runtime/schemas.py must not contain a CREATE TABLE IF NOT EXISTS "
+        "dispatch_cycles statement"
+    )

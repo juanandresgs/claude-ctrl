@@ -1,12 +1,104 @@
 # ClauDEX Current State
 
-Status (current, 2026-04-17): **PUSH DEBT PRESENT — UPSTREAM DIVERGED** — lane committed a **30-file** bundle as `d7db4ba` plus doc-reconciliation checkpoint `696254a` (3 files). Lane is 12 ahead / 35+ behind `origin/feat/claudex-cutover` (behind-count time-variant). Push requires merge integration first: 7 dirty tracked files block merge (must be checkpointed), then `git merge origin/feat/claudex-cutover`, then push. See "cc-policy-who-remediation Slice 1 State (2026-04-17)" and "Recommended next supervisor action" below.
+Status: active handoff record — **§2a FABRIC CLOSED / CUTOVER STEADY-STATE**
+Updated: 2026-04-17 (post-§2a closure reconciliation).
 
-Historical snapshot: as of 2026-04-14 closeout (Phase 8 Slice 12), the ClauDEX cutover bundle had landed and been pushed upstream with no remaining Phase-8 checkpoint debt. That snapshot is preserved in the "Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT" section below; it is not current lane truth.
+- **2026-04-14 checkpoint:** Phases 1-8 COMPLETE; cutover bundle landed as `6b8cc5c`
+  on `feat/claudex-cutover` + follow-up process-control fix `d8fdf96` pushed to the
+  same upstream; `ca7190e` (supervisor-launch + state-record fix) landed on top.
+- **2026-04-17 post-checkpoint integration (Integration Wave 1):** ten
+  cutover-continuation bundles authored as independent checkpoint branches on
+  origin, merged onto `checkpoint/integration-wave1`, and fast-forwarded into
+  `feat/claudex-cutover`. Custody advanced `ca7190e → 018f2fa` via FF only.
+  Integrated bundles (by order on custody):
+  - Bundle 1 (`write_plan_guard` capability-gate hardening) — `48ab1ca`
+  - Bundle D (Phase 2b carrier-invariant test hermeticity) — `ee46d82`
+  - Bundle A' (docs reconciliation + `bash_write_who` policy) — `bc1fe28`
+  - Bundle B (Category C bundle 1 — `proof_state` retirement) — `f72e656`
+  - Bundle C (Category C bundle 2 — `dispatch_queue`/`dispatch_cycles`
+    retirement) — `369cca6`
+  - Bundle E (Invariant #8 doc-reference validator, wave 1) — `e108036`
+  - Bundle F (Invariant #8 wave 2 — 10-doc coverage + retirement registry +
+    non-event stripper) — `17d04ab`
+  - Bundle B2 (supervision-domain authority hardening) — `4b24d1f`
+  - Bundle B3 (hook-adapter thin-translation hardening) — `7365792`
+  - Bundle B4 (CLAUDE.md constitution update — narrative capstone) — `2ab1d9f`
+- **2026-04-17 §2a closure chain (post-Integration-Wave-1, custody tip
+  `018f2fa → f3e88dd`):** the four §2a models now all have runtime-owned
+  domain modules, Rule-1 is mechanically enforced, and the dead-loop
+  recovery path is runtime-owned. Each commit is a pure FF on
+  `feat/claudex-cutover`; no phase was opened.
+  - supervision_threads promotion (`DEC-SUPERVISION-THREADS-DOMAIN-001`
+    chain) — `f1e4fc6` domain module + CLI; `afec534` session/seat
+    query surface; `887f4e1` domain-layer seat-existence; `5432e10`
+    bulk abandonment helpers.
+  - SubagentStop seat-release integration — `472d94b` runtime helper +
+    `cc-policy dispatch seat-release` CLI; `3967f6d` four
+    SubagentStop check adapters wire the best-effort call;
+    `d733ee3` execution-level behavioral pins.
+  - seat domain promotion (`DEC-SEAT-DOMAIN-001`) — `e982d50`
+    `runtime/core/seats.py` + `cc-policy seat` CLI + inward
+    delegation of `dispatch_hook` writes.
+  - agent_session domain promotion (`DEC-AGENT-SESSION-DOMAIN-001`) —
+    `a3653ad` `runtime/core/agent_sessions.py` + `cc-policy
+    agent-session` CLI + inward delegation of the last
+    `dispatch_hook` session write.
+  - Rule-1 mechanical writer invariant
+    (`DEC-AUTHORITY-WRITERS-001`) — `571c155`
+    `tests/runtime/test_authority_table_writers.py` scans every
+    `.py` under `runtime/` and every `.sh` under `hooks/`+`scripts/`
+    and fails if any non-allowlisted surface issues
+    INSERT/UPDATE/DELETE against the four §2a tables. Green on
+    baseline; the allowlist is the four domain modules plus
+    `runtime/schemas.py`.
+  - Dead-loop recovery (`DEC-DEAD-RECOVERY-001`) — `f3e88dd`
+    `runtime/core/dead_recovery.py` + `cc-policy dispatch sweep-dead
+    [--grace-seconds]` + one best-effort watchdog call right after
+    the existing `attempt-expire-stale` invocation. Pure delegation
+    over the domain modules; no authority-writer allowlist
+    extension.
+  - Dead-recovery selector correction (`DEC-DEAD-RECOVERY-001`) —
+    `c400245` narrows `_eligible_dead_seat_ids` to the **most
+    recent** attempt per seat (deterministic `ORDER BY created_at
+    DESC, attempt_id DESC LIMIT 1`) after a reviewer flagged a
+    mixed-history over-sweep: an old `timed_out` attempt followed
+    by a newer `cancelled` (or `acknowledged`) attempt must not
+    sweep the seat. Three focused regressions added in
+    `tests/runtime/test_dead_recovery.py`; Rule-1 writer invariant
+    unchanged.
+  - Dead-recovery selector re-correction (`DEC-DEAD-RECOVERY-001`) —
+    `f37b8ab` re-keys the selector to `ORDER BY updated_at DESC,
+    attempt_id DESC` after a follow-up review noted that
+    `dispatch_attempts.retry()` reuses the same row (bumps
+    `updated_at`/`status`, leaves `created_at` fixed).  Under the
+    `created_at` ordering, a retried attempt that times out after
+    a later-issued `cancelled` attempt was under-swept.  The
+    `updated_at` key tracks the most recent delivery activity and
+    preserves the prior mixed-history regressions; one new retry
+    regression landed.
 
-Historical updated log:
-- 2026-04-17: cc-policy-who-remediation Slice 1 — bridge-permission authority + subordinate WHO notes + authority-doc reconciliation + time-scoping + Invariant #15 Bash readiness invalidation (root + bridge parity) + supervisor Step 4 response-surface fallback + handoff-artifact invariant pins + Invariant #11 `@decision-ref` resolution pin + Invariant #5 `command_intent` sole-authority scanner pin + current-lane state-authority scanner pin + Invariant #13 symmetric retrieval-layer downstream pin + dated invariant-coverage-matrix artifact + coverage-matrix mechanical pin + CUTOVER_PLAN phase-closure time-scoping pin + DEC-EVAL-006 fingerprint-comparison fix (circular invalidation bypass + payload-identity baseline-key stability). Staged bundle grew 19 → 28 across turns, then committed as `d7db4ba` (30 files — fingerprint fix added 2 files to the composition). Push to `origin/feat/claudex-cutover` blocked by `bash_approval_gate` high-risk policy; push debt present.
-- 2026-04-14: Phase 5 complete; Phase 6 slices 1-6 complete; Phase 7 slices 1-17 complete; Phase 8 slices 1-12 complete — Slice 10 = Tester Bundle 1 wiring decommission + 0047-fodn2m narrative/pin correction; Slice 11 = Tester Bundle 2 dead-code cleanup + invariant flip (0048-ywlb7d) + correction 0049-lojhjs/0050-hkoa80; Slice 12 = closeout / time-scoping correction; CUTOVER_PLAN planned-area set exhausted; Phase 8 exit criteria met; Final Acceptance Condition 12/12 satisfied against installed truth; accepted bundle landed on `feat/claudex-cutover` as commit `6b8cc5c` and pushed to `origin/feat/claudex-cutover`; follow-up auto-submit process-control fix landed as `d8fdf96` and pushed to the same upstream. That 2026-04-14 snapshot is historical — it does not describe the current lane.
+## Next bounded cutover slice
+
+**Category C retirement scoping packet (planning-only, 2026-04-17).**
+The sole remaining Category C work is the non-destructive-posture
+inert rows on pre-retirement databases — `proof_state`,
+`dispatch_queue`, `dispatch_cycles`. Both code surfaces are retired
+(`f72e656`, `369cca6`); residual table data persists only because
+the retirement bundles deliberately skipped `DROP TABLE` for
+safety. The execution-ready scoping packet lives at
+`ClauDEX/CATEGORY_C_SCOPING_PACKET_2026-04-17.md` and is
+**planning-only**. It does NOT reopen Phase 8 and does NOT create
+Phase 9. Any future execution slice must escalate for explicit
+operator approval per Sacred Practice #8 (destructive ops). No
+code change was made in this slice; the packet is a docs-only
+artifact grounded in `CUTOVER_PLAN.md` (no Phase 9 defined).
+
+No `Phase 9` exists in `ClauDEX/CUTOVER_PLAN.md`; the cutover is closed. The
+integrated bundles are post-Phase-8 hardening (Category C retirements +
+Invariant #8 coverage + Phase 2/2b/3 continuations + constitution doc
+refresh), not a new phase. Category C is fully closed (bundles 1 and 2
+retired). Remaining local WIP on other worktrees is bridge/transport only
+(containment stack), explicitly deferred per handoff discipline.
 
 This file is the execution handoff for the current ClauDEX buildout. It is the
 place to answer:
@@ -17,6 +109,37 @@ place to answer:
 - how to restart cleanly without inheriting dead tmux state
 
 ## Git Placement
+
+> **Time-scoping note:** the branch / HEAD / upstream / worktree claims in
+> this section and in "Checkpoint Readiness" below are a snapshot **as of
+> the 2026-04-14 checkpoint landing** (plus the follow-up `d8fdf96`
+> process-control fix pushed to the same upstream on the same day). They
+> record the immortalised checkpoint moment, not live runtime truth on
+> subsequent days. Post-checkpoint branch evolution (bridge / supervisor
+> fixes pushed later to the same upstream) and in-flight WIP in this soak
+> worktree are expected and do not reopen the closed cutover; do not read
+> the numbers below as a live `git status` / `git rev-list` output.
+>
+> **2026-04-17 post-integration marker:** on 2026-04-17 the ten
+> Integration-Wave-1 bundles (enumerated in the status block above) were
+> fast-forwarded into `feat/claudex-cutover`; the custody tip advanced
+> `ca7190e → 018f2fa`. Every `d8fdf96`-referencing clause below therefore
+> reads as the 2026-04-14 snapshot identifier, not the live custody tip.
+>
+> **2026-04-17 §2a closure marker:** following integration, the §2a
+> supervision fabric was closed by a continuous FF-only chain
+> `018f2fa → f37b8ab` on the same upstream. The live custody HEAD
+> immediately before this docs-only Category C scoping packet was
+> `f37b8ab`. Intermediate landmarks (for `git log` navigation) are
+> `f1e4fc6` (supervision_threads domain), `e982d50` (seat domain),
+> `a3653ad` (agent_session domain), `571c155` (Rule-1 invariant),
+> `3967f6d` (SubagentStop adapters wired), `f3e88dd` (dead-loop
+> recovery sweeper), `c400245` (selector narrowed to
+> most-recent-attempt eligibility via `created_at` ordering),
+> `f37b8ab` (selector re-keyed to `updated_at` ordering;
+> **supersedes** `c400245`'s `created_at` key — the live
+> dead-recovery selector today is `f37b8ab`, which closes both
+> the mixed-history over-sweep and the retry under-sweep).
 
 Canonical cutover custody branch (remote):
 
@@ -1037,11 +1160,24 @@ All four CUTOVER_PLAN exit criteria verified with mechanical evidence:
 3. **Reviewer is the sole technical readiness authority before guardian** — only `determine_next_role("reviewer", "ready_for_guardian")` returns `"guardian"`. No other (role, verdict) pair reaches guardian through routing. Verified by exhaustive check across planner/implementer/tester.
 4. **The implementer/reviewer loop is canonical and test-backed** — `implementer→reviewer` and `reviewer(needs_changes)→implementer` both derive from `stage_registry.next_stage()`. Behavioral parity tests + AST structural invariant + stage_registry tests pin the loop. 265 targeted tests, 0 failures.
 
-Next cutover phase: **Phase 6 — Goal Continuation Activation.**
+Next cutover phase at Phase 5 completion (2026-04-13): **Phase 6 — Goal
+Continuation Activation.** (Historical pointer only — Phase 6 subsequently
+landed on 2026-04-13 and the full cutover closed at Phase 8 on 2026-04-14.
+See the Checkpoint Readiness section above for live post-checkpoint
+status.)
 
-## Current Restart Slice
+## Phase 6 — Goal Continuation Activation (COMPLETE 2026-04-13)
 
-**Phase 6 — Goal Continuation Activation: IN PROGRESS.**
+> **Historical log.** This section was previously titled "Current Restart
+> Slice" while Phase 6 was the active slice. Phase 6 completed on
+> 2026-04-13 (all 6 slices landed); Phases 7 and 8 subsequently landed and
+> the full cutover checkpoint was immortalised as `6b8cc5c` on
+> 2026-04-14. The section is retained as a historical execution log of
+> the Phase 6 slices for reviewer context; it does **not** describe
+> active or in-progress work today. For live post-checkpoint status, see
+> the "Checkpoint Readiness" and "Phase 8 Closeout Status" sections.
+
+**Phase 6 — Goal Continuation Activation: COMPLETE (2026-04-13, 6 slices).**
 
 **Slice 1 complete: Planner completion contract seed.**
 

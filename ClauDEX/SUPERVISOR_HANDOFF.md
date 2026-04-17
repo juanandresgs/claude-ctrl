@@ -31,6 +31,107 @@ The Codex supervisor is the decider for the live ClauDEX bridge loop.
 The supervisor must not invent a new project or a second control plane. It
 stays on the active ClauDEX cutover slice only.
 
+## 2026-04-17 §2a closure snapshot
+
+Post-Integration-Wave-1, the §2a supervision fabric has been closed on
+`feat/claudex-cutover` by a continuous FF-only chain `018f2fa →
+f37b8ab`. Custody HEAD immediately before the docs-only Category C
+scoping packet was `f37b8ab`. No new phase was opened; every commit
+is a post-Phase-8 continuation under the closed Phase 2b scope.
+
+Installed truth the supervisor should rely on:
+
+- **§2a model symmetry** — all four primitives have runtime-owned
+  domain modules with state-machine enforcement, query surface, and
+  CLI:
+  - `runtime/core/agent_sessions.py` (`cc-policy agent-session
+    {get, mark-completed, mark-dead, mark-orphaned, list-active}`),
+    `a3653ad`, `DEC-AGENT-SESSION-DOMAIN-001`.
+  - `runtime/core/seats.py` (`cc-policy seat {get, release,
+    mark-dead, list-for-session, list-active}`), `e982d50`,
+    `DEC-SEAT-DOMAIN-001`.
+  - `runtime/core/supervision_threads.py` (`cc-policy supervision
+    {attach, detach, abandon, abandon-for-seat, abandon-for-session,
+    get, list-*}` — 11 actions), `f1e4fc6 → 5432e10`,
+    `DEC-SUPERVISION-THREADS-DOMAIN-001`.
+  - `runtime/core/dispatch_attempts.py` (unchanged; Bundle 2 full
+    state machine + timeout sweep).
+
+- **§2a Rule 1 mechanically enforced** —
+  `tests/runtime/test_authority_table_writers.py` (`571c155`,
+  `DEC-AUTHORITY-WRITERS-001`) fails the suite if any file outside
+  the five-element allowlist (`runtime/core/agent_sessions.py`,
+  `seats.py`, `supervision_threads.py`, `dispatch_attempts.py`,
+  `runtime/schemas.py`) issues INSERT/UPDATE/DELETE against the
+  four §2a tables. Green on baseline.
+
+- **SubagentStop adapter wiring** — the four check hooks
+  (`hooks/check-{implementer,reviewer,guardian,planner}.sh`) call
+  `cc-policy dispatch seat-release` best-effort immediately after
+  `lifecycle on-stop`. Source pin (`3967f6d`) + execution-level
+  behavioral pin (`d733ee3`) in `tests/runtime/test_dispatch_hook.py`.
+
+- **Dead-loop recovery is runtime-owned** — the watchdog tick
+  (`scripts/claudex-watchdog.sh`) now calls `cc-policy dispatch
+  sweep-dead` immediately after `attempt-expire-stale`. The sweeper
+  (`runtime/core/dead_recovery.py`, `f3e88dd`,
+  `DEC-DEAD-RECOVERY-001`) marks seats with past-grace terminal
+  attempts dead, cascade-closes their supervision_threads, and
+  transitions every-seat-terminal sessions to completed or dead.
+  Pure delegation — no authority-writer allowlist extension.
+  Default grace `DEFAULT_GRACE_SECONDS = 900` (module constant,
+  overridable via `--grace-seconds`).  **Eligibility is keyed off
+  the seat's most recent dispatch_attempt only** (deterministic
+  `ORDER BY updated_at DESC, attempt_id DESC LIMIT 1`) per the
+  `f37b8ab` selector re-correction, which **supersedes the
+  `c400245` `created_at` ordering**.  The `c400245` fix closed the
+  mixed-history over-sweep (old `timed_out` followed by a newer
+  `cancelled` / `acknowledged` must not sweep); the `f37b8ab`
+  re-correction additionally closes a retry under-sweep —
+  `dispatch_attempts.retry()` reuses the same row, bumping
+  `updated_at` / `status` / `retry_count` but leaving
+  `created_at` fixed, so the `created_at` key under-swept when a
+  retried attempt finished *after* a later-issued terminal
+  attempt.  Under the current `updated_at` ordering both
+  regressions hold: cancelled and retried cases both resolve to
+  the correct seat-latest delivery-activity row.
+
+- **Unchanged authority-surface invariants** — `cc-policy
+  constitution validate` healthy=true concrete_count=24;
+  `cc-policy hook validate-settings` healthy=true entry_count=30;
+  `cc-policy hook doc-check` exact_match=true. All three numbers
+  have held from `018f2fa` through `f3e88dd`; any drift in a future
+  slice should be treated as a blocker.
+
+Bridge transport (`scripts/claudex-*.sh` non-watchdog,
+`hooks/claudex-*.sh`) remains containment; the single watchdog
+one-liner is the only adapter change in this closure chain.
+
+## Next bounded cutover slice
+
+**Category C retirement scoping packet (planning-only,
+2026-04-17).** Both Category C code surfaces are already retired
+(`proof_state` at `f72e656`, `dispatch_queue`/`dispatch_cycles` at
+`369cca6`, both under non-destructive posture). The remaining
+deferred piece is the **inert rows** on pre-retirement databases
+where neither retirement bundle issued `DROP TABLE`. An
+execution-ready scoping packet has been produced at
+`ClauDEX/CATEGORY_C_SCOPING_PACKET_2026-04-17.md` describing two
+ordered sub-slices (proof_state first, dispatch_queue /
+dispatch_cycles second), each guarded by explicit operator
+approval per Sacred Practice #8, with required invariant gates
+(`test_phase8_category_c_*`, `test_authority_table_writers`,
+`constitution validate concrete_count=24`, `hook validate-settings
+entry_count=30`, `hook doc-check exact_match=true`) and
+escalation boundaries (destructive `DROP TABLE`, cross-database
+impact, forensic data-loss risk). The packet is **planning-only**
+— no `runtime/` / `hooks/` / `settings.json` / `schema` / bridge
+/ watchdog edits are made by its landing, and no execution slice
+may proceed without a separate authorizing instruction. This does
+NOT reopen Phase 8 and does NOT create Phase 9. Grounded in
+`CUTOVER_PLAN.md` (no Phase 9 defined) and annotated with reserved
+decision `DEC-CATEGORY-C-FORENSIC-001` (status: planning).
+
 ## Open Soak Issues
 
 ### Checkpoint-report excluded-scope narration drift (2026-04-17) — RESOLVED (guardrail added)
@@ -647,41 +748,97 @@ The ClauDEX cutover reached the Phase 8 closeout boundary at that date:
   installed-truth evidence — see `ClauDEX/CURRENT_STATE.md`
   "Phase 8 Closeout Status" section.
 
-**Historical snapshot (2026-04-14 closeout): Checkpoint stewardship
-was complete as of that date.** The ClauDEX cutover bundle landed as
-commit `6b8cc5c` (`feat(claudex): cutover bundle - Phases 1-8
-closeout`) and the subsequent auto-submit process-control fix landed
-as `d8fdf96` (`Fix ClauDEX auto-submit process growth`). Both commits
-were pushed to `origin/feat/claudex-cutover`; at that snapshot the
-soak worktree was on `claudesox-local` tracking the same upstream at
-HEAD `d8fdf96` and no checkpoint debt remained. **This describes the
-2026-04-14 Phase-8 closeout state only; it does NOT describe the
-current (2026-04-17) lane, which carries a 28-file harness-blocked
-staged bundle — see the "Current Lane Truth (2026-04-17)" banner at
-the top of this file.**
+**Checkpoint stewardship is complete.** The ClauDEX cutover bundle
+landed as commit `6b8cc5c` (`feat(claudex): cutover bundle - Phases 1-8
+closeout`) and the subsequent auto-submit process-control fix landed as
+`d8fdf96` (`Fix ClauDEX auto-submit process growth`). Both commits are
+pushed to `origin/feat/claudex-cutover`. At the 2026-04-14 checkpoint
+snapshot, this soak worktree was on `claudesox-local` tracking the same
+upstream at HEAD `d8fdf96`; no checkpoint debt remained. These are
+point-in-time checkpoint facts — post-checkpoint bridge / supervisor
+fixes pushed to the same branch, and in-flight WIP in the soak
+worktree, are expected and do not reopen the closed cutover.
 
-**Historical next-action framing (2026-04-14): checkpoint the
-follow-up maintenance bundle, then resume cutover-plan continuation
-or lane maintenance.** At the 2026-04-14 snapshot, with Phases 1-8
-closed and upstream, the only local work was state-record correction
-plus the lane-local Codex supervisor launcher fix
-(`ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
-`scripts/claudex-codex-launch.sh`). Once that bundle was reviewed,
-tested, committed, and pushed, the supervisor was to either (a)
-resume the `ClauDEX/CUTOVER_PLAN.md` architecture track — the
-runtime-owned agent-session supervision fabric — when ready to open a
-new slice, or (b) stay in steady-state review/steer mode. **This
-framing is preserved for historical record; current 2026-04-17
-next-action guidance lives in the top-of-file banner and in the
-"cc-policy-who-remediation Slice 1 (2026-04-17)" entry under Open
-Soak Issues.** See `ClauDEX/CURRENT_STATE.md` "Checkpoint Readiness
-(Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT" for
-the corresponding 2026-04-14 git-state and focused-gate evidence.
+**2026-04-17 post-checkpoint integration (Integration Wave 1):** ten
+cutover-continuation bundles (Bundle 1 / A' / B / C / D / E / F / B2 /
+B3 / B4 — see `ClauDEX/CURRENT_STATE.md` status block for
+per-bundle SHAs and scopes) were authored as independent checkpoint
+branches on origin, merged onto `checkpoint/integration-wave1`, and
+fast-forwarded into `feat/claudex-cutover`. The custody tip advanced
+`ca7190e → 018f2fa` via FF-only. No new cutover phase opened; the
+integrated bundles are Category C retirements + Invariant #8 coverage +
+Phase 2/2b/3 continuations + the CLAUDE.md narrative capstone. The
+`CUTOVER_PLAN.md` Phase Plan remains exhausted; no Phase 9.
+
+**Next bounded action: post-checkpoint state-record reconciliation
+under the already-closed Phase 8. No Phase 9 exists.** With
+Phases 1-8 closed and upstream, supervisor-session work on docs is
+limited to narrow reconciliation of `ClauDEX/CURRENT_STATE.md` and
+`ClauDEX/SUPERVISOR_HANDOFF.md` against the installed checkpoint
+truth, plus lane maintenance (e.g. the lane-local Codex supervisor
+launcher fix). Once those narrow bundles are reviewed and landed, the
+supervisor should either (a) resume the `ClauDEX/CUTOVER_PLAN.md`
+architecture track — the runtime-owned agent-session supervision
+fabric — when ready to open a new slice, or (b) stay in steady-state
+review/steer mode and handle narrow maintenance items without opening
+fresh architecture work. Category C retirement (`proof_state`,
+`dispatch_queue`/`dispatch_cycles`) pre-scoped in
+`ClauDEX/PHASE8_DELETION_INVENTORY.md:205-216` remains future bounded
+work, not current; it must not be auto-dispatched from this handoff
+without a fresh Codex planning/scoping slice first. See
+`ClauDEX/CURRENT_STATE.md` "Checkpoint Readiness" section for the
+installed-truth git state and focused gate evidence.
 
 Do not auto-dispatch a new architecture slice unless the cutover plan
 has been re-read and a clearly bounded slice is ready.
 
 For current detail, see `ClauDEX/CURRENT_STATE.md`.
+
+## Current Restart Slice
+
+**Status (post-checkpoint, post-integration):** no active cutover phase.
+Phases 1-8 are complete; the accepted bundle is landed as `6b8cc5c` on
+`feat/claudex-cutover`; the follow-up process-control fix landed as
+`d8fdf96` and the supervisor-launch / state-record fix as `ca7190e` on
+the same upstream. **On 2026-04-17 the Integration-Wave-1 set (ten
+bundles, see `## Current State` above) was fast-forwarded into custody;
+the live tip is `018f2fa`.** `ClauDEX/CUTOVER_PLAN.md` has no Phase 9,
+the planned-area set is exhausted, and Category C is fully closed.
+
+**Fresh-run bootstrap action (Steady-State step 3):** on a fresh
+supervised run, the supervisor must dispatch a single bounded
+verification / state-reconciliation slice — nothing more. Specifically:
+
+1. Verify installed truth against the post-checkpoint claims in this
+   file and in `ClauDEX/CURRENT_STATE.md`:
+   - phase / work status (no active unfinished cutover phase, no hidden
+     "Phase 9" style continuation)
+   - branch / HEAD / upstream cleanliness claims understood as the
+     2026-04-14 checkpoint snapshot, not as live runtime truth
+   - `ClauDEX/CUTOVER_PLAN.md` alignment (no hidden continuation phase)
+2. If drift is found **between** `CURRENT_STATE.md`,
+   `SUPERVISOR_HANDOFF.md`, and `CUTOVER_PLAN.md`, apply **minimal
+   docs-only reconciliation edits** to restore cross-doc coherence.
+3. If no drift is found, make no changes and return evidence (commands
+   run, key outputs, explicit "none" for files changed).
+
+**Out of scope for the fresh-run slice:**
+
+- Creating a new phase, slice, or control plane.
+- Auto-dispatching any Category C implementation work
+  (`proof_state`, `dispatch_queue` / `dispatch_cycles` retirement
+  pre-scoped in `ClauDEX/PHASE8_DELETION_INVENTORY.md:205-216`).
+  Category C remains future bounded work that requires a fresh Codex
+  planning/scoping slice first — it must not be auto-dispatched from
+  this handoff.
+- Bridge / transport refinement, unless a bridge defect is a direct
+  blocker on this verification slice.
+- Any commit / push / destructive git action beyond the narrow
+  reconciled docs bundle explicitly authorised by the supervisor.
+
+**Next bounded action after this slice:** whichever bounded slice the
+Codex supervisor explicitly authorises next. Until such authorisation,
+the fresh-run slice is the entire restart-slice scope.
 
 ## Relevant Grounding
 

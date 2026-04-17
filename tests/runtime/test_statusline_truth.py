@@ -10,8 +10,9 @@ Verifies that:
   - snapshot() returns marker_age_seconds=None when no marker is active
   - snapshot() still carries active_agent after TKT-023 refactor
   - snapshot() does NOT expose proof_status or proof_workflow (W-CONV-4:
-    proof_state is removed from the display surface; evaluation_state is sole
-    readiness authority)
+    proof_state was removed from the display surface; DEC-CATEGORY-C-PROOF-
+    RETIRE-001: underlying proof_state storage has also been retired;
+    evaluation_state is sole readiness authority)
 
 Production sequence exercised: subagent-start.sh calls marker set → hook reads
 snapshot → statusline.sh renders marker label with age. These tests cover that
@@ -33,10 +34,10 @@ full read path in-process using an in-memory DB.
 @status accepted
 @rationale Operators were seeing both proof_status/proof_workflow and
   evaluation_state in the HUD, creating two contradictory readiness signals.
-  Enforcement already uses only evaluation_state (TKT-024). The fix removes
+  Enforcement already uses only evaluation_state (TKT-024). W-CONV-4 removed
   proof_state from the snapshot dict entirely so there is exactly one readiness
-  display. The proof_state table, proof.py module, and proof CLI subcommands
-  are retained (storage is not removed, only the display layer).
+  display; DEC-CATEGORY-C-PROOF-RETIRE-001 subsequently retired the underlying
+  proof_state table, proof.py module, and proof CLI subcommands.
 """
 
 import sys
@@ -145,64 +146,41 @@ class TestSnapshotMarkerAge:
 
 
 # ---------------------------------------------------------------------------
-# W-CONV-4: proof_state removed from display surface
+# W-CONV-4 + DEC-CATEGORY-C-PROOF-RETIRE-001: proof_state fully retired
 # ---------------------------------------------------------------------------
-# These tests assert that snapshot() no longer exposes proof_status or
-# proof_workflow as top-level fields. The proof_state table itself is retained
-# (storage not removed), but the HUD surface must be clean of these fields so
-# operators see only one readiness signal (evaluation_state).
+# W-CONV-4 removed proof_status / proof_workflow from the display surface.
+# DEC-CATEGORY-C-PROOF-RETIRE-001 subsequently retired the underlying
+# proof_state table and the proof.py module entirely. These tests now assert
+# the combined invariant: snapshot() exposes no proof_* fields, and the
+# proof module is not importable.
 # ---------------------------------------------------------------------------
 
 
 class TestProofStateRemovedFromDisplay:
-    """W-CONV-4: snapshot() must not expose proof_status or proof_workflow.
+    """snapshot() must not expose proof_status or proof_workflow.
 
-    evaluation_state is the sole readiness authority (TKT-024 / DEC-EVAL-006).
-    Surfacing proof_state alongside it creates contradictory readiness signals.
-    These tests prove that the display surface is clean regardless of what the
-    proof_state table contains.
+    evaluation_state is the sole readiness authority (TKT-024 / DEC-EVAL-006 /
+    DEC-CATEGORY-C-PROOF-RETIRE-001). The proof_state surface no longer exists
+    in any layer; these tests prove the display surface is clean regardless
+    of DB state.
 
     Production sequence: the evaluator stop hook writes evaluation_state →
     Guardian reads snapshot → snapshot must carry only eval_status, not
-    proof_status. (Historically check-tester.sh; retired in Phase 8 Slice 10.
-    Phase 8 Slice 11 retired the ``tester`` role entirely — reviewer readiness
-    is owned by the reviewer completion/findings/convergence path and does
-    not write evaluation_state. The invariant on this surface — clean of
-    proof_state — remains unchanged.)
-    This is the compound-interaction test: proof.py (storage), statusline.py
-    (projection), and evaluation_state (readiness authority) cross boundaries
-    in a single snapshot() call to verify that proof display was excised.
+    proof_status.
     """
 
     def test_proof_status_not_in_snapshot_empty_db(self, conn):
         """proof_status must not appear in snapshot when DB is empty."""
         result = snapshot(conn)
         assert "proof_status" not in result, (
-            "proof_status must not be a top-level snapshot field (W-CONV-4)"
+            "proof_status must not be a top-level snapshot field"
         )
 
     def test_proof_workflow_not_in_snapshot_empty_db(self, conn):
         """proof_workflow must not appear in snapshot when DB is empty."""
         result = snapshot(conn)
         assert "proof_workflow" not in result, (
-            "proof_workflow must not be a top-level snapshot field (W-CONV-4)"
-        )
-
-    def test_proof_status_not_in_snapshot_with_proof_data(self, conn):
-        """proof_status must not appear even when proof_state table has active rows.
-
-        The proof_state table is retained for storage but the display surface
-        must be clean. A live proof row must not bleed through to the HUD.
-        """
-        import runtime.core.proof as proof_mod
-
-        proof_mod.set_status(conn, "wf-live", "pending")
-        result = snapshot(conn)
-        assert "proof_status" not in result, (
-            "proof_status must not surface even with a live proof_state row (W-CONV-4)"
-        )
-        assert "proof_workflow" not in result, (
-            "proof_workflow must not surface even with a live proof_state row (W-CONV-4)"
+            "proof_workflow must not be a top-level snapshot field"
         )
 
     def test_eval_status_still_present_after_proof_removal(self, conn):
@@ -212,23 +190,17 @@ class TestProofStateRemovedFromDisplay:
         remain present in the snapshot after the proof_state query is removed.
         """
         result = snapshot(conn)
-        assert "eval_status" in result, "eval_status must remain in snapshot (W-CONV-4)"
-        assert "eval_workflow" in result, "eval_workflow must remain in snapshot (W-CONV-4)"
+        assert "eval_status" in result, "eval_status must remain in snapshot"
+        assert "eval_workflow" in result, "eval_workflow must remain in snapshot"
 
-    def test_compound_proof_storage_retained_display_removed(self, conn):
-        """Compound-interaction: proof_state table write succeeds, snapshot clean.
+    def test_compound_eval_only_readiness_surface(self, conn):
+        """Compound-interaction: evaluation_state is the sole readiness surface.
 
-        Verifies the storage/display split: proof.py can still write to
-        proof_state (storage layer intact), but snapshot() does not read it
-        into the display dict. eval_status is derived from evaluation_state,
-        not proof_state.
+        After DEC-CATEGORY-C-PROOF-RETIRE-001 there is no proof.py module and
+        no proof_state table. The snapshot must surface only eval_* fields.
         """
         import runtime.core.evaluation as eval_mod
-        import runtime.core.proof as proof_mod
 
-        # Write to proof_state (storage must still work)
-        proof_mod.set_status(conn, "wf-compound", "verified")
-        # Write evaluation_state (the readiness authority)
         eval_mod.set_status(conn, "wf-compound", "ready_for_guardian", head_sha="abc123")
 
         result = snapshot(conn)

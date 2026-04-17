@@ -4,7 +4,7 @@ set -euo pipefail
 # SubagentStop:planner — deterministic validation of planner output.
 # Replaces AI agent hook. Checks MASTER_PLAN.md exists and has required structure.
 # Parses PLAN_VERDICT and PLAN_SUMMARY trailers, submits a structured completion
-# record via rt_completion_submit (Phase 6 slice 3). completions.py is the
+# record via the local cc-policy runtime (Phase 6 slice 3). completions.py is the
 # schema authority — this hook is advisory only (exit 0 always).
 #
 # DECISION: Deterministic planner validation. Rationale: AI agent hooks have
@@ -48,6 +48,18 @@ _local_cc_policy() {
 # project; otherwise the globally newest active marker can be deactivated.
 if [[ -n "$AGENT_TYPE" ]]; then
     _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
+fi
+
+# Release the seat and abandon every active supervision_thread touching it.
+# DEC-SUPERVISION-THREADS-DOMAIN-001 continuation. Best-effort — seat-release
+# failures must never block the hook. release_session_seat() is idempotent
+# (repeat calls return released=false, abandoned_count=0) so retries on
+# unexpected interrupts are safe.
+SESSION_ID=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
+    _local_cc_policy dispatch seat-release \
+        --session-id "$SESSION_ID" \
+        --agent-type "$AGENT_TYPE" >/dev/null 2>&1 || true
 fi
 
 ISSUES=()
@@ -123,8 +135,8 @@ fi
 # guardian(provision) until Slice 4 wires completion consumption.
 # Advisory: report but remain exit 0.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    _PL_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
-    _PL_LEASE_FOUND=$(printf '%s' "$_PL_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    _PL_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
+    _PL_LEASE_FOUND=$(printf '%s' "$_PL_LEASE_CTX" | jq -r 'if (.found == true or .lease_id != null) then "true" else "false" end' 2>/dev/null || echo "false")
     if [[ "$_PL_LEASE_FOUND" == "true" ]]; then
         _PL_LEASE_ID=$(printf '%s' "$_PL_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
         _PL_WF_ID=$(printf '%s' "$_PL_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
@@ -139,8 +151,12 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             --arg v "${_PLAN_VERDICT:-}" \
             --arg s "${_PLAN_SUMMARY:-}" \
             '{PLAN_VERDICT:$v, PLAN_SUMMARY:$s}')
-        _PL_RESULT=$(rt_completion_submit "$_PL_LEASE_ID" "$_PL_WF_ID" "planner" "$_PL_PAYLOAD")
-        _PL_VALID=$(printf '%s' "${_PL_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
+        _PL_RESULT=$(_local_cc_policy completion submit \
+            --lease-id "$_PL_LEASE_ID" \
+            --workflow-id "$_PL_WF_ID" \
+            --role "planner" \
+            --payload "$_PL_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
+        _PL_VALID=$(printf '%s' "${_PL_RESULT:-}" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
         if [[ "$_PL_VALID" != "true" ]]; then
             _PL_MISSING=$(printf '%s' "$_PL_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
             ISSUES+=("COMPLETION CONTRACT ERROR: Planner completion INVALID. Missing: $_PL_MISSING.")

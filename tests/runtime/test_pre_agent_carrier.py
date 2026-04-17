@@ -209,6 +209,20 @@ def _read_row(db_path: Path, session_id: str, agent_type: str) -> dict | None:
     return dict(row)
 
 
+def _latest_attempt_timeout(db_path: Path) -> int | None:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT timeout_at FROM dispatch_attempts ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return row["timeout_at"]
+
+
 # ---------------------------------------------------------------------------
 # 1. pre-agent.sh write leg — positive cases
 # ---------------------------------------------------------------------------
@@ -269,6 +283,12 @@ class TestPreAgentCarrierWrite:
             conn.close()
         assert count == 1
 
+    def test_attempt_issue_sets_default_timeout(self, carrier_db):
+        _run_pre_agent(_agent_payload(), carrier_db)
+        timeout_at = _latest_attempt_timeout(carrier_db)
+        assert timeout_at is not None
+        assert timeout_at > 0
+
 
 # ---------------------------------------------------------------------------
 # 2. pre-agent.sh write leg — negative cases
@@ -301,7 +321,51 @@ class TestPreAgentCarrierWriteNegative:
     def test_missing_subagent_type_no_row_written(self, carrier_db):
         payload = _agent_payload()
         del payload["tool_input"]["subagent_type"]
-        _run_pre_agent(payload, carrier_db)
+        rc, out, _err = _run_pre_agent(payload, carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_dispatch_role_without_contract_is_denied(self, carrier_db):
+        payload = _agent_payload()
+        payload["tool_input"]["prompt"] = _PROMPT_WITHOUT_BLOCK
+        rc, out, _err = _run_pre_agent(payload, carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "without CLAUDEX_CONTRACT_BLOCK" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_contract_stage_with_general_purpose_subagent_is_denied(self, carrier_db):
+        payload = _agent_payload()
+        payload["tool_input"]["subagent_type"] = "general-purpose"
+        rc, out, _err = _run_pre_agent(payload, carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "must launch with subagent_type='planner'" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, "general-purpose")
+
+    # Shell-side keyword-intent classification was retired per Codex
+    # supervisor correction 1776448684478-0015-9lddhj (hooks are adapters,
+    # not policy engines). Tests that asserted prose-based deny paths
+    # (complex implementer / planner intent on generic seat) were removed;
+    # runtime-owned classification via canonical_dispatch_subagent_type
+    # remains covered by test_dispatch_role_without_contract_is_denied and
+    # test_contract_stage_with_general_purpose_subagent_is_denied above.
+
+    def test_simple_prompt_without_subagent_is_allowed(self, carrier_db):
+        payload = {
+            "session_id": _SESSION_ID,
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": "Summarize current bridge status briefly.",
+            },
+        }
+        rc, out, _err = _run_pre_agent(payload, carrier_db)
+        assert rc == 0
+        assert out.strip() == ""
         assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
     def test_non_agent_tool_no_row_written(self, carrier_db):

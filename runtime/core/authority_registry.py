@@ -244,22 +244,49 @@ STAGE_CAPABILITIES: Mapping[str, FrozenSet[str]] = {
 # with whatever actor_role they received; this table ensures the lookup
 # degrades cleanly rather than returning an empty frozenset for known aliases.
 #
-# "Plan" — SubagentStart agent_type alias for the planner stage (capitalized
-#   variant observed in live payloads; canonical stage name is "planner").
-#
-# @decision DEC-WHO-LANDING-ALIAS-001
-# Bare "guardian" removed from _LIVE_ROLE_ALIASES. Before Slice 3 it mapped
-# to GUARDIAN_PROVISION, which gave any actor identified as "guardian" the
-# provision capability set — including CAN_PROVISION_WORKTREE but NOT
-# CAN_LAND_GIT. That was ambiguous: live leases use "guardian" as the role
-# string for both provision and land modes, but the alias silently resolved
-# to only one of them. After removal, bare "guardian" returns empty
-# capabilities (fail-closed). Actors must use the compound stage IDs
-# "guardian:provision" or "guardian:land" to receive capabilities.
+# "Plan" — historical harness alias observed in live payloads. Canonical
+#   delivery-path subagent type is the repo-owned custom agent name
+#   ``planner`` so the launch resolves through ``agents/planner.md`` rather
+#   than a generic or built-in planner seat.
+# "guardian" — live lease role used by both provision and land modes. Mapped
+#   to GUARDIAN_PROVISION so that CAN_PROVISION_WORKTREE is reachable for
+#   the bash_worktree_creation policy; both modes may run `git worktree add`
+#   for manual recovery paths.
 # ---------------------------------------------------------------------------
 
 _LIVE_ROLE_ALIASES: Mapping[str, str] = {
     "Plan": sr.PLANNER,
+}
+
+# ---------------------------------------------------------------------------
+# Stage → delivery-path subagent identity
+#
+# The control plane needs a single authority for which Claude subagent type is
+# valid for each runtime stage. This is distinct from the stage id itself:
+# guardian has two runtime stages but one repo-owned custom agent prompt
+# (``agents/guardian.md``). The canonical values below are the exact
+# ``tool_input.subagent_type`` strings the orchestrator must use for stage work.
+#
+# Historical aliases such as ``Plan`` are tolerated for capability lookups via
+# _LIVE_ROLE_ALIASES, but they are NOT canonical delivery identities; using the
+# wrong subagent type bypasses the stage-specific agent prompt file and weakens
+# the checks-and-balances model.
+# ---------------------------------------------------------------------------
+
+STAGE_SUBAGENT_TYPES: Mapping[str, str] = {
+    sr.PLANNER: "planner",
+    sr.GUARDIAN_PROVISION: "guardian",
+    sr.IMPLEMENTER: "implementer",
+    sr.REVIEWER: "reviewer",
+    sr.GUARDIAN_LAND: "guardian",
+}
+
+_SUBAGENT_TYPE_ALIASES: Mapping[str, str] = {
+    "Plan": "planner",
+    "planner": "planner",
+    "guardian": "guardian",
+    "implementer": "implementer",
+    "reviewer": "reviewer",
 }
 
 # Canonical active-stage ordering used by all_contracts() and
@@ -510,6 +537,51 @@ def stages_with_capability(capability: str) -> Tuple[str, ...]:
     stage has ``can_land_git``).
     """
     return tuple(s for s in _STAGE_ORDER if capability in STAGE_CAPABILITIES.get(s, frozenset()))
+
+
+def canonical_stage_id(stage: str) -> Optional[str]:
+    """Return the canonical active-stage id for ``stage``.
+
+    Accepts canonical stage ids and the historical live-role aliases handled by
+    ``resolve_contract()``. Returns ``None`` for unknown / sink / empty input.
+    """
+    contract = resolve_contract(stage)
+    if contract is None:
+        return None
+    return contract.stage_id
+
+
+def dispatch_subagent_type_for_stage(stage: str) -> Optional[str]:
+    """Return the canonical Claude ``subagent_type`` for ``stage``.
+
+    This is the delivery-path identity the orchestrator must pass to the Agent
+    tool so Claude loads the repo-owned agent prompt (e.g. ``agents/planner.md``)
+    rather than falling back to a generic seat.
+    """
+    canonical = canonical_stage_id(stage)
+    if canonical is None:
+        return None
+    return STAGE_SUBAGENT_TYPES.get(canonical)
+
+
+def canonical_dispatch_subagent_type(subagent_type: str) -> Optional[str]:
+    """Canonicalize a Claude ``subagent_type`` for delivery-path stages.
+
+    Returns the canonical custom-agent name (``planner``, ``implementer``,
+    ``reviewer``, ``guardian``) or ``None`` when the value is not a recognised
+    stage-bound delivery identity.
+    """
+    if not subagent_type:
+        return None
+    return _SUBAGENT_TYPE_ALIASES.get(subagent_type)
+
+
+def stage_accepts_subagent_type(stage: str, subagent_type: str) -> bool:
+    """Return True iff ``subagent_type`` is the canonical delivery seat for ``stage``."""
+    expected = dispatch_subagent_type_for_stage(stage)
+    if expected is None:
+        return False
+    return canonical_dispatch_subagent_type(subagent_type) == expected
 
 
 def resolve_contract(stage: str) -> Optional[StageCapabilityContract]:

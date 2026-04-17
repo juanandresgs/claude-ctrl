@@ -34,7 +34,6 @@ Rationale: Hooks are thin transport adapters; they must not own state transition
 from __future__ import annotations
 
 import sqlite3
-import time
 from typing import Optional
 
 from runtime.core import dispatch_attempts
@@ -44,6 +43,7 @@ __all__ = [
     "ensure_session_and_seat",
     "record_agent_dispatch",
     "record_subagent_delivery",
+    "release_session_seat",
 ]
 
 _SEAT_ID_SEP = ":"
@@ -81,26 +81,29 @@ def ensure_session_and_seat(
     ``seat_id`` derivation (``"{session_id}:{agent_type}"``) so the lookup
     correlation is never lost; it is just not written into ``role``.
     """
-    now = int(time.time())
+    # Late imports: both domain modules import only runtime.schemas, so
+    # importing them here keeps dispatch_hook's module-level dependency
+    # graph unchanged and avoids any circular-import surprise during
+    # test collection.
+    from runtime.core import agent_sessions as _as
+    from runtime.core import seats as _seats
+
     seat_id = _seat_id(session_id, agent_type)
 
-    with conn:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO agent_sessions
-                (session_id, transport, status, created_at, updated_at)
-            VALUES (?, 'claude_code', 'active', ?, ?)
-            """,
-            (session_id, now, now),
-        )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO seats
-                (seat_id, session_id, role, status, created_at, updated_at)
-            VALUES (?, ?, 'worker', 'active', ?, ?)
-            """,
-            (seat_id, session_id, now, now),
-        )
+    # Delegate the agent_sessions write inward to the agent-session
+    # domain module (DEC-AGENT-SESSION-DOMAIN-001).  create() is
+    # idempotent — if a row already exists for this session_id it is
+    # returned unchanged, matching the prior INSERT OR IGNORE
+    # semantics exactly (including preservation of any pre-existing
+    # workflow_id or transport_handle bound by earlier callers).
+    _as.create(conn, session_id, transport="claude_code")
+
+    # Delegate the seats write inward to the seat domain module
+    # (DEC-SEAT-DOMAIN-001).  seats.create() is idempotent — if a row
+    # already exists for this seat_id it is returned unchanged, matching
+    # the prior INSERT OR IGNORE semantics exactly.  External return
+    # shape is unchanged: callers still receive the seat_id string.
+    _seats.create(conn, seat_id, session_id, "worker")
 
     return seat_id
 
@@ -198,3 +201,88 @@ def record_subagent_delivery(
     # list_for_seat returns oldest-first (created_at ASC); take last = newest.
     attempt_id = pending[-1]["attempt_id"]
     return ADAPTER.on_delivery_claimed(conn, attempt_id)
+
+
+def release_session_seat(
+    conn: sqlite3.Connection,
+    session_id: str,
+    agent_type: str,
+) -> dict:
+    """Release a seat and abandon every supervision_thread touching it.
+
+    Authoritative runtime path for "this seat is going away".  Used at
+    seat-lifecycle teardown to:
+
+    1. Transition the matching ``seats`` row to ``status='released'``.
+    2. Close every ``active`` ``supervision_threads`` row where this seat
+       is supervisor or worker (via
+       :func:`runtime.core.supervision_threads.abandon_for_seat`).
+
+    Both operations are idempotent — repeat calls return ``released=False``
+    once the seat has already been released, and the abandon sweep
+    returns 0 on a second call because only ``active`` rows are
+    transitioned.  If no seat exists for ``(session_id, agent_type)``,
+    the function is a no-op and ``found=False`` is returned; this
+    matches the best-effort posture the other hook helpers use.
+
+    Parameters
+    ----------
+    conn:
+        Open SQLite connection.
+    session_id:
+        Orchestrator session_id.
+    agent_type:
+        Harness agent_type (e.g. ``implementer``, ``reviewer``).  The
+        same convention as ``ensure_session_and_seat``.
+
+    Returns
+    -------
+    dict
+        ``{"seat_id": str, "found": bool, "released": bool,
+           "abandoned_count": int}``.
+
+        * ``found`` — whether a seat row exists for this pair.
+        * ``released`` — whether this call performed the active→released
+          transition (``False`` if already released or not found).
+        * ``abandoned_count`` — number of supervision_threads rows this
+          call transitioned from active to abandoned (0 on repeat or if
+          the seat has no threads).
+    """
+    # Late imports: both domain modules import only runtime.schemas, so
+    # importing them here keeps dispatch_hook's top-level dependency
+    # graph unchanged and avoids any circular-import surprise.
+    from runtime.core import seats as _seats
+    from runtime.core import supervision_threads as _sup
+
+    seat_id = _seat_id(session_id, agent_type)
+
+    # Delegate existence-check + release transition inward to the seat
+    # domain module (DEC-SEAT-DOMAIN-001).  The hook-adapter wrapper
+    # keeps the tolerant best-effort semantics it had before this
+    # refactor: missing seat is a no-op (found=False), an already-
+    # released seat is a no-op (released=False), and a dead seat is a
+    # no-op rather than an exception — seats.release() would refuse the
+    # dead→released transition, so we only call it from an 'active'
+    # seat to preserve external behavior exactly.
+    try:
+        row = _seats.get(conn, seat_id)
+    except ValueError:
+        return {
+            "seat_id": seat_id,
+            "found": False,
+            "released": False,
+            "abandoned_count": 0,
+        }
+
+    released = False
+    if row["status"] == "active":
+        result = _seats.release(conn, seat_id)
+        released = bool(result["transitioned"])
+
+    abandoned_count = _sup.abandon_for_seat(conn, seat_id)
+    return {
+        "seat_id": seat_id,
+        "found": True,
+        "released": released,
+        "abandoned_count": abandoned_count,
+    }

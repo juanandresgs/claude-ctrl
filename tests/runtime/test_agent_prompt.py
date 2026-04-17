@@ -145,6 +145,15 @@ class TestBuildContractConstruction:
         assert result["contract"]["stage_id"] == "implementer"
         assert result["required_subagent_type"] == "implementer"
 
+    def test_required_subagent_type_matches_stage(self, conn):
+        result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
+        assert result["required_subagent_type"] == "planner"
+
+    def test_stage_alias_canonicalized_in_contract(self, conn):
+        result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="Plan")
+        assert result["contract"]["stage_id"] == "planner"
+        assert result["required_subagent_type"] == "planner"
+
     def test_default_decision_scope_is_kernel(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
         assert result["contract"]["decision_scope"] == "kernel"

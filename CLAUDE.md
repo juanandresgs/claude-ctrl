@@ -165,14 +165,16 @@ guardian, reviewer), the orchestrator MUST:
    - Append task instructions after the prefix unchanged
 
 3. **Set `subagent_type` explicitly on every Agent tool call that participates
-   in the ClauDEX delivery path.** The `pre-agent.sh` hook only writes the
-   carrier row and issues a `dispatch_attempts` entry when `tool_input.subagent_type`
-   is non-empty in the PreToolUse payload. When `subagent_type` is omitted, the
-   harness carries an empty string and the entire delivery-tracking path is
-   silently skipped — no carrier row, no `dispatch_attempts` row. Use the role
-   name as the value: `"Explore"`, `"Plan"`, `"general-purpose"`, etc.
-   Live-verified 2026-04-09: dispatch with `subagent_type="Explore"` produced a
-   `dispatch_attempts` row at `delivered`; omitting `subagent_type` produces no row.
+   in the ClauDEX delivery path, and use the runtime-returned canonical value.**
+   `cc-policy dispatch agent-prompt` returns `required_subagent_type`; the
+   orchestrator MUST use that exact value on the Agent tool call. For
+   delivery-path stages the canonical values are the repo-owned agent names:
+   `"planner"`, `"implementer"`, `"reviewer"`, and `"guardian"`. Do NOT use
+   `"Plan"` or `"general-purpose"` for planner/implementer/reviewer/guardian
+   work — that bypasses the stage-specific prompt in `agents/` and is denied by
+   `pre-agent.sh`. When `subagent_type` is omitted, the harness carries an
+   empty string and the delivery-tracking path is silently skipped — no carrier
+   row, no `dispatch_attempts` row.
 
 4. If the CLI returns a non-zero exit code or `"status": "error"`, report the
    error and halt the dispatch until the issue is resolved.

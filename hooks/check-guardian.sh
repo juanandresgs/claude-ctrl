@@ -46,6 +46,18 @@ if [[ -n "$AGENT_TYPE" ]]; then
     _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
 fi
 
+# Release the seat and abandon every active supervision_thread touching it.
+# DEC-SUPERVISION-THREADS-DOMAIN-001 continuation. Best-effort — seat-release
+# failures must never block the hook. release_session_seat() is idempotent
+# (repeat calls return released=false, abandoned_count=0) so retries on
+# unexpected interrupts are safe.
+SESSION_ID=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
+    _local_cc_policy dispatch seat-release \
+        --session-id "$SESSION_ID" \
+        --agent-type "$AGENT_TYPE" >/dev/null 2>&1 || true
+fi
+
 ISSUES=()
 
 # Extract agent's response text first (needed for phase-boundary detection)
@@ -83,8 +95,8 @@ fi
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     # WS1: use lease_context() to derive workflow_id from the active lease.
     # When a lease is active its workflow_id is authoritative over branch-derived id.
-    _GD_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
-    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    _GD_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
+    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r 'if (.found == true or .lease_id != null) then "true" else "false" end' 2>/dev/null || echo "false")
     if [[ "$_GD_LEASE_FOUND" == "true" ]]; then
         _GD_LEASE_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
         _GD_WF_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
@@ -104,8 +116,12 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             --arg wt "${_GD_WORKTREE_PATH:-}" \
             'if $wt != "" then {LANDING_RESULT:$lr, OPERATION_CLASS:$oc, WORKTREE_PATH:$wt}
              else {LANDING_RESULT:$lr, OPERATION_CLASS:$oc} end')
-        _GD_CT_RESULT=$(rt_completion_submit "$_GD_LEASE_ID" "$_GD_WF_ID" "guardian" "$_GD_PAYLOAD")
-        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
+        _GD_CT_RESULT=$(_local_cc_policy completion submit \
+            --lease-id "$_GD_LEASE_ID" \
+            --workflow-id "$_GD_WF_ID" \
+            --role "guardian" \
+            --payload "$_GD_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
+        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
         if [[ "$_GD_CT_VALID" != "true" ]]; then
             _GD_CT_MISSING=$(printf '%s' "$_GD_CT_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
             # Advisory only in v1 — the git operation already completed.
@@ -229,10 +245,10 @@ elif [[ "$_TS_STATUS" == "fail" ]]; then
 fi
 
 # Check 6: Evaluation state for git operations (TKT-024)
-# Validates evaluation_state instead of proof_state. Guardian should only
-# operate when evaluation_state == "ready_for_guardian" (set by the active
-# SubagentStop evaluator adapter; the legacy tester producer was retired in
-# Phase 8 Slice 10).
+# Guardian should only operate when evaluation_state == "ready_for_guardian"
+# (set by the active SubagentStop evaluator adapter; the legacy tester
+# producer was retired in Phase 8 Slice 10, and the legacy proof_state
+# storage was retired under DEC-CATEGORY-C-PROOF-RETIRE-001).
 EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_GD_WF_ID")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit|git\s+(\S+\s+)*push' || echo "")
 if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then

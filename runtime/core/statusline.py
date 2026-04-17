@@ -6,8 +6,9 @@ scripts/statusline.sh without that script needing to call multiple subcommands.
 
 TKT-011 promotes this from a stub to the canonical implementation.
 TKT-024 establishes evaluation_state as the sole readiness display.
-W-CONV-4 removes proof_state from the snapshot dict entirely — the proof_state
-table is retained for storage, but operators must see only one readiness signal.
+W-CONV-4 removed proof_state from the snapshot dict entirely; the proof_state
+table itself was retired post-Phase-8 under Category C bundle 1
+(DEC-CATEGORY-C-PROOF-RETIRE-001).
 W-SL-160 introduces per-section partial failure reporting and a last_review
 section that shows whether the latest output was reviewed by Codex/Gemini.
 
@@ -16,8 +17,10 @@ Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() is the single read surface for the statusline HUD. It
   reads evaluation_state (TKT-024 sole readiness authority), agent_markers,
-  worktrees, dispatch_cycles, completion_records, and events in one pass and
-  returns a canonical dict. No writes happen here.
+  worktrees, completion_records, and events in one pass and returns a
+  canonical dict. No writes happen here. (The dispatch_cycles read was
+  retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001; the dispatch_cycle_id /
+  dispatch_initiative snapshot keys persist with None defaults.)
   All fields default to None/0/[] so the statusline never crashes on an empty
   or partially-populated DB. Per-section try/except (W-SL-160) reports partial
   failures without suppressing successfully-loaded sections: if any section
@@ -30,9 +33,10 @@ Status: accepted
 Rationale: After TKT-024 cutover, evaluation_state is the sole readiness
   authority. W-CONV-4 completes the cleanup: proof_status and proof_workflow
   are removed from the snapshot dict entirely. Operators were seeing both
-  signals which could contradict each other. proof_state table and proof.py
-  module are retained (storage is not removed), but the display surface now
-  exposes only eval_status, eval_workflow, and eval_head_sha for readiness.
+  signals which could contradict each other. The proof_state table and
+  proof.py module were subsequently retired post-Phase-8 under Category C
+  bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001); the display surface exposes
+  only eval_status, eval_workflow, and eval_head_sha for readiness.
 
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
@@ -44,8 +48,9 @@ Rationale: WS6 removes dispatch_queue from the routing hot-path. post-task.sh
   single authoritative routing table in completions.py. dispatch_workflow,
   dispatch_from_role, and dispatch_from_verdict are new fields that let the HUD
   surface where the routing decision came from. dispatch_initiative and
-  dispatch_cycle_id remain (read from dispatch_cycles) for initiative-level
-  tracking, which is not routing state.
+  dispatch_cycle_id keys remain in the snapshot dict with None defaults for
+  schema-stability, but the dispatch_cycles-backed population path was
+  retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
 
 @decision DEC-SL-160
 Title: Per-section partial failure reporting and review status indicator
@@ -121,10 +126,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "eval_status": "idle",
         "eval_workflow": None,
         "eval_head_sha": None,
-        # proof_status / proof_workflow removed (W-CONV-4 / DEC-EVAL-006):
-        # operators were seeing two contradictory readiness signals. The
-        # proof_state table is retained for storage; only the display is
-        # removed. evaluation_state is the sole readiness surface.
+        # proof_status / proof_workflow were removed (W-CONV-4 / DEC-EVAL-006)
+        # and the proof_state table itself was retired post-Phase-8 under
+        # Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001).
+        # evaluation_state is the sole readiness surface.
         "active_agent": None,
         "active_agent_id": None,
         "marker_age_seconds": None,
@@ -156,7 +161,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
 
     # ------------------------------------------------------------------
     # Section: Evaluation state (TKT-024 / W-CONV-4) — sole readiness
-    # authority. proof_state is no longer queried here (DEC-EVAL-006).
+    # authority. proof_state was retired under DEC-CATEGORY-C-PROOF-RETIRE-001.
     # Prefer any non-idle row; most recently updated wins.
     # We also read updated_at here to scope last_review correctly.
     # ------------------------------------------------------------------
@@ -224,9 +229,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # the queue was a write-only sink with no live readers in the
     # enforcement path. Routing is now determined by
     # determine_next_role(role, verdict) applied to the most recent
-    # completion record. dispatch_initiative and dispatch_cycle_id are
-    # retained from dispatch_cycles — that is initiative-level tracking,
-    # not routing state.
+    # completion record. dispatch_initiative and dispatch_cycle_id were
+    # previously read from the dispatch_cycles table; that read was retired
+    # under DEC-CATEGORY-C-DISPATCH-RETIRE-001. The snapshot keys persist
+    # with their None defaults for schema stability.
     # ------------------------------------------------------------------
     try:
         comp = comp_latest(conn)
@@ -237,18 +243,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             result["dispatch_from_role"] = comp["role"]
             result["dispatch_from_verdict"] = comp.get("verdict", "")
 
-        row = conn.execute(
-            """
-            SELECT id, initiative
-            FROM   dispatch_cycles
-            WHERE  status = 'active'
-            ORDER  BY created_at DESC
-            LIMIT  1
-            """
-        ).fetchone()
-        if row:
-            result["dispatch_initiative"] = row["initiative"]
-            result["dispatch_cycle_id"] = row["id"]
+        # dispatch_cycles was retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+        # dispatch_cycle_id and dispatch_initiative remain in the snapshot
+        # dict with their None defaults so schema-checking consumers do not
+        # break, but the legacy table-backed population path is gone.
     except Exception as exc:
         result["status"] = "partial_failure"
         result["errors"].append({"section": "dispatch", "error": str(exc)})

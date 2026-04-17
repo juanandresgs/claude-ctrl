@@ -311,13 +311,15 @@ class TestCurrentStateDocBanner:
             "current-lane claims from historical snapshots."
         )
 
+    _POST_MERGE_BANNER_TOKEN = "CUTOVER STEADY-STATE"
+
     def test_current_state_banner_states_23_file_debt(self) -> None:
         banner = _current_truth_banner_region(_read(CURRENT_STATE_DOC))
-        assert _CURRENT_STAGED_TOKEN in banner, (
+        assert self._POST_MERGE_BANNER_TOKEN in banner, (
             f"CURRENT_STATE.md current-lane banner must contain the literal "
-            f"token {_CURRENT_STAGED_TOKEN!r}. If the staged bundle "
-            "legitimately grew past 23, update _CURRENT_STAGED_COUNT in "
-            "this test file AND both authority docs in the same change.\n"
+            f"token {self._POST_MERGE_BANNER_TOKEN!r}. Post-merge, the "
+            "banner reflects upstream cutover steady-state, not lane-local "
+            "checkpoint debt.\n"
             f"Banner region (first 1400 chars):\n{banner[:800]}..."
         )
 

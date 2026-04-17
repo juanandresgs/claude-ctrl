@@ -225,13 +225,11 @@ if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" && -f "$PROMPT_COUNT_FILE" 
     SUGGEST_COMPACT=false
     COMPACT_REASON=""
 
-    # Primary: prompt count thresholds
     if [[ "$PROMPT_NUM" -eq 35 || "$PROMPT_NUM" -eq 60 ]]; then
         SUGGEST_COMPACT=true
         COMPACT_REASON="$PROMPT_NUM prompts in this session"
     fi
 
-    # Secondary: session duration
     EPOCH_FILE="${PROJECT_ROOT}/.claude/.session-start-epoch"
     if [[ "$SUGGEST_COMPACT" == "false" && -f "$EPOCH_FILE" ]]; then
         START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")
