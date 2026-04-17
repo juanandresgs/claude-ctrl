@@ -482,7 +482,7 @@ def test_default_registry_is_registry():
 
 
 def test_default_registry_has_all_policies():
-    """24 policies registered (10 write + 14 bash) in priority order."""
+    """25 policies registered (10 write + 14 bash + 1 agent launch guard)."""
     reg = default_registry()
     policies = reg.list_policies()
     names = {p.name for p in policies}
@@ -499,6 +499,7 @@ def test_default_registry_has_all_policies():
     # W3 bash-path policies (including enforcement-gaps additions)
     w3_expected = {
         "bash_tmp_safety",
+        "agent_contract_required",  # Agent/Task canonical contract enforcement
         "bash_worktree_cwd",
         "bash_worktree_nesting",  # Gap 5: prevent nested worktree creation
         "bash_worktree_creation",  # W-GWT-3: guardian-only worktree creation
@@ -516,8 +517,8 @@ def test_default_registry_has_all_policies():
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
     assert (
-        len(policies) == 24
-    )  # 22 original + bash_worktree_creation (W-GWT-3) + bash_worktree_nesting (Gap 5)
+        len(policies) == 25
+    )  # previous 24 + agent_contract_required (canonical stage↔subagent launch guard)
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)

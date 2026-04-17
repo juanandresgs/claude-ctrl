@@ -337,18 +337,11 @@ class TestLiveRoleAliases:
         """'Plan' caps must exactly equal canonical planner caps."""
         assert ar.capabilities_for("Plan") == ar.capabilities_for(sr.PLANNER)
 
-    def test_guardian_alias_has_provision_worktree(self):
-        """Live 'guardian' role must resolve to CAN_PROVISION_WORKTREE."""
+    def test_bare_guardian_returns_empty_capabilities(self):
+        """Bare 'guardian' returns empty capabilities after DEC-WHO-LANDING-ALIAS-001.
+        Actors must use compound stage IDs (guardian:provision, guardian:land)."""
         caps = ar.capabilities_for("guardian")
-        assert ar.CAN_PROVISION_WORKTREE in caps
-
-    def test_guardian_alias_does_not_have_write_source(self):
-        """'guardian' alias must not carry CAN_WRITE_SOURCE."""
-        assert ar.CAN_WRITE_SOURCE not in ar.capabilities_for("guardian")
-
-    def test_guardian_alias_does_not_have_write_governance(self):
-        """'guardian' alias must not carry CAN_WRITE_GOVERNANCE."""
-        assert ar.CAN_WRITE_GOVERNANCE not in ar.capabilities_for("guardian")
+        assert caps == frozenset()
 
     def test_alias_lookup_returns_frozenset(self):
         """capabilities_for() must return a frozenset for aliased roles."""
@@ -551,11 +544,9 @@ class TestCapabilityContractResolution:
         """'Plan' alias produces the same contract as 'planner'."""
         assert ar.resolve_contract("Plan") == ar.resolve_contract(sr.PLANNER)
 
-    def test_guardian_alias_resolves_to_provision_contract(self):
-        """'guardian' alias produces the same contract as 'guardian:provision'."""
-        assert ar.resolve_contract("guardian") == ar.resolve_contract(
-            sr.GUARDIAN_PROVISION
-        )
+    def test_bare_guardian_returns_no_contract(self):
+        """Bare 'guardian' returns None after alias removal (DEC-WHO-LANDING-ALIAS-001)."""
+        assert ar.resolve_contract("guardian") is None
 
     def test_contract_stage_id_is_canonical(self):
         """Aliased lookups return contracts with canonical stage_id, not the alias."""

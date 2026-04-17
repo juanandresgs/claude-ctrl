@@ -599,21 +599,12 @@ class TestStageContractLayer:
             == ppr.render_stage_contract_layer(sr.PLANNER)
         )
 
-    def test_guardian_alias_renders_canonical_provision_stage(self):
-        """'guardian' alias must resolve to guardian:provision."""
-        text = ppr.render_stage_contract_layer("guardian")
-        assert "Stage: guardian:provision" in text
-
-    def test_guardian_alias_includes_provision_verdicts(self):
-        """'guardian' alias must produce guardian:provision verdicts."""
-        text = ppr.render_stage_contract_layer("guardian")
-        assert "provisioned" in text
-
-    def test_guardian_alias_matches_canonical_provision_output(self):
-        assert (
+    def test_bare_guardian_raises_after_alias_removal(self):
+        """Bare 'guardian' raises ValueError after DEC-WHO-LANDING-ALIAS-001.
+        Callers must use 'guardian:provision' or 'guardian:land'."""
+        import pytest
+        with pytest.raises(ValueError, match="unknown active stage"):
             ppr.render_stage_contract_layer("guardian")
-            == ppr.render_stage_contract_layer(sr.GUARDIAN_PROVISION)
-        )
 
 
 # ---------------------------------------------------------------------------

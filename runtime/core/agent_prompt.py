@@ -29,6 +29,9 @@ from typing import Optional
 
 import runtime.core.decision_work_registry as _dwr
 from runtime.core import workflows as _workflows
+from runtime.core.dispatch_contract import (
+    dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
+)
 
 __all__ = [
     "build_agent_dispatch_prompt",
@@ -88,6 +91,12 @@ def build_agent_dispatch_prompt(
         raise ValueError("workflow_id must be a non-empty string")
     if not stage_id or not stage_id.strip():
         raise ValueError("stage_id must be a non-empty string")
+    required_subagent_type = _dispatch_subagent_type_for_stage(stage_id)
+    if required_subagent_type is None:
+        raise ValueError(
+            f"stage_id {stage_id!r} is not a canonical dispatch stage; "
+            "valid stages: planner, guardian:provision, implementer, reviewer, guardian:land"
+        )
 
     # Resolve goal_id from runtime state when not supplied.
     #
@@ -185,6 +194,7 @@ def build_agent_dispatch_prompt(
         "contract": contract,
         "contract_block_line": contract_block_line,
         "prompt_prefix": prompt_prefix,
+        "required_subagent_type": required_subagent_type,
     }
 
 

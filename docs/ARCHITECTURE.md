@@ -24,10 +24,10 @@ JSON into a policy request and forward the decision.
 - `runtime/core/policy_utils.py` -- Python ports of shell classification
   helpers (is_source_file, is_governance_markdown, extract_git_target_dir,
   classify_git_op, etc.).
-- `runtime/core/policies/` -- 22 registered policy modules (10 write-path
-  + 12 bash-path).
+- `runtime/core/policies/` -- 25 registered policy modules (10 write-path
+  + 14 bash-path + 1 agent-launch contract gate).
 
-**22 registered policies:**
+**25 registered policies:**
 
 Write-path (event_types=["Write","Edit"]):
 
@@ -49,6 +49,7 @@ Bash-path (event_types=["Bash","PreToolUse"]):
 | Priority | Name | Purpose |
 |----------|------|---------|
 | 100 | bash_tmp_safety | Deny /tmp writes (Sacred Practice #3) |
+| 150 | agent_contract_required | Enforce canonical stage↔subagent Agent contracts |
 | 200 | bash_worktree_cwd | Deny bare cd into .worktrees/ |
 | 300 | bash_git_who | Lease-based WHO enforcement for git ops |
 | 400 | bash_main_sacred | Deny commits on main/master |

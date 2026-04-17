@@ -402,6 +402,7 @@ WORK_ITEMS_DDL = """
 CREATE TABLE IF NOT EXISTS work_items (
     work_item_id    TEXT    PRIMARY KEY,
     goal_id         TEXT    NOT NULL,
+    workflow_id     TEXT,
     title           TEXT    NOT NULL,
     status          TEXT    NOT NULL,
     version         INTEGER NOT NULL,
@@ -421,6 +422,11 @@ CREATE INDEX IF NOT EXISTS idx_work_items_goal ON work_items (goal_id)
 
 WORK_ITEMS_INDEX_STATUS_DDL = """
 CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items (status)
+"""
+
+WORK_ITEMS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_work_items_workflow
+    ON work_items (workflow_id) WHERE workflow_id IS NOT NULL
 """
 
 # ---------------------------------------------------------------------------
@@ -461,6 +467,7 @@ CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items (status)
 GOAL_CONTRACTS_DDL = """
 CREATE TABLE IF NOT EXISTS goal_contracts (
     goal_id                       TEXT    PRIMARY KEY,
+    workflow_id                   TEXT,
     desired_end_state             TEXT    NOT NULL,
     status                        TEXT    NOT NULL,
     autonomy_budget               INTEGER NOT NULL DEFAULT 0,
@@ -475,6 +482,11 @@ CREATE TABLE IF NOT EXISTS goal_contracts (
 
 GOAL_CONTRACTS_INDEX_STATUS_DDL = """
 CREATE INDEX IF NOT EXISTS idx_goal_contracts_status ON goal_contracts (status)
+"""
+
+GOAL_CONTRACTS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_goal_contracts_workflow
+    ON goal_contracts (workflow_id) WHERE workflow_id IS NOT NULL
 """
 
 # ---------------------------------------------------------------------------
@@ -993,6 +1005,29 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             )
         except sqlite3.OperationalError:
             pass  # column already exists — no-op
+
+        # Migrate work_items: add workflow_id column if missing.
+        # DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 requires workflow-scoped
+        # goal/work-item resolution in the agent-prompt producer.
+        # Legacy rows may have workflow_id NULL and are intentionally
+        # excluded from workflow-scoped lookups.
+        try:
+            conn.execute("ALTER TABLE work_items ADD COLUMN workflow_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists — no-op
+
+        # Migrate goal_contracts: add workflow_id column if missing.
+        # Same rationale as work_items above; NULL remains valid for
+        # pre-migration legacy rows.
+        try:
+            conn.execute("ALTER TABLE goal_contracts ADD COLUMN workflow_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists — no-op
+
+        # Workflow-scoped indexes are created after the ALTER migrations so
+        # existing databases without workflow_id columns are upgraded first.
+        conn.execute(WORK_ITEMS_INDEX_WORKFLOW_DDL)
+        conn.execute(GOAL_CONTRACTS_INDEX_WORKFLOW_DDL)
 
         # Cleanup migration (W-CONV-2): deactivate any active markers whose role
         # is NOT a dispatch-significant role. Explore, Bash, and general-purpose

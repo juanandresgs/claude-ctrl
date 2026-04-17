@@ -66,8 +66,21 @@ import json
 import time
 from typing import Optional
 
-from runtime.core.authority_registry import READ_ONLY_REVIEW
+from runtime.core.authority_registry import (
+    CAN_LAND_GIT,
+    READ_ONLY_REVIEW,
+    actor_matches_lease_role,
+)
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+
+# @decision DEC-WHO-LANDING-001
+# Landing subcommands (commit, merge, push) require CAN_LAND_GIT capability.
+# Only guardian:land carries this capability. This gate fires AFTER the
+# lease-expired check but BEFORE allowed_ops, so actors with valid leases
+# but without landing authority are denied before op-class checks.
+# admin_recovery ops (e.g. merge --abort) are exempt — they undo state,
+# not land code.
+_LANDING_SUBCOMMANDS = frozenset({"commit", "merge", "push"})
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Deny git operations requiring a Guardian lease when no valid active lease covers the op.
@@ -168,15 +181,18 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         )
 
     # Belt-and-suspenders role check (DEC-PE-EGAP-GIT-WHO-002):
-    # If the lease carries a role, the actor must match it. This is a secondary
-    # defense against build_context handing the wrong actor a role-specific lease.
-    actor = (request.context.actor_role or "").lower().strip()
-    lease_role = (lease.get("role") or "").lower().strip()
-    if lease_role and actor != lease_role:
+    # If the lease carries a role, the actor must match it. Uses
+    # actor_matches_lease_role (DEC-WHO-STAGE-LEASE-MATCH-001) to bridge
+    # compound stage IDs to lease-level roles.
+    lease_role_str = (lease.get("role") or "").strip()
+    if lease_role_str and not actor_matches_lease_role(
+        request.context.actor_role or "", lease_role_str
+    ):
+        actor_display = (request.context.actor_role or "").lower().strip()
         return PolicyDecision(
             action="deny",
             reason=(
-                f"Lease role '{lease_role}' does not match actor role '{actor}'. "
+                f"Lease role '{lease_role_str.lower()}' does not match actor role '{actor_display}'. "
                 "Only the lease holder may use this lease for git operations. "
                 "Dispatch via: cc-policy lease issue-for-dispatch "
                 "--role <role> --worktree-path <path>"
@@ -194,6 +210,25 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             policy_name="bash_git_who",
             effects={"expire_stale_leases": True},
         )
+
+    # CAN_LAND_GIT capability gate (DEC-WHO-LANDING-001): landing subcommands
+    # require CAN_LAND_GIT. admin_recovery ops (merge --abort) are exempt.
+    if (
+        intent.git_invocation
+        and intent.git_invocation.subcommand in _LANDING_SUBCOMMANDS
+        and op_class != "admin_recovery"
+    ):
+        if CAN_LAND_GIT not in request.context.capabilities:
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    f"Landing authority required: git {intent.git_invocation.subcommand} "
+                    f"requires the {CAN_LAND_GIT} capability. Only guardian:land "
+                    f"carries this capability. Current actor "
+                    f"'{request.context.actor_role}' does not have it."
+                ),
+                policy_name="bash_git_who",
+            )
 
     try:
         allowed_ops = json.loads(lease.get("allowed_ops_json") or "[]")

@@ -132,7 +132,13 @@ class TestContextRoleCommand:
         )
 
     def test_context_role_with_guardian_marker(self, db, project_dir):
-        """context role resolves 'guardian' marker correctly."""
+        """context role resolves 'guardian' marker correctly.
+
+        DEC-WHO-GUARDIAN-CANONICALIZE-001: live dispatch writes bare "guardian"
+        to agent_markers; build_context() canonicalizes to the compound stage
+        using dispatch_phase. With no completion records seeded here, the
+        safe-default path routes to guardian:provision (no landing auth).
+        """
         run_cli_json(
             ["marker", "set", "agent-gd-001", "guardian", "--project-root", project_dir], db
         )
@@ -140,7 +146,7 @@ class TestContextRoleCommand:
             ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
         )
         assert code == 0
-        assert out.get("role") == "guardian"
+        assert out.get("role") == "guardian:provision"
 
     def test_context_role_tester_marker_is_deactivated_by_schema_cleanup(
         self, db, project_dir
@@ -502,7 +508,12 @@ class TestContextRoleProductionSequence:
         assert active_out.get("found") is False, "Marker should be inactive after deactivation"
 
     def test_full_subagent_stop_sequence_guardian(self, db, project_dir):
-        """Simulates check-guardian.sh marker deactivation via context role."""
+        """Simulates check-guardian.sh marker deactivation via context role.
+
+        DEC-WHO-GUARDIAN-CANONICALIZE-001: live bare "guardian" marker
+        canonicalizes to guardian:provision (safe default) when no dispatch
+        phase is present.
+        """
         _env = {"CLAUDE_PROJECT_DIR": project_dir}
         run_cli_json(
             ["marker", "set", "gd-agent-07", "guardian", "--project-root", project_dir], db
@@ -510,7 +521,7 @@ class TestContextRoleProductionSequence:
 
         code, ctx_out = run_cli_json(["context", "role"], db, extra_env=_env)
         assert code == 0
-        assert ctx_out.get("role") == "guardian"
+        assert ctx_out.get("role") == "guardian:provision"
         agent_id = ctx_out.get("agent_id")
         assert agent_id == "gd-agent-07"
 

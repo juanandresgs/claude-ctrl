@@ -125,9 +125,14 @@ class TestBuildContractConstruction:
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
         assert isinstance(result, dict)
 
-    def test_result_has_three_keys(self, conn):
+    def test_result_has_four_keys(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
-        assert set(result.keys()) == {"contract", "contract_block_line", "prompt_prefix"}
+        assert set(result.keys()) == {
+            "contract",
+            "contract_block_line",
+            "prompt_prefix",
+            "required_subagent_type",
+        }
 
     def test_contract_contains_all_six_fields(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
@@ -138,6 +143,7 @@ class TestBuildContractConstruction:
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="implementer")
         assert result["contract"]["workflow_id"] == "wf-ap"
         assert result["contract"]["stage_id"] == "implementer"
+        assert result["required_subagent_type"] == "implementer"
 
     def test_default_decision_scope_is_kernel(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
@@ -365,7 +371,8 @@ def _run_cli(db_path: Path, *extra_args: str) -> tuple[int, str, str]:
 
 class TestCLIHappyPath:
     # CLI uses _ok() which merges into a flat dict with status="ok".
-    # Keys are at top level: contract, contract_block_line, prompt_prefix, status.
+    # Keys are at top level: contract, contract_block_line, prompt_prefix,
+    # required_subagent_type, status.
 
     def test_exit_zero(self, db):
         rc, _out, _err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")
@@ -395,6 +402,11 @@ class TestCLIHappyPath:
         _rc, out, _err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")
         parsed = json.loads(out.strip())
         assert "prompt_prefix" in parsed
+
+    def test_output_contains_required_subagent_type(self, db):
+        _rc, out, _err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")
+        parsed = json.loads(out.strip())
+        assert parsed["required_subagent_type"] == "planner"
 
     def test_contract_block_line_starts_with_marker(self, db):
         _rc, out, _err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")

@@ -105,13 +105,14 @@ def test_expired_lease_denied():
 
 
 def test_op_in_blocked_ops_denied():
-    # classify_git_op("git push ...") returns "high_risk" — use the real op_class.
+    # Use a non-landing high_risk op (rebase) so the CAN_LAND_GIT gate
+    # doesn't fire first. Push would hit the landing gate before blocked_ops.
     lease = _make_lease(
         allowed_ops=["routine_local", "high_risk"],
         blocked_ops=["high_risk"],
     )
-    ctx = make_context(lease=lease)
-    req = make_request("git push origin feature/foo", context=ctx)
+    ctx = make_context(actor_role="guardian:land", lease=lease)
+    req = make_request("git rebase main", context=ctx)
     decision = check(req)
     assert decision is not None
     assert decision.action == "deny"
@@ -124,10 +125,11 @@ def test_op_in_blocked_ops_denied():
 
 
 def test_op_not_in_allowed_ops_denied():
+    # Use a non-landing high_risk op (rebase) so the CAN_LAND_GIT gate
+    # doesn't fire first.
     lease = _make_lease(allowed_ops=["routine_local"])
-    ctx = make_context(lease=lease)
-    # push is classified as high_risk / push, not routine_local
-    req = make_request("git push origin feature/bar", context=ctx)
+    ctx = make_context(actor_role="guardian:land", lease=lease)
+    req = make_request("git rebase main", context=ctx)
     decision = check(req)
     assert decision is not None
     assert decision.action == "deny"
@@ -139,18 +141,19 @@ def test_op_not_in_allowed_ops_denied():
 # ---------------------------------------------------------------------------
 
 
-def test_commit_with_valid_lease_allowed():
+def test_commit_with_valid_lease_allowed_for_guardian_land():
     lease = _make_lease(allowed_ops=["routine_local"])
-    ctx = make_context(lease=lease)
+    lease["role"] = "guardian"
+    ctx = make_context(actor_role="guardian:land", lease=lease)
     req = make_request("git commit -m 'feat: add thing'", context=ctx)
     decision = check(req)
     assert decision is None
 
 
-def test_push_allowed_when_in_allowed_ops():
-    # classify_git_op("git push ...") returns "high_risk" — include that class.
+def test_push_allowed_for_guardian_land():
     lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
-    ctx = make_context(lease=lease)
+    lease["role"] = "guardian"
+    ctx = make_context(actor_role="guardian:land", lease=lease)
     req = make_request("git push origin feature/done", context=ctx)
     decision = check(req)
     assert decision is None
@@ -294,16 +297,17 @@ def test_arbitrary_role_with_read_only_review_injected_is_denied():
     assert "read-only" in decision.reason.lower()
 
 
-def test_implementer_with_valid_lease_still_allowed_for_commit():
-    """Implementer with CAN_WRITE_SOURCE and a valid lease for routine_local
-    is still allowed — the READ_ONLY_REVIEW gate must not affect non-reviewer
-    stages."""
+def test_implementer_denied_commit_by_landing_gate():
+    """Implementer with a valid lease is denied git commit by the CAN_LAND_GIT
+    gate (DEC-WHO-LANDING-001). Only guardian:land can land."""
     lease = _make_lease(allowed_ops=["routine_local"])
     lease["role"] = "implementer"
     ctx = make_context(actor_role="implementer", lease=lease)
     req = make_request("git commit -m 'feat: add thing'", context=ctx)
     decision = check(req)
-    assert decision is None
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "can_land_git" in decision.reason.lower()
 
 
 def test_meta_repo_bypass_unaffected_by_read_only():
@@ -440,11 +444,11 @@ def test_suppressed_roles_ignored_when_lease_actually_attached():
     lease = _make_lease(allowed_ops=["routine_local"])
     lease["role"] = "guardian"
     ctx = make_context(
-        actor_role="guardian",
+        actor_role="guardian:land",
         lease=lease,
         worktree_lease_suppressed_roles=frozenset({"guardian"}),
     )
     req = make_request("git commit -m 'landing'", context=ctx)
     decision = check(req)
-    # Valid lease → allow (check returns None).
+    # Valid lease + guardian:land has CAN_LAND_GIT → allow.
     assert decision is None

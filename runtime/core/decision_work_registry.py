@@ -205,6 +205,7 @@ class WorkItemRecord:
     evaluation_json: str = "{}"
     head_sha: Optional[str] = None
     reviewer_round: int = 0
+    workflow_id: Optional[str] = None
     created_at: int = 0
     updated_at: int = 0
 
@@ -214,6 +215,7 @@ class WorkItemRecord:
         _require_non_empty_str(self, "title")
         _require_non_empty_str(self, "author")
         _require_optional_non_empty_str(self, "head_sha")
+        _require_optional_non_empty_str(self, "workflow_id")
         if self.status not in WORK_ITEM_STATUSES:
             raise ValueError(
                 f"unknown work-item status {self.status!r}; "
@@ -266,12 +268,14 @@ class GoalRecord:
     stop_conditions_json: str = "[]"
     escalation_boundaries_json: str = "[]"
     user_decision_boundaries_json: str = "[]"
+    workflow_id: Optional[str] = None
     created_at: int = 0
     updated_at: int = 0
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self, "goal_id")
         _require_non_empty_str(self, "desired_end_state")
+        _require_optional_non_empty_str(self, "workflow_id")
         if self.status not in GOAL_STATUSES:
             raise ValueError(
                 f"unknown goal status {self.status!r}; "
@@ -375,6 +379,7 @@ def _row_to_work_item(row: sqlite3.Row) -> WorkItemRecord:
     return WorkItemRecord(
         work_item_id=row["work_item_id"],
         goal_id=row["goal_id"],
+        workflow_id=row["workflow_id"],
         title=row["title"],
         status=row["status"],
         version=int(row["version"]),
@@ -391,6 +396,7 @@ def _row_to_work_item(row: sqlite3.Row) -> WorkItemRecord:
 def _row_to_goal(row: sqlite3.Row) -> GoalRecord:
     return GoalRecord(
         goal_id=row["goal_id"],
+        workflow_id=row["workflow_id"],
         desired_end_state=row["desired_end_state"],
         status=row["status"],
         autonomy_budget=int(row["autonomy_budget"]),
@@ -410,14 +416,14 @@ _DECISION_COLUMNS = (
 
 
 _WORK_ITEM_COLUMNS = (
-    "work_item_id, goal_id, title, status, version, author, "
+    "work_item_id, goal_id, workflow_id, title, status, version, author, "
     "scope_json, evaluation_json, head_sha, reviewer_round, "
     "created_at, updated_at"
 )
 
 
 _GOAL_COLUMNS = (
-    "goal_id, desired_end_state, status, autonomy_budget, "
+    "goal_id, workflow_id, desired_end_state, status, autonomy_budget, "
     "continuation_rules_json, stop_conditions_json, "
     "escalation_boundaries_json, user_decision_boundaries_json, "
     "created_at, updated_at"
@@ -663,10 +669,11 @@ def insert_work_item(
     with conn:
         conn.execute(
             f"INSERT INTO work_items ({_WORK_ITEM_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.work_item_id,
                 record.goal_id,
+                record.workflow_id,
                 record.title,
                 record.status,
                 record.version,
@@ -692,9 +699,10 @@ def upsert_work_item(
     with conn:
         conn.execute(
             f"INSERT INTO work_items ({_WORK_ITEM_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(work_item_id) DO UPDATE SET "
             "  goal_id         = excluded.goal_id, "
+            "  workflow_id     = excluded.workflow_id, "
             "  title           = excluded.title, "
             "  status          = excluded.status, "
             "  version         = excluded.version, "
@@ -707,6 +715,7 @@ def upsert_work_item(
             (
                 record.work_item_id,
                 record.goal_id,
+                record.workflow_id,
                 record.title,
                 record.status,
                 record.version,
@@ -739,9 +748,10 @@ def list_work_items(
     conn: sqlite3.Connection,
     *,
     goal_id: Optional[str] = None,
+    workflow_id: Optional[str] = None,
     status: Optional[str] = None,
 ) -> List[WorkItemRecord]:
-    """List work items, optionally filtered by ``goal_id`` and/or ``status``.
+    """List work items, optionally filtered by ``goal_id``, ``workflow_id``, and/or ``status``.
 
     Results are ordered by ``created_at ASC, work_item_id ASC``.
     """
@@ -750,6 +760,9 @@ def list_work_items(
     if goal_id is not None:
         clauses.append("goal_id = ?")
         params.append(goal_id)
+    if workflow_id is not None:
+        clauses.append("workflow_id = ?")
+        params.append(workflow_id)
     if status is not None:
         clauses.append("status = ?")
         params.append(status)
@@ -789,9 +802,10 @@ def insert_goal(
     with conn:
         conn.execute(
             f"INSERT INTO goal_contracts ({_GOAL_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.goal_id,
+                record.workflow_id,
                 record.desired_end_state,
                 record.status,
                 record.autonomy_budget,
@@ -821,8 +835,9 @@ def upsert_goal(
     with conn:
         conn.execute(
             f"INSERT INTO goal_contracts ({_GOAL_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(goal_id) DO UPDATE SET "
+            "  workflow_id                   = excluded.workflow_id, "
             "  desired_end_state             = excluded.desired_end_state, "
             "  status                        = excluded.status, "
             "  autonomy_budget               = excluded.autonomy_budget, "
@@ -833,6 +848,7 @@ def upsert_goal(
             "  updated_at                    = excluded.updated_at",
             (
                 record.goal_id,
+                record.workflow_id,
                 record.desired_end_state,
                 record.status,
                 record.autonomy_budget,
@@ -863,9 +879,10 @@ def get_goal(
 def list_goals(
     conn: sqlite3.Connection,
     *,
+    workflow_id: Optional[str] = None,
     status: Optional[str] = None,
 ) -> List[GoalRecord]:
-    """List goal contracts, optionally filtered by ``status``.
+    """List goal contracts, optionally filtered by ``workflow_id`` and/or ``status``.
 
     Results are ordered by ``created_at ASC, goal_id ASC`` so the
     return is deterministic for test assertions — symmetric with
@@ -873,6 +890,9 @@ def list_goals(
     """
     clauses: List[str] = []
     params: List[object] = []
+    if workflow_id is not None:
+        clauses.append("workflow_id = ?")
+        params.append(workflow_id)
     if status is not None:
         clauses.append("status = ?")
         params.append(status)

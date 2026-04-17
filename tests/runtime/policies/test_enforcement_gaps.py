@@ -197,26 +197,27 @@ class TestGap2RoleBlindLease:
         assert "lease role" in decision.reason.lower() or "role" in decision.reason.lower()
 
     def test_role_match_not_denied_by_bash_git_who(self):
-        """When actor_role matches lease.role, the role check must not fire."""
+        """When actor_role matches lease.role, the role check must not fire.
+        guardian:land has CAN_LAND_GIT so commit is allowed."""
         from runtime.core.policies.bash_git_who import check
 
         guardian_lease = _make_guardian_lease()
-        # actor_role is "guardian" and lease.role is "guardian" — should pass role check
-        ctx = make_context(lease=guardian_lease, actor_role_override="guardian")
+        ctx = make_context(lease=guardian_lease, actor_role_override="guardian:land")
         req = make_request("git commit -m 'landing'", context=ctx)
         decision = check(req)
-        # Role check passes; op_class for commit is routine_local, guardian allows that
-        assert decision is None, "guardian with matching role must pass role check"
+        assert decision is None, "guardian:land with matching role must pass role check"
 
-    def test_implementer_role_matches_implementer_lease(self):
-        """Implementer role + implementer lease must pass role check."""
+    def test_implementer_role_denied_for_commit_by_landing_gate(self):
+        """Implementer with valid lease is denied git commit by CAN_LAND_GIT gate."""
         from runtime.core.policies.bash_git_who import check
 
         lease = _make_lease(role="implementer", allowed_ops=["routine_local"])
         ctx = make_context(lease=lease, actor_role_override="implementer")
         req = make_request("git commit -m 'feat: add thing'", context=ctx)
         decision = check(req)
-        assert decision is None
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "can_land_git" in decision.reason.lower()
 
     def test_build_context_role_aware_lease_resolution(self):
         """build_context with actor_role set must only pick up leases matching that role.
@@ -484,6 +485,7 @@ def make_context(
     actor_role_override=None,
 ) -> PolicyContext:
     """Extended make_context that supports actor_role_override for Gap 2 testing."""
+    from runtime.core.authority_registry import capabilities_for
     role = actor_role_override if actor_role_override is not None else "implementer"
     return PolicyContext(
         actor_role=role,
@@ -499,6 +501,7 @@ def make_context(
         test_state=test_state,
         binding=binding,
         dispatch_phase=None,
+        capabilities=capabilities_for(role),
     )
 
 
@@ -719,14 +722,14 @@ class TestRCA2EnvVarSpoofing:
 
         from runtime.core.policies.bash_git_who import check
 
-        # Context says guardian with guardian lease — op should be allowed
+        # Context says guardian:land with guardian lease — op should be allowed
         lease = _make_guardian_lease()
-        ctx = make_context(lease=lease, actor_role_override="guardian")
+        ctx = make_context(lease=lease, actor_role_override="guardian:land")
         req = make_request("git push origin main", context=ctx)
         decision = check(req)
-        # Guardian with high_risk lease: push is high_risk, should pass WHO
+        # guardian:land has CAN_LAND_GIT + high_risk in allowed_ops
         assert decision is None, (
-            "When context.actor_role=guardian (from SQLite), env var=implementer "
+            "When context.actor_role=guardian:land (from SQLite), env var=implementer "
             "must not override — the op must be allowed"
         )
 

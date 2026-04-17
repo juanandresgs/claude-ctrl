@@ -137,21 +137,21 @@ def test_denial_reason_references_guardian():
 # ---------------------------------------------------------------------------
 
 
-def test_guardian_worktree_add_allowed():
-    """Guardian is the sole worktree lifecycle authority — must be allowed."""
+def test_guardian_provision_worktree_add_allowed():
+    """guardian:provision is the sole worktree lifecycle authority — must be allowed."""
     req = make_request(
         "git worktree add .worktrees/feature-allowed -b feature/allowed",
-        context=_ctx("guardian"),
+        context=_ctx("guardian:provision"),
     )
     decision = check(req)
     assert decision is None
 
 
-def test_guardian_worktree_add_with_git_c_allowed():
-    """`git -C /path worktree add` from guardian is allowed."""
+def test_guardian_provision_worktree_add_with_git_c_allowed():
+    """`git -C /path worktree add` from guardian:provision is allowed."""
     req = make_request(
         "git -C /project worktree add .worktrees/feature-allowed -b feature/allowed",
-        context=_ctx("guardian"),
+        context=_ctx("guardian:provision"),
     )
     decision = check(req)
     assert decision is None
@@ -234,15 +234,15 @@ def test_register_wires_policy():
 # ---------------------------------------------------------------------------
 
 
-def test_guardian_alias_resolves_via_capability():
-    """Live "guardian" role resolves to CAN_PROVISION_WORKTREE via alias.
+def test_guardian_provision_stage_resolves_via_capability():
+    """guardian:provision stage resolves to CAN_PROVISION_WORKTREE.
 
-    capabilities_for("guardian") must return a set containing
-    CAN_PROVISION_WORKTREE so that the live lease role name passes the gate.
+    capabilities_for("guardian:provision") must return a set containing
+    CAN_PROVISION_WORKTREE. Bare "guardian" no longer resolves (DEC-WHO-LANDING-ALIAS-001).
     """
     from runtime.core.authority_registry import CAN_PROVISION_WORKTREE, capabilities_for
 
-    caps = capabilities_for("guardian")
+    caps = capabilities_for("guardian:provision")
     assert CAN_PROVISION_WORKTREE in caps
 
 

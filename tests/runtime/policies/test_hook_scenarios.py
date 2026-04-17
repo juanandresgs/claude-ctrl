@@ -243,6 +243,9 @@ def _typescript_exports(count: int = 25) -> str:
 
 
 def _configure_guardian_git_allow(repo: Path) -> None:
+    # Live truth: marker stores bare "guardian". build_context canonicalizes
+    # to guardian:land via dispatch_phase from the reviewer completion seeded
+    # below (DEC-WHO-GUARDIAN-CANONICALIZE-001).
     _set_role(repo, "guardian")
     _policy(
         repo,
@@ -275,6 +278,26 @@ def _configure_guardian_git_allow(repo: Path) -> None:
         "--allowed-ops",
         '["routine_local","high_risk"]',
     )
+
+    # Seed a reviewer:ready_for_guardian completion so build_context resolves
+    # dispatch_phase to "reviewer:ready_for_guardian", canonicalizing bare
+    # guardian → guardian:land. Inserted directly to avoid the full reviewer
+    # completion payload validation (payload fields aren't relevant here —
+    # only the row's role/verdict/workflow_id drive the dispatch_phase read).
+    import sqlite3 as _sqlite3
+
+    _db = _db_path(repo)
+    _conn = _sqlite3.connect(str(_db))
+    try:
+        _conn.execute(
+            "INSERT INTO completion_records "
+            "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+            ("seed-lease", workflow_id, "reviewer", "ready_for_guardian", 1, "{}", "[]"),
+        )
+        _conn.commit()
+    finally:
+        _conn.close()
 
 
 @pytest.mark.parametrize(

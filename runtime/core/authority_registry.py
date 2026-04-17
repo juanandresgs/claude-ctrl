@@ -246,15 +246,20 @@ STAGE_CAPABILITIES: Mapping[str, FrozenSet[str]] = {
 #
 # "Plan" — SubagentStart agent_type alias for the planner stage (capitalized
 #   variant observed in live payloads; canonical stage name is "planner").
-# "guardian" — live lease role used by both provision and land modes. Mapped
-#   to GUARDIAN_PROVISION so that CAN_PROVISION_WORKTREE is reachable for
-#   the bash_worktree_creation policy; both modes may run `git worktree add`
-#   for manual recovery paths.
+#
+# @decision DEC-WHO-LANDING-ALIAS-001
+# Bare "guardian" removed from _LIVE_ROLE_ALIASES. Before Slice 3 it mapped
+# to GUARDIAN_PROVISION, which gave any actor identified as "guardian" the
+# provision capability set — including CAN_PROVISION_WORKTREE but NOT
+# CAN_LAND_GIT. That was ambiguous: live leases use "guardian" as the role
+# string for both provision and land modes, but the alias silently resolved
+# to only one of them. After removal, bare "guardian" returns empty
+# capabilities (fail-closed). Actors must use the compound stage IDs
+# "guardian:provision" or "guardian:land" to receive capabilities.
 # ---------------------------------------------------------------------------
 
 _LIVE_ROLE_ALIASES: Mapping[str, str] = {
     "Plan": sr.PLANNER,
-    "guardian": sr.GUARDIAN_PROVISION,
 }
 
 # Canonical active-stage ordering used by all_contracts() and
@@ -581,6 +586,92 @@ def owner_index() -> Dict[str, str]:
     return {f.name: f.owner_module for f in AUTHORITY_TABLE}
 
 
+# ---------------------------------------------------------------------------
+# Stage↔lease role bridging (Slice 3 — DEC-WHO-STAGE-LEASE-MATCH-001)
+#
+# Leases are issued with the base role string ("guardian", "implementer",
+# "planner") while actors in the policy engine carry compound stage IDs
+# ("guardian:provision", "guardian:land"). These helpers bridge the gap so
+# build_context() and bash_git_who can match actors to their leases without
+# literal string equality.
+# ---------------------------------------------------------------------------
+
+
+def lease_role_for_stage(stage: str) -> Optional[str]:
+    """Map a stage identifier to the lease-level role that owns it.
+
+    For compound stages (e.g. "guardian:land"), returns the base role
+    ("guardian"). For simple stages, returns the stage itself if known.
+    Returns None for unknown stages or empty input.
+    """
+    if not stage:
+        return None
+    if stage in STAGE_CAPABILITIES:
+        return stage.split(":")[0] if ":" in stage else stage
+    canonical = _LIVE_ROLE_ALIASES.get(stage)
+    if canonical is not None and canonical in STAGE_CAPABILITIES:
+        return canonical.split(":")[0] if ":" in canonical else canonical
+    return None
+
+
+def actor_matches_lease_role(actor_role: str, lease_role: str) -> bool:
+    """Return True iff actor_role is authorized to use a lease with lease_role.
+
+    Handles compound stage IDs: "guardian:land" matches lease role "guardian".
+    This is the sole authority for actor↔lease role comparison
+    (DEC-WHO-STAGE-LEASE-MATCH-001).
+    """
+    if not actor_role or not lease_role:
+        return False
+    a = actor_role.lower().strip()
+    lr = lease_role.lower().strip()
+    if a == lr:
+        return True
+    base = lease_role_for_stage(actor_role)
+    if base and base.lower() == lr:
+        return True
+    return False
+
+
+def canonical_actor_stage(actor_role: str, dispatch_phase: Optional[str]) -> str:
+    """Canonicalize live bare roles to compound stage IDs where the graph distinguishes them.
+
+    @decision DEC-WHO-GUARDIAN-CANONICALIZE-001
+    Title: canonical_actor_stage promotes bare 'guardian' to the right compound stage
+    Status: accepted (Slice 3 correction)
+    Rationale: Live dispatch (hooks/subagent-start.sh, runtime/core/lifecycle.py,
+      runtime/core/completions.py) uses bare ``guardian`` for both provision
+      and land modes — that is the live truth the policy engine must map from.
+      stage_registry is the single stage-routing authority; this helper reads
+      it via ``next_stage()`` rather than inventing a second mapping table.
+      ``dispatch_phase`` (populated by build_context() from completion_records
+      as ``{role}:{verdict}``) encodes the routing verdict that dispatched the
+      current actor. ``next_stage(prev_stage, verdict)`` resolves that verdict
+      to the compound guardian stage.
+
+      Derived mapping (from stage_registry, not duplicated here):
+        - planner:next_work_item       → guardian:provision
+        - reviewer:ready_for_guardian  → guardian:land
+        - any other / absent phase     → guardian:provision (safe default —
+          provision carries CAN_PROVISION_WORKTREE but NOT CAN_LAND_GIT, so a
+          guardian without a clear landing dispatch phase cannot silently land)
+
+    Non-guardian actor_role values pass through unchanged. This is the sole
+    authority for actor-role canonicalization in build_context(); no other
+    module may emit a parallel mapping.
+    """
+    if actor_role != "guardian":
+        return actor_role
+
+    if dispatch_phase and ":" in dispatch_phase:
+        prev_stage, verdict = dispatch_phase.split(":", 1)
+        target = sr.next_stage(prev_stage, verdict)
+        if target in (sr.GUARDIAN_PROVISION, sr.GUARDIAN_LAND):
+            return target
+
+    return sr.GUARDIAN_PROVISION
+
+
 __all__ = [
     # Capabilities
     "CAN_WRITE_SOURCE",
@@ -609,4 +700,8 @@ __all__ = [
     "facts_owned_by",
     "declared_facts",
     "owner_index",
+    # Stage↔lease role bridging (Slice 3)
+    "lease_role_for_stage",
+    "actor_matches_lease_role",
+    "canonical_actor_stage",
 ]

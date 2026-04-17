@@ -45,6 +45,7 @@ def register_all(registry: PolicyRegistry) -> None:
 
     Bash-path priorities (PE-W3 + enforcement-gaps):
       100  bash_tmp_safety           -- deny /tmp writes
+      150  agent_contract_required   -- canonical stage↔subagent Agent launch contract
       200  bash_worktree_cwd         -- deny bare cd into .worktrees/
       250  bash_worktree_nesting     -- deny worktree add from inside .worktrees/ (Gap 5)
       300  bash_git_who              -- lease-based WHO enforcement for git ops (expanded Gap 1)
@@ -137,6 +138,7 @@ def register_all(registry: PolicyRegistry) -> None:
 
     # PE-W3: bash-path policies (guard.sh migration + enforcement-gaps fixes)
     from runtime.core.policies import (
+        agent_contract_required,
         bash_approval_gate,
         bash_destructive_git,
         bash_eval_readiness,
@@ -153,6 +155,7 @@ def register_all(registry: PolicyRegistry) -> None:
     )
 
     bash_tmp_safety.register(registry)
+    agent_contract_required.register(registry)
     bash_worktree_cwd.register(registry)
     bash_worktree_nesting.register(
         registry

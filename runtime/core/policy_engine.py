@@ -467,6 +467,23 @@ def build_context(
         ).fetchone()
         if row:
             lease = dict(row)
+
+        # Stage variant match (DEC-WHO-STAGE-LEASE-MATCH-001): compound stage
+        # IDs like "guardian:land" won't match a lease with role="guardian" via
+        # the literal query above. Bridge through lease_role_for_stage to find
+        # the base role and retry.
+        if row is None:
+            from runtime.core.authority_registry import lease_role_for_stage as _lrfs
+            _base_role = _lrfs(actor_role)
+            if _base_role and _base_role != actor_role:
+                row = conn.execute(
+                    "SELECT * FROM dispatch_leases WHERE status = 'active' "
+                    "AND (worktree_path = ? OR worktree_path = ?) "
+                    "AND role = ? LIMIT 1",
+                    (cwd, project_root, _base_role),
+                ).fetchone()
+                if row:
+                    lease = dict(row)
     elif lease is None and not actor_role:
         # No actor_role (orchestrator path): do NOT inherit a role-specific
         # lease via the worktree_path fallback. Doing so would give the
@@ -607,10 +624,19 @@ def build_context(
     #   accepts workflow_id). We follow the same scoping here: only query when
     #   workflow_id is known, and filter to that workflow_id. This is consistent with
     #   how scope, eval_state, and lease are all resolved with workflow_id guards above.
+    # DEC-WHO-DISPATCH-PHASE-TIEBREAK-001: align the latest-completion ORDER
+    # BY with the completion authority (completions.latest — "created_at DESC,
+    # id DESC"). Without the id tiebreak, two completions in the same workflow
+    # written in the same second (e.g. a reviewer verdict and a planner
+    # verdict flushed in a single tick) can resolve nondeterministically.
+    # Guardian-stage canonicalization depends on this row; a wrong row would
+    # misgrant landing-vs-provision capability.
     dispatch_phase: Optional[str] = None
     if workflow_id:
         row = conn.execute(
-            "SELECT role, verdict FROM completion_records WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT role, verdict FROM completion_records "
+            "WHERE workflow_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             (workflow_id,),
         ).fetchone()
         if row:
@@ -639,10 +665,20 @@ def build_context(
     except Exception:
         pass  # fail-safe: empty dict → policies use built-in defaults
 
-    from runtime.core.authority_registry import capabilities_for as _capabilities_for
+    from runtime.core.authority_registry import (
+        canonical_actor_stage as _canonical_actor_stage,
+        capabilities_for as _capabilities_for,
+    )
+
+    # DEC-WHO-GUARDIAN-CANONICALIZE-001: live dispatch emits bare "guardian"
+    # for both provision and land modes. Promote to the compound stage using
+    # dispatch_phase and stage_registry.next_stage() — the existing routing
+    # authority — so context.actor_role and context.capabilities reflect the
+    # actual guardian mode. Non-guardian roles pass through unchanged.
+    canonical_role = _canonical_actor_stage(resolved_role, dispatch_phase)
 
     return PolicyContext(
-        actor_role=resolved_role,
+        actor_role=canonical_role,
         actor_id=resolved_id,
         workflow_id=workflow_id,
         worktree_path=worktree_path,
@@ -656,7 +692,7 @@ def build_context(
         binding=binding,
         dispatch_phase=dispatch_phase,
         enforcement_config=enforcement_config,
-        capabilities=_capabilities_for(resolved_role),
+        capabilities=_capabilities_for(canonical_role),
         worktree_lease_suppressed_roles=suppressed_roles,
     )
 
