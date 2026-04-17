@@ -47,6 +47,7 @@ def register_all(registry: PolicyRegistry) -> None:
       100  bash_tmp_safety           -- deny /tmp writes
       200  bash_worktree_cwd         -- deny bare cd into .worktrees/
       250  bash_worktree_nesting     -- deny worktree add from inside .worktrees/ (Gap 5)
+      275  bash_write_who            -- capability gate for bash-based source/governance writes
       300  bash_git_who              -- lease-based WHO enforcement for git ops (expanded Gap 1)
       350  bash_worktree_creation    -- deny git worktree add from non-guardian roles (W-GWT-3)
       400  bash_main_sacred          -- deny commits on main/master
@@ -145,6 +146,7 @@ def register_all(registry: PolicyRegistry) -> None:
         bash_main_sacred,
         bash_test_gate,
         bash_tmp_safety,
+        bash_write_who,
         bash_workflow_scope,
         bash_worktree_creation,
         bash_worktree_cwd,
@@ -157,6 +159,7 @@ def register_all(registry: PolicyRegistry) -> None:
     bash_worktree_nesting.register(
         registry
     )  # Gap 5: prevent nested worktree creation (priority 250)
+    bash_write_who.register(registry)
     bash_git_who.register(registry)
     bash_worktree_creation.register(registry)
     bash_main_sacred.register(registry)

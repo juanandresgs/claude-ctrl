@@ -1,7 +1,7 @@
 # ClauDEX Current State
 
-Status: active handoff record — **READY PENDING CHECKPOINT**
-Updated: 2026-04-14 (Phase 5 complete; Phase 6 slices 1-6 complete; Phase 7 slices 1-17 complete; Phase 8 slices 1-12 complete — Slice 10 = Tester Bundle 1 wiring decommission + 0047-fodn2m narrative/pin correction; Slice 11 = Tester Bundle 2 dead-code cleanup + invariant flip (0048-ywlb7d) + correction 0049-lojhjs/0050-hkoa80; Slice 12 = closeout / time-scoping correction; CUTOVER_PLAN planned-area set exhausted; Phase 8 exit criteria met; Final Acceptance Condition 12/12 satisfied against installed truth; accepted bundle staged on `feat/claudex-cutover` awaiting checkpoint commit blocked by outer Claude harness approval gate)
+Status: active handoff record — **CHECKPOINT LANDED / CUTOVER CONTINUATION**
+Updated: 2026-04-14 (Phase 5 complete; Phase 6 slices 1-6 complete; Phase 7 slices 1-17 complete; Phase 8 slices 1-12 complete — Slice 10 = Tester Bundle 1 wiring decommission + 0047-fodn2m narrative/pin correction; Slice 11 = Tester Bundle 2 dead-code cleanup + invariant flip (0048-ywlb7d) + correction 0049-lojhjs/0050-hkoa80; Slice 12 = closeout / time-scoping correction; CUTOVER_PLAN planned-area set exhausted; Phase 8 exit criteria met; Final Acceptance Condition 12/12 satisfied against installed truth; accepted bundle landed on `feat/claudex-cutover` as commit `6b8cc5c` and pushed to `origin/feat/claudex-cutover`; follow-up auto-submit process-control fix landed as `d8fdf96` and pushed to the same upstream; this soak worktree is on `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD `d8fdf96` with no checkpoint debt remaining)
 
 This file is the execution handoff for the current ClauDEX buildout. It is the
 place to answer:
@@ -13,36 +13,47 @@ place to answer:
 
 ## Git Placement
 
-Current repo branch:
+> **Time-scoping note:** the branch / HEAD / upstream / worktree claims in
+> this section and in "Checkpoint Readiness" below are a snapshot **as of
+> the 2026-04-14 checkpoint landing** (plus the follow-up `d8fdf96`
+> process-control fix pushed to the same upstream on the same day). They
+> record the immortalised checkpoint moment, not live runtime truth on
+> subsequent days. Post-checkpoint branch evolution (bridge / supervisor
+> fixes pushed later to the same upstream) and in-flight WIP in this soak
+> worktree are expected and do not reopen the closed cutover; do not read
+> the numbers below as a live `git status` / `git rev-list` output.
 
-- `feat/claudex-cutover` (dedicated custody branch for the accepted ClauDEX
-  cutover bundle; was cut from `fix/enforce-rca-13-git-shell-classifier` at
-  HEAD `c7a3109` and not yet pushed to `origin`)
+Canonical cutover custody branch (remote):
 
-Current HEAD:
+- `origin/feat/claudex-cutover` at HEAD `d8fdf96` — carries the accepted
+  ClauDEX cutover bundle (`6b8cc5c`, "feat(claudex): cutover bundle -
+  Phases 1-8 closeout") plus the follow-up auto-submit process-control
+  fix (`d8fdf96`, "Fix ClauDEX auto-submit process growth").
 
-- `c7a3109` — no checkpoint commit has landed yet on `feat/claudex-cutover`;
-  HEAD is still the pre-checkpoint base.
+Soak worktree branch (this lane):
 
-Current pushed hardFork commit on the originating branch:
+- `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD
+  `d8fdf96`. The upstream checkpoint is landed; this soak lane currently
+  carries a small uncommitted follow-up bundle:
+  `ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`, and
+  `scripts/claudex-codex-launch.sh`. These edits correct state-record
+  drift and stabilize the lane-local Codex supervisor launch; they are
+  follow-up maintenance, not remaining Phase 8 checkpoint debt.
 
-- `c7a3109` on `origin/fix/enforce-rca-13-git-shell-classifier`
+Originating branch:
+
+- `fix/enforce-rca-13-git-shell-classifier` at `c7a3109` — the
+  pre-checkpoint base from which `feat/claudex-cutover` was cut. Kept
+  as historical reference only; no further commits are expected there.
 
 Current ClauDEX reality:
 
-- the ClauDEX cutover bundle is **staged in full** on `feat/claudex-cutover`
-  (263 staged paths) and is awaiting the checkpoint commit
-- post-handoff working-tree reconciliation (2026-04-14 checkpoint-debt
-  correction): `ClauDEX/CURRENT_STATE.md` was restaged cleanly into the
-  bundle (now `A`, 0 residual unstaged modification); this keeps the
-  accepted 263-path bundle coherent with the handoff narrative.
-  `ClauDEX/DUAL_LANE_STABILITY_HANDOFF_2026-04-14.md` remains 1
-  untracked lane/operator handoff intentionally excluded from the
-  cutover checkpoint bundle (Codex has not approved inclusion; it
-  remains outside the bundle)
-- `feat/claudex-cutover` does **not** yet exist on `origin`; the `-u` push
-  will create it
-- the braid-side portable bridge work **was** pushed separately upstream on:
+- the ClauDEX cutover bundle **landed and was pushed** as commit
+  `6b8cc5c` on `feat/claudex-cutover`; the follow-up process-control
+  fix landed and was pushed as `d8fdf96` on the same branch
+- `ClauDEX/DUAL_LANE_STABILITY_HANDOFF_2026-04-14.md` is intentionally
+  excluded from the cutover bundle (lane/operator handoff)
+- the braid-side portable bridge work was pushed separately upstream on:
   - repo: `/Users/turla/Code/braid`
   - branch: `feat/single-claude-mvp`
   - commit: `ccca086`
@@ -50,60 +61,66 @@ Current ClauDEX reality:
 Implication:
 
 - architecture/design handoff is good
-- implementation custody is collected on `feat/claudex-cutover` but the
-  checkpoint is not yet immortalised — the remaining gap is a single
-  `git commit` (and subsequent `git push -u origin feat/claudex-cutover`)
-- the next clean git step is to retry the checkpoint commit when the outer
-  Claude harness approval gate permits it; no branch creation, rebase, or
-  unstage is required
+- implementation custody is immortalised on `origin/feat/claudex-cutover`
+  through HEAD `d8fdf96`; no checkpoint debt remains
+- the next clean action is **not** a checkpoint commit — the next
+  bounded action is either cutover-plan continuation (new architecture
+  slice, explicitly scoped) or narrow maintenance (soak hygiene,
+  documentation drift, focused gate reverification)
 
 ## Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14)
 
-**Status:** **READY PENDING CHECKPOINT.** Phase 8 is closed as accepted
+**Status:** **CHECKPOINT LANDED.** Phase 8 is closed as accepted
 (Slice 12 closeout and time-scoping correction accepted per Codex
 instructions `1776138763332-0051-lxgl2p` and `1776139292226-0052-b15d20`).
 The Final Acceptance Condition at `CUTOVER_PLAN.md:1532` is satisfied
-12/12 against installed truth. The accepted ClauDEX cutover bundle is
-**fully staged** on the dedicated custody branch `feat/claudex-cutover`,
-but no checkpoint commit has landed yet: the outer Claude harness
-permission-approval gate has blocked `git commit`. The runtime
-policy-engine lease gate is already satisfied by an authorised guardian
-lease for workflow `claudex-cutover-checkpoint`.
+12/12 against installed truth. The accepted ClauDEX cutover bundle
+landed on `feat/claudex-cutover` as commit `6b8cc5c`
+("feat(claudex): cutover bundle - Phases 1-8 closeout") and was pushed
+to `origin/feat/claudex-cutover`. A follow-up auto-submit
+process-control fix landed on the same branch as `d8fdf96` ("Fix
+ClauDEX auto-submit process growth") and was also pushed. No checkpoint
+debt remains; the lane is `claudesox-local` tracking
+`origin/feat/claudex-cutover` at HEAD `d8fdf96`.
 
-### Git state at handoff (inspection only — no write performed)
+### Git state at handoff (installed truth)
 
-- Current branch: `feat/claudex-cutover` (no upstream configured yet;
-  push target will be `origin feat/claudex-cutover`).
-- Current HEAD: `c7a3109` (= the pre-checkpoint base; identical to
-  `origin/fix/enforce-rca-13-git-shell-classifier` tip — no checkpoint
-  commit has landed).
-- Working-tree changes (via `git status --short --branch`, live at
-  2026-04-14 checkpoint-debt reconciliation after restage): 264
-  entries — 263 staged (the accepted ClauDEX cutover bundle, now
-  including this reconciled handoff file as a clean `A` rather than
-  `AM`), 0 unstaged, and 1 untracked path
-  `ClauDEX/DUAL_LANE_STABILITY_HANDOFF_2026-04-14.md` (lane/operator
-  handoff, intentionally excluded from the cutover checkpoint bundle
-  unless Codex explicitly approves inclusion later).
-- Excluded-artifact grep on the staged set (`.jsonl`, `.trace`,
-  `.claude/`, `.b2r*`, `tmp/`, `.worktrees/`, `.env`,
+- Current worktree branch: `claudesox-local` tracking
+  `origin/feat/claudex-cutover` at HEAD `d8fdf96` (via
+  `git status --short --branch`).
+- Canonical cutover commits on `origin/feat/claudex-cutover`:
+  `6b8cc5c` (Phases 1-8 bundle) and `d8fdf96` (auto-submit
+  process-control fix on top of the bundle).
+- Pre-checkpoint base: `c7a3109` on
+  `origin/fix/enforce-rca-13-git-shell-classifier` — kept as
+  historical reference only.
+- Working-tree residual: a coherent follow-up maintenance bundle touching
+  `ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`, and
+  `scripts/claudex-codex-launch.sh`. The doc edits align state records
+  with landed checkpoint truth; the launcher edit pins the lane-local
+  Codex supervisor to `gpt-5.3-codex` with `xhigh` reasoning, writes the
+  braid-root hint consumed by the MCP wrapper, and records the current
+  Codex upgrade prompt as dismissed. One untracked path
+  `ClauDEX/DUAL_LANE_STABILITY_HANDOFF_2026-04-14.md` remains excluded
+  from the cutover branch (lane/operator handoff).
+- Excluded-artifact invariant (for the already-landed bundle — `.jsonl`,
+  `.trace`, `.claude/`, `.b2r*`, `tmp/`, `.worktrees/`, `.env`,
   `secret`/`credential`, and any `runtime/` path outside
-  `runtime/core/`, `runtime/cli.py`, `runtime/schemas.py`):
-  **NONE FOUND**. False-positive filename matches such as
-  `runtime/core/prompt_pack_state.py` are not runtime state — they are
-  canonical-authority source under `runtime/core/` and are in-scope for
-  the bundle.
-- Scope classification: this reconciliation is **checkpoint debt /
-  record correction** under the already-closed Phase 8 — not new
-  architecture work. `ClauDEX/CUTOVER_PLAN.md` has no Phase 9; phase
-  work is exhausted, and the only remaining step is the outer-harness
-  approval of `git commit` followed by `git push -u origin
-  feat/claudex-cutover`.
+  `runtime/core/`, `runtime/cli.py`, `runtime/schemas.py`): held at
+  bundle creation time; `runtime/core/prompt_pack_state.py` and peers
+  are canonical authority, not runtime state.
+- Scope classification: Phase 8 work is fully exhausted. There is no
+  Phase 9 in `ClauDEX/CUTOVER_PLAN.md`. The current bounded action is to
+  finish and checkpoint the follow-up maintenance bundle above, then
+  resume either cutover-plan continuation (new architecture slice,
+  explicitly scoped) or steady-state lane maintenance — **not** another
+  Phase 8 checkpoint commit.
 
-Staged-file summary grouped by area (all staged; no split between
-staged / unstaged / untracked remains):
+Historical staged-file summary (from the pre-landing checkpoint slice;
+preserved for traceability — the bundle is now committed as
+`6b8cc5c`):
 
-| Area | Staged paths |
+| Area | Paths in bundle |
 |---|---|
 | `ClauDEX/` | 36 |
 | `runtime/` | 53 |
@@ -116,7 +133,7 @@ staged / unstaged / untracked remains):
 | `plugins/` | 1 |
 | root / other | 6 |
 
-(Sum: 263, matching `git status --short | wc -l`.)
+(Sum: 263 at landing.)
 
 Notable deletions (all intentional per Slices 2/4/5/6/10):
 `agents/tester.md`, `docs/AGENT_HANDOFFS.md`,
@@ -188,63 +205,31 @@ many untracked Phase 2-7 modules).
   `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT pytest ...` for faithful
   counts.
 
-### Recommended next supervisor action (checkpoint stewardship)
+### Recommended next supervisor action (cutover-plan continuation or maintenance)
 
-The next bounded action is to checkpoint the accepted ClauDEX cutover
-bundle, not to open fresh implementation work. Treat this as a
-guardian-equivalent slice.
+Checkpoint stewardship is **complete**: the cutover bundle landed as
+`6b8cc5c` and the process-control fix landed as `d8fdf96`, both on
+`origin/feat/claudex-cutover`. Do not re-dispatch a checkpoint slice
+against this lane.
 
-Default shape:
+The next bounded action is one of:
 
-```
-git checkout -b feat/claudex-cutover
-git add <scoped paths>
-git commit -m "feat(claudex): cutover bundle — Phases 1-8 closeout"
-git push -u origin feat/claudex-cutover
-```
+- **Cutover-plan continuation.** Re-read `ClauDEX/CUTOVER_PLAN.md`
+  (the runtime-owned agent-session supervision fabric is the next
+  architecture track beyond the bridge stack) and open a fresh,
+  explicitly scoped slice only when ready. The canonical chain —
+  planner → guardian (provision) → implementer → reviewer → guardian
+  (merge) — still applies.
+- **Narrow maintenance.** Documentation drift fixes, soak-test hygiene,
+  focused gate reverification (e.g. the auto-submit / watchdog pair in
+  a clean env), or other bounded items that do not open architecture
+  work. State-authority documents (`ClauDEX/CURRENT_STATE.md`,
+  `ClauDEX/SUPERVISOR_HANDOFF.md`) must stay aligned with installed
+  truth as subsequent commits land.
 
-Suggested include scope for the initial checkpoint:
-
-- `ClauDEX/`
-- `runtime/`
-- `tests/`
-- `hooks/`
-- `docs/`
-- `agents/`
-- `scripts/`
-- `.codex/` (when writable / present in the accepted bundle)
-- `settings.json`
-
-Suggested exclude scope:
-
-- `.b2r*` lane state
-- `.claude/claudex/**` runtime artifacts
-- transcript / trace captures such as `*.jsonl`
-- temporary worktree scratch or other non-product artifacts
-- unrelated plugin or local-environment churn outside the accepted cutover
-  bundle
-
-Escalate instead of auto-checkpointing only if one of these is true:
-
-- the push would require force or history rewrite
-- no appropriate private upstream exists yet
-- unrelated working-tree changes cannot be separated cleanly
-- the intended branch / repo placement is ambiguous
-- sensitive artifacts may be staged accidentally
-
-### Explicitly not performed in this slice
-
-- No `git checkout -b` / `git branch`.
-- No `git add` / `git commit` / `git push`.
-- No `git stash` / `git reset` / `git restore`.
-- No edits to `runtime/`, `hooks/`, `tests/`, `settings.json`,
-  `agents/`, or `MASTER_PLAN.md`.
-- No invocation of any `claudex-*` or launch script.
-
-Phase 8 is closed. The bridge supervisor loop should checkpoint this
-state before dispatching a new cutover slice. If the checkpoint is
-straightforward, it should proceed; if the git decision is genuinely
-ambiguous, it should ask one concise question with the safest default.
+Escalate to the user only under the standard checkpoint-stewardship
+conditions (force/history rewrite, ambiguous push target, mixed
+working tree, sensitive artifacts, or genuine architectural ambiguity).
 
 ## Materially Implemented
 
@@ -790,11 +775,24 @@ All four CUTOVER_PLAN exit criteria verified with mechanical evidence:
 3. **Reviewer is the sole technical readiness authority before guardian** — only `determine_next_role("reviewer", "ready_for_guardian")` returns `"guardian"`. No other (role, verdict) pair reaches guardian through routing. Verified by exhaustive check across planner/implementer/tester.
 4. **The implementer/reviewer loop is canonical and test-backed** — `implementer→reviewer` and `reviewer(needs_changes)→implementer` both derive from `stage_registry.next_stage()`. Behavioral parity tests + AST structural invariant + stage_registry tests pin the loop. 265 targeted tests, 0 failures.
 
-Next cutover phase: **Phase 6 — Goal Continuation Activation.**
+Next cutover phase at Phase 5 completion (2026-04-13): **Phase 6 — Goal
+Continuation Activation.** (Historical pointer only — Phase 6 subsequently
+landed on 2026-04-13 and the full cutover closed at Phase 8 on 2026-04-14.
+See the Checkpoint Readiness section above for live post-checkpoint
+status.)
 
-## Current Restart Slice
+## Phase 6 — Goal Continuation Activation (COMPLETE 2026-04-13)
 
-**Phase 6 — Goal Continuation Activation: IN PROGRESS.**
+> **Historical log.** This section was previously titled "Current Restart
+> Slice" while Phase 6 was the active slice. Phase 6 completed on
+> 2026-04-13 (all 6 slices landed); Phases 7 and 8 subsequently landed and
+> the full cutover checkpoint was immortalised as `6b8cc5c` on
+> 2026-04-14. The section is retained as a historical execution log of
+> the Phase 6 slices for reviewer context; it does **not** describe
+> active or in-progress work today. For live post-checkpoint status, see
+> the "Checkpoint Readiness" and "Phase 8 Closeout Status" sections.
+
+**Phase 6 — Goal Continuation Activation: COMPLETE (2026-04-13, 6 slices).**
 
 **Slice 1 complete: Planner completion contract seed.**
 
