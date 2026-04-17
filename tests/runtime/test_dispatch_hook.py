@@ -448,3 +448,43 @@ def test_cli_attempt_expire_stale_ignores_future_timeout(db_path):
     out = _run_cli(db_path, "dispatch", "attempt-expire-stale")
     assert out.get("status") == "ok"
     assert out["expired"] == 0
+
+
+def test_cli_attempt_expire_stale_fallback_expires_legacy_pending(db_path):
+    """Fallback age option expires pending rows that have timeout_at=NULL."""
+    import sqlite3 as _sqlite3
+    from runtime.schemas import ensure_schema as _ensure_schema
+    from runtime.core.dispatch_hook import record_agent_dispatch as _rad
+
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    _ensure_schema(conn)
+
+    row = _rad(conn, "sess-exp-03", "general-purpose", "legacy pending task")
+    attempt_id = row["attempt_id"]
+    old = int(time.time()) - 5000
+    conn.execute(
+        "UPDATE dispatch_attempts SET created_at = ?, updated_at = ? WHERE attempt_id = ?",
+        (old, old, attempt_id),
+    )
+    conn.commit()
+    conn.close()
+
+    out = _run_cli(
+        db_path,
+        "dispatch",
+        "attempt-expire-stale",
+        "--fallback-pending-max-age-seconds",
+        "3600",
+    )
+    assert out.get("status") == "ok"
+    assert out["expired"] == 1
+
+    conn2 = _sqlite3.connect(db_path)
+    conn2.row_factory = _sqlite3.Row
+    state = conn2.execute(
+        "SELECT status FROM dispatch_attempts WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+    conn2.close()
+    assert state["status"] == "timed_out"

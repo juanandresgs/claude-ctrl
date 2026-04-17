@@ -26,6 +26,10 @@ import sqlite3
 import time
 from typing import Optional
 
+from runtime.core.authority_registry import (
+    canonical_stage_id,
+    dispatch_subagent_type_for_stage,
+)
 import runtime.core.decision_work_registry as _dwr
 
 __all__ = [
@@ -74,6 +78,12 @@ def build_agent_dispatch_prompt(
         minimal context banner.  The orchestrator concatenates its task
         instructions after this prefix.
 
+    ``required_subagent_type``
+        The canonical Agent-tool ``subagent_type`` the orchestrator must use
+        for this stage so Claude loads the repo-owned stage prompt
+        (``agents/planner.md``, ``agents/implementer.md``, etc.) instead of a
+        generic seat.
+
     Raises ``ValueError`` when a required state lookup fails (e.g. no active goal
     found, no in_progress work item found for the goal).
     """
@@ -81,6 +91,12 @@ def build_agent_dispatch_prompt(
         raise ValueError("workflow_id must be a non-empty string")
     if not stage_id or not stage_id.strip():
         raise ValueError("stage_id must be a non-empty string")
+    resolved_stage_id = canonical_stage_id(stage_id)
+    if not resolved_stage_id:
+        raise ValueError(f"unknown active stage {stage_id!r}")
+    required_subagent_type = dispatch_subagent_type_for_stage(resolved_stage_id)
+    if not required_subagent_type:
+        raise ValueError(f"no canonical subagent type for stage {resolved_stage_id!r}")
 
     # Resolve goal_id from runtime state when not supplied.
     if not goal_id:
@@ -107,7 +123,7 @@ def build_agent_dispatch_prompt(
 
     contract = {
         "workflow_id": workflow_id,
-        "stage_id": stage_id,
+        "stage_id": resolved_stage_id,
         "goal_id": goal_id,
         "work_item_id": work_item_id,
         "decision_scope": decision_scope,
@@ -123,11 +139,13 @@ def build_agent_dispatch_prompt(
     prompt_prefix = (
         f"{contract_block_line}\n"
         f"\n"
-        f"[ClauDEX dispatch: {workflow_id} / {stage_id} / {goal_id}]\n"
+        f"[ClauDEX dispatch: {workflow_id} / {resolved_stage_id} / {goal_id} | "
+        f"subagent={required_subagent_type}]\n"
     )
 
     return {
         "contract": contract,
         "contract_block_line": contract_block_line,
         "prompt_prefix": prompt_prefix,
+        "required_subagent_type": required_subagent_type,
     }

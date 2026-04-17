@@ -15,7 +15,9 @@ Pins:
 12. ``expire_stale()`` marks pending/delivered attempts past timeout_at.
 13. ``expire_stale()`` does not touch already-terminal or already-timed-out rows.
 14. ``expire_stale()`` ignores attempts with no timeout_at.
-15. Multiple attempts for one seat are independent.
+15. ``expire_stale(fallback_pending_max_age_seconds=...)`` cleans legacy
+    pending rows with ``timeout_at`` unset.
+16. Multiple attempts for one seat are independent.
 
 These tests import only ``runtime.core.dispatch_attempts`` and
 ``runtime.schemas``.  No adapter, hook, or bridge code.
@@ -474,6 +476,42 @@ def test_expire_stale_ignores_no_timeout(conn):
     count = da.expire_stale(conn)
     assert count == 0
     assert da.get(conn, row["attempt_id"])["status"] == "pending"
+
+
+def test_expire_stale_fallback_expires_old_pending_without_timeout(conn):
+    row = _issue(conn)  # timeout_at NULL
+    old = int(time.time()) - 5000
+    conn.execute(
+        "UPDATE dispatch_attempts SET created_at = ?, updated_at = ? WHERE attempt_id = ?",
+        (old, old, row["attempt_id"]),
+    )
+    conn.commit()
+
+    count = da.expire_stale(conn, fallback_pending_max_age_seconds=3600)
+    assert count == 1
+    assert da.get(conn, row["attempt_id"])["status"] == "timed_out"
+
+
+def test_expire_stale_fallback_keeps_recent_pending_without_timeout(conn):
+    row = _issue(conn)  # timeout_at NULL
+    count = da.expire_stale(conn, fallback_pending_max_age_seconds=3600)
+    assert count == 0
+    assert da.get(conn, row["attempt_id"])["status"] == "pending"
+
+
+def test_expire_stale_fallback_does_not_touch_delivered_without_timeout(conn):
+    row = _issue(conn)  # timeout_at NULL
+    da.claim(conn, row["attempt_id"])
+    old = int(time.time()) - 5000
+    conn.execute(
+        "UPDATE dispatch_attempts SET created_at = ?, updated_at = ? WHERE attempt_id = ?",
+        (old, old, row["attempt_id"]),
+    )
+    conn.commit()
+
+    count = da.expire_stale(conn, fallback_pending_max_age_seconds=3600)
+    assert count == 0
+    assert da.get(conn, row["attempt_id"])["status"] == "delivered"
 
 
 # ---------------------------------------------------------------------------

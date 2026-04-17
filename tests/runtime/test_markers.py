@@ -196,6 +196,44 @@ def test_get_active_without_params_returns_newest_active(conn):
     assert row["agent_id"] == "agent-2"
 
 
+def test_set_active_replaces_previous_active_same_scope_and_role(conn):
+    """set_active keeps one active marker per (role, project_root, workflow_id)."""
+    markers.set_active(
+        conn, "agent-old", "guardian", project_root="/repo/project-a", workflow_id="wf-1"
+    )
+    markers.set_active(
+        conn, "agent-new", "guardian", project_root="/repo/project-a", workflow_id="wf-1"
+    )
+
+    active = markers.get_active(conn, project_root="/repo/project-a", workflow_id="wf-1")
+    assert active is not None
+    assert active["agent_id"] == "agent-new"
+    assert active["status"] == "active"
+
+    replaced = conn.execute(
+        "SELECT is_active, status, stopped_at FROM agent_markers WHERE agent_id = 'agent-old'"
+    ).fetchone()
+    assert replaced is not None
+    assert replaced["is_active"] == 0
+    assert replaced["status"] == "replaced"
+    assert replaced["stopped_at"] is not None
+
+
+def test_set_active_does_not_replace_different_workflow(conn):
+    """Replacement scope is exact; same role across workflows remains independent."""
+    markers.set_active(
+        conn, "agent-wf-a", "guardian", project_root="/repo/project-a", workflow_id="wf-a"
+    )
+    markers.set_active(
+        conn, "agent-wf-b", "guardian", project_root="/repo/project-a", workflow_id="wf-b"
+    )
+
+    wf_a = markers.get_active(conn, project_root="/repo/project-a", workflow_id="wf-a")
+    wf_b = markers.get_active(conn, project_root="/repo/project-a", workflow_id="wf-b")
+    assert wf_a is not None and wf_a["agent_id"] == "agent-wf-a"
+    assert wf_b is not None and wf_b["agent_id"] == "agent-wf-b"
+
+
 def test_tester_wf_a_vs_implementer_wf_b_cross_project_isolation(conn):
     """Compound interaction: two workflows in same project are independently queryable.
 
