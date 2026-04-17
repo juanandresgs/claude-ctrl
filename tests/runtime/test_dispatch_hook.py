@@ -488,3 +488,150 @@ def test_cli_attempt_expire_stale_fallback_expires_legacy_pending(db_path):
     ).fetchone()
     conn2.close()
     assert state["status"] == "timed_out"
+
+
+# ---------------------------------------------------------------------------
+# release_session_seat — seat lifecycle teardown
+# ---------------------------------------------------------------------------
+
+
+def test_release_session_seat_transitions_active_to_released(conn):
+    from runtime.core.dispatch_hook import release_session_seat
+
+    seat_id = ensure_session_and_seat(conn, "sess-rel-01", "implementer")
+    result = release_session_seat(conn, "sess-rel-01", "implementer")
+
+    assert result["seat_id"] == seat_id
+    assert result["found"] is True
+    assert result["released"] is True
+    assert result["abandoned_count"] == 0
+
+    row = conn.execute(
+        "SELECT status FROM seats WHERE seat_id = ?", (seat_id,)
+    ).fetchone()
+    assert row["status"] == "released"
+
+
+def test_release_session_seat_is_idempotent(conn):
+    from runtime.core.dispatch_hook import release_session_seat
+
+    ensure_session_and_seat(conn, "sess-rel-02", "implementer")
+    first = release_session_seat(conn, "sess-rel-02", "implementer")
+    assert first["released"] is True
+
+    second = release_session_seat(conn, "sess-rel-02", "implementer")
+    assert second["found"] is True
+    assert second["released"] is False
+    assert second["abandoned_count"] == 0
+
+
+def test_release_session_seat_missing_seat_is_no_op(conn):
+    from runtime.core.dispatch_hook import release_session_seat
+
+    result = release_session_seat(conn, "sess-ghost", "implementer")
+    assert result == {
+        "seat_id": "sess-ghost:implementer",
+        "found": False,
+        "released": False,
+        "abandoned_count": 0,
+    }
+    row = conn.execute(
+        "SELECT 1 FROM seats WHERE seat_id = ?", ("sess-ghost:implementer",)
+    ).fetchone()
+    assert row is None
+
+
+def test_release_session_seat_abandons_active_supervision_threads(conn):
+    from runtime.core import supervision_threads as sup
+    from runtime.core.dispatch_hook import release_session_seat
+
+    sup_id = ensure_session_and_seat(conn, "sess-rel-03", "reviewer")
+    wrk_id = ensure_session_and_seat(conn, "sess-rel-03", "implementer")
+    conn.execute(
+        "UPDATE seats SET role = 'supervisor' WHERE seat_id = ?", (sup_id,)
+    )
+    conn.commit()
+
+    t_a = sup.attach(conn, sup_id, wrk_id, "analysis")
+    t_b = sup.attach(conn, sup_id, wrk_id, "review")
+    t_c = sup.attach(conn, sup_id, wrk_id, "observer")
+    sup.detach(conn, t_c["thread_id"])  # completed — must survive
+
+    result = release_session_seat(conn, "sess-rel-03", "implementer")
+    assert result["seat_id"] == wrk_id
+    assert result["released"] is True
+    assert result["abandoned_count"] == 2
+
+    assert sup.get(conn, t_a["thread_id"])["status"] == "abandoned"
+    assert sup.get(conn, t_b["thread_id"])["status"] == "abandoned"
+    assert sup.get(conn, t_c["thread_id"])["status"] == "completed"
+
+    again = release_session_seat(conn, "sess-rel-03", "implementer")
+    assert again["released"] is False
+    assert again["abandoned_count"] == 0
+
+
+def test_release_session_seat_does_not_touch_other_sessions(conn):
+    from runtime.core import supervision_threads as sup
+    from runtime.core.dispatch_hook import release_session_seat
+
+    a_sup = ensure_session_and_seat(conn, "sess-rel-04a", "reviewer")
+    a_wrk = ensure_session_and_seat(conn, "sess-rel-04a", "implementer")
+    b_sup = ensure_session_and_seat(conn, "sess-rel-04b", "reviewer")
+    b_wrk = ensure_session_and_seat(conn, "sess-rel-04b", "implementer")
+    conn.execute(
+        "UPDATE seats SET role='supervisor' WHERE seat_id IN (?, ?)", (a_sup, b_sup)
+    )
+    conn.commit()
+
+    t_a = sup.attach(conn, a_sup, a_wrk, "analysis")
+    t_b = sup.attach(conn, b_sup, b_wrk, "analysis")
+
+    release_session_seat(conn, "sess-rel-04a", "implementer")
+
+    assert sup.get(conn, t_a["thread_id"])["status"] == "abandoned"
+    assert sup.get(conn, t_b["thread_id"])["status"] == "active"
+    assert conn.execute(
+        "SELECT status FROM seats WHERE seat_id = ?", (b_wrk,)
+    ).fetchone()["status"] == "active"
+
+
+def test_cli_seat_release_roundtrip(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    ensure_session_and_seat(conn, "sess-cli-rel", "implementer")
+    conn.commit()
+    conn.close()
+
+    out = _run_cli(
+        db_path, "dispatch", "seat-release",
+        "--session-id", "sess-cli-rel",
+        "--agent-type", "implementer",
+    )
+    assert out["status"] == "ok"
+    assert out["seat_id"] == "sess-cli-rel:implementer"
+    assert out["found"] is True
+    assert out["released"] is True
+    assert out["abandoned_count"] == 0
+
+    again = _run_cli(
+        db_path, "dispatch", "seat-release",
+        "--session-id", "sess-cli-rel",
+        "--agent-type", "implementer",
+    )
+    assert again["status"] == "ok"
+    assert again["released"] is False
+    assert again["abandoned_count"] == 0
+
+
+def test_cli_seat_release_unknown_seat_returns_not_found(db_path):
+    out = _run_cli(
+        db_path, "dispatch", "seat-release",
+        "--session-id", "sess-ghost",
+        "--agent-type", "implementer",
+    )
+    assert out["status"] == "ok"
+    assert out["found"] is False
+    assert out["released"] is False
+    assert out["abandoned_count"] == 0

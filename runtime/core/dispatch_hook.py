@@ -44,6 +44,7 @@ __all__ = [
     "ensure_session_and_seat",
     "record_agent_dispatch",
     "record_subagent_delivery",
+    "release_session_seat",
 ]
 
 _SEAT_ID_SEP = ":"
@@ -198,3 +199,89 @@ def record_subagent_delivery(
     # list_for_seat returns oldest-first (created_at ASC); take last = newest.
     attempt_id = pending[-1]["attempt_id"]
     return ADAPTER.on_delivery_claimed(conn, attempt_id)
+
+
+def release_session_seat(
+    conn: sqlite3.Connection,
+    session_id: str,
+    agent_type: str,
+) -> dict:
+    """Release a seat and abandon every supervision_thread touching it.
+
+    Authoritative runtime path for "this seat is going away".  Used at
+    seat-lifecycle teardown to:
+
+    1. Transition the matching ``seats`` row to ``status='released'``.
+    2. Close every ``active`` ``supervision_threads`` row where this seat
+       is supervisor or worker (via
+       :func:`runtime.core.supervision_threads.abandon_for_seat`).
+
+    Both operations are idempotent — repeat calls return ``released=False``
+    once the seat has already been released, and the abandon sweep
+    returns 0 on a second call because only ``active`` rows are
+    transitioned.  If no seat exists for ``(session_id, agent_type)``,
+    the function is a no-op and ``found=False`` is returned; this
+    matches the best-effort posture the other hook helpers use.
+
+    Parameters
+    ----------
+    conn:
+        Open SQLite connection.
+    session_id:
+        Orchestrator session_id.
+    agent_type:
+        Harness agent_type (e.g. ``implementer``, ``reviewer``).  The
+        same convention as ``ensure_session_and_seat``.
+
+    Returns
+    -------
+    dict
+        ``{"seat_id": str, "found": bool, "released": bool,
+           "abandoned_count": int}``.
+
+        * ``found`` — whether a seat row exists for this pair.
+        * ``released`` — whether this call performed the active→released
+          transition (``False`` if already released or not found).
+        * ``abandoned_count`` — number of supervision_threads rows this
+          call transitioned from active to abandoned (0 on repeat or if
+          the seat has no threads).
+    """
+    # Late import: supervision_threads imports only runtime.schemas, so
+    # importing it here avoids a circular import at module load time and
+    # keeps dispatch_hook's top-level dependency graph unchanged.
+    from runtime.core import supervision_threads as _sup
+
+    seat_id = _seat_id(session_id, agent_type)
+    row = conn.execute(
+        "SELECT status FROM seats WHERE seat_id = ?", (seat_id,)
+    ).fetchone()
+
+    if row is None:
+        return {
+            "seat_id": seat_id,
+            "found": False,
+            "released": False,
+            "abandoned_count": 0,
+        }
+
+    released = False
+    if row["status"] == "active":
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                """
+                UPDATE seats
+                SET    status = 'released', updated_at = ?
+                WHERE  seat_id = ? AND status = 'active'
+                """,
+                (now, seat_id),
+            )
+        released = True
+
+    abandoned_count = _sup.abandon_for_seat(conn, seat_id)
+    return {
+        "seat_id": seat_id,
+        "found": True,
+        "released": released,
+        "abandoned_count": abandoned_count,
+    }

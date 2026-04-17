@@ -1660,6 +1660,18 @@ def _handle_dispatch(args) -> int:
                 return _ok({"found": False, "attempt": None})
             return _ok({"found": True, "attempt": result})
 
+        elif args.action == "seat-release":
+            # Runtime-owned seat teardown (DEC-SUPERVISION-THREADS-DOMAIN-001
+            # continuation).  Releases the seat and abandons every active
+            # supervision_thread touching it in one transaction per action.
+            from runtime.core.dispatch_hook import release_session_seat as _release
+
+            try:
+                result = _release(conn, args.session_id, args.agent_type)
+            except Exception as exc:
+                return _err(f"dispatch seat-release: {exc}")
+            return _ok(result)
+
         elif args.action == "attempt-expire-stale":
             # Sweep pending/delivered attempts whose timeout_at has elapsed.
             # Called by scripts/claudex-watchdog.sh on every tick so timed-out
@@ -3838,6 +3850,25 @@ def build_parser() -> argparse.ArgumentParser:
             "Optional legacy cleanup threshold: expire pending rows with "
             "timeout_at NULL older than this many seconds."
         ),
+    )
+
+    # seat-release: release a seat and abandon its active supervision_threads
+    # (DEC-SUPERVISION-THREADS-DOMAIN-001 continuation).  Thin adapter over
+    # runtime.core.dispatch_hook.release_session_seat().
+    dsr = dp_sub.add_parser(
+        "seat-release",
+        help=(
+            "Release a session seat and abandon every active supervision_thread "
+            "where it is supervisor or worker."
+        ),
+    )
+    dsr.add_argument(
+        "--session-id", dest="session_id", required=True,
+        help="Orchestrator session_id for the seat being released",
+    )
+    dsr.add_argument(
+        "--agent-type", dest="agent_type", required=True,
+        help="Harness agent_type the seat was created for",
     )
 
     # statusline
