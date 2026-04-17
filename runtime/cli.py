@@ -1697,6 +1697,61 @@ def _handle_dispatch(args) -> int:
     return _err(f"unknown dispatch action: {args.action}")
 
 
+def _handle_seat(args) -> int:
+    """Handler for `cc-policy seat` subcommands.
+
+    Thin adapter over ``runtime.core.seats`` (DEC-SEAT-DOMAIN-001).
+    No seat state is read or written outside of that domain module.
+    Seat creation is intentionally absent — seats are bootstrapped
+    exclusively through ``dispatch_hook.ensure_session_and_seat``.
+    """
+    from runtime.core import seats as seat_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            try:
+                row = seat_mod.get(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"seat get: {exc}")
+            return _ok({"seat": row})
+
+        if args.action == "release":
+            try:
+                result = seat_mod.release(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"seat release: {exc}")
+            return _ok(
+                {"seat": result["row"], "transitioned": result["transitioned"]}
+            )
+
+        if args.action == "mark-dead":
+            try:
+                result = seat_mod.mark_dead(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"seat mark-dead: {exc}")
+            return _ok(
+                {"seat": result["row"], "transitioned": result["transitioned"]}
+            )
+
+        if args.action == "list-for-session":
+            try:
+                rows = seat_mod.list_for_session(
+                    conn, args.session_id, status=args.status
+                )
+            except ValueError as exc:
+                return _err(f"seat list-for-session: {exc}")
+            return _ok({"seats": rows})
+
+        if args.action == "list-active":
+            rows = seat_mod.list_active(conn)
+            return _ok({"seats": rows})
+
+    finally:
+        conn.close()
+    return _err(f"unknown seat action: {args.action}")
+
+
 def _handle_supervision(args) -> int:
     """Handler for `cc-policy supervision` subcommands.
 
@@ -4377,6 +4432,40 @@ def build_parser() -> argparse.ArgumentParser:
     obs_sub.add_parser("status", help="Return high-level observatory status")
     obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
 
+    # seat — seats domain authority (DEC-SEAT-DOMAIN-001).  Read/transition
+    # surface over the runtime-owned seat state machine.  Seat creation is
+    # NOT exposed here: seats are bootstrapped exclusively through
+    # dispatch_hook.ensure_session_and_seat (PreToolUse:Agent path).
+    seat_p = subparsers.add_parser(
+        "seat",
+        help="Seat lifecycle + query authority",
+    )
+    seat_sub = seat_p.add_subparsers(dest="action", required=True)
+
+    seat_get = seat_sub.add_parser("get", help="Fetch a seat row by id")
+    seat_get.add_argument("--seat-id", dest="seat_id", required=True)
+
+    seat_rel = seat_sub.add_parser(
+        "release", help="Transition an active seat to released"
+    )
+    seat_rel.add_argument("--seat-id", dest="seat_id", required=True)
+
+    seat_dead = seat_sub.add_parser(
+        "mark-dead", help="Transition a seat (from active or released) to dead"
+    )
+    seat_dead.add_argument("--seat-id", dest="seat_id", required=True)
+
+    seat_lfs = seat_sub.add_parser(
+        "list-for-session",
+        help="List seats for a session (optionally filtered by status)",
+    )
+    seat_lfs.add_argument("--session-id", dest="session_id", required=True)
+    seat_lfs.add_argument("--status", dest="status", default=None)
+
+    seat_sub.add_parser(
+        "list-active", help="List every seat whose status is active"
+    )
+
     # supervision — supervision_threads domain authority
     # (DEC-SUPERVISION-THREADS-DOMAIN-001). Runtime-owned CRUD + state queries
     # for recursive-supervision relationships between seats.
@@ -4544,6 +4633,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
+    if args.domain == "seat":
+        return _handle_seat(args)
     if args.domain == "supervision":
         return _handle_supervision(args)
     if args.domain == "statusline":

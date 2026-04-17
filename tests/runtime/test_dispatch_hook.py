@@ -908,6 +908,46 @@ def test_check_hook_execution_is_idempotent(tmp_path, hook_name, agent_type):
     )
 
 
+def test_dispatch_hook_delegates_seat_writes_to_seats_domain():
+    """Both ``ensure_session_and_seat`` and ``release_session_seat``
+    must write seats exclusively via ``runtime.core.seats`` — inline
+    SQL against the ``seats`` table inside ``dispatch_hook.py`` would
+    silently re-introduce the authority-split this slice removed.
+    """
+    hook_src_path = os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__), "..", "..", "runtime", "core",
+            "dispatch_hook.py",
+        )
+    )
+    with open(hook_src_path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    # No direct seats table writes allowed in dispatch_hook.py.
+    for forbidden in (
+        "INSERT OR IGNORE INTO seats",
+        "INSERT INTO seats",
+        "UPDATE seats",
+        "DELETE FROM seats",
+    ):
+        assert forbidden not in src, (
+            f"dispatch_hook.py must not issue '{forbidden}' directly — "
+            "seat writes must flow through runtime.core.seats"
+        )
+
+    # It must delegate to the seats domain module — the create helper
+    # for bootstrap and the release transition for teardown.
+    assert "seats as _seats" in src or "from runtime.core import seats" in src, (
+        "dispatch_hook.py must import the seats domain module"
+    )
+    assert "_seats.create" in src, (
+        "ensure_session_and_seat must delegate to seats.create"
+    )
+    assert "_seats.release" in src, (
+        "release_session_seat must delegate to seats.release"
+    )
+
+
 def test_seat_release_wiring_is_uniform_across_hooks():
     """Every hook must carry byte-identical seat-release invocation lines."""
     canonical_lines = (

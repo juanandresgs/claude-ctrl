@@ -82,6 +82,11 @@ def ensure_session_and_seat(
     ``seat_id`` derivation (``"{session_id}:{agent_type}"``) so the lookup
     correlation is never lost; it is just not written into ``role``.
     """
+    # Late import: seats.py imports only runtime.schemas, so importing it
+    # here keeps dispatch_hook's module-level dependency graph unchanged
+    # and avoids any circular-import surprise during test collection.
+    from runtime.core import seats as _seats
+
     now = int(time.time())
     seat_id = _seat_id(session_id, agent_type)
 
@@ -94,14 +99,12 @@ def ensure_session_and_seat(
             """,
             (session_id, now, now),
         )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO seats
-                (seat_id, session_id, role, status, created_at, updated_at)
-            VALUES (?, ?, 'worker', 'active', ?, ?)
-            """,
-            (seat_id, session_id, now, now),
-        )
+    # Delegate the seats write inward to the seat domain module
+    # (DEC-SEAT-DOMAIN-001).  seats.create() is idempotent — if a row
+    # already exists for this seat_id it is returned unchanged, matching
+    # the prior INSERT OR IGNORE semantics exactly.  External return
+    # shape is unchanged: callers still receive the seat_id string.
+    _seats.create(conn, seat_id, session_id, "worker")
 
     return seat_id
 
@@ -246,17 +249,25 @@ def release_session_seat(
           call transitioned from active to abandoned (0 on repeat or if
           the seat has no threads).
     """
-    # Late import: supervision_threads imports only runtime.schemas, so
-    # importing it here avoids a circular import at module load time and
-    # keeps dispatch_hook's top-level dependency graph unchanged.
+    # Late imports: both domain modules import only runtime.schemas, so
+    # importing them here keeps dispatch_hook's top-level dependency
+    # graph unchanged and avoids any circular-import surprise.
+    from runtime.core import seats as _seats
     from runtime.core import supervision_threads as _sup
 
     seat_id = _seat_id(session_id, agent_type)
-    row = conn.execute(
-        "SELECT status FROM seats WHERE seat_id = ?", (seat_id,)
-    ).fetchone()
 
-    if row is None:
+    # Delegate existence-check + release transition inward to the seat
+    # domain module (DEC-SEAT-DOMAIN-001).  The hook-adapter wrapper
+    # keeps the tolerant best-effort semantics it had before this
+    # refactor: missing seat is a no-op (found=False), an already-
+    # released seat is a no-op (released=False), and a dead seat is a
+    # no-op rather than an exception — seats.release() would refuse the
+    # dead→released transition, so we only call it from an 'active'
+    # seat to preserve external behavior exactly.
+    try:
+        row = _seats.get(conn, seat_id)
+    except ValueError:
         return {
             "seat_id": seat_id,
             "found": False,
@@ -266,17 +277,8 @@ def release_session_seat(
 
     released = False
     if row["status"] == "active":
-        now = int(time.time())
-        with conn:
-            conn.execute(
-                """
-                UPDATE seats
-                SET    status = 'released', updated_at = ?
-                WHERE  seat_id = ? AND status = 'active'
-                """,
-                (now, seat_id),
-            )
-        released = True
+        result = _seats.release(conn, seat_id)
+        released = bool(result["transitioned"])
 
     abandoned_count = _sup.abandon_for_seat(conn, seat_id)
     return {

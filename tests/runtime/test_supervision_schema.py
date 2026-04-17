@@ -483,6 +483,33 @@ def test_dispatch_attempts_indexes_exist(conn):
 # ---------------------------------------------------------------------------
 
 
+def test_seats_domain_module_imports_and_pins_schema_vocabulary():
+    """@decision DEC-SEAT-DOMAIN-001 — seats.py public surface pin.
+
+    Symmetric to the supervision_threads pin below.  Ensures the seat
+    domain module exposes the declared public API and that its state
+    machine never invents a status outside SEAT_STATUSES.
+    """
+    from runtime.core import seats as seat_mod
+
+    for name in (
+        "create",
+        "get",
+        "release",
+        "mark_dead",
+        "list_for_session",
+        "list_active",
+    ):
+        assert hasattr(seat_mod, name), (
+            f"seats domain module missing public API: {name}"
+        )
+
+    for current, allowed in seat_mod._VALID_TRANSITIONS.items():
+        assert current in SEAT_STATUSES
+        for nxt in allowed:
+            assert nxt in SEAT_STATUSES
+
+
 def test_supervision_threads_domain_module_imports_and_pins_schema_vocabulary(conn):
     from runtime.core import supervision_threads as sup_mod
 
