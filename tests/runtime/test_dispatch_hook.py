@@ -698,6 +698,216 @@ def test_check_hook_wires_seat_release(hook_name):
     )
 
 
+# ---------------------------------------------------------------------------
+# SubagentStop adapter execution pin — running each check hook against a
+# hermetic temp DB must actually release the seat and abandon supervision
+# threads touching it.  This is the behavioral complement to the source-
+# level pins above: those prevent drift in the written code, these prove
+# the code does what the plan says when executed.
+# ---------------------------------------------------------------------------
+
+
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+
+
+def _run_check_hook(
+    hook_name: str,
+    db_path: str,
+    session_id: str,
+    agent_type: str,
+) -> int:
+    """Invoke a check-*.sh hook with a synthetic SubagentStop payload.
+
+    The hook is invoked with CLAUDE_POLICY_DB pointing at the test DB so
+    every _local_cc_policy call inside the hook writes to our hermetic
+    DB.  Hook exit status is returned but *not* asserted — downstream
+    hook checks (branch detection, completion submission, lease lookup)
+    may produce noise in a temp workspace that is irrelevant to the
+    seat-release side effect we are testing.  Side-effect correctness is
+    asserted by reading the DB directly.
+    """
+    import subprocess as _sp
+    payload = json.dumps({
+        "session_id": session_id,
+        "agent_type": agent_type,
+    })
+    env = os.environ.copy()
+    env["CLAUDE_POLICY_DB"] = db_path
+    # Keep hooks scoped to a known project dir so detect_project_root
+    # returns a stable path.  The repo root is a valid git dir and
+    # satisfies downstream git-based checks without any custody effect.
+    env["CLAUDE_PROJECT_DIR"] = _REPO_ROOT
+    hook_path = os.path.join(_REPO_ROOT, "hooks", hook_name)
+    proc = _sp.run(
+        ["bash", hook_path],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=_REPO_ROOT,
+        timeout=30,
+    )
+    return proc.returncode
+
+
+@pytest.mark.parametrize(
+    "hook_name, agent_type",
+    [
+        ("check-implementer.sh", "implementer"),
+        ("check-reviewer.sh", "reviewer"),
+        ("check-guardian.sh", "guardian"),
+        ("check-planner.sh", "planner"),
+    ],
+)
+def test_check_hook_execution_releases_seat_and_abandons_threads(
+    tmp_path, hook_name, agent_type
+):
+    """Running the hook flips the seat to released and abandons its threads."""
+    db_path = str(tmp_path / "state.db")
+
+    # Seed: session + two seats + two active threads + one completed thread.
+    c = sqlite3.connect(db_path)
+    c.row_factory = sqlite3.Row
+    ensure_schema(c)
+
+    session_id = f"exec-test-{agent_type}"
+    # ensure_session_and_seat creates a role='worker' seat keyed as
+    # '{session_id}:{agent_type}'.  Add a second seat in the same session
+    # to act as the supervisor for the supervision_thread rows.
+    worker_seat = ensure_session_and_seat(c, session_id, agent_type)
+    supervisor_seat = ensure_session_and_seat(c, session_id, f"{agent_type}-sup")
+    c.execute(
+        "UPDATE seats SET role = 'supervisor' WHERE seat_id = ?",
+        (supervisor_seat,),
+    )
+    c.commit()
+
+    from runtime.core import supervision_threads as sup
+    t_a = sup.attach(c, supervisor_seat, worker_seat, "analysis")
+    t_b = sup.attach(c, supervisor_seat, worker_seat, "review")
+    t_c = sup.attach(c, supervisor_seat, worker_seat, "observer")
+    sup.detach(c, t_c["thread_id"])  # completed — must NOT be rewritten
+    c.commit()
+    c.close()
+
+    # Run hook.
+    _run_check_hook(hook_name, db_path, session_id, agent_type)
+
+    # Verify side effects against the hermetic DB.
+    c2 = sqlite3.connect(db_path)
+    c2.row_factory = sqlite3.Row
+    try:
+        seat_row = c2.execute(
+            "SELECT status FROM seats WHERE seat_id = ?", (worker_seat,)
+        ).fetchone()
+        assert seat_row["status"] == "released", (
+            f"{hook_name} did not release the worker seat"
+        )
+
+        # Supervisor seat was not the one released.
+        sup_row = c2.execute(
+            "SELECT status FROM seats WHERE seat_id = ?", (supervisor_seat,)
+        ).fetchone()
+        assert sup_row["status"] == "active", (
+            f"{hook_name} must not touch the supervisor seat"
+        )
+
+        for tid in (t_a["thread_id"], t_b["thread_id"]):
+            row = c2.execute(
+                "SELECT status FROM supervision_threads WHERE thread_id = ?",
+                (tid,),
+            ).fetchone()
+            assert row["status"] == "abandoned", (
+                f"{hook_name} did not abandon active thread {tid}"
+            )
+
+        completed_row = c2.execute(
+            "SELECT status FROM supervision_threads WHERE thread_id = ?",
+            (t_c["thread_id"],),
+        ).fetchone()
+        assert completed_row["status"] == "completed", (
+            f"{hook_name} must not rewrite a non-active thread"
+        )
+    finally:
+        c2.close()
+
+
+@pytest.mark.parametrize(
+    "hook_name, agent_type",
+    [
+        ("check-implementer.sh", "implementer"),
+        ("check-reviewer.sh", "reviewer"),
+        ("check-guardian.sh", "guardian"),
+        ("check-planner.sh", "planner"),
+    ],
+)
+def test_check_hook_execution_is_idempotent(tmp_path, hook_name, agent_type):
+    """A second invocation leaves released/abandoned state unchanged."""
+    db_path = str(tmp_path / "state.db")
+    session_id = f"idem-{agent_type}"
+
+    c = sqlite3.connect(db_path)
+    c.row_factory = sqlite3.Row
+    ensure_schema(c)
+    worker_seat = ensure_session_and_seat(c, session_id, agent_type)
+    supervisor_seat = ensure_session_and_seat(c, session_id, f"{agent_type}-sup")
+    c.execute(
+        "UPDATE seats SET role='supervisor' WHERE seat_id = ?",
+        (supervisor_seat,),
+    )
+    c.commit()
+    from runtime.core import supervision_threads as sup
+    thread = sup.attach(c, supervisor_seat, worker_seat, "analysis")
+    c.commit()
+    c.close()
+
+    # First run releases + abandons.
+    _run_check_hook(hook_name, db_path, session_id, agent_type)
+    # Capture updated_at fingerprint for both rows after first run.
+    c2 = sqlite3.connect(db_path)
+    c2.row_factory = sqlite3.Row
+    seat_first = c2.execute(
+        "SELECT status, updated_at FROM seats WHERE seat_id = ?",
+        (worker_seat,),
+    ).fetchone()
+    thread_first = c2.execute(
+        "SELECT status, updated_at FROM supervision_threads WHERE thread_id = ?",
+        (thread["thread_id"],),
+    ).fetchone()
+    c2.close()
+    assert seat_first["status"] == "released"
+    assert thread_first["status"] == "abandoned"
+
+    # Second run must be a no-op — status stays and updated_at is
+    # preserved (release_session_seat() only writes when status was
+    # 'active', and abandon_for_seat() only rewrites active rows).
+    _run_check_hook(hook_name, db_path, session_id, agent_type)
+
+    c3 = sqlite3.connect(db_path)
+    c3.row_factory = sqlite3.Row
+    seat_second = c3.execute(
+        "SELECT status, updated_at FROM seats WHERE seat_id = ?",
+        (worker_seat,),
+    ).fetchone()
+    thread_second = c3.execute(
+        "SELECT status, updated_at FROM supervision_threads WHERE thread_id = ?",
+        (thread["thread_id"],),
+    ).fetchone()
+    c3.close()
+
+    assert seat_second["status"] == "released"
+    assert thread_second["status"] == "abandoned"
+    # No second write — updated_at did not move.
+    assert seat_second["updated_at"] == seat_first["updated_at"], (
+        f"{hook_name} rewrote the released seat on a second invocation"
+    )
+    assert thread_second["updated_at"] == thread_first["updated_at"], (
+        f"{hook_name} rewrote the abandoned thread on a second invocation"
+    )
+
+
 def test_seat_release_wiring_is_uniform_across_hooks():
     """Every hook must carry byte-identical seat-release invocation lines."""
     canonical_lines = (
