@@ -278,6 +278,38 @@ class TestCapabilityExclusivity:
     def test_exactly_one_stage_is_read_only_review(self):
         assert ar.stages_with_capability(ar.READ_ONLY_REVIEW) == (sr.REVIEWER,)
 
+
+# ---------------------------------------------------------------------------
+# 6. Canonical stage → delivery subagent identity
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchSubagentIdentity:
+    def test_planner_stage_maps_to_planner_agent(self):
+        assert ar.dispatch_subagent_type_for_stage(sr.PLANNER) == "planner"
+
+    def test_implementer_stage_maps_to_implementer_agent(self):
+        assert ar.dispatch_subagent_type_for_stage(sr.IMPLEMENTER) == "implementer"
+
+    def test_reviewer_stage_maps_to_reviewer_agent(self):
+        assert ar.dispatch_subagent_type_for_stage(sr.REVIEWER) == "reviewer"
+
+    def test_guardian_modes_share_guardian_agent_prompt(self):
+        assert ar.dispatch_subagent_type_for_stage(sr.GUARDIAN_PROVISION) == "guardian"
+        assert ar.dispatch_subagent_type_for_stage(sr.GUARDIAN_LAND) == "guardian"
+
+    def test_plan_alias_is_not_canonical_dispatch_identity(self):
+        assert ar.canonical_dispatch_subagent_type("Plan") == "planner"
+        assert ar.dispatch_subagent_type_for_stage("Plan") == "planner"
+
+    def test_stage_accepts_only_matching_dispatch_subagent_type(self):
+        assert ar.stage_accepts_subagent_type(sr.PLANNER, "planner") is True
+        assert ar.stage_accepts_subagent_type(sr.PLANNER, "general-purpose") is False
+        assert ar.stage_accepts_subagent_type(sr.IMPLEMENTER, "planner") is False
+
+    def test_unknown_stage_has_no_dispatch_subagent_type(self):
+        assert ar.dispatch_subagent_type_for_stage("no-such-stage") is None
+
     def test_every_active_stage_emits_dispatch_transitions(self):
         # This is the one non-exclusive cap: every active stage must
         # have it, so stages_with_capability returns all five.

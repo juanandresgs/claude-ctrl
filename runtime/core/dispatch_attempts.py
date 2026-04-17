@@ -326,15 +326,26 @@ def list_for_seat(
     return [_row_to_dict(r) for r in rows]
 
 
-def expire_stale(conn: sqlite3.Connection) -> int:
+def expire_stale(
+    conn: sqlite3.Connection,
+    *,
+    fallback_pending_max_age_seconds: int | None = None,
+) -> int:
     """Sweep for attempts whose ``timeout_at`` has elapsed and mark them ``timed_out``.
 
     Only ``pending`` and ``delivered`` attempts are eligible — terminal and
     already-timed-out attempts are left untouched.
 
+    Optional legacy hygiene mode:
+    - when ``fallback_pending_max_age_seconds`` is provided, ``pending`` rows
+      with ``timeout_at IS NULL`` and ``created_at`` older than the fallback
+      age are also transitioned to ``timed_out``. This is used to clean up
+      older attempt rows created before timeout discipline was enforced.
+
     Returns the number of attempts expired.
     """
     now = _now()
+    expired = 0
     with conn:
         cur = conn.execute(
             """
@@ -347,4 +358,23 @@ def expire_stale(conn: sqlite3.Connection) -> int:
             """,
             (now, now),
         )
-    return cur.rowcount
+        expired += cur.rowcount
+
+        if (
+            fallback_pending_max_age_seconds is not None
+            and fallback_pending_max_age_seconds > 0
+        ):
+            cutoff = now - int(fallback_pending_max_age_seconds)
+            cur2 = conn.execute(
+                """
+                UPDATE dispatch_attempts
+                SET    status     = 'timed_out',
+                       updated_at = ?
+                WHERE  status     = 'pending'
+                  AND  timeout_at IS NULL
+                  AND  created_at <= ?
+                """,
+                (now, cutoff),
+            )
+            expired += cur2.rowcount
+    return expired

@@ -109,7 +109,12 @@ class TestBuildContractConstruction:
 
     def test_result_has_three_keys(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
-        assert set(result.keys()) == {"contract", "contract_block_line", "prompt_prefix"}
+        assert set(result.keys()) == {
+            "contract",
+            "contract_block_line",
+            "prompt_prefix",
+            "required_subagent_type",
+        }
 
     def test_contract_contains_all_six_fields(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
@@ -120,6 +125,15 @@ class TestBuildContractConstruction:
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="implementer")
         assert result["contract"]["workflow_id"] == "wf-ap"
         assert result["contract"]["stage_id"] == "implementer"
+
+    def test_required_subagent_type_matches_stage(self, conn):
+        result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
+        assert result["required_subagent_type"] == "planner"
+
+    def test_stage_alias_canonicalized_in_contract(self, conn):
+        result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="Plan")
+        assert result["contract"]["stage_id"] == "planner"
+        assert result["required_subagent_type"] == "planner"
 
     def test_default_decision_scope_is_kernel(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")

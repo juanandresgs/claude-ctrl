@@ -1704,7 +1704,14 @@ def _handle_dispatch(args) -> int:
             from runtime.core.dispatch_attempts import expire_stale as _expire_stale
 
             try:
-                n = _expire_stale(conn)
+                n = _expire_stale(
+                    conn,
+                    fallback_pending_max_age_seconds=(
+                        args.fallback_pending_max_age_seconds
+                        if getattr(args, "fallback_pending_max_age_seconds", 0) > 0
+                        else None
+                    ),
+                )
             except Exception as exc:
                 return _err(f"dispatch attempt-expire-stale: {exc}")
             return _ok({"expired": n})
@@ -3761,11 +3768,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
     # Called by scripts/claudex-watchdog.sh on every tick.
-    dp_sub.add_parser(
+    daes = dp_sub.add_parser(
         "attempt-expire-stale",
         help=(
-            "Sweep pending/delivered dispatch attempts past their timeout_at "
-            "and transition them to timed_out. Returns {expired: N}."
+            "Sweep pending/delivered dispatch attempts past timeout_at and "
+            "optionally expire legacy pending rows with no timeout_at."
+        ),
+    )
+    daes.add_argument(
+        "--fallback-pending-max-age-seconds",
+        dest="fallback_pending_max_age_seconds",
+        type=int,
+        default=0,
+        help=(
+            "Optional legacy cleanup threshold: expire pending rows with "
+            "timeout_at NULL older than this many seconds."
         ),
     )
 
