@@ -82,6 +82,7 @@ tmux new-window -d -a -t "$PAIR_WINDOW_TARGET" -n "claudex-monitor" -c "$ROOT" \
 tmux new-window -d -a -t "$PAIR_WINDOW_TARGET" -n "claudex-helper" -c "$ROOT" \
   "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && mkdir -p \"$CLAUDEX_STATE_DIR\" && \
   bash ./scripts/claudex-auto-submit.sh >> \"$CLAUDEX_STATE_DIR/auto-submit.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/auto-submit.pid\" && \
+  bash ./scripts/claudex-codex-model-guard.sh \"$CODEX_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/codex-model-guard.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/codex-model-guard.pid\" && \
   bash ./scripts/claudex-codex-approver.sh --tmux-target \"$CODEX_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/codex-approver.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/codex-approver.pid\" && \
   bash ./scripts/claudex-worker-approver.sh --tmux-target \"$CLAUDE_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/worker-approver.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/worker-approver.pid\" && \
   exec bash ./scripts/claudex-watchdog.sh --tmux-target \"$CLAUDE_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/watchdog.log\" 2>&1"

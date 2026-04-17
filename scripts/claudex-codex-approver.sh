@@ -12,6 +12,7 @@ LOG_FILE="${PID_DIR}/codex-approver.log"
 TMUX_TARGET=""
 INTERVAL_SECONDS="${CLAUDEX_CODEX_APPROVER_INTERVAL_SECONDS:-2}"
 RETRY_SECONDS="${CLAUDEX_CODEX_APPROVER_RETRY_SECONDS:-5}"
+CLASSIFY_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -37,6 +38,61 @@ send_choice() {
 
 send_enter() {
   tmux send-keys -t "$TMUX_TARGET" Enter
+}
+
+extract_tool_from_capture() {
+  local capture="$1"
+  printf '%s' "$capture" | perl -ne 'if (/Allow the claude_bridge MCP server to run tool "([^"]+)"/) { print $1; exit 0 }'
+}
+
+is_directory_trust_prompt() {
+  local capture="$1"
+  [[ "$capture" == *"Do you trust the contents of this"* ]] &&
+    [[ "$capture" == *"Press enter to continue"* ]]
+}
+
+is_model_upgrade_prompt() {
+  local capture="$1"
+  [[ "$capture" == *"Choose how you'd like Codex to proceed."* ]] &&
+    [[ "$capture" == *"Use existing model"* ]]
+}
+
+codex_prompt_policy() {
+  local capture="$1"
+
+  # The Codex model-upgrade prompt is owned solely by
+  # claudex-codex-model-guard.sh. This approver must neither press keys
+  # for it nor fall through to trust/mcp_tool detection on a pane that
+  # overlaps the model-upgrade phrasing (mixed-state panes can contain
+  # "Press enter to continue" from an earlier line while the model-
+  # upgrade prompt is the live choice). Matching the prompt and
+  # returning "ignore" is a defensive guard: it prevents the approver
+  # from mis-pressing while leaving the single-authority dismissal to
+  # the model guard.
+  if is_model_upgrade_prompt "$capture"; then
+    printf '%s\n' "ignore"
+    return 0
+  fi
+
+  if is_directory_trust_prompt "$capture"; then
+    printf '%s\n' "trust"
+    return 0
+  fi
+
+  local tool
+  tool="$(extract_tool_from_capture "$capture")"
+  if [[ -n "$tool" ]]; then
+    printf '%s\n' "mcp_tool:${tool}"
+    return 0
+  fi
+
+  printf '%s\n' "ignore"
+}
+
+classify_stdin() {
+  local capture
+  capture="$(cat)"
+  codex_prompt_policy "$capture"
 }
 
 clear_state() {
@@ -78,6 +134,10 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
+    --classify-stdin)
+      CLASSIFY_ONLY=1
+      shift
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       usage >&2
@@ -85,6 +145,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$CLASSIFY_ONLY" -eq 1 ]]; then
+  classify_stdin
+  exit 0
+fi
 
 if [[ -z "$TMUX_TARGET" ]]; then
   echo "--tmux-target is required" >&2
@@ -116,33 +181,29 @@ while true; do
   pane="$(tmux capture-pane -p -t "$TMUX_TARGET" 2>/dev/null || true)"
   pane_pid="$(tmux display-message -p -t "$TMUX_TARGET" '#{pane_pid}' 2>/dev/null || true)"
   now="$(date +%s)"
-  tool="$(printf '%s' "$pane" | perl -ne 'if (/Allow the claude_bridge MCP server to run tool "([^"]+)"/) { print $1; exit 0 }')"
-  trust_prompt=0
-  if printf '%s' "$pane" | grep -q 'Do you trust the contents of this' \
-    && printf '%s' "$pane" | grep -q 'Press enter to continue'; then
-    trust_prompt=1
-  fi
+  policy="$(codex_prompt_policy "$pane")"
 
-  if [[ "$trust_prompt" -eq 1 ]]; then
-    fingerprint="${TMUX_TARGET}:${pane_pid}:directory_trust"
-    if should_send "$fingerprint" "$now"; then
-      send_choice 1
-      record_state "$fingerprint" "$now"
-      log "auto-approved directory trust prompt in ${TMUX_TARGET}"
-    fi
-    sleep "$INTERVAL_SECONDS"
-    continue
-  fi
-
-  if [[ -n "$tool" ]]; then
-    fingerprint="${TMUX_TARGET}:${pane_pid}:${tool}"
-    if should_send "$fingerprint" "$now"; then
-      send_choice 3
-      record_state "$fingerprint" "$now"
-      log "auto-approved claude_bridge tool trust for ${tool} in ${TMUX_TARGET}"
-    fi
-  else
-    clear_state
-  fi
+  case "$policy" in
+    trust)
+      fingerprint="${TMUX_TARGET}:${pane_pid}:directory_trust"
+      if should_send "$fingerprint" "$now"; then
+        send_choice 1
+        record_state "$fingerprint" "$now"
+        log "auto-approved directory trust prompt in ${TMUX_TARGET}"
+      fi
+      ;;
+    mcp_tool:*)
+      tool="${policy#mcp_tool:}"
+      fingerprint="${TMUX_TARGET}:${pane_pid}:${tool}"
+      if should_send "$fingerprint" "$now"; then
+        send_choice 3
+        record_state "$fingerprint" "$now"
+        log "auto-approved claude_bridge tool trust for ${tool} in ${TMUX_TARGET}"
+      fi
+      ;;
+    *)
+      clear_state
+      ;;
+  esac
   sleep "$INTERVAL_SECONDS"
 done

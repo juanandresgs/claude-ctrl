@@ -8,6 +8,7 @@ BRAID_ROOT="${BRAID_ROOT:-${ROOT}/.b2r}"
 PID_DIR="${CLAUDEX_STATE_DIR:-$(claudex_state_dir "$ROOT" "$BRAID_ROOT")}"
 APPROVER_PID_FILE="${PID_DIR}/codex-approver.pid"
 APPROVER_STATE_FILE="${PID_DIR}/codex-approver.state"
+MODEL_GUARD_PID_FILE="${PID_DIR}/codex-model-guard.pid"
 WORKER_APPROVER_PID_FILE="${PID_DIR}/worker-approver.pid"
 WORKER_APPROVER_STATE_FILE="${PID_DIR}/worker-approver.state"
 PROGRESS_PID_FILE="${PID_DIR}/progress-monitor.pid"
@@ -295,6 +296,24 @@ restart_supervisor_pane() {
     "cd \"$ROOT\" && export BRAID_ROOT=\"$BRAID_ROOT\" CLAUDEX_STATE_DIR=\"$PID_DIR\" && clear && ./scripts/claudex-codex-launch.sh"
 }
 
+restart_model_guard() {
+  mkdir -p "$PID_DIR"
+  kill_pid_file "$MODEL_GUARD_PID_FILE" >/dev/null 2>&1 || true
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[dry-run] BRAID_ROOT=%q CLAUDEX_STATE_DIR=%q nohup bash %q %q >>%q 2>&1 &\n' \
+      "$BRAID_ROOT" "$PID_DIR" \
+      "$ROOT/scripts/claudex-codex-model-guard.sh" "$CODEX_TARGET" "$PID_DIR/codex-model-guard.log"
+    printf '[dry-run] write pid to %q\n' "$MODEL_GUARD_PID_FILE"
+    return 0
+  fi
+
+  BRAID_ROOT="$BRAID_ROOT" CLAUDEX_STATE_DIR="$PID_DIR" \
+    nohup bash "$ROOT/scripts/claudex-codex-model-guard.sh" "$CODEX_TARGET" \
+    >>"$PID_DIR/codex-model-guard.log" 2>&1 &
+  echo "$!" > "$MODEL_GUARD_PID_FILE"
+}
+
 CODEX_TARGET="$(resolve_codex_target)" || {
   echo "Unable to resolve the Codex supervisor pane target. Pass --codex-target explicitly." >&2
   exit 1
@@ -311,6 +330,7 @@ restart_progress_monitor
 restart_codex_approver
 restart_worker_approver
 restart_supervisor_pane
+restart_model_guard
 
 cat <<EOF
 ClauDEX supervisor restart queued.
@@ -320,6 +340,7 @@ session: $SESSION_NAME
 monitor_window: ${SESSION_NAME}:${MONITOR_WINDOW_NAME}
 approver: $([[ "$RESTART_APPROVER" -eq 1 ]] && echo restarted || echo unchanged)
 worker_approver: $([[ "$RESTART_WORKER_APPROVER" -eq 1 ]] && echo restarted || echo unchanged)
+model_guard: restarted
 monitor: $([[ "$RESTART_MONITOR" -eq 1 ]] && echo restarted || echo unchanged)
 
 If the pane shows the standard trust prompt, press Enter once.

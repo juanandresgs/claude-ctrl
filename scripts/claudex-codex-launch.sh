@@ -35,6 +35,10 @@ prepare_local_codex_home() {
   cat >"${LOCAL_CODEX_HOME}/config.toml" <<EOF
 model = "${CLAUDEX_CODEX_MODEL:-gpt-5.3-codex}"
 model_reasoning_effort = "${CLAUDEX_CODEX_REASONING_EFFORT:-xhigh}"
+hide_rate_limit_model_nudge = true
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+model_availability_nux = false
 
 [mcp_servers.claude_bridge]
 transport = "stdio"
