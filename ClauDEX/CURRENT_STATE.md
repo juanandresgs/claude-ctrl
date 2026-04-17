@@ -1,7 +1,35 @@
 # ClauDEX Current State
 
-Status: active handoff record — **CHECKPOINT LANDED / CUTOVER CONTINUATION**
-Updated: 2026-04-14 (Phase 5 complete; Phase 6 slices 1-6 complete; Phase 7 slices 1-17 complete; Phase 8 slices 1-12 complete — Slice 10 = Tester Bundle 1 wiring decommission + 0047-fodn2m narrative/pin correction; Slice 11 = Tester Bundle 2 dead-code cleanup + invariant flip (0048-ywlb7d) + correction 0049-lojhjs/0050-hkoa80; Slice 12 = closeout / time-scoping correction; CUTOVER_PLAN planned-area set exhausted; Phase 8 exit criteria met; Final Acceptance Condition 12/12 satisfied against installed truth; accepted bundle landed on `feat/claudex-cutover` as commit `6b8cc5c` and pushed to `origin/feat/claudex-cutover`; follow-up auto-submit process-control fix landed as `d8fdf96` and pushed to the same upstream; this soak worktree is on `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD `d8fdf96` with no checkpoint debt remaining)
+Status: active handoff record — **INTEGRATION WAVE 1 PROMOTED / CUTOVER STEADY-STATE**
+Updated: 2026-04-17 (post-promotion reconciliation).
+
+- **2026-04-14 checkpoint:** Phases 1-8 COMPLETE; cutover bundle landed as `6b8cc5c`
+  on `feat/claudex-cutover` + follow-up process-control fix `d8fdf96` pushed to the
+  same upstream; `ca7190e` (supervisor-launch + state-record fix) landed on top.
+- **2026-04-17 post-checkpoint integration (Integration Wave 1):** ten
+  cutover-continuation bundles authored as independent checkpoint branches on
+  origin, merged onto `checkpoint/integration-wave1`, and fast-forwarded into
+  `feat/claudex-cutover`. Custody advanced `ca7190e → 018f2fa` via FF only.
+  Integrated bundles (by order on custody):
+  - Bundle 1 (`write_plan_guard` capability-gate hardening) — `48ab1ca`
+  - Bundle D (Phase 2b carrier-invariant test hermeticity) — `ee46d82`
+  - Bundle A' (docs reconciliation + `bash_write_who` policy) — `bc1fe28`
+  - Bundle B (Category C bundle 1 — `proof_state` retirement) — `f72e656`
+  - Bundle C (Category C bundle 2 — `dispatch_queue`/`dispatch_cycles`
+    retirement) — `369cca6`
+  - Bundle E (Invariant #8 doc-reference validator, wave 1) — `e108036`
+  - Bundle F (Invariant #8 wave 2 — 10-doc coverage + retirement registry +
+    non-event stripper) — `17d04ab`
+  - Bundle B2 (supervision-domain authority hardening) — `4b24d1f`
+  - Bundle B3 (hook-adapter thin-translation hardening) — `7365792`
+  - Bundle B4 (CLAUDE.md constitution update — narrative capstone) — `2ab1d9f`
+
+No `Phase 9` exists in `ClauDEX/CUTOVER_PLAN.md`; the cutover is closed. The
+integrated bundles are post-Phase-8 hardening (Category C retirements +
+Invariant #8 coverage + Phase 2/2b/3 continuations + constitution doc
+refresh), not a new phase. Category C is fully closed (bundles 1 and 2
+retired). Remaining local WIP on other worktrees is bridge/transport only
+(containment stack), explicitly deferred per handoff discipline.
 
 This file is the execution handoff for the current ClauDEX buildout. It is the
 place to answer:
@@ -22,6 +50,13 @@ place to answer:
 > fixes pushed later to the same upstream) and in-flight WIP in this soak
 > worktree are expected and do not reopen the closed cutover; do not read
 > the numbers below as a live `git status` / `git rev-list` output.
+>
+> **2026-04-17 post-integration marker:** on 2026-04-17 the ten
+> Integration-Wave-1 bundles (enumerated in the status block above) were
+> fast-forwarded into `feat/claudex-cutover`; the custody tip advanced
+> `ca7190e → 018f2fa`. Every `d8fdf96`-referencing clause below therefore
+> reads as the 2026-04-14 snapshot identifier, not the live custody tip.
+> Live custody HEAD since 2026-04-17 is `018f2fa`.
 
 Canonical cutover custody branch (remote):
 

@@ -391,6 +391,17 @@ point-in-time checkpoint facts — post-checkpoint bridge / supervisor
 fixes pushed to the same branch, and in-flight WIP in the soak
 worktree, are expected and do not reopen the closed cutover.
 
+**2026-04-17 post-checkpoint integration (Integration Wave 1):** ten
+cutover-continuation bundles (Bundle 1 / A' / B / C / D / E / F / B2 /
+B3 / B4 — see `ClauDEX/CURRENT_STATE.md` status block for
+per-bundle SHAs and scopes) were authored as independent checkpoint
+branches on origin, merged onto `checkpoint/integration-wave1`, and
+fast-forwarded into `feat/claudex-cutover`. The custody tip advanced
+`ca7190e → 018f2fa` via FF-only. No new cutover phase opened; the
+integrated bundles are Category C retirements + Invariant #8 coverage +
+Phase 2/2b/3 continuations + the CLAUDE.md narrative capstone. The
+`CUTOVER_PLAN.md` Phase Plan remains exhausted; no Phase 9.
+
 **Next bounded action: post-checkpoint state-record reconciliation
 under the already-closed Phase 8. No Phase 9 exists.** With
 Phases 1-8 closed and upstream, supervisor-session work on docs is
@@ -417,11 +428,14 @@ For current detail, see `ClauDEX/CURRENT_STATE.md`.
 
 ## Current Restart Slice
 
-**Status (post-checkpoint):** no active cutover phase. Phases 1-8 are
-complete; the accepted bundle is landed as `6b8cc5c` on
-`feat/claudex-cutover` and the follow-up process-control fix landed as
-`d8fdf96` on the same upstream. `ClauDEX/CUTOVER_PLAN.md` has no
-Phase 9, and the planned-area set is exhausted.
+**Status (post-checkpoint, post-integration):** no active cutover phase.
+Phases 1-8 are complete; the accepted bundle is landed as `6b8cc5c` on
+`feat/claudex-cutover`; the follow-up process-control fix landed as
+`d8fdf96` and the supervisor-launch / state-record fix as `ca7190e` on
+the same upstream. **On 2026-04-17 the Integration-Wave-1 set (ten
+bundles, see `## Current State` above) was fast-forwarded into custody;
+the live tip is `018f2fa`.** `ClauDEX/CUTOVER_PLAN.md` has no Phase 9,
+the planned-area set is exhausted, and Category C is fully closed.
 
 **Fresh-run bootstrap action (Steady-State step 3):** on a fresh
 supervised run, the supervisor must dispatch a single bounded
