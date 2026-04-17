@@ -100,6 +100,8 @@ CUTOVER_PLAN_CONCRETE_FILES: frozenset[str] = frozenset(
         "runtime/core/projection_reflow.py",
         # Phase 7 Slice 17 memory/retrieval projection compiler:
         "runtime/core/memory_retrieval.py",
+        # cc-policy-who-remediation Slice 1 bridge permission surface authority:
+        "runtime/core/bridge_permissions.py",
     }
 )
 
@@ -118,14 +120,15 @@ class TestConcreteSetEquality:
         # the path itself. This assertion pins that convention.
         assert cr.CONCRETE_ENTRY_NAMES == CUTOVER_PLAN_CONCRETE_FILES
 
-    def test_concrete_count_is_twenty_four(self):
+    def test_concrete_count_is_twenty_five(self):
         # 11 CUTOVER_PLAN baseline + 1 Phase 2 + 2 Phase 7 S3 +
         # 1 Phase 7 S4 + 4 Phase 7 S5 + 1 Phase 7 S8 (hook_manifest)
         # + 1 Phase 7 S10 (prompt_pack_resolver)
         # + 1 Phase 7 S13 (decision_digest_projection)
         # + 1 Phase 7 S16 (projection_reflow)
-        # + 1 Phase 7 S17 (memory_retrieval).
-        assert len(cr.concrete_entries()) == 24
+        # + 1 Phase 7 S17 (memory_retrieval)
+        # + 1 cc-policy-who-remediation S1 (bridge_permissions).
+        assert len(cr.concrete_entries()) == 25
 
     def test_all_concrete_paths_helper_returns_declaration_order(self):
         ordered = cr.all_concrete_paths()
@@ -157,15 +160,16 @@ class TestConcreteSetEquality:
             "runtime/core/decision_digest_projection.py",
             "runtime/core/projection_reflow.py",
             "runtime/core/memory_retrieval.py",
+            "runtime/core/bridge_permissions.py",
         )
 
     def test_registry_is_tuple(self):
         # Frozen, ordered, immutable.
         assert isinstance(cr.CONSTITUTION_REGISTRY, tuple)
         # Concrete entries come first, planned after. Pin the layout.
-        first_twenty_four = cr.CONSTITUTION_REGISTRY[:24]
-        assert all(e.kind == cr.KIND_CONCRETE for e in first_twenty_four)
-        remaining = cr.CONSTITUTION_REGISTRY[24:]
+        first_twenty_five = cr.CONSTITUTION_REGISTRY[:25]
+        assert all(e.kind == cr.KIND_CONCRETE for e in first_twenty_five)
+        remaining = cr.CONSTITUTION_REGISTRY[25:]
         assert all(e.kind == cr.KIND_PLANNED for e in remaining)
 
     def test_planned_area_set_is_empty_after_slice_17(self):
@@ -645,6 +649,41 @@ class TestLookupHelpers:
                 f"as of Phase 7 Slice 10"
             )
 
+    def test_bridge_permissions_module_is_concrete(self):
+        """cc-policy-who-remediation Slice 1: bridge_permissions is the
+        sole declarative authority for the ClauDEX bridge permission surface.
+        It follows the same shadow-only pattern as hook_manifest.py and
+        must be registered as a concrete constitution entry so write-scope
+        gates can protect it (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001)."""
+        entry = cr.lookup("runtime/core/bridge_permissions.py")
+        assert entry is not None, (
+            "runtime/core/bridge_permissions.py must be registered in the "
+            "constitution registry as a concrete entry"
+        )
+        assert entry.kind == cr.KIND_CONCRETE
+        assert entry.path == "runtime/core/bridge_permissions.py"
+        assert (
+            cr.is_constitution_level("runtime/core/bridge_permissions.py")
+            is True
+        )
+
+    def test_no_broad_bridge_permissions_planned_slug(self):
+        """No planned-area slug should refer to the bridge permission
+        surface — its authority lives in the concrete
+        ``runtime/core/bridge_permissions.py``
+        (cc-policy-who-remediation Slice 1)."""
+        for slug in cr.PLANNED_AREA_NAMES:
+            assert "bridge_permissions" not in slug, (
+                f"planned slug {slug!r} suggests bridge_permissions is "
+                f"still future — but it is concrete as of "
+                f"cc-policy-who-remediation Slice 1"
+            )
+            assert "bridge_permission" not in slug, (
+                f"planned slug {slug!r} suggests bridge permission surface "
+                f"authority is still future — but the authority lives in "
+                f"runtime/core/bridge_permissions.py"
+            )
+
     def test_lookup_unknown_name_returns_none(self):
         assert cr.lookup("nothing_here") is None
         assert cr.lookup("") is None
@@ -722,4 +761,92 @@ class TestShadowOnlyDiscipline:
         assert runtime_core_imports == set(), (
             f"constitution_registry.py unexpectedly depends on "
             f"{runtime_core_imports}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. CUTOVER_PLAN § "Constitution-Level Files" doc-registry parity invariant
+# ---------------------------------------------------------------------------
+
+
+def _parse_cutover_plan_constitution_bullets() -> set[str]:
+    """Parse bullet paths from the ## Constitution-Level Files section of
+    CUTOVER_PLAN.md.
+
+    Returns the set of path strings found as backtick-quoted bullets in that
+    section, stripping any trailing parenthetical annotation.  Each bullet has
+    the form::
+
+        - `runtime/core/foo.py` (parenthetical note…)
+
+    We extract the backtick-quoted token only.
+    """
+    import re
+
+    cutover_plan = _REPO_ROOT / "ClauDEX" / "CUTOVER_PLAN.md"
+    text = cutover_plan.read_text(encoding="utf-8")
+
+    # Locate the section by header, stop at the next ## header.
+    section_match = re.search(
+        r"^## Constitution-Level Files\s*\n(.*?)(?=^## )",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert section_match is not None, (
+        "CUTOVER_PLAN.md must contain a '## Constitution-Level Files' section"
+    )
+    section_body = section_match.group(1)
+
+    # Extract every backtick-quoted token that appears on a bullet line.
+    paths: set[str] = set()
+    for line in section_body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("-"):
+            continue
+        token_match = re.search(r"`([^`]+)`", stripped)
+        if token_match:
+            paths.add(token_match.group(1))
+    return paths
+
+
+class TestCutoverPlanDocRegistryParity:
+    """Mechanically pin that every runtime/core/*.py concrete registry entry
+    is also listed as a bullet in CUTOVER_PLAN.md §"Constitution-Level Files".
+
+    This prevents the declared authority surface from silently lagging the
+    registry again — the failure mode that motivated cc-policy-who-remediation
+    Slice 1 authority-doc reconciliation.
+
+    @decision DEC-CLAUDEX-CONSTITUTION-DOC-PARITY-001
+    Title: CUTOVER_PLAN §"Constitution-Level Files" must include every
+           runtime/core/*.py concrete registry entry
+    Status: active (cc-policy-who-remediation Slice 1)
+    Rationale: The bridge_permissions.py authority was registered in the
+      constitution_registry before the CUTOVER_PLAN doc was updated.  This
+      test makes that class of drift mechanically detectable: CI fails the
+      moment a new runtime/core module is promoted to concrete without the
+      corresponding CUTOVER_PLAN bullet.
+    """
+
+    def test_every_runtime_core_concrete_py_appears_in_cutover_plan_bullets(self):
+        """Every concrete registry entry whose path ends in .py and lives
+        under runtime/core/ must appear verbatim as a bullet path in the
+        CUTOVER_PLAN §"Constitution-Level Files" section."""
+        doc_bullets = _parse_cutover_plan_constitution_bullets()
+
+        registry_runtime_core_paths = {
+            entry.path
+            for entry in cr.concrete_entries()
+            if entry.path is not None
+            and entry.path.startswith("runtime/core/")
+            and entry.path.endswith(".py")
+        }
+
+        missing_from_doc = registry_runtime_core_paths - doc_bullets
+        assert missing_from_doc == set(), (
+            f"The following runtime/core/*.py concrete registry entries are "
+            f"missing from CUTOVER_PLAN.md §'Constitution-Level Files': "
+            f"{sorted(missing_from_doc)}.  Add a bullet for each missing "
+            f"path to reconcile the declared authority surface with the "
+            f"registry."
         )

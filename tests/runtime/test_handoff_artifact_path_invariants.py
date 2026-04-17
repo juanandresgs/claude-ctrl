@@ -210,3 +210,484 @@ def test_legacy_pre_fix_active_phrases_are_absent() -> None:
     assert not hits, (
         "Pre-fix active-instruction phrasings found:\n" + "\n".join(hits)
     )
+
+
+# ---------------------------------------------------------------------------
+# Supervisor Step 4 response-surface fallback pin
+#
+# Context: under observed bridge response-broker drift, `get_response()` can
+# return `count: 0` while the lane-local `pending-review.json` carries a
+# valid on-disk response payload for the same active run. The supervisor
+# prompt's Step 4 defines the fallback order the steady-state loop must
+# follow in that case. This invariant pins the required phrasing so the
+# fallback cannot silently regress (e.g., by removing the fallback,
+# demoting `pending-review.json` below `get_response()` unconditionally,
+# or collapsing Step 4 back to the pre-fix single-line form).
+#
+# The fallback order is authoritative in `.codex/prompts/claudex_supervisor.txt`
+# Step 4. This test pins the three critical tokens:
+#   1. Primary path name: `get_response()`
+#   2. Empty-count trigger: `count: 0` or `count=0`
+#   3. Run-id match phrasing: `matching \`run_id\`` or equivalent
+# and the run-id-mismatch rule:
+#   4. `Ignore`/`ignore` + `run_id`
+#
+# Refs: SUPERVISOR_HANDOFF.md "Bridge response-broker drift in
+# `waiting_for_codex`" Open Soak Issues entry.
+# ---------------------------------------------------------------------------
+
+SUPERVISOR_PROMPT = REPO_ROOT / ".codex" / "prompts" / "claudex_supervisor.txt"
+
+FALLBACK_REQUIRED_TOKENS: tuple[str, ...] = (
+    # Primary path still named
+    "get_response()",
+    # Fallback trigger: empty-count signal
+    "count: 0",
+    # Run-id match check for the fallback path
+    "run_id",
+    # Lane-local artifact referenced as fallback source
+    "$CLAUDEX_STATE_DIR/pending-review.json",
+    # response_path readability check
+    "response_path",
+)
+
+FALLBACK_MISMATCH_IGNORE_PHRASES: tuple[str, ...] = (
+    # Mismatch-ignore rule: when run_id does NOT match active run
+    "does NOT match",
+    "ignore",
+)
+
+
+def test_supervisor_step4_response_surface_fallback_is_pinned() -> None:
+    """The supervisor prompt must encode the Step 4 response-surface
+    fallback order: primary = `get_response()`, fallback on `count: 0`
+    with matching `run_id` = lane-local `pending-review.json` artifact,
+    mismatch-ignore when `run_id` diverges from the active run.
+
+    This guards against silent regression of the fallback guidance, which
+    would re-introduce the known bridge response-broker drift failure mode
+    (supervisor missed an on-disk response because `get_response()` under-
+    reported in `waiting_for_codex`).
+    """
+    text = SUPERVISOR_PROMPT.read_text()
+    # Step 4 block is identified by the numbered-list marker. Extract only
+    # the Step 4 region so changes to other steps do not accidentally
+    # satisfy this pin.
+    step4_match = re.search(
+        r"(?m)^4\. If bridge state is `waiting_for_codex`.*?(?=\n\d+\. |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert step4_match is not None, (
+        "Supervisor prompt Step 4 for `waiting_for_codex` not found at "
+        f"{SUPERVISOR_PROMPT.relative_to(REPO_ROOT)}. Expected a numbered "
+        "Step 4 opening with 'If bridge state is `waiting_for_codex`'."
+    )
+    step4 = step4_match.group(0)
+
+    missing_required = [t for t in FALLBACK_REQUIRED_TOKENS if t not in step4]
+    assert not missing_required, (
+        "Supervisor Step 4 is missing response-surface fallback tokens:\n"
+        + "\n".join(f"  - {t!r}" for t in missing_required)
+        + f"\n\nStep 4 text:\n{step4}"
+    )
+
+    missing_mismatch = [p for p in FALLBACK_MISMATCH_IGNORE_PHRASES if p not in step4]
+    assert not missing_mismatch, (
+        "Supervisor Step 4 is missing run_id-mismatch ignore phrasing:\n"
+        + "\n".join(f"  - {p!r}" for p in missing_mismatch)
+        + f"\n\nStep 4 text:\n{step4}"
+    )
+
+
+def test_supervisor_step4_primary_before_fallback_ordering() -> None:
+    """Within Step 4, the primary-path token (`get_response()`) must
+    appear before the fallback artifact token (`pending-review.json`).
+    This pins the fallback order so a future edit cannot flip the
+    priority (which would make `pending-review.json` the primary, losing
+    the broker's dedupe/ack semantics).
+    """
+    text = SUPERVISOR_PROMPT.read_text()
+    step4_match = re.search(
+        r"(?m)^4\. If bridge state is `waiting_for_codex`.*?(?=\n\d+\. |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert step4_match is not None
+    step4 = step4_match.group(0)
+    primary_idx = step4.find("get_response()")
+    fallback_idx = step4.find("$CLAUDEX_STATE_DIR/pending-review.json")
+    assert primary_idx != -1 and fallback_idx != -1, (
+        "Step 4 must name both `get_response()` and "
+        "`$CLAUDEX_STATE_DIR/pending-review.json` to pin ordering."
+    )
+    assert primary_idx < fallback_idx, (
+        "Step 4 ordering regression: `get_response()` must appear before "
+        "`$CLAUDEX_STATE_DIR/pending-review.json` so the primary path "
+        "stays primary. Current offsets: "
+        f"get_response={primary_idx}, pending-review.json={fallback_idx}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint report staged-scope authority pin
+#
+# Context: 2026-04-17, Codex instruction `1776422371697-0001-b39h0v` surfaced
+# a scope-narration drift where a guardian subagent report listed
+# `Included scope` paths that were not in the live staged index. The real
+# git index was intact (staged count matched), but the report's prose
+# enumerated hallucinated paths from recall rather than from live git
+# output. The fix (applied in this test file's sibling slice) pins the
+# execution-prompt surface to require:
+#   1. `Included scope` derived from `git diff --cached --name-only`
+#   2. count anchored to `git diff --cached --name-only | wc -l`
+#   3. any non-staged path in the report is invalid
+# Adjacent: `ClauDEX/SUPERVISOR_HANDOFF.md` Open Soak Issues entry
+# "Checkpoint-report staged-scope narration drift (2026-04-17)".
+# ---------------------------------------------------------------------------
+
+EXECUTION_PROMPT_DOC = (
+    REPO_ROOT / "ClauDEX" / "CC_POLICY_WHO_REMEDIATION_EXECUTION_PROMPT.txt"
+)
+
+_CHECKPOINT_SCOPE_AUTHORITY_REQUIRED_TOKENS: tuple[str, ...] = (
+    # Rule-heading anchor so the invariant is findable:
+    "CHECKPOINT REPORT STAGED-SCOPE AUTHORITY RULE",
+    # Rule 1: derive scope from live git output.
+    "git diff --cached --name-only",
+    # Rule 2: count citation requirement.
+    "git diff --cached --name-only | wc -l",
+    # Rule 3: non-staged-path rejection clause.
+    "is invalid",
+    # Rule 4: explicit prohibition of narration/recall sources.
+    "MUST NOT be narrated from",
+)
+
+
+def test_execution_prompt_carries_checkpoint_scope_authority_rule() -> None:
+    """The execution-prompt surface must state the checkpoint-report
+    staged-scope authority rule verbatim. Every required token must
+    appear in the file's body. Missing tokens indicate a silent
+    regression of the 2026-04-17 drift-guardrail edit.
+    """
+    assert EXECUTION_PROMPT_DOC.exists(), (
+        f"Execution prompt surface missing at {EXECUTION_PROMPT_DOC}"
+    )
+    text = EXECUTION_PROMPT_DOC.read_text(encoding="utf-8")
+    missing = [t for t in _CHECKPOINT_SCOPE_AUTHORITY_REQUIRED_TOKENS if t not in text]
+    assert not missing, (
+        "Execution prompt is missing required CHECKPOINT REPORT STAGED-"
+        "SCOPE AUTHORITY RULE tokens. The authoritative guidance for "
+        "how a guardian report derives its `Included scope` cell must "
+        "stay in this file.\n"
+        + "\n".join(f"  - missing: {t!r}" for t in missing)
+    )
+
+
+def test_execution_prompt_names_this_mechanical_pin() -> None:
+    """The execution-prompt rule must cite the pin test so a future
+    reader can locate the mechanical guard.
+    """
+    text = EXECUTION_PROMPT_DOC.read_text(encoding="utf-8")
+    required_test_ref = (
+        "tests/runtime/test_handoff_artifact_path_invariants.py"
+        "::TestCheckpointReportScopeAuthority"
+    )
+    assert required_test_ref in text, (
+        "Execution prompt must name the mechanical pin "
+        f"{required_test_ref!r} so the rule's enforcement is traceable."
+    )
+
+
+class TestCheckpointReportScopeAuthority:
+    """Grouping class for the two pins above — keeps the
+    ``::TestCheckpointReportScopeAuthority`` reference the execution
+    prompt cites resolvable, and carries the rule tokens forward as a
+    class-level reference for future extensions.
+    """
+
+    REQUIRED_TOKENS = _CHECKPOINT_SCOPE_AUTHORITY_REQUIRED_TOKENS
+
+    def test_required_token_list_is_non_empty(self) -> None:
+        """Scanner-sanity pin so a future refactor cannot empty the
+        required-token list and silently disable both sibling tests.
+        """
+        assert len(self.REQUIRED_TOKENS) >= 3, (
+            f"_CHECKPOINT_SCOPE_AUTHORITY_REQUIRED_TOKENS shrunk to "
+            f"{len(self.REQUIRED_TOKENS)} token(s); must remain ≥ 3 to "
+            "keep the authority-rule invariant meaningful."
+        )
+
+    def test_class_ref_resolves_in_prompt(self) -> None:
+        """Delegates to the module-level test but via the class path
+        the execution prompt cites (``TestCheckpointReportScopeAuthority``).
+        """
+        test_execution_prompt_names_this_mechanical_pin()
+
+    def test_prompt_rule_is_present_via_class(self) -> None:
+        """Delegates to the module-level token-presence test. Keeps the
+        rule discoverable under the class path named in the execution
+        prompt.
+        """
+        test_execution_prompt_carries_checkpoint_scope_authority_rule()
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint-report EXCLUDED-scope authority rule
+# ---------------------------------------------------------------------------
+# Sibling guardrail to the staged-scope rule above. Added 2026-04-17 after
+# instruction `1776423808293-0006-4eqliy` surfaced a drift where a
+# checkpoint-retry report's `Excluded scope` cell enumerated many
+# modified / untracked paths narrated from a session-start `gitStatus`
+# snapshot rather than live `git status --short` output. Live state at
+# report time showed only `?? .claudex/` outside the staged bundle;
+# the report's excluded-scope list contained ~25 unrelated paths.
+#
+# The fix pins the execution-prompt surface to require:
+#   1. `Excluded scope` derived from live `git status --short`
+#   2. explicit distinction between staged vs unstaged/untracked rows
+#   3. explicit "none outside lane-local artifacts" wording when applicable
+#   4. any non-worktree path in the excluded cell is invalid
+# Adjacent: `ClauDEX/SUPERVISOR_HANDOFF.md` Open Soak Issues entry
+# "Checkpoint-report excluded-scope narration drift (2026-04-17)".
+# ---------------------------------------------------------------------------
+
+_CHECKPOINT_EXCLUDED_SCOPE_AUTHORITY_REQUIRED_TOKENS: tuple[str, ...] = (
+    # Rule-heading anchor so the invariant is findable:
+    "CHECKPOINT REPORT EXCLUDED-SCOPE AUTHORITY RULE",
+    # Rule 1: derive excluded scope from live git status.
+    "git status --short",
+    # Rule 2: staged vs unstaged/untracked distinction.
+    "distinguish staged entries",
+    # Rule 3: explicit "none" wording when applicable.
+    "none outside lane-local artifacts",
+    # Rule 4: prohibition of narration from session-start snapshot.
+    "session-start status snapshot",
+)
+
+
+def test_execution_prompt_carries_checkpoint_excluded_scope_authority_rule() -> None:
+    """The execution-prompt surface must state the checkpoint-report
+    excluded-scope authority rule verbatim. Every required token must
+    appear in the file's body. Missing tokens indicate a silent
+    regression of the 2026-04-17 excluded-scope drift guardrail.
+    """
+    assert EXECUTION_PROMPT_DOC.exists(), (
+        f"Execution prompt surface missing at {EXECUTION_PROMPT_DOC}"
+    )
+    text = EXECUTION_PROMPT_DOC.read_text(encoding="utf-8")
+    missing = [
+        t for t in _CHECKPOINT_EXCLUDED_SCOPE_AUTHORITY_REQUIRED_TOKENS
+        if t not in text
+    ]
+    assert not missing, (
+        "Execution prompt is missing required CHECKPOINT REPORT EXCLUDED-"
+        "SCOPE AUTHORITY RULE tokens. The authoritative guidance for how "
+        "a guardian report derives its `Excluded scope` cell must stay "
+        "in this file.\n"
+        + "\n".join(f"  - missing: {t!r}" for t in missing)
+    )
+
+
+def test_execution_prompt_names_excluded_scope_mechanical_pin() -> None:
+    """The execution-prompt rule must cite the pin test so a future
+    reader can locate the mechanical guard for excluded-scope drift.
+    """
+    text = EXECUTION_PROMPT_DOC.read_text(encoding="utf-8")
+    required_test_ref = (
+        "tests/runtime/test_handoff_artifact_path_invariants.py"
+        "::TestCheckpointReportExcludedScopeAuthority"
+    )
+    assert required_test_ref in text, (
+        "Execution prompt must name the mechanical pin "
+        f"{required_test_ref!r} so the excluded-scope rule's "
+        "enforcement is traceable."
+    )
+
+
+class TestCheckpointReportExcludedScopeAuthority:
+    """Grouping class for the excluded-scope authority pins — keeps the
+    ``::TestCheckpointReportExcludedScopeAuthority`` reference the
+    execution prompt cites resolvable, and carries the rule tokens
+    forward as a class-level reference for future extensions.
+    """
+
+    REQUIRED_TOKENS = _CHECKPOINT_EXCLUDED_SCOPE_AUTHORITY_REQUIRED_TOKENS
+
+    def test_required_token_list_is_non_empty(self) -> None:
+        """Scanner-sanity pin so a future refactor cannot empty the
+        required-token list and silently disable both sibling tests.
+        """
+        assert len(self.REQUIRED_TOKENS) >= 4, (
+            f"_CHECKPOINT_EXCLUDED_SCOPE_AUTHORITY_REQUIRED_TOKENS "
+            f"shrunk to {len(self.REQUIRED_TOKENS)} token(s); must "
+            "remain ≥ 4 to keep the authority-rule invariant meaningful."
+        )
+
+    def test_class_ref_resolves_in_prompt(self) -> None:
+        """Delegates to the module-level pin-citation test but via the
+        class path the execution prompt cites.
+        """
+        test_execution_prompt_names_excluded_scope_mechanical_pin()
+
+    def test_prompt_rule_is_present_via_class(self) -> None:
+        """Delegates to the module-level token-presence test. Keeps the
+        rule discoverable under the class path named in the execution
+        prompt.
+        """
+        test_execution_prompt_carries_checkpoint_excluded_scope_authority_rule()
+
+    def test_rule_distinguishes_staged_from_unstaged(self) -> None:
+        """The excluded-scope rule must explicitly require
+        distinguishing staged entries (first column non-space) from
+        unstaged / untracked entries (first column space or ``?``).
+        Without this distinction, reports can list staged files under
+        `Excluded scope` or vice versa.
+        """
+        text = EXECUTION_PROMPT_DOC.read_text(encoding="utf-8")
+        # The rule body must reference both the staged-indicator and
+        # the untracked-indicator explicitly so the distinction is
+        # mechanically unambiguous.
+        assert "unstaged" in text or "untracked" in text, (
+            "Excluded-scope rule missing staged/unstaged distinction "
+            "vocabulary; reports cannot mechanically classify "
+            "`git status --short` rows without it."
+        )
+        assert "??" in text, (
+            "Excluded-scope rule must reference the `??` untracked "
+            "indicator so authors know which status rows qualify as "
+            "excluded."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint-retry throttle rule
+# ---------------------------------------------------------------------------
+# Added 2026-04-17 after repeated identical checkpoint retries were observed
+# producing the same harness-level Bash-approval deny with unchanged lane
+# fingerprint (same HEAD, same staged count, same denial text). The rule
+# prevents immediate retry loops that cannot make forward progress and
+# instead routes the supervisor to the next bounded non-write slice until
+# an approval-state or lane-state change is observed.
+#
+# The pin verifies the SUPERVISOR_HANDOFF.md Checkpoint Stewardship section
+# carries the rule's anchor heading and its three fingerprint-component
+# clauses plus the "approval-state change" / "lane-state change" retry
+# gating vocabulary.
+# ---------------------------------------------------------------------------
+
+SUPERVISOR_HANDOFF_DOC = REPO_ROOT / "ClauDEX" / "SUPERVISOR_HANDOFF.md"
+
+_CHECKPOINT_RETRY_THROTTLE_REQUIRED_TOKENS: tuple[str, ...] = (
+    # Rule-heading anchor:
+    "Checkpoint-retry throttle rule",
+    # Unchanged-fingerprint trigger vocabulary:
+    "lane fingerprint is **unchanged**",
+    # Three fingerprint components (HEAD, staged count, denial text):
+    "`git rev-parse HEAD`",
+    "`git diff --cached --name-only | wc -l`",
+    "Permission to use Bash with command git commit -F",
+    # Forward-motion clause: proceed to next bounded non-write slice.
+    "next bounded non-write cutover slice",
+    # Retry-gating clause: approval-state OR lane-state change.
+    "approval-state change",
+    "lane-state change",
+    # Pin-citation clause:
+    "TestCheckpointRetryThrottleRule",
+)
+
+
+def test_supervisor_handoff_carries_checkpoint_retry_throttle_rule() -> None:
+    """The SUPERVISOR_HANDOFF.md Checkpoint Stewardship section must state
+    the checkpoint-retry throttle rule verbatim. Every required token
+    must appear in the file's body. Missing tokens indicate a silent
+    regression of the 2026-04-17 governance-hardening edit.
+    """
+    assert SUPERVISOR_HANDOFF_DOC.exists(), (
+        f"Supervisor handoff doc missing at {SUPERVISOR_HANDOFF_DOC}"
+    )
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+    missing = [
+        t for t in _CHECKPOINT_RETRY_THROTTLE_REQUIRED_TOKENS if t not in text
+    ]
+    assert not missing, (
+        "SUPERVISOR_HANDOFF.md is missing required Checkpoint-retry "
+        "throttle rule tokens. The authoritative guidance for when a "
+        "harness-denied checkpoint retry may or must not be immediately "
+        "re-dispatched must stay in this file.\n"
+        + "\n".join(f"  - missing: {t!r}" for t in missing)
+    )
+
+
+class TestCheckpointRetryThrottleRule:
+    """Grouping class for the checkpoint-retry throttle invariant — keeps
+    the ``::TestCheckpointRetryThrottleRule`` reference the supervisor
+    handoff cites resolvable, and carries the required-token list forward
+    as a class-level reference for future extensions.
+    """
+
+    REQUIRED_TOKENS = _CHECKPOINT_RETRY_THROTTLE_REQUIRED_TOKENS
+
+    def test_required_token_list_is_non_empty(self) -> None:
+        """Scanner-sanity pin so a future refactor cannot empty the
+        required-token list and silently disable the sibling test.
+        """
+        assert len(self.REQUIRED_TOKENS) >= 6, (
+            f"_CHECKPOINT_RETRY_THROTTLE_REQUIRED_TOKENS shrunk to "
+            f"{len(self.REQUIRED_TOKENS)} token(s); must remain ≥ 6 to "
+            "keep the throttle-rule invariant meaningful."
+        )
+
+    def test_rule_names_all_three_fingerprint_components(self) -> None:
+        """The rule body must enumerate all three fingerprint components
+        (HEAD, staged count, denial text) explicitly. Without all three,
+        the throttle predicate is under-specified and a regression could
+        drop one component and silently reopen the retry-loop class.
+        """
+        text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+        components = {
+            "HEAD": "`git rev-parse HEAD`",
+            "staged count": "`git diff --cached --name-only | wc -l`",
+            "denial text": "Permission to use Bash with command git commit -F",
+        }
+        missing = {
+            name: tok for name, tok in components.items() if tok not in text
+        }
+        assert not missing, (
+            "Throttle rule must name all three fingerprint components "
+            "(HEAD, staged count, denial text). Missing: "
+            + ", ".join(f"{n}={t!r}" for n, t in missing.items())
+        )
+
+    def test_rule_specifies_forward_motion_on_unchanged_fingerprint(
+        self,
+    ) -> None:
+        """The rule must direct the supervisor to proceed to a next
+        bounded non-write slice when the fingerprint is unchanged —
+        otherwise the rule only says 'do not retry' without providing
+        the forward-motion path, leaving the supervisor idle.
+        """
+        text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+        assert "next bounded non-write cutover slice" in text, (
+            "Throttle rule must direct the supervisor toward a next "
+            "bounded non-write slice when the checkpoint is throttled; "
+            "otherwise the rule blocks retry without providing forward "
+            "motion."
+        )
+
+    def test_rule_specifies_retry_unblock_conditions(self) -> None:
+        """The rule must name BOTH retry-unblock conditions
+        (approval-state change OR lane-state change). Dropping either
+        creates a class of drift where a legitimate retry is blocked
+        (or an illegitimate retry is permitted).
+        """
+        text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+        assert "approval-state change" in text, (
+            "Throttle rule must name `approval-state change` as a "
+            "retry-unblock condition (user grants harness approval)."
+        )
+        assert "lane-state change" in text, (
+            "Throttle rule must name `lane-state change` as a retry-"
+            "unblock condition (HEAD moves, staged count changes, or "
+            "denial text changes)."
+        )

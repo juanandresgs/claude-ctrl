@@ -49,6 +49,8 @@ Generator version: `1.0.0`
   - _Plan-scope validation on source writes (CUTOVER_PLAN H4)._
 - matcher `Write|Edit` → `hooks/test-runner.sh`
   - _Post-write test runner (CUTOVER_PLAN H4 / P7)._
+- matcher `Bash` → `hooks/post-bash.sh`
+  - _Post-bash source-mutation readiness invalidation (Invariant #15, DEC-EVAL-006)._
 
 ## Notification
 

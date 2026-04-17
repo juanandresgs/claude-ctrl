@@ -450,6 +450,113 @@ def _handle_hook(args) -> int:
     return _err(f"unknown hook action: {args.action}")
 
 
+def _handle_bridge(args) -> int:
+    """Handle ``cc-policy bridge`` subcommands (read-only bridge tools).
+
+    Currently supports one action:
+
+    * ``validate-settings`` (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001) —
+      reads ``ClauDEX/bridge/claude-settings.json`` (or the file
+      specified by ``--settings-path``), runs
+      ``runtime.core.bridge_permissions.validate_bridge_settings``,
+      and reports drift. Exit 0 with ``{"status": "ok"}`` on clean;
+      exit non-zero with ``{"status": "drift", "messages": [...]}``
+      on violation.
+
+    This command is strictly read-only — it does not rewrite the
+    bridge file, does not write to the runtime DB, and does not emit
+    any event.
+    """
+    if args.action == "validate-settings":
+        from pathlib import Path
+
+        import runtime.core.bridge_permissions as bridge_permissions_mod
+
+        settings_path_str = getattr(args, "settings_path", None)
+        if settings_path_str:
+            settings_path = Path(settings_path_str).resolve()
+        else:
+            # Default: ClauDEX/bridge/claude-settings.json at repo root.
+            settings_path = (
+                _PROJECT_ROOT / "ClauDEX" / "bridge" / "claude-settings.json"
+            ).resolve()
+
+        if not settings_path.is_file():
+            return _err(
+                f"bridge validate-settings: settings file not found at {settings_path}"
+            )
+
+        try:
+            with settings_path.open() as f:
+                settings = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            return _err(
+                f"bridge validate-settings: failed to read {settings_path}: {exc}"
+            )
+
+        messages = bridge_permissions_mod.validate_bridge_settings(settings)
+
+        if not messages:
+            return _ok({"settings_path": str(settings_path)})
+
+        # Non-empty: exit non-zero with drift detail.
+        payload = {
+            "status": "drift",
+            "messages": messages,
+            "settings_path": str(settings_path),
+        }
+        print(json.dumps(payload))
+        return 1
+
+    if args.action == "broker-health":
+        import runtime.core.bridge_permissions as bridge_permissions_mod
+
+        try:
+            snapshot = bridge_permissions_mod.probe_broker_health(
+                braid_root=getattr(args, "braid_root", None),
+            )
+        except Exception as exc:  # pragma: no cover — probe is fail-closed
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error_detail": (
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                )
+            )
+            return 1
+        print(json.dumps(snapshot.to_json_dict()))
+        return 0
+
+    if args.action == "probe-response-drift":
+        import runtime.core.bridge_permissions as bridge_permissions_mod
+
+        try:
+            diagnostic = bridge_permissions_mod.probe_response_surface_drift(
+                run_id=args.run_id,
+                braid_root=getattr(args, "braid_root", None),
+                state_dir=getattr(args, "state_dir", None),
+            )
+        except Exception as exc:  # pragma: no cover — probe is fail-closed
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error_detail": (
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                )
+            )
+            return 1
+        print(json.dumps(diagnostic.to_json_dict()))
+        return 0
+
+    return _err(f"unknown bridge action: {args.action}")
+
+
 def _handle_constitution(args) -> int:
     """Handle ``cc-policy constitution`` subcommands (read-only registry inspection).
 
@@ -1873,6 +1980,187 @@ def _handle_workflow(args) -> int:
             rows = workflows_mod.list_bindings(conn)
             return _ok({"items": rows, "count": len(rows)})
 
+        elif args.action == "unbind":
+            removed = workflows_mod.unbind_workflow(conn, args.workflow_id)
+            return _ok(
+                {
+                    "workflow_id": args.workflow_id,
+                    "action": "unbind",
+                    "removed": removed,
+                    "found": removed,
+                }
+            )
+
+        elif args.action == "scope-unset":
+            removed = workflows_mod.unset_scope(conn, args.workflow_id)
+            return _ok(
+                {
+                    "workflow_id": args.workflow_id,
+                    "action": "scope-unset",
+                    "removed": removed,
+                    "found": removed,
+                }
+            )
+
+        elif args.action == "goal-set":
+            # Canonical workflow-scoped goal upsert.
+            # Refuses unbound workflow_id so callers cannot seed goals under
+            # workflows that have no worktree/branch binding — the binding
+            # is the authority that proves the workflow exists.
+            # (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)
+            if workflows_mod.get_binding(conn, args.workflow_id) is None:
+                return _err(
+                    f"workflow_id '{args.workflow_id}' is not bound; "
+                    f"run `cc-policy workflow bind` first. Refusing to "
+                    f"seed a goal under an unbound workflow — this is the "
+                    f"authority check introduced by "
+                    f"DEC-CLAUDEX-DW-WORKFLOW-JOIN-001."
+                )
+            import runtime.core.decision_work_registry as _dwr
+
+            # Cross-workflow ownership guard on the goal authority.
+            # Symmetric with the work-item-set check: upsert must not
+            # reassign an existing goal_id from workflow A to workflow B.
+            # Legal upserts — same-workflow overwrite and legacy
+            # NULL-workflow adoption — are preserved.
+            # (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)
+            existing = _dwr.get_goal(conn, args.goal_id)
+            if (
+                existing is not None
+                and existing.workflow_id is not None
+                and existing.workflow_id != args.workflow_id
+            ):
+                return _err(
+                    f"goal_id '{args.goal_id}' is already scoped to "
+                    f"workflow '{existing.workflow_id}'; refusing to "
+                    f"reassign it to '{args.workflow_id}'. Cross-workflow "
+                    f"goal reassignment would re-open the contract bleed "
+                    f"closed by DEC-CLAUDEX-DW-WORKFLOW-JOIN-001. Choose a "
+                    f"distinct goal_id for the new workflow, or retire the "
+                    f"existing goal first."
+                )
+
+            record = _dwr.GoalRecord(
+                goal_id=args.goal_id,
+                desired_end_state=args.desired_end_state,
+                status=args.status,
+                autonomy_budget=int(args.autonomy_budget),
+                continuation_rules_json=getattr(args, "continuation_rules_json", "[]") or "[]",
+                stop_conditions_json=getattr(args, "stop_conditions_json", "[]") or "[]",
+                escalation_boundaries_json=getattr(args, "escalation_boundaries_json", "[]") or "[]",
+                user_decision_boundaries_json=getattr(args, "user_decision_boundaries_json", "[]") or "[]",
+                workflow_id=args.workflow_id,
+            )
+            stored = _dwr.upsert_goal(conn, record)
+            return _ok(
+                {
+                    "action": "goal-set",
+                    "workflow_id": args.workflow_id,
+                    "goal_id": stored.goal_id,
+                    "goal_status": stored.status,
+                    "created_at": stored.created_at,
+                    "updated_at": stored.updated_at,
+                }
+            )
+
+        elif args.action == "work-item-set":
+            # Canonical workflow-scoped work-item upsert.
+            # Two authority checks:
+            #   1) workflow_id must be bound (same rule as goal-set).
+            #   2) goal_id must already exist AND carry the same workflow_id
+            #      — otherwise the caller is attaching a work_item to a goal
+            #      that belongs to a different workflow, which would re-open
+            #      the cross-workflow bleed DEC-CLAUDEX-DW-WORKFLOW-JOIN-001
+            #      closed.
+            if workflows_mod.get_binding(conn, args.workflow_id) is None:
+                return _err(
+                    f"workflow_id '{args.workflow_id}' is not bound; "
+                    f"run `cc-policy workflow bind` first. Refusing to "
+                    f"seed a work_item under an unbound workflow."
+                )
+            import runtime.core.decision_work_registry as _dwr
+
+            goal = _dwr.get_goal(conn, args.goal_id)
+            if goal is None:
+                return _err(
+                    f"goal_id '{args.goal_id}' not found; create the goal "
+                    f"first with `cc-policy workflow goal-set`."
+                )
+            if goal.workflow_id != args.workflow_id:
+                return _err(
+                    f"goal_id '{args.goal_id}' is scoped to workflow "
+                    f"'{goal.workflow_id}', not '{args.workflow_id}'. "
+                    f"Refusing to attach a work_item across workflow "
+                    f"boundaries (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)."
+                )
+            record = _dwr.WorkItemRecord(
+                work_item_id=args.work_item_id,
+                goal_id=args.goal_id,
+                title=args.title,
+                status=args.status,
+                version=int(getattr(args, "version", 1) or 1),
+                author=getattr(args, "author", "planner") or "planner",
+                scope_json=getattr(args, "scope_json", "{}") or "{}",
+                evaluation_json=getattr(args, "evaluation_json", "{}") or "{}",
+                head_sha=getattr(args, "head_sha", None) or None,
+                reviewer_round=int(getattr(args, "reviewer_round", 0) or 0),
+                workflow_id=args.workflow_id,
+            )
+            stored = _dwr.upsert_work_item(conn, record)
+            return _ok(
+                {
+                    "action": "work-item-set",
+                    "workflow_id": args.workflow_id,
+                    "goal_id": stored.goal_id,
+                    "work_item_id": stored.work_item_id,
+                    "work_item_status": stored.status,
+                    "created_at": stored.created_at,
+                    "updated_at": stored.updated_at,
+                }
+            )
+
+        elif args.action == "goal-get":
+            import runtime.core.decision_work_registry as _dwr
+
+            goal = _dwr.get_goal(conn, args.goal_id)
+            if goal is None:
+                return _err(f"goal_id '{args.goal_id}' not found")
+            return _ok(
+                {
+                    "goal_id": goal.goal_id,
+                    "desired_end_state": goal.desired_end_state,
+                    "status": goal.status,
+                    "autonomy_budget": goal.autonomy_budget,
+                    "workflow_id": goal.workflow_id,
+                    "created_at": goal.created_at,
+                    "updated_at": goal.updated_at,
+                    "found": True,
+                }
+            )
+
+        elif args.action == "work-item-get":
+            import runtime.core.decision_work_registry as _dwr
+
+            wi = _dwr.get_work_item(conn, args.work_item_id)
+            if wi is None:
+                return _err(f"work_item_id '{args.work_item_id}' not found")
+            return _ok(
+                {
+                    "work_item_id": wi.work_item_id,
+                    "goal_id": wi.goal_id,
+                    "title": wi.title,
+                    "status": wi.status,
+                    "version": wi.version,
+                    "author": wi.author,
+                    "head_sha": wi.head_sha,
+                    "reviewer_round": wi.reviewer_round,
+                    "workflow_id": wi.workflow_id,
+                    "created_at": wi.created_at,
+                    "updated_at": wi.updated_at,
+                    "found": True,
+                }
+            )
+
     except ValueError as e:
         return _err(str(e))
     finally:
@@ -3280,6 +3568,64 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # bridge — read-only ClauDEX bridge permission surface tooling
+    # (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001)
+    bridge_p = subparsers.add_parser(
+        "bridge",
+        help="ClauDEX bridge permission surface tools (read-only)",
+    )
+    bridge_sub = bridge_p.add_subparsers(dest="action", required=True)
+    bridge_validate = bridge_sub.add_parser(
+        "validate-settings",
+        help=(
+            "Validate ClauDEX/bridge/claude-settings.json against "
+            "runtime.core.bridge_permissions; non-zero exit on drift "
+            "(DEC-CLAUDEX-BRIDGE-PERMISSIONS-001)"
+        ),
+    )
+    bridge_validate.add_argument(
+        "--settings-path",
+        default=None,
+        help=(
+            "Path to the bridge settings file to validate. Defaults to the "
+            "repo root's ClauDEX/bridge/claude-settings.json."
+        ),
+    )
+    bridge_broker_health = bridge_sub.add_parser(
+        "broker-health",
+        help=(
+            "Probe bridge broker daemon health (pidfile + socket). "
+            "Read-only classification."
+        ),
+    )
+    bridge_broker_health.add_argument(
+        "--braid-root",
+        default=None,
+        help="Override $BRAID_ROOT for the probe (defaults to env).",
+    )
+    bridge_probe = bridge_sub.add_parser(
+        "probe-response-drift",
+        help=(
+            "Classify response-surface drift for a run (broker health + "
+            "pending-review + env). Read-only."
+        ),
+    )
+    bridge_probe.add_argument(
+        "--run-id",
+        required=True,
+        help="Target run id under $BRAID_ROOT/runs/.",
+    )
+    bridge_probe.add_argument(
+        "--braid-root",
+        default=None,
+        help="Override $BRAID_ROOT for the probe (defaults to env).",
+    )
+    bridge_probe.add_argument(
+        "--state-dir",
+        default=None,
+        help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
+    )
+
     # constitution — read-only constitution registry inspection/validation
     const_p = subparsers.add_parser(
         "constitution",
@@ -3874,6 +4220,138 @@ def build_parser() -> argparse.ArgumentParser:
 
     wf_sub.add_parser("list", help="List all workflow bindings")
 
+    wf_unbind = wf_sub.add_parser(
+        "unbind",
+        help="Remove workflow binding row (idempotent; also drops matching scope row)",
+    )
+    wf_unbind.add_argument("workflow_id")
+
+    wf_scope_unset = wf_sub.add_parser(
+        "scope-unset",
+        help="Remove workflow scope manifest row (idempotent; leaves binding intact)",
+    )
+    wf_scope_unset.add_argument("workflow_id")
+
+    # DEC-CLAUDEX-DW-WORKFLOW-JOIN-001: workflow-scoped seeding verbs.
+    # Before this slice no orchestrator-facing CLI surface existed to create a
+    # goal or work_item bound to a workflow_id — callers had to reach
+    # decision_work_registry through Python. The new verbs close that gap and
+    # enforce the binding-exists precondition so seeds cannot be attached to
+    # workflows that have no worktree/branch authority.
+    wf_goal_set = wf_sub.add_parser(
+        "goal-set",
+        help="Create or upsert a goal scoped to a bound workflow_id",
+    )
+    wf_goal_set.add_argument("workflow_id")
+    wf_goal_set.add_argument("goal_id")
+    wf_goal_set.add_argument(
+        "--desired-end-state",
+        dest="desired_end_state",
+        required=True,
+        help="Free-text description of the goal's completion criterion",
+    )
+    wf_goal_set.add_argument(
+        "--status",
+        default="active",
+        choices=sorted(["active", "awaiting_user", "complete", "blocked_external"]),
+    )
+    wf_goal_set.add_argument(
+        "--autonomy-budget",
+        dest="autonomy_budget",
+        type=int,
+        default=0,
+        help="Integer budget of autonomous steps the goal may spend",
+    )
+    wf_goal_set.add_argument(
+        "--continuation-rules-json",
+        dest="continuation_rules_json",
+        default="[]",
+        help="JSON array of continuation rule strings",
+    )
+    wf_goal_set.add_argument(
+        "--stop-conditions-json",
+        dest="stop_conditions_json",
+        default="[]",
+        help="JSON array of stop-condition strings",
+    )
+    wf_goal_set.add_argument(
+        "--escalation-boundaries-json",
+        dest="escalation_boundaries_json",
+        default="[]",
+        help="JSON array of escalation-boundary strings",
+    )
+    wf_goal_set.add_argument(
+        "--user-decision-boundaries-json",
+        dest="user_decision_boundaries_json",
+        default="[]",
+        help="JSON array of user-decision-boundary strings",
+    )
+
+    wf_goal_get = wf_sub.add_parser(
+        "goal-get",
+        help="Read back a goal record by goal_id",
+    )
+    wf_goal_get.add_argument("goal_id")
+
+    wf_wi_set = wf_sub.add_parser(
+        "work-item-set",
+        help="Create or upsert a work_item scoped to a bound workflow_id",
+    )
+    wf_wi_set.add_argument("workflow_id")
+    wf_wi_set.add_argument("goal_id")
+    wf_wi_set.add_argument("work_item_id")
+    wf_wi_set.add_argument(
+        "--title", required=True, help="Human-readable work-item title"
+    )
+    wf_wi_set.add_argument(
+        "--status",
+        default="in_progress",
+        choices=sorted(
+            [
+                "pending",
+                "in_progress",
+                "in_review",
+                "ready_to_land",
+                "landed",
+                "needs_changes",
+                "blocked_by_plan",
+                "abandoned",
+            ]
+        ),
+    )
+    wf_wi_set.add_argument("--version", type=int, default=1)
+    wf_wi_set.add_argument("--author", default="planner")
+    wf_wi_set.add_argument(
+        "--scope-json",
+        dest="scope_json",
+        default="{}",
+        help="JSON Scope Manifest (allowed/required/forbidden/state_domains)",
+    )
+    wf_wi_set.add_argument(
+        "--evaluation-json",
+        dest="evaluation_json",
+        default="{}",
+        help="JSON Evaluation Contract (required_tests/evidence/rollback_boundary/notes)",
+    )
+    wf_wi_set.add_argument(
+        "--head-sha",
+        dest="head_sha",
+        default=None,
+        help="Optional commit SHA the work_item currently points at",
+    )
+    wf_wi_set.add_argument(
+        "--reviewer-round",
+        dest="reviewer_round",
+        type=int,
+        default=0,
+    )
+
+    wf_wi_get = wf_sub.add_parser(
+        "work-item-get",
+        help="Read back a work_item record by work_item_id",
+    )
+    wf_wi_get.add_argument("work_item_id")
+
     # bug pipeline
     bug_p = subparsers.add_parser("bug", help="Canonical bug-filing pipeline")
     bug_sub = bug_p.add_subparsers(dest="action", required=True)
@@ -4340,6 +4818,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_event(args)
     if args.domain == "hook":
         return _handle_hook(args)
+    if args.domain == "bridge":
+        return _handle_bridge(args)
     if args.domain == "constitution":
         return _handle_constitution(args)
     if args.domain == "decision":

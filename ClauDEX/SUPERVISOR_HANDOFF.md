@@ -1,5 +1,15 @@
 # ClauDEX Supervisor Handoff
 
+## Current Lane Truth (2026-04-17)
+
+- Branch `claudesox-local` at HEAD `f24df96`, **10 commits ahead of** `origin/feat/claudex-cutover`.
+- **28-file staged checkpoint debt present** in the git index: two Bundle E subordinate-notes docs + seven bridge-permission authority slice paths + three authority-doc / time-scoping paths + seven Invariant #15 Bash readiness-invalidation paths + one supervisor Step 4 response-surface fallback edit (`.codex/prompts/claudex_supervisor.txt`) + one handoff-artifact invariant extension (`tests/runtime/test_handoff_artifact_path_invariants.py`) + one Invariant #11 mechanical-pin scan (`tests/runtime/test_decision_ref_resolution.py`) + one Invariant #5 mechanical-pin scanner (`tests/runtime/policies/test_command_intent_single_authority.py`) + one current-lane state-authority scanner pin (`tests/runtime/test_current_lane_state_invariants.py`) + one Invariant #13 symmetric retrieval-layer downstream pin (`tests/runtime/test_retrieval_layer_downstream_invariant.py`) + one dated invariant-coverage-matrix artifact (`ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md`) + one coverage-matrix mechanical pin (`tests/runtime/test_cutover_invariant_coverage_matrix.py`) + one CUTOVER_PLAN phase-closure time-scoping pin (`tests/runtime/test_cutover_plan_phase_closure_invariants.py`, with paired Status annotations added to CUTOVER_PLAN.md). Bridge-parity additions for Invariant #15 are folded into the existing `ClauDEX/bridge/claude-settings.json`, `runtime/core/bridge_permissions.py`, and `tests/runtime/test_bridge_permissions.py` entries, not new files. Runtime gates are green (`evaluation_state` = `ready_for_guardian`, `test_state` = pass, active guardian lease with `["routine_local","high_risk"]`).
+- **Checkpoint commit/push blocker depends on current actor role — runtime gate precedes harness:**
+  - If the acting caller is NOT `guardian:land` (e.g., orchestrator acting as `implementer` after an implementer lease issuance), `runtime/core/policies/bash_git_who.py` (DEC-WHO-LANDING-001) denies FIRST with `"Landing authority required: git commit requires the can_land_git capability. Only guardian:land carries this capability. Current actor '<role>' does not have it."` This is a runtime policy deny surfaced via `pre-bash.sh` → `cc-policy evaluate`.
+  - If the acting caller IS `guardian:land` with an active guardian lease, the runtime path clears (`cc-policy lease validate-op` returns `allowed=true`) and the Claude Code harness Bash permission prompt becomes the remaining gate.
+  - Canonical unblock path: issue a fresh guardian lease via `cc-policy lease issue-for-dispatch guardian --workflow-id <wf> --worktree-path <wt> --branch <branch> --head-sha <sha>` THEN dispatch a guardian subagent with the prompt-pack from `cc-policy dispatch agent-prompt --workflow-id <wf> --stage-id guardian:land`. That subagent inherits guardian role in runtime context and runtime authorizes its `git commit`. The harness prompt remains the outermost gate and may still require user approval at that point.
+- Any "no checkpoint debt remains" wording elsewhere in this file refers to earlier Phase-8 closeout snapshots (typically 2026-04-14) and is NOT current lane truth. Those statements are preserved for historical record only.
+
 This file defines the project-specific Codex supervisor kickoff for the
 `claude-ctrl-hardFork` overnight bridge session.
 
@@ -16,6 +26,170 @@ The supervisor must not invent a new project or a second control plane. It
 stays on the active ClauDEX cutover slice only.
 
 ## Open Soak Issues
+
+### Checkpoint-report excluded-scope narration drift (2026-04-17) — RESOLVED (guardrail added)
+
+- **Subject:** `guardian:land` checkpoint-retry report emitted for Codex instruction `1776423808293-0006-4eqliy` listed an `Excluded scope` cell enumerating ~25 modified / untracked paths (e.g., `M .codex/hooks/stop_supervisor.py`, `M scripts/claudex-*.sh`, `?? ClauDEX/CC_POLICY_SUPERVISION_RECOVERY_PLAN.md`, `M CLAUDE.md`, `M hooks/pre-agent.sh`, etc.) that were NOT present in live `git status --short` at report time.
+- **Repro:** compare the emitted report's `Excluded scope` enumeration to `git status --short` at HEAD `f24df96`. Live state shows a single non-staged entry: `?? .claudex/`. Drift source: the session-start `gitStatus` block embedded in the environment prompt, narrated forward across slices as if it were live state.
+- **Evidence:** Codex review instruction `1776423868647-0007-ugxr84` flagged the contradiction. Supervisor verification at the same HEAD confirmed only `?? .claudex/` outside the staged bundle.
+- **Impact:** the report was materially truthful about the harness-block outcome (staged count, blocker text) but the excluded-scope cell was stale fiction. Future automation trusting such a report could believe the repo has substantial unstaged work it does not actually have, or conclude deferred items remain unsafely outside the bundle when they no longer exist in the worktree. This is a reporting-authority defect — excluded-scope narration drift — symmetric to the earlier included-scope drift.
+- **Fix (applied this slice):** added `CHECKPOINT REPORT EXCLUDED-SCOPE AUTHORITY RULE` to `ClauDEX/CC_POLICY_WHO_REMEDIATION_EXECUTION_PROMPT.txt` requiring (1) excluded scope derived from live `git status --short`, (2) explicit staged-vs-unstaged/untracked distinction via first-column indicator, (3) explicit "none outside lane-local artifacts" wording when only `?? .claudex/` remains, and (4) prohibition of narration from session-start `gitStatus` snapshots or recalled lists. Mechanical pin: `tests/runtime/test_handoff_artifact_path_invariants.py::TestCheckpointReportExcludedScopeAuthority`.
+- **Blocking?** No. The real staged index and runtime gates were unaffected. Resolved by the guardrail prose + mechanical pin this slice.
+- **Verification state:** 4-token pin (`CHECKPOINT REPORT EXCLUDED-SCOPE AUTHORITY RULE`, `git status --short`, `distinguish staged entries`, `none outside lane-local artifacts`, `session-start status snapshot`) asserts the execution prompt surface carries the rule; pin-citation test asserts the rule names the mechanical class path; staged/unstaged distinction test asserts the rule body references both `??` and unstaged/untracked vocabulary.
+
+### Checkpoint-report staged-scope narration drift (2026-04-17) — RESOLVED (guardrail added)
+
+- **Subject:** `git commit` / `guardian:land` subagent report emitted by Codex instruction `1776422371697-0001-b39h0v` listed `Included scope` paths that were NOT in the live staged index.
+- **Repro context:** the guardian subagent reported an "Included (28 paths)" list containing entries like `.codex/hooks/stop_supervisor.py`, `.codex/prompts/claudex_handoff.txt`, `CLAUDE.md`, `ClauDEX/OVERNIGHT_RUNBOOK.md`, `hooks/pre-agent.sh`, `hooks/subagent-start.sh`, `runtime/core/agent_prompt.py`, `runtime/core/authority_registry.py`, `runtime/core/decision_work_registry.py`, `runtime/core/eval_runner.py`, `runtime/core/policies/__init__.py`, `runtime/core/policies/agent_contract_required.py`, `runtime/core/workflows.py`, `runtime/schemas.py`, `scripts/claudex-sync-claude-agents.sh`, `tests/runtime/test_agent_contract_required_policy.py`, `tests/test_bridge_settings_bash_envelope.py`, `tests/test_bridge_settings_no_git_landing_denies.py`, `tests/test_claude_agents_projection.py`. None of those paths is in `git diff --cached --name-only` at HEAD `f24df96...`; the authoritative staged set is a different 28-path list (see the matching `## Current Restart Slice` composition and `cc-policy-who-remediation Slice 1 (2026-04-17)` staged-debt bullet above in this file). The orchestrator's wrap-up response detected the mismatch and over-reported the authoritative list alongside the subagent's hallucination; Codex review `1776422792879-0002-ibhq3l` independently confirmed the real staged count is 28 but did not itself enumerate the subagent's hallucinated entries.
+- **Impact:** the report was materially truthful about the harness-block outcome (staged count, commit SHA, blocker text) but the scope-narration cells were unreliable. A future automation or operator who trusts such a report verbatim could mis-audit what's in-bundle or misbelieve a file has already been checkpointed. This is a reporting-authority defect — scope narration drift — even though the real git index was byte-identical to pre-dispatch.
+- **Suggested fix (applied this slice):** the guardian-dispatch prompt authoring (in the execution-prompt surface and the supervisor handoff discipline) must require checkpoint reports to derive `Included scope` exclusively from `git diff --cached --name-only` at the time of the attempt. Reports must cite the exact `git diff --cached --name-only | wc -l` count and MUST NOT narrate paths from memory or from a prior turn's dispatch-context list. Any non-staged path in the `Included scope` section is treated as invalid. This discipline is pinned by a new mechanical invariant extension in `tests/runtime/test_handoff_artifact_path_invariants.py` (`TestCheckpointReportScopeAuthority`).
+- **Blocking?** No. The real staged index and runtime gates were unaffected; only the narrative prose was unreliable. Resolved by adding the guardrail prose and the mechanical pin this slice.
+- **Verification state:** mechanical pin asserts the execution prompt surface (`ClauDEX/CC_POLICY_WHO_REMEDIATION_EXECUTION_PROMPT.txt`) contains the explicit `git diff --cached --name-only` authority clause and count-requirement clause.
+
+### Invariant #5 scanner defect — Rule A/B bypassed via `_KNOWN_EXEMPT_MODULES` (2026-04-17) — RESOLVED
+
+- **Subject:** `tests/runtime/policies/test_command_intent_single_authority.py` (the Invariant #5 mechanical pin added this session).
+- **Symptom:** the first landing of the scanner included `if path.name in _KNOWN_EXEMPT_MODULES: continue` at the top of both Rule A (no-shlex-import) and Rule B (no-split-on-raw-command) scan loops. This silently allowed any module in the allowlist (currently `bash_tmp_safety.py`, exempted only for Rule C literal-substring-pattern use) to also bypass the two absolute rules, contradicting the scanner's own module-docstring contract (*"Rules A and B are absolute ... apply to every policy module regardless of this list"*).
+- **Evidence:** Codex review instruction `1776417637417-0001-oqn1bp` flagged the contradiction at the exact lineno positions (~310-311, ~328-329 in the first-landing form). Static verification confirmed: exempt modules could have imported `shlex` or tokenized raw command strings without failing Rule A/B.
+- **Impact:** the scanner's Rule A and Rule B were effectively "strict only on non-exempt modules", not "absolute" as claimed. A future author adding a module to the allowlist for Rule C reasons would accidentally also grant that module a free pass on tokenization and `shlex` import, reopening the parallel-parser-drift defect class this pin exists to close.
+- **Fix (applied 2026-04-17):** Rule A and Rule B scan loops now iterate every policy module unconditionally — the `if path.name in _KNOWN_EXEMPT_MODULES: continue` guard was removed from both. Comment block added to each rule explicitly stating "Rule {A,B} is absolute per the module-docstring contract. Rule C may keep the current exemption behavior" so a future re-introduction will be caught at review. A new `TestRuleABAbsoluteNoExemptBypass` class adds three mechanical self-tests: (a) `test_rule_a_does_not_reference_known_exempt_modules` — AST-scans the test file's own source and asserts `_KNOWN_EXEMPT_MODULES` is NOT referenced inside the Rule A test-function body; (b) `test_rule_b_does_not_reference_known_exempt_modules` — same invariant for Rule B; (c) `test_rule_c_does_reference_known_exempt_modules` — counterpart that asserts Rule C's test-function body DOES reference the allowlist (so the allowlist doesn't silently become dead code). A future regression that re-adds the `continue`-on-exempt pattern to Rule A or Rule B will fail these invariants.
+- **Blocking?** No — resolved in the same slice. The scanner now correctly enforces Rules A and B absolutely.
+- **Verification state:** 14 tests pass in `tests/runtime/policies/test_command_intent_single_authority.py` (3 live-repo rule scans + 4 positive-fixture-detection tests + 1 negative-fixture-clean-passes test + 3 module-surface/allowlist-discipline tests + 3 new scanner-self-invariant tests). `tests/runtime/policies/test_bash_git_who.py` (55 tests) and `tests/runtime/test_policy_engine.py` (subset) remain green — zero policy-module regression.
+
+### Invariant #11 mechanical pin verified + moved into staged checkpoint scope (2026-04-17)
+
+- **Subject:** `tests/runtime/test_decision_ref_resolution.py` — the filesystem-based scanner pinning CUTOVER_PLAN Invariant #11 (`@decision-ref` / `Refs DEC-*` cross-references must resolve to an `@decision DEC-X` declaration somewhere in repo source). Landed from a prior implementer slice (Codex acceptance `1776411084446-0003-xs5p0d`), originally held as untracked (`??`) and excluded from the 19-file checkpoint bundle.
+- **Verification (lane):** `pytest -q tests/runtime/test_decision_ref_resolution.py` → **5 passed in 0.26s**. The live-repo scan across `runtime/`, `hooks/`, `tests/`, `agents/`, and top-level `ClauDEX/*.md` (excluding `ClauDEX/braid-v2/**`, `.git`, `.claudex`, `tmp`, `__pycache__`, `.worktrees`, `dist`, `build`, `.venv`, `venv`, `node_modules`, `.pyc`) finds zero unresolved `@decision-ref` / `Refs DEC-*` targets.
+- **Contract fit:** The file opens with `@decision DEC-CLAUDEX-DECISION-REF-SCAN-001` (shadow-only, filesystem-based, stdlib-only — mirrors `hook_manifest` / `bridge_permissions` shadow-only discipline), explicitly cross-references `CUTOVER_PLAN.md` Invariant #11 as the authority the pin serves, and keeps `_KNOWN_DRIFT_IDS` empty by default with a documented rule requiring a dated follow-on-slice comment for any future addition. No parallel authority is introduced; the scanner is read-only and does not compete with `runtime/core/decision_work_registry.py` (the SQLite-backed decision store).
+- **Action taken this slice:** staged the file so it is no longer excluded debt. The checkpoint bundle at the time of this Invariant-#11-integration slice became 22 paths (prior 21 + this file); the bundle subsequently grew to 23 with the addition of the Invariant #5 `command_intent` sole-authority scanner pin.
+- **Blocking?** No. The test passes on the live repo. If a future slice introduces a new `@decision-ref DEC-X` target without a matching `@decision DEC-X` declaration, this invariant will fail and surface the drift with structured `file:line` diagnostics.
+- **Verification state:** Green on lane at 2026-04-17 with HEAD `f24df96`; passes are deterministic (scan is pure-Python stdlib, sorted-walk, fixed regex).
+
+### Bridge response-broker drift in `waiting_for_codex` (2026-04-17)
+
+- **Symptom:** while the lane was in `waiting_for_codex`, the lane-local `pending-review.json` reported `response_available=true` with a valid `response_path`, while the Codex bridge supervisor's `get_response()` call against the same run returned `count: 0`. The two response surfaces disagreed even though they were nominally reading the same run.
+- **Evidence context (from Codex supervisor):**
+  - Run id: `1776367239-90135-af6087b8`
+  - Triggering orchestrator instruction: `1776412474745-0001-8t25qs` (the stash-pop recovery slice)
+  - Broker health: reported as "degraded" at the Codex supervisor seat
+  - Artifact: `$CLAUDEX_STATE_DIR/pending-review.json` had a non-empty `response_path` pointing at an existing on-disk response while `get_response()` returned the empty result
+- **Impact:** The supervisor loop cannot rely on `get_response()` as the authoritative signal when it disagrees with the lane-local `pending-review.json`. If the supervisor had defaulted to `get_response().count == 0 → treat as no response`, it would have missed a real response that was already written to disk, delaying review and extending the live-gate window. Conversely, trusting `pending-review.json` alone bypasses the bridge broker's dedupe/ack semantics. Neither fallback is safe in isolation.
+- **Blocking?** Not blocking the current staged checkpoint (commit and push are governed by a separate harness gate). Blocking in the sense that the normal `get_response()`-first supervisor discipline cannot be trusted end-to-end while the broker is degraded; the supervisor must fall back to reading `pending-review.json` directly when `get_response()` disagrees with it.
+- **Suggested next action:**
+  - Short-term: the supervisor should treat `pending-review.json` as the tiebreaker when `get_response()` returns 0 but `pending-review.json` carries a valid `response_path` on disk. Add a comment in `.codex/prompts/claudex_supervisor.txt` (or equivalent) noting this fallback order; do NOT remove `get_response()` as the primary path.
+  - Medium-term: investigate whether the bridge broker's response-cache invalidation missed the write, or whether the lane and supervisor are pointing at different bridge roots (cf. the 2026-04-14 env-leak class: `BRAID_ROOT` / `CLAUDEX_STATE_DIR` mismatch between supervisor seat and lane could produce the same symptom without broker bug). Capture the runtime values of `BRAID_ROOT` and `CLAUDEX_STATE_DIR` on both seats next time the drift recurs.
+  - Long-term: the Phase-2b supervision fabric (`runtime.core.transport_contract` + `dispatch_attempts`) is the intended authoritative surface for delivery claim / ack. Work already done in that lane (see "Current Restart Slice" below) is forward progress; until the live bridge runs through that fabric, the `get_response()` / `pending-review.json` dual surface is the known drift point.
+- **Verification state:** Not currently reproducing in this lane's own shell (the lane is write-side, not supervisor-side). Symptom was observed from the Codex supervisor read-only seat. Re-verification requires either (a) the supervisor pane to redo the `get_response()` / `pending-review.json` comparison, or (b) the lane to simulate the state by walking `pending-review.json` and the bridge broker cache together. Neither has been done this turn because this slice is checkpoint stewardship only.
+- **Fresh verification 2026-04-17 (supervisor seat):** re-observed the same drift on run `1776367239-90135-af6087b8`. `get_status()` reported `state=waiting_for_codex`, `latest_response.instruction_id=1776413091424-0003-lb2em4`; lane-local `$CLAUDEX_STATE_DIR/pending-review.json` had `response_available=true` with a valid on-disk `response_path`; the Codex supervisor's `get_response()` call against the same run returned `count: 0`. This confirms the drift is not a one-off and that the supervisor loop needs an explicit fallback-order rule rather than treating `get_response()` as sole truth.
+- **Mitigation landed (2026-04-17):** `.codex/prompts/claudex_supervisor.txt` Step 4 now documents the explicit response-surface fallback order — primary `get_response()`, fallback to lane-local `pending-review.json` when `count: 0` AND `run_id` matches the active run AND `response_path` is readable, ignore/regenerate when `run_id` mismatches. The fallback order is mechanically pinned by `tests/runtime/test_handoff_artifact_path_invariants.py::test_supervisor_step4_response_surface_fallback_is_pinned` and `::test_supervisor_step4_primary_before_fallback_ordering` (5 passed in 0.02s). The Step 4 fallback rule remains the current mitigation and continues to apply — it is not superseded by the narrower root-cause classification below. Broker-health investigation (cache-invalidation miss vs `BRAID_ROOT`/`CLAUDEX_STATE_DIR` env divergence) was narrowed this session (see below).
+- **Fresh verification 2026-04-17 late-session (lane seat, instruction `1776434660074-0003-h9s2vh`) — root cause narrowed to `broker_or_cache_surface_mismatch`:**
+  - **Env-divergence ruled out.** Lane-side `BRAID_ROOT=/tmp/claudex-b2r-v2` and `CLAUDEX_STATE_DIR=/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/worktrees/claudex-cutover-soak/.claude/claudex` match the supervisor-seat baseline byte-for-byte. `$CLAUDEX_STATE_DIR/braid-root` sentinel file reads `/tmp/claudex-b2r-v2` (agrees with env). Both seats resolve the same active run id `1776367239-90135-af6087b8`.
+  - **Live broker signal (lane seat):** `$BRAID_ROOT/braid status` reports `Broker: degraded (socket exists but pid 89934 is dead)`. `cat $BRAID_ROOT/runs/braidd.pid` → `89934`; `ps -p 89934` returns empty → the pidfile is stale and the broker daemon is not running. Unix socket file `$BRAID_ROOT/runs/braidd.sock` remains on-disk. This is the mechanical explanation for the supervisor's observed `get_response() = count:0` while on-disk response files and `pending-review.json` carry real content: clients dialing the stale socket get no server response, while filesystem writers (which bypass the broker) continue producing real response artifacts.
+  - **State-gating nuance for `pending-review.json`:** at the moment of this lane-seat verification the run was `state="inflight"` and `$CLAUDEX_STATE_DIR/pending-review.json` was **absent** (confirmed via `find $CLAUDEX_STATE_DIR $BRAID_ROOT -name pending-review.json -type f` → no matches). Supervisor-seat verification at the same HEAD moments later (when the run transitioned to `state="waiting_for_codex"`) confirmed the file exists at the lane-local path with matching `run_id` / `instruction_id` and readable `response_path`. Conclusion: `pending-review.json` is **not persistently present** — it is written when the run enters `waiting_for_codex` and may be absent during `inflight`. Any probe or consumer that reads `pending-review.json` must handle absence during `inflight` as a non-error state, not as drift.
+  - **Classification:** `broker_or_cache_surface_mismatch`, concrete sub-class `degraded_dead_pid_stale_socket`. Confidence: **HIGH** (env ruled out; `braid status` directly names the class; `ps` confirms dead pid).
+  - **Next action recorded in planning contract:** `1776434532306-0002-c0n153` response contains the bounded-probe planning contract (`cc-policy bridge probe-response-drift` + `cc-policy bridge broker-health` read-only CLIs). That probe slice will execute **after** the 28-file staged checkpoint bundle lands at the harness approval; it will not widen scope before landing.
+- **Implementation landed (2026-04-17 same-session, instruction `1776435335627-0008-n74wwg`):** the two probe CLIs planned above shipped in Option A form (already-staged files only, no new paths; staged count remained 28). Source in `runtime/core/bridge_permissions.py` (new public functions `probe_broker_health`, `probe_response_surface_drift` + frozen dataclasses `BrokerHealthSnapshot`, `ResponseSurfaceDiagnostic`). CLI wiring in `runtime/cli.py` under the `bridge` subparser. Tests in `tests/runtime/test_bridge_permissions.py` (13 new tests covering the six required classes) + `tests/runtime/test_bridge_validate_settings_cli.py` (5 new end-to-end CLI tests). `pytest -q tests/runtime/test_bridge_permissions.py tests/runtime/test_bridge_validate_settings_cli.py` → 73 passed, 0 failed. Broader smoke including `test_constitution_registry`, `test_current_lane_state_invariants`, `test_handoff_artifact_path_invariants` → 185 passed, 0 failed.
+- **Live classification values observed on this lane (2026-04-17, HEAD `f24df96`):**
+  - `python3 -m runtime.cli bridge broker-health` → exit 0, `status="degraded_dead_pid_stale_socket"`, `braidd_pid=89934`, `pid_alive=false`, `socket_exists=true`, `recovery_hint="braid down && braid up"`. This confirms via runtime CLI the same dead-pid / stale-socket finding previously surfaced only by the external `braid status` tool.
+  - `python3 -m runtime.cli bridge probe-response-drift --run-id 1776367239-90135-af6087b8` → exit 0, `status="broker_cache_miss_stale_socket"`, with coherent `broker_health`, `pending_review`, `cursor`, and `env` sub-objects.
+- **Impact of implementation:** root-cause diagnosis of the response-surface drift is now a runtime-CLI output rather than a manual forensic walk (inspecting `$BRAID_ROOT/runs/braidd.pid`, `ps -p <pid>`, `$CLAUDEX_STATE_DIR/pending-review.json`, `$BRAID_ROOT/runs/.../status.json` by hand). Supervisors, operators, and runbooks can now call the two CLIs directly and branch on the classified `status` field. The Step 4 fallback rule remains the current mitigation; these probes are diagnostic, not mitigation.
+
+### Accidental `git stash pop` contaminated the lane (2026-04-17) — RESOLVED
+
+- **Symptom:** a `git stash pop` invoked by the orchestrator during an attempted debug of a pre-existing test failure reapplied a pre-existing orphan stash `stash@{0}: WIP on claudesox-local: 9b24af9` against the then-19-file staged checkpoint bundle. The pop produced merge conflict markers in 16 files, left 17 files in `UU` (unmerged) state (including two files from the staged bundle — `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md`), and expanded the staged set from 19 to 68 paths by silently promoting orphan stash content into the index. The policy engine then failed to import (`SyntaxError` in `runtime/schemas.py` from conflict markers), blocking all Bash tool invocations via `pre-bash.sh` fail-safe.
+- **Evidence / Repro:**
+  - Pre-incident status: `## claudesox-local...origin/feat/claudex-cutover [ahead 10]` with exactly 19 staged entries + `?? .claudex/` + `?? tests/runtime/test_decision_ref_resolution.py`.
+  - Triggering sequence (recorded in session trace): the orchestrator ran `git stash push -- tests/runtime/test_decision_ref_resolution.py` (failed — path didn't match because the file was untracked), then `git stash pop` (succeeded — popped the orphan stash, producing the conflict).
+  - Post-incident status: 68 staged entries, 17 `UU` entries, 16 files with conflict markers.
+  - Orphan stash remained preserved on `stash@{0}` because the pop did not drop it (conflicts block auto-drop).
+- **Impact:**
+  - Policy engine briefly unable to import, blocking all runtime Bash operations via `pre-bash.sh` fail-safe until the blocking `runtime/schemas.py`, `runtime/core/authority_registry.py`, and `runtime/core/policies/bash_git_who.py` conflict markers were cleared via direct Edit-tool writes.
+  - 19-file staged bundle was preserved at the git-object-store level (stage-2 blobs intact) but required manual resolution to exit the unmerged state.
+  - Orphan stash content that overlapped our 19-bundle files (`runtime/cli.py`, `runtime/core/constitution_registry.py`, etc.) did NOT contaminate those bundle entries — they remained as cleanly-staged `M` because the stash had no content for them OR the content merged trivially.
+- **Blocking?** No — resolved within the same turn per Codex recovery instruction `1776412474745-0001-8t25qs`. Recovery used `git checkout --ours` on bundle UU docs + `git add`, `git restore --source=HEAD --staged --worktree` on 49 non-bundle paths, and direct Edit-tool writes on 3 `runtime/core/*.py` files whose conflict markers had broken Python parsing before policy-engine-dependent Bash tools could run. Post-recovery lane matches the expected 19-file staged bundle exactly.
+- **Suggested next action:**
+  - NEVER run `git stash push` or `git stash pop` during an active checkpoint slice without first confirming the stash list is empty of pre-existing orphans (`git stash list | wc -l` should be the value you expect; this lane had 5 pre-existing stashes, so any `pop` was unsafe).
+  - Orchestrator discipline: stash operations are on the destructive list for a reason — prefer `git diff --stat` / content-hash checks over `git stash` for "is this test failure pre-existing" investigation.
+  - Consider adding a `bash_approval_gate` or `bash_git_who` sub-rule that denies `git stash` invocations during `in_progress` workflow states unless an explicit approval is granted.
+- **Verification state (post-recovery):**
+  - `git ls-files -u` → empty (no UU).
+  - `git diff --cached --name-only | wc -l` → 19.
+  - `git diff --cached --name-only` matches the expected 19-file bundle (per "## Current Restart Slice" enumeration below) exactly.
+  - `git status --short --branch` → `## claudesox-local...origin/feat/claudex-cutover [ahead 10]` + the 19 staged entries + `?? .claudex/` + `?? tests/runtime/test_decision_ref_resolution.py`. No `UU` entries.
+  - `CURRENT_STATE.md` cached blob hash `4a297f67...` matches the pre-pop stage-2 blob hash captured during forensic snapshot; `SUPERVISOR_HANDOFF.md` cached hash `ea03d9e6...` likewise.
+  - `orphan stash stash@{0}` remains preserved on the stash list for operator inspection — can be dropped manually once the operator has confirmed there is no content worth recovering.
+
+### cc-policy-who-remediation Slice 1 (2026-04-17)
+
+- `runtime/core/bridge_permissions.py` added as concrete declarative authority
+  (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001); registered as entry #25 in
+  `runtime/core/constitution_registry.py`; validated by
+  `cc-policy bridge validate-settings` (exits 0).
+- Five git-landing Bash denies removed from `ClauDEX/bridge/claude-settings.json`.
+- **Checkpoint commit/push blocked by harness permission prompt, NOT runtime policy.**
+  `cc-policy lease validate-op allowed=true`; harness layer denies the `git commit`.
+- Staged checkpoint debt intact: **28 files**. Composition:
+  Bundle E subordinate notes (`CC_POLICY_WHO_REMEDIATION_SPEC.md`,
+  `CC_POLICY_WHO_REMEDIATION_EXECUTION_PROMPT.txt`); bridge-permission-slice
+  (`runtime/core/bridge_permissions.py`, `runtime/cli.py`,
+  `runtime/core/constitution_registry.py`,
+  `ClauDEX/bridge/claude-settings.json`,
+  `tests/runtime/test_bridge_permissions.py`,
+  `tests/runtime/test_bridge_validate_settings_cli.py`,
+  `tests/runtime/test_constitution_registry.py`); authority-doc /
+  time-scoping (`ClauDEX/CURRENT_STATE.md`, `ClauDEX/CUTOVER_PLAN.md`,
+  `ClauDEX/SUPERVISOR_HANDOFF.md`); Invariant #15 Bash readiness
+  invalidation (`hooks/post-bash.sh`, `hooks/HOOKS.md`,
+  `runtime/core/hook_manifest.py`, `settings.json`,
+  `tests/runtime/policies/test_post_bash_eval_invalidation.py`,
+  `tests/runtime/test_hook_manifest.py`,
+  `tests/runtime/test_hook_validate_settings.py`); supervisor Step 4
+  response-surface fallback (`.codex/prompts/claudex_supervisor.txt`);
+  handoff-artifact invariant extension with Step 4 fallback pins
+  (`tests/runtime/test_handoff_artifact_path_invariants.py`);
+  Invariant #11 `@decision-ref` resolution pin
+  (`tests/runtime/test_decision_ref_resolution.py`,
+  DEC-CLAUDEX-DECISION-REF-SCAN-001); Invariant #5 `command_intent`
+  sole-authority scanner pin
+  (`tests/runtime/policies/test_command_intent_single_authority.py`,
+  DEC-CLAUDEX-COMMAND-INTENT-SOLE-AUTHORITY-001); current-lane
+  state-authority scanner pin
+  (`tests/runtime/test_current_lane_state_invariants.py`,
+  DEC-CLAUDEX-CURRENT-LANE-STATE-INVARIANT-001); Invariant #13
+  symmetric retrieval-layer downstream pin
+  (`tests/runtime/test_retrieval_layer_downstream_invariant.py`,
+  DEC-CLAUDEX-RETRIEVAL-LAYER-DOWNSTREAM-INVARIANT-001); and dated
+  invariant-coverage-matrix artifact + mechanical pin
+  (`ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md` +
+  `tests/runtime/test_cutover_invariant_coverage_matrix.py`,
+  DEC-CLAUDEX-CUTOVER-INVARIANT-COVERAGE-MATRIX-001). The bridge-parity extensions for
+  Invariant #15 (PostToolUse Bash wiring and `REQUIRED_POSTTOOL_BASH_HOOKS`
+  + drift tests) are folded into the three already-listed bridge paths — no
+  new files for that sub-slice.
+- Lane: `claudesox-local` at HEAD `f24df96`, 10 commits ahead of
+  `origin/feat/claudex-cutover`.
+- Focused test evidence (refreshed 2026-04-17 for full 28-file bundle):
+  **309 passed in 8.18s** across the 11-file combined focused suite
+  (adds `tests/runtime/test_handoff_artifact_path_invariants.py` and
+  `tests/runtime/test_decision_ref_resolution.py` to the prior 9-file
+  set), plus **14 passed in 0.05s** on
+  `tests/runtime/policies/test_command_intent_single_authority.py` for
+  the Invariant #5 scanner pin. `python3 runtime/cli.py bridge validate-settings` → status ok;
+  `python3 runtime/cli.py hook validate-settings` → status ok, healthy
+  true, 31/31 manifest/settings parity; `python3 runtime/cli.py hook
+  doc-check` → status ok, healthy true, exact_match true, 102/102
+  line count (content hash
+  `sha256:7019769b9f7d8d4fd90cfab786f4aa4512f624ccb9cf8f7f70510040f66dbed7`).
+  Codex independent verification seats accepted the combined scope
+  across six sub-slices: `1776406189098-0001-lqjleq`,
+  `1776406882715-0003-7t7ugq`, `1776407137196-0001-3ql6ig`,
+  `1776408220252-0004-2n7gcm`, `1776408476029-0005-jdg8g4`,
+  `1776409725071-0001-7hvquf`, `1776411084446-0003-xs5p0d`
+  (Invariant #11), `1776413402515-0001-zsj5f3` (Step 4 fallback +
+  handoff invariant pins), and `1776413883321-0003-e8mgaw`
+  (Invariant #11 integration).
+- Blocking? No — checkpoint debt is preserved; next step is harness permission
+  resolution or guardian-path commit.
 
 - Soak Run 2026-04-14 (cutover bundle, worktree claudex-cutover-soak)
   1. Smoke keyword filter matched zero tests
@@ -81,11 +255,11 @@ stays on the active ClauDEX cutover slice only.
   - Verification: `pytest -q tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py --maxfail=8` → **36 passed**, 14.80s; live bridge status shows one active auto-submit pid and one active watchdog pid for the soak lane.
   - Blocking: no after fix and orphan cleanup.
 
-- **State-record drift: handoff docs said "checkpoint pending" after checkpoint landed** (fixed, documentation-only)
-  - Repro: a stale-state grep over `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md` returned phrases asserting the bundle was still waiting for a checkpoint even though the checkpoint had already landed as `6b8cc5c` and the follow-up process-control fix landed as `d8fdf96`, both pushed to `origin/feat/claudex-cutover`.
-  - Impact: supervisor and future implementers would dispatch another checkpoint-stewardship slice against a lane that has no checkpoint debt; directly contradicts installed truth.
-  - Fix: `ClauDEX/CURRENT_STATE.md` Git Placement + Checkpoint Readiness sections rewritten to reflect `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD `d8fdf96` with `6b8cc5c` as the cutover-bundle commit; `ClauDEX/SUPERVISOR_HANDOFF.md` next-action text rewritten to say the checkpoint is complete and the next action is cutover-plan continuation or lane maintenance.
-  - Blocking: no.
+- **State-record drift: handoff docs said "checkpoint pending" after checkpoint landed** (observed and fixed at 2026-04-14 closeout; documentation-only; HISTORICAL context only — this entry describes the 2026-04-14 Phase-8 closeout state, NOT the current 2026-04-17 lane state, which explicitly carries 28-file checkpoint debt per the top-of-file "Current Lane Truth (2026-04-17)" banner)
+  - Repro (2026-04-14): a stale-state grep over `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md` returned phrases asserting the bundle was still waiting for a checkpoint even though the Phase-8 checkpoint had already landed as `6b8cc5c` and the follow-up process-control fix landed as `d8fdf96`, both pushed to `origin/feat/claudex-cutover`.
+  - Impact (2026-04-14): supervisor and future implementers would dispatch another checkpoint-stewardship slice against a lane that at that snapshot had no checkpoint debt; directly contradicted installed truth as of 2026-04-14.
+  - Fix (applied 2026-04-14): `ClauDEX/CURRENT_STATE.md` Git Placement + Checkpoint Readiness sections rewritten to reflect `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD `d8fdf96` with `6b8cc5c` as the cutover-bundle commit; `ClauDEX/SUPERVISOR_HANDOFF.md` next-action text at the time was rewritten to say (as of 2026-04-14) that the Phase-8 checkpoint had landed and the next action was cutover-plan continuation or lane maintenance. **That 2026-04-14 next-action framing is superseded as of 2026-04-17: the current lane carries 28-file staged checkpoint debt (harness-blocked), so the current next action is landing the staged bundle once the harness permission layer permits.**
+  - Blocking: no (historical entry; resolved at 2026-04-14).
 
 
 - **Codex supervisor model-upgrade prompt / MCP root drift** (fixed, lane maintenance)
@@ -220,6 +394,50 @@ The steady-state supervisor loop should not call `get_conversation()` or
 row. Those tools are escalation-only for inconsistent bridge state, not part of
 the normal review/steer cycle.
 
+## Current Restart Slice
+
+This section is the authoritative pointer the steady-state loop uses when it
+finds the bridge idle with an empty queue and no pending-review artifact
+(step 3 of Steady-State Behavior). It describes the single bounded slice the
+supervisor should dispatch in that condition.
+
+As of 2026-04-17, the Current Restart Slice is **checkpoint-debt clearance for
+the cc-policy-who-remediation combined bundle**:
+
+- **Lane:** `claudesox-local` at HEAD `f24df96`, 10 commits ahead of
+  `origin/feat/claudex-cutover`.
+- **Staged bundle:** 28 files. Composition matches the
+  "cc-policy-who-remediation Slice 1 (2026-04-17)" entry above in
+  Open Soak Issues (the 28-file list, with supervisor Step 4 response-
+  surface fallback, handoff-artifact invariant pins, Invariant #11
+  `@decision-ref` resolution pin, Invariant #5 `command_intent`
+  sole-authority scanner pin, current-lane state-authority scanner
+  pin, Invariant #13 symmetric retrieval-layer downstream pin, and
+  the dated invariant-coverage-matrix artifact + its mechanical pin
+  now folded into checkpoint scope).
+- **Runtime gates:** `evaluation_state=ready_for_guardian`, `test_state=pass
+  346/346`, a fresh guardian lease with `["routine_local","high_risk"]` (the
+  supervisor is expected to issue a new one at re-dispatch via
+  `cc-policy lease issue-for-dispatch guardian --workflow-id
+  cc-policy-who-remediation ...`).
+- **Intended action on re-dispatch:** issue the guardian lease, dispatch the
+  guardian subagent with the `CLAUDEX_CONTRACT_BLOCK` prefix produced by
+  `cc-policy dispatch agent-prompt --workflow-id cc-policy-who-remediation
+  --stage-id guardian:land`, and invoke
+  `git commit -F tmp/cc-policy-who-remediation/commit-msg-combined.txt`
+  verbatim. Follow with one push attempt to `origin/feat/claudex-cutover`.
+- **Known blocker:** Claude Code harness Bash permission prompt for
+  `git commit` remains the sole gate. Runtime policy returns
+  `allowed=true` for the scoped invocation. Any user approval of that
+  prompt is sufficient to unblock; no runtime or scope changes are needed.
+- **Non-destructive constraint:** do NOT `git reset`, `git stash`,
+  `git restore --staged`, `git commit --amend`, or `git push --force`
+  on this lane. The staged bundle is the checkpoint; preserve it.
+
+Once the checkpoint lands and pushes, the Current Restart Slice should
+be replaced with the next bounded cutover slice or, if none is queued,
+marked `None — lane in steady-state maintenance`.
+
 ## Checkpoint Stewardship
 
 Routine checkpoint work is not, by itself, a terminal approval boundary.
@@ -253,6 +471,45 @@ branch used, commit SHA, push target, included scope, excluded scope, and test
 evidence. Do not stop merely because branch creation, staging, commit, or push
 would normally be "git work"; stop only when the git decision itself is
 ambiguous or destructive.
+
+### Checkpoint-retry throttle rule (2026-04-17)
+
+**Rule:** if a checkpoint retry is denied at the Claude Code harness
+Bash-approval layer and the lane fingerprint is **unchanged** across
+retries — same `HEAD` SHA, same staged file count, same denial class
+(harness approval prompt on the same `git commit -F <path>` invocation)
+and same verbatim denial text — the supervisor MUST NOT immediately
+re-dispatch an identical checkpoint retry loop. Instead:
+
+- Record the checkpoint debt as preserved (non-terminal) citing the
+  unchanged lane fingerprint (HEAD, staged count, denial text).
+- Proceed to the next bounded non-write cutover slice (diagnostic,
+  documentation reconciliation, or planning work) that does not depend
+  on the checkpoint landing first.
+- Only retry the checkpoint when an **approval-state change** (the
+  user grants the harness Bash approval for the denied command) or a
+  **lane-state change** (HEAD moves, staged count changes, or the
+  denial text changes) is observed. An unchanged-fingerprint repeat
+  retry loop burns cycles without forward motion and creates noise in
+  the artifact trail that obscures real state changes.
+
+**Rationale:** a harness approval prompt is a pure session-scope gate.
+The runtime policy engine, guardian lease, and test-pass state are all
+clean and do not change between back-to-back retries. Repeating the
+same command in the same session reliably produces the same denial.
+Retrying is only meaningful when one of the three approval- or
+lane-state inputs has actually changed.
+
+**Fingerprint components (all three required for `unchanged`):**
+1. `HEAD` SHA from `git rev-parse HEAD`.
+2. Staged count from `git diff --cached --name-only | wc -l`.
+3. Denial text (verbatim, starting with
+   `Permission to use Bash with command git commit -F ...`).
+
+If ANY of the three differs from the previous retry's record, the
+fingerprint IS changed and a retry is permitted (and expected).
+
+**Mechanical pin:** `tests/runtime/test_handoff_artifact_path_invariants.py::TestCheckpointRetryThrottleRule`.
 
 ## Completed Slices (most recent session)
 
@@ -355,10 +612,19 @@ These slices are done and test-backed. Do not re-dispatch them.
 16. **Phase 3 exit-criteria audit** — `ready_to_mark_phase3_complete: true`.
     All four CUTOVER_PLAN exit criteria verified with mechanical evidence.
 
-## Current State (as of 2026-04-14)
+## Historical Phase State Snapshot (as of 2026-04-14)
 
-**Phases 3, 4, 5, 6, 7, and 8 are all COMPLETE.** The ClauDEX cutover
-has reached the Phase 8 closeout boundary:
+**This section is a historical snapshot of the Phase-plan status as
+of the 2026-04-14 closeout. It is NOT current lane truth for 2026-04-17.**
+Current lane truth lives in "Current Lane Truth (2026-04-17)" at the
+top of this file and in the "cc-policy-who-remediation Slice 1
+(2026-04-17)" entry under Open Soak Issues: the current lane carries
+a 28-file harness-blocked staged checkpoint bundle. The phase-closure
+claims below describe the 2026-04-14 Phase-plan state only and are
+preserved for audit.
+
+**Phases 3, 4, 5, 6, 7, and 8 are all COMPLETE (as of 2026-04-14).**
+The ClauDEX cutover reached the Phase 8 closeout boundary at that date:
 
 - **Phase 3 — Capability-Gated Policy Model:** COMPLETE (2026-04-13),
   7 slices.
@@ -380,27 +646,36 @@ has reached the Phase 8 closeout boundary:
   installed-truth evidence — see `ClauDEX/CURRENT_STATE.md`
   "Phase 8 Closeout Status" section.
 
-**Checkpoint stewardship is complete.** The ClauDEX cutover bundle
-landed as commit `6b8cc5c` (`feat(claudex): cutover bundle - Phases 1-8
-closeout`) and the subsequent auto-submit process-control fix landed as
-`d8fdf96` (`Fix ClauDEX auto-submit process growth`). Both commits are
-pushed to `origin/feat/claudex-cutover`; this soak worktree is on
-`claudesox-local` tracking the same upstream at HEAD `d8fdf96`. No
-checkpoint debt remains.
+**Historical snapshot (2026-04-14 closeout): Checkpoint stewardship
+was complete as of that date.** The ClauDEX cutover bundle landed as
+commit `6b8cc5c` (`feat(claudex): cutover bundle - Phases 1-8
+closeout`) and the subsequent auto-submit process-control fix landed
+as `d8fdf96` (`Fix ClauDEX auto-submit process growth`). Both commits
+were pushed to `origin/feat/claudex-cutover`; at that snapshot the
+soak worktree was on `claudesox-local` tracking the same upstream at
+HEAD `d8fdf96` and no checkpoint debt remained. **This describes the
+2026-04-14 Phase-8 closeout state only; it does NOT describe the
+current (2026-04-17) lane, which carries a 28-file harness-blocked
+staged bundle — see the "Current Lane Truth (2026-04-17)" banner at
+the top of this file.**
 
-**Next bounded action: checkpoint the follow-up maintenance bundle,
-then resume cutover-plan continuation or lane maintenance.** With
-Phases 1-8 closed and upstream, the only current local work is the
-state-record correction plus the lane-local Codex supervisor launcher
-fix (`ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
-`scripts/claudex-codex-launch.sh`). Once that bundle is reviewed,
-tested, committed, and pushed, the supervisor should either (a) resume
-the `ClauDEX/CUTOVER_PLAN.md` architecture track — the runtime-owned
-agent-session supervision fabric — when ready to open a new slice, or
-(b) stay in steady-state review/steer mode and handle narrow
-maintenance items without opening fresh architecture work. See
-`ClauDEX/CURRENT_STATE.md` "Checkpoint Readiness" section for the
-installed-truth git state and focused gate evidence.
+**Historical next-action framing (2026-04-14): checkpoint the
+follow-up maintenance bundle, then resume cutover-plan continuation
+or lane maintenance.** At the 2026-04-14 snapshot, with Phases 1-8
+closed and upstream, the only local work was state-record correction
+plus the lane-local Codex supervisor launcher fix
+(`ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
+`scripts/claudex-codex-launch.sh`). Once that bundle was reviewed,
+tested, committed, and pushed, the supervisor was to either (a)
+resume the `ClauDEX/CUTOVER_PLAN.md` architecture track — the
+runtime-owned agent-session supervision fabric — when ready to open a
+new slice, or (b) stay in steady-state review/steer mode. **This
+framing is preserved for historical record; current 2026-04-17
+next-action guidance lives in the top-of-file banner and in the
+"cc-policy-who-remediation Slice 1 (2026-04-17)" entry under Open
+Soak Issues.** See `ClauDEX/CURRENT_STATE.md` "Checkpoint Readiness
+(Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT" for
+the corresponding 2026-04-14 git-state and focused-gate evidence.
 
 Do not auto-dispatch a new architecture slice unless the cutover plan
 has been re-read and a clearly bounded slice is ready.

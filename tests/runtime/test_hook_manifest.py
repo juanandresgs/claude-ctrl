@@ -260,21 +260,33 @@ class TestSettingsJsonAlignment:
             f"does not contain: {sorted(extra)}"
         )
 
-    def test_manifest_is_exactly_30_entries_against_todays_settings(self):
+    def test_manifest_is_exactly_31_entries_against_todays_settings(self):
         # Pin the overall count so any drift in settings.json forces
         # a deliberate manifest update. Phase 8 Slice 3 reduced this
         # from 33 to 32 by removing PreToolUse:EnterWorktree. Phase 8
         # Slice 10 further reduced it to 30 by removing the two tester
         # SubagentStop entries (check-tester.sh + post-task.sh).
-        assert len(hm.HOOK_MANIFEST) == 30
+        # Invariant #15 (DEC-EVAL-006) added PostToolUse:Bash →
+        # hooks/post-bash.sh, bringing the count to 31.
+        assert len(hm.HOOK_MANIFEST) == 31
 
     def test_active_plus_deprecated_counts_match(self):
         # Phase 8 Slice 3: WorktreeCreate un-deprecated (→ active),
         # PreToolUse:EnterWorktree removed. Phase 8 Slice 10: tester
-        # SubagentStop entries removed. No deprecated entries remain.
-        assert len(hm.active_entries()) == 30
+        # SubagentStop entries removed. Invariant #15: +1 PostToolUse Bash.
+        assert len(hm.active_entries()) == 31
         assert len(hm.deprecated_entries()) == 0
         assert len(hm.planned_entries()) == 0
+
+    def test_post_bash_entry_present_and_active(self):
+        # Invariant #15 (DEC-EVAL-006): PostToolUse Bash → post-bash.sh
+        # must be present and active.
+        entry = hm.lookup("PostToolUse", "Bash", "hooks/post-bash.sh")
+        assert entry is not None, (
+            "PostToolUse/Bash/hooks/post-bash.sh not found in manifest "
+            "(required by Invariant #15 / DEC-EVAL-006)"
+        )
+        assert entry.status == hm.STATUS_ACTIVE
 
     def test_no_subagent_stop_tester_entry(self):
         # Phase 8 Slice 10: tester SubagentStop wiring removed. The

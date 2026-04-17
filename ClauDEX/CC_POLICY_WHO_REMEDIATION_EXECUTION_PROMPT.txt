@@ -1,0 +1,122 @@
+WHO / Checks-and-Balances — Slice Seed Notes (Subordinate)
+
+SUBORDINATION:
+- This file is supporting subsystem notes for the current ClauDEX cutover lane.
+- It is NOT a controlling authority for any session.
+- Architecture source of truth: `ClauDEX/CUTOVER_PLAN.md`.
+- Active lane-state authorities: `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md`.
+- If any content below conflicts with those three files or with installed runtime
+  truth, the three files and installed code win; this notes file is updated to
+  match, not the other way around.
+- Nothing in this file overrides the current cutover mission, promotes a second
+  controlling workflow, or appoints a new planning authority.
+
+SCOPE OF THESE NOTES:
+- Capture WHO / checks-and-balances framing observations that can inform future
+  bounded slices under the existing cutover lane.
+- Provide example wording for planner/implementer/reviewer/guardian dispatch
+  when a future slice under the existing cutover lane addresses a WHO gap.
+
+FRAMING (informational, not directive):
+- WHO is not just role denial; it is the checks-and-balances model that keeps
+  planning, implementation, evaluation, provisioning, and landing in distinct
+  authorities.
+- The orchestrator/supervisor coordinates and reviews. It must not silently
+  perform source work, evaluation, worktree provisioning, or git landing
+  directly.
+- Live stage naming in runtime is `reviewer`; evaluator-facing wording may
+  appear only where clearly labeled as operator-facing prose, with `reviewer`
+  used for runtime/tests and dispatch.
+
+GUARDRAIL REMINDERS (mirror existing cutover-lane discipline):
+- Planners do not implement.
+- Implementers do not choose their own scope; the orchestrator + planner
+  supply the scope manifest before dispatch.
+- Reviewers do not write source.
+- Guardian is the sole git landing authority; settings-level denies are not a
+  substitute for runtime policy.
+- The orchestrator thread does not bypass the stage graph.
+
+SLICE-SEED TOPICS (examples only; NOT an active plan):
+The following are candidate discussion seeds that the existing cutover lane's
+planner may choose to shape into bounded slices. They are unordered, not a
+roadmap, and must not be treated as a new active branch of work:
+- bridge overlay denies for git landing verbs vs runtime policy coverage
+- bridge overlay Bash surface breadth vs shell-mutation bypass risk
+- implementer git-authority classification alignment with guardian-only landing
+- stage-identity precision between `guardian:provision` and `guardian:land`
+- mandatory runtime-issued contract metadata for dispatch-significant launches
+- Write/Edit hook wiring proof under the bridge launch surface
+
+DISPATCH EXAMPLE (illustrative only):
+- Any concrete dispatch must use the cutover lane's existing workflow id as
+  recorded in `ClauDEX/CURRENT_STATE.md` — NOT a new workflow id introduced
+  by this notes file. The prior placeholder id `cc-policy-who-remediation`
+  that appears in earlier drafts was an example scratch name; it is not a
+  live workflow id and must not be used to open a parallel track.
+- When a future slice under the existing cutover lane touches a WHO gap, the
+  orchestrator produces its dispatch prompts the normal way: via
+  `cc-policy dispatch agent-prompt --workflow-id <existing-cutover-workflow>
+  --stage-id <planner|implementer|reviewer|guardian>` with the runtime-issued
+  `prompt_prefix` prepended.
+
+AUTHORITY RECONCILIATION RULE:
+- If any wording in this notes file drifts from installed runtime truth, the
+  installed code and the three authority files (`CUTOVER_PLAN.md`,
+  `CURRENT_STATE.md`, `SUPERVISOR_HANDOFF.md`) are correct and this notes
+  file must be updated in the same change that updates the authority.
+
+CHECKPOINT REPORT STAGED-SCOPE AUTHORITY RULE:
+- Every checkpoint-stewardship / guardian-land report MUST derive its
+  `Included scope` from the live output of `git diff --cached --name-only`
+  at the time the report is assembled. Scope MUST NOT be narrated from
+  memory, from a dispatch-context list, from a previous turn's scope list,
+  or from a commit-message draft.
+- Every such report MUST cite the exact current value of
+  `git diff --cached --name-only | wc -l` as the count of included paths.
+  If that count does not match the report's enumerated scope length, the
+  report is invalid.
+- Any path appearing in the `Included scope` cell of a report that is NOT
+  present in `git diff --cached --name-only` is invalid and must be
+  removed before the report is emitted. Guardian subagents that cannot
+  obtain live `git` output for scope verification must STOP and report
+  the inability, not substitute a recalled list.
+- This rule was added 2026-04-17 in response to a scope-narration drift
+  observed in instruction `1776422371697-0001-b39h0v` where a guardian
+  subagent report's `Included scope` cell listed files that were not in
+  the staged index. Mechanical pin:
+  `tests/runtime/test_handoff_artifact_path_invariants.py::TestCheckpointReportScopeAuthority`.
+
+CHECKPOINT REPORT EXCLUDED-SCOPE AUTHORITY RULE:
+- Every checkpoint-stewardship / guardian-land report MUST derive its
+  `Excluded scope` from the live output of `git status --short` at the
+  time the report is assembled. Excluded scope MUST NOT be narrated
+  from a session-start status snapshot, from memory, from a prior
+  turn's status output, or from a recalled list of worktree mods.
+- The report MUST explicitly distinguish staged entries (lines whose
+  first column is non-space: `M `, `A `, `D `, `R `, `C `) from
+  unstaged / untracked entries (lines whose first column is a space
+  or `?`: ` M`, ` D`, `??`). Only unstaged / untracked entries belong
+  in `Excluded scope`. Staged entries belong in `Included scope` and
+  MUST be derived from `git diff --cached --name-only` per the
+  staged-scope rule above.
+- If `git status --short` shows no unstaged / untracked entries other
+  than known lane-local artifacts (e.g., `?? .claudex/`), the report
+  MUST say so explicitly with a single line such as
+  `Excluded scope: none outside lane-local artifacts (`.claudex/`).`
+  It MUST NOT enumerate unrelated or stale mods to create the
+  appearance of a larger excluded surface.
+- Any path appearing in the `Excluded scope` cell of a report that is
+  NOT present in `git status --short` at report time is invalid and
+  must be removed before the report is emitted. Guardian or
+  orchestrator authors that cannot obtain live `git status --short`
+  output for excluded-scope verification must STOP and report the
+  inability, not substitute a recalled list.
+- This rule was added 2026-04-17 in response to an excluded-scope
+  narration drift observed in instruction `1776423808293-0006-4eqliy`
+  where the checkpoint-retry report's `Excluded scope` cell listed
+  many modified / untracked paths narrated from a session-start
+  `gitStatus` snapshot rather than live `git status --short`
+  (live state at report time showed only `?? .claudex/` outside the
+  staged bundle). Mechanical pin:
+  `tests/runtime/test_handoff_artifact_path_invariants.py::TestCheckpointReportExcludedScopeAuthority`.

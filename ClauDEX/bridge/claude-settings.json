@@ -1,7 +1,43 @@
 {
   "permissions": {
     "allow": [
-      "Bash(*)",
+      "Bash(awk *)",
+      "Bash(basename *)",
+      "Bash(cat *)",
+      "Bash(cut *)",
+      "Bash(date *)",
+      "Bash(diff *)",
+      "Bash(dirname *)",
+      "Bash(du *)",
+      "Bash(echo *)",
+      "Bash(env *)",
+      "Bash(file *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(head *)",
+      "Bash(jq *)",
+      "Bash(less *)",
+      "Bash(ls *)",
+      "Bash(ls)",
+      "Bash(lsof *)",
+      "Bash(pwd)",
+      "Bash(readlink *)",
+      "Bash(realpath *)",
+      "Bash(rg *)",
+      "Bash(sleep *)",
+      "Bash(sort *)",
+      "Bash(stat *)",
+      "Bash(tail *)",
+      "Bash(test *)",
+      "Bash(tr *)",
+      "Bash(uname)",
+      "Bash(uname *)",
+      "Bash(uniq *)",
+      "Bash(wc *)",
+      "Bash(which *)",
+      "Bash(whoami)",
+      "Bash(git *)",
+      "Bash(xargs *)",
       "Read",
       "Write",
       "Edit",
@@ -11,11 +47,6 @@
     ],
     "deny": [
       "NotebookEdit",
-      "Bash(git commit *)",
-      "Bash(git push *)",
-      "Bash(git merge *)",
-      "Bash(git rebase *)",
-      "Bash(git reset *)",
       "Bash(git checkout main*)",
       "Bash(git checkout master*)",
       "Bash(git branch -D *)",
@@ -77,6 +108,18 @@
             "type": "command",
             "command": "$(git rev-parse --show-toplevel)/hooks/pre-agent.sh",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$(git rev-parse --show-toplevel)/hooks/post-bash.sh",
+            "timeout": 10
           }
         ]
       }

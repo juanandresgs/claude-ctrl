@@ -359,6 +359,13 @@ HOOK_MANIFEST: Tuple[HookManifestEntry, ...] = (
         STATUS_ACTIVE,
         "Post-write test runner (CUTOVER_PLAN H4 / P7).",
     ),
+    _e(
+        "PostToolUse",
+        "Bash",
+        "hooks/post-bash.sh",
+        STATUS_ACTIVE,
+        "Post-bash source-mutation readiness invalidation (Invariant #15, DEC-EVAL-006).",
+    ),
     # --- Notification ---------------------------------------------------
     _e(
         "Notification",

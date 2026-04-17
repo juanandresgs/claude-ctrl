@@ -179,6 +179,45 @@ is_skippable_path() {
     return 1
 }
 
+# --- Source mutation fingerprint (DEC-EVAL-006) ---
+# Content-aware hash of all source-file mutations relative to HEAD.
+# Used by pre/post-bash hooks to detect per-command source changes.
+# Returns a sha256 hash of "path:content_hash" pairs for all source files
+# that differ from HEAD. The hash changes when file content changes, not
+# just when path presence changes — this prevents false invalidation from
+# pre-existing staged changes.
+compute_source_fingerprint() {
+    local root="$1"
+    local _csf_data=""
+    local _csf_files
+    _csf_files=$(
+        {
+            git -C "$root" diff --name-only HEAD 2>/dev/null || true
+            git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true
+        } | sort -u
+    )
+    while IFS= read -r _csf_f; do
+        [[ -z "$_csf_f" ]] && continue
+        if is_source_file "$_csf_f" && ! is_skippable_path "$_csf_f"; then
+            local _csf_abs="$root/$_csf_f"
+            local _csf_h
+            if [[ -f "$_csf_abs" ]]; then
+                _csf_h=$( (shasum -a 256 "$_csf_abs" 2>/dev/null || sha256sum "$_csf_abs" 2>/dev/null) | cut -d' ' -f1 )
+            else
+                _csf_h="DELETED"
+            fi
+            _csf_data+="${_csf_f}:${_csf_h}"$'\n'
+        fi
+    done <<< "$_csf_files"
+    if [[ -z "$_csf_data" ]]; then
+        echo "EMPTY"
+        return
+    fi
+    printf '%s' "$_csf_data" | shasum -a 256 2>/dev/null | cut -d' ' -f1 \
+        || printf '%s' "$_csf_data" | sha256sum 2>/dev/null | cut -d' ' -f1 \
+        || echo "NOHASH"
+}
+
 # --- Audit trail ---
 # Runtime-only (TKT-008): .audit-log flat file removed.
 # All audit events go directly to the SQLite event store via rt_event_emit.
@@ -567,4 +606,4 @@ print(classify_git_op(sys.argv[1]))
 # Export for subshells
 export SOURCE_EXTENSIONS
 export -f cc_policy _rt_ensure_schema rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route rt_obs_metric rt_obs_metric_batch _obs_accum
-export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path compute_source_fingerprint append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

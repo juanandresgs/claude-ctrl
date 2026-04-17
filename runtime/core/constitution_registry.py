@@ -468,6 +468,24 @@ _CONCRETE: Tuple[ConstitutionEntry, ...] = (
             "on this compiler)."
         ),
     ),
+    ConstitutionEntry(
+        name="runtime/core/bridge_permissions.py",
+        kind=KIND_CONCRETE,
+        path="runtime/core/bridge_permissions.py",
+        rationale=(
+            "Sole declarative authority for the ClauDEX bridge permission "
+            "surface (ClauDEX/bridge/claude-settings.json). Declares which "
+            "Bash patterns are runtime-policy-delegated (must NOT appear in "
+            "permissions.deny) and which are safety-deny patterns (must "
+            "remain). Added as concrete in cc-policy-who-remediation Slice 1 "
+            "to close the bridge authority gap: previously the bridge "
+            "short-circuited runtime policy (bash_git_who / CAN_LAND_GIT) "
+            "by hard-denying git landing ops at the permission layer. "
+            "Follows the same shadow-only pattern as hook_manifest.py "
+            "(DEC-CLAUDEX-HOOK-MANIFEST-001). "
+            "Cross-ref: DEC-CLAUDEX-BRIDGE-PERMISSIONS-001, DEC-WHO-LANDING-001."
+        ),
+    ),
 )
 
 

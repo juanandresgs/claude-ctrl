@@ -1161,6 +1161,21 @@ messages alone.
 
 ## Execution Model
 
+**Status note (2026-04-17):** the reviewer stage is live (Phase 4/5 closed
+2026-04-13), guardian provision/land split is live (Phase 3 closed
+2026-04-13), post-guardian planner continuation is live (Phase 6 closed
+2026-04-13), derived-surface validation is live (Phase 7 closed 2026-04-13),
+legacy deletion is complete (Phase 8 closed 2026-04-14), and the agent-
+agnostic supervision fabric is live (Phase 2b closed 2026-04-17). The
+narrative below is preserved from the pre-closure architecture doc as
+historical framing for how the system was sequenced; it does NOT imply that
+the reviewer stage or post-guardian continuation are still pending. Where a
+specific sentence below says "until X is live" or "only becomes live after
+Y", treat it as a historical description of the cutover sequencing — all
+those conditions have been met. See `ClauDEX/CURRENT_STATE.md` Historical
+Phase State Snapshot and each `Status:` annotation under `## Phase Plan`
+for the authoritative closure dates.
+
 Until the reviewer stage is live, implementation work still uses the current
 chain. The cutover does not pretend the new graph exists before it is proven.
 
@@ -1186,7 +1201,11 @@ Execution during the cutover:
 
 ## Phase Plan
 
+**Status summary (2026-04-17, projected from `ClauDEX/CURRENT_STATE.md` Historical Phase State Snapshot):** every phase below carries an explicit `Status:` annotation naming its closure date. All phases are `CLOSED`. This annotation is mechanically pinned by `tests/runtime/test_cutover_plan_phase_closure_invariants.py` (DEC-CLAUDEX-CUTOVER-PHASE-CLOSURE-INVARIANT-001). Follow-on architectural work beyond the Phase Plan is captured as bounded maintenance slices under the cc-policy-who-remediation lane, not as new phase entries; if a future Phase 9 is ever declared, this summary and the scanner test must be updated together.
+
 ### Phase 0 — Hook Authority Reset
+
+Status: CLOSED (pre-2026-04-13)
 
 Goal:
 Re-establish a trustworthy hook/config surface before deeper cutover work.
@@ -1216,6 +1235,8 @@ Exit criteria:
 
 ### Phase 1 — Constitutional Kernel
 
+Status: CLOSED (pre-2026-04-13)
+
 Goal:
 Create the explicit architecture authorities the rest of the cutover depends on.
 
@@ -1240,6 +1261,8 @@ Exit criteria:
 
 ### Phase 2 — Hook Adapter Reduction
 
+Status: CLOSED (pre-2026-04-13)
+
 Goal:
 Move live shell semantics back behind the runtime boundary.
 
@@ -1258,6 +1281,12 @@ Exit criteria:
   hand-maintained local prompt fragments
 
 ### Phase 2b — Agent-Agnostic Supervision Cutover
+
+Status: CLOSED (2026-04-17; Phase 2b exit criteria verified by
+cc-policy-who-remediation audit under Codex instruction
+`1776410474042-0005-y9aiv1`; evidence set in sibling tests
+`test_braid_v2.py`, `test_dispatch_attempts.py`, `test_transport_contract.py`,
+`test_tmux_adapter.py`, `test_supervision_schema.py`, `test_claudex_watchdog.py`)
 
 Goal:
 Replace the current blind bridge loop with a runtime-owned supervision fabric
@@ -1292,6 +1321,8 @@ Exit criteria:
 
 ### Phase 3 — Capability-Gated Policy Model
 
+Status: CLOSED 2026-04-13
+
 Goal:
 Replace repeated role-name logic with explicit capability enforcement.
 
@@ -1313,6 +1344,8 @@ Exit criteria:
 - planner and guardian have distinct continuation authorities
 
 ### Phase 4 — Workflow Reviewer Introduction
+
+Status: CLOSED 2026-04-13
 
 Goal:
 Introduce `reviewer` as a first-class workflow stage without yet removing the
@@ -1342,6 +1375,8 @@ Exit criteria:
 
 ### Phase 5 — Loop Activation and Tester Removal
 
+Status: CLOSED 2026-04-13
+
 Goal:
 Make workflow review and regular Stop review fully separate, activate the new
 work-item loop, and remove tester as a routing authority.
@@ -1364,6 +1399,8 @@ Exit criteria:
 
 ### Phase 6 — Goal Continuation Activation
 
+Status: CLOSED 2026-04-13
+
 Goal:
 Teach the system what happens after guardian without turning reviewer into a
 planner surrogate.
@@ -1384,6 +1421,8 @@ Exit criteria:
 - user re-entry boundaries are explicit and test-backed
 
 ### Phase 7 — Derived Surface Generation and Enforcement
+
+Status: CLOSED 2026-04-13
 
 Goal:
 Make drift harder to reintroduce.
@@ -1409,6 +1448,8 @@ Exit criteria:
 - derived retrieval layers are provably downstream from canonical state
 
 ### Phase 8 — Legacy Deletion and Final Cutover
+
+Status: CLOSED 2026-04-14
 
 Goal:
 Delete superseded authorities and close the migration cleanly.
@@ -1483,6 +1524,7 @@ edited casually:
 - `runtime/core/decision_digest_projection.py` (added as concrete in Phase 7 Slice 13)
 - `runtime/core/projection_reflow.py` (promoted from planned area in Phase 7 Slice 16)
 - `runtime/core/memory_retrieval.py` (promoted from planned area in Phase 7 Slice 17)
+- `runtime/core/bridge_permissions.py` (added as concrete in cc-policy-who-remediation Slice 1)
 
 Rule:
 changes to these files require explicit architecture-scoped plan coverage,

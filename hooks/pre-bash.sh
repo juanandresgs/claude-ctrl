@@ -110,6 +110,26 @@ _hook_main() {
     # and violate the hook contract.  Pass the full JSON — Claude Code reads the
     # top-level "hookSpecificOutput" key directly from the hook's stdout.
     printf '%s\n' "$RESULT"
+
+    # Capture source-mutation fingerprint baseline for post-bash.sh (DEC-EVAL-006).
+    # Only when allowed — denied commands don't execute so post-bash.sh won't fire.
+    if [[ "$_pb_action" != "deny" ]]; then
+        local _pb_proj _pb_baseline_key _pb_fp
+        _pb_proj=$(detect_project_root 2>/dev/null || echo "")
+        if [[ -n "$_pb_proj" ]]; then
+            # Baseline key must be stable across the matching PreToolUse and
+            # PostToolUse hook invocations for the SAME Bash tool call.
+            # Prefer hook payload IDs over process/env fallback so missing
+            # CLAUDE_SESSION_ID does not cause pre/post filename drift.
+            _pb_baseline_key=$(get_field '.tool_use_id')
+            [[ -z "$_pb_baseline_key" ]] && _pb_baseline_key=$(get_field '.session_id')
+            [[ -z "$_pb_baseline_key" ]] && _pb_baseline_key=$(canonical_session_id)
+            _pb_baseline_key=$(sanitize_token "$_pb_baseline_key")
+            _pb_fp=$(compute_source_fingerprint "$_pb_proj" 2>/dev/null || echo "ERROR")
+            mkdir -p "$_pb_proj/tmp" 2>/dev/null || true
+            printf '%s' "$_pb_fp" > "$_pb_proj/tmp/.bash-source-baseline-${_pb_baseline_key}" 2>/dev/null || true
+        fi
+    fi
 }
 
 run_fail_closed _hook_main
