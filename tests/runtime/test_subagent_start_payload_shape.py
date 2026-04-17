@@ -70,7 +70,31 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_CAPTURE = _REPO_ROOT / "runtime" / "dispatch-debug.jsonl"
+_LIVE_CAPTURE = _REPO_ROOT / "runtime" / "dispatch-debug.jsonl"
+_SEED_CAPTURE = _REPO_ROOT / "tests" / "fixtures" / "dispatch-debug.seed.jsonl"
+
+
+def _effective_capture() -> Path:
+    """Return the active dispatch-debug source.
+
+    Prefers the live ``runtime/dispatch-debug.jsonl`` when present (primary
+    repo with active hook capture). Falls back to the committed deterministic
+    seed fixture ``tests/fixtures/dispatch-debug.seed.jsonl`` so the invariant
+    pins run hermetically in fresh worktrees where no live capture exists.
+
+    DEC-CLAUDEX-SA-PAYLOAD-SHAPE-FIXTURE-001: the seed fixture carries the
+    same *structural* payload shape (field presence / absence, carrier
+    write-key correspondence) that the invariants care about. It carries no
+    live command text beyond the minimal ``CLAUDEX_CONTRACT_BLOCK`` marker
+    and trivial task-body placeholders — the assertions in this module are
+    structural, not content-sensitive.
+    """
+    if _LIVE_CAPTURE.is_file():
+        return _LIVE_CAPTURE
+    return _SEED_CAPTURE
+
+
+_CAPTURE = _effective_capture()
 
 # The six contract fields that drive the runtime-first branch.
 _CONTRACT_FIELDS: frozenset[str] = frozenset(
@@ -155,8 +179,9 @@ class TestSubagentStartPayloadShape:
 
     def test_capture_file_exists(self):
         assert _CAPTURE.is_file(), (
-            f"runtime/dispatch-debug.jsonl not found at {_CAPTURE}. "
-            "Hook capture must be active to run these tests."
+            f"Neither live capture ({_LIVE_CAPTURE}) nor seed fixture "
+            f"({_SEED_CAPTURE}) is present. At least one must exist to run "
+            "these tests."
         )
 
     def test_all_payloads_have_session_id(self):
@@ -335,10 +360,62 @@ class TestContractCarrierGap:
 
     def test_dispatch_debug_file_exists_and_has_subagent_start_events(self):
         payloads = _load_real_subagent_start_payloads()
-        assert _CAPTURE.is_file(), "dispatch-debug.jsonl must exist to pin the gap"
+        assert _CAPTURE.is_file(), (
+            f"Neither live capture ({_LIVE_CAPTURE}) nor seed fixture "
+            f"({_SEED_CAPTURE}) exists — at least one must be present to "
+            "pin the carrier gap"
+        )
         assert len(payloads) > 0, (
-            "dispatch-debug.jsonl has no real SubagentStart events — "
-            "hook capture must be active for this assertion to have meaning"
+            f"Effective capture ({_CAPTURE}) has no SubagentStart events — "
+            "live capture must be active or seed fixture must contain "
+            "structural SubagentStart rows for this assertion to have meaning"
+        )
+
+    def test_seed_fixture_exists_and_is_non_empty(self):
+        """Pin: tests/fixtures/dispatch-debug.seed.jsonl exists and carries
+        at least one PreToolUse:Agent row and one SubagentStart row so
+        fresh-worktree runs have structural data to assert against.
+
+        DEC-CLAUDEX-SA-PAYLOAD-SHAPE-FIXTURE-001.
+        """
+        assert _SEED_CAPTURE.is_file(), (
+            f"Seed fixture must exist at {_SEED_CAPTURE}. It anchors the "
+            "fresh-worktree test path so TestContractCarrierGap can run "
+            "hermetically without a live runtime/dispatch-debug.jsonl."
+        )
+        seed_text = _SEED_CAPTURE.read_text().strip()
+        assert seed_text, f"Seed fixture at {_SEED_CAPTURE} must be non-empty"
+
+        # Walk the seed and classify rows structurally.
+        pre_tool_count = 0
+        subagent_start_count = 0
+        for line in seed_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise AssertionError(
+                    f"Seed fixture contains invalid JSON on a line: {exc}"
+                )
+            if not isinstance(evt, dict):
+                continue
+            if (
+                evt.get("hook_event_name") == "PreToolUse"
+                and evt.get("tool_name") == "Agent"
+            ):
+                pre_tool_count += 1
+            elif evt.get("hook_event_name") == "SubagentStart":
+                subagent_start_count += 1
+
+        assert pre_tool_count >= 1, (
+            f"Seed fixture must carry at least one PreToolUse:Agent row; "
+            f"got {pre_tool_count}"
+        )
+        assert subagent_start_count >= 1, (
+            f"Seed fixture must carry at least one SubagentStart row; "
+            f"got {subagent_start_count}"
         )
 
     def test_contract_fields_absent_from_all_observed_payloads(self):
