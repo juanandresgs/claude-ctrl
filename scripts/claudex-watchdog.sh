@@ -1042,6 +1042,12 @@ expire_stale_dispatch_attempts() {
   if [[ "$expired" =~ ^[0-9]+$ ]] && (( expired > 0 )); then
     log "expired ${expired} stale dispatch attempt(s)"
   fi
+
+  # Runtime-owned dead-loop recovery (DEC-DEAD-RECOVERY-001).  Marks seats
+  # with past-grace terminal attempts as dead, cascade-closes their
+  # supervision_threads, and transitions every-seat-terminal sessions to
+  # completed / dead.  Best-effort — failures must never block the tick.
+  CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_CLI" dispatch sweep-dead >/dev/null 2>&1 || true
 }
 
 watchdog_tick() {

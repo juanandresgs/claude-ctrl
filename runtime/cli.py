@@ -1660,6 +1660,19 @@ def _handle_dispatch(args) -> int:
                 return _ok({"found": False, "attempt": None})
             return _ok({"found": True, "attempt": result})
 
+        elif args.action == "sweep-dead":
+            # @decision DEC-DEAD-RECOVERY-001
+            from runtime.core import dead_recovery as _dr
+
+            kwargs: dict = {}
+            if getattr(args, "grace_seconds", None) is not None:
+                kwargs["grace_seconds"] = int(args.grace_seconds)
+            try:
+                result = _dr.sweep_all(conn, **kwargs)
+            except ValueError as exc:
+                return _err(f"dispatch sweep-dead: {exc}")
+            return _ok(result)
+
         elif args.action == "seat-release":
             # Runtime-owned seat teardown (DEC-SUPERVISION-THREADS-DOMAIN-001
             # continuation).  Releases the seat and abandons every active
@@ -3969,6 +3982,31 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional legacy cleanup threshold: expire pending rows with "
             "timeout_at NULL older than this many seconds."
+        ),
+    )
+
+    # sweep-dead: runtime-owned dead-loop recovery (DEC-DEAD-RECOVERY-001).
+    # Thin adapter over runtime.core.dead_recovery.sweep_all().  Called by
+    # scripts/claudex-watchdog.sh immediately after attempt-expire-stale so
+    # silent-death cases (no SubagentStop event) are recovered by the
+    # runtime rather than by stop-hook recursion.
+    dsw = dp_sub.add_parser(
+        "sweep-dead",
+        help=(
+            "Mark active seats with past-grace terminal attempts as dead "
+            "and cascade-close their supervision_threads; transition "
+            "every-seat-terminal sessions to completed or dead."
+        ),
+    )
+    dsw.add_argument(
+        "--grace-seconds",
+        dest="grace_seconds",
+        type=int,
+        default=None,
+        help=(
+            "Minimum age (seconds) a terminal dispatch_attempt must reach "
+            "before its seat is eligible for sweeping. Defaults to "
+            "runtime.core.dead_recovery.DEFAULT_GRACE_SECONDS."
         ),
     )
 
