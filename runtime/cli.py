@@ -1773,6 +1773,20 @@ def _handle_supervision(args) -> int:
                 return _err(f"supervision list-for-seat: {exc}")
             return _ok({"threads": rows})
 
+        if args.action == "abandon-for-seat":
+            try:
+                count = sup_mod.abandon_for_seat(conn, args.seat_id)
+            except ValueError as exc:
+                return _err(f"supervision abandon-for-seat: {exc}")
+            return _ok({"abandoned": count})
+
+        if args.action == "abandon-for-session":
+            try:
+                count = sup_mod.abandon_for_session(conn, args.agent_session_id)
+            except ValueError as exc:
+                return _err(f"supervision abandon-for-session: {exc}")
+            return _ok({"abandoned": count})
+
         if args.action == "list-active":
             rows = sup_mod.list_active(conn)
             return _ok({"threads": rows})
@@ -4393,6 +4407,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sup_lst.add_argument("--seat-id", dest="seat_id", required=True)
     sup_lst.add_argument("--status", dest="status", default=None)
+
+    sup_afs = sup_sub.add_parser(
+        "abandon-for-seat",
+        help="Abandon every active thread where a seat is supervisor or worker",
+    )
+    sup_afs.add_argument("--seat-id", dest="seat_id", required=True)
+
+    sup_afses = sup_sub.add_parser(
+        "abandon-for-session",
+        help="Abandon every active thread touching a session (either side)",
+    )
+    sup_afses.add_argument("--agent-session-id", dest="agent_session_id", required=True)
 
     sup_sub.add_parser(
         "list-active", help="List every supervision_thread whose status is active"

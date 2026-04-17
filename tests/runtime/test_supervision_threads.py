@@ -399,6 +399,99 @@ def test_list_for_seat_rejects_invalid_status(conn, cross_session_seats):
 
 
 # ---------------------------------------------------------------------------
+# Bulk abandonment helpers
+# ---------------------------------------------------------------------------
+
+
+def test_abandon_for_seat_transitions_only_active_rows(conn, cross_session_seats):
+    s = cross_session_seats
+    t_active_sup = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    t_active_wrk = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "review")
+    t_completed = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "observer")
+    sup_mod.detach(conn, t_completed["thread_id"])
+
+    count = sup_mod.abandon_for_seat(conn, s["A_wrk"])
+    assert count == 2
+
+    # Both active rows touching seat-A-wrk flipped to abandoned.
+    assert sup_mod.get(conn, t_active_sup["thread_id"])["status"] == "abandoned"
+    assert sup_mod.get(conn, t_active_wrk["thread_id"])["status"] == "abandoned"
+    # The already-completed row is not rewritten.
+    assert sup_mod.get(conn, t_completed["thread_id"])["status"] == "completed"
+
+
+def test_abandon_for_seat_is_idempotent(conn, cross_session_seats):
+    s = cross_session_seats
+    sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    assert sup_mod.abandon_for_seat(conn, s["A_wrk"]) == 1
+    # Second call finds nothing active to abandon.
+    assert sup_mod.abandon_for_seat(conn, s["A_wrk"]) == 0
+
+
+def test_abandon_for_seat_returns_zero_for_unrelated_seat(conn, cross_session_seats):
+    s = cross_session_seats
+    sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    # seat-B-wrk is in a different session; no threads touch it.
+    assert sup_mod.abandon_for_seat(conn, s["B_wrk"]) == 0
+
+
+def test_abandon_for_seat_rejects_empty_seat_id(conn):
+    with pytest.raises(ValueError, match="seat_id"):
+        sup_mod.abandon_for_seat(conn, "")
+
+
+def test_abandon_for_session_abandons_every_touching_active_thread(conn, cross_session_seats):
+    s = cross_session_seats
+    t_intra = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    t_cross = sup_mod.attach(conn, s["A_sup"], s["B_wrk"], "review")
+    # Also create a thread entirely within session B so we can prove scoping.
+    _insert_seat(conn, "seat-B-sup", "sess-B", role="supervisor")
+    conn.commit()
+    t_b_only = sup_mod.attach(conn, "seat-B-sup", s["B_wrk"], "observer")
+
+    # Abandoning sess-A must close the intra-A thread and the cross-session
+    # thread (sess-A seat is one side of it), but must NOT touch the
+    # sess-B-only thread.
+    count = sup_mod.abandon_for_session(conn, s["sess_A"])
+    assert count == 2
+    assert sup_mod.get(conn, t_intra["thread_id"])["status"] == "abandoned"
+    assert sup_mod.get(conn, t_cross["thread_id"])["status"] == "abandoned"
+    assert sup_mod.get(conn, t_b_only["thread_id"])["status"] == "active"
+
+
+def test_abandon_for_session_is_idempotent(conn, cross_session_seats):
+    s = cross_session_seats
+    sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    assert sup_mod.abandon_for_session(conn, s["sess_A"]) == 1
+    assert sup_mod.abandon_for_session(conn, s["sess_A"]) == 0
+
+
+def test_abandon_for_session_ignores_non_active_rows(conn, cross_session_seats):
+    s = cross_session_seats
+    t1 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    t2 = sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "review")
+    sup_mod.detach(conn, t1["thread_id"])  # completed — must not be rewritten
+
+    count = sup_mod.abandon_for_session(conn, s["sess_A"])
+    assert count == 1
+    assert sup_mod.get(conn, t1["thread_id"])["status"] == "completed"
+    assert sup_mod.get(conn, t2["thread_id"])["status"] == "abandoned"
+
+
+def test_abandon_for_session_returns_zero_for_unknown_session(conn, cross_session_seats):
+    s = cross_session_seats
+    sup_mod.attach(conn, s["A_sup"], s["A_wrk"], "analysis")
+    assert sup_mod.abandon_for_session(conn, "sess-ghost") == 0
+    # And the active thread remains untouched.
+    assert len(sup_mod.list_active(conn)) == 1
+
+
+def test_abandon_for_session_rejects_empty_session_id(conn):
+    with pytest.raises(ValueError, match="agent_session_id"):
+        sup_mod.abandon_for_session(conn, "")
+
+
+# ---------------------------------------------------------------------------
 # Vocabulary authority
 # ---------------------------------------------------------------------------
 
@@ -466,6 +559,8 @@ def test_cli_help_lists_supervision_actions(tmp_path):
         "attach",
         "detach",
         "abandon",
+        "abandon-for-seat",
+        "abandon-for-session",
         "get",
         "list-for-supervisor",
         "list-for-worker",
@@ -585,3 +680,44 @@ def test_cli_list_for_session_and_seat_roundtrip(tmp_path):
         "--seat-id", wrk,
     )
     assert any(r["thread_id"] == tid for r in by_seat_wrk["threads"])
+
+
+def test_cli_abandon_for_seat_roundtrip(tmp_path):
+    tmp_db = tmp_path / "cli.sqlite3"
+    sup, wrk = _seed_seats_in_db(tmp_db)
+
+    _run_cli(
+        tmp_db,
+        "supervision", "attach",
+        "--supervisor-seat-id", sup,
+        "--worker-seat-id", wrk,
+        "--thread-type", "analysis",
+    )
+    first = _run_cli(tmp_db, "supervision", "abandon-for-seat", "--seat-id", wrk)
+    assert first == {"status": "ok", "abandoned": 1}
+    # Second call is a no-op — idempotent.
+    second = _run_cli(tmp_db, "supervision", "abandon-for-seat", "--seat-id", wrk)
+    assert second == {"status": "ok", "abandoned": 0}
+
+
+def test_cli_abandon_for_session_roundtrip(tmp_path):
+    tmp_db = tmp_path / "cli.sqlite3"
+    sup, wrk = _seed_seats_in_db(tmp_db)
+
+    _run_cli(
+        tmp_db,
+        "supervision", "attach",
+        "--supervisor-seat-id", sup,
+        "--worker-seat-id", wrk,
+        "--thread-type", "review",
+    )
+    first = _run_cli(
+        tmp_db, "supervision", "abandon-for-session",
+        "--agent-session-id", "cli-sess",
+    )
+    assert first == {"status": "ok", "abandoned": 1}
+    second = _run_cli(
+        tmp_db, "supervision", "abandon-for-session",
+        "--agent-session-id", "cli-sess",
+    )
+    assert second == {"status": "ok", "abandoned": 0}

@@ -409,6 +409,70 @@ def list_for_seat(
     return [_row_to_dict(r) for r in rows]
 
 
+def abandon_for_seat(conn: sqlite3.Connection, seat_id: str) -> int:
+    """Abandon every ``active`` thread where ``seat_id`` is supervisor or worker.
+
+    Used when a seat is being torn down and every supervision relationship
+    touching it must be closed.  Only rows whose current status is
+    ``active`` are transitioned to ``abandoned``; ``completed`` and
+    ``abandoned`` rows are left untouched (idempotent).
+
+    Returns the count of rows transitioned in this call.  A second call
+    with the same argument returns 0 when there is nothing left to
+    abandon.
+    """
+    if not seat_id:
+        raise ValueError("supervision_threads: seat_id must be non-empty")
+    now = _now()
+    with conn:
+        cur = conn.execute(
+            """
+            UPDATE supervision_threads
+            SET    status = 'abandoned', updated_at = ?
+            WHERE  status = 'active'
+              AND  (supervisor_seat_id = ? OR worker_seat_id = ?)
+            """,
+            (now, seat_id, seat_id),
+        )
+    return cur.rowcount or 0
+
+
+def abandon_for_session(conn: sqlite3.Connection, agent_session_id: str) -> int:
+    """Abandon every ``active`` thread touching ``agent_session_id``.
+
+    A thread is considered to touch the session when *either* its
+    supervisor or worker seat belongs to that session.  Only rows whose
+    current status is ``active`` are transitioned; ``completed`` and
+    ``abandoned`` rows are left untouched (idempotent).
+
+    Returns the count of rows transitioned in this call.  Cross-session
+    data is untouched — only threads whose supervisor or worker seat
+    maps back to this session are affected.
+    """
+    if not agent_session_id:
+        raise ValueError(
+            "supervision_threads: agent_session_id must be non-empty"
+        )
+    now = _now()
+    with conn:
+        cur = conn.execute(
+            """
+            UPDATE supervision_threads
+            SET    status = 'abandoned', updated_at = ?
+            WHERE  status = 'active'
+              AND  thread_id IN (
+                    SELECT st.thread_id
+                    FROM   supervision_threads st
+                    JOIN   seats s
+                      ON   s.seat_id IN (st.supervisor_seat_id, st.worker_seat_id)
+                    WHERE  s.session_id = ?
+              )
+            """,
+            (now, agent_session_id),
+        )
+    return cur.rowcount or 0
+
+
 def list_active(conn: sqlite3.Connection) -> list[dict]:
     """Return every thread with ``status == 'active'`` in created_at order."""
     rows = conn.execute(
