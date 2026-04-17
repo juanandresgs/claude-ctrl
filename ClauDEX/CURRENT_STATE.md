@@ -13,6 +13,16 @@ place to answer:
 
 ## Git Placement
 
+> **Time-scoping note:** the branch / HEAD / upstream / worktree claims in
+> this section and in "Checkpoint Readiness" below are a snapshot **as of
+> the 2026-04-14 checkpoint landing** (plus the follow-up `d8fdf96`
+> process-control fix pushed to the same upstream on the same day). They
+> record the immortalised checkpoint moment, not live runtime truth on
+> subsequent days. Post-checkpoint branch evolution (bridge / supervisor
+> fixes pushed later to the same upstream) and in-flight WIP in this soak
+> worktree are expected and do not reopen the closed cutover; do not read
+> the numbers below as a live `git status` / `git rev-list` output.
+
 Canonical cutover custody branch (remote):
 
 - `origin/feat/claudex-cutover` at HEAD `d8fdf96` — carries the accepted
@@ -765,11 +775,24 @@ All four CUTOVER_PLAN exit criteria verified with mechanical evidence:
 3. **Reviewer is the sole technical readiness authority before guardian** — only `determine_next_role("reviewer", "ready_for_guardian")` returns `"guardian"`. No other (role, verdict) pair reaches guardian through routing. Verified by exhaustive check across planner/implementer/tester.
 4. **The implementer/reviewer loop is canonical and test-backed** — `implementer→reviewer` and `reviewer(needs_changes)→implementer` both derive from `stage_registry.next_stage()`. Behavioral parity tests + AST structural invariant + stage_registry tests pin the loop. 265 targeted tests, 0 failures.
 
-Next cutover phase: **Phase 6 — Goal Continuation Activation.**
+Next cutover phase at Phase 5 completion (2026-04-13): **Phase 6 — Goal
+Continuation Activation.** (Historical pointer only — Phase 6 subsequently
+landed on 2026-04-13 and the full cutover closed at Phase 8 on 2026-04-14.
+See the Checkpoint Readiness section above for live post-checkpoint
+status.)
 
-## Current Restart Slice
+## Phase 6 — Goal Continuation Activation (COMPLETE 2026-04-13)
 
-**Phase 6 — Goal Continuation Activation: IN PROGRESS.**
+> **Historical log.** This section was previously titled "Current Restart
+> Slice" while Phase 6 was the active slice. Phase 6 completed on
+> 2026-04-13 (all 6 slices landed); Phases 7 and 8 subsequently landed and
+> the full cutover checkpoint was immortalised as `6b8cc5c` on
+> 2026-04-14. The section is retained as a historical execution log of
+> the Phase 6 slices for reviewer context; it does **not** describe
+> active or in-progress work today. For live post-checkpoint status, see
+> the "Checkpoint Readiness" and "Phase 8 Closeout Status" sections.
+
+**Phase 6 — Goal Continuation Activation: COMPLETE (2026-04-13, 6 slices).**
 
 **Slice 1 complete: Planner completion contract seed.**
 

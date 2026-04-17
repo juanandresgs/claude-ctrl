@@ -384,21 +384,29 @@ has reached the Phase 8 closeout boundary:
 landed as commit `6b8cc5c` (`feat(claudex): cutover bundle - Phases 1-8
 closeout`) and the subsequent auto-submit process-control fix landed as
 `d8fdf96` (`Fix ClauDEX auto-submit process growth`). Both commits are
-pushed to `origin/feat/claudex-cutover`; this soak worktree is on
-`claudesox-local` tracking the same upstream at HEAD `d8fdf96`. No
-checkpoint debt remains.
+pushed to `origin/feat/claudex-cutover`. At the 2026-04-14 checkpoint
+snapshot, this soak worktree was on `claudesox-local` tracking the same
+upstream at HEAD `d8fdf96`; no checkpoint debt remained. These are
+point-in-time checkpoint facts — post-checkpoint bridge / supervisor
+fixes pushed to the same branch, and in-flight WIP in the soak
+worktree, are expected and do not reopen the closed cutover.
 
-**Next bounded action: checkpoint the follow-up maintenance bundle,
-then resume cutover-plan continuation or lane maintenance.** With
-Phases 1-8 closed and upstream, the only current local work is the
-state-record correction plus the lane-local Codex supervisor launcher
-fix (`ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
-`scripts/claudex-codex-launch.sh`). Once that bundle is reviewed,
-tested, committed, and pushed, the supervisor should either (a) resume
-the `ClauDEX/CUTOVER_PLAN.md` architecture track — the runtime-owned
-agent-session supervision fabric — when ready to open a new slice, or
-(b) stay in steady-state review/steer mode and handle narrow
-maintenance items without opening fresh architecture work. See
+**Next bounded action: post-checkpoint state-record reconciliation
+under the already-closed Phase 8. No Phase 9 exists.** With
+Phases 1-8 closed and upstream, supervisor-session work on docs is
+limited to narrow reconciliation of `ClauDEX/CURRENT_STATE.md` and
+`ClauDEX/SUPERVISOR_HANDOFF.md` against the installed checkpoint
+truth, plus lane maintenance (e.g. the lane-local Codex supervisor
+launcher fix). Once those narrow bundles are reviewed and landed, the
+supervisor should either (a) resume the `ClauDEX/CUTOVER_PLAN.md`
+architecture track — the runtime-owned agent-session supervision
+fabric — when ready to open a new slice, or (b) stay in steady-state
+review/steer mode and handle narrow maintenance items without opening
+fresh architecture work. Category C retirement (`proof_state`,
+`dispatch_queue`/`dispatch_cycles`) pre-scoped in
+`ClauDEX/PHASE8_DELETION_INVENTORY.md:205-216` remains future bounded
+work, not current; it must not be auto-dispatched from this handoff
+without a fresh Codex planning/scoping slice first. See
 `ClauDEX/CURRENT_STATE.md` "Checkpoint Readiness" section for the
 installed-truth git state and focused gate evidence.
 
@@ -406,6 +414,49 @@ Do not auto-dispatch a new architecture slice unless the cutover plan
 has been re-read and a clearly bounded slice is ready.
 
 For current detail, see `ClauDEX/CURRENT_STATE.md`.
+
+## Current Restart Slice
+
+**Status (post-checkpoint):** no active cutover phase. Phases 1-8 are
+complete; the accepted bundle is landed as `6b8cc5c` on
+`feat/claudex-cutover` and the follow-up process-control fix landed as
+`d8fdf96` on the same upstream. `ClauDEX/CUTOVER_PLAN.md` has no
+Phase 9, and the planned-area set is exhausted.
+
+**Fresh-run bootstrap action (Steady-State step 3):** on a fresh
+supervised run, the supervisor must dispatch a single bounded
+verification / state-reconciliation slice — nothing more. Specifically:
+
+1. Verify installed truth against the post-checkpoint claims in this
+   file and in `ClauDEX/CURRENT_STATE.md`:
+   - phase / work status (no active unfinished cutover phase, no hidden
+     "Phase 9" style continuation)
+   - branch / HEAD / upstream cleanliness claims understood as the
+     2026-04-14 checkpoint snapshot, not as live runtime truth
+   - `ClauDEX/CUTOVER_PLAN.md` alignment (no hidden continuation phase)
+2. If drift is found **between** `CURRENT_STATE.md`,
+   `SUPERVISOR_HANDOFF.md`, and `CUTOVER_PLAN.md`, apply **minimal
+   docs-only reconciliation edits** to restore cross-doc coherence.
+3. If no drift is found, make no changes and return evidence (commands
+   run, key outputs, explicit "none" for files changed).
+
+**Out of scope for the fresh-run slice:**
+
+- Creating a new phase, slice, or control plane.
+- Auto-dispatching any Category C implementation work
+  (`proof_state`, `dispatch_queue` / `dispatch_cycles` retirement
+  pre-scoped in `ClauDEX/PHASE8_DELETION_INVENTORY.md:205-216`).
+  Category C remains future bounded work that requires a fresh Codex
+  planning/scoping slice first — it must not be auto-dispatched from
+  this handoff.
+- Bridge / transport refinement, unless a bridge defect is a direct
+  blocker on this verification slice.
+- Any commit / push / destructive git action beyond the narrow
+  reconciled docs bundle explicitly authorised by the supervisor.
+
+**Next bounded action after this slice:** whichever bounded slice the
+Codex supervisor explicitly authorises next. Until such authorisation,
+the fresh-run slice is the entire restart-slice scope.
 
 ## Relevant Grounding
 

@@ -28,6 +28,7 @@ import textwrap
 import pytest
 
 from runtime.core.policies import bash_git_who
+from runtime.core.policies import bash_write_who
 from runtime.core.policies import bash_worktree_creation
 from runtime.core.policies import write_plan_guard
 from runtime.core.policies import write_who
@@ -302,6 +303,37 @@ class TestGitWhoReadOnlyGate:
 
 
 # ---------------------------------------------------------------------------
+# bash_write_who.py: CAN_WRITE_SOURCE / CAN_WRITE_GOVERNANCE gates
+# ---------------------------------------------------------------------------
+
+
+class TestBashWriteWhoCapabilityGate:
+    """Pin: bash_write_who uses capability checks, not role-name strings."""
+
+    @pytest.fixture(autouse=True)
+    def _parse(self):
+        self.tree = _parse_module(bash_write_who)
+
+    def test_imports_write_capabilities(self):
+        imported = _find_imports_of(self.tree, {"CAN_WRITE_SOURCE", "CAN_WRITE_GOVERNANCE"})
+        assert "CAN_WRITE_SOURCE" in imported
+        assert "CAN_WRITE_GOVERNANCE" in imported
+
+    def test_uses_capability_membership_checks(self):
+        src_lines = _find_capability_in_checks(self.tree, "CAN_WRITE_SOURCE")
+        gov_lines = _find_capability_in_checks(self.tree, "CAN_WRITE_GOVERNANCE")
+        assert src_lines, "bash_write_who must use CAN_WRITE_SOURCE membership checks"
+        assert gov_lines, "bash_write_who must use CAN_WRITE_GOVERNANCE membership checks"
+
+    def test_no_role_string_comparisons(self):
+        for role_word in ("implementer", "planner", "guardian", "reviewer", "orchestrator"):
+            matches = _find_string_comparisons_with(self.tree, role_word)
+            assert matches == [], (
+                f"bash_write_who must not gate via role-name string comparisons: {matches}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # enforcement_config.py: CAN_SET_CONTROL_CONFIG gate
 # ---------------------------------------------------------------------------
 
@@ -393,7 +425,7 @@ class TestNoPolicyImportsRoleCheckHelpers:
     """Pin: none of the migrated policies import or define ad-hoc role-check
     helpers that could re-introduce role-name folklore."""
 
-    MODULES = [write_who, write_plan_guard, bash_worktree_creation, bash_git_who]
+    MODULES = [write_who, write_plan_guard, bash_worktree_creation, bash_git_who, bash_write_who]
     FORBIDDEN_PATTERNS = {"is_implementer", "is_planner", "is_guardian", "is_reviewer"}
 
     def test_no_role_check_function_definitions(self):
