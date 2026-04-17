@@ -25,12 +25,18 @@ from runtime.core.policy_engine import PolicyContext, PolicyRequest
 # ---------------------------------------------------------------------------
 
 
-def _make_context(actor_role: str = "", project_root: str = "/proj") -> PolicyContext:
+def _make_context(
+    actor_role: str = "",
+    project_root: str = "/proj",
+    worktree_path: str | None = None,
+) -> PolicyContext:
+    if worktree_path is None:
+        worktree_path = project_root
     return PolicyContext(
         actor_role=actor_role,
         actor_id="agent-1",
         workflow_id="wf-1",
-        worktree_path=project_root,
+        worktree_path=worktree_path,
         branch="feature/test",
         project_root=project_root,
         is_meta_repo=False,
@@ -44,13 +50,24 @@ def _make_context(actor_role: str = "", project_root: str = "/proj") -> PolicyCo
     )
 
 
-def _req(file_path: str, role: str = "", project_root: str = "/proj") -> PolicyRequest:
+def _req(
+    file_path: str,
+    role: str = "",
+    project_root: str = "/proj",
+    worktree_path: str | None = None,
+    cwd: str | None = None,
+) -> PolicyRequest:
+    effective_cwd = cwd if cwd is not None else (worktree_path if worktree_path is not None else project_root)
     return PolicyRequest(
         event_type="Write",
         tool_name="Write",
         tool_input={"file_path": file_path},
-        context=_make_context(actor_role=role, project_root=project_root),
-        cwd=project_root,
+        context=_make_context(
+            actor_role=role,
+            project_root=project_root,
+            worktree_path=worktree_path,
+        ),
+        cwd=effective_cwd,
     )
 
 
@@ -274,6 +291,36 @@ def test_implementer_denied_for_constitution_level_stage_registry():
 def test_planner_allowed_for_constitution_level_source_file():
     """Planner (CAN_WRITE_GOVERNANCE) is allowed for constitution files."""
     assert plan_guard(_req("/proj/runtime/cli.py", role="planner")) is None
+
+
+def test_implementer_denied_for_constitution_level_file_from_worktree_path():
+    worktree_path = "/proj/.worktrees/feature-test"
+    result = plan_guard(
+        _req(
+            f"{worktree_path}/runtime/cli.py",
+            role="implementer",
+            worktree_path=worktree_path,
+            cwd=worktree_path,
+        )
+    )
+    assert result is not None
+    assert result.action == "deny"
+    assert "constitution-level" in result.reason
+
+
+def test_planner_allowed_for_constitution_level_file_from_worktree_path():
+    worktree_path = "/proj/.worktrees/feature-test"
+    assert (
+        plan_guard(
+            _req(
+                f"{worktree_path}/runtime/cli.py",
+                role="planner",
+                worktree_path=worktree_path,
+                cwd=worktree_path,
+            )
+        )
+        is None
+    )
 
 
 def test_Plan_allowed_for_constitution_level_source_file():

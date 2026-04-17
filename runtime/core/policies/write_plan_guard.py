@@ -47,18 +47,31 @@ from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import is_governance_markdown
 
 
-def _to_repo_relative(file_path: str, project_root: str | None) -> str | None:
+def _strip_worktree_prefix(path: str) -> str:
+    normalized = path.replace("\\", "/").lstrip("/")
+    parts = normalized.split("/")
+    if len(parts) >= 3 and parts[0] == ".worktrees":
+        return "/".join(parts[2:])
+    return normalized
+
+
+def _to_repo_relative(
+    file_path: str, project_root: str | None, worktree_path: str | None
+) -> str | None:
     """Convert an absolute file_path to a repo-relative POSIX path.
 
     If *file_path* is already relative, normalise it directly.
     Returns ``None`` when the path cannot be made repo-relative.
     """
-    if project_root and file_path.startswith(project_root):
+    if worktree_path and file_path.startswith(worktree_path + os.sep):
+        rel = file_path[len(worktree_path):].lstrip(os.sep).lstrip("/")
+        return normalize_repo_path(rel)
+    if project_root and file_path.startswith(project_root + os.sep):
         # Strip the root prefix and any trailing separator.
         rel = file_path[len(project_root):].lstrip(os.sep).lstrip("/")
-        return normalize_repo_path(rel)
+        return normalize_repo_path(_strip_worktree_prefix(rel))
     # Already relative or no project_root — try normalising as-is.
-    return normalize_repo_path(file_path)
+    return normalize_repo_path(_strip_worktree_prefix(file_path))
 
 
 def plan_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -85,7 +98,7 @@ def plan_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
     is_gov = is_governance_markdown(file_path)
     is_const = False
     if not is_gov:
-        repo_rel = _to_repo_relative(file_path, project_root)
+        repo_rel = _to_repo_relative(file_path, project_root, request.context.worktree_path)
         if repo_rel is not None:
             is_const = is_constitution_level(repo_rel)
 
