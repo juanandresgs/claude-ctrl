@@ -200,8 +200,10 @@ live-verified. Production reachability is confirmed.
 - Before this session: 38 Agent entries, 0 with the contract prefix
 - After: 39 entries, 1 confirmed match
 
-Phase 2b (agent-agnostic supervision fabric) is now the active cutover slice.
-See `ClauDEX/CURRENT_STATE.md` for the current Phase 2b progress.
+At the time of this verification (2026-04-09), Phase 2b (agent-agnostic
+supervision fabric) was the active cutover slice. Phase 2b is now CLOSED
+(2026-04-17); all phases 0-8 are closed. See `ClauDEX/CURRENT_STATE.md`
+and `ClauDEX/CUTOVER_PLAN.md` for current phase status.
 
 ## Safety Model Tonight
 
