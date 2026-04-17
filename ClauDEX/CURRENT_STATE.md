@@ -1,7 +1,7 @@
 # ClauDEX Current State
 
-Status: active handoff record — **INTEGRATION WAVE 1 PROMOTED / CUTOVER STEADY-STATE**
-Updated: 2026-04-17 (post-promotion reconciliation).
+Status: active handoff record — **§2a FABRIC CLOSED / CUTOVER STEADY-STATE**
+Updated: 2026-04-17 (post-§2a closure reconciliation).
 
 - **2026-04-14 checkpoint:** Phases 1-8 COMPLETE; cutover bundle landed as `6b8cc5c`
   on `feat/claudex-cutover` + follow-up process-control fix `d8fdf96` pushed to the
@@ -23,6 +23,40 @@ Updated: 2026-04-17 (post-promotion reconciliation).
   - Bundle B2 (supervision-domain authority hardening) — `4b24d1f`
   - Bundle B3 (hook-adapter thin-translation hardening) — `7365792`
   - Bundle B4 (CLAUDE.md constitution update — narrative capstone) — `2ab1d9f`
+- **2026-04-17 §2a closure chain (post-Integration-Wave-1, custody tip
+  `018f2fa → f3e88dd`):** the four §2a models now all have runtime-owned
+  domain modules, Rule-1 is mechanically enforced, and the dead-loop
+  recovery path is runtime-owned. Each commit is a pure FF on
+  `feat/claudex-cutover`; no phase was opened.
+  - supervision_threads promotion (`DEC-SUPERVISION-THREADS-DOMAIN-001`
+    chain) — `f1e4fc6` domain module + CLI; `afec534` session/seat
+    query surface; `887f4e1` domain-layer seat-existence; `5432e10`
+    bulk abandonment helpers.
+  - SubagentStop seat-release integration — `472d94b` runtime helper +
+    `cc-policy dispatch seat-release` CLI; `3967f6d` four
+    SubagentStop check adapters wire the best-effort call;
+    `d733ee3` execution-level behavioral pins.
+  - seat domain promotion (`DEC-SEAT-DOMAIN-001`) — `e982d50`
+    `runtime/core/seats.py` + `cc-policy seat` CLI + inward
+    delegation of `dispatch_hook` writes.
+  - agent_session domain promotion (`DEC-AGENT-SESSION-DOMAIN-001`) —
+    `a3653ad` `runtime/core/agent_sessions.py` + `cc-policy
+    agent-session` CLI + inward delegation of the last
+    `dispatch_hook` session write.
+  - Rule-1 mechanical writer invariant
+    (`DEC-AUTHORITY-WRITERS-001`) — `571c155`
+    `tests/runtime/test_authority_table_writers.py` scans every
+    `.py` under `runtime/` and every `.sh` under `hooks/`+`scripts/`
+    and fails if any non-allowlisted surface issues
+    INSERT/UPDATE/DELETE against the four §2a tables. Green on
+    baseline; the allowlist is the four domain modules plus
+    `runtime/schemas.py`.
+  - Dead-loop recovery (`DEC-DEAD-RECOVERY-001`) — `f3e88dd`
+    `runtime/core/dead_recovery.py` + `cc-policy dispatch sweep-dead
+    [--grace-seconds]` + one best-effort watchdog call right after
+    the existing `attempt-expire-stale` invocation. Pure delegation
+    over the domain modules; no authority-writer allowlist
+    extension.
 
 No `Phase 9` exists in `ClauDEX/CUTOVER_PLAN.md`; the cutover is closed. The
 integrated bundles are post-Phase-8 hardening (Category C retirements +
@@ -56,7 +90,15 @@ place to answer:
 > fast-forwarded into `feat/claudex-cutover`; the custody tip advanced
 > `ca7190e → 018f2fa`. Every `d8fdf96`-referencing clause below therefore
 > reads as the 2026-04-14 snapshot identifier, not the live custody tip.
-> Live custody HEAD since 2026-04-17 is `018f2fa`.
+>
+> **2026-04-17 §2a closure marker:** following integration, the §2a
+> supervision fabric was closed by a continuous FF-only chain
+> `018f2fa → f3e88dd` on the same upstream. The live custody HEAD is
+> `f3e88dd`. Intermediate landmarks (for `git log` navigation) are
+> `f1e4fc6` (supervision_threads domain), `e982d50` (seat domain),
+> `a3653ad` (agent_session domain), `571c155` (Rule-1 invariant),
+> `3967f6d` (SubagentStop adapters wired), `f3e88dd` (dead-loop
+> recovery sweeper).
 
 Canonical cutover custody branch (remote):
 

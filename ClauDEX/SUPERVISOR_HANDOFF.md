@@ -15,6 +15,67 @@ The Codex supervisor is the decider for the live ClauDEX bridge loop.
 The supervisor must not invent a new project or a second control plane. It
 stays on the active ClauDEX cutover slice only.
 
+## 2026-04-17 §2a closure snapshot
+
+Post-Integration-Wave-1, the §2a supervision fabric has been closed on
+`feat/claudex-cutover` by a continuous FF-only chain `018f2fa →
+f3e88dd`. Custody HEAD is `f3e88dd`. No new phase was opened; every
+commit is a post-Phase-8 continuation under the closed Phase 2b scope.
+
+Installed truth the supervisor should rely on:
+
+- **§2a model symmetry** — all four primitives have runtime-owned
+  domain modules with state-machine enforcement, query surface, and
+  CLI:
+  - `runtime/core/agent_sessions.py` (`cc-policy agent-session
+    {get, mark-completed, mark-dead, mark-orphaned, list-active}`),
+    `a3653ad`, `DEC-AGENT-SESSION-DOMAIN-001`.
+  - `runtime/core/seats.py` (`cc-policy seat {get, release,
+    mark-dead, list-for-session, list-active}`), `e982d50`,
+    `DEC-SEAT-DOMAIN-001`.
+  - `runtime/core/supervision_threads.py` (`cc-policy supervision
+    {attach, detach, abandon, abandon-for-seat, abandon-for-session,
+    get, list-*}` — 11 actions), `f1e4fc6 → 5432e10`,
+    `DEC-SUPERVISION-THREADS-DOMAIN-001`.
+  - `runtime/core/dispatch_attempts.py` (unchanged; Bundle 2 full
+    state machine + timeout sweep).
+
+- **§2a Rule 1 mechanically enforced** —
+  `tests/runtime/test_authority_table_writers.py` (`571c155`,
+  `DEC-AUTHORITY-WRITERS-001`) fails the suite if any file outside
+  the five-element allowlist (`runtime/core/agent_sessions.py`,
+  `seats.py`, `supervision_threads.py`, `dispatch_attempts.py`,
+  `runtime/schemas.py`) issues INSERT/UPDATE/DELETE against the
+  four §2a tables. Green on baseline.
+
+- **SubagentStop adapter wiring** — the four check hooks
+  (`hooks/check-{implementer,reviewer,guardian,planner}.sh`) call
+  `cc-policy dispatch seat-release` best-effort immediately after
+  `lifecycle on-stop`. Source pin (`3967f6d`) + execution-level
+  behavioral pin (`d733ee3`) in `tests/runtime/test_dispatch_hook.py`.
+
+- **Dead-loop recovery is runtime-owned** — the watchdog tick
+  (`scripts/claudex-watchdog.sh`) now calls `cc-policy dispatch
+  sweep-dead` immediately after `attempt-expire-stale`. The sweeper
+  (`runtime/core/dead_recovery.py`, `f3e88dd`,
+  `DEC-DEAD-RECOVERY-001`) marks seats with past-grace terminal
+  attempts dead, cascade-closes their supervision_threads, and
+  transitions every-seat-terminal sessions to completed or dead.
+  Pure delegation — no authority-writer allowlist extension.
+  Default grace `DEFAULT_GRACE_SECONDS = 900` (module constant,
+  overridable via `--grace-seconds`).
+
+- **Unchanged authority-surface invariants** — `cc-policy
+  constitution validate` healthy=true concrete_count=24;
+  `cc-policy hook validate-settings` healthy=true entry_count=30;
+  `cc-policy hook doc-check` exact_match=true. All three numbers
+  have held from `018f2fa` through `f3e88dd`; any drift in a future
+  slice should be treated as a blocker.
+
+Bridge transport (`scripts/claudex-*.sh` non-watchdog,
+`hooks/claudex-*.sh`) remains containment; the single watchdog
+one-liner is the only adapter change in this closure chain.
+
 ## Open Soak Issues
 
 - Soak Run 2026-04-14 (cutover bundle, worktree claudex-cutover-soak)
