@@ -165,14 +165,16 @@ guardian, reviewer), the orchestrator MUST:
    - Append task instructions after the prefix unchanged
 
 3. **Set `subagent_type` explicitly on every Agent tool call that participates
-   in the ClauDEX delivery path.** The `pre-agent.sh` hook only writes the
-   carrier row and issues a `dispatch_attempts` entry when `tool_input.subagent_type`
-   is non-empty in the PreToolUse payload. When `subagent_type` is omitted, the
-   harness carries an empty string and the entire delivery-tracking path is
-   silently skipped — no carrier row, no `dispatch_attempts` row. Use the role
-   name as the value: `"Explore"`, `"Plan"`, `"general-purpose"`, etc.
-   Live-verified 2026-04-09: dispatch with `subagent_type="Explore"` produced a
-   `dispatch_attempts` row at `delivered`; omitting `subagent_type` produces no row.
+   in the ClauDEX delivery path, and use the runtime-returned canonical value.**
+   `cc-policy dispatch agent-prompt` returns `required_subagent_type`; the
+   orchestrator MUST use that exact value on the Agent tool call. For
+   delivery-path stages the canonical values are the repo-owned agent names:
+   `"planner"`, `"implementer"`, `"reviewer"`, and `"guardian"`. Do NOT use
+   `"Plan"` or `"general-purpose"` for planner/implementer/reviewer/guardian
+   work — that bypasses the stage-specific prompt in `agents/` and is denied by
+   `pre-agent.sh`. When `subagent_type` is omitted, the harness carries an
+   empty string and the delivery-tracking path is silently skipped — no carrier
+   row, no `dispatch_attempts` row.
 
 4. If the CLI returns a non-zero exit code or `"status": "error"`, report the
    error and halt the dispatch until the issue is resolved.
@@ -181,6 +183,46 @@ guardian, reviewer), the orchestrator MUST:
 A correctly wired dispatch shows an entry where `tool_input.prompt` starts with
 `CLAUDEX_CONTRACT_BLOCK:` on line 1. Do not claim production reachability without
 a live capture showing this.
+
+### cc-policy Operating Primer (Orchestrator)
+
+`cc-policy` is the runtime control-plane authority. The orchestrator should prefer runtime facts from `cc-policy` over guesses from branch names, pane text, or stale summaries.
+
+Common queries and dispatch calls (copy/adapt these forms):
+
+```bash
+# Who am I / which workflow is active?
+cc-policy context role
+
+# Build canonical dispatch prompt contract for a stage
+cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <planner|implementer|reviewer|guardian>
+
+# Workflow readiness checks before landing
+cc-policy eval get --workflow-id <workflow_id>
+cc-policy test-state get --project-root <repo_root>
+cc-policy lease summary --workflow-id <workflow_id>
+
+# Scope authority for implementation slices
+cc-policy workflow scope-set --workflow-id <workflow_id> --scope-file tmp/<scope>.json
+```
+
+Parameter discipline:
+- `--workflow-id`: runtime workflow identity; resolve from `cc-policy context role` / lease context, do not invent from branch names.
+- `--stage-id`: canonical stage target. Use planner/implementer/reviewer/guardian dispatch chain; for guardian actions, include mode intent in task (`provision` vs `merge/land`).
+- `--project-root`: absolute repo/worktree root for state checks.
+- `--scope-file`: canonical scope manifest for source slices (required before implementer coding work).
+
+Subagent authority model (enforce this in routing):
+- `planner`: plan/governance/scope/evaluation contract authority; no source implementation.
+- `guardian (provision)`: worktree/lease/bootstrap authority; no source implementation.
+- `implementer`: source implementation within scope; no landing authority.
+- `reviewer`: read-only technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`).
+- `guardian (land)`: local landing authority (`commit`/`merge`) once readiness gates are green.
+- `orchestrator`: coordination/dispatch/review only; does not perform source edits or bypass stage authorities.
+
+When `cc-policy` denies, treat the denial as routing guidance:
+- evaluate/test/lease denial before landing → dispatch the owning stage to fix that state.
+- do not retry the same denied operation until governing state changes.
 
 ### Uncertainty Reporting
 
@@ -209,6 +251,30 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 - Guardian needs user approval for high-risk ops (push, rebase, force) — these are gated by `bash_approval_gate` policy, not by the orchestrator
 
 Note: The Codex stop-review gate (`stop-review-gate-hook.mjs`) remains wired in `settings.json` for user-facing review but is **non-authoritative for workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001). Its `VERDICT: BLOCK` does not affect `auto_dispatch` or `next_role`.
+
+### Guardian Landing Preflight (Required)
+
+Before any Guardian-local landing attempt (`git commit`, `git merge`) — including checkpoint-stewardship commits — the orchestrator MUST run a preflight and only attempt landing when all gates are green.
+
+1. Resolve current workflow identity from runtime (do not infer from branch names):
+   - `cc-policy context role`
+2. Check evaluation readiness for that workflow:
+   - `cc-policy eval get --workflow-id <workflow_id>`
+   - Required: `status == ready_for_guardian` and `head_sha` matches the landing head.
+3. Check test-state readiness:
+   - `cc-policy test-state get --project-root <repo_root>`
+   - Required: passing state (`pass` / `pass_complete`) for the current head.
+4. Check Guardian lease readiness:
+   - `cc-policy lease summary --workflow-id <workflow_id>`
+   - Required: active Guardian lease that authorizes the intended landing operation.
+
+If any preflight gate fails, do **not** attempt `git commit`/`git merge` yet. Route immediately:
+- `evaluation_state=pending|needs_changes|blocked_by_plan` → dispatch `reviewer` and require a fresh verdict on current HEAD (`REVIEW_VERDICT=ready_for_guardian`).
+- `evaluation_state ready but head_sha mismatch` → dispatch `reviewer` for re-evaluation on current HEAD.
+- test-state not passing → dispatch `implementer` to produce a passing test state, then return to `reviewer`.
+- missing/invalid Guardian lease → dispatch Guardian provisioning flow first.
+
+When a landing denial still occurs (for example `bash_eval_readiness` or approval gate), treat it as a **state signal**, not a retry prompt. Record the blocker once, and only retry landing after at least one governing state changes (evaluation_state, head_sha, test_state, lease/approval state, or staged scope).
 
 **After the chain completes** (guardian terminal state or error), report what each role did so the user sees the outcome.
 
