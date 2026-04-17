@@ -34,7 +34,6 @@ Rationale: Hooks are thin transport adapters; they must not own state transition
 from __future__ import annotations
 
 import sqlite3
-import time
 from typing import Optional
 
 from runtime.core import dispatch_attempts
@@ -82,23 +81,23 @@ def ensure_session_and_seat(
     ``seat_id`` derivation (``"{session_id}:{agent_type}"``) so the lookup
     correlation is never lost; it is just not written into ``role``.
     """
-    # Late import: seats.py imports only runtime.schemas, so importing it
-    # here keeps dispatch_hook's module-level dependency graph unchanged
-    # and avoids any circular-import surprise during test collection.
+    # Late imports: both domain modules import only runtime.schemas, so
+    # importing them here keeps dispatch_hook's module-level dependency
+    # graph unchanged and avoids any circular-import surprise during
+    # test collection.
+    from runtime.core import agent_sessions as _as
     from runtime.core import seats as _seats
 
-    now = int(time.time())
     seat_id = _seat_id(session_id, agent_type)
 
-    with conn:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO agent_sessions
-                (session_id, transport, status, created_at, updated_at)
-            VALUES (?, 'claude_code', 'active', ?, ?)
-            """,
-            (session_id, now, now),
-        )
+    # Delegate the agent_sessions write inward to the agent-session
+    # domain module (DEC-AGENT-SESSION-DOMAIN-001).  create() is
+    # idempotent — if a row already exists for this session_id it is
+    # returned unchanged, matching the prior INSERT OR IGNORE
+    # semantics exactly (including preservation of any pre-existing
+    # workflow_id or transport_handle bound by earlier callers).
+    _as.create(conn, session_id, transport="claude_code")
+
     # Delegate the seats write inward to the seat domain module
     # (DEC-SEAT-DOMAIN-001).  seats.create() is idempotent — if a row
     # already exists for this seat_id it is returned unchanged, matching

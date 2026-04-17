@@ -483,6 +483,35 @@ def test_dispatch_attempts_indexes_exist(conn):
 # ---------------------------------------------------------------------------
 
 
+def test_agent_sessions_domain_module_imports_and_pins_schema_vocabulary():
+    """@decision DEC-AGENT-SESSION-DOMAIN-001 — agent_sessions.py public pin.
+
+    Symmetric to the seats and supervision_threads pins below.  Ensures
+    the agent_session domain module exposes the declared public API
+    and that its state machine never invents a status outside the
+    schema vocabulary.
+    """
+    from runtime.core import agent_sessions as as_mod
+    from runtime.schemas import AGENT_SESSION_STATUSES as _STATUSES
+
+    for name in (
+        "create",
+        "get",
+        "mark_completed",
+        "mark_dead",
+        "mark_orphaned",
+        "list_active",
+    ):
+        assert hasattr(as_mod, name), (
+            f"agent_sessions domain module missing public API: {name}"
+        )
+
+    for current, allowed in as_mod._VALID_TRANSITIONS.items():
+        assert current in _STATUSES
+        for nxt in allowed:
+            assert nxt in _STATUSES
+
+
 def test_seats_domain_module_imports_and_pins_schema_vocabulary():
     """@decision DEC-SEAT-DOMAIN-001 — seats.py public surface pin.
 

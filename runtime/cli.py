@@ -1697,6 +1697,71 @@ def _handle_dispatch(args) -> int:
     return _err(f"unknown dispatch action: {args.action}")
 
 
+def _handle_agent_session(args) -> int:
+    """Handler for `cc-policy agent-session` subcommands.
+
+    Thin adapter over ``runtime.core.agent_sessions``
+    (DEC-AGENT-SESSION-DOMAIN-001).  No agent_sessions state is read or
+    written outside of that domain module.  Session creation is
+    intentionally absent — sessions are bootstrapped exclusively
+    through ``dispatch_hook.ensure_session_and_seat``.
+    """
+    from runtime.core import agent_sessions as as_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            try:
+                row = as_mod.get(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session get: {exc}")
+            return _ok({"session": row})
+
+        if args.action == "mark-completed":
+            try:
+                result = as_mod.mark_completed(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session mark-completed: {exc}")
+            return _ok(
+                {
+                    "session": result["row"],
+                    "transitioned": result["transitioned"],
+                }
+            )
+
+        if args.action == "mark-dead":
+            try:
+                result = as_mod.mark_dead(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session mark-dead: {exc}")
+            return _ok(
+                {
+                    "session": result["row"],
+                    "transitioned": result["transitioned"],
+                }
+            )
+
+        if args.action == "mark-orphaned":
+            try:
+                result = as_mod.mark_orphaned(conn, args.session_id)
+            except ValueError as exc:
+                return _err(f"agent-session mark-orphaned: {exc}")
+            return _ok(
+                {
+                    "session": result["row"],
+                    "transitioned": result["transitioned"],
+                }
+            )
+
+        if args.action == "list-active":
+            rows = as_mod.list_active(conn, workflow_id=args.workflow_id)
+            return _ok({"sessions": rows})
+
+    finally:
+        conn.close()
+    return _err(f"unknown agent-session action: {args.action}")
+
+
 def _handle_seat(args) -> int:
     """Handler for `cc-policy seat` subcommands.
 
@@ -4432,6 +4497,41 @@ def build_parser() -> argparse.ArgumentParser:
     obs_sub.add_parser("status", help="Return high-level observatory status")
     obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
 
+    # agent-session — agent_sessions domain authority
+    # (DEC-AGENT-SESSION-DOMAIN-001).  Read/transition surface over the
+    # runtime-owned session state machine.  Session creation is NOT
+    # exposed here: sessions are bootstrapped exclusively through
+    # dispatch_hook.ensure_session_and_seat (PreToolUse:Agent path).
+    as_p = subparsers.add_parser(
+        "agent-session",
+        help="Agent-session lifecycle + query authority",
+    )
+    as_sub = as_p.add_subparsers(dest="action", required=True)
+
+    as_get = as_sub.add_parser("get", help="Fetch an agent_sessions row by id")
+    as_get.add_argument("--session-id", dest="session_id", required=True)
+
+    as_mc = as_sub.add_parser(
+        "mark-completed", help="Transition an active session to completed"
+    )
+    as_mc.add_argument("--session-id", dest="session_id", required=True)
+
+    as_md = as_sub.add_parser(
+        "mark-dead", help="Transition an active session to dead"
+    )
+    as_md.add_argument("--session-id", dest="session_id", required=True)
+
+    as_mo = as_sub.add_parser(
+        "mark-orphaned", help="Transition an active session to orphaned"
+    )
+    as_mo.add_argument("--session-id", dest="session_id", required=True)
+
+    as_la = as_sub.add_parser(
+        "list-active",
+        help="List every active session (optionally filtered by workflow_id)",
+    )
+    as_la.add_argument("--workflow-id", dest="workflow_id", default=None)
+
     # seat — seats domain authority (DEC-SEAT-DOMAIN-001).  Read/transition
     # surface over the runtime-owned seat state machine.  Seat creation is
     # NOT exposed here: seats are bootstrapped exclusively through
@@ -4633,6 +4733,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
+    if args.domain == "agent-session":
+        return _handle_agent_session(args)
     if args.domain == "seat":
         return _handle_seat(args)
     if args.domain == "supervision":

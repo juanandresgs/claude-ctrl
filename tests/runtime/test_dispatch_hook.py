@@ -947,6 +947,28 @@ def test_dispatch_hook_delegates_seat_writes_to_seats_domain():
         "release_session_seat must delegate to seats.release"
     )
 
+    # @decision DEC-AGENT-SESSION-DOMAIN-001 — no direct agent_sessions
+    # writes allowed either; bootstrap must delegate to
+    # runtime.core.agent_sessions.
+    for forbidden in (
+        "INSERT OR IGNORE INTO agent_sessions",
+        "INSERT INTO agent_sessions",
+        "UPDATE agent_sessions",
+        "DELETE FROM agent_sessions",
+    ):
+        assert forbidden not in src, (
+            f"dispatch_hook.py must not issue '{forbidden}' directly — "
+            "agent_session writes must flow through "
+            "runtime.core.agent_sessions"
+        )
+    assert (
+        "agent_sessions as _as" in src
+        or "from runtime.core import agent_sessions" in src
+    ), "dispatch_hook.py must import the agent_sessions domain module"
+    assert "_as.create" in src, (
+        "ensure_session_and_seat must delegate to agent_sessions.create"
+    )
+
 
 def test_seat_release_wiring_is_uniform_across_hooks():
     """Every hook must carry byte-identical seat-release invocation lines."""
