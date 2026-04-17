@@ -229,10 +229,10 @@ elif [[ "$_TS_STATUS" == "fail" ]]; then
 fi
 
 # Check 6: Evaluation state for git operations (TKT-024)
-# Validates evaluation_state instead of proof_state. Guardian should only
-# operate when evaluation_state == "ready_for_guardian" (set by the active
-# SubagentStop evaluator adapter; the legacy tester producer was retired in
-# Phase 8 Slice 10).
+# Guardian should only operate when evaluation_state == "ready_for_guardian"
+# (set by the active SubagentStop evaluator adapter; the legacy tester
+# producer was retired in Phase 8 Slice 10, and the legacy proof_state
+# storage was retired under DEC-CATEGORY-C-PROOF-RETIRE-001).
 EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_GD_WF_ID")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit|git\s+(\S+\s+)*push' || echo "")
 if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then

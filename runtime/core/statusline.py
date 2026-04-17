@@ -6,8 +6,9 @@ scripts/statusline.sh without that script needing to call multiple subcommands.
 
 TKT-011 promotes this from a stub to the canonical implementation.
 TKT-024 establishes evaluation_state as the sole readiness display.
-W-CONV-4 removes proof_state from the snapshot dict entirely — the proof_state
-table is retained for storage, but operators must see only one readiness signal.
+W-CONV-4 removed proof_state from the snapshot dict entirely; the proof_state
+table itself was retired post-Phase-8 under Category C bundle 1
+(DEC-CATEGORY-C-PROOF-RETIRE-001).
 W-SL-160 introduces per-section partial failure reporting and a last_review
 section that shows whether the latest output was reviewed by Codex/Gemini.
 
@@ -30,9 +31,10 @@ Status: accepted
 Rationale: After TKT-024 cutover, evaluation_state is the sole readiness
   authority. W-CONV-4 completes the cleanup: proof_status and proof_workflow
   are removed from the snapshot dict entirely. Operators were seeing both
-  signals which could contradict each other. proof_state table and proof.py
-  module are retained (storage is not removed), but the display surface now
-  exposes only eval_status, eval_workflow, and eval_head_sha for readiness.
+  signals which could contradict each other. The proof_state table and
+  proof.py module were subsequently retired post-Phase-8 under Category C
+  bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001); the display surface exposes
+  only eval_status, eval_workflow, and eval_head_sha for readiness.
 
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
@@ -121,10 +123,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "eval_status": "idle",
         "eval_workflow": None,
         "eval_head_sha": None,
-        # proof_status / proof_workflow removed (W-CONV-4 / DEC-EVAL-006):
-        # operators were seeing two contradictory readiness signals. The
-        # proof_state table is retained for storage; only the display is
-        # removed. evaluation_state is the sole readiness surface.
+        # proof_status / proof_workflow were removed (W-CONV-4 / DEC-EVAL-006)
+        # and the proof_state table itself was retired post-Phase-8 under
+        # Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001).
+        # evaluation_state is the sole readiness surface.
         "active_agent": None,
         "active_agent_id": None,
         "marker_age_seconds": None,
@@ -156,7 +158,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
 
     # ------------------------------------------------------------------
     # Section: Evaluation state (TKT-024 / W-CONV-4) — sole readiness
-    # authority. proof_state is no longer queried here (DEC-EVAL-006).
+    # authority. proof_state was retired under DEC-CATEGORY-C-PROOF-RETIRE-001.
     # Prefer any non-idle row; most recently updated wins.
     # We also read updated_at here to scope last_review correctly.
     # ------------------------------------------------------------------

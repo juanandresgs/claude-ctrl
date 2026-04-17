@@ -49,7 +49,6 @@ import runtime.core.lifecycle as lifecycle_mod
 import runtime.core.markers as markers_mod
 import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
-import runtime.core.proof as proof_mod
 import runtime.core.quick_eval as quick_eval_mod
 import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.statusline as statusline_mod
@@ -152,31 +151,6 @@ def _handle_config(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown config action: {args.action}")
-
-
-def _handle_proof(args) -> int:
-    conn = _get_conn()
-    try:
-        if args.action == "get":
-            result = proof_mod.get(conn, args.workflow_id)
-            if result is None:
-                return _ok({"workflow_id": args.workflow_id, "status": "idle", "found": False})
-            result["found"] = True
-            return _ok(result)
-
-        elif args.action == "set":
-            proof_mod.set_status(conn, args.workflow_id, args.status)
-            return _ok({"workflow_id": args.workflow_id, "status": args.status})
-
-        elif args.action == "list":
-            rows = proof_mod.list_all(conn)
-            return _ok({"items": rows, "count": len(rows)})
-
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-    return _err(f"unknown proof action: {args.action}")
 
 
 def _handle_evaluation(args) -> int:
@@ -3150,16 +3124,6 @@ def build_parser() -> argparse.ArgumentParser:
     # init (backward compat with scaffold)
     subparsers.add_parser("init", help="Alias for schema ensure")
 
-    # proof
-    proof_p = subparsers.add_parser("proof", help="Proof-of-work lifecycle")
-    proof_sub = proof_p.add_subparsers(dest="action", required=True)
-    pg = proof_sub.add_parser("get")
-    pg.add_argument("workflow_id")
-    ps_p = proof_sub.add_parser("set")
-    ps_p.add_argument("workflow_id")
-    ps_p.add_argument("status", choices=["idle", "pending", "verified"])
-    proof_sub.add_parser("list")
-
     # evaluation
     eval_p = subparsers.add_parser("evaluation", help="Evaluator-state readiness authority")
     eval_sub = eval_p.add_subparsers(dest="action", required=True)
@@ -4324,8 +4288,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.domain == "schema":
         return _handle_schema(args)
-    if args.domain == "proof":
-        return _handle_proof(args)
     if args.domain == "evaluation":
         return _handle_evaluation(args)
     if args.domain == "marker":

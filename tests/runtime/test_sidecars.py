@@ -1,17 +1,17 @@
 """Unit tests for shadow-mode sidecars (TKT-015).
 
 Tests cover:
-- Observatory.observe() populates state from all 5 canonical tables
+- Observatory.observe() populates state from the canonical tables
 - Observatory.report() returns a valid JSON-serializable dict
-- Observatory._compute_health() detects stale proofs, too many agents, dispatch backlog
+- Observatory._compute_health() detects too many agents, dispatch backlog
 - SearchIndex.observe() indexes traces and trace_manifest
 - SearchIndex.search() returns matching results by query term
 - SearchIndex.report() returns valid dict
 - Read-only enforcement: sidecars never write to canonical tables
 
 Production sequence exercised:
-  1. Populate db with proof_state, agent_markers, events, worktrees,
-     dispatch_queue, traces, trace_manifest rows.
+  1. Populate db with agent_markers, events, worktrees, dispatch_queue,
+     traces, trace_manifest rows.
   2. Instantiate Observatory and SearchIndex with the same db.
   3. Call observe() on both.
   4. Assert report() fields match what was inserted.
@@ -41,7 +41,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from runtime.core.db import connect_memory
 from runtime.schemas import ensure_schema
-import runtime.core.proof as proof_mod
 import runtime.core.markers as markers_mod
 import runtime.core.events as events_mod
 import runtime.core.worktrees as worktrees_mod
@@ -69,9 +68,6 @@ def conn():
 def populated_conn(conn):
     """DB pre-populated with one row in every canonical table."""
     now = int(time.time())
-
-    # proof_state
-    proof_mod.set_status(conn, "wf-001", "pending")
 
     # agent_markers
     markers_mod.set_active(conn, "agent-001", "implementer")
@@ -101,7 +97,7 @@ def populated_conn(conn):
 
 def _canonical_row_counts(conn) -> dict:
     tables = [
-        "proof_state", "agent_markers", "events",
+        "agent_markers", "events",
         "worktrees", "dispatch_queue", "dispatch_cycles",
         "traces", "trace_manifest",
     ]
@@ -113,11 +109,6 @@ def _canonical_row_counts(conn) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestObservatory:
-
-    def test_observe_populates_proof_states(self, populated_conn):
-        obs = Observatory("observatory", populated_conn)
-        obs.observe()
-        assert len(obs.proof_states) == 1
 
     def test_observe_populates_active_markers(self, populated_conn):
         obs = Observatory("observatory", populated_conn)
@@ -157,7 +148,6 @@ class TestObservatory:
         obs = Observatory("observatory", populated_conn)
         obs.observe()
         report = obs.report()
-        assert report["proof_count"] == 1
         assert report["active_agents"] >= 1
         assert report["pending_dispatches"] >= 1
         assert report["worktree_count"] >= 1
@@ -190,21 +180,6 @@ class TestObservatory:
         health = obs._compute_health()
         assert health["ok"] is False
         assert "dispatch_backlog" in health["issues"]
-
-    def test_health_detects_stale_proofs(self, conn):
-        """A proof_state with status=pending and updated_at > 1h ago is stale."""
-        # Insert a proof with a timestamp 2 hours in the past
-        two_hours_ago = int(time.time()) - 7201
-        with conn:
-            conn.execute(
-                "INSERT INTO proof_state (workflow_id, status, updated_at) VALUES (?, ?, ?)",
-                ("wf-stale", "pending", two_hours_ago),
-            )
-        obs = Observatory("observatory", conn)
-        obs.observe()
-        health = obs._compute_health()
-        assert health["ok"] is False
-        assert "stale_proofs" in health["issues"]
 
     def test_health_ok_with_empty_state(self, conn):
         """Empty DB produces a healthy report (no issues)."""
@@ -337,7 +312,7 @@ class TestSidecarProductionSequence:
 
     This mirrors what happens in production:
       1. session-init.sh calls cc-policy trace start → traces row
-      2. pre-write.sh checks proof, markers → proof_state, agent_markers rows
+      2. pre-write.sh checks markers → agent_markers rows
       3. post-task.sh enqueues dispatch → dispatch_queue row
       4. A sidecar is invoked by the user → reads all tables, produces output
       5. Runtime state is identical after the sidecar ran
@@ -347,7 +322,6 @@ class TestSidecarProductionSequence:
         import json
 
         # --- Production write sequence (simulating hooks/domain modules) ---
-        proof_mod.set_status(conn, "wf-compound", "pending")
         markers_mod.set_active(conn, "agent-compound", "implementer")
         events_mod.emit(conn, type="session_start", source="session-init.sh",
                         detail="session compound started")
@@ -378,7 +352,6 @@ class TestSidecarProductionSequence:
         # --- Assertions ---
 
         # Observatory sees the state
-        assert obs_report["proof_count"] == 1
         assert obs_report["active_agents"] >= 1
         assert obs_report["pending_dispatches"] >= 1
         assert obs_report["worktree_count"] >= 1

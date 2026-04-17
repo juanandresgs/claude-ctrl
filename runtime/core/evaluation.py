@@ -5,8 +5,9 @@ Status values: idle | pending | needs_changes | ready_for_guardian | blocked_by_
 (see schemas.EVALUATION_STATUSES).
 
 This module is the sole readiness authority for Guardian commit/merge after
-TKT-024 cutover. proof_state retains zero enforcement effect; nothing gates
-on it. evaluation_state is written exclusively by:
+TKT-024 cutover. The legacy proof_state table was retired post-Phase-8 under
+Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001); evaluation_state is
+now the only readiness store. evaluation_state is written exclusively by:
   - post-task.sh       (implementer completion → pending)
   - check-reviewer.sh  (reviewer REVIEW_* trailer → verdict status; this is
                         the Phase 8 Slice 11 replacement for the retired
@@ -16,9 +17,10 @@ on it. evaluation_state is written exclusively by:
 @decision DEC-EVAL-001
 Title: evaluation_state is the sole Guardian readiness authority (TKT-024)
 Status: accepted
-Rationale: proof_state was gated on the user typing "verified" — ceremony, not
-  technical proof. The evaluator workflow (INIT-004) produces structured
-  EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers. This
+Rationale: the legacy proof_state flow was gated on the user typing "verified"
+  — ceremony, not technical proof. It has since been retired under
+  DEC-CATEGORY-C-PROOF-RETIRE-001. The evaluator workflow (INIT-004) produces
+  structured EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers. This
   module backs that trailer with a persistent SQLite table and enforces that
   only a matching head_sha + ready_for_guardian status passes guard.sh Check 10.
   head_sha is stored so a source write after evaluator clearance is detected by
