@@ -57,6 +57,15 @@ Updated: 2026-04-17 (post-§2a closure reconciliation).
     the existing `attempt-expire-stale` invocation. Pure delegation
     over the domain modules; no authority-writer allowlist
     extension.
+  - Dead-recovery selector correction (`DEC-DEAD-RECOVERY-001`) —
+    `c400245` narrows `_eligible_dead_seat_ids` to the **most
+    recent** attempt per seat (deterministic `ORDER BY created_at
+    DESC, attempt_id DESC LIMIT 1`) after a reviewer flagged a
+    mixed-history over-sweep: an old `timed_out` attempt followed
+    by a newer `cancelled` (or `acknowledged`) attempt must not
+    sweep the seat. Three focused regressions added in
+    `tests/runtime/test_dead_recovery.py`; Rule-1 writer invariant
+    unchanged.
 
 No `Phase 9` exists in `ClauDEX/CUTOVER_PLAN.md`; the cutover is closed. The
 integrated bundles are post-Phase-8 hardening (Category C retirements +
@@ -93,12 +102,13 @@ place to answer:
 >
 > **2026-04-17 §2a closure marker:** following integration, the §2a
 > supervision fabric was closed by a continuous FF-only chain
-> `018f2fa → f3e88dd` on the same upstream. The live custody HEAD is
-> `f3e88dd`. Intermediate landmarks (for `git log` navigation) are
+> `018f2fa → c400245` on the same upstream. The live custody HEAD is
+> `c400245`. Intermediate landmarks (for `git log` navigation) are
 > `f1e4fc6` (supervision_threads domain), `e982d50` (seat domain),
 > `a3653ad` (agent_session domain), `571c155` (Rule-1 invariant),
 > `3967f6d` (SubagentStop adapters wired), `f3e88dd` (dead-loop
-> recovery sweeper).
+> recovery sweeper), `c400245` (dead-recovery selector narrowed to
+> most-recent-attempt eligibility).
 
 Canonical cutover custody branch (remote):
 

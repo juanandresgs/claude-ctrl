@@ -19,7 +19,7 @@ stays on the active ClauDEX cutover slice only.
 
 Post-Integration-Wave-1, the §2a supervision fabric has been closed on
 `feat/claudex-cutover` by a continuous FF-only chain `018f2fa →
-f3e88dd`. Custody HEAD is `f3e88dd`. No new phase was opened; every
+c400245`. Custody HEAD is `c400245`. No new phase was opened; every
 commit is a post-Phase-8 continuation under the closed Phase 2b scope.
 
 Installed truth the supervisor should rely on:
@@ -63,7 +63,13 @@ Installed truth the supervisor should rely on:
   transitions every-seat-terminal sessions to completed or dead.
   Pure delegation — no authority-writer allowlist extension.
   Default grace `DEFAULT_GRACE_SECONDS = 900` (module constant,
-  overridable via `--grace-seconds`).
+  overridable via `--grace-seconds`).  **Eligibility is keyed off
+  the seat's most recent dispatch_attempt only** (deterministic
+  `ORDER BY created_at DESC, attempt_id DESC LIMIT 1`) per the
+  `c400245` selector correction — a seat whose latest attempt is
+  `cancelled` or `acknowledged` after an older `timed_out` is NOT
+  swept, because the latest signal on the seat is not a silent
+  death.
 
 - **Unchanged authority-surface invariants** — `cc-policy
   constitution validate` healthy=true concrete_count=24;
