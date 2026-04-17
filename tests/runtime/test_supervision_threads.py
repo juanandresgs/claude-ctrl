@@ -131,10 +131,48 @@ def test_attach_rejects_empty_seat_ids(conn, two_seats):
         sup_mod.attach(conn, sup, "", "analysis")
 
 
-def test_attach_rejects_unknown_seat_fk(conn, two_seats):
+def test_attach_rejects_unknown_worker_seat(conn, two_seats):
+    """Domain authority rejects unknown worker seat with a clear ValueError."""
     sup, _ = two_seats
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(ValueError, match="worker_seat_id not found"):
         sup_mod.attach(conn, sup, "seat-does-not-exist", "analysis")
+
+
+def test_attach_rejects_unknown_supervisor_seat(conn, two_seats):
+    """Domain authority rejects unknown supervisor seat with a clear ValueError."""
+    _, wrk = two_seats
+    with pytest.raises(ValueError, match="supervisor_seat_id not found"):
+        sup_mod.attach(conn, "seat-does-not-exist", wrk, "analysis")
+
+
+def test_attach_seat_check_holds_without_fk_pragma():
+    """Seat existence invariant is enforced by the domain module itself.
+
+    PRAGMA foreign_keys is deliberately left OFF here to prove the check
+    does not depend on SQLite's optional FK enforcement.
+    """
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    # No PRAGMA foreign_keys = ON — invariant must still hold.
+    ensure_schema(c)
+
+    _insert_session(c, "sess-nofk")
+    _insert_seat(c, "seat-nofk-sup", "sess-nofk", role="supervisor")
+    c.commit()
+
+    with pytest.raises(ValueError, match="worker_seat_id not found"):
+        sup_mod.attach(c, "seat-nofk-sup", "seat-ghost", "analysis")
+
+    # And it still correctly rejects a bogus supervisor even with FK off.
+    _insert_seat(c, "seat-nofk-wrk", "sess-nofk", role="worker")
+    c.commit()
+    with pytest.raises(ValueError, match="supervisor_seat_id not found"):
+        sup_mod.attach(c, "seat-ghost", "seat-nofk-wrk", "analysis")
+
+    # And no stray row was inserted on either failure.
+    rows = c.execute("SELECT COUNT(*) AS n FROM supervision_threads").fetchone()
+    assert rows["n"] == 0
+    c.close()
 
 
 def test_attach_accepts_every_declared_type(conn, two_seats):
@@ -469,6 +507,44 @@ def test_cli_attach_list_detach_roundtrip(tmp_path):
     listed_after = _run_cli(tmp_db, "supervision", "list-active")
     assert listed_after["status"] == "ok"
     assert all(r["thread_id"] != tid for r in listed_after["threads"])
+
+
+def test_cli_attach_reports_unknown_seat_as_structured_error(tmp_path):
+    """Unknown seat_id surfaces as JSON {status: error} on stderr, exit code 1.
+
+    This proves the domain-level ValueError is caught by
+    ``_handle_supervision`` and returned as a structured error rather
+    than as an uncaught traceback.
+    """
+    tmp_db = tmp_path / "cli.sqlite3"
+    sup, _ = _seed_seats_in_db(tmp_db)
+
+    env = os.environ.copy()
+    env["CLAUDE_POLICY_DB"] = str(tmp_db)
+    proc = subprocess.run(
+        [
+            sys.executable, str(_CLI_PATH), "supervision", "attach",
+            "--supervisor-seat-id", sup,
+            "--worker-seat-id", "seat-does-not-exist",
+            "--thread-type", "analysis",
+        ],
+        cwd=str(_PROJECT_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 1, (
+        f"expected exit 1, got {proc.returncode}; stdout={proc.stdout!r} "
+        f"stderr={proc.stderr!r}"
+    )
+    # The CLI emits error JSON on stderr and nothing on stdout.
+    assert proc.stdout == ""
+    payload = json.loads(proc.stderr.strip())
+    assert payload["status"] == "error"
+    assert "worker_seat_id not found" in payload["message"]
+    # No traceback markers leaked through.
+    assert "Traceback" not in proc.stderr
 
 
 def test_cli_list_for_session_and_seat_roundtrip(tmp_path):

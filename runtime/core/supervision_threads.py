@@ -112,6 +112,25 @@ def _require_thread_type(thread_type: str) -> None:
         )
 
 
+def _require_seat_exists(conn: sqlite3.Connection, seat_id: str, label: str) -> None:
+    """Domain-level seat existence check.
+
+    SQLite only enforces the seats FK when ``PRAGMA foreign_keys=ON``.
+    This module cannot rely on every caller setting that pragma, so the
+    invariant "you cannot attach a supervision_thread to a seat that
+    does not exist" is enforced here directly.  ``label`` is included in
+    the error so callers can distinguish a missing supervisor from a
+    missing worker without parsing the seat_id back out.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM seats WHERE seat_id = ? LIMIT 1", (seat_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"supervision_threads: {label}_seat_id not found in seats: {seat_id!r}"
+        )
+
+
 def _transition(
     conn: sqlite3.Connection,
     thread_id: str,
@@ -187,13 +206,14 @@ def attach(
     Raises
     ------
     ValueError
-        if ``thread_type`` is not in the declared vocabulary, or if
+        if ``thread_type`` is not in the declared vocabulary, if
         ``supervisor_seat_id == worker_seat_id`` (a seat cannot
-        supervise itself), or if either seat_id is empty.
-    sqlite3.IntegrityError
-        if either ``seat_id`` does not exist (FK enforced by
-        SQLite when ``PRAGMA foreign_keys=ON`` is set; callers who
-        depend on rejection must set it).
+        supervise itself), if either seat_id is empty, or if either
+        seat_id is not present in the ``seats`` table.  The seat
+        existence check is enforced at the domain layer rather than
+        relying on SQLite's optional foreign-key pragma, so the
+        invariant holds for every caller regardless of connection
+        configuration.
     """
     _require_thread_type(thread_type)
     if not supervisor_seat_id:
@@ -205,6 +225,8 @@ def attach(
             "supervision_threads: a seat cannot supervise itself "
             f"(seat_id={supervisor_seat_id!r})"
         )
+    _require_seat_exists(conn, supervisor_seat_id, "supervisor")
+    _require_seat_exists(conn, worker_seat_id, "worker")
 
     thread_id = uuid.uuid4().hex
     now = _now()
