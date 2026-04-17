@@ -47,6 +47,18 @@ if [[ -n "$AGENT_TYPE" ]]; then
     _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
 fi
 
+# Release the seat and abandon every active supervision_thread touching it.
+# DEC-SUPERVISION-THREADS-DOMAIN-001 continuation. Best-effort — seat-release
+# failures must never block the hook. release_session_seat() is idempotent
+# (repeat calls return released=false, abandoned_count=0) so retries on
+# unexpected interrupts are safe.
+SESSION_ID=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
+    _local_cc_policy dispatch seat-release \
+        --session-id "$SESSION_ID" \
+        --agent-type "$AGENT_TYPE" >/dev/null 2>&1 || true
+fi
+
 ISSUES=()
 
 # Check 1: Current branch is NOT main/master (worktree was used)

@@ -635,3 +635,83 @@ def test_cli_seat_release_unknown_seat_returns_not_found(db_path):
     assert out["found"] is False
     assert out["released"] is False
     assert out["abandoned_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# SubagentStop adapter wiring pin — all four check hooks call
+# `cc-policy dispatch seat-release` with the canonical shape.
+# ---------------------------------------------------------------------------
+
+
+_CHECK_HOOKS = [
+    "check-implementer.sh",
+    "check-reviewer.sh",
+    "check-guardian.sh",
+    "check-planner.sh",
+]
+
+
+def _read_hook(name: str) -> str:
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "hooks", name
+    )
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.mark.parametrize("hook_name", _CHECK_HOOKS)
+def test_check_hook_wires_seat_release(hook_name):
+    """Every SubagentStop check adapter must call `dispatch seat-release`.
+
+    This is a source-level pin rather than a live-hook simulation: the
+    call pattern must be uniform across all four adapters so later
+    changes cannot silently drop the seat-release wiring from one role.
+    """
+    src = _read_hook(hook_name)
+
+    # Each hook must extract session_id from the SubagentStop payload.
+    assert "jq -r '.session_id // empty'" in src, (
+        f"{hook_name} must capture session_id via the canonical "
+        "jq extraction used by subagent-start.sh / pre-agent.sh"
+    )
+
+    # Each hook must call dispatch seat-release with both required args.
+    assert "_local_cc_policy dispatch seat-release" in src, (
+        f"{hook_name} must invoke seat-release via the local cc-policy wrapper"
+    )
+    assert '--session-id "$SESSION_ID"' in src, (
+        f"{hook_name} seat-release call must pass --session-id from the payload"
+    )
+    assert '--agent-type "$AGENT_TYPE"' in src, (
+        f"{hook_name} seat-release call must pass --agent-type from the payload"
+    )
+
+    # Best-effort posture: failures must never block the hook.
+    assert '>/dev/null 2>&1 || true' in src, (
+        f"{hook_name} must keep seat-release best-effort (|| true)"
+    )
+
+    # Guard must check both fields so an empty-session payload is a no-op.
+    assert '[[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]' in src, (
+        f"{hook_name} must guard the seat-release call on non-empty "
+        "SESSION_ID and AGENT_TYPE"
+    )
+
+
+def test_seat_release_wiring_is_uniform_across_hooks():
+    """Every hook must carry byte-identical seat-release invocation lines."""
+    canonical_lines = (
+        'SESSION_ID=$(printf \'%s\' "$AGENT_RESPONSE" | jq -r \'.session_id // empty\' 2>/dev/null || echo "")',
+        'if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then',
+        '    _local_cc_policy dispatch seat-release \\',
+        '        --session-id "$SESSION_ID" \\',
+        '        --agent-type "$AGENT_TYPE" >/dev/null 2>&1 || true',
+        'fi',
+    )
+    block = "\n".join(canonical_lines)
+    for hook_name in _CHECK_HOOKS:
+        src = _read_hook(hook_name)
+        assert block in src, (
+            f"{hook_name} does not carry the canonical seat-release "
+            "block verbatim; cross-adapter drift detected"
+        )
