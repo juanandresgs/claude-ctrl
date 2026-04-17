@@ -37,11 +37,11 @@ Run the supervisor loop for the active Claude bridge session:
 3. If bridge state is `idle` and all of the following are true:
    - `queue_depth == 0`
    - there is no latest response to review
-   - `.claude/claudex/pending-review.json` is absent
+   - `$CLAUDEX_STATE_DIR/pending-review.json` is absent
    then this is a fresh supervised run. Bootstrap it by dispatching the
    current restart slice defined in `ClauDEX/SUPERVISOR_HANDOFF.md` under
    `## Current Restart Slice`, then return to the normal supervisor loop.
-4. If bridge state is `waiting_for_codex`, read `.claude/claudex/pending-review.json` when present. Prefer `get_response()` as the normal review source. Verify the relevant files/tests yourself and decide the next bounded instruction.
+4. If bridge state is `waiting_for_codex`, read `$CLAUDEX_STATE_DIR/pending-review.json` when present. Prefer `get_response()` as the normal review source. Verify the relevant files/tests yourself and decide the next bounded instruction.
 5. If bridge state is `queued` or `inflight`, call `wait_for_codex_review(timeout_ms=1200000)`. If it returns a review payload, continue from that payload.
    If the connector or tool layer returns early with timeout or interruption but `get_status()` still shows `queued` or `inflight`, do not re-summarize prior context. Emit at most two short sentences: confirm the run is still active and that no new review payload is ready, then immediately call `wait_for_codex_review(timeout_ms=1200000)` again.
 6. If bridge state is active but there is nothing immediate to review, call `wait_for_codex_review(timeout_ms=1200000)` so the session returns to a blocking state instead of stopping.

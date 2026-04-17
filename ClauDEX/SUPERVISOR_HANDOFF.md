@@ -204,12 +204,12 @@ The supervisor loop is:
    pending-review artifact, treat that as a fresh supervised run and dispatch
    the current restart slice from `## Current Restart Slice`.
 4. If the bridge is `waiting_for_codex`, read
-   [`.claude/claudex/pending-review.json`](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/claudex/pending-review.json)
+   `$CLAUDEX_STATE_DIR/pending-review.json`
    when present, then prefer `get_response()` as the normal review source,
    verify files/tests, and decide the next bounded instruction.
 5. If the bridge is `queued` or `inflight`, call `wait_for_codex_review()` to
    return to a true blocking state until review is needed.
-6. If the bridge is active but `.claude/claudex/dispatch-stall.state.json`
+6. If the bridge is active but `$CLAUDEX_STATE_DIR/dispatch-stall.state.json`
    matches the active run, do not keep re-arming. Treat that as a transport
    failure already handed off to the watchdog recovery path.
 7. Only stop for genuine user input, a genuine git/policy ambiguity, or an

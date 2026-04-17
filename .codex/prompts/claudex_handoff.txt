@@ -15,7 +15,7 @@ Project grounding:
 - The architectural grounding document is `ClauDEX/CUTOVER_PLAN.md`.
 - The operator/runtime setup is `ClauDEX/OVERNIGHT_RUNBOOK.md`.
 - The supervisor mandate and bridge-stop boundary are in `ClauDEX/SUPERVISOR_HANDOFF.md`.
-- The active bridge handoff artifact is `.claude/claudex/pending-review.json`.
+- The active bridge handoff artifact is `$CLAUDEX_STATE_DIR/pending-review.json`.
 
 Behavior:
 - Review Claude's completed work yourself before sending the next bounded instruction.

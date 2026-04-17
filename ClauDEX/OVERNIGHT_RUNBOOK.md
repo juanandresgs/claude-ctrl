@@ -161,10 +161,10 @@ tmux new-window -d -t overnight -n claudex-monitor -c /Users/turla/Code/ConfigRe
   slices; it only keeps the bridge alive and leaves the run in a clean
   `waiting_for_codex` handoff state.
 - The progress monitor is also not a planner. It is only an observer:
-  - healthy snapshots are written to `.claude/claudex/progress-monitor.latest.json`
-  - alerts are written to `.claude/claudex/progress-monitor.alert.json`
-  - dispatch stalls are written to `.claude/claudex/dispatch-stall.state.json`
-  - preserved recovery bundles are written to `.claude/claudex/recovery/`
+  - healthy snapshots are written to `$CLAUDEX_STATE_DIR/progress-monitor.latest.json`
+  - alerts are written to `$CLAUDEX_STATE_DIR/progress-monitor.alert.json`
+  - dispatch stalls are written to `$CLAUDEX_STATE_DIR/dispatch-stall.state.json`
+  - preserved recovery bundles are written to `$CLAUDEX_STATE_DIR/recovery/`
   - both are surfaced by `./scripts/claudex-bridge-status.sh`
   - the watchdog may consume those artifacts to trigger the one authoritative
     supervisor or dispatch repair path, but the monitor itself never restarts
@@ -180,7 +180,7 @@ tmux new-window -d -t overnight -n claudex-monitor -c /Users/turla/Code/ConfigRe
   - `.codex/prompts/claudex_supervisor.txt` is the steady-state loop that the
     Stop hook reuses indefinitely
 - If the Codex driver turn is interrupted, the recovery artifact is
-  `.claude/claudex/pending-review.json`. It records the latest run id,
+  `$CLAUDEX_STATE_DIR/pending-review.json`. It records the latest run id,
   instruction id, response path, transcript path, completion time, and a short
   response preview so the next Codex turn can resume deterministically instead
   of guessing from logs.
