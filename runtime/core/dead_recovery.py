@@ -97,41 +97,48 @@ def _eligible_dead_seat_ids(
     grace_seconds: int,
     now: int,
 ) -> list[str]:
-    """Return the seat_ids whose most recent dispatch_attempt is past grace.
+    """Return the seat_ids whose **most recent** dispatch_attempt is past grace.
 
     Selection rules:
 
     1. ``seats.status = 'active'`` — we only sweep seats that are still
        in the lifecycle.  ``released`` and ``dead`` are skipped.
-    2. The seat has at least one ``dispatch_attempts`` row whose status
-       is in ``_DEAD_ATTEMPT_STATUSES`` and whose ``updated_at`` is
-       older than ``now - grace_seconds``.
-    3. No ``dispatch_attempts`` row for the seat is still live
-       (``pending`` / ``delivered`` / ``acknowledged``) — an active
-       attempt means the adapter is still working the seat and the
-       sweeper must not pre-empt it.
+    2. The seat has at least one ``dispatch_attempts`` row.
+    3. The *most recent* attempt for the seat — ordered by
+       ``created_at DESC, attempt_id DESC`` for a deterministic
+       tiebreak on same-second inserts — must be in
+       ``_DEAD_ATTEMPT_STATUSES`` (``timed_out`` / ``failed``) and its
+       ``updated_at`` must be older than ``now - grace_seconds``.
+
+    Eligibility is keyed off the *latest* attempt, not any historical
+    attempt.  This matters for the mixed-history case: a seat that has
+    an old ``timed_out`` attempt followed by a newer ``cancelled``
+    attempt must not be swept, because the latest user-driven signal
+    on the seat is a cancel, not a silent death.  The earlier
+    "any historical terminal + no live attempt" selector over-swept
+    those seats; this form queries exactly one attempt per seat.
     """
     cutoff = now - int(grace_seconds)
-
     dead_statuses_placeholder = ",".join("?" for _ in _DEAD_ATTEMPT_STATUSES)
-    live_statuses = ("pending", "delivered", "acknowledged")
-    live_statuses_placeholder = ",".join("?" for _ in live_statuses)
 
     sql = f"""
-        SELECT DISTINCT s.seat_id
+        SELECT s.seat_id
         FROM   seats s
-        JOIN   dispatch_attempts da ON da.seat_id = s.seat_id
         WHERE  s.status = 'active'
-          AND  da.status IN ({dead_statuses_placeholder})
-          AND  da.updated_at < ?
-          AND  NOT EXISTS (
-                SELECT 1 FROM dispatch_attempts live
-                WHERE  live.seat_id = s.seat_id
-                  AND  live.status IN ({live_statuses_placeholder})
+          AND  EXISTS (
+                SELECT 1 FROM dispatch_attempts da
+                WHERE  da.attempt_id = (
+                        SELECT attempt_id FROM dispatch_attempts da2
+                        WHERE  da2.seat_id = s.seat_id
+                        ORDER  BY da2.created_at DESC, da2.attempt_id DESC
+                        LIMIT  1
+                )
+                  AND  da.status IN ({dead_statuses_placeholder})
+                  AND  da.updated_at < ?
           )
         ORDER  BY s.seat_id
     """
-    params = tuple(sorted(_DEAD_ATTEMPT_STATUSES)) + (cutoff,) + live_statuses
+    params = tuple(sorted(_DEAD_ATTEMPT_STATUSES)) + (cutoff,)
     rows = conn.execute(sql, params).fetchall()
     return [r["seat_id"] for r in rows]
 

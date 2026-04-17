@@ -163,6 +163,55 @@ def test_seat_with_live_attempt_is_not_swept(conn):
     assert seat_mod.get(conn, seat)["status"] == "active"
 
 
+def test_seat_with_newer_cancelled_after_old_timeout_is_not_swept(conn):
+    """Review regression: an old timed_out attempt followed by a newer
+    cancelled attempt must NOT sweep the seat — eligibility is keyed off
+    the most recent attempt, and cancel is a user-driven early
+    termination rather than a silent death."""
+    seat = _make_seat(conn, "sess-mixed-cancel", "seat-mixed-cancel")
+    _seed_attempt(conn, seat, "timed_out", age_seconds=3600)
+    _seed_attempt(conn, seat, "cancelled", age_seconds=60)
+
+    result = dr_mod.sweep_dead_seats(conn, grace_seconds=900)
+    assert result["swept"] == 0
+    assert result["seats"] == []
+    assert seat_mod.get(conn, seat)["status"] == "active"
+
+
+def test_seat_with_newer_acknowledged_after_old_timeout_is_not_swept(conn):
+    """A prior timeout followed by a newer acknowledged attempt means
+    the adapter recovered — sweep must not pre-empt a working seat."""
+    seat = _make_seat(conn, "sess-mixed-ack", "seat-mixed-ack")
+    _seed_attempt(conn, seat, "timed_out", age_seconds=3600)
+    _seed_attempt(conn, seat, "acknowledged", age_seconds=60)
+
+    assert dr_mod.sweep_dead_seats(conn, grace_seconds=900)["swept"] == 0
+    assert seat_mod.get(conn, seat)["status"] == "active"
+
+
+def test_seat_with_newer_timed_out_after_old_pending_is_swept(conn):
+    """Complement to the cancelled case: an older *live* pending
+    attempt followed by a newer past-grace timed_out attempt still
+    sweeps the seat.  Eligibility tracks the latest attempt only;
+    the older pending row must not shield the seat from sweeping
+    when the adapter has since died.
+
+    This test relies on test seeding to produce the ordering: the
+    helper issues a fresh attempt each call, so the second call is
+    genuinely newer by created_at / attempt_id.  The first attempt's
+    pending row is back-dated but remains 'pending' in the table —
+    the selector must correctly treat the second row (timed_out) as
+    the one that determines eligibility."""
+    seat = _make_seat(conn, "sess-pending-then-timeout", "seat-ptt")
+    _seed_attempt(conn, seat, "pending", age_seconds=7200)   # older
+    _seed_attempt(conn, seat, "timed_out", age_seconds=3600) # newer
+
+    result = dr_mod.sweep_dead_seats(conn, grace_seconds=900)
+    assert result["swept"] == 1
+    assert result["seats"] == [seat]
+    assert seat_mod.get(conn, seat)["status"] == "dead"
+
+
 def test_released_seat_is_not_re_swept(conn):
     """Already-released seats must not be touched by the sweeper."""
     seat = _make_seat(conn, "sess-rel", "seat-rel")
