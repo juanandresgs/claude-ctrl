@@ -30,13 +30,25 @@ Two reference kinds are validated:
 2. **Event-matcher references** — tokens matching ``<Event>:<matcher>``
    where the event is one of the harness event names and the matcher is
    a non-empty token. For each, the validator asserts:
-     - event appears in at least one manifest entry, AND
+     - event appears in at least one manifest entry (or retirement
+       registry), AND
      - (event, matcher) resolves against the manifest: the matcher
        token is a member of some manifest entry's pipe-split matcher set
        for that event. An empty-matcher event (``SubagentStart:``) is
        accepted iff the manifest declares an empty-matcher entry for
        that event.
-   Retired role matchers (``SubagentStop:tester``) are caught here.
+   Retired role matchers (``SubagentStop:tester``) and retired event
+   names are caught via the retirement registry. **Unknown events are
+   flagged as drift** — a doc inventing a new event name
+   (``NeverHeardOf:planner``) must be caught.
+
+   Known false-positive shapes are stripped before extraction to keep
+   unknown-event detection meaningful:
+     - ``*** (Update|Add|Delete) File:path`` — apply_patch markers.
+   These specific non-event tokens are removed by
+   ``_strip_known_non_event_shapes`` before the event regex runs; the
+   extraction never sees them as candidate matches, so unknown-event
+   detection retains full precision elsewhere.
 
 The validator is deliberately strict on adapter paths and event-matcher
 pairs, and lenient on everything else (prose narrative, code blocks in
@@ -106,6 +118,11 @@ RETIRED_EVENT_MATCHERS: frozenset[tuple[str, str]] = frozenset(
         # not a documented Claude Code event; matcher was removed from
         # settings.json and hook_manifest.py.
         ("PreToolUse", "EnterWorktree"),
+        # Phase 8 Slice 10 (2026-04-13) — tester role retirement.
+        # SubagentStop:tester matcher was removed from settings.json and
+        # hook_manifest.py when check-tester.sh was retired; the role
+        # references remain legitimate in retirement narrative.
+        ("SubagentStop", "tester"),
     }
 )
 
@@ -132,6 +149,52 @@ _ADAPTER_PATH_RE = re.compile(
 _EVENT_MATCHER_RE = re.compile(
     r"(?<![A-Za-z0-9_])([A-Z][A-Za-z]+):([A-Za-z_][A-Za-z0-9_|-]*)(?![A-Za-z0-9_])"
 )
+
+# Known non-event token shapes that match ``[A-Z][A-Za-z]+:<ident>`` but
+# are definitively not harness events. Stripped before event-regex
+# extraction so unknown-event detection retains precision elsewhere.
+#
+# Each entry MUST have a documented non-event rationale. Do not add
+# shapes for arbitrary unknown events — those must continue to fail as
+# drift via the unknown-event branch of validate_doc_references.
+_KNOWN_NON_EVENT_SHAPES: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        # apply_patch markers: ``*** Update File:path``,
+        # ``*** Add File:path``, ``*** Delete File:path``.
+        "apply_patch_file_marker",
+        re.compile(
+            r"\*\*\*\s+(?:Update|Add|Delete)\s+File:\S*",
+            flags=re.MULTILINE,
+        ),
+    ),
+    (
+        # Table-cell ``File:line`` header / column references.
+        # ``File`` is not and has never been a Claude Code harness
+        # event name (documented surface set: SessionStart,
+        # UserPromptSubmit, WorktreeCreate, PreToolUse, PostToolUse,
+        # Notification, SubagentStart, SubagentStop, PreCompact, Stop,
+        # SessionEnd). Any ``File:<ident>`` shape is prose, not a hook
+        # reference.
+        "file_colon_prose",
+        re.compile(r"\bFile:[A-Za-z_][A-Za-z0-9_|-]*"),
+    ),
+)
+
+
+def _strip_known_non_event_shapes(text: str) -> str:
+    """Remove token shapes that match the event regex but are not events.
+
+    Currently strips two shapes (see ``_KNOWN_NON_EVENT_SHAPES``):
+      - apply_patch ``*** Update|Add|Delete File:path`` markers
+      - ``File:<ident>`` prose / table-cell references
+
+    Each shape must be documented as a specific known non-event
+    pattern. This is not a general denylist for unknown events — those
+    must continue to fail as drift.
+    """
+    for _name, pattern in _KNOWN_NON_EVENT_SHAPES:
+        text = pattern.sub("", text)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +321,12 @@ def _extract_event_matcher_pairs(text: str) -> list[tuple[str, str]]:
     Event-matcher pairs where the event is not a manifest-known event
     are returned unfiltered — the caller classifies them against the
     manifest vocabulary.
+
+    Known non-event shapes (apply_patch ``*** Update File:path``
+    markers) are stripped first so they never become candidate matches.
     """
-    return [(m.group(1), m.group(2)) for m in _EVENT_MATCHER_RE.finditer(text)]
+    stripped = _strip_known_non_event_shapes(text)
+    return [(m.group(1), m.group(2)) for m in _EVENT_MATCHER_RE.finditer(stripped)]
 
 
 def validate_doc_references(text: str, path: str = "<inline>") -> DriftReport:
@@ -289,14 +356,32 @@ def validate_doc_references(text: str, path: str = "<inline>") -> DriftReport:
 
     unknown_events: list[str] = []
     unknown_matchers: list[tuple[str, str]] = []
+    # Events that belong to the retirement registry are also valid even if
+    # they are not (or are no longer) in HOOK_MANIFEST.
+    retired_events: set[str] = {e for (e, _) in RETIRED_EVENT_MATCHERS}
+    valid_event_vocabulary = known_events | retired_events
     for event, matcher in event_matcher_refs:
         if (event, matcher) in RETIRED_EVENT_MATCHERS:
             # Documented retirement — historical narrative reference is
             # legitimate; do not flag as drift.
             continue
-        if event not in known_events:
+        if event not in valid_event_vocabulary:
+            # Invented event name that is not in HOOK_MANIFEST and not
+            # in the retirement registry. This IS drift — ghost events
+            # must be caught (the apply_patch ``File:path`` shape is
+            # stripped upstream in _strip_known_non_event_shapes so it
+            # never reaches this branch).
             if event not in unknown_events:
                 unknown_events.append(event)
+            continue
+        if event not in known_events:
+            # Event is a retired-only event (appeared in RETIRED but
+            # not in HOOK_MANIFEST). The specific (event, matcher) pair
+            # didn't match above, so the matcher is unknown for this
+            # retired event — flag as drift.
+            pair = (event, matcher)
+            if pair not in unknown_matchers:
+                unknown_matchers.append(pair)
             continue
         bucket = event_matchers[event]
         # Accept the reference when the matcher token matches any known

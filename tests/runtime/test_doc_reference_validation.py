@@ -119,14 +119,51 @@ class TestEventMatcherDetection:
         assert report.unknown_matchers == []
         assert report.unknown_events == []
 
-    def test_retired_subagentstop_tester_matcher_is_drift(self):
+    def test_registered_retired_tester_matcher_is_accepted_not_drift(self):
+        """SubagentStop:tester is in RETIRED_EVENT_MATCHERS (Phase 8
+        Slice 10 retirement); historical references must not drift."""
         text = "Historically: `SubagentStop:tester` dispatched check-tester.sh."
         report = validate_doc_references(text)
-        assert report.healthy is False
-        assert ("SubagentStop", "tester") in report.unknown_matchers
+        assert report.healthy is True
+        assert ("SubagentStop", "tester") not in report.unknown_matchers
 
-    def test_unknown_event_is_reported(self):
+    def test_unknown_event_is_reported_as_drift(self):
+        """Invented event names (not in HOOK_MANIFEST and not in
+        RETIRED_EVENT_MATCHERS) are ghost references and must fail the
+        validator. This is load-bearing: without it, a doc could
+        silently introduce a fake event name like ``NeverHeardOf:...``
+        and no pin would catch the drift."""
         text = "Fake event: `NeverHeardOf:whatever` does not exist."
+        report = validate_doc_references(text)
+        assert report.healthy is False
+        assert "NeverHeardOf" in report.unknown_events
+
+    def test_apply_patch_file_marker_is_not_flagged(self):
+        """apply_patch markers look like ``*** Update File:path`` which
+        matches the event regex shape. These are stripped by
+        ``_strip_known_non_event_shapes`` before extraction so they do
+        not trigger unknown-event drift — while the general
+        unknown-event detection is preserved (see
+        ``test_unknown_event_is_reported_as_drift``)."""
+        text = (
+            "The apply_patch body contains:\n"
+            "    *** Update File: src/app.py\n"
+            "    *** Add File: src/new.py\n"
+            "    *** Delete File: src/old.py\n"
+        )
+        report = validate_doc_references(text)
+        assert report.healthy is True
+        assert report.unknown_events == []
+        assert report.unknown_matchers == []
+
+    def test_apply_patch_stripping_does_not_hide_nearby_drift(self):
+        """Stripping apply_patch markers must be surgical: a genuine
+        invented event on an adjacent line must still be detected."""
+        text = (
+            "Patch markers:\n"
+            "    *** Update File: src/app.py\n"
+            "Separately, a ghost event: `NeverHeardOf:planner`.\n"
+        )
         report = validate_doc_references(text)
         assert report.healthy is False
         assert "NeverHeardOf" in report.unknown_events
@@ -147,13 +184,16 @@ class TestEventMatcherDetection:
         assert ("SubagentStop", "planner|ghost") in report.unknown_matchers
 
     def test_duplicate_matcher_references_deduplicate_in_report(self):
+        # PreToolUse is a known event; NonExistentTool is not a valid
+        # matcher for it, so this is genuine drift (not retirement-
+        # registered). Two occurrences should report once.
         text = (
-            "First: `SubagentStop:tester`.\n"
-            "Again: `SubagentStop:tester`.\n"
+            "First: `PreToolUse:NonExistentTool`.\n"
+            "Again: `PreToolUse:NonExistentTool`.\n"
         )
         report = validate_doc_references(text)
         # Only reported once.
-        assert report.unknown_matchers == [("SubagentStop", "tester")]
+        assert report.unknown_matchers == [("PreToolUse", "NonExistentTool")]
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +380,18 @@ class TestCliDocRefCheck:
 
     def test_ref_check_on_drifted_doc_exits_nonzero(self, tmp_path):
         p = tmp_path / "drift.md"
-        p.write_text("ghost: `hooks/ghost.sh`\nbad matcher: `SubagentStop:tester`\n")
+        # Use a genuine ghost adapter + an unknown matcher for a known
+        # event. SubagentStop:tester would be accepted (retirement-
+        # registered), so pick something actually drifted.
+        p.write_text(
+            "ghost: `hooks/ghost.sh`\n"
+            "bad matcher: `PreToolUse:NonExistentTool`\n"
+        )
         result = self._run("doc", "ref-check", str(p))
         assert result.returncode != 0
         combined = result.stdout + result.stderr
         assert "hooks/ghost.sh" in combined
-        assert "tester" in combined
+        assert "NonExistentTool" in combined
 
     def test_ref_check_on_missing_path_returns_error(self, tmp_path):
         missing = tmp_path / "does-not-exist.md"
