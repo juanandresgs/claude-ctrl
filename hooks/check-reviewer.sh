@@ -105,8 +105,8 @@ fi
 # will fail closed. Advisory: report but remain exit 0.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     # WS1: use lease_context() to derive workflow_id from the active lease.
-    _RV_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
-    _RV_LEASE_FOUND=$(printf '%s' "$_RV_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    _RV_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
+    _RV_LEASE_FOUND=$(printf '%s' "$_RV_LEASE_CTX" | jq -r 'if (.found == true or .lease_id != null) then "true" else "false" end' 2>/dev/null || echo "false")
     if [[ "$_RV_LEASE_FOUND" == "true" ]]; then
         _RV_LEASE_ID=$(printf '%s' "$_RV_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
         _RV_WF_ID=$(printf '%s' "$_RV_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
@@ -122,8 +122,12 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             --arg h "${_REVIEW_HEAD_SHA:-}" \
             --arg f "${_REVIEW_FINDINGS_JSON:-}" \
             '{REVIEW_VERDICT:$v, REVIEW_HEAD_SHA:$h, REVIEW_FINDINGS_JSON:$f}')
-        _RV_RESULT=$(rt_completion_submit "$_RV_LEASE_ID" "$_RV_WF_ID" "reviewer" "$_RV_PAYLOAD")
-        _RV_VALID=$(printf '%s' "${_RV_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
+        _RV_RESULT=$(_local_cc_policy completion submit \
+            --lease-id "$_RV_LEASE_ID" \
+            --workflow-id "$_RV_WF_ID" \
+            --role "reviewer" \
+            --payload "$_RV_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
+        _RV_VALID=$(printf '%s' "${_RV_RESULT:-}" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
         if [[ "$_RV_VALID" != "true" ]]; then
             _RV_MISSING=$(printf '%s' "$_RV_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
             ISSUES+=("COMPLETION CONTRACT ERROR: Reviewer completion INVALID. Missing: $_RV_MISSING.")

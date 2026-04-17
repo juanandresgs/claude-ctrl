@@ -211,28 +211,21 @@ if [[ -f "$PROMPT_COUNT_FILE" ]]; then
     echo "$((CURRENT_COUNT + 1))" > "$PROMPT_COUNT_FILE"
 fi
 
-# --- Compaction heuristic ---
-# @decision DEC-COMPACT-001
-# @title Smart compaction suggestions based on prompts and session duration
-# @status accepted
-# @rationale Proactively suggest /compact at predictable checkpoints (35, 60 prompts
-# or 45, 90 minutes) to prevent context overflow. Primary trigger is prompt count
-# (more reliable). Secondary is session duration (catches long sessions with fewer
-# prompts). Narrow time windows prevent spam across multiple prompts.
-if [[ -f "$PROMPT_COUNT_FILE" ]]; then
+# --- Compaction suggestions (disabled by default) ---
+# Noise reduction: compact prompts were firing despite 1M-token model headroom.
+# Enable by setting COMPACT_SUGGESTIONS=1 in the environment if needed.
+if [[ "${COMPACT_SUGGESTIONS:-}" == "1" && -f "$PROMPT_COUNT_FILE" ]]; then
     PROMPT_NUM=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
     [[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
 
     SUGGEST_COMPACT=false
     COMPACT_REASON=""
 
-    # Primary: prompt count thresholds
     if [[ "$PROMPT_NUM" -eq 35 || "$PROMPT_NUM" -eq 60 ]]; then
         SUGGEST_COMPACT=true
         COMPACT_REASON="$PROMPT_NUM prompts in this session"
     fi
 
-    # Secondary: session duration
     EPOCH_FILE="${PROJECT_ROOT}/.claude/.session-start-epoch"
     if [[ "$SUGGEST_COMPACT" == "false" && -f "$EPOCH_FILE" ]]; then
         START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")

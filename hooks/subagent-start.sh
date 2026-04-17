@@ -41,55 +41,42 @@ _local_cc_policy() {
     python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
 
-# Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
-# Using PID as the agent_id gives a stable per-process key that the
-# check-*.sh SubagentStop hooks can match when deactivating the marker.
-# Calls dispatch agent-start (lifecycle.py) via local CLI resolution so
-# this reaches the in-worktree runtime in isolated worktrees before merge.
-# rt_marker_set direct call removed — lifecycle.py is the sole authority.
-#
-# W-CONV-2 (DEC-CONV-002): Only dispatch-significant roles write markers.
-# Explore, Bash, and general-purpose agents are lightweight coordinators
-# that have no SubagentStop check-*.sh hook to deactivate their marker, so
-# any marker they write accumulates indefinitely as a ghost marker and
-# contaminates actor-role inference in build_context(). The filter below
-# prevents that by skipping agent-start entirely for non-dispatch roles.
-# The schemas.py cleanup migration handles markers that already accumulated.
-_IS_DISPATCH_ROLE=false
-case "${AGENT_TYPE:-}" in
-    planner|Plan|implementer|guardian|reviewer)
-        _IS_DISPATCH_ROLE=true
-        ;;
-esac
+_authority_python() {
+    local mode="$1"
+    local value="$2"
+    python3 - "$_HOOK_DIR/.." "$mode" "$value" <<'PY'
+import sys
+repo_root, mode, value = sys.argv[1:4]
+sys.path.insert(0, repo_root)
+from runtime.core import authority_registry as ar
 
-if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
-    # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
-    # workflow_id is derived from the current branch via current_workflow_id()
-    # so the marker is queryable via get_active(project_root=X, workflow_id=W).
-    _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
-    _local_cc_policy dispatch agent-start \
-        "${AGENT_TYPE:-unknown}" "agent-$$" \
-        --project-root "$PROJECT_ROOT" \
-        ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
-        >/dev/null 2>&1 || true
-fi
+if mode == "dispatch_subagent_type_for_stage":
+    result = ar.dispatch_subagent_type_for_stage(value)
+elif mode == "canonical_dispatch_subagent_type":
+    result = ar.canonical_dispatch_subagent_type(value)
+elif mode == "canonical_stage_id":
+    result = ar.canonical_stage_id(value)
+else:
+    raise SystemExit(2)
 
-# --- Lease claim: bind this agent to an active dispatch lease if one exists ---
-# Phase 2 (DEC-LEASE-002): At spawn time, attempt to claim any active lease
-# for this worktree. If found, inject the lease context so the agent knows
-# its role, allowed ops, and next step without re-inferring from environment.
-# If no lease exists, inject a warning — high-risk git ops will be denied by
-# guard.sh Check 3 (validate_op fallback path) when no lease is active.
-_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT" "$AGENT_TYPE")
-_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
-if [[ -n "$_LEASE_ID" ]]; then
-    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
-    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
-    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
-    CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
-else
-    CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
-fi
+print("" if result is None else result)
+PY
+}
+
+_emit_context_only() {
+    local message="$1"
+    local escaped
+    escaped=$(printf '%s' "$message" | jq -Rs .)
+    cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStart",
+    "additionalContext": $escaped
+  }
+}
+EOF
+    exit 0
+}
 
 # ---------------------------------------------------------------------------
 # Carrier consume: augment HOOK_INPUT with contract fields written by
@@ -108,7 +95,9 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
         _CARRIER_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
     if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
-        _CARRIER_JSON=$(python3 "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$AGENT_TYPE" 2>/dev/null || echo "")
+        _CARRIER_AGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" "${AGENT_TYPE:-}" 2>/dev/null || echo "")
+        [[ -z "$_CARRIER_AGENT_TYPE" ]] && _CARRIER_AGENT_TYPE="$AGENT_TYPE"
+        _CARRIER_JSON=$(python3 "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$_CARRIER_AGENT_TYPE" 2>/dev/null || echo "")
         if [[ -n "$_CARRIER_JSON" ]]; then
             HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
             # Claim delivery only when the carrier-backed correlation path matched
@@ -117,10 +106,87 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
             # Best-effort: never blocks subagent start.
             _local_cc_policy dispatch attempt-claim \
                 --session-id "$SESSION_ID" \
-                --agent-type "$AGENT_TYPE" \
+                --agent-type "$_CARRIER_AGENT_TYPE" \
                 >/dev/null 2>&1 || true
         fi
     fi
+fi
+
+_HAS_CONTRACT=$(echo "$HOOK_INPUT" | jq -r '
+  if (has("workflow_id") and has("stage_id") and has("goal_id") and
+      has("work_item_id") and has("decision_scope") and has("generated_at"))
+  then "yes" else "no" end
+' 2>/dev/null || echo "no")
+
+_CANONICAL_SUBAGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" "${AGENT_TYPE:-}" 2>/dev/null || echo "")
+_EFFECTIVE_STAGE_ID=""
+_EFFECTIVE_LEASE_ROLE="$AGENT_TYPE"
+_MARKER_ROLE="$AGENT_TYPE"
+
+if [[ "$_HAS_CONTRACT" == "yes" ]]; then
+    _EFFECTIVE_STAGE_ID=$(echo "$HOOK_INPUT" | jq -r '.stage_id // empty' 2>/dev/null || echo "")
+    _EXPECTED_SUBAGENT_TYPE=$(_authority_python "dispatch_subagent_type_for_stage" "$_EFFECTIVE_STAGE_ID" 2>/dev/null || echo "")
+    if [[ -n "$_EXPECTED_SUBAGENT_TYPE" && "$AGENT_TYPE" != "$_EXPECTED_SUBAGENT_TYPE" ]]; then
+        _emit_context_only "Runtime dispatch contract rejected: stage '${_EFFECTIVE_STAGE_ID}' requires subagent_type '${_EXPECTED_SUBAGENT_TYPE}', but the harness started '${AGENT_TYPE}'. This launch bypasses the repo-owned stage prompt and is not trusted."
+    fi
+    if [[ -n "$_EXPECTED_SUBAGENT_TYPE" ]]; then
+        _EFFECTIVE_LEASE_ROLE="$_EXPECTED_SUBAGENT_TYPE"
+        _MARKER_ROLE="$_EFFECTIVE_STAGE_ID"
+    fi
+elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
+    _EFFECTIVE_LEASE_ROLE="$_CANONICAL_SUBAGENT_TYPE"
+    _LEGACY_STAGE_ID=$(_authority_python "canonical_stage_id" "$AGENT_TYPE" 2>/dev/null || echo "")
+    [[ -n "$_LEGACY_STAGE_ID" ]] && _MARKER_ROLE="$_LEGACY_STAGE_ID"
+fi
+
+# Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
+# Using PID as the agent_id gives a stable per-process key that the
+# check-*.sh SubagentStop hooks can match when deactivating the marker.
+# Calls dispatch agent-start (lifecycle.py) via local CLI resolution so
+# this reaches the in-worktree runtime in isolated worktrees before merge.
+# rt_marker_set direct call removed — lifecycle.py is the sole authority.
+#
+# W-CONV-2 (DEC-CONV-002): Only dispatch-significant roles write markers.
+# Explore, Bash, and general-purpose agents are lightweight coordinators
+# that have no SubagentStop check-*.sh hook to deactivate their marker, so
+# any marker they write accumulates indefinitely as a ghost marker and
+# contaminates actor-role inference in build_context(). The filter below
+# prevents that by skipping agent-start entirely for non-dispatch roles.
+# The schemas.py cleanup migration handles markers that already accumulated.
+_IS_DISPATCH_ROLE=false
+case "${_MARKER_ROLE:-}" in
+    planner|implementer|guardian|guardian:provision|guardian:land|reviewer)
+        _IS_DISPATCH_ROLE=true
+        ;;
+esac
+
+if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
+    # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
+    # workflow_id is derived from the current branch via current_workflow_id()
+    # so the marker is queryable via get_active(project_root=X, workflow_id=W).
+    _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
+    _local_cc_policy dispatch agent-start \
+        "${_MARKER_ROLE:-unknown}" "agent-$$" \
+        --project-root "$PROJECT_ROOT" \
+        ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
+        >/dev/null 2>&1 || true
+fi
+
+# --- Lease claim: bind this agent to an active dispatch lease if one exists ---
+# Phase 2 (DEC-LEASE-002): At spawn time, attempt to claim any active lease
+# for this worktree. If found, inject the lease context so the agent knows
+# its role, allowed ops, and next step without re-inferring from environment.
+# If no lease exists, inject a warning — high-risk git ops will be denied by
+# guard.sh Check 3 (validate_op fallback path) when no lease is active.
+_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT" "$_EFFECTIVE_LEASE_ROLE")
+_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
+if [[ -n "$_LEASE_ID" ]]; then
+    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
+    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
+    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
+    CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
+else
+    CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
 fi
 
 # ---------------------------------------------------------------------------
@@ -137,12 +203,6 @@ fi
 # the contract was present, so the caller expected runtime-produced output
 # and the legacy path would silently inject unrelated guidance.
 # ---------------------------------------------------------------------------
-_HAS_CONTRACT=$(echo "$HOOK_INPUT" | jq -r '
-  if (has("workflow_id") and has("stage_id") and has("goal_id") and
-      has("work_item_id") and has("decision_scope") and has("generated_at"))
-  then "yes" else "no" end
-' 2>/dev/null || echo "no")
-
 if [[ "$_HAS_CONTRACT" == "yes" ]]; then
     _PP_PAYLOAD=$(echo "$HOOK_INPUT" | jq -c \
         '{workflow_id, stage_id, goal_id, work_item_id, decision_scope, generated_at}')
