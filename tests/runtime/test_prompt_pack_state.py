@@ -757,3 +757,68 @@ class TestShadowOnlyDiscipline:
         imported = _imported_module_names(ppr)
         for name in imported:
             assert "prompt_pack_state" not in name
+
+
+# ---------------------------------------------------------------------------
+# DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001 — capture_workflow_scope
+# is the shadow-only read-through that lets prompt_pack load the
+# enforcement-authority workflow_scope row without importing
+# runtime.core.workflows directly (which would break the shadow-only
+# import discipline pinned by TestShadowOnlyDiscipline below).
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureWorkflowScope:
+
+    def test_returns_none_when_no_scope_row(self, conn):
+        assert pps.capture_workflow_scope(conn, "wf-absent") is None
+
+    def test_returns_parsed_dict_when_scope_exists(self, conn):
+        _seed_binding(conn, workflow_id="wf-test")
+        workflows.set_scope(
+            conn,
+            workflow_id="wf-test",
+            allowed_paths=["runtime/**", "tests/**"],
+            forbidden_paths=["settings.json"],
+            required_paths=["runtime/core/x.py"],
+            authority_domains=["auth-d"],
+        )
+        got = pps.capture_workflow_scope(conn, "wf-test")
+        assert got is not None
+        assert got["workflow_id"] == "wf-test"
+        # Path lists must be parsed from JSON back to Python lists.
+        assert got["allowed_paths"] == ["runtime/**", "tests/**"]
+        assert got["forbidden_paths"] == ["settings.json"]
+        assert got["required_paths"] == ["runtime/core/x.py"]
+        assert got["authority_domains"] == ["auth-d"]
+
+    def test_agrees_with_workflows_get_scope_directly(self, conn):
+        """The helper is a thin read-through — no drift from the
+        underlying workflows.get_scope output."""
+        _seed_binding(conn, workflow_id="wf-parity")
+        workflows.set_scope(
+            conn,
+            workflow_id="wf-parity",
+            allowed_paths=["a.py"],
+            forbidden_paths=["b.py"],
+            required_paths=["c.py"],
+            authority_domains=["d"],
+        )
+        via_helper = pps.capture_workflow_scope(conn, "wf-parity")
+        via_direct = workflows.get_scope(conn, "wf-parity")
+        assert via_helper == via_direct
+
+    def test_read_only_does_not_mutate_state(self, conn):
+        _seed_binding(conn, workflow_id="wf-ro")
+        workflows.set_scope(
+            conn,
+            workflow_id="wf-ro",
+            allowed_paths=["x.py"],
+            forbidden_paths=[],
+            required_paths=[],
+            authority_domains=[],
+        )
+        total_before = conn.total_changes
+        pps.capture_workflow_scope(conn, "wf-ro")
+        pps.capture_workflow_scope(conn, "wf-absent")
+        assert conn.total_changes == total_before

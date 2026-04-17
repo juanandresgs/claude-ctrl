@@ -284,6 +284,33 @@ def capture_runtime_state_snapshot(
     )
 
 
+def capture_workflow_scope(
+    conn: "sqlite3.Connection", workflow_id: str
+) -> Optional[dict]:
+    """Return the enforcement-authority ``workflow_scope`` row as a dict, or None.
+
+    @decision DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001
+    Title: prompt-pack scope read-through this module preserves
+      runtime.core.workflows-import discipline on prompt_pack.py
+    Status: accepted
+    Rationale: prompt_pack.py is import-bound to shadow-only helpers
+      (see ``tests/runtime/test_prompt_pack.py::TestShadowOnlyDiscipline``)
+      and cannot import ``runtime.core.workflows`` directly. This module
+      already imports workflows for
+      :func:`capture_runtime_state_snapshot` — adding a second narrow
+      read-through keeps the permitted import surface stable while
+      giving ``prompt_pack`` a path to the enforcement-authority scope
+      record without growing the shadow-kernel's import surface.
+
+      This helper is read-only (one SELECT via
+      :func:`workflows.get_scope`), issues no writes, and returns the
+      parsed-list dict shape the prompt-pack resolver expects for
+      :func:`workflow_summary_from_contracts(workflow_scope_record=...)`.
+    """
+    return workflows_mod.get_scope(conn, workflow_id)
+
+
 __all__ = [
     "capture_runtime_state_snapshot",
+    "capture_workflow_scope",
 ]

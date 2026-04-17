@@ -1093,21 +1093,24 @@ class TestWorkflowSummaryFromContractsDerivation:
 
 
 class TestScopeSummaryRendering:
+    """Unit coverage for the legacy ``_render_scope_summary`` helper.
+
+    DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-002: this helper is no
+    longer reachable from any production compile path. These tests
+    exercise it directly as a unit (the helper remains in module for
+    diagnostic / test-only callers that work on the intent-declaration
+    manifest shape). The corresponding compile-path behaviour (None
+    authoritative record → explicit no-authoritative marker) is pinned
+    by ``TestNoAuthoritativeScopeBehavior`` below.
+    """
+
     def test_empty_scope_shows_explicit_markers(self):
-        summary = ppr.workflow_summary_from_contracts(
-            workflow_id="wf",
-            goal=_default_goal(),
-            work_item=_default_work_item(scope=contracts.ScopeManifest()),
-        )
-        scope_text = summary.scope_summary
-        # Every labelled section must be present.
+        scope_text = ppr._render_scope_summary(contracts.ScopeManifest())
         assert "Allowed paths:" in scope_text
         assert "Required paths:" in scope_text
         assert "Forbidden paths:" in scope_text
         assert "State domains:" in scope_text
-        # Empty allowed_paths → unrestricted.
         assert "(unrestricted)" in scope_text
-        # Empty required / forbidden / state domains → (none).
         assert scope_text.count("(none)") == 3
 
     def test_populated_scope_lists_each_path(self):
@@ -1117,19 +1120,13 @@ class TestScopeSummaryRendering:
             forbidden_paths=("hooks/**",),
             state_domains=("contracts", "authority_registry"),
         )
-        summary = ppr.workflow_summary_from_contracts(
-            workflow_id="wf",
-            goal=_default_goal(),
-            work_item=_default_work_item(scope=scope),
-        )
-        text = summary.scope_summary
+        text = ppr._render_scope_summary(scope)
         assert "runtime/core/**" in text
         assert "tests/runtime/**" in text
         assert "runtime/core/foo.py" in text
         assert "hooks/**" in text
         assert "contracts" in text
         assert "authority_registry" in text
-        # Populated sections must NOT carry the empty markers.
         assert "(unrestricted)" not in text
 
     def test_partial_scope_mixes_explicit_markers_with_paths(self):
@@ -1137,25 +1134,16 @@ class TestScopeSummaryRendering:
             allowed_paths=("runtime/**",),
             # required_paths / forbidden_paths / state_domains empty
         )
-        summary = ppr.workflow_summary_from_contracts(
-            workflow_id="wf",
-            goal=_default_goal(),
-            work_item=_default_work_item(scope=scope),
-        )
-        text = summary.scope_summary
+        text = ppr._render_scope_summary(scope)
         assert "runtime/**" in text
-        assert "(unrestricted)" not in text  # allowed is populated
-        # Required / forbidden / state domains still show (none).
+        assert "(unrestricted)" not in text
         assert text.count("(none)") == 3
 
     def test_scope_summary_is_non_empty_even_with_fully_empty_scope(self):
-        # Must satisfy WorkflowContractSummary's non-empty constraint.
-        summary = ppr.workflow_summary_from_contracts(
-            workflow_id="wf",
-            goal=_default_goal(),
-            work_item=_default_work_item(scope=contracts.ScopeManifest()),
-        )
-        assert summary.scope_summary.strip() != ""
+        # Helper must always produce a non-empty block so downstream
+        # readers never see a blank section.
+        text = ppr._render_scope_summary(contracts.ScopeManifest())
+        assert text.strip() != ""
 
 
 class TestEvaluationSummaryRendering:
@@ -2183,3 +2171,430 @@ class TestRuntimeStateSnapshotIntegration:
             generated_at=1_700_000_000,
         )
         assert via_snapshot.content_hash == via_manual.content_hash
+
+
+# ---------------------------------------------------------------------------
+# DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001 — compiled prompt-pack
+# scope_summary derives from the workflow_scope enforcement authority.
+# When the authoritative record is passed:
+#   - scope_summary renders from it (not from work_item.scope)
+#   - work_item.scope must match (set equality on the path triad) or
+#     compile raises ValueError
+# When authoritative record is None:
+#   - legacy path: renders from work_item.scope (early-lifecycle only)
+# ---------------------------------------------------------------------------
+
+
+class TestScopeSummaryAuthoritativeSource:
+
+    def test_authoritative_record_overrides_work_item_scope_in_summary(self):
+        """When the caller passes workflow_scope_record, scope_summary
+        renders from it. The work_item.scope still gates via validation
+        (must match), but the TEXT of the summary is the enforcement
+        authority's view."""
+        wi_scope = contracts.ScopeManifest(
+            allowed_paths=("runtime/core/a.py",),
+            required_paths=(),
+            forbidden_paths=("settings.json",),
+        )
+        # Authoritative record has the SAME triad (validation passes)
+        # but includes authority_domains — which the legacy renderer
+        # never emits. If the authoritative path is used, we should
+        # see "Authority domains:" in the output.
+        auth_record = {
+            "workflow_id": "wf-auth",
+            "allowed_paths": ["runtime/core/a.py"],
+            "required_paths": [],
+            "forbidden_paths": ["settings.json"],
+            "authority_domains": ["who_landing_authority"],
+        }
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf-auth",
+            goal=_default_goal(),
+            work_item=_default_work_item(scope=wi_scope),
+            workflow_scope_record=auth_record,
+        )
+        # Rendered from the authoritative record:
+        assert "Authority domains:" in summary.scope_summary
+        assert "who_landing_authority" in summary.scope_summary
+        # Legacy renderer would emit "State domains:" — which must NOT
+        # appear when the authoritative path is taken.
+        assert "State domains:" not in summary.scope_summary
+
+    def test_authoritative_scope_change_produces_different_summary(self):
+        """The regression the instruction explicitly requires:
+        authoritative scope changes and the compiled prompt-pack output
+        changes with it. Prior slice had them silently drift — this
+        test pins that drift is impossible on this path."""
+        wi_scope_v1 = contracts.ScopeManifest(
+            allowed_paths=("runtime/core/a.py",),
+            required_paths=(),
+            forbidden_paths=(),
+        )
+        auth_v1 = {
+            "workflow_id": "wf",
+            "allowed_paths": ["runtime/core/a.py"],
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": ["d1"],
+        }
+        wi_scope_v2 = contracts.ScopeManifest(
+            allowed_paths=("runtime/core/a.py", "runtime/core/b.py"),
+            required_paths=(),
+            forbidden_paths=(),
+        )
+        auth_v2 = {
+            "workflow_id": "wf",
+            "allowed_paths": ["runtime/core/a.py", "runtime/core/b.py"],
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": ["d1"],
+        }
+        goal = _default_goal()
+        summary_v1 = ppr.workflow_summary_from_contracts(
+            workflow_id="wf", goal=goal,
+            work_item=_default_work_item(scope=wi_scope_v1),
+            workflow_scope_record=auth_v1,
+        )
+        summary_v2 = ppr.workflow_summary_from_contracts(
+            workflow_id="wf", goal=goal,
+            work_item=_default_work_item(scope=wi_scope_v2),
+            workflow_scope_record=auth_v2,
+        )
+        # The two authoritative records differ → summaries must differ.
+        assert summary_v1.scope_summary != summary_v2.scope_summary
+        assert "runtime/core/b.py" not in summary_v1.scope_summary
+        assert "runtime/core/b.py" in summary_v2.scope_summary
+
+    def test_drift_between_work_item_and_authority_raises_on_allowed(self):
+        """work_item.scope.allowed diverges from authoritative.allowed → raise."""
+        wi_scope = contracts.ScopeManifest(
+            allowed_paths=("runtime/core/a.py",),  # stale
+        )
+        auth_record = {
+            "workflow_id": "wf",
+            "allowed_paths": ["runtime/core/b.py"],  # refreshed
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": [],
+        }
+        with pytest.raises(ValueError, match="drifted from the enforcement authority"):
+            ppr.workflow_summary_from_contracts(
+                workflow_id="wf",
+                goal=_default_goal(),
+                work_item=_default_work_item(scope=wi_scope),
+                workflow_scope_record=auth_record,
+            )
+
+    def test_drift_between_work_item_and_authority_raises_on_forbidden(self):
+        """Divergence on forbidden_paths triad also fails."""
+        wi_scope = contracts.ScopeManifest(
+            allowed_paths=("runtime/**",),
+            forbidden_paths=("settings.json",),
+        )
+        auth_record = {
+            "workflow_id": "wf",
+            "allowed_paths": ["runtime/**"],
+            "required_paths": [],
+            "forbidden_paths": ["settings.json", "CLAUDE.md"],  # extra
+            "authority_domains": [],
+        }
+        with pytest.raises(ValueError, match="drifted from the enforcement authority"):
+            ppr.workflow_summary_from_contracts(
+                workflow_id="wf",
+                goal=_default_goal(),
+                work_item=_default_work_item(scope=wi_scope),
+                workflow_scope_record=auth_record,
+            )
+
+    def test_drift_error_names_both_surfaces_in_message(self):
+        """The deny message must name work_item-extra and workflow_scope-extra
+        explicitly so the operator can route the fix."""
+        wi_scope = contracts.ScopeManifest(
+            allowed_paths=("old/path.py",),
+        )
+        auth_record = {
+            "workflow_id": "wf",
+            "allowed_paths": ["new/path.py"],
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": [],
+        }
+        with pytest.raises(ValueError) as ei:
+            ppr.workflow_summary_from_contracts(
+                workflow_id="wf",
+                goal=_default_goal(),
+                work_item=_default_work_item(scope=wi_scope),
+                workflow_scope_record=auth_record,
+            )
+        msg = str(ei.value)
+        assert "work_item-extra=['old/path.py']" in msg
+        assert "workflow_scope-extra=['new/path.py']" in msg
+
+    def test_matching_scopes_allow_and_render_from_authority(self):
+        """Matching triad → no raise, rendered from authoritative record."""
+        paths = ("runtime/core/x.py",)
+        wi_scope = contracts.ScopeManifest(allowed_paths=paths)
+        auth_record = {
+            "workflow_id": "wf",
+            "allowed_paths": list(paths),
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": ["d"],
+        }
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(scope=wi_scope),
+            workflow_scope_record=auth_record,
+        )
+        assert "runtime/core/x.py" in summary.scope_summary
+        assert "Authority domains:" in summary.scope_summary
+
+    def test_authoritative_path_ignores_state_domains_from_work_item(self):
+        """work_item.scope.state_domains is not compared against authority
+        (they use different vocabularies). Divergence on state_domains
+        alone must not raise."""
+        wi_scope = contracts.ScopeManifest(
+            allowed_paths=("runtime/a.py",),
+            state_domains=("proof_state",),
+        )
+        auth_record = {
+            "workflow_id": "wf",
+            "allowed_paths": ["runtime/a.py"],
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": ["d"],  # different vocabulary, fine
+        }
+        # Should not raise.
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(scope=wi_scope),
+            workflow_scope_record=auth_record,
+        )
+        # Rendered from authority: "Authority domains:" appears,
+        # "State domains:" does not.
+        assert "Authority domains:" in summary.scope_summary
+        assert "State domains:" not in summary.scope_summary
+
+    def test_none_record_emits_no_authoritative_scope_marker(self):
+        """DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-002: when the
+        caller passes ``workflow_scope_record=None``, the compile
+        path MUST emit the explicit no-authoritative-scope marker
+        rather than rendering ``work_item.scope`` as if it were
+        live law. The work_item's scope is deliberately leaked
+        with rich content here to prove it does NOT show up in
+        the compiled summary."""
+        wi_scope = contracts.ScopeManifest(
+            allowed_paths=("runtime/a.py", "tests/**"),
+            required_paths=("runtime/core/x.py",),
+            forbidden_paths=("settings.json",),
+            state_domains=("proof_state",),
+        )
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(scope=wi_scope),
+            workflow_scope_record=None,
+        )
+        # Explicit marker present.
+        assert summary.scope_summary == ppr._NO_AUTHORITATIVE_SCOPE_MARKER
+        # Operator-facing remediation guidance is in the marker.
+        assert "cc-policy workflow scope-set" in summary.scope_summary
+        assert "fail-closed" in summary.scope_summary
+        # work_item.scope contents must NOT surface on the compile
+        # path — none of the work_item paths should appear.
+        assert "runtime/a.py" not in summary.scope_summary
+        assert "tests/**" not in summary.scope_summary
+        assert "runtime/core/x.py" not in summary.scope_summary
+        assert "settings.json" not in summary.scope_summary
+        # Legacy section labels must NOT appear either (they would
+        # indicate the legacy renderer was reached).
+        assert "Allowed paths:" not in summary.scope_summary
+        assert "Required paths:" not in summary.scope_summary
+        assert "Forbidden paths:" not in summary.scope_summary
+        assert "State domains:" not in summary.scope_summary
+        assert "Authority domains:" not in summary.scope_summary
+
+
+class TestNoAuthoritativeScopeBehavior:
+    """DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-002: pin the compile-path
+    fail-loud behaviour when ``workflow_scope_record=None``."""
+
+    def test_marker_is_emitted_when_work_item_scope_is_empty(self):
+        """No authoritative row + empty work_item.scope still emits the
+        explicit marker, not an empty string or the legacy empty-manifest
+        render. Proves the marker is not conditional on work_item content."""
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(scope=contracts.ScopeManifest()),
+            workflow_scope_record=None,
+        )
+        assert summary.scope_summary == ppr._NO_AUTHORITATIVE_SCOPE_MARKER
+        # Must satisfy WorkflowContractSummary's non-empty constraint.
+        assert summary.scope_summary.strip() != ""
+
+    def test_marker_names_workflow_scope_set_remediation(self):
+        """Operator-facing message must name the exact CLI verb to fix."""
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(),
+            workflow_scope_record=None,
+        )
+        assert "cc-policy workflow scope-set" in summary.scope_summary
+        assert "<workflow_id>" in summary.scope_summary
+
+    def test_marker_calls_out_that_work_item_scope_is_not_rendered(self):
+        """Marker text must make it explicit that the omission is
+        deliberate — not a missing-data bug."""
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(),
+            workflow_scope_record=None,
+        )
+        assert "work_item.scope" in summary.scope_summary
+        assert "intentionally does not render" in summary.scope_summary
+
+    def test_marker_cannot_be_mistaken_for_an_enforceable_scope(self):
+        """The marker must not contain any labelled scope section —
+        readers (human or LLM) must not be able to parse it as if it
+        were an actual allowed/forbidden list."""
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(),
+            workflow_scope_record=None,
+        )
+        for label in (
+            "Allowed paths:", "Required paths:", "Forbidden paths:",
+            "State domains:", "Authority domains:",
+        ):
+            assert label not in summary.scope_summary, (
+                f"marker accidentally carries {label!r} — could be "
+                "misread as a real scope block"
+            )
+
+    def test_marker_text_is_stable_and_deterministic(self):
+        """Two calls with identical inputs produce byte-identical output."""
+        kwargs = dict(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(),
+            workflow_scope_record=None,
+        )
+        first = ppr.workflow_summary_from_contracts(**kwargs)
+        second = ppr.workflow_summary_from_contracts(**kwargs)
+        assert first.scope_summary == second.scope_summary
+        assert first.scope_summary == ppr._NO_AUTHORITATIVE_SCOPE_MARKER
+
+    def test_legacy_helper_is_not_called_on_compile_path(self):
+        """Direct instrumentation: if ``workflow_summary_from_contracts``
+        ever starts calling ``_render_scope_summary`` on the None path
+        again, this test fails."""
+        from unittest import mock
+        with mock.patch.object(
+            ppr, "_render_scope_summary",
+            wraps=ppr._render_scope_summary,
+        ) as spy:
+            ppr.workflow_summary_from_contracts(
+                workflow_id="wf",
+                goal=_default_goal(),
+                work_item=_default_work_item(
+                    scope=contracts.ScopeManifest(allowed_paths=("runtime/a.py",))
+                ),
+                workflow_scope_record=None,
+            )
+            assert spy.call_count == 0, (
+                "_render_scope_summary must not be reachable from "
+                "workflow_summary_from_contracts when workflow_scope_record=None"
+            )
+
+    def test_empty_authority_domains_renders_none_marker(self):
+        """Empty authority_domains list renders the explicit (none) marker."""
+        wi_scope = contracts.ScopeManifest(allowed_paths=("x.py",))
+        auth_record = {
+            "workflow_id": "wf",
+            "allowed_paths": ["x.py"],
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": [],
+        }
+        summary = ppr.workflow_summary_from_contracts(
+            workflow_id="wf",
+            goal=_default_goal(),
+            work_item=_default_work_item(scope=wi_scope),
+            workflow_scope_record=auth_record,
+        )
+        assert "Authority domains:\n  - (none)" in summary.scope_summary
+
+
+class TestScopeAuthoritativeHelpers:
+    """Direct unit coverage for the new rendering / validation helpers."""
+
+    def test_render_from_workflow_scope_populates_all_sections(self):
+        scope_record = {
+            "workflow_id": "wf",
+            "allowed_paths": ["a.py", "b.py"],
+            "required_paths": ["c.py"],
+            "forbidden_paths": ["secret.json"],
+            "authority_domains": ["auth-a", "auth-b"],
+        }
+        out = ppr._render_scope_summary_from_workflow_scope(scope_record)
+        assert "Allowed paths:" in out
+        assert "  - a.py" in out and "  - b.py" in out
+        assert "Required paths:" in out and "  - c.py" in out
+        assert "Forbidden paths:" in out and "  - secret.json" in out
+        assert "Authority domains:" in out and "  - auth-a" in out
+
+    def test_render_from_workflow_scope_empty_sections_show_explicit_markers(self):
+        scope_record = {
+            "workflow_id": "wf",
+            "allowed_paths": [],
+            "required_paths": [],
+            "forbidden_paths": [],
+            "authority_domains": [],
+        }
+        out = ppr._render_scope_summary_from_workflow_scope(scope_record)
+        assert "Allowed paths:\n  - (unrestricted)" in out
+        assert "Required paths:\n  - (none)" in out
+        assert "Forbidden paths:\n  - (none)" in out
+        assert "Authority domains:\n  - (none)" in out
+
+    def test_validator_passes_on_exact_match(self):
+        wi = contracts.ScopeManifest(
+            allowed_paths=("a.py",),
+            required_paths=("b.py",),
+            forbidden_paths=("c.py",),
+        )
+        auth = {
+            "allowed_paths": ["a.py"],
+            "required_paths": ["b.py"],
+            "forbidden_paths": ["c.py"],
+        }
+        # Should not raise.
+        ppr._validate_work_item_scope_matches_authority(wi, auth)
+
+    def test_validator_order_independence(self):
+        """Set equality means path order doesn't affect matching."""
+        wi = contracts.ScopeManifest(
+            allowed_paths=("a.py", "b.py"),
+        )
+        auth = {
+            "allowed_paths": ["b.py", "a.py"],  # different order
+            "required_paths": [],
+            "forbidden_paths": [],
+        }
+        ppr._validate_work_item_scope_matches_authority(wi, auth)
+
+    def test_validator_duplicates_collapsed_via_set_equality(self):
+        wi = contracts.ScopeManifest(allowed_paths=("a.py",))
+        auth = {
+            "allowed_paths": ["a.py", "a.py"],  # duplicates
+            "required_paths": [],
+            "forbidden_paths": [],
+        }
+        ppr._validate_work_item_scope_matches_authority(wi, auth)

@@ -1119,10 +1119,16 @@ def _handle_prompt_pack(args) -> int:
                     conn, goal_id=goal_id, work_item_id=work_item_id
                 )
             )
+            # DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001: load enforcement-
+            # authority scope so the compiled prompt-pack summary derives
+            # from the same row policy enforcement consults.
+            from runtime.core import workflows as _workflows_scope_mod
+            _wf_scope_record = _workflows_scope_mod.get_scope(conn, workflow_id)
             workflow_summary = _ppr.workflow_summary_from_contracts(
                 workflow_id=workflow_id,
                 goal=goal_contract,
                 work_item=work_item_contract,
+                workflow_scope_record=_wf_scope_record,
             )
             decision_records = _ppd.capture_relevant_decisions(
                 conn, scope=decision_scope

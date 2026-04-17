@@ -626,11 +626,20 @@ def compile_prompt_pack_for_stage(
     # is None, but the contract carries the real id.
     effective_work_item_id: str = work_item.work_item_id
 
-    # Step 1: contracts → WorkflowContractSummary
+    # Step 1: contracts → WorkflowContractSummary.
+    # DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001: load the enforcement-
+    # authority workflow_scope row via the permitted shadow-only helper
+    # and pass it to the summary builder so the compiled scope_summary
+    # derives from the same source policy enforcement consults.
+    # work_item.scope (intent declaration) is mechanically validated to
+    # match. prompt_pack.py must not import runtime.core.workflows
+    # directly — the read is routed through prompt_pack_state.
+    workflow_scope_record = _pps.capture_workflow_scope(conn, workflow_id)
     workflow_summary = _ppr.workflow_summary_from_contracts(
         workflow_id=workflow_id,
         goal=goal,
         work_item=work_item,
+        workflow_scope_record=workflow_scope_record,
     )
 
     # Step 2: exact-scope decision capture
@@ -952,8 +961,13 @@ def build_subagent_start_prompt_pack_response(conn, payload: object) -> dict:
     goal, work_item = _wcap.capture_workflow_contracts(
         conn, goal_id=goal_id, work_item_id=work_item_id
     )
+    # DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001 — see the first callsite
+    # above for the rationale; workflow_scope read routed through
+    # prompt_pack_state to preserve import discipline.
+    workflow_scope_record = _pps.capture_workflow_scope(conn, workflow_id)
     workflow_summary = _ppr.workflow_summary_from_contracts(
         workflow_id=workflow_id, goal=goal, work_item=work_item,
+        workflow_scope_record=workflow_scope_record,
     )
     decision_records = _ppd.capture_relevant_decisions(conn, scope=decision_scope)
     decision_summary = _ppr.local_decision_summary_from_records(decisions=decision_records)

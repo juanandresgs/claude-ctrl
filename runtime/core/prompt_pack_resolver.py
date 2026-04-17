@@ -497,6 +497,39 @@ def resolve_prompt_pack_layers(
 # ---------------------------------------------------------------------------
 
 
+_NO_AUTHORITATIVE_SCOPE_MARKER = (
+    "(no authoritative workflow_scope configured for this workflow; "
+    "commit/merge enforcement will fail-closed with \"No scope manifest\" "
+    "until a planner runs `cc-policy workflow scope-set <workflow_id>` — "
+    "this block intentionally does not render work_item.scope as live law)"
+)
+"""Explicit marker used by :func:`workflow_summary_from_contracts` when the
+caller passes ``workflow_scope_record=None``.
+
+@decision DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-002
+Title: prompt-pack scope_summary fails-loud with an explicit marker when
+  no authoritative workflow_scope row exists — never falls back to
+  rendering work_item.scope as if it were live law.
+Status: accepted
+Rationale: The previous slice (DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001)
+  still routed ``workflow_scope_record=None`` through
+  :func:`_render_scope_summary` on ``work_item.scope``. On the real compile
+  paths (``prompt_pack.build_prompt_pack_for_stage``,
+  ``prompt_pack.build_subagent_start_prompt_pack_response``, and the
+  ``cc-policy prompt-pack compile`` CLI branch), the caller always passes
+  whatever ``workflows.get_scope()`` returns — so ``None`` means "no
+  enforcement row exists yet" and enforcement will fail-closed. Rendering
+  ``work_item.scope`` anyway put the agent's prompt pack back in the same
+  drift class the first slice was trying to remove: the compiled prompt
+  advertised intent-only paths as if they were the law, while the gate
+  would refuse the commit with "No scope manifest."
+  The correction: compile-path summaries for unconfigured workflows emit
+  an explicit marker that cannot be confused with an enforceable scope
+  and that tells the operator exactly what to do to get the workflow
+  into a commit-able state.
+"""
+
+
 def _render_scope_summary(scope: "contracts.ScopeManifest") -> str:
     """Render a :class:`contracts.ScopeManifest` into a deterministic block.
 
@@ -504,6 +537,16 @@ def _render_scope_summary(scope: "contracts.ScopeManifest") -> str:
     tuples produce explicit ``(unrestricted)`` / ``(none)`` markers
     so downstream readers never see a blank section and cannot
     confuse "no restriction" with "missing data".
+
+    This renderer operates on the work-item intent-declaration shape
+    (``contracts.ScopeManifest``). It is **not reachable from any
+    production compile path**: ``workflow_summary_from_contracts``
+    emits :data:`_NO_AUTHORITATIVE_SCOPE_MARKER` when no authoritative
+    ``workflow_scope`` row is provided, not a render of
+    ``work_item.scope``. The helper is retained as a unit-level
+    utility for tests / diagnostic tooling that work directly with
+    the intent-declaration manifest.
+    See DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-002.
     """
     lines: list[str] = []
 
@@ -536,6 +579,152 @@ def _render_scope_summary(scope: "contracts.ScopeManifest") -> str:
         lines.append("  - (none)")
 
     return "\n".join(lines)
+
+
+def _render_scope_summary_from_workflow_scope(scope_record: dict) -> str:
+    """Render a ``workflow_scope`` table row into a deterministic block.
+
+    @decision DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001
+    Title: prompt-pack scope_summary derives from workflow_scope, the
+      single enforcement authority — not from work_item.scope
+    Status: accepted (cutover-maintenance slice)
+    Rationale: ``bash_workflow_scope`` policy reads the ``workflow_scope``
+      table (via ``PolicyContext.scope`` populated by
+      ``policy_engine.build_context``) for every commit/merge enforcement
+      decision. It is the single authority for the scope facts the gate
+      evaluates. The prompt-pack previously rendered ``scope_summary``
+      from ``work_item.scope`` (written once at work-item insert time and
+      never refreshed), which silently drifted from the enforcement
+      authority whenever a planner ran
+      ``cc-policy workflow scope-set`` — exactly the drift observed in
+      the WHO-remediation landing sequence, where the prompt-pack kept
+      showing Slice 1 paths while the runtime had been refreshed to cover
+      later slices.
+
+      This renderer accepts a dict in the shape returned by
+      ``workflows.get_scope(conn, workflow_id)`` — the enforcement
+      authority loader — so the compiled prompt-pack cannot go out of
+      sync with the policy engine on this surface.
+
+      ``work_item.scope`` is preserved as the planner's intent
+      declaration. When
+      :func:`workflow_summary_from_contracts` receives both sources, it
+      mechanically validates they agree (set equality across allowed /
+      required / forbidden paths) and raises ``ValueError`` on
+      divergence. That converts silent drift into a loud failure at
+      compile time.
+
+    The record shape is:
+
+      {
+        "workflow_id": str,
+        "allowed_paths": [str, ...],
+        "required_paths": [str, ...],
+        "forbidden_paths": [str, ...],
+        "authority_domains": [str, ...],
+        "updated_at": int,
+      }
+
+    Every section always prints under its labelled heading; empty
+    lists produce explicit ``(unrestricted)`` / ``(none)`` markers.
+    ``authority_domains`` replaces ``state_domains`` since that is
+    what the enforcement row carries.
+    """
+    allowed = list(scope_record.get("allowed_paths") or [])
+    required = list(scope_record.get("required_paths") or [])
+    forbidden = list(scope_record.get("forbidden_paths") or [])
+    authorities = list(scope_record.get("authority_domains") or [])
+
+    lines: list[str] = []
+
+    lines.append("Allowed paths:")
+    if allowed:
+        for path in allowed:
+            lines.append(f"  - {path}")
+    else:
+        lines.append("  - (unrestricted)")
+
+    lines.append("Required paths:")
+    if required:
+        for path in required:
+            lines.append(f"  - {path}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("Forbidden paths:")
+    if forbidden:
+        for path in forbidden:
+            lines.append(f"  - {path}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("Authority domains:")
+    if authorities:
+        for domain in authorities:
+            lines.append(f"  - {domain}")
+    else:
+        lines.append("  - (none)")
+
+    return "\n".join(lines)
+
+
+def _validate_work_item_scope_matches_authority(
+    work_item_scope: "contracts.ScopeManifest",
+    workflow_scope_record: dict,
+) -> None:
+    """Raise ``ValueError`` if the work-item scope diverges from the
+    authoritative ``workflow_scope`` record on any of the three path sets.
+
+    Compares via set equality so order differences do not trip the gate.
+    ``state_domains`` / ``authority_domains`` are NOT compared — they
+    carry different vocabularies (state domains on the work-item side,
+    authority domains on the enforcement side). The path triad is what
+    enforcement evaluates.
+
+    @decision DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001
+    This validator is the mechanical guarantee that the planner's
+    intent declaration (``work_items.scope_json``) has not drifted
+    from the enforcement authority (``workflow_scope`` row).
+    Divergence is a planner bug that should fail loudly before the
+    prompt pack is emitted, not silently produce a misleading
+    scope summary that contradicts what the commit gate will enforce.
+    """
+    def _triad(record_or_manifest, allowed_attr, required_attr, forbidden_attr):
+        return (
+            frozenset(getattr(record_or_manifest, allowed_attr) or ()),
+            frozenset(getattr(record_or_manifest, required_attr) or ()),
+            frozenset(getattr(record_or_manifest, forbidden_attr) or ()),
+        )
+
+    wi = (
+        frozenset(work_item_scope.allowed_paths),
+        frozenset(work_item_scope.required_paths),
+        frozenset(work_item_scope.forbidden_paths),
+    )
+    auth = (
+        frozenset(workflow_scope_record.get("allowed_paths") or ()),
+        frozenset(workflow_scope_record.get("required_paths") or ()),
+        frozenset(workflow_scope_record.get("forbidden_paths") or ()),
+    )
+    if wi != auth:
+        diffs: list[str] = []
+        labels = ("allowed_paths", "required_paths", "forbidden_paths")
+        for name, w, a in zip(labels, wi, auth):
+            extra_wi = sorted(w - a)
+            extra_auth = sorted(a - w)
+            if extra_wi or extra_auth:
+                diffs.append(
+                    f"  {name}: work_item-extra={extra_wi}, "
+                    f"workflow_scope-extra={extra_auth}"
+                )
+        raise ValueError(
+            "workflow_summary_from_contracts: work_item.scope has drifted "
+            "from the enforcement authority (workflow_scope row). The two "
+            "must agree on the path triad before a prompt pack can compile. "
+            "Refresh via 'cc-policy workflow scope-set <workflow_id> ...' or "
+            "re-insert the work_item with the corrected ScopeManifest. "
+            "Divergence:\n" + "\n".join(diffs)
+        )
 
 
 def _render_evaluation_summary(
@@ -602,6 +791,7 @@ def workflow_summary_from_contracts(
     workflow_id: str,
     goal: "contracts.GoalContract",
     work_item: "contracts.WorkItemContract",
+    workflow_scope_record: Optional[dict] = None,
 ) -> WorkflowContractSummary:
     """Derive a :class:`WorkflowContractSummary` from canonical contract records.
 
@@ -628,8 +818,21 @@ def workflow_summary_from_contracts(
       * ``status`` is a compact deterministic string that preserves
         both the goal and work-item status: e.g.
         ``"goal=active; work_item=in_progress"``.
-      * ``scope_summary`` is rendered mechanically from
-        ``work_item.scope`` via :func:`_render_scope_summary`.
+      * ``scope_summary`` is rendered mechanically. When the caller
+        passes ``workflow_scope_record`` (a dict returned by
+        :func:`runtime.core.workflows.get_scope`), the summary is
+        derived from that authoritative record via
+        :func:`_render_scope_summary_from_workflow_scope`, AND
+        ``work_item.scope`` is mechanically validated to match the
+        authority — divergence raises ``ValueError``. When
+        ``workflow_scope_record`` is ``None`` the summary emits
+        :data:`_NO_AUTHORITATIVE_SCOPE_MARKER` — an explicit
+        "no authoritative workflow_scope configured" line that
+        cannot be confused with an enforceable scope. The legacy
+        ``_render_scope_summary`` path on ``work_item.scope`` is
+        **no longer reachable** from compile-path callers; see
+        DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001 and -002 for
+        the rationale.
       * ``evaluation_summary`` is rendered mechanically from
         ``goal.desired_end_state`` plus ``work_item.evaluation``
         via :func:`_render_evaluation_summary`.
@@ -665,7 +868,27 @@ def workflow_summary_from_contracts(
         )
 
     status = f"goal={goal.status}; work_item={work_item.status}"
-    scope_summary = _render_scope_summary(work_item.scope)
+    # DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001: derive scope_summary
+    # from the enforcement authority (workflow_scope row) when provided,
+    # and mechanically validate that the work-item intent declaration
+    # matches.
+    # DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-002: when no authoritative
+    # record is provided, emit an explicit "no authoritative
+    # workflow_scope configured" marker rather than rendering
+    # work_item.scope. The production compile paths always pass
+    # whatever workflows.get_scope() returns, so None means "no
+    # enforcement row exists" — rendering work_item.scope there would
+    # advertise intent-only paths as live law while the gate would
+    # actually fail-closed with "No scope manifest."
+    if workflow_scope_record is not None:
+        _validate_work_item_scope_matches_authority(
+            work_item.scope, workflow_scope_record
+        )
+        scope_summary = _render_scope_summary_from_workflow_scope(
+            workflow_scope_record
+        )
+    else:
+        scope_summary = _NO_AUTHORITATIVE_SCOPE_MARKER
     evaluation_summary = _render_evaluation_summary(goal, work_item.evaluation)
     rollback_boundary = _render_rollback_boundary(work_item.evaluation)
 
