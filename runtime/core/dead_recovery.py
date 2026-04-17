@@ -104,19 +104,29 @@ def _eligible_dead_seat_ids(
     1. ``seats.status = 'active'`` — we only sweep seats that are still
        in the lifecycle.  ``released`` and ``dead`` are skipped.
     2. The seat has at least one ``dispatch_attempts`` row.
-    3. The *most recent* attempt for the seat — ordered by
-       ``created_at DESC, attempt_id DESC`` for a deterministic
-       tiebreak on same-second inserts — must be in
-       ``_DEAD_ATTEMPT_STATUSES`` (``timed_out`` / ``failed``) and its
-       ``updated_at`` must be older than ``now - grace_seconds``.
+    3. The attempt with the most recent *delivery activity* for the
+       seat — ordered by ``updated_at DESC, attempt_id DESC`` for a
+       deterministic tiebreak on same-second transitions — must be
+       in ``_DEAD_ATTEMPT_STATUSES`` (``timed_out`` / ``failed``) and
+       its ``updated_at`` must be older than ``now - grace_seconds``.
 
-    Eligibility is keyed off the *latest* attempt, not any historical
-    attempt.  This matters for the mixed-history case: a seat that has
-    an old ``timed_out`` attempt followed by a newer ``cancelled``
-    attempt must not be swept, because the latest user-driven signal
-    on the seat is a cancel, not a silent death.  The earlier
-    "any historical terminal + no live attempt" selector over-swept
-    those seats; this form queries exactly one attempt per seat.
+    Eligibility is keyed off the *latest transitioned* attempt, not
+    merely the latest-created row.  ``dispatch_attempts.retry()``
+    reuses the same row — it updates ``status`` / ``updated_at`` /
+    ``retry_count`` but leaves ``created_at`` fixed — so a retried
+    attempt can finish later (newer ``updated_at``) than a
+    subsequently-issued attempt (newer ``created_at``).  Ordering by
+    ``updated_at`` correctly treats that retried row as the seat's
+    current delivery effort.
+
+    The mixed-history case from the earlier correction
+    (``c400245``) still holds under ``updated_at`` ordering: an old
+    ``timed_out`` followed by a newer ``cancelled`` attempt leaves
+    ``cancelled`` with the newest ``updated_at``, so the seat is
+    still not swept.  The retry regression (this correction) and the
+    mixed-history regression therefore share the same selector —
+    they disagree only on which ordering key is authoritative, and
+    ``updated_at`` satisfies both.
     """
     cutoff = now - int(grace_seconds)
     dead_statuses_placeholder = ",".join("?" for _ in _DEAD_ATTEMPT_STATUSES)
@@ -130,7 +140,7 @@ def _eligible_dead_seat_ids(
                 WHERE  da.attempt_id = (
                         SELECT attempt_id FROM dispatch_attempts da2
                         WHERE  da2.seat_id = s.seat_id
-                        ORDER  BY da2.created_at DESC, da2.attempt_id DESC
+                        ORDER  BY da2.updated_at DESC, da2.attempt_id DESC
                         LIMIT  1
                 )
                   AND  da.status IN ({dead_statuses_placeholder})

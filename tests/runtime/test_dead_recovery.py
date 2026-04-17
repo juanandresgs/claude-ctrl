@@ -189,6 +189,79 @@ def test_seat_with_newer_acknowledged_after_old_timeout_is_not_swept(conn):
     assert seat_mod.get(conn, seat)["status"] == "active"
 
 
+def test_seat_with_retried_attempt_timing_out_after_newer_cancel_is_swept(conn):
+    """Review regression on c400245: ``dispatch_attempts.retry()`` reuses
+    the same row — it updates ``updated_at`` and ``status`` but leaves
+    ``created_at`` fixed.  A retried attempt therefore can have an older
+    ``created_at`` than a subsequently-issued attempt yet be the most
+    recent delivery activity on the seat.
+
+    Sequence reproduced here:
+
+      1. attempt A issued → A.created_at = T1
+      2. A claimed, A times out (updated_at = T2)
+      3. attempt B issued → B.created_at = T3 (T3 > T2 > T1)
+      4. B cancelled (B.updated_at = T4)
+      5. A retried — A.retry_count += 1, A.status = 'pending',
+         A.updated_at = T5 (T5 > T4), A.created_at still T1
+      6. A claimed, A times out again past grace
+         (A.updated_at = T6, the newest on the seat)
+
+    Under the earlier created_at-keyed selector this seat did NOT
+    sweep, because B still had the newest created_at.  The correct
+    answer is to sweep: the most recent delivery effort on the seat
+    is A's second timeout.
+    """
+    seat = _make_seat(conn, "sess-retry-regress", "seat-retry-regress")
+
+    # Step 1-2: A issued + timed_out; back-date so A.created_at looks
+    # older than B.created_at later.
+    attempt_a = _seed_attempt(conn, seat, "timed_out", age_seconds=7200)
+    conn.execute(
+        "UPDATE dispatch_attempts SET created_at = ? WHERE attempt_id = ?",
+        (int(time.time()) - 7200, attempt_a),
+    )
+    conn.commit()
+
+    # Step 3-4: B issued + cancelled, with a newer created_at than A.
+    attempt_b = _seed_attempt(conn, seat, "cancelled", age_seconds=3600)
+    # Assert the invariant we are about to exploit: B.created_at > A.created_at.
+    ca_row = conn.execute(
+        "SELECT attempt_id, created_at FROM dispatch_attempts WHERE seat_id = ?"
+        " ORDER BY created_at DESC", (seat,),
+    ).fetchall()
+    assert ca_row[0]["attempt_id"] == attempt_b
+    assert ca_row[1]["attempt_id"] == attempt_a
+
+    # Step 5-6: retry A (pending → claimed → timed_out) past grace.
+    da_mod.retry(conn, attempt_a)
+    da_mod.claim(conn, attempt_a)
+    da_mod.timeout(conn, attempt_a)
+    # Back-date A's updated_at so it is BOTH past grace AND newer than
+    # B.updated_at.  Cancel happened at (now - 3600); the retried
+    # timeout happened logically after that, so place it at (now -
+    # 1800) — newer than B but still past a 900-second grace.
+    conn.execute(
+        "UPDATE dispatch_attempts SET updated_at = ? WHERE attempt_id = ?",
+        (int(time.time()) - 1800, attempt_a),
+    )
+    conn.commit()
+
+    # Pre-condition checks — make the invariants the selector must key
+    # off visible in the test log if it ever flakes.
+    ua_row = conn.execute(
+        "SELECT attempt_id, updated_at FROM dispatch_attempts WHERE seat_id = ?"
+        " ORDER BY updated_at DESC", (seat,),
+    ).fetchall()
+    assert ua_row[0]["attempt_id"] == attempt_a  # newest updated_at is A
+    assert ua_row[1]["attempt_id"] == attempt_b
+
+    result = dr_mod.sweep_dead_seats(conn, grace_seconds=900)
+    assert result["swept"] == 1
+    assert result["seats"] == [seat]
+    assert seat_mod.get(conn, seat)["status"] == "dead"
+
+
 def test_seat_with_newer_timed_out_after_old_pending_is_swept(conn):
     """Complement to the cancelled case: an older *live* pending
     attempt followed by a newer past-grace timed_out attempt still
