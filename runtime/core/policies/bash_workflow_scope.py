@@ -52,7 +52,54 @@ def _resolve_workflow_id(
     return current_workflow_id(target_dir)
 
 
-def _get_changed_files(target_dir: str, base_branch: str) -> list[str]:
+def _get_staged_files(target_dir: str) -> list[str]:
+    """Return files in the staged index for the commit path.
+
+    @decision DEC-PE-W3-010-STAGED-GATE-001
+    Title: bash_workflow_scope inspects the staged index on the commit path
+    Status: accepted
+    Rationale: The prior implementation ran ``git diff --name-only
+      base_branch...HEAD`` for both commit and merge, which validates
+      branch-ahead history rather than the staged/indexed bundle about to
+      be committed. That gap lets a first new staged file evade scope
+      validation at PreToolUse commit time (it only shows up in the check
+      after it has already been committed into branch-ahead history, by
+      which point enforcement is too late for that specific commit).
+
+      The commit path now inspects ``git diff --cached --name-only`` so the
+      policy gates exactly the file set that is about to enter the commit.
+      Branch-ahead history is not re-checked on commit — it was scope-
+      checked at its own commit time. Tightening scope later does not
+      retroactively block new commits just because prior commits existed
+      under a looser scope; that was the anti-pattern the branch-history
+      check induced during the WHO-remediation landing.
+
+      Merge-path behaviour is preserved via :func:`_get_branch_ahead_files`
+      and still uses ``base_branch...HEAD`` — merge semantics is about
+      incorporating prior history, not about a staged index, so the
+      existing discipline remains correct there.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", target_dir, "diff", "--cached", "--name-only"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0:
+            return [f for f in r.stdout.strip().splitlines() if f]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
+
+
+def _get_branch_ahead_files(target_dir: str, base_branch: str) -> list[str]:
+    """Return files in branch-ahead commits (merge path).
+
+    See :func:`_get_staged_files` for why the commit path no longer uses
+    this function. Kept for the merge path, which inspects the commits
+    that would be absorbed by the merge.
+    """
     try:
         r = subprocess.run(
             ["git", "-C", target_dir, "diff", "--name-only", f"{base_branch}...HEAD"],
@@ -152,13 +199,14 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         )
 
     # Sub-check C: changed files must comply with scope.
-    # Fix #175: on the commit path, use project_root already resolved by
-    # cli.py from target_cwd. The if/else distinction between commit and merge
-    # is no longer needed — both paths resolve to the same source of truth.
-    # Merge path is preserved as-is (project_root or cwd) since it was already
-    # correct; the commit path now matches it rather than re-parsing the command.
-    base_branch = request.context.binding.get("base_branch", "main") or "main"
-    changed_files = _get_changed_files(target_dir, base_branch)
+    # DEC-PE-W3-010-STAGED-GATE-001: commit gates on the staged index; merge
+    # gates on branch-ahead history. See _get_staged_files for the full
+    # rationale — branch-ahead gating on commit was the wrong surface.
+    if invocation.subcommand == "commit":
+        changed_files = _get_staged_files(target_dir)
+    else:  # merge
+        base_branch = request.context.binding.get("base_branch", "main") or "main"
+        changed_files = _get_branch_ahead_files(target_dir, base_branch)
 
     if changed_files:
         compliant, violations = _check_compliance(request.context.scope, changed_files)

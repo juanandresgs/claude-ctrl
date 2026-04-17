@@ -98,7 +98,73 @@ def build_agent_dispatch_prompt(
             "valid stages: planner, guardian:provision, implementer, reviewer, guardian:land"
         )
 
-    # Resolve goal_id from runtime state when not supplied.
+    # DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: the explicit-override path must enforce
+    # the same workflow-ownership discipline as the default-resolution path.
+    # Before this slice, explicit goal_id / work_item_id were trusted verbatim
+    # and the producer emitted a contract block binding the caller's
+    # workflow_id to a goal/work_item owned by a different workflow (or with
+    # NULL workflow_id). That re-opened the cross-workflow contract bleed the
+    # default-path filter was supposed to close. The override path now:
+    #
+    #   * validates explicit work_item_id belongs to workflow_id
+    #   * validates explicit goal_id belongs to workflow_id
+    #   * when both are explicit, cross-validates work_item.goal_id == goal_id
+    #   * when only work_item_id is explicit, derives goal_id from the
+    #     validated work item so the contract fields stay internally consistent
+    #
+    # Every failure raises ValueError whose message names both the requested
+    # workflow_id and the offending row's actual workflow_id / goal_id so the
+    # operator can route the fix unambiguously. Fail-closed in every branch.
+
+    # Validate explicit work_item_id first (it may also pin goal_id).
+    if work_item_id:
+        wi_record = _dwr.get_work_item(conn, work_item_id)
+        if wi_record is None:
+            raise ValueError(
+                f"explicit work_item_id {work_item_id!r} not found in "
+                f"work_items; cannot issue a dispatch contract for an "
+                f"unknown work item. See DEC-CLAUDEX-DW-WORKFLOW-JOIN-002."
+            )
+        if wi_record.workflow_id != workflow_id:
+            raise ValueError(
+                f"explicit work_item_id {work_item_id!r} ownership mismatch: "
+                f"requested workflow_id={workflow_id!r} but work_item.workflow_id="
+                f"{wi_record.workflow_id!r}. Re-dispatch under the owning "
+                f"workflow, or re-seed the work item with the correct "
+                f"workflow_id. See DEC-CLAUDEX-DW-WORKFLOW-JOIN-002."
+            )
+        # Validated work item pins the goal_id. If caller also supplied
+        # goal_id, cross-check them; otherwise derive it from the work item.
+        if goal_id and goal_id != wi_record.goal_id:
+            raise ValueError(
+                f"explicit goal_id/work_item_id mismatch: requested "
+                f"goal_id={goal_id!r} but work_item {work_item_id!r} owns "
+                f"goal_id={wi_record.goal_id!r}. The two explicit IDs must "
+                f"agree. See DEC-CLAUDEX-DW-WORKFLOW-JOIN-002."
+            )
+        if not goal_id:
+            goal_id = wi_record.goal_id
+
+    # Validate explicit goal_id (whether supplied by the caller or just
+    # derived from an explicit work_item) against the workflow.
+    if goal_id:
+        g_record = _dwr.get_goal(conn, goal_id)
+        if g_record is None:
+            raise ValueError(
+                f"explicit goal_id {goal_id!r} not found in goal_contracts; "
+                f"cannot issue a dispatch contract for an unknown goal. "
+                f"See DEC-CLAUDEX-DW-WORKFLOW-JOIN-002."
+            )
+        if g_record.workflow_id != workflow_id:
+            raise ValueError(
+                f"explicit goal_id {goal_id!r} ownership mismatch: requested "
+                f"workflow_id={workflow_id!r} but goal.workflow_id="
+                f"{g_record.workflow_id!r}. Re-dispatch under the owning "
+                f"workflow, or re-seed the goal with the correct "
+                f"workflow_id. See DEC-CLAUDEX-DW-WORKFLOW-JOIN-002."
+            )
+
+    # Resolve goal_id from runtime state when still not supplied.
     #
     # DEC-CLAUDEX-DW-WORKFLOW-JOIN-001: the default-resolution path MUST be
     # scoped by workflow_id. Before this slice the producer did a workflow-
@@ -298,3 +364,24 @@ def _validate_head_sha_commit_shape(
 #   When a valid workflow binding is absent, the guard soft-passes and
 #   downstream stages still apply their own checks — this is intentional
 #   to avoid breaking early-lifecycle dispatches where no binding yet exists.
+
+
+# @decision DEC-CLAUDEX-DW-WORKFLOW-JOIN-002
+# @title agent_prompt: explicit-override ownership check closes cross-workflow bleed
+# @status accepted
+# @rationale DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 added workflow_id filtering to
+#   the default resolution paths for goal_id / work_item_id, but the explicit-
+#   override path still called ``get_work_item(conn, id)`` and
+#   ``get_goal(conn, id)`` without verifying workflow ownership. A caller
+#   passing ``workflow_id="wf-a"`` with ``work_item_id="WI-owned-by-wf-b"``
+#   (or with ``workflow_id IS NULL`` in the row) got a valid-looking contract
+#   block that bound the caller's workflow identity to another workflow's
+#   work item — exactly the cross-workflow contract bleed DEC-001 was
+#   supposed to prevent. This decision closes that gap: the override path
+#   validates ownership of both goal_id and work_item_id against the
+#   requested workflow_id, cross-validates when both are explicit, and
+#   derives goal_id from a validated explicit work_item when omitted so
+#   the contract fields stay internally consistent. Every mismatch raises
+#   ValueError with explicit ownership language so the operator can route
+#   the fix. Fail-closed in every branch. Ownership check uses the existing
+#   decision_work_registry accessors — no new authority table introduced.

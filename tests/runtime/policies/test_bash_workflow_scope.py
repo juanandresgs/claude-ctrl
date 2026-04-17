@@ -176,3 +176,213 @@ def test_quoted_git_commit_prompt_skipped():
     ctx = make_context(binding=None, scope=None)
     req = make_request('node tool.mjs task "investigate git commit gating"', context=ctx)
     assert check(req) is None
+
+
+# ---------------------------------------------------------------------------
+# DEC-PE-W3-010-STAGED-GATE-001 — commit path gates on the staged index,
+# not on `base_branch...HEAD`. These tests construct a real temp git repo
+# with a branch history that would PASS the old base...HEAD check but
+# FAIL the new staged-index check (forbidden / OUT_OF_SCOPE staged file),
+# and vice versa. They prove the commit path is governed by the staged
+# bundle — closing the gap flagged by the WHO-remediation landing.
+# ---------------------------------------------------------------------------
+
+
+import subprocess as _subprocess
+
+import pytest
+
+
+def _git(repo, *args):
+    return _subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def _init_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@test.invalid")
+    _git(repo, "config", "user.name", "test")
+    # Seed one commit on main so `base_branch=main` is resolvable.
+    (repo / "README.md").write_text("seed\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "seed", "-q")
+    # Branch off main to match the production shape (claudesox-local off main).
+    _git(repo, "checkout", "-B", "feature/slice", "-q")
+    return repo
+
+
+def _stage(repo, relpath, content="stub\n"):
+    full = repo / relpath
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content)
+    _git(repo, "add", relpath)
+
+
+def _commit_into_branch_history(repo, relpath, content="hist\n"):
+    """Land a file on the branch as prior history; NOT staged at check time."""
+    full = repo / relpath
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content)
+    _git(repo, "add", relpath)
+    _git(repo, "commit", "-m", f"history {relpath}", "-q")
+
+
+def _ctx_with_scope(repo, *, allowed, forbidden):
+    binding = {"base_branch": "main", "worktree_path": str(repo)}
+    scope = {
+        "allowed_paths": json.dumps(allowed),
+        "forbidden_paths": json.dumps(forbidden),
+    }
+    return make_context(
+        binding=binding,
+        scope=scope,
+        project_root=str(repo),
+    )
+
+
+def _commit_req(ctx, cwd):
+    return make_request(
+        "git commit -m 'slice'",
+        context=ctx,
+        cwd=cwd,
+    )
+
+
+def test_staged_forbidden_file_denied_on_commit_even_when_branch_history_is_clean(
+    tmp_path,
+):
+    """The new-staged forbidden file must trip the gate even though the
+    branch-ahead history is empty — proving the check runs on the staged
+    index, not on base_branch...HEAD."""
+    repo = _init_repo(tmp_path)
+    # Stage a forbidden file. No prior branch-ahead history.
+    _stage(repo, "settings.json", '{"x":1}')
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["settings.json"],
+    )
+    decision = check(_commit_req(ctx, str(repo)))
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "bash_workflow_scope"
+    assert "FORBIDDEN" in decision.reason
+    assert "settings.json" in decision.reason
+
+
+def test_staged_out_of_scope_file_denied_on_commit(tmp_path):
+    """A staged file that is neither in allowed_paths nor forbidden_paths
+    must still be denied when allowed_paths is non-empty — the staged path
+    is treated identically to how branch-ahead paths were treated."""
+    repo = _init_repo(tmp_path)
+    _stage(repo, "hooks/guard.sh", "echo hi\n")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=[],
+    )
+    decision = check(_commit_req(ctx, str(repo)))
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "OUT_OF_SCOPE" in decision.reason
+    assert "hooks/guard.sh" in decision.reason
+
+
+def test_staged_in_scope_file_allowed_on_commit(tmp_path):
+    """Happy path: a staged file that matches allowed_paths passes the
+    commit gate."""
+    repo = _init_repo(tmp_path)
+    _stage(repo, "runtime/core/agent_prompt.py", "# ok\n")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["settings.json"],
+    )
+    decision = check(_commit_req(ctx, str(repo)))
+    assert decision is None
+
+
+def test_commit_gate_ignores_branch_history_when_staged_is_in_scope(tmp_path):
+    """The key regression fix: a branch-ahead commit can contain forbidden
+    files (landed under an older / looser scope), but a NEW commit whose
+    staged index is fully in scope must pass. Before DEC-PE-W3-010-STAGED-
+    GATE-001 the policy would have denied this commit because it ran
+    `base...HEAD` and saw the historical forbidden file."""
+    repo = _init_repo(tmp_path)
+    # Branch-ahead history carries a forbidden file.
+    _commit_into_branch_history(repo, "scripts/legacy.sh", "old\n")
+    # Staged index is fully in scope.
+    _stage(repo, "runtime/core/agent_prompt.py", "# ok\n")
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["scripts/**"],
+    )
+    decision = check(_commit_req(ctx, str(repo)))
+    assert decision is None, (
+        "Commit should pass: staged files in-scope, forbidden file lives "
+        "only in branch-ahead history that was already landed under a "
+        "prior scope. Got deny: "
+        f"{None if decision is None else decision.reason}"
+    )
+
+
+def test_commit_gate_denies_forbidden_staged_even_when_branch_history_in_scope(
+    tmp_path,
+):
+    """Symmetric check: branch-ahead history is all in-scope, staged file
+    is forbidden. Old policy would pass (base...HEAD clean); new policy
+    must deny (staged has forbidden)."""
+    repo = _init_repo(tmp_path)
+    _commit_into_branch_history(repo, "runtime/core/clean.py", "# ok\n")
+    _stage(repo, "settings.json", '{"x":1}')
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**", "tests/**"],
+        forbidden=["settings.json"],
+    )
+    decision = check(_commit_req(ctx, str(repo)))
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "FORBIDDEN" in decision.reason
+    assert "settings.json" in decision.reason
+
+
+def test_commit_with_empty_staged_index_allows(tmp_path):
+    """No staged files → nothing to check → policy does not deny. (git
+    itself will refuse the no-op commit separately; the scope policy's job
+    is not to emulate that.)"""
+    repo = _init_repo(tmp_path)
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**"],
+        forbidden=["settings.json"],
+    )
+    decision = check(_commit_req(ctx, str(repo)))
+    assert decision is None
+
+
+def test_merge_path_still_uses_branch_ahead_history(tmp_path):
+    """DEC-PE-W3-010-STAGED-GATE-001 preserves merge-path semantics —
+    merge continues to check base_branch...HEAD (what the merge would
+    incorporate), not the staged index."""
+    repo = _init_repo(tmp_path)
+    # Forbidden file lives ONLY in branch-ahead history (merge target).
+    _commit_into_branch_history(repo, "scripts/bad.sh", "old\n")
+    # Nothing staged — if the merge path incorrectly used the staged index,
+    # it would not catch the forbidden history.
+    ctx = _ctx_with_scope(
+        repo,
+        allowed=["runtime/**"],
+        forbidden=["scripts/**"],
+    )
+    req = make_request("git merge feature/foo", context=ctx, cwd=str(repo))
+    decision = check(req)
+    assert decision is not None, "merge path must still inspect branch-ahead history"
+    assert decision.action == "deny"
+    assert "FORBIDDEN" in decision.reason
+    assert "scripts/bad.sh" in decision.reason

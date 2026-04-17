@@ -223,13 +223,20 @@ class TestRuntimeStateResolution:
         )
         assert result["contract"]["goal_id"] == "GOAL-EXPLICIT"
 
-    def test_explicit_work_item_id_overrides_lookup(self, conn):
-        # Insert a second work item under the same goal.
+    def test_explicit_work_item_id_overrides_lookup_same_workflow(self, conn):
+        """Happy path: explicit work_item_id belongs to requested workflow_id.
+
+        DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: the override is accepted only when
+        the explicit work item is workflow-scoped to the caller's workflow.
+        Legacy behaviour of trusting the explicit id verbatim (regardless of
+        ownership) is closed.
+        """
         dwr.insert_work_item(
             conn,
             dwr.WorkItemRecord(
                 work_item_id="WI-EXPLICIT",
                 goal_id="GOAL-AP-1",
+                workflow_id="wf-ap",
                 title="explicit work item",
                 status="in_progress",
                 version=1,
@@ -245,6 +252,214 @@ class TestRuntimeStateResolution:
             conn, workflow_id="wf-ap", stage_id="planner", work_item_id="WI-EXPLICIT"
         )
         assert result["contract"]["work_item_id"] == "WI-EXPLICIT"
+        # goal_id must be derived from the validated explicit work_item.
+        assert result["contract"]["goal_id"] == "GOAL-AP-1"
+
+    def test_explicit_work_item_with_wrong_workflow_ownership_denied(self, conn):
+        """DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: an explicit work_item_id whose
+        workflow_id does not match the requested workflow_id must fail
+        closed — no cross-workflow contract bleed via the override path."""
+        # Seed a second goal + work item under a DIFFERENT workflow.
+        other_goal = contracts.GoalContract(
+            goal_id="GOAL-OTHER",
+            desired_end_state="other workflow",
+            status="active",
+            autonomy_budget=1,
+            continuation_rules=(),
+            stop_conditions=(),
+            escalation_boundaries=(),
+            user_decision_boundaries=(),
+        )
+        other_goal_record = dataclasses.replace(
+            goal_contract_codec.encode_goal_contract(other_goal),
+            workflow_id="wf-other",
+        )
+        dwr.insert_goal(conn, other_goal_record)
+        dwr.insert_work_item(
+            conn,
+            dwr.WorkItemRecord(
+                work_item_id="WI-OWNED-BY-OTHER",
+                goal_id="GOAL-OTHER",
+                workflow_id="wf-other",
+                title="foreign work item",
+                status="in_progress",
+                version=1,
+                author="planner",
+                scope_json='{"allowed_paths":[],"required_paths":[],"forbidden_paths":[],"state_domains":[]}',
+                evaluation_json='{"required_tests":[],"required_evidence":[],"rollback_boundary":"","acceptance_notes":""}',
+                head_sha=None,
+                reviewer_round=1,
+            ),
+        )
+        conn.commit()
+        with pytest.raises(ValueError, match="ownership mismatch") as ei:
+            build_agent_dispatch_prompt(
+                conn,
+                workflow_id="wf-ap",
+                stage_id="planner",
+                work_item_id="WI-OWNED-BY-OTHER",
+            )
+        assert "wf-ap" in str(ei.value)
+        assert "wf-other" in str(ei.value)
+
+    def test_explicit_work_item_with_null_workflow_id_denied(self, conn):
+        """DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: a work_item inserted without
+        workflow_id (legacy / pre-migration) must be rejected when used as
+        an explicit override — NULL does not equal the requested workflow_id."""
+        dwr.insert_work_item(
+            conn,
+            dwr.WorkItemRecord(
+                work_item_id="WI-NO-WORKFLOW",
+                goal_id="GOAL-AP-1",
+                # workflow_id intentionally omitted — legacy/pre-migration row
+                title="legacy work item",
+                status="in_progress",
+                version=1,
+                author="planner",
+                scope_json='{"allowed_paths":[],"required_paths":[],"forbidden_paths":[],"state_domains":[]}',
+                evaluation_json='{"required_tests":[],"required_evidence":[],"rollback_boundary":"","acceptance_notes":""}',
+                head_sha=None,
+                reviewer_round=1,
+            ),
+        )
+        conn.commit()
+        with pytest.raises(ValueError, match="ownership mismatch"):
+            build_agent_dispatch_prompt(
+                conn,
+                workflow_id="wf-ap",
+                stage_id="planner",
+                work_item_id="WI-NO-WORKFLOW",
+            )
+
+    def test_explicit_goal_with_wrong_workflow_ownership_denied(self, conn):
+        """DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: explicit goal_id whose
+        workflow_id does not match the requested workflow_id must be
+        rejected before the contract is issued."""
+        # Seed a goal that belongs to a different workflow.
+        other_goal = contracts.GoalContract(
+            goal_id="GOAL-OTHER-WF",
+            desired_end_state="goal in another workflow",
+            status="active",
+            autonomy_budget=1,
+            continuation_rules=(),
+            stop_conditions=(),
+            escalation_boundaries=(),
+            user_decision_boundaries=(),
+        )
+        other_goal_record = dataclasses.replace(
+            goal_contract_codec.encode_goal_contract(other_goal),
+            workflow_id="wf-other",
+        )
+        dwr.insert_goal(conn, other_goal_record)
+        conn.commit()
+        with pytest.raises(ValueError, match="ownership mismatch") as ei:
+            build_agent_dispatch_prompt(
+                conn,
+                workflow_id="wf-ap",
+                stage_id="planner",
+                goal_id="GOAL-OTHER-WF",
+            )
+        assert "wf-ap" in str(ei.value)
+        assert "wf-other" in str(ei.value)
+
+    def test_explicit_goal_and_work_item_mismatch_denied(self, conn):
+        """DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: when both goal_id and
+        work_item_id are explicit, work_item.goal_id must match the
+        requested goal_id. Otherwise the two overrides disagree and the
+        producer must refuse."""
+        # Seed a second goal in the same workflow plus a work item under it.
+        second_goal = contracts.GoalContract(
+            goal_id="GOAL-AP-SECOND",
+            desired_end_state="second goal same workflow",
+            status="active",
+            autonomy_budget=1,
+            continuation_rules=(),
+            stop_conditions=(),
+            escalation_boundaries=(),
+            user_decision_boundaries=(),
+        )
+        second_goal_record = dataclasses.replace(
+            goal_contract_codec.encode_goal_contract(second_goal),
+            workflow_id="wf-ap",
+        )
+        dwr.insert_goal(conn, second_goal_record)
+        dwr.insert_work_item(
+            conn,
+            dwr.WorkItemRecord(
+                work_item_id="WI-UNDER-SECOND-GOAL",
+                goal_id="GOAL-AP-SECOND",
+                workflow_id="wf-ap",
+                title="work item under the second goal",
+                status="in_progress",
+                version=1,
+                author="planner",
+                scope_json='{"allowed_paths":[],"required_paths":[],"forbidden_paths":[],"state_domains":[]}',
+                evaluation_json='{"required_tests":[],"required_evidence":[],"rollback_boundary":"","acceptance_notes":""}',
+                head_sha=None,
+                reviewer_round=1,
+            ),
+        )
+        conn.commit()
+        # Caller passes goal_id=GOAL-AP-1 but work_item_id belongs to GOAL-AP-SECOND.
+        with pytest.raises(ValueError, match="goal_id/work_item_id mismatch") as ei:
+            build_agent_dispatch_prompt(
+                conn,
+                workflow_id="wf-ap",
+                stage_id="planner",
+                goal_id="GOAL-AP-1",
+                work_item_id="WI-UNDER-SECOND-GOAL",
+            )
+        assert "GOAL-AP-1" in str(ei.value)
+        assert "GOAL-AP-SECOND" in str(ei.value)
+
+    def test_goal_id_derived_from_validated_explicit_work_item(self, conn):
+        """DEC-CLAUDEX-DW-WORKFLOW-JOIN-002: when the caller provides only
+        an explicit work_item_id (no explicit goal_id), the producer derives
+        goal_id from the validated work item so contract fields stay
+        internally consistent."""
+        # Seed a second goal + work item in the same workflow.
+        second_goal = contracts.GoalContract(
+            goal_id="GOAL-AP-SECOND",
+            desired_end_state="second goal same workflow",
+            status="active",
+            autonomy_budget=1,
+            continuation_rules=(),
+            stop_conditions=(),
+            escalation_boundaries=(),
+            user_decision_boundaries=(),
+        )
+        second_goal_record = dataclasses.replace(
+            goal_contract_codec.encode_goal_contract(second_goal),
+            workflow_id="wf-ap",
+        )
+        dwr.insert_goal(conn, second_goal_record)
+        dwr.insert_work_item(
+            conn,
+            dwr.WorkItemRecord(
+                work_item_id="WI-UNDER-SECOND-GOAL",
+                goal_id="GOAL-AP-SECOND",
+                workflow_id="wf-ap",
+                title="work item under the second goal",
+                status="in_progress",
+                version=1,
+                author="planner",
+                scope_json='{"allowed_paths":[],"required_paths":[],"forbidden_paths":[],"state_domains":[]}',
+                evaluation_json='{"required_tests":[],"required_evidence":[],"rollback_boundary":"","acceptance_notes":""}',
+                head_sha=None,
+                reviewer_round=1,
+            ),
+        )
+        conn.commit()
+        # Caller omits goal_id; must derive GOAL-AP-SECOND from the explicit
+        # work_item, NOT default to the first active goal (GOAL-AP-1).
+        result = build_agent_dispatch_prompt(
+            conn,
+            workflow_id="wf-ap",
+            stage_id="planner",
+            work_item_id="WI-UNDER-SECOND-GOAL",
+        )
+        assert result["contract"]["work_item_id"] == "WI-UNDER-SECOND-GOAL"
+        assert result["contract"]["goal_id"] == "GOAL-AP-SECOND"
 
     def test_no_active_goal_raises_value_error(self, db):
         # Open a fresh DB with no seeded goals.
