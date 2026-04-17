@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 SETTINGS_FILE="${ROOT}/ClauDEX/bridge/claude-settings.json"
-MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-opus-4-6}"
+MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-opus-4-7[1m]}"
 EFFORT="${CLAUDEX_CLAUDE_EFFORT:-high}"
 
 if [[ ! -f "$SETTINGS_FILE" ]]; then
