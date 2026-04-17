@@ -111,8 +111,8 @@ fi
 unset _SESSION_RUNTIME_ROOT _LEASE_SUM _LS_ROLE _LS_NS
 
 # --- Workflow evaluation state (TKT-024) ---
-# Shows evaluation_state as the readiness display. proof_state is deprecated
-# with zero enforcement effect and is no longer shown here.
+# Shows evaluation_state as the readiness display. The legacy proof_state
+# storage was retired under DEC-CATEGORY-C-PROOF-RETIRE-001.
 # W-CONV-3: resolve workflow_id lease-first so session HUD shows the correct
 # eval state when a lease is active with a different workflow_id than the branch.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then

@@ -20,14 +20,6 @@ import sqlite3
 # DDL — one constant per table so callers can reference individual statements
 # ---------------------------------------------------------------------------
 
-PROOF_STATE_DDL = """
-CREATE TABLE IF NOT EXISTS proof_state (
-    workflow_id  TEXT    PRIMARY KEY,
-    status       TEXT    NOT NULL DEFAULT 'idle',
-    updated_at   INTEGER NOT NULL
-)
-"""
-
 AGENT_MARKERS_DDL = """
 CREATE TABLE IF NOT EXISTS agent_markers (
     agent_id    TEXT    PRIMARY KEY,
@@ -643,7 +635,6 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_workflow
 
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
-    PROOF_STATE_DDL,
     AGENT_MARKERS_DDL,
     EVENTS_DDL,
     WORKTREES_DDL,
