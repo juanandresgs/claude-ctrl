@@ -211,15 +211,14 @@ if [[ -f "$PROMPT_COUNT_FILE" ]]; then
     echo "$((CURRENT_COUNT + 1))" > "$PROMPT_COUNT_FILE"
 fi
 
-# --- Compaction heuristic ---
+# --- Compaction heuristic (opt-in) ---
 # @decision DEC-COMPACT-001
-# @title Smart compaction suggestions based on prompts and session duration
+# @title Compaction suggestion hook is explicitly opt-in
 # @status accepted
-# @rationale Proactively suggest /compact at predictable checkpoints (35, 60 prompts
-# or 45, 90 minutes) to prevent context overflow. Primary trigger is prompt count
-# (more reliable). Secondary is session duration (catches long sessions with fewer
-# prompts). Narrow time windows prevent spam across multiple prompts.
-if [[ -f "$PROMPT_COUNT_FILE" ]]; then
+# @rationale The previous fixed-threshold compaction hints added drag in
+# long-context sessions (e.g. Opus 1M) where no compaction was needed.
+# Suggestions now run only when CLAUDEX_ENABLE_COMPACTION_HINTS=1.
+if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" && -f "$PROMPT_COUNT_FILE" ]]; then
     PROMPT_NUM=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
     [[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
 
