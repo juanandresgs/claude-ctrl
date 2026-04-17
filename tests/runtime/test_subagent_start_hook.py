@@ -211,6 +211,15 @@ class TestRuntimeFirstPath:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "Role: Planner" not in ctx
 
+    def test_contract_with_mismatched_agent_type_fails_closed(self, hook_db):
+        payload = _contract_payload(agent_type="general-purpose")
+        _rc, stdout, _stderr = _run_hook(payload, hook_db)
+        parsed = json.loads(stdout.strip())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "requires subagent_type 'planner'" in ctx
+        assert "# ClauDEX Prompt Pack:" not in ctx
+        assert "Context:" not in ctx
+
 
 # ---------------------------------------------------------------------------
 # 2. Contract-absent payload → legacy compatibility path

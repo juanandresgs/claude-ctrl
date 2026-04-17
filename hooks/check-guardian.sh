@@ -83,8 +83,8 @@ fi
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     # WS1: use lease_context() to derive workflow_id from the active lease.
     # When a lease is active its workflow_id is authoritative over branch-derived id.
-    _GD_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
-    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
+    _GD_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
+    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r 'if (.found == true or .lease_id != null) then "true" else "false" end' 2>/dev/null || echo "false")
     if [[ "$_GD_LEASE_FOUND" == "true" ]]; then
         _GD_LEASE_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
         _GD_WF_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
@@ -104,8 +104,12 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             --arg wt "${_GD_WORKTREE_PATH:-}" \
             'if $wt != "" then {LANDING_RESULT:$lr, OPERATION_CLASS:$oc, WORKTREE_PATH:$wt}
              else {LANDING_RESULT:$lr, OPERATION_CLASS:$oc} end')
-        _GD_CT_RESULT=$(rt_completion_submit "$_GD_LEASE_ID" "$_GD_WF_ID" "guardian" "$_GD_PAYLOAD")
-        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
+        _GD_CT_RESULT=$(_local_cc_policy completion submit \
+            --lease-id "$_GD_LEASE_ID" \
+            --workflow-id "$_GD_WF_ID" \
+            --role "guardian" \
+            --payload "$_GD_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
+        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
         if [[ "$_GD_CT_VALID" != "true" ]]; then
             _GD_CT_MISSING=$(printf '%s' "$_GD_CT_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
             # Advisory only in v1 — the git operation already completed.

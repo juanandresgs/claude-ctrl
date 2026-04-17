@@ -382,10 +382,11 @@ class TestHookLocalCLIPattern:
 class TestCheckPlannerHookStructure:
     """Structural assertions on hooks/check-planner.sh.
 
-    Proves the hook parses PLAN_VERDICT/PLAN_SUMMARY trailers and calls
-    rt_completion_submit with role planner. These are source-level checks,
-    not execution tests — the hook is advisory (exit 0) so we verify intent
-    via string matching rather than full subprocess invocation.
+    Proves the hook parses PLAN_VERDICT/PLAN_SUMMARY trailers and submits
+    completion with role planner via the local runtime wrapper. These are
+    source-level checks, not execution tests — the hook is advisory (exit 0)
+    so we verify intent via string matching rather than full subprocess
+    invocation.
     """
 
     @staticmethod
@@ -424,13 +425,13 @@ class TestCheckPlannerHookStructure:
         content = self._hook_content()
         assert "PLAN_SUMMARY" in content, "check-planner.sh must parse PLAN_SUMMARY"
 
-    def test_calls_rt_completion_submit_planner(self):
+    def test_calls_completion_submit_planner(self):
         content = self._hook_content()
-        assert 'rt_completion_submit' in content, (
-            "check-planner.sh must call rt_completion_submit"
+        assert "_local_cc_policy completion submit" in content, (
+            "check-planner.sh must call _local_cc_policy completion submit"
         )
         assert '"planner"' in content, (
-            "check-planner.sh must pass role 'planner' to rt_completion_submit"
+            "check-planner.sh must pass role 'planner' to completion submit"
         )
 
     def test_advisory_exit_zero(self):

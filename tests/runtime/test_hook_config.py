@@ -99,10 +99,10 @@ def test_reviewer_subagent_stop_group_has_stop_review_gate() -> None:
 
 
 def test_check_reviewer_uses_completion_submit_with_role_reviewer() -> None:
-    """Phase 4: check-reviewer.sh calls rt_completion_submit with role reviewer."""
+    """Phase 4: check-reviewer.sh submits completion via local runtime with role reviewer."""
     check_reviewer = _ROOT / "hooks" / "check-reviewer.sh"
     content = check_reviewer.read_text(encoding="utf-8")
-    assert 'rt_completion_submit' in content
+    assert "_local_cc_policy completion submit" in content
     assert '"reviewer"' in content
 
 
@@ -121,4 +121,4 @@ def test_check_reviewer_has_local_runtime_lifecycle_pattern() -> None:
     assert "_local_cc_policy" in content
     assert "_LOCAL_RUNTIME_CLI" in content
     assert "lifecycle on-stop" in content
-    assert "lease_context" in content
+    assert "_local_cc_policy lease current" in content
