@@ -66,11 +66,19 @@ Installed truth the supervisor should rely on:
   Default grace `DEFAULT_GRACE_SECONDS = 900` (module constant,
   overridable via `--grace-seconds`).  **Eligibility is keyed off
   the seat's most recent dispatch_attempt only** (deterministic
-  `ORDER BY created_at DESC, attempt_id DESC LIMIT 1`) per the
-  `c400245` selector correction — a seat whose latest attempt is
-  `cancelled` or `acknowledged` after an older `timed_out` is NOT
-  swept, because the latest signal on the seat is not a silent
-  death.
+  `ORDER BY updated_at DESC, attempt_id DESC LIMIT 1`) per the
+  `f37b8ab` selector re-correction, which **supersedes the
+  `c400245` `created_at` ordering**.  The `c400245` fix closed the
+  mixed-history over-sweep (old `timed_out` followed by a newer
+  `cancelled` / `acknowledged` must not sweep); the `f37b8ab`
+  re-correction additionally closes a retry under-sweep —
+  `dispatch_attempts.retry()` reuses the same row, bumping
+  `updated_at` / `status` / `retry_count` but leaving
+  `created_at` fixed, so the `created_at` key under-swept when a
+  retried attempt finished *after* a later-issued terminal
+  attempt.  Under the current `updated_at` ordering both
+  regressions hold: cancelled and retried cases both resolve to
+  the correct seat-latest delivery-activity row.
 
 - **Unchanged authority-surface invariants** — `cc-policy
   constitution validate` healthy=true concrete_count=24;

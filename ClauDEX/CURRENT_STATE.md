@@ -135,8 +135,11 @@ place to answer:
 > `a3653ad` (agent_session domain), `571c155` (Rule-1 invariant),
 > `3967f6d` (SubagentStop adapters wired), `f3e88dd` (dead-loop
 > recovery sweeper), `c400245` (selector narrowed to
-> most-recent-attempt eligibility), `f37b8ab` (selector re-keyed
-> to `updated_at` to cover retry semantics).
+> most-recent-attempt eligibility via `created_at` ordering),
+> `f37b8ab` (selector re-keyed to `updated_at` ordering;
+> **supersedes** `c400245`'s `created_at` key — the live
+> dead-recovery selector today is `f37b8ab`, which closes both
+> the mixed-history over-sweep and the retry under-sweep).
 
 Canonical cutover custody branch (remote):
 
