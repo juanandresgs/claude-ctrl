@@ -150,6 +150,254 @@ def _get_tracked_modifications(target_dir: str) -> list[str]:
     return []
 
 
+_COMMIT_SHORT_VALUE_FLAGS = frozenset({"-m", "-F", "-c", "-C", "-t"})
+"""Short flags that consume the next positional arg as their value.
+
+Only includes flags that ALWAYS take a value. ``-u`` and ``-S`` take optional
+values and when standalone do not consume the next arg — they are treated
+as valueless here, which is conservative: at worst a pathspec following a
+bare ``-u`` is swept into the check, which is already a safer direction
+than leaving tracked out-of-scope files un-gated.
+"""
+
+_COMMIT_LONG_VALUE_FLAGS = frozenset({
+    "--message", "--file", "--reuse-message", "--reedit-message",
+    "--fixup", "--squash", "--author", "--date", "--cleanup",
+    "--template", "--untracked-files", "--trailer",
+    "--pathspec-from-file",
+    # --gpg-sign takes an OPTIONAL arg; treated as valueless — see comment
+    # above for the conservative rationale.
+})
+"""Long flags (without inline ``=``) that consume the next positional arg.
+
+Includes ``--pathspec-from-file`` so the separated form
+``git commit --pathspec-from-file paths.txt`` does NOT treat ``paths.txt``
+as a literal pathspec entry. The filename is extracted separately by
+:func:`_extract_pathspec_file_info`, and the file's contents are resolved
+into pathspec entries by :func:`_read_pathspec_file`.
+"""
+
+_COMMIT_PATHSPEC_SEP = "--"
+"""POSIX end-of-options sentinel. Everything after this is pathspec."""
+
+
+def _parse_commit_pathspec(args: tuple[str, ...]) -> tuple[list[str], bool, bool]:
+    """Parse ``git commit`` args into (pathspec, has_include, has_only).
+
+    @decision DEC-PE-W3-010-STAGED-GATE-003
+    Title: bash_workflow_scope models commit pathspec / --only / --include
+    Status: accepted
+    Rationale: ``git commit [<pathspec>...]`` implicitly enables ``--only``
+      mode: git commits the contents of the pathspec-matched tracked files
+      (both staged and unstaged changes to those files), NOT unrelated
+      staged changes elsewhere. ``--include`` unions staged with the
+      pathspec. Neither was modelled by the `-a/--all` handling in
+      DEC-PE-W3-010-STAGED-GATE-002, so a tracked out-of-scope file could
+      still slip past via ``git commit out-of-scope.py`` as long as it was
+      not pre-staged. This parser lets :func:`check` route to the correct
+      file set for each invocation flavour.
+
+      Pathspec is every positional arg that is NOT a flag and NOT a flag's
+      value. We detect value-taking flags by name (short and long
+      variants); we honour the POSIX ``--`` end-of-options sentinel; we
+      handle ``--flag=value`` inline form. Short-flag bundles whose last
+      character is a value-taking flag (``-am "msg"`` where ``m`` takes
+      ``"msg"``) are recognised so the bundle's value arg is not mistaken
+      for pathspec. Unknown long options are assumed valueless (git will
+      error on the real commit; our job is to classify, not emulate).
+
+      Over-inclusion of pathspec is the safe direction: it can only cause
+      the scope gate to check MORE files, never fewer. The no-oversweep
+      invariant (untracked files excluded) is enforced separately by
+      :func:`_get_pathspec_commit_files`, which intersects the parsed
+      pathspec with real tracked modifications via ``git diff HEAD``.
+    """
+    pathspec: list[str] = []
+    has_include = False
+    has_only = False
+    pathspec_mode = False  # True after we see ``--``
+    skip_next = False
+
+    for tok in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if pathspec_mode:
+            pathspec.append(tok)
+            continue
+        if tok == _COMMIT_PATHSPEC_SEP:
+            pathspec_mode = True
+            continue
+        if tok in ("--include", "-i"):
+            has_include = True
+            continue
+        if tok in ("--only", "-o"):
+            has_only = True
+            continue
+        # Long option with inline ``=value`` form is self-contained.
+        if tok.startswith("--") and "=" in tok:
+            continue
+        # Long option that consumes the next positional arg.
+        if tok in _COMMIT_LONG_VALUE_FLAGS:
+            skip_next = True
+            continue
+        # Any other long option: assume valueless.
+        if tok.startswith("--"):
+            continue
+        # Short flag or short-flag bundle.
+        if tok.startswith("-") and len(tok) > 1:
+            # Standalone short flag that takes a value (``-m foo``).
+            if tok in _COMMIT_SHORT_VALUE_FLAGS:
+                skip_next = True
+                continue
+            # Short-flag bundle (``-am``, ``-avm``, ``-amF``). Git parses the
+            # chars left-to-right; if any char is a value-taking flag, the
+            # rest of the bundle is that flag's value (inline). In that
+            # case no following positional arg is consumed. Only when the
+            # LAST char is a value-taking flag and there's nothing after
+            # it inline does the NEXT positional arg become the value.
+            value_taking_chars = {f[1:] for f in _COMMIT_SHORT_VALUE_FLAGS}
+            last_char = tok[-1]
+            # Walk inner chars (except the last) — if any is value-taking,
+            # everything after it is an inline value and we do NOT skip_next.
+            consumed_inline = False
+            for ch in tok[1:-1]:
+                if ch in value_taking_chars:
+                    consumed_inline = True
+                    break
+            if not consumed_inline and last_char in value_taking_chars:
+                skip_next = True
+            continue
+        # Positional argument — pathspec.
+        pathspec.append(tok)
+
+    return pathspec, has_include, has_only
+
+
+def _extract_pathspec_file_info(
+    args: tuple[str, ...],
+) -> tuple[Optional[str], bool]:
+    """Extract (filename, nul_separator) from --pathspec-from-file / --pathspec-file-nul.
+
+    @decision DEC-PE-W3-010-STAGED-GATE-004
+    Title: bash_workflow_scope models --pathspec-from-file
+    Status: accepted
+    Rationale: ``git commit --pathspec-from-file=<file>`` reads pathspec
+      entries from a file (one per line, or NUL-separated when combined
+      with ``--pathspec-file-nul``). The previous parser skipped the
+      filename as if the flag were valueless, and in the separated form
+      ``--pathspec-from-file paths.txt`` treated ``paths.txt`` as a
+      literal pathspec. Either way, a tracked out-of-scope file listed
+      in the pathspec file could bypass the scope gate when nothing was
+      staged.
+
+      This helper scans ``invocation.args`` for both inline
+      (``--pathspec-from-file=foo``) and separated
+      (``--pathspec-from-file foo``) forms, and the paired boolean flag
+      ``--pathspec-file-nul``. Returns ``(filename, nul_separator)``;
+      ``filename`` is ``None`` when the flag is absent. The separated
+      form's filename is captured correctly because the parser in
+      :func:`_parse_commit_pathspec` has ``--pathspec-from-file`` in
+      ``_COMMIT_LONG_VALUE_FLAGS``, so it is not misclassified as
+      pathspec there either.
+
+      ``--pathspec-file-nul`` takes no value and is a simple long flag.
+      We do not emulate ``--pathspec-from-file=-`` (stdin) — the scope
+      gate runs at PreToolUse and cannot read the future stdin of the
+      git commit process. If the caller points at stdin, the helper
+      returns an empty pathspec-entry list and the gate falls back to
+      the other pathspec / staged / tracked signals.
+    """
+    filename: Optional[str] = None
+    nul_separator = False
+    skip_next = False
+    for i, tok in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "--pathspec-file-nul":
+            nul_separator = True
+            continue
+        if tok == "--pathspec-from-file":
+            # Separated form: next arg is the filename.
+            if i + 1 < len(args):
+                filename = args[i + 1]
+                skip_next = True
+            continue
+        if tok.startswith("--pathspec-from-file="):
+            filename = tok.split("=", 1)[1]
+            continue
+    return filename, nul_separator
+
+
+def _read_pathspec_file(
+    target_dir: str, filename: str, nul_separator: bool
+) -> list[str]:
+    """Read pathspec entries from ``filename`` in the given target directory.
+
+    Entries are split by NUL when ``nul_separator`` is True, else by
+    newlines. Blank entries are filtered. Returns an empty list when the
+    file does not exist, cannot be read, or refers to stdin (``-``) —
+    the gate cannot observe future stdin at PreToolUse, so stdin-backed
+    pathspec is treated as unknown and the policy falls through to the
+    other signals (which are still conservative).
+
+    Paths are intentionally NOT validated against the filesystem here —
+    matching them against tracked files is left to
+    :func:`_get_pathspec_commit_files` which uses ``git diff HEAD`` to
+    resolve tracked-and-modified entries from the combined pathspec.
+    """
+    if not filename or filename == "-":
+        return []
+    # Resolve relative filename against target_dir; keep absolute paths as-is.
+    import os
+    if not os.path.isabs(filename):
+        full = os.path.join(target_dir, filename)
+    else:
+        full = filename
+    try:
+        with open(full, "rb") as fh:
+            raw = fh.read()
+    except (OSError, FileNotFoundError):
+        return []
+    text = raw.decode("utf-8", errors="replace")
+    sep = "\x00" if nul_separator else "\n"
+    entries = [e.strip() for e in text.split(sep)]
+    return [e for e in entries if e]
+
+
+def _get_pathspec_commit_files(
+    target_dir: str, pathspec: list[str]
+) -> list[str]:
+    """Return tracked files that would be included by a pathspec commit.
+
+    Uses ``git diff HEAD --name-only -- <pathspec>`` to resolve which
+    tracked files that differ from HEAD match the pathspec. This captures
+    both staged and unstaged contents for pathspec-matched tracked files
+    — exactly the set ``git commit <pathspec>`` / ``--only`` / ``--include``
+    would commit for those paths.
+
+    Never sweeps in untracked files: ``git diff HEAD`` is tracked-only by
+    design. Directories and globs in pathspec are expanded by git itself.
+    Empty pathspec returns an empty list.
+    """
+    if not pathspec:
+        return []
+    try:
+        r = subprocess.run(
+            ["git", "-C", target_dir, "diff", "HEAD", "--name-only", "--"]
+            + list(pathspec),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0:
+            return [f for f in r.stdout.strip().splitlines() if f]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
+
+
 def _commit_stages_all(args: tuple[str, ...]) -> bool:
     """Return True iff the commit invocation will auto-stage tracked changes.
 
@@ -260,19 +508,72 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     # Sub-check C: changed files must comply with scope.
     # DEC-PE-W3-010-STAGED-GATE-001: commit gates on the staged index; merge
-    # gates on branch-ahead history. See _get_staged_files for the full
-    # rationale — branch-ahead gating on commit was the wrong surface.
-    #
-    # DEC-PE-W3-010-STAGED-GATE-002: when ``git commit -a`` / ``--all`` is
-    # used, git auto-stages every tracked file with uncommitted changes at
-    # commit time. At PreToolUse those files are not yet in the index, so
-    # the gate must union the staged set with the tracked-modified set.
-    # Untracked files are NOT swept in — ``-a`` does not stage them.
+    # gates on branch-ahead history.
+    # DEC-PE-W3-010-STAGED-GATE-002: ``-a`` / ``--all`` unions staged with
+    # tracked-modifications (no untracked sweep).
+    # DEC-PE-W3-010-STAGED-GATE-003: ``git commit <pathspec>`` (implicit
+    # ``--only``) and ``--only <pathspec>`` commit only the pathspec files;
+    # ``--include <pathspec>`` commits staged ∪ pathspec. See
+    # :func:`_parse_commit_pathspec` for the rationale and parser contract.
     if invocation.subcommand == "commit":
-        changed_files = _get_staged_files(target_dir)
+        staged = set(_get_staged_files(target_dir))
+        pathspec, has_include, has_only = _parse_commit_pathspec(invocation.args)
+        # DEC-PE-W3-010-STAGED-GATE-004: merge pathspec from
+        # --pathspec-from-file / --pathspec-file-nul into the pathspec
+        # list before resolving the commit file set. The filename is NOT
+        # treated as a pathspec entry itself (the parser recognises
+        # --pathspec-from-file as a value-taking flag).
+        #
+        # DEC-PE-W3-010-STAGED-GATE-005: --pathspec-from-file=- reads
+        # pathspec entries from the commit process's future stdin.
+        # PreToolUse cannot inspect that stream, so the scope gate
+        # cannot validate which files would actually be committed. Fail
+        # closed explicitly rather than soft-pass — otherwise a caller
+        # could feed out-of-scope tracked paths on stdin and bypass the
+        # gate while inline/staged signals look clean.
+        _ps_file, _ps_nul = _extract_pathspec_file_info(invocation.args)
+        if _ps_file == "-":
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    f"Scope violation for workflow '{workflow_id}'. "
+                    "git commit --pathspec-from-file=- reads pathspec "
+                    "entries from stdin, which the PreToolUse scope gate "
+                    "cannot inspect pre-execution. Write the pathspec "
+                    "entries to a file (e.g. tmp/commit-paths.txt) and "
+                    "use --pathspec-from-file=<path> so scope can be "
+                    "validated before commit. See "
+                    "DEC-PE-W3-010-STAGED-GATE-005."
+                ),
+                policy_name="bash_workflow_scope",
+            )
+        if _ps_file:
+            pathspec = list(pathspec) + _read_pathspec_file(
+                target_dir, _ps_file, _ps_nul
+            )
         if _commit_stages_all(invocation.args):
-            tracked = _get_tracked_modifications(target_dir)
-            changed_files = sorted(set(changed_files) | set(tracked))
+            # -a / --all: staged ∪ all tracked modifications (no untracked).
+            tracked = set(_get_tracked_modifications(target_dir))
+            changed_set = staged | tracked
+            # Pathspec alongside -a still only commits the pathspec files,
+            # but gate conservatively on the union so no auto-staged
+            # tracked file escapes scope.
+            if pathspec:
+                changed_set |= set(_get_pathspec_commit_files(target_dir, pathspec))
+        elif pathspec:
+            pathspec_files = set(_get_pathspec_commit_files(target_dir, pathspec))
+            if has_include:
+                # --include: staged ∪ pathspec.
+                changed_set = staged | pathspec_files
+            else:
+                # --only (explicit or implicit): pathspec only. Unrelated
+                # staged changes are NOT committed on this invocation and
+                # must not factor into the scope gate.
+                changed_set = pathspec_files
+        else:
+            # Plain commit — staged index only.
+            changed_set = staged
+        changed_files = sorted(changed_set)
     else:  # merge
         base_branch = request.context.binding.get("base_branch", "main") or "main"
         changed_files = _get_branch_ahead_files(target_dir, base_branch)
