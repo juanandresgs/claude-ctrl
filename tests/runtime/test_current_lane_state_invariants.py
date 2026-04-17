@@ -330,7 +330,7 @@ class TestSupervisorHandoffDocBanner:
     phrasing).
     """
 
-    _REQUIRED_PHRASE = f"{_CURRENT_STAGED_COUNT}-file checkpoint committed"
+    _POST_MERGE_BANNER_TOKEN = "steady-state maintenance"
 
     def test_supervisor_handoff_doc_exists(self) -> None:
         assert SUPERVISOR_HANDOFF_DOC.exists(), (
@@ -349,11 +349,11 @@ class TestSupervisorHandoffDocBanner:
 
     def test_supervisor_handoff_banner_states_23_file_debt_phrase(self) -> None:
         banner = _current_truth_banner_region(_read(SUPERVISOR_HANDOFF_DOC))
-        assert self._REQUIRED_PHRASE in banner, (
+        assert self._POST_MERGE_BANNER_TOKEN in banner, (
             f"SUPERVISOR_HANDOFF.md current-lane banner must contain the "
-            f"exact phrase {self._REQUIRED_PHRASE!r}. If the staged bundle "
-            "legitimately grew past 23, update _CURRENT_STAGED_COUNT in "
-            "this test file AND both authority docs in the same change.\n"
+            f"token {self._POST_MERGE_BANNER_TOKEN!r}. Post-merge, the "
+            "banner reflects steady-state maintenance, not lane-local "
+            "checkpoint debt.\n"
             f"Banner region (first 1400 chars):\n{banner[:800]}..."
         )
 

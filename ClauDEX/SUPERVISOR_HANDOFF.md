@@ -2,19 +2,10 @@
 
 ## Current Lane Truth (2026-04-17)
 
-- Branch `claudesox-local` at HEAD `696254a` (doc-reconciliation checkpoint on top of `d7db4ba`), **12 commits ahead** of `origin/feat/claudex-cutover` (behind-count time-variant; was 35 at last sample).
-- **30-file checkpoint committed** as `d7db4ba`; doc-reconciliation checkpoint as `696254a` (3 files). Push to remote is not a simple fast-forward — lane has diverged from upstream.
-- **Push is blocked by upstream divergence** (non-fast-forward reject), not only by approval gate. The lane is significantly behind `origin/feat/claudex-cutover` (35+ commits at last sample). A `git merge origin/feat/claudex-cutover` is required before push can succeed.
-- **Merge is blocked by 7 dirty tracked files** that overlap with files the remote branch would update. These must be committed (non-destructive checkpoint) before merge can proceed:
-  - `.codex/prompts/claudex_handoff.txt`
-  - `.codex/prompts/claudex_supervisor.txt`
-  - `CLAUDE.md`
-  - `ClauDEX/CURRENT_STATE.md`
-  - `ClauDEX/SUPERVISOR_HANDOFF.md`
-  - `scripts/claudex-codex-model-guard.sh`
-  - `scripts/claudex-supervisor-restart.sh`
-- **Non-destructive constraint (absolute):** no stash, no reset, no rebase, no `git checkout -- <path>` discard, no force-push. The only safe path for the 7 merge-blocker files is a pre-merge checkpoint commit.
-- Any "no checkpoint debt remains" wording elsewhere in this file refers to earlier Phase-8 closeout snapshots (typically 2026-04-14) and is NOT current lane truth. Those statements are preserved for historical record only.
+- Branch `claudesox-local` at HEAD `995341e` (merge commit integrating upstream), pushed to `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** — fully integrated.
+- **Push debt cleared.** The 30-file cc-policy-who-remediation bundle (committed as `d7db4ba`), doc-reconciliation checkpoint (`696254a`), pre-merge supervisor infrastructure checkpoint (`49e71d5`, 12 files), and two merge commits (`959c3b2` integrating 41 upstream commits with 5 conflicts resolved, `995341e` integrating 1 additional upstream commit clean) are all pushed to `origin/feat/claudex-cutover`.
+- **No checkpoint debt, no merge blockers, no push debt.** The lane is in steady-state maintenance mode.
+- Historical: the pre-merge integration prep (7 merge-blocker files, non-destructive constraint, stash-pop contamination incident) is resolved. Those details are preserved in the Open Soak Issues section for audit.
 
 This file defines the project-specific Codex supervisor kickoff for the
 `claude-ctrl-hardFork` overnight bridge session.
@@ -362,7 +353,7 @@ decision `DEC-CATEGORY-C-FORENSIC-001` (status: planning).
   - Verification: `pytest -q tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py --maxfail=8` → **36 passed**, 14.80s; live bridge status shows one active auto-submit pid and one active watchdog pid for the soak lane.
   - Blocking: no after fix and orphan cleanup.
 
-- **State-record drift: handoff docs said "checkpoint pending" after checkpoint landed** (observed and fixed at 2026-04-14 closeout; documentation-only; HISTORICAL context only — this entry describes the 2026-04-14 Phase-8 closeout state, NOT the current 2026-04-17 lane state, which explicitly carries 28-file checkpoint debt per the top-of-file "Current Lane Truth (2026-04-17)" banner)
+- **State-record drift: handoff docs said "checkpoint pending" after checkpoint landed** (observed and fixed at 2026-04-14 closeout; documentation-only; HISTORICAL context only — this entry describes the 2026-04-14 Phase-8 closeout state, NOT the current 2026-04-17 lane state; see the top-of-file "Current Lane Truth (2026-04-17)" banner for current state)
   - Repro (2026-04-14): a stale-state grep over `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md` returned phrases asserting the bundle was still waiting for a checkpoint even though the Phase-8 checkpoint had already landed as `6b8cc5c` and the follow-up process-control fix landed as `d8fdf96`, both pushed to `origin/feat/claudex-cutover`.
   - Impact (2026-04-14): supervisor and future implementers would dispatch another checkpoint-stewardship slice against a lane that at that snapshot had no checkpoint debt; directly contradicted installed truth as of 2026-04-14.
   - Fix (applied 2026-04-14): `ClauDEX/CURRENT_STATE.md` Git Placement + Checkpoint Readiness sections rewritten to reflect `claudesox-local` tracking `origin/feat/claudex-cutover` at HEAD `d8fdf96` with `6b8cc5c` as the cutover-bundle commit; `ClauDEX/SUPERVISOR_HANDOFF.md` next-action text at the time was rewritten to say (as of 2026-04-14) that the Phase-8 checkpoint had landed and the next action was cutover-plan continuation or lane maintenance. **That 2026-04-14 next-action framing is superseded as of 2026-04-17: the current lane carries 28-file staged checkpoint debt (harness-blocked), so the current next action is landing the staged bundle once the harness permission layer permits.**
@@ -508,37 +499,16 @@ finds the bridge idle with an empty queue and no pending-review artifact
 (step 3 of Steady-State Behavior). It describes the single bounded slice the
 supervisor should dispatch in that condition.
 
-As of 2026-04-17 (post-commit `696254a`), the Current Restart Slice is
-**pre-push integration prep for the diverged lane**:
+As of 2026-04-17 (post-push `995341e`), the Current Restart Slice is
+**None — lane in steady-state maintenance**.
 
-- **Lane:** `claudesox-local` at HEAD `696254a`, 12 commits ahead of
-  `origin/feat/claudex-cutover` (behind-count time-variant; 35 at last
-  sample). Lane has **diverged** — simple fast-forward push is impossible.
-- **Step 1 — checkpoint dirty merge-blockers.** 7 dirty tracked files
-  overlap with files that `origin/feat/claudex-cutover` would update on
-  merge. These must be committed before merge can proceed:
-  `.codex/prompts/claudex_handoff.txt`,
-  `.codex/prompts/claudex_supervisor.txt`, `CLAUDE.md`,
-  `ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
-  `scripts/claudex-codex-model-guard.sh`,
-  `scripts/claudex-supervisor-restart.sh`.
-  This is routine non-destructive checkpoint stewardship — not a user
-  decision boundary. The remaining 5 dirty tracked files
-  (`.codex/hooks/stop_supervisor.py`, `hooks/claudex-stop-relay.sh`,
-  `hooks/claudex-submit-inject.sh`, `scripts/claudex-auto-submit.sh`,
-  `scripts/claudex-common.sh`) do NOT overlap remote and can stay dirty.
-- **Step 2 — fetch + merge.** `git fetch origin feat/claudex-cutover`
-  then `git merge origin/feat/claudex-cutover --no-edit`. Expect
-  conflicts in up to 11 overlap files (highest risk: `runtime/cli.py`,
-  `runtime/core/authority_registry.py`, `runtime/core/agent_prompt.py`).
-- **Step 3 — resolve conflicts, test, push.**
-- **Non-destructive constraint (absolute):** no stash, no reset, no
-  rebase, no `git checkout -- <path>` discard, no force-push, no
-  `git commit --amend` on shared history.
+The pre-push integration prep is complete: 12-file pre-merge checkpoint
+(`49e71d5`), upstream merge with 5 conflicts resolved (`959c3b2`),
+follow-up merge (`995341e`), and push to `origin/feat/claudex-cutover`
+all landed. Lane is 0 ahead / 0 behind.
 
-Once the merge lands and pushes, the Current Restart Slice should be
-replaced with the next bounded cutover slice or, if none is queued,
-marked `None — lane in steady-state maintenance`.
+No active cutover phase. No queued bounded slice. The supervisor should
+dispatch only what the next Codex instruction explicitly authorises.
 
 ## Checkpoint Stewardship
 
@@ -719,11 +689,10 @@ These slices are done and test-backed. Do not re-dispatch them.
 **This section is a historical snapshot of the Phase-plan status as
 of the 2026-04-14 closeout. It is NOT current lane truth for 2026-04-17.**
 Current lane truth lives in "Current Lane Truth (2026-04-17)" at the
-top of this file and in the "cc-policy-who-remediation Slice 1
-(2026-04-17)" entry under Open Soak Issues: the current lane carries
-a 28-file harness-blocked staged checkpoint bundle. The phase-closure
-claims below describe the 2026-04-14 Phase-plan state only and are
-preserved for audit.
+top of this file: the lane is fully integrated and pushed (HEAD
+`995341e`, 0 ahead / 0 behind). The phase-closure claims below
+describe the 2026-04-14 Phase-plan state only and are preserved for
+audit.
 
 **Phases 3, 4, 5, 6, 7, and 8 are all COMPLETE (as of 2026-04-14).**
 The ClauDEX cutover reached the Phase 8 closeout boundary at that date:
