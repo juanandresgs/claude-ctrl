@@ -19,8 +19,9 @@ stays on the active ClauDEX cutover slice only.
 
 Post-Integration-Wave-1, the §2a supervision fabric has been closed on
 `feat/claudex-cutover` by a continuous FF-only chain `018f2fa →
-c400245`. Custody HEAD is `c400245`. No new phase was opened; every
-commit is a post-Phase-8 continuation under the closed Phase 2b scope.
+f37b8ab`. Custody HEAD immediately before the docs-only Category C
+scoping packet was `f37b8ab`. No new phase was opened; every commit
+is a post-Phase-8 continuation under the closed Phase 2b scope.
 
 Installed truth the supervisor should rely on:
 
@@ -81,6 +82,31 @@ Installed truth the supervisor should rely on:
 Bridge transport (`scripts/claudex-*.sh` non-watchdog,
 `hooks/claudex-*.sh`) remains containment; the single watchdog
 one-liner is the only adapter change in this closure chain.
+
+## Next bounded cutover slice
+
+**Category C retirement scoping packet (planning-only,
+2026-04-17).** Both Category C code surfaces are already retired
+(`proof_state` at `f72e656`, `dispatch_queue`/`dispatch_cycles` at
+`369cca6`, both under non-destructive posture). The remaining
+deferred piece is the **inert rows** on pre-retirement databases
+where neither retirement bundle issued `DROP TABLE`. An
+execution-ready scoping packet has been produced at
+`ClauDEX/CATEGORY_C_SCOPING_PACKET_2026-04-17.md` describing two
+ordered sub-slices (proof_state first, dispatch_queue /
+dispatch_cycles second), each guarded by explicit operator
+approval per Sacred Practice #8, with required invariant gates
+(`test_phase8_category_c_*`, `test_authority_table_writers`,
+`constitution validate concrete_count=24`, `hook validate-settings
+entry_count=30`, `hook doc-check exact_match=true`) and
+escalation boundaries (destructive `DROP TABLE`, cross-database
+impact, forensic data-loss risk). The packet is **planning-only**
+— no `runtime/` / `hooks/` / `settings.json` / `schema` / bridge
+/ watchdog edits are made by its landing, and no execution slice
+may proceed without a separate authorizing instruction. This does
+NOT reopen Phase 8 and does NOT create Phase 9. Grounded in
+`CUTOVER_PLAN.md` (no Phase 9 defined) and annotated with reserved
+decision `DEC-CATEGORY-C-FORENSIC-001` (status: planning).
 
 ## Open Soak Issues
 

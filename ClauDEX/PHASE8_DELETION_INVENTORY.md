@@ -209,8 +209,22 @@ audit snapshot.
 | `runtime/core/proof.py` + `proof_state` table | **Retired post-Phase-8 under Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001, 2026-04-17).** | Module deleted; `PROOF_STATE_DDL` and its `ALL_DDL` entry removed from `runtime/schemas.py`; `proof get/set/list` CLI retired from `runtime/cli.py` (import + subparser + `_handle_proof` + domain-dispatch branch); `SELECT … FROM proof_state` + `self.proof_states` + `proof_count` report key + `stale_proofs` health branch removed from `sidecars/observatory/observe.py`; retained-storage comments in `runtime/core/statusline.py` / `runtime/core/evaluation.py` / `hooks/check-guardian.sh` / `hooks/session-init.sh` rewritten to retirement pointers; `tests/runtime/test_proof.py` deleted; surgical edits applied to `tests/runtime/test_statusline.py` / `tests/runtime/test_statusline_truth.py` / `tests/runtime/test_sidecars.py` (removed `proof_mod` imports, proof fixture inserts, and proof-specific assertions; rewrote compound tests to exercise eval-state surfaces only); new invariant pins in `tests/runtime/test_phase8_category_c_proof_retired.py`; extended pins in `tests/runtime/test_phase8_deletions.py`. Non-destructive posture: the DDL is gone so new DBs never create the table; existing DBs retain the inert row data until a forensic operator drops it manually (no runtime `DROP TABLE` issued). |
 | `runtime/core/dispatch.py` — `dispatch_queue` + `dispatch_cycles` surfaces | **Retired post-Phase-8 under Category C bundle 2 (DEC-CATEGORY-C-DISPATCH-RETIRE-001, 2026-04-17).** | Module `runtime/core/dispatch.py` deleted. `DISPATCH_QUEUE_DDL`, `DISPATCH_CYCLES_DDL`, their `ALL_DDL` entries, `DISPATCH_QUEUE_STATUSES`, and `DISPATCH_CYCLE_STATUSES` removed from `runtime/schemas.py`. Six legacy actions retired from `runtime/cli.py` (`enqueue`, `next`, `start`, `complete`, `cycle-start`, `cycle-current`); the `dispatch` CLI domain itself stays live for `process-stop`, `agent-start`, `agent-stop`, `agent-prompt`, `attempt-issue`, `attempt-claim`, `attempt-expire-stale` (owned by `dispatch_engine` / `dispatch_attempts`). `SELECT … FROM dispatch_queue` + `dispatch_backlog` health branch removed from `sidecars/observatory/observe.py`; `self.dispatch` kept as an always-empty list so the `pending_dispatches` report key stays present with value `0` (schema stability). `SELECT … FROM dispatch_cycles` removed from `runtime/core/statusline.py`; the `dispatch_cycle_id` and `dispatch_initiative` snapshot keys remain with `None` defaults (schema stability). `tests/runtime/test_dispatch.py` deleted; surgical edits applied to `tests/runtime/test_statusline.py` and `tests/runtime/test_sidecars.py`; new invariant pins in `tests/runtime/test_phase8_category_c_dispatch_retired.py`; extended pins in `tests/runtime/test_phase8_deletions.py`. Non-destructive posture: no runtime `DROP TABLE`; existing DBs retain inert row data. Unrelated dispatch-family modules (`dispatch_engine.py`, `dispatch_shadow.py`, `dispatch_attempts.py`, `dispatch_hook.py`) are unaffected — they never imported `runtime.core.dispatch`. |
 
-**Future retirement bundle scope:** none remaining. Category C is
-**fully closed** with both bundles retired.
+**Future retirement bundle scope (code surface):** none remaining.
+Category C is **fully closed for code surfaces** with both bundles
+retired.
+
+**Deferred — non-destructive-posture inert rows:** both retirement
+bundles explicitly skipped `DROP TABLE` for safety, so pre-
+retirement databases retain inert row data for `proof_state`,
+`dispatch_queue`, and `dispatch_cycles`. The code runtime never
+reads those rows (DDL gone from `runtime/schemas.py`'s `ALL_DDL`,
+every reader removed in the retirement bundles, and the Rule-1
+authority-writer invariant at `571c155` prevents reintroduction),
+so this is not a live blocker. Finalizing the inert rows — if it
+is ever wanted — is scoped by the planning-only artifact
+`ClauDEX/CATEGORY_C_SCOPING_PACKET_2026-04-17.md` (reserved
+decision `DEC-CATEGORY-C-FORENSIC-001`, status `planning`). That
+packet does not reopen Phase 8 and does not create Phase 9.
 
 ### Category D — Hook Wiring Status Drift (RESOLVED in Phase 8 Slice 3)
 

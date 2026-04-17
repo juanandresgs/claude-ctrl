@@ -66,6 +66,32 @@ Updated: 2026-04-17 (post-§2a closure reconciliation).
     sweep the seat. Three focused regressions added in
     `tests/runtime/test_dead_recovery.py`; Rule-1 writer invariant
     unchanged.
+  - Dead-recovery selector re-correction (`DEC-DEAD-RECOVERY-001`) —
+    `f37b8ab` re-keys the selector to `ORDER BY updated_at DESC,
+    attempt_id DESC` after a follow-up review noted that
+    `dispatch_attempts.retry()` reuses the same row (bumps
+    `updated_at`/`status`, leaves `created_at` fixed).  Under the
+    `created_at` ordering, a retried attempt that times out after
+    a later-issued `cancelled` attempt was under-swept.  The
+    `updated_at` key tracks the most recent delivery activity and
+    preserves the prior mixed-history regressions; one new retry
+    regression landed.
+
+## Next bounded cutover slice
+
+**Category C retirement scoping packet (planning-only, 2026-04-17).**
+The sole remaining Category C work is the non-destructive-posture
+inert rows on pre-retirement databases — `proof_state`,
+`dispatch_queue`, `dispatch_cycles`. Both code surfaces are retired
+(`f72e656`, `369cca6`); residual table data persists only because
+the retirement bundles deliberately skipped `DROP TABLE` for
+safety. The execution-ready scoping packet lives at
+`ClauDEX/CATEGORY_C_SCOPING_PACKET_2026-04-17.md` and is
+**planning-only**. It does NOT reopen Phase 8 and does NOT create
+Phase 9. Any future execution slice must escalate for explicit
+operator approval per Sacred Practice #8 (destructive ops). No
+code change was made in this slice; the packet is a docs-only
+artifact grounded in `CUTOVER_PLAN.md` (no Phase 9 defined).
 
 No `Phase 9` exists in `ClauDEX/CUTOVER_PLAN.md`; the cutover is closed. The
 integrated bundles are post-Phase-8 hardening (Category C retirements +
@@ -102,13 +128,15 @@ place to answer:
 >
 > **2026-04-17 §2a closure marker:** following integration, the §2a
 > supervision fabric was closed by a continuous FF-only chain
-> `018f2fa → c400245` on the same upstream. The live custody HEAD is
-> `c400245`. Intermediate landmarks (for `git log` navigation) are
+> `018f2fa → f37b8ab` on the same upstream. The live custody HEAD
+> immediately before this docs-only Category C scoping packet was
+> `f37b8ab`. Intermediate landmarks (for `git log` navigation) are
 > `f1e4fc6` (supervision_threads domain), `e982d50` (seat domain),
 > `a3653ad` (agent_session domain), `571c155` (Rule-1 invariant),
 > `3967f6d` (SubagentStop adapters wired), `f3e88dd` (dead-loop
-> recovery sweeper), `c400245` (dead-recovery selector narrowed to
-> most-recent-attempt eligibility).
+> recovery sweeper), `c400245` (selector narrowed to
+> most-recent-attempt eligibility), `f37b8ab` (selector re-keyed
+> to `updated_at` to cover retry semantics).
 
 Canonical cutover custody branch (remote):
 
