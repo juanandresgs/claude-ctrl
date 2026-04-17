@@ -10,8 +10,8 @@ Tests cover:
 - Read-only enforcement: sidecars never write to canonical tables
 
 Production sequence exercised:
-  1. Populate db with agent_markers, events, worktrees, dispatch_queue,
-     traces, trace_manifest rows.
+  1. Populate db with agent_markers, events, worktrees, traces,
+     trace_manifest rows.
   2. Instantiate Observatory and SearchIndex with the same db.
   3. Call observe() on both.
   4. Assert report() fields match what was inserted.
@@ -44,7 +44,6 @@ from runtime.schemas import ensure_schema
 import runtime.core.markers as markers_mod
 import runtime.core.events as events_mod
 import runtime.core.worktrees as worktrees_mod
-import runtime.core.dispatch as dispatch_mod
 import runtime.core.traces as traces_mod
 
 from sidecars.observatory.observe import Observatory
@@ -78,9 +77,6 @@ def populated_conn(conn):
     # worktrees
     worktrees_mod.register(conn, path="/tmp/wt-test", branch="feature/x")
 
-    # dispatch_queue
-    dispatch_mod.enqueue(conn, role="reviewer", ticket="TKT-015")
-
     # traces + trace_manifest
     traces_mod.start_trace(conn, "sess-populate", agent_role="implementer", ticket="TKT-015")
     traces_mod.add_manifest_entry(conn, "sess-populate", "file_write",
@@ -98,7 +94,7 @@ def populated_conn(conn):
 def _canonical_row_counts(conn) -> dict:
     tables = [
         "agent_markers", "events",
-        "worktrees", "dispatch_queue", "dispatch_cycles",
+        "worktrees",
         "traces", "trace_manifest",
     ]
     return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
@@ -126,11 +122,15 @@ class TestObservatory:
         obs.observe()
         assert len(obs.worktrees) >= 1
 
-    def test_observe_populates_dispatch(self, populated_conn):
+    def test_observe_dispatch_is_empty_after_retirement(self, populated_conn):
+        """DEC-CATEGORY-C-DISPATCH-RETIRE-001: dispatch_queue retired.
+
+        self.dispatch is preserved as an attribute for downstream-consumer
+        stability (so pending_dispatches = 0, not crash) but is always empty.
+        """
         obs = Observatory("observatory", populated_conn)
         obs.observe()
-        # dispatch has one pending item
-        assert len(obs.dispatch) >= 1
+        assert obs.dispatch == []
 
     def test_report_is_json_serializable(self, populated_conn):
         import json
@@ -149,7 +149,9 @@ class TestObservatory:
         obs.observe()
         report = obs.report()
         assert report["active_agents"] >= 1
-        assert report["pending_dispatches"] >= 1
+        # pending_dispatches remains as a key for schema stability but is
+        # always 0 after DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+        assert report["pending_dispatches"] == 0
         assert report["worktree_count"] >= 1
         assert report["recent_event_count"] >= 1
 
@@ -170,16 +172,6 @@ class TestObservatory:
         health = obs._compute_health()
         assert health["ok"] is False
         assert "many_active_agents" in health["issues"]
-
-    def test_health_detects_dispatch_backlog(self, conn):
-        """More than 10 pending dispatches triggers dispatch_backlog issue."""
-        for i in range(11):
-            dispatch_mod.enqueue(conn, role="reviewer", ticket=f"TKT-{i:03d}")
-        obs = Observatory("observatory", conn)
-        obs.observe()
-        health = obs._compute_health()
-        assert health["ok"] is False
-        assert "dispatch_backlog" in health["issues"]
 
     def test_health_ok_with_empty_state(self, conn):
         """Empty DB produces a healthy report (no issues)."""
@@ -313,9 +305,8 @@ class TestSidecarProductionSequence:
     This mirrors what happens in production:
       1. session-init.sh calls cc-policy trace start → traces row
       2. pre-write.sh checks markers → agent_markers rows
-      3. post-task.sh enqueues dispatch → dispatch_queue row
-      4. A sidecar is invoked by the user → reads all tables, produces output
-      5. Runtime state is identical after the sidecar ran
+      3. A sidecar is invoked by the user → reads all tables, produces output
+      4. Runtime state is identical after the sidecar ran
     """
 
     def test_full_runtime_population_then_sidecar_observe(self, conn):
@@ -326,7 +317,6 @@ class TestSidecarProductionSequence:
         events_mod.emit(conn, type="session_start", source="session-init.sh",
                         detail="session compound started")
         worktrees_mod.register(conn, path="/tmp/wt-compound", branch="feature/compound")
-        dispatch_mod.enqueue(conn, role="reviewer", ticket="TKT-015")
         traces_mod.start_trace(conn, "sess-compound", agent_role="implementer",
                                ticket="TKT-015")
         traces_mod.add_manifest_entry(conn, "sess-compound", "file_write",
@@ -353,7 +343,9 @@ class TestSidecarProductionSequence:
 
         # Observatory sees the state
         assert obs_report["active_agents"] >= 1
-        assert obs_report["pending_dispatches"] >= 1
+        # pending_dispatches key preserved for schema stability; always 0
+        # after DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+        assert obs_report["pending_dispatches"] == 0
         assert obs_report["worktree_count"] >= 1
         assert obs_report["recent_event_count"] >= 1
 

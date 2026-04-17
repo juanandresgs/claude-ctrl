@@ -17,8 +17,10 @@ Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() is the single read surface for the statusline HUD. It
   reads evaluation_state (TKT-024 sole readiness authority), agent_markers,
-  worktrees, dispatch_cycles, completion_records, and events in one pass and
-  returns a canonical dict. No writes happen here.
+  worktrees, completion_records, and events in one pass and returns a
+  canonical dict. No writes happen here. (The dispatch_cycles read was
+  retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001; the dispatch_cycle_id /
+  dispatch_initiative snapshot keys persist with None defaults.)
   All fields default to None/0/[] so the statusline never crashes on an empty
   or partially-populated DB. Per-section try/except (W-SL-160) reports partial
   failures without suppressing successfully-loaded sections: if any section
@@ -46,8 +48,9 @@ Rationale: WS6 removes dispatch_queue from the routing hot-path. post-task.sh
   single authoritative routing table in completions.py. dispatch_workflow,
   dispatch_from_role, and dispatch_from_verdict are new fields that let the HUD
   surface where the routing decision came from. dispatch_initiative and
-  dispatch_cycle_id remain (read from dispatch_cycles) for initiative-level
-  tracking, which is not routing state.
+  dispatch_cycle_id keys remain in the snapshot dict with None defaults for
+  schema-stability, but the dispatch_cycles-backed population path was
+  retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
 
 @decision DEC-SL-160
 Title: Per-section partial failure reporting and review status indicator
@@ -226,9 +229,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # the queue was a write-only sink with no live readers in the
     # enforcement path. Routing is now determined by
     # determine_next_role(role, verdict) applied to the most recent
-    # completion record. dispatch_initiative and dispatch_cycle_id are
-    # retained from dispatch_cycles — that is initiative-level tracking,
-    # not routing state.
+    # completion record. dispatch_initiative and dispatch_cycle_id were
+    # previously read from the dispatch_cycles table; that read was retired
+    # under DEC-CATEGORY-C-DISPATCH-RETIRE-001. The snapshot keys persist
+    # with their None defaults for schema stability.
     # ------------------------------------------------------------------
     try:
         comp = comp_latest(conn)
@@ -239,18 +243,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             result["dispatch_from_role"] = comp["role"]
             result["dispatch_from_verdict"] = comp.get("verdict", "")
 
-        row = conn.execute(
-            """
-            SELECT id, initiative
-            FROM   dispatch_cycles
-            WHERE  status = 'active'
-            ORDER  BY created_at DESC
-            LIMIT  1
-            """
-        ).fetchone()
-        if row:
-            result["dispatch_initiative"] = row["initiative"]
-            result["dispatch_cycle_id"] = row["id"]
+        # dispatch_cycles was retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+        # dispatch_cycle_id and dispatch_initiative remain in the snapshot
+        # dict with their None defaults so schema-checking consumers do not
+        # break, but the legacy table-backed population path is gone.
     except Exception as exc:
         result["status"] = "partial_failure"
         result["errors"].append({"section": "dispatch", "error": str(exc)})

@@ -32,7 +32,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 import runtime.core.approvals as approvals_mod
 import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
-import runtime.core.dispatch as dispatch_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
@@ -1511,41 +1510,7 @@ def _handle_worktree(args) -> int:
 def _handle_dispatch(args) -> int:
     conn = _get_conn()
     try:
-        if args.action == "enqueue":
-            qid = dispatch_mod.enqueue(
-                conn,
-                role=args.role,
-                ticket=getattr(args, "ticket", None),
-            )
-            return _ok({"id": qid, "role": args.role})
-
-        elif args.action == "next":
-            result = dispatch_mod.next_pending(conn)
-            if result is None:
-                return _ok({"found": False, "item": None})
-            result["found"] = True
-            return _ok(result)
-
-        elif args.action == "start":
-            dispatch_mod.start(conn, args.id)
-            return _ok({"id": args.id})
-
-        elif args.action == "complete":
-            dispatch_mod.complete(conn, args.id)
-            return _ok({"id": args.id})
-
-        elif args.action == "cycle-start":
-            cid = dispatch_mod.start_cycle(conn, args.initiative)
-            return _ok({"id": cid, "initiative": args.initiative})
-
-        elif args.action == "cycle-current":
-            result = dispatch_mod.current_cycle(conn)
-            if result is None:
-                return _ok({"found": False, "cycle": None})
-            result["found"] = True
-            return _ok(result)
-
-        elif args.action == "process-stop":
+        if args.action == "process-stop":
             # Read JSON from stdin: {"agent_type": "reviewer", "project_root": "/path"}
             import json as _json
 
@@ -3615,19 +3580,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scope deactivation further to this workflow_id",
     )
 
-    dp_p = subparsers.add_parser("dispatch", help="Dispatch queue and cycles")
+    dp_p = subparsers.add_parser("dispatch", help="Dispatch engine operations")
     dp_sub = dp_p.add_subparsers(dest="action", required=True)
-    deq = dp_sub.add_parser("enqueue")
-    deq.add_argument("role")
-    deq.add_argument("--ticket")
-    dp_sub.add_parser("next")
-    dst = dp_sub.add_parser("start")
-    dst.add_argument("id", type=int)
-    dco = dp_sub.add_parser("complete")
-    dco.add_argument("id", type=int)
-    dcs = dp_sub.add_parser("cycle-start")
-    dcs.add_argument("initiative")
-    dp_sub.add_parser("cycle-current")
 
     # process-stop: reads JSON from stdin, returns hookSpecificOutput
     dp_sub.add_parser(

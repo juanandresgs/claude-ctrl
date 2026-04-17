@@ -15,8 +15,8 @@ Usage (via cc-policy):
 @decision DEC-SIDECAR-001
 Title: Sidecars are read-only consumers of the canonical SQLite runtime
 Status: accepted
-Rationale: Observatory reads agent_markers, events, worktrees, and
-  dispatch_queue in four SELECT-only queries. It never calls INSERT,
+Rationale: Observatory reads agent_markers, events, and worktrees in
+  three SELECT-only queries. It never calls INSERT,
   UPDATE, or DELETE. Health assessment is a pure Python computation over
   the fetched rows — no state is written back. This is enforced by the
   test suite's row-count assertions and by code review. The sidecar has
@@ -75,7 +75,7 @@ from runtime.core.observatory import generate_report  # noqa: E402
 class Observatory:
     """Read-only observer of all runtime state domains.
 
-    Reads: agent_markers, events, worktrees, dispatch_queue.
+    Reads: agent_markers, events, worktrees.
     Delegates to generate_report() for full analysis sections.
 
     Note: generate_report() calls record_run() which writes one obs_runs
@@ -86,7 +86,10 @@ class Observatory:
         active_markers:  list[sqlite3.Row] — agent_markers WHERE is_active=1
         recent_events:   list[sqlite3.Row] — 20 most recent events
         worktrees:       list[sqlite3.Row] — active (not removed) worktrees
-        dispatch:        list[sqlite3.Row] — pending dispatch_queue entries
+        dispatch:        list — always empty after
+                         DEC-CATEGORY-C-DISPATCH-RETIRE-001; retained as
+                         attribute so downstream consumers reading
+                         ``pending_dispatches`` see 0 instead of a crash.
         _analysis:       dict — output of generate_report(), populated by observe()
     """
 
@@ -121,11 +124,11 @@ class Observatory:
         self.worktrees = conn.execute(
             "SELECT path, branch, ticket, created_at FROM worktrees WHERE removed_at IS NULL"
         ).fetchall()
-        self.dispatch = conn.execute(
-            "SELECT id, role, status, ticket, created_at"
-            " FROM dispatch_queue WHERE status='pending'"
-            " ORDER BY created_at"
-        ).fetchall()
+        # dispatch_queue was retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+        # Keep self.dispatch populated as an empty list so downstream
+        # consumers reading pending_dispatches get a deterministic 0 rather
+        # than an AttributeError or missing key.
+        self.dispatch = []
 
         # Full analysis via domain module (DEC-SIDECAR-003).
         # Returns metrics_summary, trends, patterns, suggestions,
@@ -165,7 +168,10 @@ class Observatory:
 
         Issues detected:
           many_active_agents  — more than 3 simultaneously active agents
-          dispatch_backlog    — more than 10 pending dispatch items
+
+        ``dispatch_backlog`` was a dispatch_queue-derived issue; it was
+        retired alongside dispatch_queue under
+        DEC-CATEGORY-C-DISPATCH-RETIRE-001.
 
         Returns:
             {"ok": bool, "issues": list[str]}
@@ -175,9 +181,6 @@ class Observatory:
 
         if len(self.active_markers) > 3:
             issues.append("many_active_agents")
-
-        if len(self.dispatch) > 10:
-            issues.append("dispatch_backlog")
 
         return {"ok": len(issues) == 0, "issues": issues}
 

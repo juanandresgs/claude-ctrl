@@ -190,33 +190,27 @@ by its own tests plus one comment, with written authority in
 `MASTER_PLAN.md` DEC-PHASE0-003 (line 10354) to decommission. Executed in
 Phase 8 Slice 2.
 
-### Category C — Retained Legacy Storage / Compat Surfaces (Phase 8 Slice 8 audit; Category C bundle 1 retired 2026-04-17)
+### Category C — Retained Legacy Storage / Compat Surfaces (Phase 8 Slice 8 audit; bundle 1 retired 2026-04-17; bundle 2 retired 2026-04-17)
 
 Phase 8 Slice 8 (2026-04-13) closed the importer/read/write audit that
 Slice 1 flagged as "pending." Category C was closed as "retained, deferred"
-for Phase 8. Post-Phase-8 **Category C bundle 1** (2026-04-17) retires
-the `proof_state` surface as an independent post-cutover cleanup slice
-under `DEC-CATEGORY-C-PROOF-RETIRE-001`. The `dispatch_queue` /
-`dispatch_cycles` retirement remains deferred as **Category C bundle 2**
-(future scope). The per-file evidence table below records the current
-disposition of each target; the Slice 8 narrative that follows is
-preserved as the historical audit snapshot.
+for Phase 8. Post-Phase-8 **Category C bundle 1** (2026-04-17) retired the
+`proof_state` surface under `DEC-CATEGORY-C-PROOF-RETIRE-001`.
+Post-Phase-8 **Category C bundle 2** (2026-04-17) retires the
+`dispatch_queue` / `dispatch_cycles` surfaces and the legacy
+`dispatch enqueue/next/start/complete/cycle-*` CLI actions under
+`DEC-CATEGORY-C-DISPATCH-RETIRE-001`. **Category C is now fully closed.**
+The per-file evidence table below records the current disposition of each
+target; the Slice 8 narrative that follows is preserved as the historical
+audit snapshot.
 
 | Target | Disposition | Notes |
 |---|---|---|
 | `runtime/core/proof.py` + `proof_state` table | **Retired post-Phase-8 under Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001, 2026-04-17).** | Module deleted; `PROOF_STATE_DDL` and its `ALL_DDL` entry removed from `runtime/schemas.py`; `proof get/set/list` CLI retired from `runtime/cli.py` (import + subparser + `_handle_proof` + domain-dispatch branch); `SELECT … FROM proof_state` + `self.proof_states` + `proof_count` report key + `stale_proofs` health branch removed from `sidecars/observatory/observe.py`; retained-storage comments in `runtime/core/statusline.py` / `runtime/core/evaluation.py` / `hooks/check-guardian.sh` / `hooks/session-init.sh` rewritten to retirement pointers; `tests/runtime/test_proof.py` deleted; surgical edits applied to `tests/runtime/test_statusline.py` / `tests/runtime/test_statusline_truth.py` / `tests/runtime/test_sidecars.py` (removed `proof_mod` imports, proof fixture inserts, and proof-specific assertions; rewrote compound tests to exercise eval-state surfaces only); new invariant pins in `tests/runtime/test_phase8_category_c_proof_retired.py`; extended pins in `tests/runtime/test_phase8_deletions.py`. Non-destructive posture: the DDL is gone so new DBs never create the table; existing DBs retain the inert row data until a forensic operator drops it manually (no runtime `DROP TABLE` issued). |
-| `runtime/core/dispatch.py` — `dispatch_queue` + `dispatch_cycles` surfaces | **Retained — deferred as Category C bundle 2 (future post-Phase-8 slice).** | (a) Live CLI surface: `runtime/cli.py:35` imports `dispatch_mod`; `runtime/cli.py:1537-1572` exposes `dispatch enqueue/next/start/complete/cycle-start/cycle-current` as user-invokable manual-orchestration commands. (b) Schema tables `dispatch_queue` and `dispatch_cycles` declared in `runtime/schemas.py:64,76`. (c) `dispatch_queue` is no longer the routing authority per DEC-WS6-001: `runtime/core/statusline.py:38-47` comment says "WS6 removes dispatch_queue from the routing hot-path … post-task.sh no longer enqueues into dispatch_queue." (d) `dispatch_cycles` is **more live than `dispatch_queue`** — `runtime/core/statusline.py:243` still reads `dispatch_cycles` for `dispatch_cycle_id` (initiative-level tracking, intentionally retained per DEC-WS6-001). (e) Observatory still reads `dispatch_queue` pending rows at `sidecars/observatory/observe.py:131`. `dispatch.py` itself is a thin CRUD module over these two tables; its deletion requires CLI command retirement + schema migration + statusline rewrite for `dispatch_cycle_id` + observatory/sidecar test rewrites. Not a single-file slice. |
+| `runtime/core/dispatch.py` — `dispatch_queue` + `dispatch_cycles` surfaces | **Retired post-Phase-8 under Category C bundle 2 (DEC-CATEGORY-C-DISPATCH-RETIRE-001, 2026-04-17).** | Module `runtime/core/dispatch.py` deleted. `DISPATCH_QUEUE_DDL`, `DISPATCH_CYCLES_DDL`, their `ALL_DDL` entries, `DISPATCH_QUEUE_STATUSES`, and `DISPATCH_CYCLE_STATUSES` removed from `runtime/schemas.py`. Six legacy actions retired from `runtime/cli.py` (`enqueue`, `next`, `start`, `complete`, `cycle-start`, `cycle-current`); the `dispatch` CLI domain itself stays live for `process-stop`, `agent-start`, `agent-stop`, `agent-prompt`, `attempt-issue`, `attempt-claim`, `attempt-expire-stale` (owned by `dispatch_engine` / `dispatch_attempts`). `SELECT … FROM dispatch_queue` + `dispatch_backlog` health branch removed from `sidecars/observatory/observe.py`; `self.dispatch` kept as an always-empty list so the `pending_dispatches` report key stays present with value `0` (schema stability). `SELECT … FROM dispatch_cycles` removed from `runtime/core/statusline.py`; the `dispatch_cycle_id` and `dispatch_initiative` snapshot keys remain with `None` defaults (schema stability). `tests/runtime/test_dispatch.py` deleted; surgical edits applied to `tests/runtime/test_statusline.py` and `tests/runtime/test_sidecars.py`; new invariant pins in `tests/runtime/test_phase8_category_c_dispatch_retired.py`; extended pins in `tests/runtime/test_phase8_deletions.py`. Non-destructive posture: no runtime `DROP TABLE`; existing DBs retain inert row data. Unrelated dispatch-family modules (`dispatch_engine.py`, `dispatch_shadow.py`, `dispatch_attempts.py`, `dispatch_hook.py`) are unaffected — they never imported `runtime.core.dispatch`. |
 
-**Future retirement bundle scope** (remaining — post-Category-C-bundle-1):
-- `dispatch_queue`/`dispatch_cycles` (Category C bundle 2): retire
-  `dispatch enqueue/next/start/complete/cycle-*` CLI commands, replace
-  `statusline.py:243` `dispatch_cycle_id` lookup with a
-  completion-records-derived alternative, drop both tables from
-  `runtime/schemas.py`, remove the observatory read in `observe.py:131`,
-  rewrite `test_dispatch.py`, `test_statusline.py`, `test_sidecars.py`.
-
-Category C bundle 1 is **closed as retired**. Category C bundle 2 remains
-closed as audited and deferred.
+**Future retirement bundle scope:** none remaining. Category C is
+**fully closed** with both bundles retired.
 
 ### Category D — Hook Wiring Status Drift (RESOLVED in Phase 8 Slice 3)
 
