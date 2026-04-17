@@ -19,7 +19,7 @@ eval_workflow, eval_head_sha).
 Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() reads evaluation_state (sole readiness authority),
-  agent_markers, worktrees, dispatch_cycles, completion_records, and events in
+  agent_markers, worktrees, completion_records, and events in
   a single pass. It never writes. The extended field set (active_agent_id,
   worktrees list, dispatch_cycle_id, recent_events list) was added in TKT-011
   so scripts/statusline.sh has everything it needs for a richer HUD without
@@ -32,9 +32,10 @@ Rationale: snapshot() reads evaluation_state (sole readiness authority),
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
 Status: accepted
-Rationale: WS6 removes dispatch_queue from the routing hot-path. dispatch_status
-  is now derived from determine_next_role(latest_completion.role, verdict).
-  The queue table remains for backward compat but is not the routing authority.
+Rationale: WS6 removed dispatch_queue from the routing hot-path. dispatch_status
+  is derived from determine_next_role(latest_completion.role, verdict).
+  The dispatch_queue / dispatch_cycles tables were subsequently retired under
+  DEC-CATEGORY-C-DISPATCH-RETIRE-001.
 """
 
 from __future__ import annotations
@@ -48,7 +49,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import runtime.core.completions as completions_mod
-import runtime.core.dispatch as dispatch_mod
 import runtime.core.events as events_mod
 import runtime.core.markers as markers_mod
 import runtime.core.statusline as statusline
@@ -207,12 +207,16 @@ def test_snapshot_worktree_fields_have_correct_keys(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_reflects_active_dispatch_cycle(conn):
-    """Snapshot surfaces dispatch_initiative, dispatch_cycle_id for active cycle."""
-    cid = dispatch_mod.start_cycle(conn, "INIT-002")
+def test_snapshot_keeps_dispatch_cycle_keys_with_none_after_retirement(conn):
+    """DEC-CATEGORY-C-DISPATCH-RETIRE-001: dispatch_cycles is retired.
+
+    The dispatch_initiative and dispatch_cycle_id keys remain in the snapshot
+    dict with their None defaults for schema stability (downstream HUD
+    consumers check key presence, not value truthiness).
+    """
     snap = statusline.snapshot(conn)
-    assert snap["dispatch_initiative"] == "INIT-002"
-    assert snap["dispatch_cycle_id"] == cid
+    assert snap["dispatch_initiative"] is None
+    assert snap["dispatch_cycle_id"] is None
 
 
 def test_snapshot_dispatch_status_from_completion_reviewer_ready(conn):
@@ -274,11 +278,10 @@ def test_snapshot_dispatch_status_from_completion_reviewer_needs_changes(conn):
 def test_snapshot_dispatch_status_none_when_no_completion(conn):
     """No completion records => dispatch_status is None.
 
-    DEC-WS6-001: queue-based lookup is gone. Without a completion record,
-    all dispatch fields are None regardless of queue contents.
+    DEC-WS6-001 + DEC-CATEGORY-C-DISPATCH-RETIRE-001: queue-based lookup is
+    gone and the dispatch_queue table has been retired. Without a completion
+    record, all dispatch fields default to None.
     """
-    # Enqueue an item — must NOT influence dispatch_status
-    dispatch_mod.enqueue(conn, "implementer", ticket="TKT-011")
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] is None
     assert snap["dispatch_workflow"] is None
@@ -368,24 +371,23 @@ def test_snapshot_full_production_sequence(conn):
 
     Production path (DEC-WS6-001 / W-CONV-4 / DEC-CATEGORY-C-PROOF-RETIRE-001):
     reviewer submits a valid completion with ready_for_guardian -> implementer
-    marker is set -> worktree registered -> dispatch cycle active -> events
-    emitted.  snapshot() must reflect all of these in a single call.
+    marker is set -> worktree registered -> events emitted.  snapshot()
+    must reflect all of these in a single call.
     dispatch_status must be derived from the completion record (not the queue).
     proof_state fields must NOT appear in the snapshot — the underlying
     proof_state storage was retired under Category C bundle 1.
+    dispatch_queue / dispatch_cycles were retired under Category C bundle 2;
+    dispatch_initiative and dispatch_cycle_id remain as None in the snapshot
+    for schema stability.
     Phase 8 Slice 11: tester retired — reviewer is the sole evaluator.
 
     This is the compound-interaction test: completions.py, markers.py,
-    worktrees.py, dispatch.py, events.py, and statusline.py all collaborate —
-    snapshot() synthesizes them into one coherent projection with no proof
-    display or storage.
+    worktrees.py, events.py, and statusline.py all collaborate — snapshot()
+    synthesizes them into one coherent projection.
     """
     import json as _json
 
-    # 1. Start a dispatch cycle
-    cid = dispatch_mod.start_cycle(conn, "INIT-002")
-
-    # 2. Submit a valid reviewer completion — this is now the routing authority
+    # 1. Submit a valid reviewer completion — this is now the routing authority
     #    (DEC-WS6-001). The queue is NOT enqueued; dispatch_status is derived
     #    from this record via determine_next_role("reviewer", "ready_for_guardian")
     #    => "guardian".
@@ -405,13 +407,13 @@ def test_snapshot_full_production_sequence(conn):
         },
     )
 
-    # 3. Set active agent marker
+    # 2. Set active agent marker
     markers_mod.set_active(conn, "agent-tkt011", "implementer")
 
-    # 4. Register a worktree
+    # 3. Register a worktree
     worktrees_mod.register(conn, "/wt/tkt-011", "feature/tkt-011", ticket="TKT-011")
 
-    # 5. Emit a couple events
+    # 4. Emit a couple events
     events_mod.emit(conn, "worktree.registered", detail="/wt/tkt-011")
     events_mod.emit(conn, "marker.set", detail="implementer")
 
@@ -433,8 +435,10 @@ def test_snapshot_full_production_sequence(conn):
     assert snap["dispatch_workflow"] == "TKT-011"
     assert snap["dispatch_from_role"] == "reviewer"
     assert snap["dispatch_from_verdict"] == "ready_for_guardian"
-    assert snap["dispatch_initiative"] == "INIT-002"
-    assert snap["dispatch_cycle_id"] == cid
+    # DEC-CATEGORY-C-DISPATCH-RETIRE-001: dispatch_cycles table retired;
+    # these keys remain as None for schema stability.
+    assert snap["dispatch_initiative"] is None
+    assert snap["dispatch_cycle_id"] is None
     assert snap["recent_event_count"] == 2
     assert len(snap["recent_events"]) == 2
     assert snap["recent_events"][0]["type"] == "marker.set"

@@ -52,28 +52,6 @@ CREATE TABLE IF NOT EXISTS worktrees (
 )
 """
 
-DISPATCH_QUEUE_DDL = """
-CREATE TABLE IF NOT EXISTS dispatch_queue (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    role         TEXT    NOT NULL,
-    status       TEXT    NOT NULL DEFAULT 'pending',
-    ticket       TEXT,
-    created_at   INTEGER NOT NULL,
-    started_at   INTEGER,
-    completed_at INTEGER
-)
-"""
-
-DISPATCH_CYCLES_DDL = """
-CREATE TABLE IF NOT EXISTS dispatch_cycles (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    initiative   TEXT,
-    status       TEXT    NOT NULL DEFAULT 'active',
-    created_at   INTEGER NOT NULL,
-    completed_at INTEGER
-)
-"""
-
 TRACES_DDL = """
 CREATE TABLE IF NOT EXISTS traces (
     session_id  TEXT    PRIMARY KEY,
@@ -638,8 +616,6 @@ ALL_DDL: list[str] = [
     AGENT_MARKERS_DDL,
     EVENTS_DDL,
     WORKTREES_DDL,
-    DISPATCH_QUEUE_DDL,
-    DISPATCH_CYCLES_DDL,
     TRACES_DDL,
     TRACE_MANIFEST_DDL,
     SESSION_TOKENS_DDL,
@@ -776,9 +752,6 @@ EVALUATION_STATUSES: frozenset[str] = frozenset(
         "blocked_by_plan",
     }
 )
-DISPATCH_QUEUE_STATUSES: frozenset[str] = frozenset({"pending", "active", "done", "skipped"})
-DISPATCH_CYCLE_STATUSES: frozenset[str] = frozenset({"active", "complete"})
-
 # Approval token op_type values — must match approvals.py VALID_OP_TYPES.
 # Enforcement happens in the domain layer (ValueError), not SQL CHECK.
 APPROVAL_OP_TYPES: frozenset[str] = frozenset(
