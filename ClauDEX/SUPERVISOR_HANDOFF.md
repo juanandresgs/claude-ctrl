@@ -2,9 +2,18 @@
 
 ## Current Lane Truth (2026-04-17)
 
-- Branch `claudesox-local` at HEAD `d7db4ba`, **11 commits ahead** of `origin/feat/claudex-cutover` (behind-count is time-variant as upstream receives independent pushes).
-- **30-file checkpoint committed** as `d7db4ba` (`feat(cc-policy-who-remediation): bridge-permission authority + WHO notes + time-scoped docs + Invariant #15 Bash readiness invalidation (root + bridge parity)`). Previously staged as 28-file bundle; final commit grew to 30 files after fingerprint-comparison fix for circular invalidation (DEC-EVAL-006) and payload-identity baseline-key stability were folded in during the same slice.
-- **Push to `origin/feat/claudex-cutover` blocked** by `bash_approval_gate` high-risk policy. The commit is local-only. Canonical unblock: `cc-policy approval grant claudesox-local push` then `git push origin claudesox-local:feat/claudex-cutover`.
+- Branch `claudesox-local` at HEAD `696254a` (doc-reconciliation checkpoint on top of `d7db4ba`), **12 commits ahead** of `origin/feat/claudex-cutover` (behind-count time-variant; was 35 at last sample).
+- **30-file checkpoint committed** as `d7db4ba`; doc-reconciliation checkpoint as `696254a` (3 files). Push to remote is not a simple fast-forward — lane has diverged from upstream.
+- **Push is blocked by upstream divergence** (non-fast-forward reject), not only by approval gate. The lane is significantly behind `origin/feat/claudex-cutover` (35+ commits at last sample). A `git merge origin/feat/claudex-cutover` is required before push can succeed.
+- **Merge is blocked by 7 dirty tracked files** that overlap with files the remote branch would update. These must be committed (non-destructive checkpoint) before merge can proceed:
+  - `.codex/prompts/claudex_handoff.txt`
+  - `.codex/prompts/claudex_supervisor.txt`
+  - `CLAUDE.md`
+  - `ClauDEX/CURRENT_STATE.md`
+  - `ClauDEX/SUPERVISOR_HANDOFF.md`
+  - `scripts/claudex-codex-model-guard.sh`
+  - `scripts/claudex-supervisor-restart.sh`
+- **Non-destructive constraint (absolute):** no stash, no reset, no rebase, no `git checkout -- <path>` discard, no force-push. The only safe path for the 7 merge-blocker files is a pre-merge checkpoint commit.
 - Any "no checkpoint debt remains" wording elsewhere in this file refers to earlier Phase-8 closeout snapshots (typically 2026-04-14) and is NOT current lane truth. Those statements are preserved for historical record only.
 
 This file defines the project-specific Codex supervisor kickoff for the
@@ -398,27 +407,37 @@ finds the bridge idle with an empty queue and no pending-review artifact
 (step 3 of Steady-State Behavior). It describes the single bounded slice the
 supervisor should dispatch in that condition.
 
-As of 2026-04-17 (post-commit `d7db4ba`), the Current Restart Slice is
-**push-debt clearance for the cc-policy-who-remediation committed bundle**:
+As of 2026-04-17 (post-commit `696254a`), the Current Restart Slice is
+**pre-push integration prep for the diverged lane**:
 
-- **Lane:** `claudesox-local` at HEAD `d7db4ba`, 11 commits ahead of
-  `origin/feat/claudex-cutover` (behind-count time-variant).
-- **Committed bundle:** 30 files in commit `d7db4ba`. The original 28-file
-  staged bundle grew to 30 after the Invariant #15 fingerprint-comparison
-  fix (DEC-EVAL-006: `hooks/post-bash.sh` circular invalidation bypass,
-  payload-identity baseline-key stability in `hooks/pre-bash.sh` and
-  `tests/runtime/policies/test_post_bash_eval_invalidation.py`) was folded
-  in during the same slice.
-- **Push blocker:** `bash_approval_gate` high-risk policy denies `git push`.
-  Canonical unblock: `cc-policy approval grant claudesox-local push`.
-- **Intended action on re-dispatch:** grant push approval, then
-  `git push origin claudesox-local:feat/claudex-cutover`.
-- **Non-destructive constraint:** do NOT `git reset`, `git rebase`,
-  `git commit --amend`, or `git push --force` on this lane.
+- **Lane:** `claudesox-local` at HEAD `696254a`, 12 commits ahead of
+  `origin/feat/claudex-cutover` (behind-count time-variant; 35 at last
+  sample). Lane has **diverged** — simple fast-forward push is impossible.
+- **Step 1 — checkpoint dirty merge-blockers.** 7 dirty tracked files
+  overlap with files that `origin/feat/claudex-cutover` would update on
+  merge. These must be committed before merge can proceed:
+  `.codex/prompts/claudex_handoff.txt`,
+  `.codex/prompts/claudex_supervisor.txt`, `CLAUDE.md`,
+  `ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
+  `scripts/claudex-codex-model-guard.sh`,
+  `scripts/claudex-supervisor-restart.sh`.
+  This is routine non-destructive checkpoint stewardship — not a user
+  decision boundary. The remaining 5 dirty tracked files
+  (`.codex/hooks/stop_supervisor.py`, `hooks/claudex-stop-relay.sh`,
+  `hooks/claudex-submit-inject.sh`, `scripts/claudex-auto-submit.sh`,
+  `scripts/claudex-common.sh`) do NOT overlap remote and can stay dirty.
+- **Step 2 — fetch + merge.** `git fetch origin feat/claudex-cutover`
+  then `git merge origin/feat/claudex-cutover --no-edit`. Expect
+  conflicts in up to 11 overlap files (highest risk: `runtime/cli.py`,
+  `runtime/core/authority_registry.py`, `runtime/core/agent_prompt.py`).
+- **Step 3 — resolve conflicts, test, push.**
+- **Non-destructive constraint (absolute):** no stash, no reset, no
+  rebase, no `git checkout -- <path>` discard, no force-push, no
+  `git commit --amend` on shared history.
 
-Once the push lands, the Current Restart Slice should be replaced with
-the next bounded cutover slice or, if none is queued, marked
-`None — lane in steady-state maintenance`.
+Once the merge lands and pushes, the Current Restart Slice should be
+replaced with the next bounded cutover slice or, if none is queued,
+marked `None — lane in steady-state maintenance`.
 
 ## Checkpoint Stewardship
 

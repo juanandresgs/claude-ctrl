@@ -1,6 +1,6 @@
 # ClauDEX Current State
 
-Status (current, 2026-04-17): **PUSH DEBT PRESENT — APPROVAL-GATED** — lane committed a **30-file** bundle as `d7db4ba` (`feat(cc-policy-who-remediation): bridge-permission authority + WHO notes + time-scoped docs + Invariant #15 Bash readiness invalidation (root + bridge parity)`). Push to `origin/feat/claudex-cutover` is blocked by `bash_approval_gate` high-risk policy. See "cc-policy-who-remediation Slice 1 State (2026-04-17)" below for the authoritative details.
+Status (current, 2026-04-17): **PUSH DEBT PRESENT — UPSTREAM DIVERGED** — lane committed a **30-file** bundle as `d7db4ba` plus doc-reconciliation checkpoint `696254a` (3 files). Lane is 12 ahead / 35+ behind `origin/feat/claudex-cutover` (behind-count time-variant). Push requires merge integration first: 7 dirty tracked files block merge (must be checkpointed), then `git merge origin/feat/claudex-cutover`, then push. See "cc-policy-who-remediation Slice 1 State (2026-04-17)" and "Recommended next supervisor action" below.
 
 Historical snapshot: as of 2026-04-14 closeout (Phase 8 Slice 12), the ClauDEX cutover bundle had landed and been pushed upstream with no remaining Phase-8 checkpoint debt. That snapshot is preserved in the "Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT" section below; it is not current lane truth.
 
@@ -27,14 +27,14 @@ Canonical cutover custody branch (remote):
 
 Soak worktree branch (this lane) — current as of 2026-04-17:
 
-- `claudesox-local` at HEAD `d7db4ba`, **11 commits ahead** of
-  `origin/feat/claudex-cutover` (behind-count is time-variant as
-  upstream receives independent pushes). The **30-file cc-policy-who-remediation
-  bundle** is committed locally as `d7db4ba`. Push to
-  `origin/feat/claudex-cutover` is blocked by `bash_approval_gate`
-  high-risk policy. Canonical unblock: `cc-policy approval grant
-  claudesox-local push` then
-  `git push origin claudesox-local:feat/claudex-cutover`.
+- `claudesox-local` at HEAD `696254a` (doc-reconciliation checkpoint on
+  top of `d7db4ba`), **12 commits ahead** of `origin/feat/claudex-cutover`
+  (behind-count time-variant; 35 at last sample). Lane has **diverged**
+  from upstream — non-fast-forward push rejected. Integration via
+  `git merge origin/feat/claudex-cutover` is required before push can
+  succeed. Merge is blocked by 7 dirty tracked files that overlap remote
+  updates (must be checkpointed first — see "Recommended next supervisor
+  action" below).
 
 Soak worktree branch — historical snapshot (2026-04-14 closeout):
 
@@ -78,11 +78,12 @@ Implication (historical, as of 2026-04-14 closeout):
 
 Current implication (2026-04-17):
 
-- Push debt is present in the lane; the 30-file bundle is committed
-  locally as `d7db4ba` but not yet pushed to remote. The next clean
-  action is to clear the push gate (`cc-policy approval grant
-  claudesox-local push`) and push, or to continue bounded maintenance
-  that does not rewrite history on this lane.
+- Push debt is present in the lane; the 30-file bundle (`d7db4ba`) plus
+  doc-reconciliation checkpoint (`696254a`) are committed locally but not
+  pushed. Lane has diverged from upstream (12 ahead / 35+ behind,
+  time-variant). The next clean action is a three-step integration:
+  (1) checkpoint the 7 dirty merge-blocker files, (2) merge upstream,
+  (3) push. No stash, reset, rebase, or force-push permitted.
 
 ## cc-policy-who-remediation Slice 1 State (2026-04-17)
 
@@ -245,12 +246,26 @@ similarly-titled subsection further down under "Checkpoint Readiness (Phase
 artifact from the 2026-04-14 Phase-8 closeout and does NOT describe the
 current lane.
 
-The recommended action is a strict two-step sequence:
+The recommended action is a strict three-step sequence:
 
-1. **Push the 30-file committed bundle to remote.** The bundle is committed
-   locally as `d7db4ba`. Push is blocked by `bash_approval_gate` high-risk
-   policy. Canonical unblock: `cc-policy approval grant claudesox-local push`
-   then `git push origin claudesox-local:feat/claudex-cutover`. Do NOT start
+1. **Checkpoint the 7 dirty merge-blocker files.** These dirty tracked files
+   overlap with files `origin/feat/claudex-cutover` would update on merge
+   and must be committed first (routine non-destructive checkpoint, not a
+   user decision boundary):
+   `.codex/prompts/claudex_handoff.txt`,
+   `.codex/prompts/claudex_supervisor.txt`, `CLAUDE.md`,
+   `ClauDEX/CURRENT_STATE.md`, `ClauDEX/SUPERVISOR_HANDOFF.md`,
+   `scripts/claudex-codex-model-guard.sh`,
+   `scripts/claudex-supervisor-restart.sh`.
+   The remaining 5 dirty tracked files do NOT overlap remote updates and
+   can stay uncommitted.
+
+2. **Merge upstream.** `git fetch origin feat/claudex-cutover` then
+   `git merge origin/feat/claudex-cutover --no-edit`. Expect conflicts
+   in up to 11 overlap files; resolve, test, commit merge.
+
+3. **Push.** `cc-policy approval grant claudesox-local push` then
+   `git push origin claudesox-local:feat/claudex-cutover`. Do NOT start
    a new implementation slice before the push lands.
 
 2. **Then, bounded probe implementation slice for the
@@ -302,14 +317,13 @@ a classified JSON status, not a traceback). Test coverage:
 tests/runtime/test_bridge_validate_settings_cli.py` → 73 passed, 0
 failed.
 
-**Push throttle + approval boundary — unchanged.** The two-step
-sequence at the top of this subsection still applies: push the 30-file
-committed bundle (`d7db4ba`) after `cc-policy approval grant
-claudesox-local push`, then continue with further bounded slices. The
-probe CLIs' availability in the lane does NOT change the push order,
-does NOT permit unthrottled retry, and does NOT supersede the
-`Checkpoint-retry throttle rule` recorded in
-`ClauDEX/SUPERVISOR_HANDOFF.md` § Checkpoint Stewardship.
+**Integration throttle — updated.** The three-step sequence at the
+top of this subsection now applies: (1) checkpoint 7 dirty merge-blocker
+files, (2) merge upstream, (3) push. The probe CLIs' availability in
+the lane does NOT change the integration order, does NOT permit
+unthrottled retry, and does NOT supersede the `Checkpoint-retry throttle
+rule` recorded in `ClauDEX/SUPERVISOR_HANDOFF.md` § Checkpoint
+Stewardship.
 
 ## Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT
 

@@ -23,7 +23,8 @@ Behavior:
 - Use `ClauDEX/CUTOVER_PLAN.md` as the source of truth for what comes after bridge minimum viability.
 - On a fresh active run with no queue and no prior response, bootstrap the worker with the current restart slice from `ClauDEX/SUPERVISOR_HANDOFF.md` instead of waiting for a handoff that does not exist yet.
 - Return to the cutover phases instead of elaborating the bridge once the supervision path is healthy.
-- Stop only for genuine user input, a real approval boundary, or an inactive/completed bridge run.
+- Stop only for genuine user input, an inactive/completed bridge run, or an explicit hard blocker where no bounded non-write slice can proceed.
+- Non-destructive approval gates (checkpoint commit/push approvals, routine high-risk approvals) are not terminal: report checkpoint debt and continue the next bounded cutover slice.
 
 Terminal stop handshake:
 - If you intentionally end the dedicated supervisor seat while the bridge may still be active, include the exact standalone token `CLAUDEX_SUPERVISOR_STOP` in your final response so the repo-local Stop hook allows the session to end instead of re-arming.

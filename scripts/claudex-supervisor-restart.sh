@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 source "${SCRIPT_DIR}/claudex-common.sh"
-BRAID_ROOT="${BRAID_ROOT:-${ROOT}/.b2r}"
+BRAID_ROOT="$(claudex_resolve_braid_root "$ROOT" "${BRAID_ROOT:-}" "${CLAUDEX_STATE_DIR:-}")"
 PID_DIR="${CLAUDEX_STATE_DIR:-$(claudex_state_dir "$ROOT" "$BRAID_ROOT")}"
 APPROVER_PID_FILE="${PID_DIR}/codex-approver.pid"
 APPROVER_STATE_FILE="${PID_DIR}/codex-approver.state"
@@ -15,19 +15,26 @@ PROGRESS_PID_FILE="${PID_DIR}/progress-monitor.pid"
 PROGRESS_SNAPSHOT_FILE="${PID_DIR}/progress-monitor.latest.json"
 ACTIVE_RUN_POINTER="${BRAID_ROOT}/runs/active-run"
 MONITOR_WINDOW_NAME="claudex-monitor"
+WATCHDOG_WINDOW_NAME="claudex-watchdog"
+WATCHDOG_PID_FILE="${PID_DIR}/watchdog.pid"
+WATCHDOG_LOG_FILE="${PID_DIR}/watchdog.log"
+AUTO_SUBMIT_PID_FILE="${PID_DIR}/auto-submit.pid"
+BROKER_PID_FILE="${BRAID_ROOT}/runs/braidd.pid"
 
 CODEX_TARGET=""
 DRY_RUN=0
 RESTART_MONITOR=1
 RESTART_APPROVER=1
 RESTART_WORKER_APPROVER=1
+RESTART_TRANSPORT=1
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--codex-target SESSION:WINDOW.PANE] [--dry-run] [--no-monitor] [--no-approver] [--no-worker-approver]
+Usage: $(basename "$0") [--codex-target SESSION:WINDOW.PANE] [--dry-run] [--no-monitor] [--no-approver] [--no-worker-approver] [--no-transport]
 
 Restarts the dedicated ClauDEX Codex supervisor pane in place and, by default,
-re-arms the progress monitor window, codex approver helper, and worker approver helper.
+re-arms the transport watchdog window, progress monitor window, codex approver
+helper, and worker approver helper.
 
 If --codex-target is omitted, the script will try to resolve it from the latest
 progress-monitor snapshot first, then from the active run's Claude pane target.
@@ -54,6 +61,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-worker-approver)
       RESTART_WORKER_APPROVER=0
+      shift
+      ;;
+    --no-transport)
+      RESTART_TRANSPORT=0
       shift
       ;;
     -h|--help)
@@ -291,9 +302,59 @@ restart_worker_approver() {
   echo "$!" > "$WORKER_APPROVER_PID_FILE"
 }
 
+restart_transport_watchdog() {
+  [[ "$RESTART_TRANSPORT" -eq 1 ]] || return 0
+
+  mkdir -p "$PID_DIR"
+
+  local worker_target=""
+  worker_target="$(resolve_worker_target)" || {
+    echo "transport watchdog target could not be resolved from active run; leaving transport unchanged" >&2
+    return 0
+  }
+
+  local kill_result=1
+  if kill_pid_file "$WATCHDOG_PID_FILE"; then
+    kill_result=0
+  else
+    kill_result=$?
+  fi
+
+  if [[ "$kill_result" -eq 2 ]]; then
+    echo "watchdog pid probe is permission-limited; starting a fresh watchdog and letting stale copies age out" >&2
+  fi
+
+  run rm -f "$WATCHDOG_PID_FILE" "$AUTO_SUBMIT_PID_FILE" "$BROKER_PID_FILE"
+
+  if tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -Fxq "$WATCHDOG_WINDOW_NAME"; then
+    run tmux kill-window -t "${SESSION_NAME}:${WATCHDOG_WINDOW_NAME}"
+  fi
+
+  local once_cmd
+  once_cmd="cd \"$ROOT\" && export BRAID_ROOT=\"$BRAID_ROOT\" CLAUDEX_STATE_DIR=\"$PID_DIR\" CLAUDEX_AUTO_HAND_BACK_USER_DRIVING=1 && bash ./scripts/claudex-watchdog.sh --tmux-target \"$worker_target\" --once"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[dry-run] %s >> %q 2>&1\n' "$once_cmd" "$WATCHDOG_LOG_FILE"
+  else
+    bash -lc "$once_cmd" >>"$WATCHDOG_LOG_FILE" 2>&1 || true
+  fi
+
+  local watchdog_cmd
+  watchdog_cmd="cd \"$ROOT\" && export BRAID_ROOT=\"$BRAID_ROOT\" CLAUDEX_STATE_DIR=\"$PID_DIR\" CLAUDEX_AUTO_HAND_BACK_USER_DRIVING=1 && exec bash ./scripts/claudex-watchdog.sh --tmux-target \"$worker_target\""
+  run tmux new-window -d -t "$SESSION_NAME" -n "$WATCHDOG_WINDOW_NAME" -c "$ROOT" "$watchdog_cmd"
+}
+
+transport_health_report() {
+  [[ "$RESTART_TRANSPORT" -eq 1 ]] || return 0
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+
+  python3 "$ROOT/runtime/cli.py" bridge broker-health --braid-root "$BRAID_ROOT" 2>/dev/null || true
+}
+
 restart_supervisor_pane() {
   run tmux respawn-pane -k -t "$CODEX_TARGET" \
     "cd \"$ROOT\" && export BRAID_ROOT=\"$BRAID_ROOT\" CLAUDEX_STATE_DIR=\"$PID_DIR\" && clear && ./scripts/claudex-codex-launch.sh"
+  run tmux select-pane -t "$CODEX_TARGET" -e
 }
 
 restart_model_guard() {
@@ -326,6 +387,7 @@ if ! tmux list-panes -t "$CODEX_TARGET" >/dev/null 2>&1; then
   exit 1
 fi
 
+restart_transport_watchdog
 restart_progress_monitor
 restart_codex_approver
 restart_worker_approver
@@ -342,6 +404,11 @@ approver: $([[ "$RESTART_APPROVER" -eq 1 ]] && echo restarted || echo unchanged)
 worker_approver: $([[ "$RESTART_WORKER_APPROVER" -eq 1 ]] && echo restarted || echo unchanged)
 model_guard: restarted
 monitor: $([[ "$RESTART_MONITOR" -eq 1 ]] && echo restarted || echo unchanged)
+transport: $([[ "$RESTART_TRANSPORT" -eq 1 ]] && echo restarted || echo unchanged)
+watchdog_window: ${SESSION_NAME}:${WATCHDOG_WINDOW_NAME}
+watchdog_log: ${WATCHDOG_LOG_FILE}
 
 If the pane shows the standard trust prompt, press Enter once.
 EOF
+
+transport_health_report

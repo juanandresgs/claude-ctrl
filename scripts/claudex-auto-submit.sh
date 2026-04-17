@@ -24,7 +24,8 @@ RELAY_RETRY_BACKOFF_SECONDS="${CLAUDEX_RELAY_RETRY_BACKOFF_SECONDS:-30}"
 RUN_ONCE=0
 PID_DIR="${CLAUDEX_STATE_DIR:-$(claudex_state_dir "$ROOT" "$BRAID_ROOT")}"
 AUTO_PID_FILE="${PID_DIR}/auto-submit.pid"
-AUTO_LOCK_DIR="${PID_DIR}/auto-submit.lock.d"
+GLOBAL_AUTO_PID_FILE="${RUNS_DIR}/auto-submit.pid"
+AUTO_LOCK_DIR="${RUNS_DIR}/.auto-submit.lock.d"
 
 usage() {
   cat <<EOF
@@ -61,10 +62,13 @@ cleanup_singleton_lock() {
   trap - EXIT INT TERM
   local recorded_pid="" current_pid=""
   recorded_pid="$(tr -d '[:space:]' < "${AUTO_LOCK_DIR}/pid" 2>/dev/null || true)"
-  current_pid="$(tr -d '[:space:]' < "$AUTO_PID_FILE" 2>/dev/null || true)"
+  if [[ -f "$AUTO_PID_FILE" ]]; then
+    current_pid="$(tr -d '[:space:]' < "$AUTO_PID_FILE" 2>/dev/null || true)"
+  fi
 
   if [[ "$recorded_pid" == "$$" ]]; then
     rm -rf "$AUTO_LOCK_DIR" 2>/dev/null || true
+    rm -f "$GLOBAL_AUTO_PID_FILE" 2>/dev/null || true
   fi
 
   if [[ "$current_pid" == "$$" ]]; then
@@ -74,10 +78,12 @@ cleanup_singleton_lock() {
 
 acquire_singleton_lock() {
   mkdir -p "$PID_DIR"
+  mkdir -p "$RUNS_DIR"
 
   while true; do
     if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
       printf '%s\n' "$$" > "${AUTO_LOCK_DIR}/pid"
+      printf '%s\n' "$$" > "$GLOBAL_AUTO_PID_FILE"
       printf '%s\n' "$$" > "$AUTO_PID_FILE"
       trap cleanup_singleton_lock EXIT
       trap 'cleanup_singleton_lock; exit 130' INT
@@ -88,6 +94,7 @@ acquire_singleton_lock() {
     local recorded_pid=""
     recorded_pid="$(tr -d '[:space:]' < "${AUTO_LOCK_DIR}/pid" 2>/dev/null || true)"
     if [[ -n "$recorded_pid" ]] && kill -0 "$recorded_pid" 2>/dev/null; then
+      printf '%s\n' "$recorded_pid" > "$GLOBAL_AUTO_PID_FILE"
       printf '%s\n' "$recorded_pid" > "$AUTO_PID_FILE"
       log "Another auto-submit is already active (${recorded_pid}); exiting."
       exit 0
@@ -108,13 +115,17 @@ write_submit_state() {
   local path="$1"
   local instruction_id="$2"
   local sent_at_epoch="$3"
-  mkdir -p "$(dirname "$path")"
+  local dir_path
+  dir_path="$(dirname "$path")"
+  if [[ ! -d "$dir_path" ]]; then
+    return 0
+  fi
   jq -n \
     --arg instruction_id "$instruction_id" \
     --argjson sent_at_epoch "$sent_at_epoch" \
     '{instruction_id: $instruction_id, sent_at_epoch: $sent_at_epoch}' \
     > "${path}.tmp"
-  mv "${path}.tmp" "$path"
+  mv "${path}.tmp" "$path" 2>/dev/null || true
 }
 
 sent_recently_for_instruction() {

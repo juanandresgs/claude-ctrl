@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_RUNS_DIR = Path(os.environ.get("BRIDGE_STATE_DIR", "/Users/turla/Code/braid/runs"))
+LEGACY_RUNS_DIR = Path("/Users/turla/Code/braid/runs")
 SUPERVISOR_ENV_VAR = "CLAUDEX_SUPERVISOR"
 TERMINAL_STOP_TOKEN = "CLAUDEX_SUPERVISOR_STOP"
 
@@ -24,6 +24,44 @@ def read_json(path: Path):
     if not path.exists():
         return None
     return json.loads(path.read_text())
+
+
+def read_text(path: Path):
+    if not path.exists():
+        return ""
+    return path.read_text().strip()
+
+
+def resolve_state_dir(root: Path) -> Path:
+    env_state_dir = os.environ.get("CLAUDEX_STATE_DIR")
+    if env_state_dir:
+        return Path(env_state_dir)
+    return root / ".claude" / "claudex"
+
+
+def resolve_runs_dir(root: Path, state_dir: Path) -> Path:
+    candidates = []
+
+    env_runs_dir = os.environ.get("BRIDGE_STATE_DIR")
+    if env_runs_dir:
+        candidates.append(Path(env_runs_dir))
+
+    env_braid_root = os.environ.get("BRAID_ROOT")
+    if env_braid_root:
+        candidates.append(Path(env_braid_root) / "runs")
+
+    for marker in (state_dir / "braid-root", root / ".claude" / "claudex" / "braid-root"):
+        marker_value = read_text(marker)
+        if marker_value:
+            candidates.append(Path(marker_value) / "runs")
+
+    candidates.append(LEGACY_RUNS_DIR)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
 
 
 def active_run_status(runs_dir: Path):
@@ -67,8 +105,10 @@ def main() -> int:
         return 0
 
     root = repo_root()
-    run_id, _run, status = active_run_status(DEFAULT_RUNS_DIR)
-    dispatch_stall = read_json(root / ".claude" / "claudex" / "dispatch-stall.state.json")
+    state_dir = resolve_state_dir(root)
+    runs_dir = resolve_runs_dir(root, state_dir)
+    run_id, _run, status = active_run_status(runs_dir)
+    dispatch_stall = read_json(state_dir / "dispatch-stall.state.json")
 
     # No active bridge run: allow Codex to stop normally.
     if not run_id or not status:
@@ -80,15 +120,19 @@ def main() -> int:
         return 0
 
     state = status.get("state")
-    pending_review_path = root / ".claude" / "claudex" / "pending-review.json"
+    pending_review_path = state_dir / "pending-review.json"
     pending_review_json = read_json(pending_review_path)
+    if pending_review_json is not None:
+        pending_run_id = str(pending_review_json.get("run_id") or "").strip()
+        if pending_run_id and pending_run_id != run_id:
+            pending_review_json = None
 
     # If the review artifact's (instruction_id, completed_at) already match the
     # review cursor under the active run, Codex has acted on this review and
     # does not need to be rearmed — regardless of bridge state.  The bridge may
     # not have transitioned state yet, but there is no supervisor work to do.
     if pending_review_json is not None:
-        cursor = read_json(DEFAULT_RUNS_DIR / run_id / "codex-review-cursor.json")
+        cursor = read_json(runs_dir / run_id / "codex-review-cursor.json")
         if (
             cursor is not None
             and cursor.get("instruction_id") == pending_review_json.get("instruction_id")

@@ -21,7 +21,34 @@ claudex_lane_name() {
 claudex_state_dir() {
   local root="$1"
   local braid_root="${2:-${root}/.b2r}"
+  local state_root="${root}/.claude/claudex"
   local lane
+
+  if [[ -d "$state_root" ]]; then
+    local lane_dir="" lane_hint=""
+    shopt -s nullglob
+    for lane_dir in "${state_root}/"*; do
+      [[ -d "$lane_dir" ]] || continue
+      [[ -f "${lane_dir}/braid-root" ]] || continue
+      lane_hint="$(tr -d '[:space:]' < "${lane_dir}/braid-root" 2>/dev/null || true)"
+      if [[ -n "$lane_hint" && "$lane_hint" == "$braid_root" ]]; then
+        shopt -u nullglob
+        printf '%s\n' "$lane_dir"
+        return 0
+      fi
+    done
+    shopt -u nullglob
+
+    local direct_hint=""
+    if [[ -f "${state_root}/braid-root" ]]; then
+      direct_hint="$(tr -d '[:space:]' < "${state_root}/braid-root" 2>/dev/null || true)"
+      if [[ -n "$direct_hint" && "$direct_hint" == "$braid_root" ]]; then
+        printf '%s\n' "$state_root"
+        return 0
+      fi
+    fi
+  fi
+
   lane="$(claudex_lane_name "$root" "$braid_root")"
 
   if [[ "$lane" == "default" ]]; then
@@ -29,4 +56,35 @@ claudex_state_dir() {
   else
     printf '%s/.claude/claudex/%s\n' "$root" "$lane"
   fi
+}
+
+claudex_resolve_braid_root() {
+  local root="$1"
+  local explicit="${2:-}"
+  local state_dir_hint="${3:-}"
+
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+
+  if [[ -n "$state_dir_hint" && -f "${state_dir_hint}/braid-root" ]]; then
+    local hinted=""
+    hinted="$(tr -d '[:space:]' < "${state_dir_hint}/braid-root" 2>/dev/null || true)"
+    if [[ -n "$hinted" ]]; then
+      printf '%s\n' "$hinted"
+      return 0
+    fi
+  fi
+
+  if [[ -f "${root}/.claude/claudex/braid-root" ]]; then
+    local root_hint=""
+    root_hint="$(tr -d '[:space:]' < "${root}/.claude/claudex/braid-root" 2>/dev/null || true)"
+    if [[ -n "$root_hint" ]]; then
+      printf '%s\n' "$root_hint"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "${root}/.b2r"
 }
