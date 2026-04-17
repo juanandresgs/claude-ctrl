@@ -281,6 +281,31 @@ def _handle_event(args) -> int:
     return _err(f"unknown event action: {args.action}")
 
 
+def _handle_doc(args) -> int:
+    """Thin CLI adapter over runtime.core.doc_reference_validation.
+
+    ``cc-policy doc ref-check <path>``:
+        Scan the markdown at ``<path>`` for hook-surface references and
+        diff them against HOOK_MANIFEST. Prints the structured report as
+        JSON. Exits non-zero when drift is detected (unknown adapter
+        paths, unknown events, or unknown event-matcher pairs).
+    """
+    from runtime.core.doc_reference_validation import validate_doc_references_file
+
+    if args.action == "ref-check":
+        path = args.path
+        if not Path(path).is_file():
+            return _err(f"doc ref-check: path not found or not a file: {path}")
+        report = validate_doc_references_file(path)
+        body = report.as_dict()
+        # Non-zero exit on drift; stable JSON body either way.
+        if not report.healthy:
+            return _err(json.dumps(body, sort_keys=True))
+        return _ok(body)
+
+    return _err(f"unknown doc action: {args.action}")
+
+
 def _handle_hook(args) -> int:
     """Handle ``cc-policy hook`` subcommands (read-only hook tools).
 
@@ -3692,6 +3717,22 @@ def build_parser() -> argparse.ArgumentParser:
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
     sl_sub.add_parser("snapshot")
 
+    # doc — hook-surface reference validation (Invariant #8,
+    # DEC-DOC-REF-VALIDATION-001)
+    doc_p = subparsers.add_parser(
+        "doc",
+        help="Markdown doc reference validation (read-only)",
+    )
+    doc_sub = doc_p.add_subparsers(dest="action", required=True)
+    doc_ref = doc_sub.add_parser(
+        "ref-check",
+        help=(
+            "Scan a markdown file for hook-surface references and diff "
+            "them against HOOK_MANIFEST. Exit non-zero on drift."
+        ),
+    )
+    doc_ref.add_argument("path", help="Path to the markdown file to validate")
+
     # trace
     tr_p = subparsers.add_parser("trace", help="Trace-lite session manifests and summaries")
     tr_sub = tr_p.add_subparsers(dest="action", required=True)
@@ -4254,6 +4295,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_constitution(args)
     if args.domain == "decision":
         return _handle_decision(args)
+    if args.domain == "doc":
+        return _handle_doc(args)
     if args.domain == "prompt-pack":
         return _handle_prompt_pack(args)
     if args.domain == "shadow":
