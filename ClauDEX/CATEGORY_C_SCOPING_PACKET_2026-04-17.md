@@ -94,9 +94,31 @@ second).
 - **No runtime/hook/bridge change.** The runtime has been running
   without these tables since `f72e656` / `369cca6`; the residual
   rows are invisible to it.
-- **No authority-writer allowlist expansion as a side effect.** A
-  future migration module would need its own explicit allowlist
-  entry rather than being silently added.
+- **No *permanent* authority-writer allowlist expansion.** This
+  non-goal prohibits any general, open-ended widening of the
+  five-element authority-writer allowlist in
+  `tests/runtime/test_authority_table_writers.py`. It does **not**
+  prohibit a bounded, one-shot exception for the migration module
+  itself — that exception is in fact required by the Proposed-shape
+  rows of both sub-slices. To remain within this non-goal, any
+  future migration writer MUST:
+  - be added to the allowlist as an explicitly-commented one-shot
+    exception (comment naming `DEC-CATEGORY-C-FORENSIC-001`, the
+    sub-slice it belongs to, and the single `DROP TABLE IF EXISTS`
+    it authorises),
+  - ship with a same-slice decommission plan — the allowlist entry
+    is scoped to the migration module and must be removed (along
+    with the module itself, per "No CLI persistence") once the
+    forensic run has been executed on all enumerated target DBs
+    and verified, in the **same** slice that runs the cleanup or
+    its immediate successor,
+  - not authorise writes against any §2a table or any non-retired
+    table — the exception is limited to `proof_state`,
+    `dispatch_queue`, and `dispatch_cycles` and to the
+    `DROP TABLE IF EXISTS` statement only.
+  Any deviation — a long-lived allowlist entry, a broader op set,
+  a second table target — is outside this packet's scope and
+  requires a fresh authorising instruction.
 - **No reintroduction.** If a future slice adds a new domain with
   the same table name, that is a separate Rule-1 authority review
   and is outside this packet's scope.
@@ -133,6 +155,61 @@ If any of the following surface during a future execution slice,
 - The target DB carries rows with non-default shape suggesting
   active-era writes the retirement missed (would mean the bundle
   did not actually retire the writer).
+
+## Pre-execution operator prerequisites (for any future execution slice)
+
+These are **operator-supplied** prerequisites that must be captured
+**before** an execution slice is dispatched. The packet is
+planning-only; none of these prerequisites are satisfied by this
+commit. This section does not authorise execution — it names the
+inputs a future execution slice will demand.
+
+1. **Target-DB enumeration.** The operator must produce a concrete
+   list of SQLite DB paths that carry inert Category C rows and
+   are in scope for this forensic cleanup. Candidates to enumerate
+   (project-agnostic labels — the operator names the actual paths
+   for this lane):
+   - the main ClauDEX runtime DB (primary project state),
+   - any worktree-local DBs used by active dispatch lanes,
+   - any soak / integration / checkpoint DBs retained from
+     pre-retirement ClauDEX,
+   - any backup / snapshot DBs used by operational recovery paths.
+   Each entry MUST record: absolute path, ClauDEX version that
+   last wrote to it, whether it is read-only / archival / live,
+   and whether it is in scope for Sub-slice 1, Sub-slice 2, both,
+   or excluded. DB paths that are **excluded** must be named
+   explicitly with the reason, not silently omitted.
+
+2. **Per-target forensic snapshots before any `DROP TABLE`.** For
+   every in-scope DB identified in step 1, the operator must
+   capture a forensic snapshot prior to the migration run:
+   - a byte-for-byte copy of the DB file to a dated, read-only
+     snapshot location (e.g. `backups/category-c-forensic/<date>/<db-basename>`),
+   - a per-table row-count export (`SELECT COUNT(*) FROM
+     proof_state`, `dispatch_queue`, `dispatch_cycles`) recorded in
+     the slice's artifact trail,
+   - optionally a per-table row dump if the operator's audit
+     posture requires content retention.
+   The execution slice MUST NOT dispatch its `DROP TABLE` run on
+   any target DB for which a snapshot has not been captured and
+   verified readable.
+
+3. **Approval checkpoint per Sacred Practice #8.** Because
+   `DROP TABLE IF EXISTS` is an irreversible, destructive
+   operation, an explicit user-approval token is required before
+   each target-DB run. The approval record MUST name:
+   - the exact DB path being targeted,
+   - the sub-slice being executed (Sub-slice 1 or Sub-slice 2),
+   - the snapshot path from step 2 that precedes it,
+   - the authorising Codex instruction ID.
+   Approval granted for one target-DB does not transitively
+   authorise other target-DBs — each in-scope DB from step 1
+   consumes its own approval token. Approvals are recorded in the
+   runtime approval surface (`cc-policy approval grant`) or the
+   lane's equivalent audited path.
+
+If any of steps 1-3 is not complete, the execution slice MUST
+return **blocked (missing prerequisite)** and not proceed.
 
 ## Required invariant / test gates for any future implementation slice
 
