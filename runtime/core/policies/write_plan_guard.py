@@ -1,4 +1,26 @@
-"""plan_guard policy — only stages with CAN_WRITE_GOVERNANCE may write governance markdown
+"""plan_guard policy — CAN_WRITE_GOVERNANCE + workflow_scope.forbidden_paths gate
+
+@decision DEC-CLAUDEX-WRITE-PLAN-GUARD-FORBIDDEN-PATHS-005
+Title: plan_guard consults workflow_scope.forbidden_paths before capability check (Slice A4 → A12 composition)
+Status: accepted
+Rationale: Slice A4 on the A-branch added a scope-forbidden-path gate to plan_guard.
+  A12 composes that gate into current soak HEAD (which has Phase-7-Slice-6
+  constitution-level refinements A-branch lacked). Closes the class-of-defect
+  where a planner (CAN_WRITE_GOVERNANCE) could write to MASTER_PLAN.md despite
+  it being in the active workflow's forbidden_paths. New check consults
+  request.context.scope.forbidden_paths via fnmatch glob match (parity with
+  bash_workflow_scope._check_compliance) and denies with stable reason-code
+  substring `scope_forbidden_path_write` regardless of role capability.
+  Ordering preserved: CLAUDE_PLAN_MIGRATION=1 bootstrap override fires first
+  (documented higher-order escape hatch); scope-forbidden then fires before
+  CAN_WRITE_GOVERNANCE so denial is role-absolute. Malformed forbidden_paths
+  JSON → empty list. Priority unchanged (300). Registration unchanged.
+Refs DEC-PE-W2-CAP-002 (existing CAN_WRITE_GOVERNANCE gate)
+     DEC-FORK-014 (plan-guard.sh origin)
+
+Legacy docstring header:
+
+plan_guard policy — only stages with CAN_WRITE_GOVERNANCE may write governance markdown
 or constitution-level files.
 
 Mirrors: hooks/plan-guard.sh (114 lines)
@@ -38,13 +60,35 @@ Rationale: Phase 7 Slice 6 extends plan_guard to deny writes to any file
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE
 from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import is_governance_markdown
+
+
+def _parse_scope_list(raw: Any) -> list[str]:
+    """Decode a workflow_scope JSON-TEXT column to list[str].
+
+    Mirrors bash_workflow_scope._parse_list semantics: list passthrough,
+    JSON-string decode, malformed/unknown → []. Fail-open on malformed
+    (operational issues are not policy concerns; strict fail-closed would
+    regress workflows with corrupt rows).
+    """
+    if isinstance(raw, list):
+        return [str(x) for x in raw if isinstance(x, str)]
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, list):
+                return [str(x) for x in decoded if isinstance(x, str)]
+        except (ValueError, TypeError):
+            pass
+    return []
 
 
 def _strip_worktree_prefix(path: str) -> str:
@@ -108,6 +152,38 @@ def plan_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
     # CLAUDE_PLAN_MIGRATION=1 is the explicit override for bootstrap migrations
     if os.environ.get("CLAUDE_PLAN_MIGRATION", "") == "1":
         return None
+
+    # A4/A12: consult workflow_scope.forbidden_paths BEFORE the capability
+    # check so scope-forbidden denial is role-absolute (neither planner nor
+    # implementer CAN_WRITE_GOVERNANCE may bypass). Fires for governance or
+    # constitution-level files whose path matches a forbidden-glob entry.
+    # @decision DEC-CLAUDEX-WRITE-PLAN-GUARD-FORBIDDEN-PATHS-005 (Slice A4 → A12)
+    scope = getattr(request.context, "scope", None) or {}
+    if isinstance(scope, dict):
+        forbidden = _parse_scope_list(scope.get("forbidden_paths"))
+        if forbidden:
+            # Prefer repo-relative for fnmatch match; fall back to file_path
+            repo_rel_for_match: Optional[str]
+            if is_gov:
+                repo_rel_for_match = _to_repo_relative(
+                    file_path, project_root, request.context.worktree_path
+                )
+            else:
+                repo_rel_for_match = repo_rel  # set in is_const branch above
+            target = repo_rel_for_match or file_path
+            for pattern in forbidden:
+                if fnmatch.fnmatch(target, pattern):
+                    workflow_id = scope.get("workflow_id", "<unknown>")
+                    return PolicyDecision(
+                        action="deny",
+                        reason=(
+                            f"BLOCKED: scope_forbidden_path_write: {file_path} "
+                            f"matches forbidden pattern {pattern!r} for workflow "
+                            f"{workflow_id!r}. Only a re-scoped or newly-approved "
+                            f"workflow may write this file."
+                        ),
+                        policy_name="plan_guard",
+                    )
 
     if CAN_WRITE_GOVERNANCE in request.context.capabilities:
         return None  # Authorized
