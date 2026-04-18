@@ -129,12 +129,11 @@ load_lane_topology() {
     return 0
   fi
 
-  local args=()
   if [[ -n "$CODEX_TARGET" ]]; then
-    args+=(--codex-target "$CODEX_TARGET")
+    TOPOLOGY_JSON="$(claudex_bridge_topology_json "$BRAID_ROOT" "$PID_DIR" --codex-target "$CODEX_TARGET" 2>/dev/null || true)"
+  else
+    TOPOLOGY_JSON="$(claudex_bridge_topology_json "$BRAID_ROOT" "$PID_DIR" 2>/dev/null || true)"
   fi
-
-  TOPOLOGY_JSON="$(claudex_bridge_topology_json "$BRAID_ROOT" "$PID_DIR" "${args[@]}" 2>/dev/null || true)"
   [[ -n "$TOPOLOGY_JSON" ]]
 }
 
