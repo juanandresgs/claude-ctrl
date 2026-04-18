@@ -258,7 +258,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -283,7 +283,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -308,7 +308,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -333,7 +333,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -375,7 +375,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           }
         ]
@@ -398,7 +398,6 @@
     "command": "$HOME/.claude/scripts/statusline.sh"
   },
   "enabledPlugins": {
-    "codex@openai-codex": true,
     "lua-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
@@ -406,12 +405,6 @@
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
-      }
-    },
-    "openai-codex": {
-      "source": {
-        "source": "github",
-        "repo": "openai/codex-plugin-cc"
       }
     }
   },

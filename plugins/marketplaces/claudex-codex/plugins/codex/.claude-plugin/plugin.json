@@ -1,0 +1,8 @@
+{
+  "name": "codex",
+  "version": "1.0.3-claudex",
+  "description": "ClauDEX-maintained Codex companion for review and delegation workflows.",
+  "author": {
+    "name": "ClauDEX"
+  }
+}

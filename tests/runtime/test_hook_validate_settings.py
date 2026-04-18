@@ -142,7 +142,7 @@ class TestExtractRepoOwnedEntries:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+                                "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
                             }
                         ],
                     }

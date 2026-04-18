@@ -8,19 +8,30 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _SETTINGS = _ROOT / "settings.json"
+_GITIGNORE = _ROOT / ".gitignore"
 _PLUGIN_HOOKS = (
     _ROOT
     / "plugins"
     / "marketplaces"
-    / "openai-codex"
+    / "claudex-codex"
     / "plugins"
     / "codex"
     / "hooks"
     / "hooks.json"
 )
 _STOP_REVIEW = (
-    "node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/"
+    "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/"
     "stop-review-gate-hook.mjs"
+)
+_PLUGIN_MANIFEST = (
+    _ROOT
+    / "plugins"
+    / "marketplaces"
+    / "claudex-codex"
+    / "plugins"
+    / "codex"
+    / ".claude-plugin"
+    / "plugin.json"
 )
 
 
@@ -45,6 +56,24 @@ def test_settings_json_is_the_single_stop_review_wiring_authority() -> None:
         assert _STOP_REVIEW in _commands([group])
 
     assert "Stop" not in plugin_hooks["hooks"]
+
+
+def test_settings_excludes_upstream_openai_codex_identity() -> None:
+    settings = json.loads(_SETTINGS.read_text(encoding="utf-8"))
+
+    assert "codex@openai-codex" not in settings.get("enabledPlugins", {})
+    assert "openai-codex" not in settings.get("extraKnownMarketplaces", {})
+
+
+def test_gitignore_ignores_upstream_openai_codex_install_tree() -> None:
+    gitignore = _GITIGNORE.read_text(encoding="utf-8")
+    assert "plugins/marketplaces/openai-codex/" in gitignore
+
+
+def test_first_party_claudex_codex_plugin_manifest_exists() -> None:
+    manifest = json.loads(_PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["name"] == "codex"
+    assert manifest["version"] == "1.0.3-claudex"
 
 
 # ---------------------------------------------------------------------------

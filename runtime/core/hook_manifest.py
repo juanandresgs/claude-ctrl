@@ -28,7 +28,7 @@ Rationale: CUTOVER_PLAN §Phase 2 "Hook Adapter Reduction" requires the
     * Non-repo-owned entries are deliberately excluded: bare bash
       passthroughs such as ``{ cat; echo; } >> dispatch-debug.jsonl``
       and plugin-owned scripts such as
-      ``node $HOME/.claude/plugins/marketplaces/openai-codex/.../
+      ``node $HOME/.claude/plugins/marketplaces/claudex-codex/.../
       stop-review-gate-hook.mjs`` are not part of the repo's hook
       adapter surface and are not this module's concern.
     * Phase 8 Slice 3 resolved the previously-deprecated block-worktree

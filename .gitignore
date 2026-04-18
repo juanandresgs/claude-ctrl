@@ -18,17 +18,8 @@ plugins/blocklist.json
 plugins/install-counts-cache.json
 plugins/installed_plugins.json
 plugins/known_marketplaces.json
-plugins/marketplaces/**/.claude-plugin/
-plugins/marketplaces/openai-codex/.git/
-plugins/marketplaces/openai-codex/.github/
-plugins/marketplaces/openai-codex/.gitignore
-plugins/marketplaces/openai-codex/LICENSE
-plugins/marketplaces/openai-codex/NOTICE
-plugins/marketplaces/openai-codex/README.md
-plugins/marketplaces/openai-codex/package.json
-plugins/marketplaces/openai-codex/package-lock.json
-plugins/marketplaces/openai-codex/tests/
-plugins/marketplaces/openai-codex/tsconfig.app-server.json
+plugins/marketplaces/**/.claude/
+plugins/marketplaces/openai-codex/
 
 # Runtime artifacts
 backups/
