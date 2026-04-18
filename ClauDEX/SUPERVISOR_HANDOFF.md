@@ -428,6 +428,35 @@ authorisation either.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
 
+### A46 post-A45 handoff historical-state reconciliation (2026-04-18) — RESOLVED (docs drift cleanup)
+
+- **Subject:** A45 closed the final global-soak statusline gate with direct worker-pane proof and updated the Routine-next-actions bullet + A31/A39 invariants to reflect the CLOSED state. However, the older A44 Open Soak Issues entry was left verbatim in place, and its present-tense phrasing ("Gate remains OPEN", "operator-owned from here", "A45a / A45b / A45c options") read as live guidance to any reader who navigated to that section directly. A46 reframes the A44 entry explicitly as historical / superseded so there is exactly one authority for current operational fact (the top-of-file Current Lane Truth + the A45 entry) while the A44 evidence remains preserved for audit.
+- **Repro (class-of-defect, pre-A46):** a reader landing on the A44 entry via ToC or body-scroll sees "Final gate state after A44: STILL OPEN (bounded attempt negative; no runtime regression; operator-owned from here)" and three labeled "next-path options" (A45a/b/c), all in present tense. Nothing in that entry acknowledges that A45 executed and succeeded, so the entry could be misread as current guidance.
+- **Exact before/after reconciliation summary (A44 wording only; A45 entry untouched):**
+  1. **Heading:** `### A44 … — STILL OPEN (bounded attempt; gate remains unclosed; not a runtime regression)` → `### A44 … — HISTORICAL / SUPERSEDED by A45 (preserved for audit)`.
+  2. **Preface block added:** inserted a blockquote above the A44 body citing A46, pointing readers to the A45 entry as the current gate truth, and explicitly stating the A44 "STILL OPEN" status + next-path options are SUPERSEDED.
+  3. **Subject bullet:** reworded "Result: the 3-line HUD … is NOT visible" → "Result at A44 time: … was NOT visible … **in the single pane target A44 attempted**. Gate remained OPEN **at A44 time**; **A45 subsequently CLOSED the gate**." Time-scoping added throughout.
+  4. **Signature-check block:** appended "A45 later re-ran these same four signature checks against pane `claudex-soak-1:4.1` and found all four matching".
+  5. **Observed-pane-contents bullet:** added "This is specific to pane 1.2; pane 4.1 (the statusline-proof window) renders the HUD cleanly as A45 documented."
+  6. **Why-not-a-regression section:** concluding sentence reworded from "The missing piece is Claude Code's live invocation of the configured renderer" to "A44's negative was a pane-target selection gap, not a runtime bug — A45 resolved it".
+  7. **Candidate explanations list:** each of the six speculation items annotated as "ruled out" / "confirmed" based on A45's pane-topology discovery.
+  8. **Next-path options (A45a/A45b/A45c):** wrapped in strikethrough markup and annotated "SUPERSEDED next-path options (A44-era; DO NOT follow as current guidance — A45 executed option-A45b equivalent and closed the gate)". A45a marked "not needed"; A45b marked "this is effectively the path A45 took, and it succeeded"; A45c marked "not needed".
+  9. **Docs/invariant reconciliation bullet:** reworded from "all remain accurate post-A44" to "were accurate at A44 time. A45 updated both the gate language and the A31/A39 invariants to reflect the CLOSED state — see the A45 entry for the current invariant shape".
+  10. **Blocking bullet:** added "Post-A45: No — gate is CLOSED, A44's 'operator-owned from here' framing is superseded."
+  11. **Final gate state bullet:** now reads "Gate state at A44 time: STILL OPEN … Gate state now: CLOSED by A45 (direct worker-pane proof at pane 4.1)."
+  12. **Decision annotation:** reworded to "historical bounded-evidence attempt; superseded by A45's successful pane-topology evidence pass."
+- **What A46 did NOT change:**
+  - A45 entry (above A44): untouched — it remains the single live authority for the closed gate state.
+  - A44's captured evidence artifact path (`tmp/A44-worker-pane-capture.txt`): reference preserved — the audit trail still points to the original capture.
+  - A44's exact tmux command, timestamp, signature-match counts, and observed-pane-contents excerpt: preserved verbatim as historical evidence.
+  - A31 / A39 invariants: already updated by A45; not touched by A46.
+  - Top-of-file Current Lane Truth bullets: already updated by A45; not touched by A46.
+- **Contradiction elimination:** pre-A46 the handoff had two claims about the gate — Routine-next-actions said "CLOSED by A45 direct worker-pane proof", and A44 said "Gate remains OPEN ... operator-owned from here". Post-A46 the A44 entry explicitly marks itself as historical/superseded with every present-tense assertion time-scoped or struck through; the Routine-next-actions and A45 entry remain the single live authority.
+- **Verification (A46 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_current_lane_state_invariants.py tests/runtime/test_handoff_artifact_path_invariants.py` → 55 passed. `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed unfiltered. No test changes required; A31/A39 already accept the CLOSED state.
+- **Residual risk (narrow):** the A46 reframing relies on prose cues ("HISTORICAL / SUPERSEDED", strikethrough, time-scoping language). A future reader skimming very quickly could still miss the reframing — but the A46 blockquote preface above the A44 body is unambiguous, and both the top Current Lane Truth and the A45 entry will contradict any "gate open" read. Mechanical belt-and-suspenders possible via a future invariant (e.g., "A44 heading must contain HISTORICAL|SUPERSEDED") but not required in A46 scope.
+- **Blocking?** No — docs-drift cleanup class closure.
+- **Decision annotation:** none (scoped historical-reframing of a single Open Soak Issues entry; no architectural change).
+
 ### A45 worker-pane topology evidence pass — gate CLOSED (2026-04-18) — RESOLVED (final statusline proof captured)
 
 - **Subject:** closes the final global-soak statusline gate that A44's bounded single-pane attempt left OPEN. A45 enumerated the tmux session pane topology for `claudex-soak-1`, captured each Claude Code candidate pane, evaluated each capture against the four canonical HUD signatures used in A44, and **found the 3-line HUD rendered in a different pane target than A44 captured** (`claudex-soak-1:4.1`, the dedicated `statusline-proof` window, pane_id `%5808`).
@@ -485,10 +514,12 @@ authorisation either.
 - **Blocking?** No — class-of-defect closure. The final global-soak statusline gate is now CLOSED by direct worker-pane evidence captured from the purpose-built `statusline-proof` window.
 - **Decision annotation:** none (scoped evidence capture + invariant reconciliation; no architectural change).
 
-### A44 final live worker-pane statusline proof attempt (2026-04-18) — STILL OPEN (bounded attempt; gate remains unclosed; not a runtime regression)
+### A44 final live worker-pane statusline proof attempt (2026-04-18) — HISTORICAL / SUPERSEDED by A45 (preserved for audit)
 
-- **Subject:** A44 executed the single bounded evidence path authorized by the slice instruction — `tmux capture-pane -t claudex-soak-1:1.2 -p` — to attempt the final live worker-pane proof that satisfies the A31-pinned gate. **Result: the 3-line HUD from `scripts/statusline.sh` is NOT visible in the captured pane output.** Gate remains OPEN.
-- **Exact attempt commands (reproducible):**
+> **A46 reconciliation note (2026-04-18):** the A44 entry below captures the first bounded attempt at live-worker-pane proof, which targeted only pane `claudex-soak-1:1.2` and returned a negative result. A45 subsequently enumerated the full pane topology, found the HUD rendered correctly in pane `claudex-soak-1:4.1` (the dedicated `statusline-proof` window), and CLOSED the gate with direct worker-pane evidence. **The A44 entry below is historical context only — its "STILL OPEN" status, "operator-owned from here" framing, and A45a/A45b/A45c next-path options are SUPERSEDED.** The live operational truth for the gate is the A45 entry above (gate CLOSED) and the Routine-next-actions bullet at the top of the file. This entry is retained verbatim below so the A44 → A45 progression is auditable; nothing in it should be read as a present-tense next action.
+
+- **Subject (historical, as written at A44 landing):** A44 executed the single bounded evidence path authorized by the slice instruction — `tmux capture-pane -t claudex-soak-1:1.2 -p` — to attempt the final live worker-pane proof that satisfies the A31-pinned gate. **Result at A44 time: the 3-line HUD from `scripts/statusline.sh` was NOT visible in the captured pane output of the single pane target A44 attempted.** Gate remained OPEN at A44 time; **A45 subsequently CLOSED the gate** by enumerating the session's full pane topology and capturing the HUD at pane `claudex-soak-1:4.1`.
+- **Exact attempt commands (historical, A44-era reproducible):**
   ```
   tmux capture-pane -t claudex-soak-1:1.2 -p > tmp/A44-worker-pane-capture.txt 2>&1
   echo "exit code: $?"   # 0
@@ -496,39 +527,35 @@ authorisation either.
   date -u +"%Y-%m-%dT%H:%M:%SZ"   # 2026-04-18T18:47:54Z
   ```
   Captured artifact path: `tmp/A44-worker-pane-capture.txt` (lane-local, gitignored per Sacred Practice #3).
-- **Expected vs observed (four grep signature checks):**
+- **Expected vs observed (historical, four grep signature checks at A44 time):**
   - Line 1 signature (`uncommitted.*worktrees` OR `claudex-cutover-soak`): **0 matches**.
   - Line 2 signature (`tks` OR `Claude Opus`): **0 matches**.
   - Line 3 signature (`eval: ✓|⏳|✗|⚠ …`): **0 matches**.
   - Tied-workflow `(claudesox-local)`: **0 matches**.
-- **Observed pane contents:** Claude Code's standard conversation body + tool-call output + the standard bottom footer `⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage` + the session's in-flight thinking indicator. **No custom 3-line ANSI HUD from `scripts/statusline.sh`.**
-- **Why this is not a runtime/renderer regression:**
+  A45 later re-ran these same four signature checks against pane `claudex-soak-1:4.1` and found all four matching — the gate-closing evidence is in the A45 entry.
+- **Observed pane contents (historical, A44 on pane 1.2):** Claude Code's standard conversation body + tool-call output + the standard bottom footer `⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage` + the session's in-flight thinking indicator. **No custom 3-line ANSI HUD from `scripts/statusline.sh`.** This is specific to pane 1.2; pane 4.1 (the statusline-proof window) renders the HUD cleanly as A45 documented.
+- **Why A44's negative result was not a runtime/renderer regression (context that enabled A45):**
   - `settings.json::statusLine.command` = `$HOME/.claude/scripts/statusline.sh` (A39 invariant PASS).
   - `ClauDEX/bridge/claude-settings.json::statusLine.command` = same (A43 + A39 invariant PASS).
   - `scripts/statusline.sh` exists and is runtime-backed (DEC-SL-002).
   - `bash scripts/statusline.sh` standalone invocation produces the expected 3-line HUD with live runtime state (A38 capture + A40 Test 7d both-sub-checks PASS).
   - `cc-policy statusline snapshot` returns valid eval-state JSON (A40 runtime-behavior tied-shape pin PASS).
   - Scenario test `test-statusline-render.sh` Test 7c is stable 10/10 PASS post-A42.
-  - The renderer/config/scenario surfaces are all green. **The missing piece is Claude Code's live invocation of the configured renderer in the worker pane** — a UI / pane-topology visibility gap, not a runtime bug.
-- **Candidate explanations (not investigated per bounded-attempt rule):**
-  1. Claude Code worker may be launched with a settings file that doesn't include the custom `statusLine.command` (caching / precedence / wrong profile at launch time).
-  2. The `:1.2` pane target may not contain a rendered statusline — Claude Code may render its custom HUD in a different window layout component than plain terminal output.
-  3. The user may have disabled the custom statusline via the `/statusline` slash command in the worker session.
-  4. Claude Code may require an explicit refresh/toggle to pick up a statusline configuration change that post-dated session startup.
-  5. Terminal emulator / tmux ANSI propagation may be stripping or relocating the HUD below the pane's visible scrollback window.
-  6. Claude Code may only render the HUD on specific events (prompt return, tool-result boundary) and the capture happened in a transient state.
-- **Next bounded non-debug paths (A45-class options, operator adjudication):**
-  - **A45a (preferred):** operator executes `/statusline` in the live worker session to confirm current rendering state; if disabled, toggles it on; re-runs the A44 capture command; if 3-line HUD now appears, commits the new evidence and marks gate SATISFIED.
-  - **A45b:** read-only diagnostic — run `tmux list-panes -t claudex-soak-1 -F '#{pane_index}:#{pane_title}'` to map the session's pane topology; determine whether `1.2` is the Claude Code process or a sibling pane. Bounded, no tmux protocol debugging.
-  - **A45c:** accept the gate as **permanently operator-owned** (same class as the Runtime-authority drift repo-root fast-forward) — the renderer/config/scenario evidence chain makes the pane-level capture a low-risk redundant piece, and requiring direct visual proof from an orchestrator-driven bash command may not be achievable without operator-side console verification. Update gate language to make the operator-hand-off explicit.
-- **Docs/invariant reconciliation (per A44 instruction Option 2):**
-  - Handoff gate language already says "not globally soak-ready" / "renderer/config/scenario evidence … does NOT satisfy this gate" / "Until that direct worker-pane proof exists" — all remain accurate post-A44. No edit needed there.
-  - A31 / A39 / A43 invariants all still PASS on HEAD — gate is correctly pinned as still-open.
-  - This A44 entry documents the bounded-attempt evidence + outcome so no future slice mistakes the renderer/config/scenario evidence for gate closure.
-- **Verification (A44 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_current_lane_state_invariants.py tests/runtime/test_handoff_artifact_path_invariants.py` → 55 passed. `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed (unfiltered).
-- **Blocking?** Gate remains OPEN. A44 is class-of-attempt-closure: the bounded tmux-capture path has been attempted and produces a negative result; future progress requires operator-owned verification (A45a) or deliberate gate-class reclassification (A45c). No product/runtime work is blocked.
-- **Final gate state after A44: STILL OPEN (bounded attempt negative; no runtime regression; operator-owned from here).**
-- **Decision annotation:** none (scoped bounded-evidence attempt + documentation; no architectural change).
+  - The renderer/config/scenario surfaces are all green. A44's negative was a **pane-target selection gap**, not a runtime bug — A45 resolved it by enumerating the full topology and capturing the correct pane.
+- **Candidate explanations (A44-era speculation, now resolved by A45's pane-topology discovery):**
+  1. Claude Code worker may be launched with a settings file that doesn't include the custom `statusLine.command` — **ruled out**: A45 found the HUD rendering correctly in pane 4.1 using the same settings.
+  2. The `:1.2` pane target may not contain a rendered statusline — **confirmed**: A45 found pane 4.1 was the purpose-built statusline-proof window; pane 1.2 is the active orchestrator session whose conversation output dominates the visible buffer.
+  3. The user may have disabled the custom statusline via `/statusline` — **ruled out**: A45 found the HUD rendering live without any operator toggle.
+  4-6. Other candidate explanations (refresh cycles, ANSI propagation, render timing) were not needed — the root cause was #2 (pane-target selection).
+- **SUPERSEDED next-path options (A44-era; DO NOT follow as current guidance — A45 executed option-A45b equivalent and closed the gate):**
+  - ~~A45a (preferred at A44 time): operator executes `/statusline` in the live worker session …~~ — **not needed**; A45 closed the gate without operator intervention.
+  - ~~A45b: read-only tmux pane-topology diagnostic …~~ — **this is effectively the path A45 took**, and it succeeded.
+  - ~~A45c: accept the gate as permanently operator-owned …~~ — **not needed**; A45 closed the gate directly.
+- **A44-era docs/invariant reconciliation (historical):** handoff gate language at A44 time said "not globally soak-ready" / "does NOT satisfy this gate" / "Until that direct worker-pane proof exists"; these were accurate at A44 time. **A45 updated both the gate language and the A31/A39 invariants to reflect the CLOSED state** — see the A45 entry for the current invariant shape.
+- **Verification (A44 landing, historical):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_current_lane_state_invariants.py tests/runtime/test_handoff_artifact_path_invariants.py` → 55 passed. `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed (unfiltered).
+- **Blocking at A44 time?** At A44 landing time, gate remained OPEN; A44 was class-of-attempt-closure for the specific pane-1.2-only attempt. **Post-A45: No — gate is CLOSED, A44's "operator-owned from here" framing is superseded.**
+- **Gate state at A44 time:** STILL OPEN (bounded attempt negative on pane 1.2; no runtime regression). **Gate state now: CLOSED by A45** (direct worker-pane proof at pane 4.1).
+- **Decision annotation:** none (historical bounded-evidence attempt; superseded by A45's successful pane-topology evidence pass).
 
 ### A43 checkpoint stewardship — bridge statusline wiring + braid-root resolver + paired tests (2026-04-18) — RESOLVED
 
