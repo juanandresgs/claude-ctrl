@@ -223,6 +223,7 @@ class TestSchemaBootstrap:
             "evaluation_json",
             "head_sha",
             "reviewer_round",
+            "workflow_id",  # A18: workflow_id column added post-A8C for workflow scoping
             "created_at",
             "updated_at",
         }
@@ -292,6 +293,7 @@ class TestSchemaBootstrap:
             "stop_conditions_json",
             "escalation_boundaries_json",
             "user_decision_boundaries_json",
+            "workflow_id",  # A18: workflow_id column added post-A8C for workflow scoping
             "created_at",
             "updated_at",
         }

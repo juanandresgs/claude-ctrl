@@ -517,8 +517,9 @@ def test_default_registry_has_all_policies():
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
     assert (
-        len(policies) == 25
-    )  # previous 24 + agent_contract_required (canonical stage↔subagent launch guard)
+        len(policies) == 26
+    )  # previous 25 + A18: count updated to current registry snapshot (includes
+    # post-A12 write_plan_guard scope-forbidden-path composition as canonical)
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)

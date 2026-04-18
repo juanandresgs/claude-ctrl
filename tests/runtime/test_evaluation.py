@@ -242,6 +242,17 @@ def test_full_evaluator_lifecycle(conn):
     assert fetched["status"] == "ready_for_guardian"
     assert fetched["head_sha"] == new_head
 
-    # Confirm proof_state table has nothing to do with this — it's untouched
-    proof_rows = conn.execute("SELECT COUNT(*) FROM proof_state").fetchone()[0]
-    assert proof_rows == 0, "proof_state must not be written by evaluation domain"
+    # A18: proof_state table was retired post-Phase-8 under
+    # DEC-CATEGORY-C-PROOF-RETIRE-001 (Category C bundle 1). The original
+    # assertion probed the retired table to confirm evaluation domain did not
+    # accidentally write to it — that guarantee is now structural (no table
+    # to write to). Assertion replaced with a schema-absence check that fails
+    # loudly if the table is ever reintroduced, preserving the original
+    # "evaluation domain has nothing to do with proof_state" invariant.
+    proof_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='proof_state'"
+    ).fetchone()
+    assert proof_table is None, (
+        "proof_state table reappeared in schema — Category C bundle 1 "
+        "retirement was reversed; evaluation domain invariant needs re-audit"
+    )
