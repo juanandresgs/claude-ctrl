@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from typing import Optional
 
 from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE, CAN_WRITE_SOURCE
+from runtime.core.command_intent import extract_bash_write_targets
 from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
@@ -27,10 +27,7 @@ from runtime.core.policy_utils import (
     resolve_path_from_base,
 )
 
-_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
-_REDIRECT_TOKENS = frozenset({">", ">>", "1>", "1>>", "2>", "2>>"})
 _PATCH_FILE_RE = re.compile(r"(?m)^\*\*\* (?:Add|Update|Delete) File:\s+(.+)$")
-_MUTATING_PATH_COMMANDS = frozenset({"cp", "mv", "install", "touch", "truncate"})
 
 
 def _strip_quotes(token: str) -> str:
@@ -62,54 +59,6 @@ def _extract_patch_targets(command: str) -> set[str]:
         raw = _strip_diff_prefix(_strip_quotes(match.group(1).strip()))
         if raw:
             targets.add(raw)
-    return targets
-
-
-def _extract_shell_targets(command: str) -> set[str]:
-    targets: set[str] = set()
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars="><;&|")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return targets
-
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-
-        if token in _REDIRECT_TOKENS and index + 1 < len(tokens):
-            target = tokens[index + 1]
-            if target and target not in _SHELL_SEPARATORS and target not in _REDIRECT_TOKENS:
-                targets.add(target)
-            index += 2
-            continue
-
-        cmd = os.path.basename(token)
-        if cmd == "tee":
-            cursor = index + 1
-            while cursor < len(tokens) and tokens[cursor] not in _SHELL_SEPARATORS:
-                arg = tokens[cursor]
-                if arg and not arg.startswith("-") and arg not in _REDIRECT_TOKENS:
-                    targets.add(arg)
-                cursor += 1
-            index = cursor
-            continue
-
-        if cmd in _MUTATING_PATH_COMMANDS:
-            cursor = index + 1
-            args: list[str] = []
-            while cursor < len(tokens) and tokens[cursor] not in _SHELL_SEPARATORS:
-                args.append(tokens[cursor])
-                cursor += 1
-            positional = [a for a in args if a and not a.startswith("-")]
-            if positional:
-                targets.add(positional[-1])
-            index = cursor
-            continue
-
-        index += 1
-
     return targets
 
 
@@ -157,7 +106,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     project_root = request.context.project_root or ""
     base_dir = intent.command_cwd or request.cwd or project_root
 
-    raw_targets = _extract_patch_targets(command) | _extract_shell_targets(command)
+    raw_targets = _extract_patch_targets(command) | extract_bash_write_targets(command)
     if not raw_targets:
         return None
 

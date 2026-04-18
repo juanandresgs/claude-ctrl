@@ -7,6 +7,8 @@ constructs a typed view once and policies consume that shared object.
 
 from __future__ import annotations
 
+import os
+import shlex
 from dataclasses import dataclass
 import re
 from typing import Optional
@@ -23,6 +25,10 @@ from runtime.core.policy_utils import (
     normalize_path,
     resolve_path_from_base,
 )
+
+_WRITE_TARGET_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
+_WRITE_TARGET_REDIRECT_TOKENS = frozenset({">", ">>", "1>", "1>>", "2>", "2>>"})
+_WRITE_TARGET_MUTATING_COMMANDS = frozenset({"cp", "mv", "install", "touch", "truncate"})
 
 _WORKTREE_ADD_RE = re.compile(r"\bgit\b.*\bworktree\s+add\b")
 _WORKTREE_REMOVE_RE = re.compile(r"\bgit\b.*\bworktree\s+remove\b")
@@ -141,6 +147,72 @@ def _extract_worktree_remove_target(args: list[str]) -> str:
             continue
         return token
     return ""
+
+
+def extract_bash_write_targets(command: str) -> set[str]:
+    """Return the raw shell-level write targets referenced by ``command``.
+
+    Recognizes three classes of write-producing constructs:
+      - redirection targets after ``>``, ``>>``, ``1>``, ``1>>``, ``2>``, ``2>>``
+      - ``tee`` argument targets (positional, pre-separator)
+      - last positional of ``cp`` / ``mv`` / ``install`` / ``touch`` / ``truncate``
+
+    Tokenization uses ``shlex`` with ``><;&|`` as punctuation so redirects glued
+    to their targets (``>/etc/x``) split correctly. This is the single
+    authority for this form of bash target extraction; policies consume it
+    rather than reimplementing tokenization.
+    """
+    targets: set[str] = set()
+    if not command:
+        return targets
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="><;&|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return targets
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+
+        if token in _WRITE_TARGET_REDIRECT_TOKENS and index + 1 < len(tokens):
+            target = tokens[index + 1]
+            if (
+                target
+                and target not in _WRITE_TARGET_SHELL_SEPARATORS
+                and target not in _WRITE_TARGET_REDIRECT_TOKENS
+            ):
+                targets.add(target)
+            index += 2
+            continue
+
+        cmd = os.path.basename(token)
+        if cmd == "tee":
+            cursor = index + 1
+            while cursor < len(tokens) and tokens[cursor] not in _WRITE_TARGET_SHELL_SEPARATORS:
+                arg = tokens[cursor]
+                if arg and not arg.startswith("-") and arg not in _WRITE_TARGET_REDIRECT_TOKENS:
+                    targets.add(arg)
+                cursor += 1
+            index = cursor
+            continue
+
+        if cmd in _WRITE_TARGET_MUTATING_COMMANDS:
+            cursor = index + 1
+            args: list[str] = []
+            while cursor < len(tokens) and tokens[cursor] not in _WRITE_TARGET_SHELL_SEPARATORS:
+                args.append(tokens[cursor])
+                cursor += 1
+            positional = [a for a in args if a and not a.startswith("-")]
+            if positional:
+                targets.add(positional[-1])
+            index = cursor
+            continue
+
+        index += 1
+
+    return targets
 
 
 def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCommandIntent]:
