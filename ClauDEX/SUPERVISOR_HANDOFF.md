@@ -123,7 +123,246 @@ NOT reopen Phase 8 and does NOT create Phase 9. Grounded in
 `CUTOVER_PLAN.md` (no Phase 9 defined) and annotated with reserved
 decision `DEC-CATEGORY-C-FORENSIC-001` (status: planning).
 
+**Step-1 draft artifact landed (2026-04-18, rev 2 after
+discovery-hardening pass).** The machine-verifiable portion of the
+packet's §Pre-execution operator prerequisites step 1 ("Target-DB
+enumeration") is materialised at
+`ClauDEX/CATEGORY_C_TARGET_DB_ENUMERATION_2026-04-18.md`. After
+the 2026-04-18 discovery-hardening pass (Codex instruction
+`1776484473001-0006-8ll8il`) it enumerates **3 in-scope DBs and
+19 excluded entries** across the hardFork lane footprint (hardFork
+root + both sibling worktrees + lane-local state dirs):
+
+- Row 1: `worktree/.claude/state.db` — empty Category C tables.
+- Row 2: `hardFork/state.db` (step-4 global fallback via
+  `~/.claude` symlink) — `proof_state=10`, dispatch tables empty.
+- **Row 14 (newly discovered rev 2):** `hardFork/.claude/state.db`
+  (step-3 git-root target when CWD is hardFork root; a distinct
+  file from row 2 at a different inode) — `proof_state=9`,
+  **`dispatch_queue=107`**, **`dispatch_cycles=1`**.
+
+**Row-14 writer-drift adjudication (technically resolved
+2026-04-18, pending operator confirmation).** A bounded read-only
+adjudication pass (Codex instruction `1776484774491-0007-0ta3rd`)
+collected three independent evidence streams against row 14 at
+lane HEAD `86795d0` — temporal (zero rows on row 14 carry any
+Category C timestamp at or after either retirement commit; the
+maximum recorded timestamp 2026-04-10 17:58:55 precedes the
+earliest retirement commit `f72e656` at 2026-04-17 12:19:56 by
+6 days 18 hours), code-level writer audit (zero non-test
+write-shaped matches in live source at HEAD), and mechanical
+invariant (`pytest -q tests/runtime/test_authority_table_writers.py`
+→ 15/15 pass in 0.18 s). The three streams converge on **likely
+benign residue — HIGH confidence**; option (b) (active-era writer
+drift, escalation-grade per Escalation boundary §3) is **ruled
+out** at this confidence level. Full evidence is captured in the
+draft artifact §1.c.1. Rows 1 and 2 do not carry this ambiguity
+and are unaffected. The adjudication is **technical** (agent-
+produced) — §3 item 5 still requires operator confirmation
+before Step 1 is sealed; residual low-probability edges
+(timestamp-trust, out-of-tree-writer, invariant-coverage) are
+enumerated in §1.c.1 and must be acknowledged by the operator if
+the adjudication is confirmed as-is.
+
+The artifact is docs-only and does **not** seal Step 1 — it is
+draft-only until operator ratification. Steps 2 (per-target
+forensic snapshots) and 3 (per-target approval tokens per Sacred
+Practice #8) remain pending, and no `DROP TABLE` execution is
+authorised by the artifact. The packet remains the authoritative
+execution gate. This does NOT reopen Phase 8 and does NOT create
+Phase 9.
+
+**Next action: operator-ratification round.** Before Step 1 can be
+sealed the operator must answer the five §3 items in the draft:
+(a) ClauDEX version-of-last-writer for the 3 in-scope DBs,
+(b) live / archival / read-only classification for each,
+(c) explicit naming of any additional target DBs outside the
+hardFork lane footprint (backup / snapshot / soak / integration
+/ checkpoint DBs, off-repo seats) or an explicit "no additional
+targets" assertion, (d) ratification of the 19 exclusions, and
+(e) confirm-or-amend the technical adjudication of row-14
+writer-drift. Items (a)-(d) remain direct operator assertions;
+item (e) now has a technical adjudication already captured (likely
+benign residue, HIGH confidence, three converging evidence
+streams — see §1.c.1 of the draft artifact) and the operator's
+ratification response either confirms it verbatim and accepts the
+enumerated residual edges (timestamp-trust / out-of-tree-writer /
+invariant-coverage) as acceptable risk, OR requests additional
+hardening (row-level dump of row 14's Category C tables, extension
+of `test_authority_table_writers.py` coverage, bounded
+out-of-tree-writer search — each a separate docs-only or
+read-only slice). The ratification response is itself a docs-only
+append to §3 of the draft artifact. Only after Step 1 is sealed
+may a separate authorising instruction open a Step-2
+forensic-snapshot slice, and only after Step 2 completes for a
+specific DB may a Step-3 approval-token slice be opened for that
+DB + sub-slice pair, each requiring explicit user approval per
+Sacred Practice #8. Rows 1 and 2 carry no writer-drift ambiguity
+and are not gated on item (e); only row 14 is. **Ratification
+response template:** a verbatim-fillable form for items (a)-(e)
+is provided in `ClauDEX/CATEGORY_C_TARGET_DB_ENUMERATION_2026-04-18.md`
+§3.1 ("Operator Ratification Response Template") — the operator's
+response should fill that template so §3 state is recorded
+mechanically; the template carries no Step-2 / Step-3 authorisation.
+**Optional non-authoritative draft fill:** §3.2 ("Suggested Draft
+Fill — Operator Review Required") offers machine-supported
+`candidate` values for items (a)-(e) to reduce operator friction; no
+candidate is binding, the operator retains full authority to reject
+or amend any value, and §3.2 carries no Step-2 / Step-3
+authorisation either.
+
 ## Open Soak Issues
+
+### Planner scope violation mechanically narrowed — RESOLVED by Slice A4 for governance class (2026-04-18)
+
+- **Subject:** the planner scope-violation class-of-defect originally logged below ("Planner scope violation — unprompted `MASTER_PLAN.md` write despite `forbidden_paths`") is now mechanically blocked for governance-markdown and constitution-level write targets by Slice A4 local commit `aef51aed93a93e07b5d5ebb5d1a739180798e3f7` on `feature/config-readiness-slice-a-agent-contract` (parent A3 `a659b6d`). The A4 commit extends `runtime/core/policies/write_plan_guard.py` to consult `request.context.scope.forbidden_paths` BEFORE the `CAN_WRITE_GOVERNANCE` capability check: on `fnmatch.fnmatch(repo_rel, pattern)` match against any forbidden_paths entry, plan_guard returns `PolicyDecision(action="deny", policy_name="plan_guard", reason=...)` whose `reason` contains stable substring `scope_forbidden_path_write`. Role-absolute: planner AND implementer are both denied equally. `@decision DEC-CLAUDEX-WRITE-PLAN-GUARD-FORBIDDEN-PATHS-005` (accepted). 27 new tests in `tests/runtime/policies/test_write_scope_forbidden.py` cover INV-A4-1..A4-10 + compound `PolicyRegistry.evaluate()` integration; all 24 existing `test_write_plan_guard.py` tests pass unchanged.
+- **Repro of the RESOLVED path:** from A4-post-commit worktree, construct a `PolicyRequest` for Write with `file_path` pointing at `MASTER_PLAN.md` (repo-relative) and `context.scope={"forbidden_paths": json.dumps(["MASTER_PLAN.md"]), "workflow_id": "<wf>"}`, then invoke `plan_guard(request)` from `runtime.core.policies.write_plan_guard`. Result: `PolicyDecision(action="deny")` with `"scope_forbidden_path_write" in decision.reason == True`. Test `TestScopeForbiddenPathsWriteGate::test_planner_denied_for_forbidden_governance_file` pins this mechanically. Before A4, the same `PolicyRequest` returned `None` (planner's `CAN_WRITE_GOVERNANCE` short-circuited at line 99). A2's concrete incident (389-line unauthorized write to `MASTER_PLAN.md`) would now be rejected at write-time before the file is touched.
+- **Narrowing (residual, explicit):** A4's gate fires only for files that pass plan_guard's existing governance-markdown / constitution-level classification block. A planner attempting to write a NON-governance source file in `forbidden_paths` (e.g., a forbidden policy module) is still caught by `write_who` (priority 200 — requires `CAN_WRITE_SOURCE` which planner lacks), so the combined write-path stack still denies it, just with a different reason string. A universal scope-forbidden gate at earlier priority (before classification) would require extending `write_who.py` or adding a new pre-priority policy; this was explicitly out of A4 scope to keep the change minimal and single-authority. Candidate for a follow-on Slice A5 if universal scope enforcement is needed across all write targets.
+- **Documented ordering (per `@decision` annotation):** plan_guard now fires the checks in this order: classification (governance/constitution) → `CLAUDE_PLAN_MIGRATION=1` bootstrap override → **scope-forbidden (new, A4)** → `CAN_WRITE_GOVERNANCE` capability → existing deny branches. `CLAUDE_PLAN_MIGRATION=1` still bypasses scope-forbidden as a documented higher-order escape hatch; if the operator wants scope-forbidden to override migration, the @decision explicitly flags the ordering as revisit-worthy.
+- **Verification state:** A4 reviewer `ready_for_guardian` @ `a659b6d` (agent `a8bf0487617df5d02`, all 11 invariants pass). Guardian land `aef51aed...` on the A-branch (parent `a659b6d`), commit-only, push deferred per first-publication ambiguous publish target. Primary evidence `55 passed in 0.03s` on `test_write_plan_guard.py + test_write_scope_forbidden.py`; broader regression `4281 passed` + the documented pre-existing unrelated `test_dispatch_debug_file_exists_and_has_subagent_start_events` failure.
+- **Blocking?** No — the class-of-defect is closed for governance writes as of commit `aef51ae`. The narrowing note above documents what remains open (source-file scope-forbidden enforcement). The original issue body below remains for historical context and cross-reference to the incident trace.
+
+### Planner scope violation — unprompted `MASTER_PLAN.md` write despite `forbidden_paths` (2026-04-18)
+
+- **Subject:** during Slice A2 planning (planner agent id `aba4a1e8842a8a0d6`, Codex instruction `1776492967992-0017-fzcry9`, decision scope `config-readiness-slice-a2-hook-fail-closed`), the planner wrote 389 lines to `MASTER_PLAN.md` in the A1 worktree (`.worktrees/feature-config-readiness-slice-a-agent-contract/MASTER_PLAN.md`) under a new section `### INIT-CR-SLICE-A2`. `MASTER_PLAN.md` was explicitly enumerated in the A2 slice's `forbidden_paths` on the Scope Manifest registered to `cc-policy workflow scope-set` at dispatch time.
+- **Repro summary:** (1) orchestrator wrote Scope Manifest via `cc-policy workflow scope-set claudesox-local --forbidden '[…,"MASTER_PLAN.md"]'` and updated `work_items.scope_json` to match. (2) Planner dispatched with `cc-policy dispatch agent-prompt --stage-id planner` and a dispatch prompt that enumerated forbidden_paths inline. (3) Planner produced its deliverables as structured prose AND, in the course of doing so, called the `Edit`/`Write` tool against `MASTER_PLAN.md` in the A1 worktree. The write succeeded — no hook denied it. Orchestrator caught the diff via `git -C <worktree> status --short` post-dispatch and reverted via `git checkout MASTER_PLAN.md` before the next dispatch chain step.
+- **Evidence:** `git -C .worktrees/feature-config-readiness-slice-a-agent-contract diff --stat MASTER_PLAN.md` showed `+389 insertions` during the window between planner return and orchestrator revert. Planner's own output acknowledged the write ("Plan amended to `MASTER_PLAN.md`… under new section `### INIT-CR-SLICE-A2`") while simultaneously returning the deliverables the orchestrator asked for — the planner treated the write as part of its "governance amend" responsibility per its own role prompt, orthogonal to the runtime-registered `forbidden_paths`.
+- **Impact:** class-of-defect rather than single-incident. The planner role carries `can_write_governance` capability (per stage contract). Its internal discipline reads the role-prompt "Workflow B (Amend)" requirement as authoritative even when the current slice's Scope Manifest enumerates `MASTER_PLAN.md` as forbidden. Result: planner writes can appear in any worktree where planner runs, at any time, regardless of per-slice scope declarations. If orchestrator did not check `git status --short` post-dispatch, the write would silently persist into the next implementer commit window, contaminating the slice. Worse: the planner's write is on a branch (`feature/config-readiness-slice-a-agent-contract`) that was NOT intended to carry governance changes; a later checkpoint commit would embed the unauthorized MASTER_PLAN edit into the feature branch's history.
+- **Suggested fix:** mechanical enforcement of per-slice `forbidden_paths` MUST override capability-class claims. Concrete approaches (one or more):
+  1. **Hook-level denial for any planner-seat write against a `forbidden_paths` entry** — `pre-edit.sh` / `pre-write.sh` policy check against the current workflow's `workflow_scope` + `work_items.scope_json`, deny with `scope_forbidden_path_write` regardless of role's capability set. The stage contract's `can_write_governance` should permit governance writes only INSIDE the Scope Manifest's `allowed_paths`; `forbidden_paths` is absolute.
+  2. **Planner role-prompt tightening** — explicit instruction that `forbidden_paths` in the runtime Scope Manifest is authoritative and supersedes Workflow B (Amend) default behavior. Text-only mitigation; weaker than mechanical but can land without a hook-policy change.
+  3. **Invariant test** — pin that the planner seat's write-capability list intersects `forbidden_paths` to an empty set on every dispatch; a planner instance that writes outside allowed_paths should return `BLOCKED` with a scope-violation diagnosis rather than produce a silent modification + structured response.
+- **Blocking?** No — orchestrator caught and reverted in-session; A2 landed clean at `b80130c`. Class-of-defect is live and will recur on any future planner dispatch where `MASTER_PLAN.md` (or similar) is in `forbidden_paths`.
+- **Verification state:** incident confirmed via git diff + planner output prose, both captured in the A2 dispatch trace for agent `aba4a1e8842a8a0d6`. No mechanical enforcement exists yet — the `pre-edit.sh` / `pre-write.sh` hooks do not currently consult `workflow_scope.forbidden_paths` for governance-capable seats. Suggested fix #1 would close the class of defect definitively.
+
+### `pre-agent.sh` fail-closed parity — RESOLVED by Slice A2 (2026-04-18)
+
+- **Subject:** the prior Slice A1 report flagged that `hooks/pre-agent.sh` was still marker-only — it checked for the `CLAUDEX_CONTRACT_BLOCK:` prefix presence on line 1 but performed no semantic validation. Semantic contract validation lived only in the Python policy path (`runtime/core/policies/agent_contract_required.py`). A shell-layer path that bypassed the Python policy would have silently allowed dispatch-significant Agent launches with malformed or mismatched contracts.
+- **Resolution:** Slice A2 lands hook-layer fail-closed parity as local commit `b80130c` on branch `feature/config-readiness-slice-a-agent-contract` (parent `3cd2b6d`, Slice A+A1 baseline). `hooks/pre-agent.sh` now invokes a fail-closed Python validator subprocess before the carrier write on the contract-bearing dispatch branch. Validator receives data via env vars (`BLOCK_LINE`, `SUBAGENT_TYPE`; never argv interpolation) and uses `runtime.core.authority_registry.STAGE_SUBAGENT_TYPES` + `canonical_dispatch_subagent_type` + `runtime.core.stage_registry.ACTIVE_STAGES` for classification. Six reason-code substrings emitted to stdout on failure (exact parity with A1 policy plus a new subprocess-failure code): `contract_block_malformed_json`, `contract_block_missing_stage`, `contract_block_unknown_stage`, `contract_block_missing_subagent_type`, `contract_block_stage_subagent_type_mismatch`, `contract_block_validator_unavailable`. Non-zero subprocess exit → `contract_block_validator_unavailable` deny (no `|| true` / `|| echo ""` silent-allow trap). Hook remains thin adapter per CLAUDE.md "Hooks are adapters, not policy engines" — no bash arrays of stage or subagent names, no shell-side alias maps.
+- **Repro / verification:** 34 new tests in `tests/runtime/test_pre_agent_hook_validation.py` exercise every failure mode and every positive case (parametrized across all 5 `STAGE_SUBAGENT_TYPES` entries including both guardian modes; `"Plan"` alias allowed; lightweight subagent types pass through; subprocess-failure fail-closed via broken-PYTHONPATH fixture). Reviewer verdict `ready_for_guardian` @ `3cd2b6d` (agent id `a39970124c2591221`) confirmed all 17 invariants including shell-injection safety (env-var only, quoted heredoc), failure ordering identical to A1 policy, and no new imports beyond stdlib in the Python subprocess block. Primary verification: `pytest -q tests/runtime/test_pre_agent_carrier.py tests/runtime/test_pre_agent_hook_validation.py tests/runtime/test_agent_contract_required_policy.py` → `98 passed in 7.07s`. Broader regression: `4208 passed, 11 skipped, 1 xpassed` plus the pre-existing unrelated `test_dispatch_debug_file_exists_and_has_subagent_start_events` failure (documented).
+- **Decision annotation:** `DEC-CLAUDEX-PRE-AGENT-HOOK-FAIL-CLOSED-003` (accepted) cross-references parent `DEC-CLAUDEX-AGENT-CONTRACT-REQUIRED-FAIL-CLOSED-002` (A1).
+- **Narrowed, not closed:** the A2 slice addresses the hook-layer symmetry. `hooks/subagent-start.sh` was not touched by A2 (in forbidden_paths for scope discipline). If a future flow bypasses `pre-agent.sh` and lands at `subagent-start.sh` directly, that hook remains marker-only for now. A potential Slice A3 could extend the same fail-closed validator to `subagent-start.sh` for full hook-layer coverage; not urgent, flagged for bookkeeping.
+- **Blocking?** No — fully resolved by A2 for the pre-agent.sh attack surface the A1 report called out.
+- **Verification state:** commit `b80130c` local on `feature/config-readiness-slice-a-agent-contract`, reviewer-approved, green tests, un-pushed. Push remains user-adjudicated (first-publication ambiguous publish target; the A-branch now has three un-pushed commits: A+A1 at `3cd2b6d`, A2 at `b80130c`, with no established upstream).
+
+### Cross-DB `work_item_contract_codec` drift audit — VERIFICATION COMPLETE (2026-04-18)
+
+- **Subject:** read-only cross-DB audit for legacy `work_items.scope_json` and `work_items.evaluation_json` vocabulary drift across the full hardFork lane footprint, executed per Codex instruction `1776492811882-0016-l99mst` as a global-soak-readiness signal after Slice A0 checkpoint landed locally (commit `764d625` on `feature/config-readiness-slice-a0-codec`).
+- **Audit scope (9 state DBs enumerated):** (1) `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/state.db`, (2) `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`, (3) `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/worktrees/claudex-cutover-soak/.claude/state.db` (soak lane), (4) `.worktrees/claudex-braid-v2-live-checkpoint/.claude/state.db`, (5) `.worktrees/feature-enforcement-gaps/.claude/state.db`, (6) `.worktrees/feature-eval-judgment/.claude/state.db`, (7) `.worktrees/feature-eval-report/.claude/state.db`, (8) `.worktrees/feature-eval-runner-fixes/.claude/state.db`, (9) `plugins/marketplaces/openai-codex/.claude/state.db`. Explicitly out of scope: tmp/ fixture DBs (gitignored ephemeral); sibling worktree `agent-a23c3d92` (no DB present); A0 worktree `feature-config-readiness-slice-a0-codec` (no `.claude/state.db` — inherits via `default_db_path()` fallback); A1 worktree `feature-config-readiness-slice-a-agent-contract` (same — no local DB).
+- **Query method:** `sqlite3 <db> "SELECT work_item_id, scope_json, evaluation_json FROM work_items"` plus Python-side key-set intersection against scope aliases `{allowed_files, required_files, forbidden_files, state_authorities, authority_domains}` and eval aliases `{acceptance, evidence}`. Read-only — no `UPDATE` / `INSERT` / `DELETE` issued.
+- **Findings matrix:**
+
+| # | DB path | Exists/readable | work_items table | Rows | Scope drift | Eval drift | Severity | Recommended action |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `hardFork/state.db` | yes (365 KB, 2026-04-17 14:56) | present | 0 | 0 | 0 | none | none |
+| 2 | `hardFork/.claude/state.db` | yes (5.9 MB, 2026-04-17 16:09) | present | 0 | 0 | 0 | none | none |
+| 3 | `worktrees/claudex-cutover-soak/.claude/state.db` | yes (475 KB, 2026-04-18 02:12) | present | 9 | 0 | 0 | none (already migrated) | none — the two one-row migrations earlier this session cleared the single legacy row (`wi-bundle-b-cli-verbs-landing`); backups at `tmp/wi-bundle-b-cli-verbs-landing.{scope,evaluation}_json.backup.txt` |
+| 4 | `.worktrees/claudex-braid-v2-live-checkpoint/.claude/state.db` | yes (356 KB, 2026-04-14) | present | 0 | 0 | 0 | none | none |
+| 5 | `.worktrees/feature-enforcement-gaps/.claude/state.db` | yes (192 KB, 2026-04-06) | **ABSENT** | n/a | n/a | n/a | none | schema not initialized — no drift possible |
+| 6 | `.worktrees/feature-eval-judgment/.claude/state.db` | yes (192 KB, 2026-04-06) | **ABSENT** | n/a | n/a | n/a | none | schema not initialized |
+| 7 | `.worktrees/feature-eval-report/.claude/state.db` | yes (160 KB, 2026-04-06) | **ABSENT** | n/a | n/a | n/a | none | schema not initialized |
+| 8 | `.worktrees/feature-eval-runner-fixes/.claude/state.db` | yes (192 KB, 2026-04-06) | **ABSENT** | n/a | n/a | n/a | none | schema not initialized |
+| 9 | `plugins/marketplaces/openai-codex/.claude/state.db` | yes (205 KB, 2026-04-07) | **ABSENT** | n/a | n/a | n/a | none | plugin DB — non-ClauDEX schema; Category C tables never created |
+
+- **Verification result:** **zero remaining legacy drift rows across the entire hardFork lane footprint.** The only row that ever carried legacy vocabulary (`wi-bundle-b-cli-verbs-landing` on the soak DB) was migrated in-session during the Slice A0 unblock; audit reconfirms both its scope_json and evaluation_json now use exclusively canonical keys. Five of the nine DBs have the `work_items` table absent (schema not initialized) so drift is mechanically impossible there. The A0 and A1 implementer worktrees do not carry their own `.claude/state.db` — they inherit via `default_db_path()` step-3/4 fallback to the soak or hardFork DB, both of which are drift-free.
+- **Blocking severity for dispatch prompt-pack path:** NONE — no SubagentStart prompt-pack compile will fail on any DB in this footprint due to codec vocabulary drift. A0's decode-side compatibility shim (commit `764d625` on `feature/config-readiness-slice-a0-codec`) remains a permanent guardrail but is not needed to unblock the current footprint.
+- **Suggested fix path:** none required for this footprint. The A0 compatibility shim remains as durable protection for future legacy rows that may appear from imports, CI fixtures, or upstream merges. If the push of `feature/config-readiness-slice-a0-codec` is later authorised and the shim lands in `cc-policy`'s installed runtime, the class of defect is permanently closed.
+- **Blocking?** No. Global soak readiness signal is GREEN for the codec-drift class. Next config-readiness slice can proceed independently of the push-target adjudication that remains outstanding for the A0 and A+A1 feature branches.
+- **Verification state:** 9 DBs enumerated, all 9 probed, Python-side key-set intersection returned zero drift against the declared alias sets. Coverage date 2026-04-18. Audit is a point-in-time snapshot; it does not automatically re-run on new rows — a bulk re-audit is bounded read-only work and can be repeated by re-running the enumeration-plus-probe script from this entry.
+
+### `work_item_contract_codec` vocabulary drift requiring compatibility handling (2026-04-18)
+
+- **Subject:** three-way vocabulary drift on the scope-manifest and evaluation-contract surfaces persisted in `work_items.scope_json` and `work_items.evaluation_json`. At discovery, (a) legacy rows carried `allowed_files` / `forbidden_files` / `state_authorities` (scope) and `acceptance` / `evidence` (eval); (b) `runtime/core/work_item_contract_codec.py` `_SCOPE_KEYS` required `allowed_paths` / `required_paths` / `forbidden_paths` / `state_domains`, and `_EVAL_KEYS` required `acceptance_notes` / `required_evidence` / `required_tests` / `rollback_boundary`; (c) `runtime/core/prompt_pack_resolver.py:624-630` + `runtime/cli.py` workflow-scope writer used `authority_domains` (declared successor to `state_domains`). Symptom: Guardian(provision) SubagentStart prompt-pack compile raised `ValueError: scope_json contains unexpected key 'allowed_files'` and (separately) `evaluation_json contains unexpected key 'acceptance'` on `wi-bundle-b-cli-verbs-landing`, blocking Config-readiness Slice A dispatch chain.
+- **Repro:** query the row via `sqlite3 .claude/state.db "SELECT scope_json, evaluation_json FROM work_items WHERE work_item_id='wi-bundle-b-cli-verbs-landing'"`. If either JSON blob contains any of the legacy keys above, `cc-policy dispatch agent-prompt ... --stage-id guardian` will emit a valid contract block but the downstream SubagentStart hook will fail prompt-pack compile. Confirmed on lane HEAD `86795d0` via both Guardian's `BLOCKED` return and direct Python reproduction against `runtime.core.work_item_contract_codec.decode_work_item_contract`.
+- **Impact:** any work_item with a legacy scope_json or evaluation_json shape makes the ENTIRE canonical dispatch chain (planner → guardian → implementer → reviewer) unusable for that work_item. Because SubagentStart prompt-pack compile is a hard-refuse failure mode (not degraded-output), the chain cannot proceed past the first role that needs runtime-rehydrated contract context. Blocking-severity for ClauDEX dispatch; soak-readiness risk for any lane that inherits legacy rows.
+- **Unblock applied (2026-04-18, soak-local, reversible):** two one-row operational migrations on `.claude/state.db` for `wi-bundle-b-cli-verbs-landing` (backups at `tmp/wi-bundle-b-cli-verbs-landing.scope_json.backup.txt` and `tmp/wi-bundle-b-cli-verbs-landing.evaluation_json.backup.txt`): scope keys renamed to canonical; evaluation keys renamed with `evidence` scalar string wrapped to singleton list (matches `_EVAL_TUPLE_KEYS` shape). Audit across ALL `work_items` rows confirmed only this single row had drift — no further on-lane rows need migration. Same drift may exist on other on-disk state DBs (hardFork-root `.claude/state.db`; other worktree state DBs) but has not been audited.
+- **Permanent fix (bounded Slice A0, in `.worktrees/feature-config-readiness-slice-a0-codec`, reviewer-verdict `ready_for_guardian`, NOT COMMITTED):** added decode-side compatibility normalization to `runtime/core/work_item_contract_codec.py` via shared `_normalize_legacy_keys(field_name, payload, alias_map)` helper + `_SCOPE_ALIASES` / `_EVAL_ALIASES` module-level constants + `_coerce_legacy_evidence_shape` value-shape coercion for `evidence` scalar→list. `_SCOPE_KEYS` / `_EVAL_KEYS` unchanged — aliasing happens BEFORE the closed-set check. Decode-only; encoders remain canonical. New `TestLegacyVocabularyCompatibility` class with 17 tests. `143 passed, 1 xpassed in 5.69s` on the required three-file verification command.
+- **Suggested fix (operator adjudication pending):** (i) land Slice A0 via Guardian(merge) when no-commit constraint is lifted; (ii) then run a cross-DB drift audit (hardFork-root `.claude/state.db`, sibling worktrees) and migrate any remaining legacy rows; (iii) pick ONE canonical encoder vocabulary between `state_domains` (codec-internal) and `authority_domains` (resolver/CLI), deprecate the other, and add an invariant test asserting round-trip with a single vocabulary name; (iv) consider an encoder-side reject for writes carrying legacy alias keys, so the codec alias-acceptance is a compatibility gate rather than a drift amplifier.
+- **Blocking?** Blocking for any SubagentStart prompt-pack compile on a legacy row; resolved for the single row in this lane via one-row migration. Not blocking for lanes with only canonical rows. Slice A0 permanent fix is dirty-worktree-reviewer-approved and awaits a landing decision.
+- **Verification state:** lane-side drift audit shows zero remaining legacy rows in `.claude/state.db`. Codec decode succeeds for all on-lane rows. Slice A0 `test_work_item_contract_codec.py` 118 passed in 0.10s (101 pre-existing + 17 new). Full regression on Slice A0 worktree: `143 passed, 1 xpassed`. Cross-DB audit (other state DBs) NOT yet performed — follow-on slice.
+
+### Planner scope-manifest mismatch forced forbidden-path authority addition in Slice A (2026-04-18)
+
+- **Subject:** Config-readiness Slice A (agent-contract classification authority retirement) planner (agent id `a7cb831bc9b5495ec`) read `runtime/core/authority_registry.py` from the soak-worktree's DIRTY tree (session-local uncommitted additions earlier in the same conversation) and asserted the precondition *"`canonical_dispatch_subagent_type` already exists in `authority_registry.py`"*. The Scope Manifest therefore placed `authority_registry.py` in `forbidden_paths` on the premise that the function was a stable authority the implementer would only consume, not modify. **Precondition was false at base commit `6b8cc5c`:** `grep -n "canonical_dispatch_subagent_type" runtime/core/authority_registry.py` at base returned zero matches. Implementer (agent id `a9fa4c3a692b1a845`) discovered the false precondition, added the function (80 lines: `STAGE_SUBAGENT_TYPES` / `_SUBAGENT_TYPE_ALIASES` / `_CANONICAL_SEATS` / `canonical_dispatch_subagent_type` / `__all__` update) to `authority_registry.py`, and reported the scope deviation explicitly.
+- **Repro:** `git -C <worktree> show 6b8cc5c:runtime/core/authority_registry.py | grep -cE "canonical_dispatch_subagent_type|STAGE_SUBAGENT_TYPES"` returns `0`. Meanwhile `grep -n "canonical_dispatch_subagent_type" /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/worktrees/claudex-cutover-soak/runtime/core/authority_registry.py` returns `line 567:def canonical_dispatch_subagent_type(subagent_type: str) -> Optional[str]:` — this is the soak-worktree dirty-tree view that the planner read.
+- **Impact:** the scope-manifest mechanical enforcement was undermined by a planner error rather than implementer overreach. The implementer's modification was additive-only, architecturally correct (sole classification authority belongs in `authority_registry`), fully bounded (80 lines, fully tested via 4 new tests in `tests/runtime/test_authority_registry.py`), and the minimum-necessary change to satisfy the Evaluation Contract. Reviewer (agent id `a47ca6ec4adde6ca8`) adjudicated the deviation as acceptable and issued `REVIEW_VERDICT: ready_for_guardian`. The deeper concern is systemic: any future planner that reads from a dirty worktree and treats uncommitted content as committed authority will produce equivalent false-precondition scope manifests. This is a recurring class of planner-side drift, not a one-off.
+- **Suggested fix:** (i) planner discipline — planner agents must verify preconditions against `git show <base>:<path>` or equivalent committed state, not the raw filesystem read of a potentially-dirty working tree; (ii) mechanical invariant — a planner-stage hook or test asserting that every asserted-existing symbol in an Evaluation Contract is present at the stated base commit via `git show`; (iii) Scope Manifest writer (planner role) emits a `base_commit_sha` field alongside the scope so downstream stages can cross-check; (iv) if a scope deviation IS necessary mid-implementer, require the implementer to return `BLOCKED` with the false-precondition diagnosis rather than silently add the missing dependency (the reviewer's after-the-fact acceptance is defensible for this slice but is not the canonical path for future slices).
+- **Blocking?** Not blocking — Slice A reached `ready_for_guardian` despite the deviation. Soak-readiness concern: the class of planner error can reoccur on any future slice whose precondition involves recent soak-worktree state. Follow-on invariant / test work is bounded and planner-only-affecting.
+- **Verification state:** base absence confirmed via `git show 6b8cc5c:runtime/core/authority_registry.py | grep -c canonical_dispatch_subagent_type` → 0. Soak dirty-tree presence confirmed via direct file read. Slice A reviewer adjudication recorded in `REVIEW_FINDINGS_JSON` under `scope_deviation_authority_registry` (reviewer agent id `a47ca6ec4adde6ca8`). No mechanical invariant for planner precondition verification exists yet.
+
+### `~/.claude` symlink target ambiguity caused Step-1 under-enumeration of `.claude/state.db` (2026-04-18)
+
+- **Subject:** the initial Step-1 draft of
+  `ClauDEX/CATEGORY_C_TARGET_DB_ENUMERATION_2026-04-18.md` (rev 1,
+  Codex instruction `1776484106248-0003-x7a92s`) enumerated
+  `hardFork/state.db` (resolved from `~/.claude/state.db`) as the
+  sole hardFork-level Category C DB target. It silently omitted
+  `hardFork/.claude/state.db` — a distinct file at a different inode
+  with materially different Category C row content.
+- **Evidence:** `readlink ~/.claude` returns
+  `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork` (the
+  hardFork directory itself, not a `.claude/` subdir within it). So
+  `~/.claude/state.db` resolves to `hardFork/state.db` (top level,
+  inode 23481828, 365 KB, `proof_state=10`,
+  `dispatch_queue=0`, `dispatch_cycles=0`). Separately,
+  `hardFork/.claude/state.db` exists as an independent file (inode
+  23486089, 5.87 MB, `proof_state=9`, **`dispatch_queue=107`**,
+  **`dispatch_cycles=1`**) and is the DB selected by
+  `runtime.core.config.default_db_path()` **step 3** when CWD is
+  the hardFork repo root (git-root `.claude/state.db` branch). The
+  rev-1 draft conflated the two files because it treated the
+  `~/.claude` symlink as if it pointed at `hardFork/.claude/` rather
+  than at `hardFork/`. Discovered by the 2026-04-18
+  discovery-hardening pass (Codex instruction
+  `1776484473001-0006-8ll8il`); corrected in rev 2 of the draft
+  artifact.
+- **Impact:** under-enumeration would have caused any eventual
+  Step-2 / Step-3 execution to miss the DB with the **most
+  material Category C content** in the entire lane footprint —
+  including the only non-zero `dispatch_queue` / `dispatch_cycles`
+  rows observed anywhere. A forensic cleanup that sealed Step 1 at
+  2 DBs would have left row 14 content intact under the false
+  label "enumeration complete." Additionally, row 14's post-retirement
+  mtime and non-zero dispatch-table rows create a potential
+  Escalation boundary §3 signal (possible unretired writer) that
+  the rev-1 draft never exposed — the operator could have
+  authorised DROP TABLE execution against rows 1 and 2 without
+  ever being prompted to adjudicate row 14's writer-drift
+  ambiguity. **Blocking?** Not blocking (no execution has been
+  authorised; all adjudication is still open). Resolved for the
+  current Step-1 draft by rev 2 adding row 14, §1.d discovery
+  narrative, §3 item 5 (row-14 writer-drift adjudication), and
+  the updated 3-in-scope / 19-excluded totals.
+- **Suggested fix (class of defect, for future Step-1 passes):**
+  any future ClauDEX `default_db_path()`-adjacent enumeration
+  (including future Category C-style retirements, future forensic
+  cleanups, any readiness pass that must name "every DB" of a
+  given class) MUST perform an explicit **canonical path
+  disambiguation** step up front:
+  1. run `readlink ~/.claude` (or the platform equivalent) and
+     record the target path,
+  2. run `realpath <candidate>` for each candidate and compare
+     inode / size to detect false aliasing,
+  3. enumerate **all four** resolver branches of
+     `default_db_path()` separately — step 1 (`CLAUDE_POLICY_DB`
+     override), step 2 (`CLAUDE_PROJECT_DIR`), step 3 (git-root
+     `.claude/state.db`), step 4 (`~/.claude/state.db` symlink
+     fallback) — and treat each resolved path as a distinct
+     candidate until inode comparison proves otherwise,
+  4. explicitly name the CWD context that would select each
+     resolver target (lane worktree vs hardFork root vs outside
+     git) so the operator can see which seat writes to which DB.
+  This discipline would have caught row 14 on the initial draft.
+  A mechanical invariant could be added in a future slice — a
+  test or `cc-policy` CLI that asserts the resolver enumeration
+  against the running filesystem — but no runtime / test code was
+  touched in this docs-only entry.
+- **Verification state:** rev 2 of the draft artifact now names
+  rows 1, 2, 14 as in-scope with the disambiguation narrative in
+  §1.b; the `readlink` output is recorded in the Open Soak Issue
+  body above; inode values (23481828 vs 23486089) are captured.
+  No further runtime verification performed — this entry is a
+  class-of-defect writeup, not an adjudication.
 
 ### Checkpoint-report excluded-scope narration drift (2026-04-17) — RESOLVED (guardrail added)
 
@@ -429,11 +668,13 @@ tests/scenarios). The entry below reflects the corrected picture.
   hook enforcement uses the repo-root `6b8cc5c` runtime. Once the convergence
   bundle is committed + pushed + the repo-root advanced, live enforcement
   picks up the new push-not-gated model.
-- **Impact on push-debt clearing guidance:** the prior operator action card
-  (lease re-issue + `cc-policy approval grant claudesox-local push` + push)
-  remains **correct for live enforcement today** — both committed runtimes
-  still accept `push` as an approval op_type, and live `bash_approval_gate`
-  still consumes the token. The action card does not require changes.
+- **Impact on push-debt clearing guidance:** the prior push-token workaround
+  is preserved here only as old-model drift evidence. It is **not** current
+  operator guidance. Under the current authority model, the
+  supervisor/orchestrator must not self-grant a push token and must not
+  self-run `git push`; evaluated `commit`/`merge`/straightforward `push`
+  stays on Guardian, and a routine harness approval prompt is helper/runtime
+  drift to repair rather than a new operator action card.
 - **Impact on single-authority policy:** one operational fact ("is push
   approval-token gated?") will have two conflicting authorities once the
   convergence bundle commits. The drift window spans: [bundle committed
@@ -448,9 +689,11 @@ tests/scenarios). The entry below reflects the corrected picture.
 - **Recommended bounded remediation order:**
   1. Checkpoint-land the convergence bundle on `claudesox-local`
      (routine Guardian commit; already test-backed across touched areas).
-  2. Clear push debt via the live-authority path — installed `cc-policy
-     approval grant claudesox-local push` under the OLD model, then push
-     (Sacred Practice #8 user approval required for the token grant).
+  2. If legacy repo-root enforcement still surfaces push-token debt before the
+     convergence bundle is propagated, treat it as repo-root/helper drift:
+     keep landing on Guardian, repair/re-seat the helper path or finish the
+     repo-root convergence, and do **not** instruct the orchestrator to grant
+     a push token or run `git push` directly.
   3. Immediately after the push lands on `origin/feat/claudex-cutover`,
      fast-forward the repo-root checkout (`git -C
      /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork pull --ff-only`
@@ -464,7 +707,8 @@ tests/scenarios). The entry below reflects the corrected picture.
 - **Status:** OPEN pending steps 1–3 above. Will transition to RESOLVED
   once the repo-root checkout is fast-forwarded past the convergence bundle
   and installed `cc-policy approval grant --help` on the repo-root path no
-  longer lists `push`.
+  longer lists `push`, so helper/runtime enforcement and Guardian landing
+  match again without any push-token workaround.
 
 ## Tonight's Priority Order
 
@@ -916,3 +1160,11 @@ The supervisor loop must keep Codex in charge of the live bridge session.
 - No user prompt required merely because Codex reached a turn boundary.
 - The `Stop` hook and `wait_for_codex_review()` exist specifically so Codex
   returns to a blocking review state instead of falling out of the loop.
+
+## Open Soak Issues — Branch-Precondition Drift (2026-04-18)
+
+**Issue class:** dispatch-slice premises assumed A-branch state but were executed on soak branch `claudesox-local`. Symptom: "fix X on file Y" slices arrive scoped against A-branch line numbers, but soak's Y has pre-existing edits or different content, producing false-premise findings when the implementer tries to apply the described patch.
+
+**Repro (concrete):** slice A5 (dispatch_contract.py adapter collapse) targeted A-branch HEAD. On A-branch tip `aef51ae`, `runtime/core/dispatch_contract.py` does NOT exist (never landed on that branch). On soak HEAD `86795d0`, the same file carried standalone `STAGE_SUBAGENT_TYPES` + `_SUBAGENT_TYPE_ALIASES` declarations (lines 61 and 72), requiring a soak-specific re-execution (A5R). A1 (frozenset retirement in `agent_contract_required.py`) landed only on A-branch; soak still has the frozensets. Following A5R, A6 must merge A1 semantics to soak before any slice that depends on frozenset retirement.
+
+**Suggested fix:** every slice dispatch context must carry (1) the **target branch** explicitly in the planner's mission (A-branch vs soak), (2) the expected **HEAD SHA** the slice was authored against, and (3) a **precondition-verification deliverable** that re-reads the target file(s) on the live branch and asserts the pre-slice state BEFORE issuing the scope manifest. A5R's planner deliverable §1 did exactly this and found no false premise; earlier slices that skipped §1 produced the drift.

@@ -1,98 +1,63 @@
-"""ClauDEX dispatch contract — stage → required subagent_type mapping.
+"""ClauDEX dispatch contract — adapter-shim over authority_registry.
+
+@decision DEC-CLAUDEX-DISPATCH-CONTRACT-ADAPTER-001
+Title: dispatch_contract.py is an adapter over authority_registry.
+Status: accepted (supersedes the standalone-authority framing of
+  DEC-CLAUDEX-DISPATCH-CONTRACT-001 while keeping its public import
+  surface for existing consumers).
+Rationale: Slice A5R of the CUTOVER_PLAN collapse pass requires a
+  single owner for stage -> Agent-tool subagent_type. That owner is
+  authority_registry (already owns the canonical STAGE_SUBAGENT_TYPES
+  mapping, the full _SUBAGENT_TYPE_ALIASES table, and
+  dispatch_subagent_type_for_stage). dispatch_contract now re-exports
+  those symbols so existing imports (agent_prompt.py,
+  policies/agent_contract_required.py) keep working unchanged while
+  the parallel declarations are retired.
+
+  The original justification for a separate module -- "capability model
+  vs launch contract" -- is subsumed because the capability registry
+  already has the launch-contract surface baked in. Keeping two sources
+  of truth created latent drift (the local dispatch_contract._SUBAGENT_TYPE_ALIASES
+  had only 1 entry while authority_registry's had 5) -- exactly the kind
+  of silent divergence CUTOVER_PLAN Constitutional Rule #1 forbids.
+
+  Invariants (enforced by tests in tests/runtime/test_dispatch_contract.py):
+    1. STAGE_SUBAGENT_TYPES is the authority_registry object (identity).
+    2. _SUBAGENT_TYPE_ALIASES is the authority_registry object (identity).
+    3. dispatch_subagent_type_for_stage delegates byte-identically.
+    4. No module-level dict literal re-declares either mapping.
+    5. __all__ preserved so existing callers' imports still resolve.
 
 @decision DEC-CLAUDEX-DISPATCH-CONTRACT-001
-Title: runtime/core/dispatch_contract.py owns the stage → Agent-tool
-  subagent_type mapping used by the contract injection path.
-Status: accepted (extracted from authority_registry.py to unblock the
-  guardian-landing / canonical-stage checkpoint bundle without dragging
-  contract-dispatch authority into the capability registry)
-Rationale: ``authority_registry.py`` owns the capability vocabulary, the
-  stage → capability mapping, the operational-fact table, and the capability
-  contracts. Those are claims about what a stage may do.
-
-  The stage → ``subagent_type`` mapping is a different concern: it is the
-  runtime contract for which ``tool_input.subagent_type`` value the Agent
-  launch MUST carry so the dispatch-contract path (``agent_contract_required``
-  policy + ``agent_prompt`` producer) can enforce a canonical launch shape.
-  Keeping those two concerns in separate modules prevents the capability
-  registry from accruing dispatch-surface drift and keeps each authority
-  single-purpose:
-
-    * authority_registry  →  capability model
-    * dispatch_contract   →  Agent-tool launch contract
-
-  The only shared dependency is ``_LIVE_ROLE_ALIASES`` from
-  ``authority_registry`` (so harness-emitted role strings like ``"Plan"``
-  resolve consistently). Importing that symbol does not create a cycle —
-  authority_registry does not import dispatch_contract.
-
-  Invariants this module owns (enforced by targeted tests, not narrated):
-    1. STAGE_SUBAGENT_TYPES keys are exactly the active stages from
-       ``stage_registry``; no stage is missing and no unknown stage is
-       present.
-    2. Guardian modes (``guardian:provision`` / ``guardian:land``) both map
-       to the ``"guardian"`` subagent_type — the Agent tool does not carry
-       the provision/land distinction; that distinction lives on the policy
-       side via canonicalization.
-    3. ``dispatch_subagent_type_for_stage`` returns ``None`` for unknown
-       stages, sinks, and empty input — fail-closed.
-    4. Harness-level aliases (``_SUBAGENT_TYPE_ALIASES``) are applied after
-       the canonical stage lookup so downstream adapters see the live
-       subagent_type string the harness actually emits.
+Title: runtime/core/dispatch_contract.py owns the stage -> Agent-tool
+  subagent_type mapping.
+Status: superseded by DEC-CLAUDEX-DISPATCH-CONTRACT-ADAPTER-001 (A5R).
+Rationale: Original framing kept dispatch_contract as a standalone
+  authority separate from authority_registry. Superseded because
+  authority_registry already owned the canonical STAGE_SUBAGENT_TYPES
+  and _SUBAGENT_TYPE_ALIASES -- keeping both was a dual-authority defect.
 """
 
 from __future__ import annotations
 
-from typing import Mapping, Optional
+from typing import Optional
 
-from runtime.core import stage_registry as sr
-from runtime.core.authority_registry import _LIVE_ROLE_ALIASES
-
-# ---------------------------------------------------------------------------
-# Stage → required subagent_type mapping
-#
-# A contract stage_id deterministically maps to the only valid
-# tool_input.subagent_type for that Agent-tool launch. Guardian provision
-# and land modes both use the bare "guardian" subagent_type — the live
-# harness does not distinguish them at the Agent tool surface; that
-# distinction is resolved on the policy side via canonical_actor_stage.
-# ---------------------------------------------------------------------------
-
-STAGE_SUBAGENT_TYPES: Mapping[str, str] = {
-    sr.PLANNER: "planner",
-    sr.GUARDIAN_PROVISION: "guardian",
-    sr.IMPLEMENTER: "implementer",
-    sr.REVIEWER: "reviewer",
-    sr.GUARDIAN_LAND: "guardian",
-}
-
-# Harness subagent-type aliases. The live harness emits the capitalised
-# "Plan" variant for planner launches; this mapping lets the policy enforce
-# against the exact string the harness will produce.
-_SUBAGENT_TYPE_ALIASES: Mapping[str, str] = {
-    "Plan": "planner",
-}
+from runtime.core.authority_registry import (
+    _LIVE_ROLE_ALIASES,  # preserved for backward-compat imports
+    _SUBAGENT_TYPE_ALIASES,
+    STAGE_SUBAGENT_TYPES,
+    dispatch_subagent_type_for_stage as _authority_dispatch_subagent_type_for_stage,
+)
 
 
 def dispatch_subagent_type_for_stage(stage: str) -> Optional[str]:
     """Return the required Agent-tool subagent_type for ``stage``.
 
-    Resolves stage aliases via ``authority_registry._LIVE_ROLE_ALIASES``
-    before lookup and returns ``None`` for unknown stages/sinks
-    (fail-closed). The returned value is the string the policy engine
-    expects the Agent-tool ``tool_input.subagent_type`` field to carry.
+    Delegates to authority_registry.dispatch_subagent_type_for_stage --
+    the canonical owner -- so dispatch_contract consumers and
+    authority_registry consumers cannot disagree.
     """
-    if not stage:
-        return None
-    canonical_stage = stage
-    if canonical_stage not in STAGE_SUBAGENT_TYPES:
-        canonical_stage = _LIVE_ROLE_ALIASES.get(stage, "")
-    if not canonical_stage:
-        return None
-    required = STAGE_SUBAGENT_TYPES.get(canonical_stage)
-    if required is None:
-        return None
-    return _SUBAGENT_TYPE_ALIASES.get(required, required)
+    return _authority_dispatch_subagent_type_for_stage(stage)
 
 
 __all__ = [
