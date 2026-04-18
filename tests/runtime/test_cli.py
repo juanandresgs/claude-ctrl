@@ -125,6 +125,60 @@ def test_marker_set_and_get_active(db):
     assert out["role"] == "implementer"
 
 
+def test_marker_set_without_project_root_defaults_to_resolved_root(db, tmp_path):
+    """A21 regression: `marker set` without --project-root must default to the
+    CLI-resolved project root (args → CLAUDE_PROJECT_DIR env → git toplevel →
+    normalize_path) so a subsequent scoped `marker get-active --project-root`
+    query finds the marker.
+
+    Pre-A21: set stored project_root=NULL, and get-active --project-root=<X>
+    returned found=False because NULL did not match equality against X. This
+    surfaced in A19R when the orchestrator's guardian marker was silently
+    invisible to the lease-visibility path until re-set with an explicit flag.
+
+    Post-A21: omitting --project-root picks up CLAUDE_PROJECT_DIR (the canonical
+    session root), so the scoped lookup matches deterministically.
+    """
+    from runtime.core.policy_utils import normalize_path
+
+    fake_root = str(tmp_path / "fake-proj")
+    os.makedirs(fake_root, exist_ok=True)
+    normalized = normalize_path(fake_root)
+
+    # Emulate a normal repo session: CLAUDE_PROJECT_DIR is set.
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": db,
+        "PYTHONPATH": str(_WORKTREE),
+        "CLAUDE_PROJECT_DIR": fake_root,
+    }
+
+    # marker set without --project-root
+    result = subprocess.run(
+        [sys.executable, _CLI, "marker", "set", "agent-noroot", "guardian"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    # Scoped get-active under the resolved root must find the marker.
+    result = subprocess.run(
+        [sys.executable, _CLI, "marker", "get-active", "--project-root", normalized],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout.strip())
+    assert data.get("found") is True, (
+        f"scoped get-active must find the marker persisted with defaulted "
+        f"project_root; got {data!r}"
+    )
+    assert data.get("agent_id") == "agent-noroot"
+    assert data.get("role") == "guardian"
+    assert data.get("project_root") == normalized, (
+        f"marker row must carry the defaulted project_root, not NULL; got "
+        f"{data.get('project_root')!r}"
+    )
+
+
 def test_marker_deactivate(db):
     run(["marker", "set", "agent-1", "implementer"], db)
     code, out = run(["marker", "deactivate", "agent-1"], db)
@@ -258,6 +312,44 @@ def test_statusline_snapshot_keys(db):
     ):
         assert key in out, f"missing key: {key}"
     # W-CONV-4: proof_status/proof_workflow removed from snapshot
+
+
+def test_bridge_topology_reports_non_authoritative_legacy_codex_target(db, tmp_path, monkeypatch):
+    braid = tmp_path / "braid"
+    state = tmp_path / "state"
+    run_dir = braid / "runs" / "run-topology-cli"
+    run_dir.mkdir(parents=True)
+    state.mkdir(parents=True)
+    (braid / "runs" / "active-run").write_text("run-topology-cli\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-topology-cli",
+                "project_root": str(tmp_path),
+                "project_slug": "fake",
+                "tmux_target": "fake:1.2",
+                "claude_pane_id": "%12",
+                "created_at": "2026-04-18T00:00:00Z",
+                "completed_at": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "status.json").write_text(
+        json.dumps({"state": "queued", "updated_at": "2026-04-18T00:00:01Z"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("BRAID_ROOT", str(braid))
+    monkeypatch.setenv("CLAUDEX_STATE_DIR", str(state))
+
+    code, out = run(["bridge", "topology"], db)
+    assert code == 0
+    assert out["active_run_id"] == "run-topology-cli"
+    assert out["claude"]["target"] == "fake:1.2"
+    assert out["claude"]["target_exists"] is False
+    assert out["codex"]["target"] == "fake:1.1"
+    assert out["codex"]["authoritative"] is False
     assert "proof_status" not in out
     assert "proof_workflow" not in out
 

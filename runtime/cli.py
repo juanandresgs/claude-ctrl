@@ -37,6 +37,7 @@ import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
 import runtime.core.hook_doc_validation as hook_doc_validation_mod
 import runtime.core.hook_manifest as hook_manifest_mod
+import runtime.core.lane_topology as lane_topology_mod
 import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
 import runtime.core.eval_report as eval_report_mod
 import runtime.core.eval_runner as eval_runner_mod
@@ -210,7 +211,20 @@ def _handle_marker(args) -> int:
             # W-CONV-2: accept optional --project-root and --workflow-id so the
             # test-marker-lifecycle.sh helper and production callers can write
             # scoped markers via `cc-policy marker set`.
+            #
+            # A21 hardening: when --project-root is omitted, resolve through the
+            # canonical CLI resolver (_resolve_project_root: args → env
+            # CLAUDE_PROJECT_DIR → git toplevel → normalize_path) so normal repo
+            # sessions no longer persist agent_markers.project_root = NULL.
+            # This closes the A19R secondary defect where scoped
+            # `marker get-active --project-root <root>` could not find a marker
+            # written by `marker set` without the flag. If resolution still
+            # returns empty (no args, no env, cwd outside a git repo), fall back
+            # to the legacy unscoped write (project_root=None) rather than
+            # crashing — preserving backward compat for context-less callers.
             _pr = getattr(args, "project_root", None) or ""
+            if not _pr:
+                _pr = _resolve_project_root(args)
             _wf = getattr(args, "workflow_id", None) or ""
             markers_mod.set_active(
                 conn,
@@ -550,6 +564,27 @@ def _handle_bridge(args) -> int:
             )
             return 1
         print(json.dumps(diagnostic.to_json_dict()))
+        return 0
+
+    if args.action == "topology":
+        try:
+            payload = lane_topology_mod.probe_lane_topology(
+                braid_root=getattr(args, "braid_root", None),
+                state_dir=getattr(args, "state_dir", None),
+                codex_target=getattr(args, "codex_target", None),
+                claude_target=getattr(args, "claude_target", None),
+            )
+        except Exception as exc:  # pragma: no cover — probe is fail-closed
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error_detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            )
+            return 1
+        print(json.dumps(payload))
         return 0
 
     return _err(f"unknown bridge action: {args.action}")
@@ -3841,6 +3876,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--state-dir",
         default=None,
         help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
+    )
+    bridge_topology = bridge_sub.add_parser(
+        "topology",
+        help=(
+            "Resolve live Codex/Claude tmux topology for the active lane "
+            "without guessing in shell wrappers."
+        ),
+    )
+    bridge_topology.add_argument(
+        "--braid-root",
+        default=None,
+        help="Override $BRAID_ROOT for the probe (defaults to env).",
+    )
+    bridge_topology.add_argument(
+        "--state-dir",
+        default=None,
+        help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
+    )
+    bridge_topology.add_argument(
+        "--codex-target",
+        default=None,
+        help="Optional explicit Codex pane target override.",
+    )
+    bridge_topology.add_argument(
+        "--claude-target",
+        default=None,
+        help="Optional explicit Claude pane target override.",
     )
 
     # constitution — read-only constitution registry inspection/validation
