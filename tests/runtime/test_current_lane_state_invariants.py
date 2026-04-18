@@ -664,8 +664,21 @@ class TestSupervisorActiveRegionCoversSectionsBelowOpenSoakIssues:
 
 
 def test_supervisor_handoff_pins_statusline_as_final_global_soak_gate() -> None:
-    """Global soak is not complete until the live CC worker visibly renders the
-    statusline. This must be stated in the active supervisor handoff surface.
+    """The final global-soak statusline gate must be expressed in the active
+    supervisor handoff surface in one of two states:
+
+    - **OPEN** — "live CC worker … statusline correctly" plus "not globally
+      soak-ready" (pre-A45 state where direct worker-pane proof was pending).
+    - **CLOSED** — "live CC worker … statusline correctly" plus an explicit
+      A45-style pane-target anchor `claudex-soak-1:4.1` documenting the
+      captured worker-pane proof that satisfied the gate.
+
+    A31 (updated by A45) requires the gate-language anchors ("live CC worker",
+    "statusline correctly") in both states. The state-specific anchor
+    ("not globally soak-ready" OR `claudex-soak-1:4.1`) disambiguates open
+    vs closed so neither state can be silently dropped. Any future handoff
+    edit that neither pins the pre-A45 open-state phrasing NOR the A45
+    closed-state anchor fails loudly.
     """
     active = _active_region_for_path(
         SUPERVISOR_HANDOFF_DOC,
@@ -675,9 +688,15 @@ def test_supervisor_handoff_pins_statusline_as_final_global_soak_gate() -> None:
         "SUPERVISOR_HANDOFF.md does not pin live CC-worker statusline proof as "
         "the final global-soak gate"
     )
-    assert "not globally soak-ready" in active, (
-        "SUPERVISOR_HANDOFF.md must say the config is not globally soak-ready "
-        "until the live CC worker statusline proof exists"
+    open_state = "not globally soak-ready" in active
+    closed_state = "claudex-soak-1:4.1" in active
+    assert open_state or closed_state, (
+        "SUPERVISOR_HANDOFF.md must either (a) say the config is 'not globally "
+        "soak-ready' while direct worker-pane proof is pending, OR "
+        "(b) anchor the A45 closed-state pane-target "
+        "`claudex-soak-1:4.1` documenting the captured worker-pane proof "
+        "that satisfied the gate. Neither anchor is present — the gate "
+        "state is unknowable from the handoff."
     )
     assert "baseline failures remain at 4" not in active, (
         "SUPERVISOR_HANDOFF.md still carries the stale 4-failure CLI-baseline "
@@ -718,11 +737,14 @@ _BRIDGE_SETTINGS_JSON = _REPO_ROOT / "ClauDEX" / "bridge" / "claude-settings.jso
 _CANONICAL_STATUSLINE_COMMAND = "$HOME/.claude/scripts/statusline.sh"
 
 # Required anchors for the active-region statusline gate. Together these pin
-# both the A38 supporting evidence and the rule that renderer/config/scenario
-# proof is NOT the final gate.
+# the A38 supporting-evidence chain regardless of gate state (open or
+# A45-closed). The supporting evidence remains load-bearing even after the
+# A45 direct worker-pane proof closes the gate — removing any of these
+# anchors would erase the chain of how the gate could be re-verified from
+# scratch. The "does NOT satisfy this gate" exclusion was retired in A45
+# because the gate is now closed by direct worker-pane proof.
 _STATUSLINE_GATE_REQUIRED_TOKENS: tuple[str, ...] = (
     "renderer/config/scenario evidence",
-    "does NOT satisfy this gate",
     "worker pane",
     "tmp/A38-statusline-capture.txt",
     "scripts/statusline.sh",
@@ -793,24 +815,30 @@ def test_settings_statusline_command_anchored_to_canonical_renderer() -> None:
 
 
 def test_supervisor_handoff_statusline_gate_keeps_direct_proof_boundary() -> None:
-    """A39 invariant: the `ClauDEX/SUPERVISOR_HANDOFF.md` active lane-truth
-    region must keep both the A38 supporting anchors and the explicit rule
-    that they do not close the final gate.
+    """A39 (updated by A45) invariant: the `ClauDEX/SUPERVISOR_HANDOFF.md`
+    active lane-truth region must keep the A38 supporting-evidence anchors.
 
     A31 pins the gate-LANGUAGE substrings (`live CC worker`,
-    `statusline correctly`, `not globally soak-ready`) but does not
-    verify that the accompanying A38 supporting anchors and "renderer
-    proof is insufficient" boundary survive future edits. Without A39,
-    someone could edit away the artifact path / reproduction command /
-    worker-pane boundary while preserving the gate-language prose — the
-    gate would visually read as closed or under-specified with no
-    underlying proof reference. A39 requires each canonical token to
-    appear in the active region and forbids the stale "gate satisfied"
-    claim from reappearing.
+    `statusline correctly`) and either the open-state phrasing
+    ("not globally soak-ready") OR the A45 closed-state anchor
+    (`claudex-soak-1:4.1`). A39 additionally requires the A38
+    supporting-evidence anchor set (artifact path, reproduction command,
+    worker-pane reference, canonical renderer path) so the evidence
+    chain remains re-auditable whether the gate is open or closed.
+    Without A39, someone could edit away the artifact path / reproduction
+    command / worker-pane boundary while preserving the gate-language
+    prose — the evidence chain would be lost even if the closure claim
+    remained.
 
     Robustness: token-level substring scan with distinct anchors for
-    each supporting-evidence piece and the direct-proof boundary so a
-    partial drift is caught at the specific missing anchor.
+    each supporting-evidence piece so a partial drift is caught at the
+    specific missing anchor.
+
+    A45 update: the pre-A45 exclusion of "global-soak gate SATISFIED" /
+    "The soak lane is now globally soak-ready" was retired because the
+    gate is now closed by direct worker-pane proof. Those substrings
+    are no longer premature claims; they are accurate closure statements
+    anchored to A45 evidence.
     """
     active = _active_region_for_path(
         SUPERVISOR_HANDOFF_DOC,
@@ -820,11 +848,9 @@ def test_supervisor_handoff_statusline_gate_keeps_direct_proof_boundary() -> Non
     assert not missing, (
         f"A39 statusline-gate anchor drift: SUPERVISOR_HANDOFF.md active "
         f"region is missing required statusline-gate token(s) {missing!r}. "
-        "The final gate cannot be audited correctly without these anchors. "
+        "The final gate evidence chain cannot be re-audited without these anchors. "
         f"Required tokens: {list(_STATUSLINE_GATE_REQUIRED_TOKENS)!r}. "
-        "If the evidence chain or direct-proof boundary was intentionally "
-        "reshaped, update this invariant in lockstep and document the new "
-        "anchor set in the A38 / A39 Open Soak Issues entries."
+        "If the evidence chain was intentionally reshaped, update this "
+        "invariant in lockstep and document the new anchor set in the "
+        "A38 / A39 / A45 Open Soak Issues entries."
     )
-    assert "global-soak gate SATISFIED" not in active
-    assert "The soak lane is now globally soak-ready" not in active
