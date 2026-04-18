@@ -62,7 +62,7 @@ authorizes it:
 | Authority | `runtime.schemas` already owns the DDL surface; this sub-slice owns the *one-time* erasure of residual rows. The five-element authority-writer allowlist stays unchanged. |
 | Removal target | Inert `proof_state` rows on pre-retirement databases. |
 | Proposed shape | A dedicated, idempotent one-shot migration module (e.g. `runtime/core/phase8_category_c_cleanup.py` or a `scripts/one_shot/` entry) guarded by an explicit `--yes-drop-proof-state` flag. Issues `DROP TABLE IF EXISTS proof_state`. No schema-DDL change, no `runtime/schemas.py` edit, no CLI-subparser persistence. |
-| Required invariants before run | `cc-policy constitution validate` healthy `concrete_count=24`; `tests/runtime/test_phase8_category_c_proof_retired.py` green; authority-writer invariant green (the migration module is a one-shot outside the runtime authority surface and must be allowlisted explicitly before running). |
+| Required invariants before run | `cc-policy constitution validate` healthy `concrete_count=25`; `tests/runtime/test_phase8_category_c_proof_retired.py` green; authority-writer invariant green (the migration module is a one-shot outside the runtime authority surface and must be allowlisted explicitly before running). **Stability note:** the `concrete_count` / `entry_count` numbers reflect the live registry at packet-reconciliation time (post-`cc-policy-who-remediation` + post-merge hardening, lane HEAD `566e2d7`). An execution slice must re-snapshot the live baseline at dispatch time and treat post-dispatch movement — not historical packet-baseline mismatch — as the halt condition per Escalation boundaries §3. |
 | Acceptance evidence | Post-run SQLite `PRAGMA table_info(proof_state)` returns empty on any target DB; invariant pin extended with a one-line "no table anywhere" check. |
 | Rollback boundary | `DROP TABLE IF EXISTS` is not reversible. A forensic operator must snapshot the DB first.  The packet therefore declares this a **one-way operation** and requires explicit user sign-off before it runs. |
 
@@ -144,10 +144,12 @@ pytest -q tests/runtime/test_phase8_category_c_proof_retired.py
 pytest -q tests/runtime/test_phase8_category_c_dispatch_retired.py
 pytest -q tests/runtime/test_authority_table_writers.py
 pytest -q tests/runtime/test_phase8_deletions.py
-python3 runtime/cli.py constitution validate      # concrete_count=24, unchanged
-python3 runtime/cli.py hook validate-settings     # entry_count=30, unchanged
-python3 runtime/cli.py hook doc-check             # exact_match=true, unchanged
+python3 runtime/cli.py constitution validate      # concrete_count=25, unchanged from dispatch-time snapshot
+python3 runtime/cli.py hook validate-settings     # entry_count=31, unchanged from dispatch-time snapshot
+python3 runtime/cli.py hook doc-check             # exact_match=true, unchanged from dispatch-time snapshot
 ```
+
+**Stability note for gate numbers:** the `25` / `31` values above reflect the live registry at packet-reconciliation time (post-`cc-policy-who-remediation` + post-merge hardening, lane HEAD `566e2d7`). An execution slice must re-snapshot `concrete_count` / `entry_count` at its own dispatch start and use that snapshot — not these literals — as the "unchanged" baseline. Treat only post-dispatch movement as a halt condition per Escalation boundaries §3.
 
 Plus, for a migration run:
 

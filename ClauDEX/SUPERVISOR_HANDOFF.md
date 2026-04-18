@@ -112,8 +112,8 @@ ordered sub-slices (proof_state first, dispatch_queue /
 dispatch_cycles second), each guarded by explicit operator
 approval per Sacred Practice #8, with required invariant gates
 (`test_phase8_category_c_*`, `test_authority_table_writers`,
-`constitution validate concrete_count=24`, `hook validate-settings
-entry_count=30`, `hook doc-check exact_match=true`) and
+`constitution validate concrete_count=25`, `hook validate-settings
+entry_count=31`, `hook doc-check exact_match=true`) and
 escalation boundaries (destructive `DROP TABLE`, cross-database
 impact, forensic data-loss risk). The packet is **planning-only**
 — no `runtime/` / `hooks/` / `settings.json` / `schema` / bridge
