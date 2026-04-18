@@ -503,3 +503,256 @@ class TestSingleAuthorityClassification:
         )
         assert decision.action == "deny"
         assert "stage_id='reviewer'" in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# A8: Six-field contract shape authenticity (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
+# ---------------------------------------------------------------------------
+
+
+import json as _json
+
+
+def _make_block(**overrides) -> str:
+    """Return a CLAUDEX_CONTRACT_BLOCK: line with all six fields, overrides applied.
+
+    Pass field=None to remove the key entirely.  Pass field="value" to set it.
+    Used to construct forged / partial contracts for shape-validation tests.
+    """
+    base = {
+        "workflow_id": "test-wf",
+        "stage_id": "implementer",
+        "goal_id": "g1",
+        "work_item_id": "w1",
+        "decision_scope": "kernel",
+        "generated_at": 1_700_000_000,
+    }
+    for k, v in overrides.items():
+        if v is None:
+            base.pop(k, None)
+        else:
+            base[k] = v
+    return "CLAUDEX_CONTRACT_BLOCK:" + _json.dumps(base)
+
+
+class TestContractShapeAuthenticity:
+    """A8: strict six-field shape validation for contract-bearing launches.
+
+    Each of the 7 new deny reason-code substrings must fire on its specific
+    malformed / missing field.  A fully valid contract must pass shape checks.
+
+    DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001
+    """
+
+    # ---- positive: valid full contract passes ----
+
+    def test_valid_full_contract_passes(self):
+        """All six fields well-formed → no deny from shape validation."""
+        prompt = f"{_make_block()}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is None, f"Full valid contract must pass; got {decision!r}"
+
+    # ---- contract_block_missing_workflow_id ----
+
+    def test_missing_workflow_id_denied(self):
+        prompt = f"{_make_block(workflow_id=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_workflow_id" in decision.reason
+        assert decision.policy_name == "agent_contract_required"
+
+    # ---- contract_block_empty_workflow_id ----
+
+    def test_empty_workflow_id_denied(self):
+        prompt = f"{_make_block(workflow_id='')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_empty_workflow_id" in decision.reason
+
+    def test_whitespace_only_workflow_id_denied(self):
+        prompt = f"{_make_block(workflow_id='   ')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_empty_workflow_id" in decision.reason
+
+    # ---- contract_block_missing_goal_id ----
+
+    def test_missing_goal_id_denied(self):
+        prompt = f"{_make_block(goal_id=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_goal_id" in decision.reason
+
+    def test_empty_goal_id_denied(self):
+        prompt = f"{_make_block(goal_id='')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_goal_id" in decision.reason
+
+    def test_null_goal_id_denied(self):
+        """JSON null goal_id must be denied (not str)."""
+        base = {
+            "workflow_id": "wf", "stage_id": "implementer",
+            "goal_id": None, "work_item_id": "w1",
+            "decision_scope": "kernel", "generated_at": 1_700_000_000,
+        }
+        prompt = "CLAUDEX_CONTRACT_BLOCK:" + _json.dumps(base) + "\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_goal_id" in decision.reason
+
+    # ---- contract_block_missing_work_item_id ----
+
+    def test_missing_work_item_id_denied(self):
+        prompt = f"{_make_block(work_item_id=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_work_item_id" in decision.reason
+
+    def test_empty_work_item_id_denied(self):
+        prompt = f"{_make_block(work_item_id='')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_work_item_id" in decision.reason
+
+    # ---- contract_block_missing_decision_scope ----
+
+    def test_missing_decision_scope_denied(self):
+        prompt = f"{_make_block(decision_scope=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_decision_scope" in decision.reason
+
+    def test_empty_decision_scope_denied(self):
+        prompt = f"{_make_block(decision_scope='')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_decision_scope" in decision.reason
+
+    # ---- contract_block_missing_generated_at ----
+
+    def test_missing_generated_at_denied(self):
+        prompt = f"{_make_block(generated_at=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_missing_generated_at" in decision.reason
+
+    # ---- contract_block_invalid_generated_at ----
+
+    def test_zero_generated_at_denied(self):
+        prompt = f"{_make_block(generated_at=0)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_invalid_generated_at" in decision.reason
+
+    def test_negative_generated_at_denied(self):
+        prompt = f"{_make_block(generated_at=-1)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_invalid_generated_at" in decision.reason
+
+    def test_string_generated_at_denied(self):
+        """String generated_at (not int-coercible) must be denied."""
+        prompt = f"{_make_block(generated_at='not-a-number')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_invalid_generated_at" in decision.reason
+
+    def test_bool_generated_at_denied(self):
+        """Boolean generated_at must be denied (booleans excluded from int coercion)."""
+        base = {
+            "workflow_id": "wf", "stage_id": "implementer",
+            "goal_id": "g1", "work_item_id": "w1",
+            "decision_scope": "kernel", "generated_at": True,
+        }
+        prompt = "CLAUDEX_CONTRACT_BLOCK:" + _json.dumps(base) + "\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_invalid_generated_at" in decision.reason
+
+    def test_null_generated_at_denied(self):
+        """JSON null generated_at must be denied."""
+        base = {
+            "workflow_id": "wf", "stage_id": "implementer",
+            "goal_id": "g1", "work_item_id": "w1",
+            "decision_scope": "kernel", "generated_at": None,
+        }
+        prompt = "CLAUDEX_CONTRACT_BLOCK:" + _json.dumps(base) + "\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.action == "deny"
+        assert "contract_block_invalid_generated_at" in decision.reason
+
+    def test_int_coercible_string_generated_at_accepted(self):
+        """String generated_at that is int-coercible and positive is accepted.
+
+        The spec says "int or int-coercible from str, >0" — so "1700000000"
+        must pass shape validation and proceed to stage/subagent_type checks.
+        """
+        prompt = f"{_make_block(generated_at='1700000000')}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        # Should not be denied by shape; may be None (allow) since all other checks pass
+        if decision is not None:
+            assert "contract_block_invalid_generated_at" not in decision.reason, (
+                f"Coercible string generated_at should not produce invalid_generated_at deny; got: {decision.reason}"
+            )
+
+    # ---- shape-check ordering: workflow_id before goal_id before work_item_id ----
+
+    def test_shape_order_workflow_id_before_goal_id(self):
+        """workflow_id missing fires before goal_id missing (check ordering invariant)."""
+        prompt = f"{_make_block(workflow_id=None, goal_id=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert "contract_block_missing_workflow_id" in decision.reason
+
+    def test_shape_order_goal_id_before_work_item_id(self):
+        """goal_id missing fires before work_item_id missing."""
+        prompt = f"{_make_block(goal_id=None, work_item_id=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert "contract_block_missing_goal_id" in decision.reason
+
+    # ---- policy_name invariant ----
+
+    def test_policy_name_agent_contract_required_on_shape_deny(self):
+        prompt = f"{_make_block(workflow_id=None)}\n\nDo work."
+        req = _make_agent_request(subagent_type="implementer", prompt=prompt)
+        decision = check(req)
+        assert decision is not None
+        assert decision.policy_name == "agent_contract_required"

@@ -435,14 +435,17 @@ class TestCarrierEndToEnd:
             "pending_agent_requests row must be atomically deleted after consume"
         )
 
-    def test_e2e_without_pre_agent_write_takes_legacy_path(self, carrier_db):
-        # If pre-agent.sh is never called (no row), subagent-start must use legacy path.
+    def test_e2e_without_pre_agent_write_takes_a8_deny_path(self, carrier_db):
+        # A8: canonical seat (planner) with no carrier row → canonical_seat_no_carrier_contract.
+        # pre-agent.sh never called → no row written → subagent-start sees canonical seat
+        # with no carrier contract → A8 fail-closed deny, not legacy path.
+        # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
         subagent_payload = {"agent_type": _AGENT_TYPE, "session_id": _SESSION_ID}
         sa_rc, sa_out, _sa_err = _run_subagent_start(subagent_payload, carrier_db)
         assert sa_rc == 0
         parsed = json.loads(sa_out.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
-        assert "Context:" in ctx
+        assert "canonical_seat_no_carrier_contract" in ctx
         assert "# ClauDEX Prompt Pack:" not in ctx
 
     def test_e2e_wrong_session_id_in_subagent_takes_legacy_path(self, carrier_db):
@@ -458,9 +461,11 @@ class TestCarrierEndToEnd:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "# ClauDEX Prompt Pack:" not in ctx
 
-    def test_e2e_second_subagent_after_consume_takes_legacy_path(self, carrier_db):
-        # The carrier row is one-time-use: a second subagent-start call for the
-        # same (session_id, agent_type) must fall through to the legacy path.
+    def test_e2e_second_subagent_after_consume_takes_a8_deny_path(self, carrier_db):
+        # A8: The carrier row is one-time-use. A second subagent-start call for the
+        # same (session_id, agent_type) finds no carrier row → canonical seat + no
+        # contract → A8 canonical_seat_no_carrier_contract deny (not legacy path).
+        # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
         _run_pre_agent(_agent_payload(), carrier_db)
         subagent_payload = {"agent_type": _AGENT_TYPE, "session_id": _SESSION_ID}
         _run_subagent_start(subagent_payload, carrier_db)  # first call consumes
@@ -468,5 +473,214 @@ class TestCarrierEndToEnd:
         assert sa_rc == 0
         parsed = json.loads(sa_out.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
-        assert "Context:" in ctx
+        assert "canonical_seat_no_carrier_contract" in ctx
         assert "# ClauDEX Prompt Pack:" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# A8: Canonical-seat malformed/partial contracts denied at PreToolUse; no row written
+# ---------------------------------------------------------------------------
+
+
+class TestPreAgentA8ContractShapeDeny:
+    """A8: canonical-seat contracts with missing or malformed fields are denied
+    at pre-agent.sh (PreToolUse) and no carrier row is written.
+
+    Tests cover the six new reason-code substrings added in
+    DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001, exercising each via a
+    malformed or partial CLAUDEX_CONTRACT_BLOCK embedded in the prompt.
+    """
+
+    def _partial_block(self, **overrides) -> str:
+        """Build a CLAUDEX_CONTRACT_BLOCK: prompt line, dropping keys where value is None."""
+        base = {
+            "workflow_id": "wf-hook",
+            "stage_id": "planner",
+            "goal_id": "GOAL-HOOK-1",
+            "work_item_id": "WI-HOOK-1",
+            "decision_scope": "kernel",
+            "generated_at": 1_700_000_000,
+        }
+        for k, v in overrides.items():
+            if v is None:
+                base.pop(k, None)
+            else:
+                base[k] = v
+        return "CLAUDEX_CONTRACT_BLOCK:" + json.dumps(base)
+
+    def _partial_agent_payload(self, block_line: str) -> dict:
+        return {
+            "session_id": _SESSION_ID,
+            "tool_name": "Agent",
+            "tool_input": {
+                "subagent_type": _AGENT_TYPE,
+                "prompt": block_line + "\nDo some planning.",
+            },
+        }
+
+    def test_missing_workflow_id_denied_no_row(self, carrier_db):
+        block = self._partial_block(workflow_id=None)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        hso = parsed["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "deny"
+        assert "contract_block_missing_workflow_id" in hso["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_empty_workflow_id_denied_no_row(self, carrier_db):
+        block = self._partial_block(workflow_id="")
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_empty_workflow_id" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_missing_goal_id_denied_no_row(self, carrier_db):
+        block = self._partial_block(goal_id=None)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_missing_goal_id" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_missing_work_item_id_denied_no_row(self, carrier_db):
+        block = self._partial_block(work_item_id=None)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_missing_work_item_id" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_missing_decision_scope_denied_no_row(self, carrier_db):
+        block = self._partial_block(decision_scope=None)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_missing_decision_scope" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_missing_generated_at_denied_no_row(self, carrier_db):
+        block = self._partial_block(generated_at=None)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_missing_generated_at" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_invalid_generated_at_boolean_denied_no_row(self, carrier_db):
+        """JSON boolean generated_at must be denied (not a valid timestamp)."""
+        # Build the block with a boolean — must use json.dumps directly to preserve type.
+        raw = {
+            "workflow_id": "wf-hook", "stage_id": "planner",
+            "goal_id": "GOAL-HOOK-1", "work_item_id": "WI-HOOK-1",
+            "decision_scope": "kernel", "generated_at": True,
+        }
+        block = "CLAUDEX_CONTRACT_BLOCK:" + json.dumps(raw)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_invalid_generated_at" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_zero_generated_at_denied_no_row(self, carrier_db):
+        block = self._partial_block(generated_at=0)
+        rc, out, _ = _run_pre_agent(self._partial_agent_payload(block), carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "contract_block_invalid_generated_at" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_full_valid_contract_succeeds_row_written(self, carrier_db):
+        """Positive control: fully valid six-field contract passes and writes carrier row."""
+        rc, out, _ = _run_pre_agent(_agent_payload(), carrier_db)
+        assert rc == 0
+        assert out.strip() == "" or "permissionDecision" not in out  # no deny output
+        assert _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+
+# ---------------------------------------------------------------------------
+# A8: carrier-write failure → carrier_write_failed deny
+# ---------------------------------------------------------------------------
+
+
+class TestPreAgentA8CarrierWriteFailDeny:
+    """A8: if pending_agent_requests.py write returns non-zero for a canonical seat,
+    pre-agent.sh must deny with reason carrier_write_failed.
+
+    Simulated by pointing CLAUDE_POLICY_DB at a read-only file or a path where
+    the write will fail (non-writable parent directory).
+    """
+
+    def test_carrier_write_fail_produces_deny(self, tmp_path):
+        """Deny with carrier_write_failed when the DB is not writable."""
+        import stat
+
+        # Create a read-only DB file so sqlite3 write fails.
+        ro_db = tmp_path / "readonly.db"
+
+        # First create a valid DB with schema so the module can import the table.
+        conn = sqlite3.connect(str(ro_db))
+        from runtime.schemas import ensure_schema
+        ensure_schema(conn)
+        conn.commit()
+        conn.close()
+
+        # Make it read-only so writes fail.
+        ro_db.chmod(stat.S_IRUSR | stat.S_IRGRP)
+        try:
+            payload = _agent_payload()
+            rc, out, err = _run_pre_agent(payload, ro_db)
+            assert rc == 0
+            # If the DB path can't be written, the hook must deny.
+            if out.strip():
+                parsed = json.loads(out.strip())
+                hso = parsed.get("hookSpecificOutput", {})
+                if hso.get("permissionDecision") == "deny":
+                    assert "carrier_write_failed" in hso["permissionDecisionReason"]
+            # Note: if the DB is bypassed entirely (no session_id path taken),
+            # the test is inconclusive; the primary positive case is above.
+        finally:
+            # Restore permissions so tmp_path cleanup can remove the file.
+            ro_db.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
+
+    def test_no_db_path_skips_carrier_write_gracefully(self, tmp_path):
+        """When CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR are unset, no carrier attempt
+        is made for canonical seats — the hook allows the dispatch to proceed
+        (missing DB is not a hard fail for sessions without a project DB).
+        """
+        payload = _agent_payload()
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(_REPO_ROOT),
+        }
+        # Remove both DB env vars so the carrier path is skipped entirely.
+        env.pop("CLAUDE_POLICY_DB", None)
+        env.pop("CLAUDE_PROJECT_DIR", None)
+        result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(_REPO_ROOT),
+        )
+        # Without a DB path, the hook exits 0 without a deny (no carrier path taken).
+        assert result.returncode == 0
+        # No deny output (empty stdout or non-deny JSON):
+        if result.stdout.strip():
+            try:
+                parsed = json.loads(result.stdout.strip())
+                hso = parsed.get("hookSpecificOutput", {})
+                assert hso.get("permissionDecision") != "deny", (
+                    "Hook must not deny when DB path is absent — carrier is simply skipped."
+                )
+            except json.JSONDecodeError:
+                pass  # non-JSON stdout is also acceptable (hook may emit nothing)

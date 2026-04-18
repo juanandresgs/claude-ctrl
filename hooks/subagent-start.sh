@@ -134,9 +134,14 @@ if [[ "$_HAS_CONTRACT" == "yes" ]]; then
         _MARKER_ROLE="$_EFFECTIVE_STAGE_ID"
     fi
 elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
-    _EFFECTIVE_LEASE_ROLE="$_CANONICAL_SUBAGENT_TYPE"
-    _LEGACY_STAGE_ID=$(_authority_python "canonical_stage_id" "$AGENT_TYPE" 2>/dev/null || echo "")
-    [[ -n "$_LEGACY_STAGE_ID" ]] && _MARKER_ROLE="$_LEGACY_STAGE_ID"
+    # A8: canonical seat without a carrier-backed contract is a bypass attempt.
+    # If the subagent_type resolves to a canonical dispatch seat but the six-field
+    # contract is NOT present (carrier row was missing, or the row had missing/empty
+    # required fields so _HAS_CONTRACT is "no"), deny fail-closed via additionalContext
+    # with reason canonical_seat_no_carrier_contract.  Do NOT fall through to the
+    # legacy guidance path — that would silently misguide a forged/stripped launch.
+    # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
+    _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. Use 'cc-policy dispatch agent-prompt --stage-id <stage>' and retry the dispatch."
 fi
 
 # Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
