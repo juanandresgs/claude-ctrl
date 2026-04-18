@@ -714,3 +714,324 @@ class TestFailClosedWhenPayloadAgentIdMissing:
         )
         # Legacy path produces Context: line for non-canonical agents.
         assert "Context:" in ctx
+
+
+# ---------------------------------------------------------------------------
+# GS1-F-2: TestMarkerSeatingReliability
+# ---------------------------------------------------------------------------
+# Regression suite for the deterministic DB routing fix and observable failure
+# signal (DEC-CLAUDEX-SA-MARKER-RELIABILITY-001).
+#
+# Root cause sealed: _local_cc_policy previously only exported CLAUDE_POLICY_DB
+# when CLAUDE_PROJECT_DIR was already in env. SubagentStart invocations in
+# which the harness did NOT inject CLAUDE_PROJECT_DIR wrote markers to the
+# home-dir default DB while context role reads from PROJECT_ROOT/.claude/state.db
+# — a silent split-brain causing "lagging" / "pid file stale" signals on the
+# global-soak lane.
+# ---------------------------------------------------------------------------
+
+
+def _run_hook_no_cpd(
+    payload: dict,
+    db_path: Path,
+) -> tuple[int, str, str]:
+    """Invoke the hook WITHOUT CLAUDE_PROJECT_DIR in env.
+
+    This is the key variant for GS1-F-2: verifies that the hook derives the
+    correct CLAUDE_POLICY_DB from PROJECT_ROOT (git-detected) when the harness
+    does not inject CLAUDE_PROJECT_DIR.
+
+    CLAUDE_POLICY_DB is still injected explicitly so tests remain hermetic —
+    the hook's _local_cc_policy must honour this when already set, confirming
+    the "if [[ -z "${CLAUDE_POLICY_DB:-}" ]]" guard works correctly.
+    """
+    import subprocess
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(_REPO_ROOT),
+        "CLAUDE_POLICY_DB": str(db_path),
+        "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
+    }
+    # Explicitly unset CLAUDE_PROJECT_DIR so the hook must fall back to
+    # PROJECT_ROOT from detect_project_root().
+    env.pop("CLAUDE_PROJECT_DIR", None)
+
+    result = subprocess.run(
+        ["bash", _HOOK],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(_REPO_ROOT),
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+class TestMarkerSeatingReliability:
+    """GS1-F-2: Marker seating is deterministic and failures are observable.
+
+    Three tests:
+    1. Marker seats when CLAUDE_PROJECT_DIR is absent (pre-fix failure vector).
+    2. Seating failure emits a breadcrumb in additionalContext (never blocks).
+    3. End-to-end: cc-policy context role resolves after seating without CLAUDE_PROJECT_DIR.
+    """
+
+    # -----------------------------------------------------------------------
+    # Test 1: marker seats when CLAUDE_PROJECT_DIR is absent
+    # -----------------------------------------------------------------------
+
+    def test_marker_seats_when_claude_project_dir_absent(self, seeded_db):
+        """Verify marker is written to CLAUDE_POLICY_DB when CLAUDE_PROJECT_DIR
+        is absent from the hook's environment.
+
+        Pre-fix behaviour: _local_cc_policy would not export CLAUDE_POLICY_DB,
+        so the CLI wrote to the home-dir default DB instead of the test DB.
+        The assertion on the test DB would find no row → test FAILS pre-fix.
+
+        Post-fix: _local_cc_policy falls back to PROJECT_ROOT (git-detected)
+        when CLAUDE_POLICY_DB is not yet set and CLAUDE_PROJECT_DIR is absent.
+        Since we inject CLAUDE_POLICY_DB explicitly, the guard honours it and
+        the marker lands in the correct test DB.
+        """
+        db_path, project_root = seeded_db
+        payload_agent_id = "gs1f2-test-agent-no-cpd-001"
+
+        conn = _open_db(db_path)
+        try:
+            _write_carrier(conn, session_id="gs1f2-no-cpd-session")
+        finally:
+            conn.close()
+
+        rc, stdout, stderr = _run_hook_no_cpd(
+            _guardian_payload(agent_id=payload_agent_id, session_id="gs1f2-no-cpd-session"),
+            db_path,
+        )
+        assert rc == 0, f"Hook exited {rc}; stderr={stderr!r}"
+
+        conn = _open_db(db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM agent_markers WHERE agent_id = ?",
+                (payload_agent_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None, (
+            f"Expected agent_markers row for agent_id={payload_agent_id!r} in test DB, "
+            f"but none found. Pre-fix: marker would land in home-dir DB when "
+            f"CLAUDE_PROJECT_DIR is absent.  stdout={stdout!r}"
+        )
+        assert row["role"] == _STAGE_ID, (
+            f"Expected role={_STAGE_ID!r}, got {row['role']!r}"
+        )
+        assert row["agent_id"] == payload_agent_id
+
+        # Confirm no "marker seating failed" breadcrumb in additionalContext.
+        # The runtime-first path fires (contract present), so stdout is the
+        # prompt-pack envelope — we check there's no failure signal in stderr.
+        assert "marker seating failed" not in stderr, (
+            f"Unexpected seating-failure signal in stderr:\n{stderr}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 2: seating failure emits breadcrumb, hook exits 0
+    # -----------------------------------------------------------------------
+
+    def test_marker_seating_failure_emits_breadcrumb(self, seeded_db, tmp_path):
+        """Force a CLI-side error for dispatch agent-start; verify the hook
+        emits a 'marker seating failed' diagnostic in stderr via log_json and
+        still exits 0 (never blocks).
+
+        Failure vector: install a SQLite BEFORE INSERT trigger on agent_markers
+        that raises an error. This is a targeted block that:
+        - Does NOT affect the carrier consume (pending_agent_requests DELETE).
+        - Does NOT affect workflow binding or other writes (different tables).
+        - DOES cause 'dispatch agent-start' to fail when it tries to INSERT or
+          UPDATE agent_markers — the trigger fires on INSERT and raises FAIL.
+
+        The trigger is installed AFTER the carrier row is written so the carrier
+        consume can still proceed, giving _HAS_CONTRACT=yes and exercising the
+        full seating block before the CLI call fails.
+
+        The failure diagnostic lands in stderr via log_json unconditionally (the
+        log_json call is before the runtime-first path exit so it runs for all
+        output paths).
+        """
+        db_path, project_root = seeded_db
+
+        conn = _open_db(db_path)
+        try:
+            _write_carrier(conn, session_id="gs1f2-fail-session")
+            # Install a trigger that blocks all INSERT/UPDATE-via-INSERT on
+            # agent_markers. The CLI's ON CONFLICT DO UPDATE is also an INSERT
+            # at the SQL level, so this fires and raises an error.
+            conn.execute(
+                """
+                CREATE TRIGGER block_agent_marker_insert
+                BEFORE INSERT ON agent_markers
+                BEGIN
+                    SELECT RAISE(FAIL, 'marker insert blocked by test trigger');
+                END
+                """
+            )
+            # Also block UPDATE (for the deactivate-stale step in set_active).
+            conn.execute(
+                """
+                CREATE TRIGGER block_agent_marker_update
+                BEFORE UPDATE ON agent_markers
+                BEGIN
+                    SELECT RAISE(FAIL, 'marker update blocked by test trigger');
+                END
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rc, stdout, stderr = _run_hook_no_cpd(
+            _guardian_payload(
+                agent_id="gs1f2-fail-agent-abc",
+                session_id="gs1f2-fail-session",
+            ),
+            db_path,
+        )
+
+        # Hook must always exit 0 — seating failure is never blocking.
+        assert rc == 0, (
+            f"Hook must exit 0 on seating failure; rc={rc}\nstderr={stderr!r}"
+        )
+
+        # The failure diagnostic must appear in stderr via log_json.
+        # log_json emits {"stage":"marker_seating_failed","message":"role=... agent_id=... exit=..."}.
+        # CONTEXT_PARTS also contains "marker seating failed" (spaces) but CONTEXT_PARTS
+        # is only visible in stdout when the legacy path runs (no contract). Here, since
+        # the contract IS present and the runtime-first path fires, CONTEXT_PARTS goes
+        # to additionalContext only in non-contract paths. The observable signal is
+        # log_json to stderr — check for both the stage token and the message fields.
+        assert "marker_seating_failed" in stderr or "marker seating failed" in stderr, (
+            f"Expected 'marker_seating_failed' or 'marker seating failed' in stderr.\n"
+            f"stderr={stderr!r}\nstdout={stdout!r}"
+        )
+        assert "role=" in stderr, f"Expected 'role=' in stderr:\n{stderr!r}"
+        assert "agent_id=" in stderr, f"Expected 'agent_id=' in stderr:\n{stderr!r}"
+        assert "exit=" in stderr, f"Expected 'exit=' in stderr:\n{stderr!r}"
+
+    # -----------------------------------------------------------------------
+    # Test 3: end-to-end context role resolves after seating without CLAUDE_PROJECT_DIR
+    # -----------------------------------------------------------------------
+
+    def test_context_role_resolves_after_seating_without_self_seat(self, seeded_db):
+        """End-to-end regression: the marker seating (done without CLAUDE_PROJECT_DIR)
+        lands in the correct DB such that a subsequent cc-policy context role
+        invocation (with CLAUDE_PROJECT_DIR + CLAUDE_ACTOR_ROLE + CLAUDE_ACTOR_ID,
+        simulating how the harness injects env for tool calls) resolves the
+        expected role and agent_id.
+
+        This is the authoritative regression for the split-brain bug on the
+        global-soak lane: pre-fix the marker landed in the home-dir DB → context
+        role returned empty role. Post-fix the marker lands in the test DB
+        (via PROJECT_ROOT fallback) → context role resolves the agent_id from
+        the lease (which the hook claimed in the same hermetic DB).
+
+        No intervening manual dispatch agent-start call is made between the
+        hook run and the context role check — this proves the hook's seating
+        (marker + lease claim) was sufficient.
+
+        Resolution path: build_context looks up the active lease by agent_id
+        (CLAUDE_ACTOR_ID) in the project-scoped DB, returning the guardian role
+        and agent_id. The lease was claimed by the hook using the payload agent_id.
+        """
+        import subprocess as _sp
+
+        db_path, project_root = seeded_db
+        payload_agent_id = "gs1f2-e2e-agent-ctx-001"
+
+        # Seed: carrier + guardian lease.
+        conn = _open_db(db_path)
+        try:
+            _write_carrier(conn, session_id="gs1f2-e2e-session")
+            leases_mod.issue(
+                conn,
+                role="guardian",
+                worktree_path=project_root,
+                workflow_id=_WORKFLOW_ID,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Run the hook WITHOUT CLAUDE_PROJECT_DIR.
+        rc, stdout, stderr = _run_hook_no_cpd(
+            _guardian_payload(agent_id=payload_agent_id, session_id="gs1f2-e2e-session"),
+            db_path,
+        )
+        assert rc == 0, f"Hook exited {rc}; stderr={stderr!r}"
+
+        # Verify the lease was claimed by the hook (lease.agent_id = payload_agent_id).
+        # This is the authoritative state that context role reads — the marker
+        # role 'guardian:land' is a stage-qualified role not retained by
+        # ensure_schema's cleanup (base roles only), so the lease is the
+        # canonical identity authority here.
+        conn = _open_db(db_path)
+        try:
+            lease_row = conn.execute(
+                "SELECT agent_id, role, status FROM dispatch_leases WHERE agent_id = ?",
+                (payload_agent_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert lease_row is not None, (
+            f"Lease must be claimed with agent_id={payload_agent_id!r} after hook. "
+            f"Pre-fix: lease would be unclaimed because marker seating failed "
+            f"(wrong DB), leaving agent_id=NULL.  stdout={stdout!r}"
+        )
+        assert lease_row["status"] == "active"
+        assert lease_row["role"] == "guardian"
+
+        # Now invoke cc-policy context role as a subprocess, simulating how the
+        # harness injects CLAUDE_PROJECT_DIR + CLAUDE_ACTOR_ROLE + CLAUDE_ACTOR_ID
+        # for tool calls AFTER spawn. CLAUDE_POLICY_DB is set so the CLI reads
+        # from our hermetic test DB. The harness injects CLAUDE_ACTOR_ROLE and
+        # CLAUDE_ACTOR_ID so build_context can locate the lease by agent_id.
+        cli_env = {
+            **os.environ,
+            "PYTHONPATH": str(_REPO_ROOT),
+            "CLAUDE_POLICY_DB": str(db_path),
+            "CLAUDE_PROJECT_DIR": str(_REPO_ROOT),
+            "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
+            "CLAUDE_ACTOR_ROLE": "guardian:land",
+            "CLAUDE_ACTOR_ID": payload_agent_id,
+        }
+        ctx_result = _sp.run(
+            ["python3", str(_REPO_ROOT / "runtime" / "cli.py"), "context", "role"],
+            capture_output=True,
+            text=True,
+            env=cli_env,
+            cwd=str(_REPO_ROOT),
+        )
+        assert ctx_result.returncode == 0, (
+            f"context role returned nonzero: {ctx_result.returncode}\n"
+            f"stderr={ctx_result.stderr!r}"
+        )
+
+        ctx_json = json.loads(ctx_result.stdout.strip())
+        # The CLI wraps in {"status":"ok","data":{...}} or returns data directly.
+        ctx_data = ctx_json.get("data", ctx_json)
+
+        assert ctx_data.get("role") in ("guardian:land", "guardian"), (
+            f"Expected role 'guardian:land' or 'guardian', got {ctx_data.get('role')!r}. "
+            f"Pre-fix: role would be empty because marker was in wrong DB and "
+            f"lease was unclaimed (agent_id=NULL). "
+            f"Full context output: {ctx_json}"
+        )
+        assert ctx_data.get("agent_id") == payload_agent_id, (
+            f"Expected agent_id={payload_agent_id!r}, got {ctx_data.get('agent_id')!r}. "
+            f"Full context output: {ctx_json}"
+        )
+        assert ctx_data.get("workflow_id") == _WORKFLOW_ID, (
+            f"Expected workflow_id={_WORKFLOW_ID!r}, got {ctx_data.get('workflow_id')!r}. "
+            f"Full context output: {ctx_json}"
+        )

@@ -39,8 +39,28 @@ get_plan_status "$PROJECT_ROOT"
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 _local_cc_policy() {
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    # @decision DEC-CLAUDEX-SA-MARKER-RELIABILITY-001
+    # Title: SubagentStart marker-seating is authoritative and failures are observable
+    # Status: accepted
+    # Rationale: CLAUDE_POLICY_DB must be deterministically routed to the
+    #   in-project state.db regardless of whether CLAUDE_PROJECT_DIR is present
+    #   in the SubagentStart env invocation. Previously, DB routing only fired
+    #   when CLAUDE_PROJECT_DIR was already exported, causing marker writes to
+    #   land in the default (home-dir) DB while context role reads from
+    #   PROJECT_ROOT/.claude/state.db — a silent split-brain. Fix: prefer
+    #   CLAUDE_POLICY_DB if already set (caller wins), then fall back to
+    #   CLAUDE_PROJECT_DIR, then fall back to PROJECT_ROOT (computed by
+    #   detect_project_root at hook startup). Any seating failure is now
+    #   captured and emitted as a CONTEXT_PARTS breadcrumb rather than silently
+    #   swallowed.  Extends DEC-CLAUDEX-SA-IDENTITY-001.
+    # Chain: detect_project_root → CLAUDE_POLICY_DB → cc-policy dispatch agent-start
+    #   → agent_markers → context role
+    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+            export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+        elif [[ -n "${PROJECT_ROOT:-}" ]]; then
+            export CLAUDE_POLICY_DB="${PROJECT_ROOT}/.claude/state.db"
+        fi
     fi
     python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
@@ -210,11 +230,22 @@ if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
         # workflow_id is derived from the current branch via current_workflow_id()
         # so the marker is queryable via get_active(project_root=X, workflow_id=W).
         _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
+        # Capture stderr to detect CLI failures; on nonzero exit emit a single-line
+        # diagnostic breadcrumb into CONTEXT_PARTS (DEC-CLAUDEX-SA-MARKER-RELIABILITY-001).
+        # The hook always exits 0 — seating failure is observable but never blocking.
+        _MARKER_STDERR_FILE=$(mktemp)
         _local_cc_policy dispatch agent-start \
             "${_MARKER_ROLE:-unknown}" "$_PAYLOAD_AGENT_ID" \
             --project-root "$PROJECT_ROOT" \
             ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
-            >/dev/null 2>&1 || true
+            >/dev/null 2>"$_MARKER_STDERR_FILE" && _MARKER_RC=0 || _MARKER_RC=$?
+        if [[ "$_MARKER_RC" -ne 0 ]]; then
+            _MARKER_STDERR_FIRST=$(head -1 "$_MARKER_STDERR_FILE" 2>/dev/null || echo "")
+            _AGENT_ID_SHORT="${_PAYLOAD_AGENT_ID:0:12}"
+            CONTEXT_PARTS+=("marker seating failed (role=${_MARKER_ROLE:-unknown} agent_id=${_AGENT_ID_SHORT} exit=${_MARKER_RC}): ${_MARKER_STDERR_FIRST:-no stderr}")
+            log_json "marker_seating_failed" "role=${_MARKER_ROLE:-unknown} agent_id=${_PAYLOAD_AGENT_ID} exit=${_MARKER_RC} stderr=${_MARKER_STDERR_FIRST:-}" || true
+        fi
+        rm -f "$_MARKER_STDERR_FILE"
     fi
 fi
 
