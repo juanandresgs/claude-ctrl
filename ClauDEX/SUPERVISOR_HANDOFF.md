@@ -2,10 +2,10 @@
 
 ## Current Lane Truth (2026-04-18)
 
-- Branch `claudesox-local` at HEAD — post-A24 `Next bounded cutover slice` internal-desync reconciliation — pushed to `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** — fully integrated.
-- **Post-A18/A19/A19R/A21/A21R/A22/A23/A24 steady state.** A18 (`a3b5a20`) reduced the non-CLI soak-baseline failure count from 10 to 5 via test-fixture alignment with current runtime DDL / policy-registry / sqlite schema-retirement truth. A19 (`9ec646f`) retired the last non-CLI failure by moving Bash redirect/tee/cp/mv tokenization out of `runtime/core/policies/bash_write_who.py` and into `runtime.core.command_intent.extract_bash_write_targets`, removing the `shlex` import from the policy so Invariant #5's Rule A (`TestNoPolicyImportsShlex`) passes. A19R landed the A19 commit on `origin/feat/claudex-cutover` after re-seating a stale installed runtime via upstream-sync of two policy files (see A19R entry in Open Soak Issues). A21 closed the A19R secondary defect on `cc-policy marker set`: omitted `--project-root` now defaults through the canonical CLI resolver (args → `CLAUDE_PROJECT_DIR` → git toplevel → `normalize_path`) so normal repo sessions no longer persist `agent_markers.project_root = NULL` and silently break scoped lookups. A21R forward-cleaned an unintended bridge-topology scope leak from the A21 commit via a non-destructive subtraction commit (no reset/rebase/history rewrite). A22 (`b13e4b1`) closed the symmetric gap on `cc-policy dispatch agent-start` so the lifecycle-path marker write defaults its project_root the same way `marker set` does post-A21. A23 (`fdcc38e`) reconciled stale OPEN-status framings in pre-A18 Open Soak Issues entries (cross-DB codec audit, codec vocabulary drift, cc-policy-who-remediation Slice 1) to reflect landed history through A22 and marked RESOLVED / HISTORICAL where appropriate. A24 (`27ec3e4`) reconciled the `## Next bounded cutover slice` section — its "Current lane truth" paragraph had been stuck at post-A16 tip `588d395` while the top-of-file block was current, a handoff-internal desynchronization defect; A24 updated that section to post-A23 tip `fdcc38e` and extended the published-chain enumeration from Ten to Seventeen commits.
+- Branch `claudesox-local` at HEAD — current tip `51bed6f` on `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** on the published branch — fully integrated. Lane-local dirty baseline has been progressively promoted through A28 (convergence-bundle docs + Guardian-landing invariant pins) and A29 (bridge/lane-topology reliability bundle + Bundle B cli-verbs WIP closure). Only lane-local ephemeral state (`.claudex/`) and the Category C planning packet remain intentionally uncommitted per standing discipline.
+- **Post-2026-04-17 steady-state maintenance.** A18 (`a3b5a20`) reduced the non-CLI soak-baseline failure count from 10 to 5 via test-fixture alignment with current runtime DDL / policy-registry / sqlite schema-retirement truth. A19 (`9ec646f`) retired the last non-CLI failure by moving Bash redirect/tee/cp/mv tokenization out of `runtime/core/policies/bash_write_who.py` and into `runtime.core.command_intent.extract_bash_write_targets`, removing the `shlex` import from the policy so Invariant #5's Rule A (`TestNoPolicyImportsShlex`) passes. A19R landed the A19 commit on `origin/feat/claudex-cutover` after re-seating a stale installed runtime via upstream-sync of two policy files (see A19R entry in Open Soak Issues). A21 closed the A19R secondary defect on `cc-policy marker set`: omitted `--project-root` now defaults through the canonical CLI resolver (args → `CLAUDE_PROJECT_DIR` → git toplevel → `normalize_path`) so normal repo sessions no longer persist `agent_markers.project_root = NULL` and silently break scoped lookups. A21R forward-cleaned an unintended bridge-topology scope leak from the A21 commit via a non-destructive subtraction commit (no reset/rebase/history rewrite). A22 (`b13e4b1`) closed the symmetric gap on `cc-policy dispatch agent-start` so the lifecycle-path marker write defaults its project_root the same way `marker set` does post-A21. A23 (`fdcc38e`) reconciled stale OPEN-status framings in pre-A18 Open Soak Issues entries (cross-DB codec audit, codec vocabulary drift, cc-policy-who-remediation Slice 1) to reflect landed history through A22 and marked RESOLVED / HISTORICAL where appropriate. A24 (`27ec3e4`) reconciled the `## Next bounded cutover slice` section internal-desync. A25 (`2cb1bbd`) and A26 (`90f0f1e`) completed the follow-on docs reconciliation and mechanical handoff tip-agreement invariant. A27 (`80a47e8`) pinned the branch-precondition contract mechanically in the supervisor prompt + invariants so future slices cannot silently dispatch against A-branch-authored premises on soak. A28 (`092f01b`) landed the doc-side of the runtime-authority convergence bundle (CLAUDE.md Guardian-landing discipline, supervisor-steering authorization, matching Guardian-landing invariant pins) so the installed cc-policy / hooks / CLAUDE.md and the runtime-level convergence (already landed in the A5R→A22 chain) now agree. A29 (`51bed6f`) landed the bridge/lane-topology reliability bundle (single runtime-owned `runtime/core/lane_topology.py` authority + `cc-policy bridge topology` CLI + supervision-script consumers + unit/integration tests) and closed the long-running Bundle B cli-verbs WIP residual.
 - **Residual baseline closure (post-A29):** the four `tests/runtime/test_cli.py` failures that were tied to Bundle B cli-verbs WIP (`test_proof_get_missing`, `test_proof_set_and_get`, `test_proof_list`, `test_dispatch_full_lifecycle`) are resolved by the A29 bridge/lane-topology bundle landing. Staged-scope verification at A29 landing: `tests/runtime/test_lane_topology.py tests/runtime/test_cli.py tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py` → 60 passed; `tests/runtime/test_braid_v2.py` → 5 passed (unfiltered). See A29 Open Soak Issues entry for details. **Non-CLI baseline is at zero failures; residual CLI baseline is at zero failures.**
-- **Push debt cleared.** All A-series commits through A24 (A5R → A10 [A0 cherry-pick] → A12 → A14 → A15 → A16 → A17 → A18 → A19 → A19R state repair → A20 → A21 → A21R forward cleanup → A22 → A23 → A24) are pushed to `origin/feat/claudex-cutover`. Pre-merge integration, doc reconciliation, the cc-policy-who-remediation bundle (historical commit `d7db4ba`, since long landed), and the Slice A0 codec compatibility shim (landed via A10 cherry-pick) all remain resolved; no checkpoint debt, no merge blockers, no push debt. Current tip: `27ec3e4` (post-A24 `Next bounded cutover slice` internal-desync reconciliation).
+- **Push debt cleared.** All A-series commits through A29 (A5R → A10 [A0 cherry-pick] → A12 → A14 → A15 → A16 → A17 → A18 → A19 → A19R state repair → A20 → A21 → A21R forward cleanup → A22 → A23 → A24 → A25 → A26 → A27 → A28 → A29) are pushed to `origin/feat/claudex-cutover`. Pre-merge integration, doc reconciliation, the cc-policy-who-remediation bundle (historical commit `d7db4ba`, since long landed), and the Slice A0 codec compatibility shim (landed via A10 cherry-pick) all remain resolved; no checkpoint debt, no merge blockers, no push debt. Current published tip: `51bed6f` (post-A29 bridge/lane-topology reliability bundle).
 - Historical: the pre-A18 lane-truth snapshot (HEAD `747fb3a`, post-merge docs/config hardening tip) and the pre-merge integration prep (7 merge-blocker files, non-destructive constraint, stash-pop contamination incident) are preserved in prior Open Soak Issues entries for audit.
 
 This file defines the project-specific Codex supervisor kickoff for the
@@ -101,10 +101,16 @@ one-liner is the only adapter change in this closure chain.
 
 ## Next bounded cutover slice
 
-**Current lane truth (2026-04-18, post-A24 push `27ec3e4`):** this
-worktree is the **global-soak config-readiness lane**. Lane is
-**0 ahead / 0 behind** `origin/feat/claudex-cutover`; push debt
-cleared. Category C is **paused-not-priority** in this overnight
+**Current lane truth (2026-04-18, post-A29 push `51bed6f`):** this
+worktree is the **global-soak config-readiness lane**. Published
+lane tip is **0 ahead / 0 behind** `origin/feat/claudex-cutover`
+at `51bed6f`; push debt on the published A-series bundle is
+cleared. The bridge/lane-topology closeout bundle referenced in
+prior revisions of this paragraph has since landed via A29
+(`runtime/core/lane_topology.py` authority + `cc-policy bridge
+topology` CLI + supervision-script consumers + unit/integration
+tests), closing the Bundle B cli-verbs WIP residual in the same
+commit. Category C is **paused-not-priority** in this overnight
 lane per operator direction — it is NOT the next bounded
 auto-selected action. Do not dispatch Category C planning or
 execution from this lane without an explicit fresh operator
@@ -128,21 +134,29 @@ recovery) → `e44c5b1` (A20 post-A18/A19/A19R handoff convergence)
 → `b13e4b1` (A22 `dispatch agent-start` project-root defaulting
 symmetry) → `fdcc38e` (A23 handoff state convergence) →
 `27ec3e4` (A24 `Next bounded cutover slice` internal-desync
-reconciliation). **Eighteen commits published on
-`origin/feat/claudex-cutover`; current tip `27ec3e4`.** Guardian remains sole landing actor; orchestrator is
-coordinate-only (no self-grant push, no self-run git push).
-Settings-file model authority fix preserved. `NULL`-project-root
-reproduction is closed on both `marker set` and `dispatch
-agent-start` when args / `CLAUDE_PROJECT_DIR` / git toplevel
-resolves (A21 + A22). Non-CLI soak-baseline failure count stands
-at zero; residual `tests/runtime/test_cli.py` baseline failures
-remain at 4 (Bundle B cli-verbs WIP, out of config-readiness
-scope).
+reconciliation) → `2cb1bbd` (A25 docs reconciliation) →
+`90f0f1e` (A26 mechanical handoff snapshot invariant) →
+`80a47e8` (A27 branch-precondition contract pin) → `092f01b`
+(A28 convergence-bundle docs + Guardian-landing invariants) →
+`51bed6f` (A29 bridge/lane-topology reliability bundle).
+**Twenty-four commits published on `origin/feat/claudex-cutover`;
+current published tip `51bed6f`.** Guardian remains sole landing
+actor; orchestrator is coordinate-only (no self-grant push, no
+self-run git push). Settings-file model authority fix preserved.
+`NULL`-project-root reproduction is closed on both `marker set`
+and `dispatch agent-start` when args / `CLAUDE_PROJECT_DIR` / git
+toplevel resolves (A21 + A22). The local soak-readiness closeout
+bundle has removed the old 4-failure CLI baseline from the
+promotion-critical suite; current local promotion evidence is
+`211 passed`.
 
 **Routine next actions (no user-decision boundary):**
 - continue steady-state supervision on this lane;
 - if a new config-readiness gap is surfaced, open a bounded slice
   scoped to this lane only;
+- before declaring global soak ready, prove the live CC worker
+  visibly renders the statusline correctly. Until that proof
+  exists, the config is not globally soak-ready;
 - if an A-branch archival test parity is explicitly requested,
   Path C (A14a/b/c) is documented and ready to dispatch.
 
@@ -363,6 +377,19 @@ authorisation either.
 - **Class of defect:** `git commit -- <paths>` re-reads worktree, not index. When only a subset of a file's worktree changes are in scope, use `git apply --cached <patch>` + `git commit` (no path args) so the commit reflects the index only. The A21 error was invoking `git commit -- <paths>` after a precise `git apply --cached` had already staged the right hunks — the path args overrode the careful staging.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
+
+### A30 mechanical handoff lane-truth freshness invariant (2026-04-18) — RESOLVED (class-of-defect closure)
+
+- **Subject:** closes the multi-commit staleness class of drift that A26 (handoff tip-agreement invariant) could not catch. A26 requires internal agreement between the top `## Current Lane Truth` block and the `## Next bounded cutover slice` block, but does NOT require either section to be fresh against the actual lane HEAD. After A27/A28/A29 all landed, both snapshot sections stayed pinned at A26 tip `90f0f1e` — a 3-commit lag from lane HEAD `51bed6f` (A29). A26 happily passed while the doc gave a reader a 3-commit-stale snapshot.
+- **Repro (pre-A30, at HEAD `51bed6f`):** `git rev-list --count <doc-named-tip>..HEAD` returned 3. Both snapshot sections named `90f0f1e` (A26); lane tip was `51bed6f` (A29). `A26 invariant (internal consistency)` PASSED; no mechanical guard detected the freshness drift.
+- **Fix applied (this slice):**
+  1. **One-time alignment (both sections to `51bed6f`):** top `## Current Lane Truth` block updated — first bullet now names `current tip \`51bed6f\``; second bullet appends A27/A28/A29 summaries; fourth bullet extends the chain enumeration to `... → A27 → A28 → A29` and names current tip `51bed6f`. `## Next bounded cutover slice` block updated — "Current lane truth" paragraph now reads `post-A29 push \`51bed6f\`` with the bridge/lane-topology bundle acknowledged as landed; published-chain extended through A29; commit count `Twenty-one → Twenty-four`.
+  2. **Mechanical freshness invariant:** new `tests/runtime/test_handoff_artifact_path_invariants.py::test_handoff_lane_truth_tip_claim_is_fresh_vs_head`. Parses the top section, extracts the last-named tip hash via the same A26 regex, then asserts the hash equals `git rev-parse HEAD` (7-char) or `git rev-parse HEAD^` (7-char). One-hop parent tolerance allows the standard docs-reconciliation cadence (the slice that edits the snapshot is itself the child of the hash it records); multi-commit lag fails loudly. Graceful-degradation: skips when git is unavailable or HEAD^ cannot be resolved (root commit / shallow clone).
+- **Verification (A30 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_braid_v2.py` — handoff suite rose 28 → 29 (new freshness test); braid v2 smoke 5 passed unfiltered. A26 tip-agreement still holds (both sections at `51bed6f`); A27 branch-precondition tokens still present; no regression.
+- **Residual risk (documented in the test docstring):** this invariant is **incremental**. It catches the specific multi-commit drift class that motivated A30. It does NOT enforce that the doc narrative (published-chain list, count, status summary) is kept in lockstep with the tip hash — a future slice could update only the tip hash without updating the surrounding prose and pass the guard while still leaving stale narrative downstream. That residual class is a candidate for a later invariant (e.g., `published-chain entry count equals git rev-list --count <baseline>..HEAD for A-series commits`); out of A30 scope.
+- **Cadence observation (documented in Open Soak Issues for future operators):** the handoff reconciliation sequence since A17 reads A17 → A20 → A23 → A24 → A25 → A26 (tip-agreement invariant) → A30 (freshness invariant). Each prior slice was a one-shot docs reconciliation. A26 + A30 together now provide two orthogonal mechanical guards: one enforces internal consistency (top ≡ next-bounded), one enforces freshness (top tip ∈ {HEAD, HEAD^}). Together they close the class so future drift surfaces as a test failure instead of silent staleness.
+- **Blocking?** No — class-of-defect closure. Both snapshot sections agree on `51bed6f`; both invariants pass on HEAD; future drift is now mechanically blocked.
+- **Decision annotation:** none (scoped invariant guarding existing docs surfaces; no new architectural decision node).
 
 ### A29 bridge/lane-topology reliability bundle landed (2026-04-18) — RESOLVED
 

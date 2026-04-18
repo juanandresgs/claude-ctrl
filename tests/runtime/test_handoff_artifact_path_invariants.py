@@ -1025,3 +1025,113 @@ def test_supervisor_prompt_branch_precondition_names_mandatory_discipline() -> N
         "Precondition Drift class. If the discipline word was intentionally "
         "softened, update this invariant in lockstep and document why."
     )
+
+
+# ---------------------------------------------------------------------------
+# A30: mechanical handoff lane-truth freshness invariant
+# ---------------------------------------------------------------------------
+# Context: A26 pinned INTERNAL CONSISTENCY between the top `## Current Lane
+# Truth` block and the `## Next bounded cutover slice` block (both must name
+# the same tip hash). It deliberately did NOT require the named hash to
+# equal git HEAD, because a docs slice that edits the snapshot produces a
+# new commit whose parent is the hash the doc then records — a one-hop lag
+# is the expected cadence.
+#
+# However, A26 alone does not prevent MULTI-COMMIT lag. After A27/A28/A29
+# all landed runtime/docs changes, both snapshot sections stayed pinned on
+# the A26 tip (`90f0f1e`), lagging HEAD by 3 commits. The Codex instruction
+# for A30 calls out this class explicitly: "current lane-truth tip claim
+# must not lag HEAD beyond an explicitly documented bounded tolerance
+# suitable for docs-reconciliation slices (e.g., allows immediate parent
+# lag, fails multi-commit stale drift)."
+#
+# This invariant enforces that tolerance: the tip named in `## Current Lane
+# Truth` must equal git HEAD or git HEAD^ (the immediate parent) on the
+# current branch. Anything staler fails loudly at commit/CI time.
+# ---------------------------------------------------------------------------
+
+
+def _rev_parse_short(ref: str) -> str:
+    """Return the 7-char short SHA for `ref`, or '' when git is unavailable
+    or the ref cannot be resolved (e.g., shallow clone missing `HEAD^`).
+    """
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", ref],
+            text=True,
+            cwd=str(REPO_ROOT),
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+    return out.strip()[:7]
+
+
+def test_handoff_lane_truth_tip_claim_is_fresh_vs_head() -> None:
+    """A30 invariant: the tip hash named in `## Current Lane Truth` must
+    equal git HEAD or the immediate parent (HEAD^) on the current branch.
+
+    Design tolerance rationale:
+      - `HEAD^ (immediate parent)` is allowed because a docs-reconciliation
+        slice by construction records the parent of the commit that edits
+        the snapshot (the slice's own commit is the child). Failing on
+        this one-hop lag would require every docs slice to itself be
+        reconciled by a FOLLOW-ON slice, which is operationally
+        untenable.
+      - `HEAD` is allowed because in some cases (e.g., the doc is edited
+        in-place AFTER a separate commit), the named hash may equal
+        current HEAD exactly.
+      - Anything older (HEAD~2 or beyond) is multi-commit stale drift
+        and fails loudly. The A17/A20/A23/A24/A25 sequence of manual
+        reconciliation slices was expensive operator labour; A30 closes
+        the class so that drift cannot accumulate silently between
+        reconciliation slices.
+
+    Graceful degradation: if git is unavailable (CI sandbox, non-git
+    checkout) or HEAD^ cannot be resolved (root commit, shallow clone),
+    the test skips with an explanatory message rather than failing
+    closed. The invariant is about authored doc freshness, not CI
+    infrastructure.
+
+    Residual risk acknowledgment: this invariant is INCREMENTAL. It
+    catches the specific multi-commit drift class that motivated A30. It
+    does NOT enforce that the doc narrative (published-chain list, count,
+    status summary) is kept in lockstep with the tip hash — a future slice
+    could update only the tip hash without updating the surrounding prose
+    and pass this guard while still leaving stale narrative downstream.
+    That residual class is a candidate for a later invariant (e.g.,
+    "published-chain entry count equals `git rev-list --count
+    <baseline>..HEAD` for A-series commits"); out of A30 scope.
+    """
+    import pytest
+
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+    top_section = _extract_handoff_section(text, _LANE_TRUTH_SECTION_HEADING)
+    named_tip = _last_named_tip(top_section)
+    if not named_tip:
+        pytest.skip(
+            f"{_LANE_TRUTH_SECTION_HEADING!r} does not name a current tip "
+            "claim (should be pinned by A26; skip here to avoid duplicate "
+            "failure reporting)."
+        )
+
+    head = _rev_parse_short("HEAD")
+    if not head:
+        pytest.skip("git not available or HEAD cannot be resolved")
+    parent = _rev_parse_short("HEAD^")  # may be empty on root commit / shallow clone
+
+    allowed = {sha for sha in (head, parent) if sha}
+    assert named_tip in allowed, (
+        f"A30 freshness drift: `{_LANE_TRUTH_SECTION_HEADING}` names tip "
+        f"`{named_tip}` but lane HEAD is `{head}`"
+        + (f" (immediate parent `{parent}`)" if parent else " (no parent resolvable)")
+        + ". The named tip must equal HEAD or HEAD^ (immediate parent). A "
+        "single-hop lag is the expected cadence for docs-reconciliation "
+        "slices — the doc records the parent of the commit that edits it. "
+        "Multi-commit lag indicates a stale snapshot that must be reconciled "
+        "before the next docs slice lands. If this fired unexpectedly, run "
+        "a dedicated reconciliation slice (A17/A20/A23/A24/A25/A30 pattern) "
+        "that updates both snapshot sections (top `## Current Lane Truth` "
+        "and `## Next bounded cutover slice`) to current HEAD or HEAD^."
+    )
