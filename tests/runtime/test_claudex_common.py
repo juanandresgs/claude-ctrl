@@ -196,7 +196,8 @@ def test_supervisor_restart_resolves_codex_target_without_explicit_flag(
 def test_codex_approver_ignores_model_upgrade_prompt_when_existing_option_is_offscreen() -> None:
     prompt = (
         "Introducing GPT-5.4\n\n"
-        "Choose how you'd like Codex to proceed.\n\n"
+        "Choose how you'd like Codex to\n"
+        "proceed.\n\n"
         "1. Try new model\n"
     )
 
@@ -235,7 +236,8 @@ def test_codex_model_guard_handles_offscreen_existing_model_prompt(
         "    cat <<'EOF'\n"
         "Introducing GPT-5.4\n"
         "\n"
-        "Choose how you'd like Codex to proceed.\n"
+        "Choose how you'd like Codex to\n"
+        "proceed.\n"
         "\n"
         "1. Try new model\n"
         "EOF\n"
