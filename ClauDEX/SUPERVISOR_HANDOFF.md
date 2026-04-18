@@ -101,7 +101,7 @@ one-liner is the only adapter change in this closure chain.
 
 ## Next bounded cutover slice
 
-**Current lane truth (2026-04-18, post-A23 push `fdcc38e`):** this
+**Current lane truth (2026-04-18, post-A24 push `27ec3e4`):** this
 worktree is the **global-soak config-readiness lane**. Lane is
 **0 ahead / 0 behind** `origin/feat/claudex-cutover`; push debt
 cleared. Category C is **paused-not-priority** in this overnight
@@ -126,9 +126,10 @@ recovery) → `e44c5b1` (A20 post-A18/A19/A19R handoff convergence)
 → `7ca2c5f` (A21 `marker set` project-root defaulting) →
 `db8382c` (A21R forward cleanup of bridge-topology scope leak)
 → `b13e4b1` (A22 `dispatch agent-start` project-root defaulting
-symmetry) → `fdcc38e` (A23 handoff state convergence). **Seventeen
-commits published on `origin/feat/claudex-cutover`; current tip
-`fdcc38e`.** Guardian remains sole landing actor; orchestrator is
+symmetry) → `fdcc38e` (A23 handoff state convergence) →
+`27ec3e4` (A24 `Next bounded cutover slice` internal-desync
+reconciliation). **Eighteen commits published on
+`origin/feat/claudex-cutover`; current tip `27ec3e4`.** Guardian remains sole landing actor; orchestrator is
 coordinate-only (no self-grant push, no self-run git push).
 Settings-file model authority fix preserved. `NULL`-project-root
 reproduction is closed on both `marker set` and `dispatch
@@ -362,6 +363,18 @@ authorisation either.
 - **Class of defect:** `git commit -- <paths>` re-reads worktree, not index. When only a subset of a file's worktree changes are in scope, use `git apply --cached <patch>` + `git commit` (no path args) so the commit reflects the index only. The A21 error was invoking `git commit -- <paths>` after a precise `git apply --cached` had already staged the right hunks — the path args overrode the careful staging.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
+
+### A26 mechanical handoff-tip agreement invariant (2026-04-18) — RESOLVED (class-of-defect closure)
+
+- **Subject:** closes the recurring one-hop handoff-internal desynchronization class that required five manual reconciliation slices (A17 → A20 → A23 → A24 → A25). Each of those slices was a docs-only cleanup caused by the top `## Current Lane Truth` and `## Next bounded cutover slice` sections taking turns being stale: a docs slice would update one snapshot section's tip claim but leave the other section's claim behind, and the next reviewer would read two disagreeing snapshots in the same file.
+- **Repro (class-of-defect, any pre-A26 HEAD):** `grep -E "^\\*\\*Current lane truth|Current tip:" ClauDEX/SUPERVISOR_HANDOFF.md` on any commit between A23 and A25 returns two different `post-A<N>` markers and two different tip hashes from the two snapshot sections. There was no mechanical guard against this drift — only operator memory and per-slice reconciliation.
+- **Invariant added (this slice):** `tests/runtime/test_handoff_artifact_path_invariants.py::test_handoff_current_tip_snapshots_agree_between_top_and_next_bounded_sections`. Parses `SUPERVISOR_HANDOFF.md`, extracts the last-named `current tip` / `post-A<N> push` hash from each of the two snapshot sections via regex (`(?:current\s+tip|post-A\d+[A-Z]?\s+push)\s*[:\s]*\`([0-9a-f]{7,40})\``, IGNORECASE), and asserts equality. Guard is about **internal consistency only** — it does NOT require the named hash to equal git HEAD (the doc snapshot naturally trails HEAD by one hop because each docs slice is itself a commit). A scanner-self sanity pin `::test_handoff_tip_agreement_invariant_scanner_finds_claim_phrases` exercises the regex against four canonical fixture phrasings (`Current tip: \`<hash>\``, `current tip \`<hash>\``, `post-A24 push \`<hash>\``, `post-A21R push \`<hash>\`` — catches suffix-variant slice names) so a future claim-vocabulary change in the handoff doc cannot silently bypass the guard.
+- **One-time alignment applied (this slice):** updated `## Next bounded cutover slice` from post-A23 tip `fdcc38e` to post-A24 tip `27ec3e4` so both sections agree on the current published tip. Chain count Seventeen → Eighteen, new entry `27ec3e4` (A24 `Next bounded cutover slice` internal-desync reconciliation) added to the enumerated chain. Category C paused-not-priority posture preserved verbatim; True-user-decision-boundaries list preserved verbatim; A25 top-block snapshot unchanged.
+- **Effect:** any future docs slice that updates one snapshot section but forgets the other will fail `pytest tests/runtime/test_handoff_artifact_path_invariants.py` at commit time. Guardian landing preflight (which runs the test suite) will deny the commit until both sections agree. The A17/A20/A23/A24/A25 manual-reconciliation cadence is no longer necessary — it was five slices; there will not be a sixth for this class.
+- **Deliberately NOT mechanized here:** strict equality between the doc tip and git HEAD. A test that pinned "doc tip must equal HEAD" would fail EVERY time a docs slice lands (by construction the doc records the parent, not self). Internal-consistency is the right guard; HEAD-equality is not.
+- **Verification:** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_braid_v2.py` → `26 passed` + `5 passed` (test count rose from 24 → 26 with the two new A26 tests).
+- **Blocking?** No — class-of-defect closure. Both snapshot sections now agree on tip `27ec3e4`; the invariant is in force for any future drift.
+- **Decision annotation:** none (scoped invariant guarding existing docs surfaces, not a new architectural decision). Satisfies A24's class-of-defect-prevention recommendation verbatim.
 
 ### A25 top `## Current Lane Truth` post-A24 resynchronization (2026-04-18) — docs-only reconciliation
 

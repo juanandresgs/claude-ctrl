@@ -691,3 +691,132 @@ class TestCheckpointRetryThrottleRule:
             "unblock condition (HEAD moves, staged count changes, or "
             "denial text changes)."
         )
+
+
+# ---------------------------------------------------------------------------
+# A26: mechanical handoff-tip agreement invariant
+# ---------------------------------------------------------------------------
+# The SUPERVISOR_HANDOFF.md file contains TWO live snapshot sections that both
+# narrate the current published lane state:
+#   1. `## Current Lane Truth` (top block)
+#   2. `## Next bounded cutover slice` (first paragraph + published-chain
+#      summary)
+# A recurring class of defect (see A17, A20, A23, A24, A25 reconciliation
+# slices) is one section landing ahead of the other by a single hop: a docs
+# slice updates one section's tip claim but the other section's claim goes
+# stale. Readers navigating via the ToC or body-scroll then hit contradictory
+# snapshots in the same file.
+#
+# This invariant enforces internal consistency — both sections must agree on
+# the most-recent "current tip" / "post-A<N> push" hash they name. It does
+# NOT require the named hash to equal git HEAD (the doc snapshot trails itself
+# by one hop by construction; the last hash in the doc is the parent of the
+# commit that edited the doc). The guard is about same-file agreement.
+# ---------------------------------------------------------------------------
+
+
+_LANE_TRUTH_SECTION_HEADING = "## Current Lane Truth"
+_NEXT_BOUNDED_SECTION_HEADING = "## Next bounded cutover slice"
+# Matches the two canonical claim phrasings we expect in these sections:
+#   "current tip `27ec3e4`"      (both sections)
+#   "Current tip: `27ec3e4`"     (top)
+#   "post-A24 push `27ec3e4`"    (`## Next bounded cutover slice` header)
+# The suffix `A\d+[A-Z]?` tolerates suffixed slice names like `A21R`, `A19R`.
+_TIP_CLAIM_PATTERN = re.compile(
+    r"(?:current\s+tip|post-A\d+[A-Z]?\s+push)\s*[:\s]*`([0-9a-f]{7,40})`",
+    re.IGNORECASE,
+)
+
+
+def _extract_handoff_section(text: str, heading: str) -> str:
+    """Return text from `heading` (inclusive) up to the next top-level `## `
+    heading (exclusive). Raises AssertionError when `heading` is absent.
+    """
+    start = text.find("\n" + heading)
+    if start == -1 and text.startswith(heading):
+        start = 0
+    else:
+        start = start + 1 if start != -1 else -1
+    assert start != -1, (
+        f"SUPERVISOR_HANDOFF.md is missing required section heading {heading!r}; "
+        "the A26 tip-agreement invariant cannot locate the snapshot blocks."
+    )
+    # Find the next top-level `\n## ` heading strictly after this one.
+    next_heading = re.search(r"\n## [^\n]", text[start + len(heading):])
+    end = (start + len(heading) + next_heading.start()) if next_heading else len(text)
+    return text[start:end]
+
+
+def _last_named_tip(section_text: str) -> str:
+    """Return the last 7-char hash referenced by a `current tip` / `post-A<N>
+    push` claim in `section_text`. Returns '' when no claim is present.
+    """
+    hits = _TIP_CLAIM_PATTERN.findall(section_text)
+    return hits[-1][:7] if hits else ""
+
+
+def test_handoff_current_tip_snapshots_agree_between_top_and_next_bounded_sections() -> None:
+    """A26 invariant: `## Current Lane Truth` top block and `## Next bounded
+    cutover slice` MUST name the same `current tip` / `post-A<N> push` hash.
+
+    The A17 / A20 / A23 / A24 / A25 sequence of manual reconciliation slices
+    demonstrates that this class of handoff-internal desynchronization
+    recurs every time a docs slice updates one snapshot section without
+    touching the other. This guard fails loudly at commit/CI time so the
+    drift is impossible to land unnoticed.
+
+    This test enforces **internal consistency**, not equality to git HEAD.
+    The named hash naturally trails HEAD by one hop (the current commit is
+    the parent of the next commit that will edit the snapshot), which is
+    fine — the invariant only requires both sections to name the SAME tip.
+    """
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+
+    top_section = _extract_handoff_section(text, _LANE_TRUTH_SECTION_HEADING)
+    next_section = _extract_handoff_section(text, _NEXT_BOUNDED_SECTION_HEADING)
+
+    top_tip = _last_named_tip(top_section)
+    next_tip = _last_named_tip(next_section)
+
+    assert top_tip, (
+        f"{_LANE_TRUTH_SECTION_HEADING!r} section must name at least one "
+        "`current tip` or `post-A<N> push <hash>` claim so A26 tip-agreement "
+        "can be verified. If the section intentionally omits a live tip "
+        "claim, update this invariant to reflect the new canonical shape."
+    )
+    assert next_tip, (
+        f"{_NEXT_BOUNDED_SECTION_HEADING!r} section must name at least one "
+        "`current tip` or `post-A<N> push <hash>` claim so A26 tip-agreement "
+        "can be verified. If the section intentionally omits a live tip "
+        "claim, update this invariant to reflect the new canonical shape."
+    )
+    assert top_tip == next_tip, (
+        f"A26 handoff-tip drift: `{_LANE_TRUTH_SECTION_HEADING}` names tip "
+        f"`{top_tip}` but `{_NEXT_BOUNDED_SECTION_HEADING}` names tip "
+        f"`{next_tip}`. The two snapshot sections must agree on the most "
+        "recent published lane tip. When a docs slice advances the snapshot "
+        "of ONE section, update the OTHER section in the same commit — or "
+        "run a dedicated reconciliation slice (A17/A20/A23/A24/A25 pattern) "
+        "before the next docs slice lands."
+    )
+
+
+def test_handoff_tip_agreement_invariant_scanner_finds_claim_phrases() -> None:
+    """Scanner-self sanity pin: the regex used by A26 must actually detect
+    the canonical claim phrasings. Catches regression if the claim vocabulary
+    in SUPERVISOR_HANDOFF.md changes without the scanner being updated in
+    lockstep.
+    """
+    fixture_claims = [
+        "Current tip: `27ec3e4` (post-A24 …)",
+        "current tip `27ec3e4`",
+        "post-A24 push `27ec3e4`",
+        "post-A21R push `db8382c`",
+    ]
+    for claim in fixture_claims:
+        hits = _TIP_CLAIM_PATTERN.findall(claim)
+        assert hits, (
+            f"A26 tip-claim scanner failed to detect a canonical claim "
+            f"phrasing: {claim!r}. Update _TIP_CLAIM_PATTERN to cover the "
+            "new phrasing, or keep the handoff doc using existing phrasings."
+        )
