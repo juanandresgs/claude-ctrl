@@ -1,5 +1,22 @@
 """Pure typed decode bridge from ``WorkItemRecord`` to ``WorkItemContract`` (shadow-only).
 
+@decision DEC-CLAUDEX-WORK-ITEM-CONTRACT-CODEC-LEGACY-ALIAS-001
+Title: Decode-time legacy vocabulary normalization for scope_json and evaluation_json
+Status: accepted
+Rationale: External callers (prompts, earlier CLI versions, hand-authored DB rows) may
+  use legacy key names such as ``allowed_files`` (instead of ``allowed_paths``) or
+  ``evidence`` (instead of ``required_evidence``). Rather than require callers to
+  migrate their stored JSON, the codec absorbs one-way legacy-vocabulary translation at
+  decode time, BEFORE the closed-key-set check fires. This keeps the encoder (if/when
+  added) strictly canonical, preventing drift amplification: only one code path can
+  introduce a legacy alias, and that path is inside this module. The alias maps are
+  module-level constants so the legal rename surface is auditable without reading
+  function bodies. Duplicate-conflict detection (both alias and canonical present with
+  different values) makes misconfigured rows loud failures rather than silent
+  last-write-wins bugs. Matching-value duplicates are accepted silently as they are
+  idempotent (see TestLegacyVocabularyCompatibility.test_scope_duplicate_match_accepted).
+  Cross-reference: DEC-CLAUDEX-WORK-ITEM-CONTRACT-CODEC-001 (parent decode-bridge decision).
+
 @decision DEC-CLAUDEX-WORK-ITEM-CONTRACT-CODEC-001
 Title: runtime/core/work_item_contract_codec.py owns the decode-only bridge from decision_work_registry.WorkItemRecord to contracts.WorkItemContract
 Status: proposed (shadow-mode, Phase 2 prompt-pack workflow-contract bridge)
@@ -136,10 +153,117 @@ _EVAL_STRING_KEYS: Tuple[str, ...] = (
 #: Closed key set for ``evaluation_json``.
 _EVAL_KEYS: frozenset = frozenset(_EVAL_TUPLE_KEYS) | frozenset(_EVAL_STRING_KEYS)
 
+#: Legacy alias map for ``scope_json`` keys.  Renames are applied at decode
+#: time BEFORE the closed-key-set check so aliases never widen the legal key
+#: surface seen by later validators.  The alias side is the legacy name; the
+#: value side is the canonical name in :class:`contracts.ScopeManifest`.
+_SCOPE_ALIASES: Mapping[str, str] = {
+    "allowed_files": "allowed_paths",
+    "forbidden_files": "forbidden_paths",
+    "required_files": "required_paths",
+    "state_authorities": "state_domains",
+    "authority_domains": "state_domains",
+}
+
+#: Legacy alias map for ``evaluation_json`` keys.  Same pre-check strategy
+#: as ``_SCOPE_ALIASES``.  ``evidence`` is also subject to scalar-string
+#: coercion (see :func:`_coerce_legacy_evidence_shape`).
+_EVAL_ALIASES: Mapping[str, str] = {
+    "acceptance": "acceptance_notes",
+    "evidence": "required_evidence",
+}
+
 
 # ---------------------------------------------------------------------------
 # Private validation helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalize_legacy_keys(
+    field_name: str,
+    payload: Mapping[str, Any],
+    alias_map: Mapping[str, str],
+) -> tuple[dict[str, Any], set[str]]:
+    """Rename legacy alias keys to their canonical equivalents on a copy.
+
+    Returns a 2-tuple ``(normalised_payload, aliased_canonicals)`` where
+    ``aliased_canonicals`` is the set of canonical key names that were
+    populated by a legacy alias during this call.  Callers may use that set
+    to apply alias-specific coercions without re-inspecting the alias map.
+
+    A fresh ``dict`` is always returned so the caller works on a mutable
+    snapshot and the original mapping is never mutated.
+
+    Conflict policy (pinned by tests):
+
+    * Both alias and canonical present with **different** values →
+      ``ValueError`` naming both keys so the caller can repair the row.
+    * Both alias and canonical present with **identical** values →
+      accepted silently (idempotent write; no information loss).
+    * Only alias present → renamed to canonical, alias key removed.
+    * Only canonical present (or neither) → passed through unchanged.
+
+    This helper is called before :func:`_require_closed_key_set`, so the
+    alias keys never reach the closed-set validator.
+    """
+    result: dict[str, Any] = dict(payload)
+    aliased_canonicals: set[str] = set()
+    for alias, canonical in alias_map.items():
+        if alias not in result:
+            continue
+        alias_val = result.pop(alias)
+        if canonical in result:
+            canonical_val = result[canonical]
+            if canonical_val != alias_val:
+                raise ValueError(
+                    f"decode_work_item_contract: {field_name} contains both "
+                    f"legacy key {alias!r} and canonical key {canonical!r} "
+                    f"with different values — remove the alias key to resolve "
+                    f"the conflict"
+                )
+            # Identical values: alias key already removed above; canonical
+            # key stays. Fall through silently.
+        else:
+            result[canonical] = alias_val
+            aliased_canonicals.add(canonical)
+    return result, aliased_canonicals
+
+
+def _coerce_legacy_evidence_shape(
+    payload: dict[str, Any],
+    aliased_canonicals: set[str],
+) -> dict[str, Any]:
+    """Wrap a bare string ``required_evidence`` into a singleton list.
+
+    This coercion fires ONLY when ``required_evidence`` was populated via
+    the ``evidence`` legacy alias (i.e. ``"required_evidence"`` appears in
+    ``aliased_canonicals``).  A payload that already carries
+    ``required_evidence`` with a canonical key is NOT coerced, preserving
+    the existing "string value rejected" behaviour for that path.
+
+    When the ``evidence`` alias is used with a scalar string the alias
+    normalizer renames the key to ``required_evidence`` but leaves the
+    value as a ``str``.  The existing :func:`_decode_string_list` validator
+    would then reject it as "not a JSON list".  This coercion converts the
+    scalar string to ``["value"]`` so the caller experiences seamless legacy
+    compatibility.
+
+    Non-string, non-list values (``int``, ``dict``, ``None``) are left
+    untouched; :func:`_decode_string_list` will raise ``ValueError`` for
+    them as normal.
+
+    A new ``dict`` copy is returned only when a coercion is needed; the
+    caller's dict is returned directly otherwise to avoid unnecessary
+    allocation.
+    """
+    if "required_evidence" not in aliased_canonicals:
+        return payload
+    value = payload.get("required_evidence")
+    if isinstance(value, str):
+        result = dict(payload)
+        result["required_evidence"] = [value]
+        return result
+    return payload
 
 
 def _parse_json_object(field_name: str, raw: Any) -> Mapping[str, Any]:
@@ -248,8 +372,13 @@ def _decode_scope_manifest(scope_json: str) -> "contracts.ScopeManifest":
     Empty ``"{}"`` decodes to a default :class:`ScopeManifest` with
     all four tuple fields set to ``()``. Missing keys default to
     empty tuples; unknown keys are errors.
+
+    Legacy alias normalization is applied before the closed-key-set
+    check so alias keys do not widen the legal key surface seen by
+    downstream validators.
     """
     payload = _parse_json_object("scope_json", scope_json)
+    payload, _aliased = _normalize_legacy_keys("scope_json", payload, _SCOPE_ALIASES)
     _require_closed_key_set("scope_json", payload, _SCOPE_KEYS)
     return contracts.ScopeManifest(
         allowed_paths=_decode_string_list("scope_json", "allowed_paths", payload),
@@ -272,8 +401,16 @@ def _decode_evaluation_contract(
     :class:`EvaluationContract` (empty tuples + empty strings).
     Missing tuple keys default to ``()``; missing string keys
     default to ``""``. Unknown keys are errors.
+
+    Legacy alias normalization is applied before the closed-key-set
+    check (same pre-check strategy as :func:`_decode_scope_manifest`).
+    A scalar-string ``required_evidence`` value originating from the
+    ``evidence`` alias is coerced to a singleton list before the
+    list-of-strings validator runs.
     """
     payload = _parse_json_object("evaluation_json", evaluation_json)
+    payload, aliased = _normalize_legacy_keys("evaluation_json", payload, _EVAL_ALIASES)
+    payload = _coerce_legacy_evidence_shape(payload, aliased)
     _require_closed_key_set("evaluation_json", payload, _EVAL_KEYS)
     return contracts.EvaluationContract(
         required_tests=_decode_string_list(

@@ -774,3 +774,205 @@ class TestShadowOnlyDiscipline:
         imported = _imported_module_names(gcc)
         for name in imported:
             assert "work_item_contract_codec" not in name
+
+
+# ---------------------------------------------------------------------------
+# 13. Legacy vocabulary compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyVocabularyCompatibility:
+    """Verify that legacy alias keys are accepted and normalised to canonical.
+
+    This test class pins the alias map, conflict policy, coercion policy,
+    and the invariant that canonical-shape payloads are unaffected.
+    """
+
+    # ------------------------------------------------------------------
+    # 13a. Scope-axis alias positive tests (one per alias, five total)
+    # ------------------------------------------------------------------
+
+    def test_allowed_files_alias_decoded_as_allowed_paths(self):
+        record = _record(scope_json=json.dumps({"allowed_files": ["a.py", "b.py"]}))
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.scope.allowed_paths == ("a.py", "b.py")
+
+    def test_forbidden_files_alias_decoded_as_forbidden_paths(self):
+        record = _record(scope_json=json.dumps({"forbidden_files": ["x.py"]}))
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.scope.forbidden_paths == ("x.py",)
+
+    def test_required_files_alias_decoded_as_required_paths(self):
+        record = _record(scope_json=json.dumps({"required_files": ["r.py"]}))
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.scope.required_paths == ("r.py",)
+
+    def test_state_authorities_alias_decoded_as_state_domains(self):
+        record = _record(scope_json=json.dumps({"state_authorities": ["work_items"]}))
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.scope.state_domains == ("work_items",)
+
+    def test_authority_domains_alias_decoded_as_state_domains(self):
+        record = _record(scope_json=json.dumps({"authority_domains": ["decisions"]}))
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.scope.state_domains == ("decisions",)
+
+    # ------------------------------------------------------------------
+    # 13b. Evaluation-axis alias positive tests (two)
+    # ------------------------------------------------------------------
+
+    def test_acceptance_alias_decoded_as_acceptance_notes_string(self):
+        record = _record(
+            evaluation_json=json.dumps({"acceptance": "all green"})
+        )
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.evaluation.acceptance_notes == "all green"
+
+    def test_evidence_string_decoded_as_required_evidence_singleton(self):
+        # Scalar string via the legacy ``evidence`` key must be wrapped
+        # into a singleton tuple on the canonical ``required_evidence`` field.
+        record = _record(evaluation_json=json.dumps({"evidence": "verbatim footer"}))
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.evaluation.required_evidence == ("verbatim footer",)
+
+    # ------------------------------------------------------------------
+    # 13c. evidence list pass-through
+    # ------------------------------------------------------------------
+
+    def test_evidence_list_alias_decoded_as_required_evidence_tuple(self):
+        # Legacy key with an already-canonical list shape must decode correctly.
+        record = _record(
+            evaluation_json=json.dumps({"evidence": ["item-a", "item-b"]})
+        )
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.evaluation.required_evidence == ("item-a", "item-b")
+
+    # ------------------------------------------------------------------
+    # 13d. evidence non-str non-list rejection
+    # ------------------------------------------------------------------
+
+    def test_evidence_int_value_rejected(self):
+        with pytest.raises(ValueError, match="required_evidence"):
+            wcc.decode_work_item_contract(
+                _record(evaluation_json=json.dumps({"evidence": 42}))
+            )
+
+    def test_evidence_dict_value_rejected(self):
+        with pytest.raises(ValueError, match="required_evidence"):
+            wcc.decode_work_item_contract(
+                _record(evaluation_json=json.dumps({"evidence": {"nested": True}}))
+            )
+
+    def test_evidence_null_value_rejected(self):
+        with pytest.raises(ValueError, match="required_evidence"):
+            wcc.decode_work_item_contract(
+                _record(evaluation_json=json.dumps({"evidence": None}))
+            )
+
+    # ------------------------------------------------------------------
+    # 13e. Duplicate-conflict rejection (one per axis)
+    # ------------------------------------------------------------------
+
+    def test_scope_duplicate_conflict_raises_value_error(self):
+        # Both ``allowed_paths`` (canonical) and ``allowed_files`` (alias)
+        # present with DIFFERENT values — must raise naming both keys.
+        with pytest.raises(ValueError, match="allowed_files"):
+            wcc.decode_work_item_contract(
+                _record(
+                    scope_json=json.dumps(
+                        {"allowed_paths": ["a.py"], "allowed_files": ["b.py"]}
+                    )
+                )
+            )
+
+    def test_evaluation_duplicate_conflict_raises_value_error(self):
+        # Both ``acceptance_notes`` (canonical) and ``acceptance`` (alias)
+        # present with DIFFERENT values — must raise naming both keys.
+        with pytest.raises(ValueError, match="acceptance"):
+            wcc.decode_work_item_contract(
+                _record(
+                    evaluation_json=json.dumps(
+                        {"acceptance_notes": "x", "acceptance": "y"}
+                    )
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # 13f. Duplicate-match policy pinned (accept silently)
+    # ------------------------------------------------------------------
+
+    def test_scope_duplicate_match_accepted(self):
+        # Same value on both alias and canonical → idempotent, accepted
+        # silently. This pin locks the "matching-value duplicate" policy
+        # as accept (not reject as over-specification).
+        record = _record(
+            scope_json=json.dumps(
+                {"allowed_paths": ["a.py"], "allowed_files": ["a.py"]}
+            )
+        )
+        contract = wcc.decode_work_item_contract(record)
+        assert contract.scope.allowed_paths == ("a.py",)
+
+    # ------------------------------------------------------------------
+    # 13g. Unknown-key rejection still fires (one per axis)
+    # ------------------------------------------------------------------
+
+    def test_scope_unknown_key_still_rejected_after_alias_normalization(self):
+        # A key that is neither a known canonical key nor a known alias
+        # must still be rejected by the closed-set check.
+        with pytest.raises(ValueError, match="foo_bar"):
+            wcc.decode_work_item_contract(
+                _record(scope_json=json.dumps({"foo_bar": []}))
+            )
+
+    def test_evaluation_unknown_key_still_rejected_after_alias_normalization(self):
+        with pytest.raises(ValueError, match="mystery_key"):
+            wcc.decode_work_item_contract(
+                _record(evaluation_json=json.dumps({"mystery_key": "x"}))
+            )
+
+    # ------------------------------------------------------------------
+    # 13h. Round-trip stability for canonical shape
+    # ------------------------------------------------------------------
+
+    def test_canonical_scope_round_trip_stable(self):
+        """Canonical JSON → decode → re-serialize canonical → decode again → equal."""
+        scope_payload = {
+            "allowed_paths": ["runtime/core/work_item_contract_codec.py"],
+            "required_paths": ["tests/runtime/test_work_item_contract_codec.py"],
+            "forbidden_paths": ["runtime/cli.py"],
+            "state_domains": ["work_items", "decisions"],
+        }
+        eval_payload = {
+            "required_tests": ["pytest tests/runtime/"],
+            "required_evidence": ["verbatim footer"],
+            "rollback_boundary": "git restore",
+            "acceptance_notes": "round-trip stable",
+        }
+        record1 = _record(
+            scope_json=json.dumps(scope_payload),
+            evaluation_json=json.dumps(eval_payload),
+        )
+        contract1 = wcc.decode_work_item_contract(record1)
+
+        # Re-serialize using only canonical keys.
+        scope2 = {
+            "allowed_paths": list(contract1.scope.allowed_paths),
+            "required_paths": list(contract1.scope.required_paths),
+            "forbidden_paths": list(contract1.scope.forbidden_paths),
+            "state_domains": list(contract1.scope.state_domains),
+        }
+        eval2 = {
+            "required_tests": list(contract1.evaluation.required_tests),
+            "required_evidence": list(contract1.evaluation.required_evidence),
+            "rollback_boundary": contract1.evaluation.rollback_boundary,
+            "acceptance_notes": contract1.evaluation.acceptance_notes,
+        }
+        record2 = _record(
+            scope_json=json.dumps(scope2),
+            evaluation_json=json.dumps(eval2),
+        )
+        contract2 = wcc.decode_work_item_contract(record2)
+
+        assert contract1.scope == contract2.scope
+        assert contract1.evaluation == contract2.evaluation
