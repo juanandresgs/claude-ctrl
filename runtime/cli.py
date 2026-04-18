@@ -1709,9 +1709,19 @@ def _handle_dispatch(args) -> int:
             # W-CONV-2: forward project_root and workflow_id so the marker is
             # scoped to this project. Both are optional — callers that do not
             # supply them get NULL columns and unscoped get_active() still works.
+            #
+            # A22 hardening (symmetric with A21 `marker set`): when
+            # --project-root is omitted, resolve through the canonical CLI
+            # resolver `_resolve_project_root(args)` (args → CLAUDE_PROJECT_DIR
+            # → git toplevel → normalize_path) so normal repo sessions no
+            # longer persist agent_markers.project_root = NULL via this
+            # dispatch path. If resolution still returns empty, preserve the
+            # legacy unscoped write (project_root=None) — matching A21.
             from runtime.core.policy_utils import normalize_path as _norm_path
 
             _pr = getattr(args, "project_root", None) or ""
+            if not _pr:
+                _pr = _resolve_project_root(args)
             _wf = getattr(args, "workflow_id", None) or ""
             lifecycle_mod.on_agent_start(
                 conn,

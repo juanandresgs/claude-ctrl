@@ -176,6 +176,61 @@ def test_dispatch_agent_start_via_cli(db_path):
     assert data.get("agent_id") == "agent-cli-001"
 
 
+def test_dispatch_agent_start_without_project_root_defaults_to_resolved_root(db_path, tmp_path):
+    """A22 regression: `dispatch agent-start` without --project-root must default
+    to the CLI-resolved project root (args → CLAUDE_PROJECT_DIR → git toplevel →
+    normalize_path) so a subsequent scoped `marker get-active --project-root`
+    query finds the marker.
+
+    Symmetric with A21's `marker set` hardening — same operational-fact
+    authority class (agent_markers.project_root persistence), same class of
+    invisibility bug (NULL column will never match equality in scoped lookup).
+
+    Pre-A22: dispatch agent-start stored project_root=NULL when the flag was
+    omitted, even if CLAUDE_PROJECT_DIR pointed at a real repo root. That was
+    the same shape of defect A19R observed on `marker set` and A21 closed.
+
+    Post-A22: the dispatch path picks up CLAUDE_PROJECT_DIR (the canonical
+    session root) so the scoped lookup matches deterministically.
+    """
+    from runtime.core.policy_utils import normalize_path
+
+    fake_root = str(tmp_path / "fake-proj")
+    os.makedirs(fake_root, exist_ok=True)
+    normalized = normalize_path(fake_root)
+
+    # Emulate a normal repo session: CLAUDE_PROJECT_DIR set, no --project-root arg.
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": db_path,
+        "PYTHONPATH": _PROJECT_ROOT,
+        "CLAUDE_PROJECT_DIR": fake_root,
+    }
+    result = subprocess.run(
+        [sys.executable, _CLI, "dispatch", "agent-start", "guardian", "agent-a22-noroot"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    # Scoped get-active under the resolved root must find the marker.
+    result = subprocess.run(
+        [sys.executable, _CLI, "marker", "get-active", "--project-root", normalized],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout.strip())
+    assert data.get("found") is True, (
+        f"scoped get-active must find the marker persisted by dispatch "
+        f"agent-start with defaulted project_root; got {data!r}"
+    )
+    assert data.get("agent_id") == "agent-a22-noroot"
+    assert data.get("role") == "guardian"
+    assert data.get("project_root") == normalized, (
+        f"dispatch agent-start must persist the defaulted project_root, not "
+        f"NULL; got {data.get('project_root')!r}"
+    )
+
+
 def test_dispatch_agent_stop_via_cli(db_path):
     """dispatch agent-stop deactivates an active marker via the local CLI path."""
     _cc("dispatch", "agent-start", "reviewer", "agent-cli-002", db_path=db_path)
