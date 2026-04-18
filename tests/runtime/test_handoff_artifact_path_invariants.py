@@ -1046,14 +1046,28 @@ def test_supervisor_prompt_branch_precondition_names_mandatory_discipline() -> N
 # lag, fails multi-commit stale drift)."
 #
 # This invariant enforces that tolerance: the tip named in `## Current Lane
-# Truth` must equal git HEAD or git HEAD^ (the immediate parent) on the
-# current branch. Anything staler fails loudly at commit/CI time.
+# Truth` must equal git HEAD, HEAD^ (immediate parent), or HEAD~2
+# (grand-parent) on the current branch. Anything staler (lag >= 3) fails
+# loudly at commit/CI time.
+#
+# A33 update (option B adjudication):
+#   The original A30 tolerance was `{HEAD, HEAD^}`. Operational observation
+#   across A30 → A31 → A32 showed that any non-docs slice interleaved
+#   between reconciliations silently fell out of the one-hop window the next
+#   commit, forcing per-non-docs-slice reconciliation micro-slices. A32's
+#   residual-risk note enumerated two tolerant options: (a) pair every
+#   non-docs commit with a docs reconciliation in the same slice scope, or
+#   (b) widen A30 tolerance to `{HEAD, HEAD^, HEAD~2}`. A33 explicitly lands
+#   option B — two-hop lag is accepted as operationally tolerable (one
+#   test-addition slice + one follow-on reconciliation slice is within
+#   tolerance), while three-hop or deeper lag still fails loudly.
 # ---------------------------------------------------------------------------
 
 
 def _rev_parse_short(ref: str) -> str:
     """Return the 7-char short SHA for `ref`, or '' when git is unavailable
-    or the ref cannot be resolved (e.g., shallow clone missing `HEAD^`).
+    or the ref cannot be resolved (e.g., shallow clone missing the ref,
+    root commit ancestry, etc.).
     """
     import subprocess
     try:
@@ -1069,40 +1083,49 @@ def _rev_parse_short(ref: str) -> str:
 
 
 def test_handoff_lane_truth_tip_claim_is_fresh_vs_head() -> None:
-    """A30 invariant: the tip hash named in `## Current Lane Truth` must
-    equal git HEAD or the immediate parent (HEAD^) on the current branch.
+    """A30 invariant (A33-widened tolerance): the tip hash named in
+    `## Current Lane Truth` must equal git HEAD, HEAD^ (immediate parent),
+    or HEAD~2 (grand-parent) on the current branch.
 
-    Design tolerance rationale:
-      - `HEAD^ (immediate parent)` is allowed because a docs-reconciliation
-        slice by construction records the parent of the commit that edits
-        the snapshot (the slice's own commit is the child). Failing on
-        this one-hop lag would require every docs slice to itself be
+    Design tolerance rationale (post-A33):
+      - `HEAD` is allowed for the trivial case where the doc has been
+        edited in-place after a separate commit, and the named hash is
+        the current tip exactly.
+      - `HEAD^` is allowed because a docs-reconciliation slice by
+        construction records the parent of the commit that edits the
+        snapshot (the slice's own commit is the child). Failing on this
+        one-hop lag would require every docs slice to itself be
         reconciled by a FOLLOW-ON slice, which is operationally
         untenable.
-      - `HEAD` is allowed because in some cases (e.g., the doc is edited
-        in-place AFTER a separate commit), the named hash may equal
-        current HEAD exactly.
-      - Anything older (HEAD~2 or beyond) is multi-commit stale drift
-        and fails loudly. The A17/A20/A23/A24/A25 sequence of manual
+      - `HEAD~2` (A33) is allowed because the operational pattern often
+        pairs a non-docs slice (e.g., a test-addition commit that does
+        not touch the snapshot) with an immediate docs reconciliation
+        commit; during the window between the two, the snapshot legitimately
+        lags by two hops. A31 → A32 demonstrated this pattern. Allowing
+        `HEAD~2` avoids forcing every non-docs slice to be inlined with a
+        docs reconciliation while still catching genuinely stale snapshots.
+      - `HEAD~3` and older fails loudly. Three or more commits of
+        unreconciled lag indicates multi-slice drift the A26/A30 cadence
+        should have caught. The A17/A20/A23/A24/A25 sequence of manual
         reconciliation slices was expensive operator labour; A30 closes
-        the class so that drift cannot accumulate silently between
+        that class so drift cannot accumulate silently between
         reconciliation slices.
 
     Graceful degradation: if git is unavailable (CI sandbox, non-git
-    checkout) or HEAD^ cannot be resolved (root commit, shallow clone),
-    the test skips with an explanatory message rather than failing
-    closed. The invariant is about authored doc freshness, not CI
-    infrastructure.
+    checkout) or HEAD cannot be resolved, the test skips rather than
+    failing closed. Missing `HEAD^` or `HEAD~2` (root commit / very
+    shallow clone) is handled by removing empty SHAs from the allowed
+    set; the test still runs with a narrower allowed set in that case.
 
     Residual risk acknowledgment: this invariant is INCREMENTAL. It
-    catches the specific multi-commit drift class that motivated A30. It
-    does NOT enforce that the doc narrative (published-chain list, count,
-    status summary) is kept in lockstep with the tip hash — a future slice
-    could update only the tip hash without updating the surrounding prose
-    and pass this guard while still leaving stale narrative downstream.
-    That residual class is a candidate for a later invariant (e.g.,
-    "published-chain entry count equals `git rev-list --count
-    <baseline>..HEAD` for A-series commits"); out of A30 scope.
+    catches multi-commit tip-hash staleness. It does NOT enforce that
+    the doc narrative (published-chain list, count, status summary) is
+    kept in lockstep with the tip hash — a future slice could update
+    only the tip hash without updating surrounding prose and pass this
+    guard while still leaving stale narrative downstream. That residual
+    class is a candidate for a later invariant (e.g., "published-chain
+    entry count equals `git rev-list --count <baseline>..HEAD` for
+    A-series commits"); out of A30/A33 scope.
     """
     import pytest
 
@@ -1119,19 +1142,22 @@ def test_handoff_lane_truth_tip_claim_is_fresh_vs_head() -> None:
     head = _rev_parse_short("HEAD")
     if not head:
         pytest.skip("git not available or HEAD cannot be resolved")
-    parent = _rev_parse_short("HEAD^")  # may be empty on root commit / shallow clone
+    parent = _rev_parse_short("HEAD^")      # may be empty on root commit / shallow clone
+    grandparent = _rev_parse_short("HEAD~2")  # may be empty on very shallow clone
 
-    allowed = {sha for sha in (head, parent) if sha}
+    allowed = {sha for sha in (head, parent, grandparent) if sha}
     assert named_tip in allowed, (
-        f"A30 freshness drift: `{_LANE_TRUTH_SECTION_HEADING}` names tip "
-        f"`{named_tip}` but lane HEAD is `{head}`"
-        + (f" (immediate parent `{parent}`)" if parent else " (no parent resolvable)")
-        + ". The named tip must equal HEAD or HEAD^ (immediate parent). A "
-        "single-hop lag is the expected cadence for docs-reconciliation "
-        "slices — the doc records the parent of the commit that edits it. "
-        "Multi-commit lag indicates a stale snapshot that must be reconciled "
-        "before the next docs slice lands. If this fired unexpectedly, run "
-        "a dedicated reconciliation slice (A17/A20/A23/A24/A25/A30 pattern) "
-        "that updates both snapshot sections (top `## Current Lane Truth` "
-        "and `## Next bounded cutover slice`) to current HEAD or HEAD^."
+        f"A30 freshness drift (A33 tolerance): "
+        f"`{_LANE_TRUTH_SECTION_HEADING}` names tip `{named_tip}` but "
+        f"lane HEAD is `{head}`"
+        + (f", HEAD^ `{parent}`" if parent else ", HEAD^ <not resolvable>")
+        + (f", HEAD~2 `{grandparent}`" if grandparent else ", HEAD~2 <not resolvable>")
+        + ". The named tip must equal HEAD, HEAD^ (immediate parent), or "
+        "HEAD~2 (grand-parent). Three-hop or deeper lag indicates the "
+        "snapshot has silently fallen behind across multiple slices — "
+        "the A26/A30 cadence should have caught drift before now. If this "
+        "fired unexpectedly, run a dedicated reconciliation slice "
+        "(A17/A20/A23/A24/A25/A30/A32 pattern) that updates both snapshot "
+        "sections (top `## Current Lane Truth` and `## Next bounded cutover "
+        "slice`) to current HEAD, HEAD^, or HEAD~2."
     )
