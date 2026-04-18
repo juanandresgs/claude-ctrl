@@ -287,15 +287,15 @@ def test_overnight_start_detaches_helper_daemons_before_exec_watchdog() -> None:
     )
 
     assert (
-        'nohup bash ./scripts/claudex-codex-model-guard.sh \\"$CODEX_PANE_TARGET\\"'
+        'nohup bash "$ROOT/scripts/claudex-codex-model-guard.sh" "$CODEX_PANE_TARGET"'
         in script
     )
     assert (
-        'nohup bash ./scripts/claudex-codex-approver.sh --tmux-target \\"$CODEX_PANE_TARGET\\"'
+        'nohup bash "$ROOT/scripts/claudex-codex-approver.sh" --tmux-target "$CODEX_PANE_TARGET"'
         in script
     )
     assert (
-        'nohup bash ./scripts/claudex-worker-approver.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\"'
+        'nohup bash "$ROOT/scripts/claudex-worker-approver.sh" --tmux-target "$CLAUDE_PANE_TARGET"'
         in script
     )
     assert 'exec bash ./scripts/claudex-watchdog.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\"' in script
