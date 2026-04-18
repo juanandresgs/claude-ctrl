@@ -357,6 +357,66 @@ class TestSupervisorHandoffDocBanner:
             f"Banner region (first 1400 chars):\n{banner[:800]}..."
         )
 
+    def test_supervisor_handoff_banner_branch_matches_current_lane(self) -> None:
+        """A48 invariant: the first ``Branch `<name>``` claim in the
+        `## Current Lane Truth` banner must equal the live
+        `git rev-parse --abbrev-ref HEAD`. Prevents silent branch-identity
+        drift when parallel checkouts of `feat/claudex-cutover` (e.g. a
+        deploy checkout and a soak checkout) push doc reconciliations to the
+        same shared authority — whichever commits last otherwise silently
+        owns the lane identity claim.
+
+        Detached HEAD (`rev-parse --abbrev-ref HEAD == "HEAD"`) is exempt so
+        CI / harness runs that check out a SHA do not spuriously fail.
+        Dynamic check rather than a hardcoded branch literal so the
+        invariant survives any future rename of the soak branch.
+        """
+        import subprocess
+
+        banner = _current_truth_banner_region(_read(SUPERVISOR_HANDOFF_DOC))
+        try:
+            current_branch = subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(_REPO_ROOT),
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "HEAD",
+                ],
+                text=True,
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            pytest.skip(
+                f"A48: git unavailable or not a repo ({exc}); branch-identity "
+                "invariant cannot run in this environment"
+            )
+
+        if current_branch == "HEAD":
+            pytest.skip(
+                "A48: detached HEAD — banner branch-identity invariant is "
+                "intentionally exempt for CI / harness SHA checkouts"
+            )
+
+        match = re.search(r"Branch `([^`]+)`", banner)
+        assert match is not None, (
+            "A48: SUPERVISOR_HANDOFF.md banner does not contain a "
+            "``Branch `<name>``` claim. Lane identity is unverifiable from "
+            "the current-truth banner — add a branch-identity line to the "
+            "top `## Current Lane Truth` bullet so parallel-checkout drift "
+            "is mechanically visible."
+        )
+        claimed = match.group(1)
+        assert claimed == current_branch, (
+            f"A48: SUPERVISOR_HANDOFF.md banner claims branch `{claimed}` "
+            f"but live worktree is on branch `{current_branch}`. Lane "
+            "identity drifted — update the top `## Current Lane Truth` "
+            "banner to match the active checkout. This typically happens "
+            "when a parallel checkout of the same published branch (e.g. "
+            "deploy vs soak) commits a doc reconciliation that overwrites "
+            "the other lane's identity claim."
+        )
+
 
 class TestNoStaleActive22CountClaims:
     """Active regions of both docs must not contain bare 22-count stale
