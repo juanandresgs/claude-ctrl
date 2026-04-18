@@ -213,6 +213,79 @@ authorisation either.
 
 ## Open Soak Issues
 
+### A9 convergence packet — A-branch + A0-branch publish-debt adjudication (2026-04-18)
+
+- **Subject:** post-A8C, A5R→A8 soak chain is published to `origin/feat/claudex-cutover` at `aeec494`. Two local config-readiness feature branches remain un-published and carry config-readiness work that overlaps or is adjacent to the published bundle. A9 produces a docs-only convergence packet for operator adjudication — **no code edits, no push/merge execution**.
+
+- **Branch A (`feature/config-readiness-slice-a-agent-contract`):**
+  - HEAD: `aef51aed93a93e07b5d5ebb5d1a739180798e3f7` (A4 commit).
+  - Upstream tracking: **none configured**.
+  - vs `origin/feat/claudex-cutover` (now `aeec494`): **4 ahead / 73 behind** (merge-base `6b8cc5c`, the Integration-Wave-1 baseline predating soak HEAD).
+  - Commits (base `6b8cc5c` → branch tip):
+    1. `3cd2b6d` — A+A1 single-authority classification + fail-closed contract validation (`runtime/core/authority_registry.py` +80, `runtime/core/policies/agent_contract_required.py` +229, `tests/runtime/test_agent_contract_required_policy.py` +604 new, `tests/runtime/test_authority_registry.py` +70).
+    2. `b80130c` — A2 pre-agent.sh fail-closed parity (`hooks/pre-agent.sh` +212, `tests/runtime/test_pre_agent_hook_validation.py` +548 new).
+    3. `a659b6d` — A3 subagent-start.sh fail-closed semantic validation (`hooks/subagent-start.sh` +186, `tests/runtime/test_subagent_start_hook.py` ±24, `tests/runtime/test_subagent_start_hook_validation.py` +847 new).
+    4. `aef51ae` — A4 write_plan_guard forbidden_paths enforcement (`runtime/core/policies/write_plan_guard.py` +69, `tests/runtime/policies/test_write_scope_forbidden.py` +370 new).
+
+- **Branch A0 (`feature/config-readiness-slice-a0-codec`):**
+  - HEAD: `764d6258913d4408caddf5448e66b67327e82511` (A0 commit).
+  - Upstream tracking: **none configured**.
+  - vs `origin/feat/claudex-cutover`: **1 ahead / 73 behind** (merge-base `6b8cc5c`).
+  - Commits: `764d625` — A0 `work_item_contract_codec` legacy-alias decode compatibility (`runtime/core/work_item_contract_codec.py` +137, `tests/runtime/test_work_item_contract_codec.py` +202 new).
+
+- **Overlap / conflict-risk matrix vs published soak tip `aeec494`:**
+
+  | A-branch file | Soak-tip counterpart | Classification | Notes |
+  |---|---|---|---|
+  | `runtime/core/authority_registry.py` (A1 +80) | Has `STAGE_SUBAGENT_TYPES`+`canonical_dispatch_subagent_type` at HEAD (baseline pre-86795d0) | **superseded-by-soak** | Symbols A1 declares already canonical on soak; merge re-applies lines already present. |
+  | `runtime/core/policies/agent_contract_required.py` (A1 retires frozensets) | A6 (`e69480b`) retired same + A8 (`aeec494`) added shape+authenticity | **equivalent + superseded-by-soak** | Semantics fully achieved by A6+A8; merge creates same-line conflict with same final behavior. |
+  | `tests/runtime/test_agent_contract_required_policy.py` (A1 +604 new) | A6 modified existing + A8 added 253 lines | **manual-merge-needed** | Both retire set-membership tests, both add TestSingleAuthorityClassification. Semantically equivalent but content conflicts. |
+  | `tests/runtime/test_authority_registry.py` (A1 +70 TestCanonicalDispatchSubagentType) | Soak has file, A5R-A8 didn't modify | **additive-safe** | New test class, no conflict. |
+  | `hooks/pre-agent.sh` (A2 +212) | A8 (`aeec494`) adds 6-field shape validator + removes `\|\| true` | **manual-merge-needed** | Both add fail-closed logic to different regions; likely composable with care. |
+  | `tests/runtime/test_pre_agent_hook_validation.py` (A2 +548 new) | Does not exist on soak | **additive-safe** | Brand-new file. |
+  | `hooks/subagent-start.sh` (A3 +186) | A8 adds `canonical_seat_no_carrier_contract` branch | **manual-merge-needed** | Both modify hook; composable depending on insertion points. |
+  | `tests/runtime/test_subagent_start_hook.py` (A3 ±24) | A8 also modifies | **manual-merge-needed** | Small overlap, likely 3-way-mergeable. |
+  | `tests/runtime/test_subagent_start_hook_validation.py` (A3 +847 new) | Does not exist on soak | **additive-safe** | Brand-new file. |
+  | `runtime/core/policies/write_plan_guard.py` (A4 +69) | Not touched by A5R-A8 | **additive-safe** | Pure forward addition. |
+  | `tests/runtime/policies/test_write_scope_forbidden.py` (A4 +370 new) | Does not exist on soak | **additive-safe** | Brand-new file. |
+
+  | A0-branch file | Soak counterpart | Classification | Notes |
+  |---|---|---|---|
+  | `runtime/core/work_item_contract_codec.py` (A0 +137 alias decode) | Exists on soak; not modified by A5R-A8 | **additive-safe** | A5R's adapter shim is on `dispatch_contract.py` (different file); A0's alias decode in codec is orthogonal territory. |
+  | `tests/runtime/test_work_item_contract_codec.py` (A0 +202) | Does not exist on soak | **additive-safe** | Brand-new file. |
+
+- **Three bounded reconciliation options (adjudication-only, no execution):**
+
+  **Option 1 — Merge branch into `claudesox-local`, then push.**
+  Commands (A0 first, simpler): `git checkout claudesox-local && git merge feature/config-readiness-slice-a0-codec -m "merge(a0): codec legacy-alias decode"` (additive-safe, no conflicts expected) then `git merge feature/config-readiness-slice-a-agent-contract` (conflicts expected in authority_registry.py → accept soak; agent_contract_required.py → accept soak; test_agent_contract_required_policy.py → complex; pre-agent.sh → composable; subagent-start.sh → composable; test_subagent_start_hook.py → small) then `git push origin claudesox-local:feat/claudex-cutover`.
+  Risk: `test_agent_contract_required_policy.py` merge is non-trivial (both sides restructured). Accept-soak + re-apply A-branch's unique additive test files is cleanest.
+  User-decision boundary? **Yes** — merge commit preserves A-branch history into soak trunk; history-shape decision.
+
+  **Option 2 — Rebase branch onto `origin/feat/claudex-cutover` (=aeec494), then push.**
+  Commands (A0): `git checkout feature/config-readiness-slice-a0-codec && git rebase origin/feat/claudex-cutover` (additive-safe, no conflicts) then `git push origin feature/config-readiness-slice-a0-codec:feat/claudex-cutover` (fast-forward).
+  Commands (A-branch): `git checkout feature/config-readiness-slice-a-agent-contract && git rebase origin/feat/claudex-cutover` (interactive; drop A1 superseded; preserve A2/A3/A4 additive portions) then push.
+  Risk: rebasing rewrites A-branch SHAs. Per Sacred Practice §8, history-rewrite is user-decision boundary — requires explicit user approval.
+  User-decision boundary? **Yes** — history rewrite.
+
+  **Option 3 — Retire branch as historical experiment, cherry-pick surviving deltas.**
+  Commands (A0): `git checkout claudesox-local && git cherry-pick 764d625 && git push origin claudesox-local:feat/claudex-cutover`. Optional retire: `git branch -D feature/config-readiness-slice-a0-codec`.
+  Commands (A-branch): `git checkout claudesox-local && git cherry-pick aef51ae` (A4 additive) + cherry-pick individual test files from A2/A3 (`test_pre_agent_hook_validation.py`, `test_subagent_start_hook_validation.py`) + merge A2/A3 hook deltas manually if desired, then push. Skip A1 (superseded).
+  Risk: A2/A3 cherry-picks mix additive files + shared-hook edits that conflict. Some deltas apply cleanly; others need manual resolution.
+  User-decision boundary? **Mixed** — `git branch -D` is destructive (user-owned); cherry-pick itself is routine. Cherry-pick without branch retirement is fully routine.
+
+- **Recommended option order (planner, user-owned final decision):**
+  1. **A0: Option 2 or Option 3 — either is clean.** A0 is 1 commit, additive-safe. Option 3 with branch retention (skip `git branch -D`) is cleanest. **Routine** if branch deletion deferred.
+  2. **A-branch: Option 3 — cherry-pick A4 + A2/A3 additive test files only, retain A-branch as historical experiment.** A1 is superseded by A6+A8 on soak; re-landing as merge creates pointless conflict for zero behavior delta. Cherry-picking A4's write_plan_guard is pure-add and clean. A2/A3's new test files are additive-safe. Hook-edit deltas from A2/A3 can be composed into soak via a follow-on bounded slice if desired. **Routine cherry-picks; branch retention avoids destructive delete.**
+
+- **User-owned vs routine:**
+  - **Routine (orchestrator-eligible when authorized):** A0 rebase or cherry-pick + push; A4 cherry-pick onto claudesox-local + push; cherry-picks of additive-safe test files from A2/A3.
+  - **User-owned (decision-boundary):** merge commit shape (Option 1); history rewrite (Option 2); branch deletion (any option); composition of A2/A3 hook deltas into aeec494-tipped soak (needs merge judgment — ambiguous composition target).
+  - **Irreconcilable:** none. A1 is superseded-not-contradicted; A2/A3/A4 additive deltas are cleanly applicable.
+
+- **Blocking?** No. A5R-A8 bundle is published; A-branch and A0 are remaining publish debt but soak is ready. Recommended: a dedicated A10 slice for adjudicated reconciliation (user picks option per branch; orchestrator executes routine parts + escalates decision boundaries).
+
+- **Verification state:** branch SHAs + upstream status + overlap classification verified via `git log`, `git diff --stat`, `git rev-list --left-right --count` against `origin/feat/claudex-cutover@aeec494`. Docs-only packet; no runtime / hook / policy / git-history mutations in A9.
+
 ### Planner scope violation mechanically narrowed — RESOLVED by Slice A4 for governance class (2026-04-18)
 
 - **Subject:** the planner scope-violation class-of-defect originally logged below ("Planner scope violation — unprompted `MASTER_PLAN.md` write despite `forbidden_paths`") is now mechanically blocked for governance-markdown and constitution-level write targets by Slice A4 local commit `aef51aed93a93e07b5d5ebb5d1a739180798e3f7` on `feature/config-readiness-slice-a-agent-contract` (parent A3 `a659b6d`). The A4 commit extends `runtime/core/policies/write_plan_guard.py` to consult `request.context.scope.forbidden_paths` BEFORE the `CAN_WRITE_GOVERNANCE` capability check: on `fnmatch.fnmatch(repo_rel, pattern)` match against any forbidden_paths entry, plan_guard returns `PolicyDecision(action="deny", policy_name="plan_guard", reason=...)` whose `reason` contains stable substring `scope_forbidden_path_write`. Role-absolute: planner AND implementer are both denied equally. `@decision DEC-CLAUDEX-WRITE-PLAN-GUARD-FORBIDDEN-PATHS-005` (accepted). 27 new tests in `tests/runtime/policies/test_write_scope_forbidden.py` cover INV-A4-1..A4-10 + compound `PolicyRegistry.evaluate()` integration; all 24 existing `test_write_plan_guard.py` tests pass unchanged.
