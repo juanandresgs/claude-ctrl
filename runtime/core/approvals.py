@@ -1,14 +1,15 @@
-"""One-shot approval tokens for high-risk git operations.
+"""One-shot approval tokens for guarded git operations.
 
 @decision DEC-APPROVAL-001
-Title: SQLite-backed approval tokens gate high-risk git ops
+Title: SQLite-backed approval tokens gate destructive/history-rewrite git ops
 Status: accepted
 Rationale: evaluation_state=ready_for_guardian is sufficient authority for
-  routine local landing (commit, merge). High-risk operations (push, rebase,
-  reset, force, destructive) require an explicit one-shot approval token
-  granted by the user or orchestrator. Tokens are consumed on first use —
-  each high-risk operation requires its own grant. This is the mechanical
-  enforcement that replaces "ask the user in prose."
+  routine Guardian landing (commit, merge, straightforward push to the
+  established upstream). Approval tokens remain for destructive or
+  history-rewrite operations such as rebase, reset, non-fast-forward merge,
+  force push, destructive cleanup, and admin recovery. Tokens are consumed on
+  first use — each guarded operation requires its own grant. This is the
+  mechanical enforcement that replaces "ask the user in prose."
 
   The domain module owns all reads and writes to the approvals table.
   CLI wrappers in cli.py surface this as cc-policy approval grant/check/list.
@@ -42,7 +43,7 @@ def grant(
     Raises ValueError for unknown op_type values (validated against
     VALID_OP_TYPES / schemas.APPROVAL_OP_TYPES so both stay in sync).
     Multiple tokens may exist for the same (workflow_id, op_type) pair —
-    each high-risk invocation consumes exactly one token.
+    each guarded invocation consumes exactly one token.
     """
     if op_type not in VALID_OP_TYPES:
         raise ValueError(f"unknown op_type {op_type!r}; valid: {sorted(VALID_OP_TYPES)}")

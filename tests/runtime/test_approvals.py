@@ -1,11 +1,11 @@
 """Unit tests for runtime/core/approvals.py
 
 @decision DEC-APPROVAL-001
-Title: SQLite-backed approval tokens gate high-risk git ops
+Title: SQLite-backed approval tokens gate guarded git ops
 Status: accepted
 Rationale: These tests exercise the three public functions (grant,
   check_and_consume, list_pending) against an in-memory SQLite database
-  to prove the one-shot token semantics that guard.sh Check 13 relies on.
+  to prove the one-shot token semantics that guarded git ops rely on.
   External DB, hooks, and CLI are tested separately in the E2E scenario.
 """
 
@@ -38,14 +38,14 @@ def conn():
 
 
 def test_grant_returns_positive_int(conn):
-    rid = approvals.grant(conn, "wf-1", "push")
+    rid = approvals.grant(conn, "wf-1", "rebase")
     assert isinstance(rid, int)
     assert rid > 0
 
 
 def test_grant_increments_id(conn):
-    rid1 = approvals.grant(conn, "wf-1", "push")
-    rid2 = approvals.grant(conn, "wf-1", "push")
+    rid1 = approvals.grant(conn, "wf-1", "rebase")
+    rid2 = approvals.grant(conn, "wf-1", "rebase")
     assert rid2 > rid1
 
 
@@ -61,13 +61,18 @@ def test_grant_rejects_invalid_op_type(conn):
         approvals.grant(conn, "wf-1", "invalid_op")
 
 
+def test_grant_rejects_push_op_type(conn):
+    with pytest.raises(ValueError, match="unknown op_type"):
+        approvals.grant(conn, "wf-1", "push")
+
+
 def test_grant_rejects_empty_op_type(conn):
     with pytest.raises(ValueError, match="unknown op_type"):
         approvals.grant(conn, "wf-1", "")
 
 
 def test_grant_default_granted_by_is_user(conn):
-    approvals.grant(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
     row = conn.execute(
         "SELECT granted_by FROM approvals WHERE workflow_id = ?", ("wf-1",)
     ).fetchone()
@@ -75,7 +80,7 @@ def test_grant_default_granted_by_is_user(conn):
 
 
 def test_grant_custom_granted_by(conn):
-    approvals.grant(conn, "wf-1", "push", granted_by="orchestrator")
+    approvals.grant(conn, "wf-1", "rebase", granted_by="orchestrator")
     row = conn.execute(
         "SELECT granted_by FROM approvals WHERE workflow_id = ?", ("wf-1",)
     ).fetchone()
@@ -83,7 +88,7 @@ def test_grant_custom_granted_by(conn):
 
 
 def test_grant_sets_consumed_zero(conn):
-    approvals.grant(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
     row = conn.execute("SELECT consumed FROM approvals WHERE workflow_id = ?", ("wf-1",)).fetchone()
     assert row["consumed"] == 0
 
@@ -94,33 +99,33 @@ def test_grant_sets_consumed_zero(conn):
 
 
 def test_check_and_consume_returns_true_when_token_exists(conn):
-    approvals.grant(conn, "wf-1", "push")
-    result = approvals.check_and_consume(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
+    result = approvals.check_and_consume(conn, "wf-1", "rebase")
     assert result is True
 
 
 def test_check_and_consume_one_shot_second_call_returns_false(conn):
     """The one-shot invariant: second call on same (wf, op) returns False."""
-    approvals.grant(conn, "wf-1", "push")
-    assert approvals.check_and_consume(conn, "wf-1", "push") is True
-    assert approvals.check_and_consume(conn, "wf-1", "push") is False
+    approvals.grant(conn, "wf-1", "rebase")
+    assert approvals.check_and_consume(conn, "wf-1", "rebase") is True
+    assert approvals.check_and_consume(conn, "wf-1", "rebase") is False
 
 
 def test_check_and_consume_returns_false_when_no_token(conn):
-    result = approvals.check_and_consume(conn, "wf-1", "push")
+    result = approvals.check_and_consume(conn, "wf-1", "rebase")
     assert result is False
 
 
 def test_check_and_consume_marks_row_consumed(conn):
-    approvals.grant(conn, "wf-1", "push")
-    approvals.check_and_consume(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
+    approvals.check_and_consume(conn, "wf-1", "rebase")
     row = conn.execute("SELECT consumed FROM approvals WHERE workflow_id = ?", ("wf-1",)).fetchone()
     assert row["consumed"] == 1
 
 
 def test_check_and_consume_sets_consumed_at(conn):
-    approvals.grant(conn, "wf-1", "push")
-    approvals.check_and_consume(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
+    approvals.check_and_consume(conn, "wf-1", "rebase")
     row = conn.execute(
         "SELECT consumed_at FROM approvals WHERE workflow_id = ?", ("wf-1",)
     ).fetchone()
@@ -129,25 +134,25 @@ def test_check_and_consume_sets_consumed_at(conn):
 
 
 def test_check_and_consume_isolates_by_op_type(conn):
-    """Token for 'push' does not satisfy 'rebase' check."""
-    approvals.grant(conn, "wf-1", "push")
-    assert approvals.check_and_consume(conn, "wf-1", "rebase") is False
-    # The push token is still unconsumed
-    assert approvals.check_and_consume(conn, "wf-1", "push") is True
+    """Token for 'rebase' does not satisfy 'reset' check."""
+    approvals.grant(conn, "wf-1", "rebase")
+    assert approvals.check_and_consume(conn, "wf-1", "reset") is False
+    # The rebase token is still unconsumed.
+    assert approvals.check_and_consume(conn, "wf-1", "rebase") is True
 
 
 def test_check_and_consume_isolates_by_workflow_id(conn):
     """Token for wf-1 does not satisfy wf-2."""
-    approvals.grant(conn, "wf-1", "push")
-    assert approvals.check_and_consume(conn, "wf-2", "push") is False
-    assert approvals.check_and_consume(conn, "wf-1", "push") is True
+    approvals.grant(conn, "wf-1", "rebase")
+    assert approvals.check_and_consume(conn, "wf-2", "rebase") is False
+    assert approvals.check_and_consume(conn, "wf-1", "rebase") is True
 
 
 def test_check_and_consume_consumes_oldest_first(conn):
     """With multiple tokens, the earliest created_at is consumed first."""
-    approvals.grant(conn, "wf-1", "push")
-    approvals.grant(conn, "wf-1", "push")
-    assert approvals.check_and_consume(conn, "wf-1", "push") is True
+    approvals.grant(conn, "wf-1", "rebase")
+    approvals.grant(conn, "wf-1", "rebase")
+    assert approvals.check_and_consume(conn, "wf-1", "rebase") is True
     # Second token should still be unconsumed
     pending = approvals.list_pending(conn, "wf-1")
     assert len(pending) == 1
@@ -167,17 +172,17 @@ def test_list_pending_empty_when_none(conn):
 
 
 def test_list_pending_returns_unconsumed_only(conn):
-    approvals.grant(conn, "wf-1", "push")
     approvals.grant(conn, "wf-1", "rebase")
-    approvals.check_and_consume(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "reset")
+    approvals.check_and_consume(conn, "wf-1", "rebase")
     pending = approvals.list_pending(conn)
     assert len(pending) == 1
-    assert pending[0]["op_type"] == "rebase"
+    assert pending[0]["op_type"] == "reset"
 
 
 def test_list_pending_filters_by_workflow_id(conn):
-    approvals.grant(conn, "wf-1", "push")
-    approvals.grant(conn, "wf-2", "push")
+    approvals.grant(conn, "wf-1", "rebase")
+    approvals.grant(conn, "wf-2", "rebase")
     wf1_pending = approvals.list_pending(conn, "wf-1")
     wf2_pending = approvals.list_pending(conn, "wf-2")
     all_pending = approvals.list_pending(conn)
@@ -189,7 +194,7 @@ def test_list_pending_filters_by_workflow_id(conn):
 
 
 def test_list_pending_returns_dicts_with_expected_keys(conn):
-    approvals.grant(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
     pending = approvals.list_pending(conn)
     assert len(pending) == 1
     row = pending[0]
@@ -198,8 +203,8 @@ def test_list_pending_returns_dicts_with_expected_keys(conn):
 
 
 def test_list_pending_none_after_all_consumed(conn):
-    approvals.grant(conn, "wf-1", "push")
-    approvals.check_and_consume(conn, "wf-1", "push")
+    approvals.grant(conn, "wf-1", "rebase")
+    approvals.check_and_consume(conn, "wf-1", "rebase")
     assert approvals.list_pending(conn) == []
 
 
@@ -213,25 +218,25 @@ def test_full_approval_lifecycle(conn):
 
     This exercises the real production sequence:
       1. User grants approval via cc-policy approval grant
-      2. guard.sh Check 13 calls check_and_consume (consumes token)
-      3. Subsequent guard.sh calls for same op are denied (no token)
+      2. Check 13 calls check_and_consume (consumes token)
+      3. Subsequent guarded-op calls for the same op are denied (no token)
       4. list_pending confirms the consumed token is no longer shown
     """
     # Step 1: grant
-    rid = approvals.grant(conn, "wf-prod", "push", granted_by="user")
+    rid = approvals.grant(conn, "wf-prod", "rebase", granted_by="user")
     assert rid > 0
 
     # Pending before consumption
     pending_before = approvals.list_pending(conn, "wf-prod")
     assert len(pending_before) == 1
-    assert pending_before[0]["op_type"] == "push"
+    assert pending_before[0]["op_type"] == "rebase"
 
-    # Step 2: guard.sh Check 13 path — first call consumes
-    consumed = approvals.check_and_consume(conn, "wf-prod", "push")
+    # Step 2: guarded-op path — first call consumes
+    consumed = approvals.check_and_consume(conn, "wf-prod", "rebase")
     assert consumed is True
 
-    # Step 3: second call (same guard.sh Check 13 re-run) returns False
-    consumed_again = approvals.check_and_consume(conn, "wf-prod", "push")
+    # Step 3: second call (same guarded-op re-run) returns False
+    consumed_again = approvals.check_and_consume(conn, "wf-prod", "rebase")
     assert consumed_again is False
 
     # Step 4: list shows nothing
@@ -241,9 +246,9 @@ def test_full_approval_lifecycle(conn):
 
 def test_multiple_op_types_independent_lifecycle(conn):
     """Multiple op-type tokens coexist and are consumed independently."""
-    approvals.grant(conn, "wf-1", "push")
     approvals.grant(conn, "wf-1", "rebase")
     approvals.grant(conn, "wf-1", "reset")
+    approvals.grant(conn, "wf-1", "non_ff_merge")
 
     assert len(approvals.list_pending(conn, "wf-1")) == 3
 
@@ -252,5 +257,5 @@ def test_multiple_op_types_independent_lifecycle(conn):
     assert len(pending) == 2
     op_types = {r["op_type"] for r in pending}
     assert "rebase" not in op_types
-    assert "push" in op_types
     assert "reset" in op_types
+    assert "non_ff_merge" in op_types

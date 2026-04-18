@@ -9,11 +9,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "claudex-worker-approver.sh"
 
 
-def classify(capture: str, *, allow_push: bool = False) -> str:
+def classify(capture: str, *, allow_push: bool | None = None) -> str:
     env = os.environ.copy()
     env["BRAID_ROOT"] = str(REPO_ROOT / ".b2r-test")
-    if allow_push:
-        env["CLAUDEX_WORKER_APPROVER_ALLOW_PUSH"] = "1"
+    if allow_push is not None:
+        env["CLAUDEX_WORKER_APPROVER_ALLOW_PUSH"] = "1" if allow_push else "0"
     proc = subprocess.run(
         ["bash", str(SCRIPT), "--classify-stdin"],
         input=capture,
@@ -52,7 +52,7 @@ enter to submit | esc to cancel
     assert classify(capture) == "deny"
 
 
-def test_worker_approver_denies_push_by_default() -> None:
+def test_worker_approver_allows_push_by_default() -> None:
     capture = """\
 Field 1/1
 Tool call needs your approval. Reason: Request attempts to git push checkpoint branch to remote.
@@ -61,10 +61,10 @@ Tool call needs your approval. Reason: Request attempts to git push checkpoint b
 2. Cancel  Cancel this tool call
 enter to submit | esc to cancel
 """
-    assert classify(capture) == "deny"
+    assert classify(capture) == "allow"
 
 
-def test_worker_approver_allows_push_when_enabled() -> None:
+def test_worker_approver_denies_push_when_disabled() -> None:
     capture = """\
 Field 1/1
 Tool call needs your approval. Reason: Request attempts to git push checkpoint branch to remote.
@@ -73,7 +73,7 @@ Tool call needs your approval. Reason: Request attempts to git push checkpoint b
 2. Cancel  Cancel this tool call
 enter to submit | esc to cancel
 """
-    assert classify(capture, allow_push=True) == "allow"
+    assert classify(capture, allow_push=False) == "deny"
 
 
 def test_worker_approver_allows_directory_trust_prompt() -> None:

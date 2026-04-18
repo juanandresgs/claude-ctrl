@@ -18,9 +18,10 @@ Rationale: Subagents today rediscover identity from ambient state (markers, CWD
   Lifecycle: active → released (normal completion) | revoked (superseded) |
              expired (TTL elapsed, detected by expire_stale).
 
-  validate_op() never consumes approval tokens — it only peeks via list_pending.
-  guard.sh Check 13 owns actual token consumption. This separation ensures
-  validate_op is safe to call repeatedly without side effects.
+  validate_op() never consumes approval tokens — it only peeks via list_pending
+  for the remaining approval-gated operations. guard.sh Check 13 owns actual
+  token consumption. This separation ensures validate_op is safe to call
+  repeatedly without side effects.
 
   classify_git_op() is the sole Python-side git-command classifier. It is the
   migration target for the bash classifier in guard.sh Check 3. When hook
@@ -702,11 +703,15 @@ def validate_op(
         result["reason"] = "evaluation_state is not ready_for_guardian (or SHA mismatch)"
         return result
 
-    # Approval check: high_risk AND admin_recovery both require an unconsumed token.
-    # admin_recovery shares the approval requirement with high_risk because these
-    # operations (merge --abort, reset --merge) are still significant repo-state
-    # changes that must be explicitly sanctioned — just not evaluated for code quality.
-    requires_approval = op_class in ("high_risk", "admin_recovery")
+    # Approval check: admin_recovery and approval-gated high_risk ops require
+    # an unconsumed token. Straightforward push stays classified as high_risk
+    # for lease/capability purposes but is no longer user-gated once Guardian
+    # has reviewer/test/lease clearance.
+    invocation = parse_git_invocation(command)
+    requires_approval = op_class == "admin_recovery" or (
+        op_class == "high_risk"
+        and (invocation is None or invocation.subcommand != "push")
+    )
     result["requires_approval"] = requires_approval
     approval_ok = None
 
@@ -714,14 +719,17 @@ def validate_op(
         wf_id = lease["workflow_id"]
         pending = approvals_mod.list_pending(conn, workflow_id=wf_id)
         # Map op_class to the approval op_type we'd look for.
-        # high_risk and admin_recovery ops may have different sub-types;
-        # for now we accept any pending token for the workflow.
+        # Approval-gated high_risk and admin_recovery ops may have different
+        # sub-types; for now we accept any pending token for the workflow.
         approval_ok = len(pending) > 0
 
     result["approval_ok"] = approval_ok
 
     if requires_approval and not approval_ok:
-        result["reason"] = "op requires an unconsumed approval token (high_risk or admin_recovery)"
+        result["reason"] = (
+            "op requires an unconsumed approval token "
+            "(approval-gated high_risk or admin_recovery)"
+        )
         return result
 
     result["allowed"] = True

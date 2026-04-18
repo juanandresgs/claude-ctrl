@@ -59,7 +59,7 @@ Rationale: The prompt-pack resolver's
       table's issuance order.
     * ``open_approvals`` are rendered as ``"{op_type}#{id}"``
       strings and sorted by ``(op_type, id)`` where ``id`` is the
-      integer approval row id, so "push#2" comes before "push#10"
+      integer approval row id, so "rebase#2" comes before "rebase#10"
       instead of being sorted as bare strings. This matches the
       instruction's "simple deterministic string surface that you
       pin in tests".
@@ -125,8 +125,8 @@ def _format_approval_entry(row: Mapping[str, Any]) -> Tuple[str, int, str]:
     """Return ``(op_type, id, rendered)`` for sorting + output.
 
     Preserving the integer ``id`` as a separate tuple element
-    gives numeric sort order (push#2 before push#10) rather than
-    lexicographic sort that would put push#10 first.
+    gives numeric sort order (rebase#2 before rebase#10) rather than
+    lexicographic sort that would put rebase#10 first.
     """
     op_type = row["op_type"]
     if not isinstance(op_type, str) or not op_type:

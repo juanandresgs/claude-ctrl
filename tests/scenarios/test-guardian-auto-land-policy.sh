@@ -19,10 +19,11 @@
 # @rationale ready_for_guardian is the evaluator-issued autoverify-HIGH equivalent
 #   (reviewer after Phase 8 Slice 11; historically the tester stop hook).
 #   Requiring additional user approval after evaluator clearance wastes tokens and
-#   creates a redundant approval loop. Local commit/merge auto-lands when all
-#   conditions are met. Push/rebase/reset/force and destructive ops still require
-#   explicit user approval. guard.sh mechanical enforcement is unchanged — only
-#   the governance text and Guardian agent instructions are updated.
+#   creates a redundant approval loop. Commit/merge/straightforward push auto-land
+#   when all conditions are met. Rebase/reset/force, destructive ops, and
+#   ambiguous publish paths still require explicit user approval. guard.sh
+#   mechanical enforcement is unchanged — only the governance text and Guardian
+#   agent instructions are updated.
 set -euo pipefail
 
 TEST_NAME="test-guardian-auto-land-policy"
@@ -55,7 +56,8 @@ run_sub_case_a() {
 
     # Gate 1: schema + guardian role
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Gate 2: test status = pass
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -71,6 +73,22 @@ run_sub_case_a() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$WF_ID" \
         --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    python3 - "$TEST_DB" "$WF_ID" <<'PY' >/dev/null 2>&1
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1])
+try:
+    conn.execute(
+        "INSERT INTO completion_records "
+        "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+        ("seed-lease", sys.argv[2], "reviewer", "ready_for_guardian", 1, "{}", "[]"),
+    )
+    conn.commit()
+finally:
+    conn.close()
+PY
 
     # Gate 5: dispatch lease (policy engine requires active lease for all git ops)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -109,7 +127,7 @@ run_sub_case_a() {
 
 run_deny_check() {
     local label="$1"
-    local cmd="$2"
+    local git_args="$2"
     local expect_pattern="${3:-}"  # optional grep pattern to confirm deny reason
 
     local TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-B-${label}-$$"
@@ -130,7 +148,8 @@ run_deny_check() {
 
     # Set up all passing gates (same as sub-case A) to isolate the destructive-op check
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -139,6 +158,29 @@ run_deny_check() {
         workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    python3 - "$TEST_DB" "$WF_ID" <<'PY' >/dev/null 2>&1
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1])
+try:
+    conn.execute(
+        "INSERT INTO completion_records "
+        "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+        ("seed-lease", sys.argv[2], "reviewer", "ready_for_guardian", 1, "{}", "[]"),
+    )
+    conn.commit()
+finally:
+    conn.close()
+PY
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --worktree-path "$TMP_DIR" --workflow-id "$WF_ID" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+
+    local cmd
+    cmd="git -C \"$TMP_DIR\" $git_args"
 
     PAYLOAD=$(jq -n --arg t "Bash" --arg c "$cmd" --arg w "$TMP_DIR" \
         '{tool_name:$t,tool_input:{command:$c},cwd:$w}')
@@ -173,17 +215,17 @@ run_deny_check() {
 run_sub_case_b() {
     # Check 6: git reset --hard
     run_deny_check "reset-hard" \
-        "git -C /tmp reset --hard HEAD~1" \
+        "reset --hard HEAD~1" \
         "destructive"
 
     # Check 6: git clean -f
     run_deny_check "clean-f" \
-        "git -C /tmp clean -f" \
+        "clean -f" \
         "permanently deletes"
 
     # Check 6: git branch -D
     run_deny_check "branch-D" \
-        "git -C /tmp branch -D some-branch" \
+        "branch -D some-branch" \
         "force-deletes"
 
     # Check 5: git push --force without --force-with-lease
@@ -204,7 +246,8 @@ run_sub_case_b() {
     local PF_HEAD
     PF_HEAD=$(git -C "$PF_TMP" rev-parse HEAD)
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        marker set "agent-test" "guardian" --project-root "$PF_TMP" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$PF_TMP" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -213,12 +256,28 @@ run_sub_case_b() {
         workflow bind "$PF_WF" "$PF_TMP" "$PF_BRANCH" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$PF_WF" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    python3 - "$PF_DB" "$PF_WF" <<'PY' >/dev/null 2>&1
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1])
+try:
+    conn.execute(
+        "INSERT INTO completion_records "
+        "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+        ("seed-lease", sys.argv[2], "reviewer", "ready_for_guardian", 1, "{}", "[]"),
+    )
+    conn.commit()
+finally:
+    conn.close()
+PY
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
         lease issue-for-dispatch "guardian" --workflow-id "$PF_WF" \
         --worktree-path "$PF_TMP" --branch "$PF_BRANCH" \
         --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PF_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        approval grant "$PF_WF" "push" >/dev/null 2>&1
+        approval grant "$PF_WF" "force_push" >/dev/null 2>&1
     local pf_cmd="git -C \"$PF_TMP\" push origin $PF_BRANCH --force"
     local pf_payload pf_output pf_decision pf_reason
     pf_payload=$(jq -n --arg t "Bash" --arg c "$pf_cmd" --arg w "$PF_TMP" \
@@ -272,17 +331,20 @@ run_sub_case_c() {
         echo "PASS: $TEST_NAME [C2] — agents/guardian.md contains high-risk tier label"
     fi
 
-    # C3: agents/guardian.md must mention push/rebase/reset as requiring approval
-    if ! grep -qi "push.*approv\|rebase.*approv\|reset.*approv\|approv.*push\|approv.*rebase\|approv.*reset" "$GUARDIAN_MD"; then
-        # fallback: check that push, rebase, and reset all appear in the Approval required section
-        if ! grep -qi "push\|rebase\|reset" "$GUARDIAN_MD"; then
-            echo "FAIL: $TEST_NAME [C3] — agents/guardian.md does not mention push/rebase/reset in approval context"
+    # C3: agents/guardian.md must reserve approval for rebase/reset/force-like boundaries,
+    # not plain push.
+    if grep -qi 'git push (any form' "$GUARDIAN_MD"; then
+        echo "FAIL: $TEST_NAME [C3] — agents/guardian.md still treats plain git push as approval-required"
+        failures=$((failures + 1))
+    elif ! grep -qi "rebase.*approv\|reset.*approv\|force.*approv\|approv.*rebase\|approv.*reset\|approv.*force" "$GUARDIAN_MD"; then
+        if ! grep -qi "rebase\|reset\|force" "$GUARDIAN_MD"; then
+            echo "FAIL: $TEST_NAME [C3] — agents/guardian.md does not mention rebase/reset/force in approval context"
             failures=$((failures + 1))
         else
-            echo "PASS: $TEST_NAME [C3] — agents/guardian.md mentions push/rebase/reset (approval context inferred)"
+            echo "PASS: $TEST_NAME [C3] — agents/guardian.md mentions rebase/reset/force (approval context inferred)"
         fi
     else
-        echo "PASS: $TEST_NAME [C3] — agents/guardian.md explicitly links push/rebase/reset to approval"
+        echo "PASS: $TEST_NAME [C3] — agents/guardian.md explicitly links rebase/reset/force to approval"
     fi
 
     # C4: CLAUDE.md Sacred Practice #8 must contain language about auto/automatic local landing
@@ -293,17 +355,16 @@ run_sub_case_c() {
         echo "PASS: $TEST_NAME [C4] — CLAUDE.md Sacred Practice #8 contains automatic local-landing language"
     fi
 
-    # C5: CLAUDE.md Sacred Practice #8 must distinguish local landing from push/force
-    if ! grep -qiE "push.*approval|force.*approval|approval.*push|approval.*force" "$CLAUDE_MD"; then
-        # fallback: check that the #8 entry mentions push/force requiring approval separately
-        if ! grep -qiE "Push|force ops|destructive" "$CLAUDE_MD"; then
-            echo "FAIL: $TEST_NAME [C5] — CLAUDE.md #8 does not distinguish push/force as requiring approval"
-            failures=$((failures + 1))
-        else
-            echo "PASS: $TEST_NAME [C5] — CLAUDE.md #8 distinguishes push/force ops (approval required)"
-        fi
+    # C5: CLAUDE.md Sacred Practice #8 must distinguish automatic straightforward
+    # push from user-gated destructive/history-rewrite operations.
+    if ! grep -qiE "straightforward push|merge, straightforward push|automatic.*push" "$CLAUDE_MD"; then
+        echo "FAIL: $TEST_NAME [C5] — CLAUDE.md #8 does not treat straightforward push as automatic Guardian landing"
+        failures=$((failures + 1))
+    elif ! grep -qiE "rebase|reset|force|destructive|ambiguous publish" "$CLAUDE_MD"; then
+        echo "FAIL: $TEST_NAME [C5] — CLAUDE.md #8 does not retain explicit user-decision boundaries"
+        failures=$((failures + 1))
     else
-        echo "PASS: $TEST_NAME [C5] — CLAUDE.md #8 explicitly links push/force to approval requirement"
+        echo "PASS: $TEST_NAME [C5] — CLAUDE.md #8 distinguishes automatic push from user-gated boundaries"
     fi
 
     if [[ "$failures" -gt 0 ]]; then

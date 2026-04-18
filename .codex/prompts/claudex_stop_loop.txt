@@ -1,4 +1,7 @@
 Re-arm the ClauDEX supervisor.
 
 If there is no active bridge run or the run is complete, stop.
-Otherwise call `get_status()`: review and steer only on `waiting_for_codex`; on `queued` or `inflight`, call `wait_for_codex_review(timeout_ms=1200000)` and ignore routine `__BRAID_RELAY__` noise.
+Otherwise call `get_status()`:
+- `waiting_for_codex` with a new pending review: review the response, steer the next slice via `send_instruction()`.
+- `waiting_for_codex` with no new review: call `wait_for_codex_review(timeout_ms=1200000)` to block until the worker finishes. Do NOT stop and re-arm — that burns a Codex turn for no work.
+- `queued` or `inflight`: call `wait_for_codex_review(timeout_ms=1200000)` and ignore routine `__BRAID_RELAY__` noise.

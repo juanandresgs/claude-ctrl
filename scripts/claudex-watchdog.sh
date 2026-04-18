@@ -527,7 +527,12 @@ write_pending_review() {
   local run_id="$1"
   local run_dir="$2"
   local updated_at="$3"
-  local tmp_file="${PENDING_REVIEW_FILE}.tmp"
+  local pending_dir=""
+  pending_dir="$(dirname "$PENDING_REVIEW_FILE")"
+  mkdir -p "$pending_dir"
+
+  local tmp_file=""
+  tmp_file="$(mktemp "${PENDING_REVIEW_FILE}.tmp.XXXXXX")"
 
   local latest_response_file=""
   latest_response_file="$(find "${run_dir}/responses" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort | tail -1 || true)"
@@ -542,7 +547,7 @@ write_pending_review() {
         updated_at: $updated_at,
         response_available: false
       }' > "$tmp_file"
-    mv "$tmp_file" "$PENDING_REVIEW_FILE"
+    mv -f "$tmp_file" "$PENDING_REVIEW_FILE"
     return 0
   fi
 
@@ -562,7 +567,7 @@ write_pending_review() {
       response_path: $response_path,
       response_preview: (($response[0].response // "") | tostring | split("\n")[:8] | join("\n"))
     }' > "$tmp_file"
-  mv "$tmp_file" "$PENDING_REVIEW_FILE"
+  mv -f "$tmp_file" "$PENDING_REVIEW_FILE"
 }
 
 clear_pending_review() {

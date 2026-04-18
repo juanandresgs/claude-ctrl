@@ -59,7 +59,7 @@ def register_all(registry: PolicyRegistry) -> None:
       850  bash_test_gate_commit     -- test-pass gate for git commit
       900  bash_eval_readiness       -- eval_state=ready_for_guardian gate
      1000  bash_workflow_scope       -- workflow binding + scope compliance
-     1100  bash_approval_gate        -- one-shot approval for high-risk git ops
+     1100  bash_approval_gate        -- one-shot approval for guarded git ops
     """
     # PE-W2: write-path policies
     from runtime.core.policies.write_branch import branch_guard

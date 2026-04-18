@@ -12,7 +12,7 @@ LOG_FILE="${PID_DIR}/worker-approver.log"
 TMUX_TARGET=""
 INTERVAL_SECONDS="${CLAUDEX_WORKER_APPROVER_INTERVAL_SECONDS:-2}"
 RETRY_SECONDS="${CLAUDEX_WORKER_APPROVER_RETRY_SECONDS:-8}"
-ALLOW_PUSH="${CLAUDEX_WORKER_APPROVER_ALLOW_PUSH:-0}"
+ALLOW_PUSH="${CLAUDEX_WORKER_APPROVER_ALLOW_PUSH:-1}"
 
 usage() {
   cat <<'EOF'
@@ -22,8 +22,8 @@ Usage:
 
 Monitors the Claude worker pane and auto-selects "Allow" only for routine
 worker prompts that the supervisor is expected to own: directory trust,
-bounded test runs, routine git add/status/diff/commit, roadmap/doc updates,
-and other non-destructive repo-local tool actions.
+bounded test runs, routine git add/status/diff/commit/straightforward push,
+roadmap/doc updates, and other non-destructive repo-local tool actions.
 EOF
 }
 

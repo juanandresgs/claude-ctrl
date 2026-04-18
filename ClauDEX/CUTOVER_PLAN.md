@@ -603,7 +603,7 @@ Recommendation meanings:
 | P2 | Governance ownership + plan immutability | Yes | Architecture and plan discipline need mechanical protection if they are to stay trustworthy. |
 | P3 | Workflow scope + lease-based git WHO | Yes | This is core to deterministic control and role isolation. |
 | P4 | Git safety policies (`main_sacred`, destructive git, force push) | Yes | High-value boundaries with clear risk reduction. |
-| P5 | One-shot approval gate for high-risk git ops | Yes | Keeps irreversible operations tied to explicit user consent. |
+| P5 | One-shot approval gate for destructive/history-rewrite/admin-recovery git ops | Yes | Keeps true user-decision boundaries explicit while leaving straightforward Guardian push inside reviewer-cleared landing authority. |
 | P6 | Worktree safety policies | Yes (rebuild) | Keep only on documented and empirically verified surfaces. |
 | P7 | Lint-gap, mock, and test-failure gates | Partial | Preserve the control property, but simplify the mechanism and severity model. |
 | P8 | Current evaluation-state readiness shortcuts | No | Replace with reviewer verdicts and convergence state, not more evaluation-state complexity. |

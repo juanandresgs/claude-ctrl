@@ -1,9 +1,9 @@
-"""Policy: bash_approval_gate — require one-shot approval for high-risk git ops.
+"""Policy: bash_approval_gate — require one-shot approval for guarded git ops.
 
-Port of guard.sh lines 424-483 (Check 13).
+Port of guard.sh lines 424-483 (Check 13), excluding straightforward push.
 
 @decision DEC-PE-W3-011
-Title: bash_approval_gate uses effects to consume approval tokens
+Title: bash_approval_gate uses effects to consume approval tokens for guarded ops
 Status: accepted
 Rationale: approvals.check_and_consume() mutates the DB (consumes a token).
   Policies are pure functions and must not perform DB writes directly.
@@ -18,6 +18,12 @@ Rationale: approvals.check_and_consume() mutates the DB (consumes a token).
 
   classify_git_op() from leases.py is the canonical classifier (DEC-LEASE-002).
   We import it directly — no subprocess needed.
+
+  Straightforward `git push` is no longer approval-token gated. Guardian owns
+  push after reviewer/test/lease clearance; this policy now gates only the
+  remaining approval-token operations (rebase, reset, non-ff merge, and
+  admin recovery). Force push and destructive git remain hard-denied earlier in
+  the stack.
 
   Guard.sh Checks 5-6 (hard denies for reset --hard, push --force, clean -f,
   branch -D) fire at priority 500-600, BEFORE this check at priority 1100.
@@ -37,7 +43,7 @@ from runtime.core.policy_utils import (
 
 
 def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
-    """Determine the approval op_type string for a high-risk or admin_recovery command.
+    """Determine the approval op_type string for an approval-gated git command.
 
     Accepts either a PolicyRequest (production path) or a raw command string
     (unit-test convenience / backwards compatibility).
@@ -52,8 +58,6 @@ def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
     if invocation is None:
         return None
 
-    if invocation.subcommand == "push":
-        return "push"
     if invocation.subcommand == "rebase":
         return "rebase"
     if invocation.subcommand == "merge" and "--abort" in invocation.args:
@@ -83,14 +87,15 @@ def _resolve_workflow_id(request: PolicyRequest) -> str:
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
-    """Require a one-shot approval token for high-risk and admin_recovery git ops.
+    """Require a one-shot approval token for approval-gated git ops.
 
     Classification (via classify_git_op from leases.py):
-      high_risk      → push, rebase, reset (any), merge --no-ff
+      high_risk      → rebase, reset (any), merge --no-ff
       admin_recovery → merge --abort, reset --merge
 
-    Routine local ops (commit, plain merge) are gated by eval_readiness
-    (priority=900) — no approval token needed here.
+    Routine Guardian landing ops (commit, plain merge, straightforward push)
+    are gated by eval_readiness / landing authority — no approval token needed
+    here.
 
     Hard denies (reset --hard, push --force, clean -f, branch -D) are handled
     by bash_destructive_git (priority=600) and bash_force_push (priority=500)
@@ -120,16 +125,6 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # build_context() does not pre-load approval tokens — they are stateful
     # and consumption is a write. We signal consumption via effects and
     # require the CLI handler to validate + consume atomically.
-    #
-    # The policy checks the approval via effects rather than querying the DB.
-    # This means we must trust the CLI handler to do the consumption.
-    # We return action="deny" with effects={"check_and_consume_approval": ...}
-    # so the CLI handler can:
-    #   1. Call approvals.check_and_consume(conn, workflow_id, op_type)
-    #   2. If True: override the deny to allow.
-    #   3. If False: emit the deny reason.
-    #
-    # This is the cleanest pure-function approach given the constraints.
     return PolicyDecision(
         action="deny",
         reason=(

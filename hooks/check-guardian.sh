@@ -218,11 +218,11 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
 
     if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_EXECUTION" ]]; then
         # Under auto-land policy (DEC-GUARD-AUTOLAND), approval questions are
-        # expected only for high-risk ops (push, rebase, reset, force, destructive).
-        # For local landing (commit, merge without push), an approval question
-        # without execution is a regression — Guardian should auto-land.
-        HAS_HIGH_RISK_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'push|rebase|reset|force|delet' || echo "")
-        if [[ -z "$HAS_HIGH_RISK_OP" ]]; then
+        # expected only for real user-decision boundaries: destructive/history-
+        # rewrite operations, ambiguous publish placement, or irreconcilable
+        # agent disagreement. Straightforward push is part of normal landing.
+        HAS_USER_DECISION_BOUNDARY=$(echo "$RESPONSE_TEXT" | grep -iE 'rebase|reset|force|delet|non-fast-forward|history rewrite|ambiguous (push|publish)|irreconcilable|reviewer.*disagree|implementer.*disagree' || echo "")
+        if [[ -z "$HAS_USER_DECISION_BOUNDARY" ]]; then
             ISSUES+=("Auto-land regression: Guardian asked for approval on a local landing instead of executing automatically (DEC-GUARD-AUTOLAND)")
         fi
     fi

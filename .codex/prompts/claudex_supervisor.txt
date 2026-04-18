@@ -54,7 +54,9 @@ Run the supervisor loop for the active Claude bridge session:
    - `get_status()` and `get_response()` remain inconsistent for two consecutive loops
    - the active cutover slice appears blocked rather than merely still in progress
 8. Only stop when there is no active bridge run, the run has completed, or genuine user input is required and the active run has been intentionally paused.
-9. Do not emit the terminal stop token for non-destructive approval-gate blocks (for example commit/push approvals or routine high-risk approvals). Record the checkpoint debt and continue with the next bounded non-write or follow-on slice.
+9. Do not emit the terminal stop token for routine commit/push Claude harness approval prompts or for true user-decision boundaries. Distinguish them correctly:
+   - routine commit/push harness approval prompts are helper-path drift, not product/design blockers; record the blocked checkpoint clearly and re-seat/repair the approver path through the existing recovery surfaces.
+   - true user-decision boundaries are destructive/history-rewrite actions, ambiguous publish targets, or irreconcilable reviewer/implementer conflict; record them explicitly and continue with the next bounded non-write or follow-on slice if one exists.
 
 Escalation boundary:
 - Only drop into transport diagnosis if all of the following are true:

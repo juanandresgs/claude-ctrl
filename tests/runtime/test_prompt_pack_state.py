@@ -22,8 +22,8 @@ Rationale: The capture helper is the first authority-wiring step
        ``workflow_id`` and sorts identifiers lexicographically.
     7. Approval capture filters to the target ``workflow_id``,
        renders entries as ``"op_type#id"``, and sorts by
-       ``(op_type, id)`` numerically so ``push#2`` comes before
-       ``push#10``.
+       ``(op_type, id)`` numerically so ``rebase#2`` comes before
+       ``rebase#10``.
     8. ``unresolved_findings`` defaults to live capture from the
        reviewer findings ledger (open findings for the workflow).
        Explicit override (including empty tuple) suppresses live.
@@ -298,58 +298,58 @@ class TestApprovalCapture:
 
     def test_single_approval_rendered_as_op_type_hash_id(self, conn):
         _seed_binding(conn)
-        approval_id = approvals.grant(conn, "wf-test", "push")
+        approval_id = approvals.grant(conn, "wf-test", "rebase")
         snap = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
-        assert snap.open_approvals == (f"push#{approval_id}",)
+        assert snap.open_approvals == (f"rebase#{approval_id}",)
 
     def test_approvals_sorted_by_op_type_then_numeric_id(self, conn):
         _seed_binding(conn)
-        id1 = approvals.grant(conn, "wf-test", "push")  # push#1
-        id2 = approvals.grant(conn, "wf-test", "push")  # push#2
-        id3 = approvals.grant(conn, "wf-test", "rebase")  # rebase#3
-        id4 = approvals.grant(conn, "wf-test", "push")  # push#4
+        id1 = approvals.grant(conn, "wf-test", "rebase")  # rebase#1
+        id2 = approvals.grant(conn, "wf-test", "rebase")  # rebase#2
+        id3 = approvals.grant(conn, "wf-test", "reset")  # reset#3
+        id4 = approvals.grant(conn, "wf-test", "rebase")  # rebase#4
         snap = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
-        # Expected order: all pushes by numeric id ascending, then
-        # rebases by numeric id ascending. "push" < "rebase"
+        # Expected order: all rebases by numeric id ascending, then
+        # resets by numeric id ascending. "rebase" < "reset"
         # lexicographically.
         assert snap.open_approvals == (
-            f"push#{id1}",
-            f"push#{id2}",
-            f"push#{id4}",
-            f"rebase#{id3}",
+            f"rebase#{id1}",
+            f"rebase#{id2}",
+            f"rebase#{id4}",
+            f"reset#{id3}",
         )
 
     def test_numeric_id_sort_beats_lexicographic(self, conn):
         _seed_binding(conn)
-        # Grant enough pushes that lexicographic sort would put
-        # push#10 before push#2.
+        # Grant enough rebases that lexicographic sort would put
+        # rebase#10 before rebase#2.
         ids: list[int] = []
         for _ in range(11):
-            ids.append(approvals.grant(conn, "wf-test", "push"))
+            ids.append(approvals.grant(conn, "wf-test", "rebase"))
         snap = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
-        # The snapshot should be numerically sorted, so push#2
-        # comes before push#10.
+        # The snapshot should be numerically sorted, so rebase#2
+        # comes before rebase#10.
         rendered = list(snap.open_approvals)
-        assert rendered[0] == f"push#{ids[0]}"
-        assert rendered[1] == f"push#{ids[1]}"  # push#2
-        assert rendered == [f"push#{id_}" for id_ in sorted(ids)]
+        assert rendered[0] == f"rebase#{ids[0]}"
+        assert rendered[1] == f"rebase#{ids[1]}"  # rebase#2
+        assert rendered == [f"rebase#{id_}" for id_ in sorted(ids)]
 
     def test_consumed_approval_excluded(self, conn):
         _seed_binding(conn)
-        id1 = approvals.grant(conn, "wf-test", "push")
-        id2 = approvals.grant(conn, "wf-test", "push")
-        approvals.check_and_consume(conn, "wf-test", "push")  # consumes id1
+        id1 = approvals.grant(conn, "wf-test", "rebase")
+        id2 = approvals.grant(conn, "wf-test", "rebase")
+        approvals.check_and_consume(conn, "wf-test", "rebase")  # consumes id1
         snap = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
         # Only the unconsumed approval (id2) remains.
-        assert snap.open_approvals == (f"push#{id2}",)
+        assert snap.open_approvals == (f"rebase#{id2}",)
 
     def test_other_workflow_approvals_excluded(self, conn):
         _seed_binding(conn)
         _seed_binding(conn, workflow_id="wf-other", worktree_path="/tmp/other")
-        id_ours = approvals.grant(conn, "wf-test", "push")
-        approvals.grant(conn, "wf-other", "push")
+        id_ours = approvals.grant(conn, "wf-test", "rebase")
+        approvals.grant(conn, "wf-other", "rebase")
         snap = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
-        assert snap.open_approvals == (f"push#{id_ours}",)
+        assert snap.open_approvals == (f"rebase#{id_ours}",)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +521,7 @@ class TestDeterminismAndReadOnly:
     def test_deterministic_for_identical_state(self, conn):
         _seed_binding(conn)
         leases.issue(conn, role="implementer", workflow_id="wf-test")
-        approvals.grant(conn, "wf-test", "push")
+        approvals.grant(conn, "wf-test", "rebase")
 
         a = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
         b = pps.capture_runtime_state_snapshot(conn, workflow_id="wf-test")
@@ -530,7 +530,7 @@ class TestDeterminismAndReadOnly:
     def test_capture_performs_no_writes(self, conn):
         _seed_binding(conn)
         leases.issue(conn, role="implementer", workflow_id="wf-test")
-        approvals.grant(conn, "wf-test", "push")
+        approvals.grant(conn, "wf-test", "rebase")
 
         before = conn.total_changes
         pps.capture_runtime_state_snapshot(
@@ -564,7 +564,7 @@ class TestEndToEndHandoff:
     def test_snapshot_feeds_runtime_state_summary_from_snapshot(self, conn):
         _seed_binding(conn)
         leases.issue(conn, role="implementer", workflow_id="wf-test")
-        approvals.grant(conn, "wf-test", "push")
+        approvals.grant(conn, "wf-test", "rebase")
 
         snap = pps.capture_runtime_state_snapshot(
             conn,
@@ -578,13 +578,13 @@ class TestEndToEndHandoff:
         assert summary.worktree_path == snap.worktree_path
         # The rendered layer mentions the captured lease / approval /
         # finding.
-        assert "push#" in rendered
+        assert "rebase#" in rendered
         assert "finding-a" in rendered
 
     def test_snapshot_feeds_build_prompt_pack_end_to_end(self, conn):
         _seed_binding(conn)
         leases.issue(conn, role="implementer", workflow_id="wf-test")
-        approvals.grant(conn, "wf-test", "push")
+        approvals.grant(conn, "wf-test", "rebase")
 
         snap = pps.capture_runtime_state_snapshot(
             conn,
@@ -649,7 +649,7 @@ class TestEndToEndHandoff:
 
         # Grant an approval — the capture should reflect the
         # change and the compiled content hash must differ.
-        approvals.grant(conn, "wf-test", "push")
+        approvals.grant(conn, "wf-test", "rebase")
         mutated_hash = _pack_hash()
 
         assert base_hash != mutated_hash

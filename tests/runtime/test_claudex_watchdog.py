@@ -1172,7 +1172,94 @@ class TestPendingReviewRefreshWithinSameState:
 
 
 # ---------------------------------------------------------------------------
-# 6. Long-running self-exec on script drift
+# 6. Concurrent pending-review writers
+#
+# Regression rationale: the live soak lane showed `mv
+# pending-review.json.tmp: No such file or directory` in the watchdog log.
+# That can only happen when multiple watchdog processes race on the same
+# shared temp path; the loser sees the source path vanish after another
+# writer renames it into place and exits under `set -e`, leaving the lane
+# without a running watchdog and with a stale handoff artifact.
+# ---------------------------------------------------------------------------
+
+
+class TestPendingReviewConcurrentWriters:
+    def test_parallel_once_ticks_do_not_race_on_pending_review_tempfile(
+        self, bridge_env, tmp_path
+    ):
+        run_id = "run-concurrent-pending-review"
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="waiting_for_codex",
+            response_payload={
+                "instruction_id": "inst-concurrent",
+                "completed_at": "2026-04-08T00:00:20Z",
+                "transcript_path": "/tmp/fake/transcript.jsonl",
+                "response": "parallel pending review payload",
+            },
+            updated_at="2026-04-08T00:00:25Z",
+        )
+
+        real_jq = shutil.which("jq")
+        assert real_jq is not None, "jq must be present for watchdog tests"
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        jq_shim = shim_dir / "jq"
+        jq_shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "sleep 0.2\n"
+            f"exec {real_jq} \"$@\"\n"
+        )
+        jq_shim.chmod(0o755)
+
+        env = {
+            **os.environ,
+            "BRAID_ROOT": str(bridge_env["braid"]),
+            "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
+            "CLAUDEX_WATCHDOG_POLL_INTERVAL": "1",
+            "CLAUDEX_WATCHDOG_QUEUE_GRACE_SECONDS": "1",
+            "CLAUDEX_WATCHDOG_POKE_COOLDOWN_SECONDS": "1",
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        }
+
+        procs = [
+            subprocess.Popen(
+                ["bash", str(_WATCHDOG), "--once"],
+                cwd=str(bridge_env["repo"]),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(4)
+        ]
+
+        results = []
+        for proc in procs:
+            stdout, stderr = proc.communicate(timeout=10)
+            results.append((proc.returncode, stdout, stderr))
+
+        failures = [
+            (returncode, stderr)
+            for returncode, _stdout, stderr in results
+            if returncode != 0
+        ]
+        assert not failures, (
+            "parallel watchdog --once ticks should all succeed when writing "
+            f"pending-review.json concurrently: {failures}"
+        )
+
+        payload = json.loads(bridge_env["pending_review"].read_text())
+        assert payload["run_id"] == run_id
+        assert payload["instruction_id"] == "inst-concurrent"
+        assert payload["response_available"] is True
+        assert payload["response_path"].endswith("0001-resp.json")
+        assert "parallel pending review payload" in payload["response_preview"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Long-running self-exec on script drift
 #
 # This is the test that covers the active-run regression class: a
 # long-running watchdog had been started before the pending-review

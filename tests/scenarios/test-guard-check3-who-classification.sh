@@ -8,11 +8,11 @@
 # classes for allowed_ops matching inside validate_op().
 #
 # Sub-cases:
-#   A: Routine commit by implementer role + lease + ready_for_guardian → allowed
-#   B: Routine commit with lease but WITHOUT ready_for_guardian → denied by Check 10
+#   A: Routine commit by guardian:land + guardian lease + ready_for_guardian → allowed
+#   B: Routine commit by guardian:land with lease but WITHOUT ready_for_guardian → denied by Check 10
 #   C: Push by implementer role, no lease → denied by Check 3
-#   D: Push by guardian role, lease but no approval token → denied (approval required)
-#   E: Merge by implementer role + lease + ready_for_guardian → allowed
+#   D: Push by guardian:land role, lease, and ready_for_guardian → allowed (no approval token needed)
+#   E: Merge by guardian:land + guardian lease + ready_for_guardian → allowed
 #   F: Merge --no-ff by implementer role, no lease → denied by Check 3 (high_risk)
 #
 # @decision DEC-GUARD-003
@@ -59,6 +59,26 @@ _run_guard() {
           "$HOOK" 2>/dev/null || true
 }
 
+_seed_guardian_land_phase() {
+    local db="$1" workflow_id="$2"
+    python3 - "$db" "$workflow_id" <<'PY' >/dev/null 2>&1
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1])
+try:
+    conn.execute(
+        "INSERT INTO completion_records "
+        "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+        ("seed-lease", sys.argv[2], "reviewer", "ready_for_guardian", 1, "{}", "[]"),
+    )
+    conn.commit()
+finally:
+    conn.close()
+PY
+}
+
 # Build a scratch git repo with all guards satisfied for commit by an
 # implementer role. Sets globals: TMP_DIR, TEST_DB, WF_ID, CURRENT_HEAD.
 _setup_repo() {
@@ -78,7 +98,7 @@ _setup_repo() {
     # Schema + role marker (NOT guardian unless specified)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        marker set "agent-test" "$role" >/dev/null 2>&1
+        marker set "agent-test" "$role" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Test status = pass (SQLite authority — Check 8/9 read via rt_test_state_get, not flat file)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -92,45 +112,45 @@ _setup_repo() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case A: Routine commit by implementer role + active lease + ready_for_guardian → allowed
+# Sub-case A: Routine commit by guardian:land + active guardian lease + ready_for_guardian → allowed
 #
-# Production sequence (TKT-STAB-A3): implementer finishes work, evaluator clears
-# the workflow, orchestrator issues a lease, implementer runs git commit.
-# Check 3 finds the active lease → validate_op() returns allowed=true (routine_local
-# in allowed_ops). Check 10 sees ready_for_guardian + matching SHA → passes.
-# Commit proceeds. Both lease and eval state are required.
+# Production sequence: reviewer clears the workflow, guardian:land holds the
+# landing seat, and a guardian lease authorises the commit. Check 3 finds the
+# active lease, the landing-authority gate recognises guardian:land, and
+# Check 10 sees ready_for_guardian + matching SHA.
 # ---------------------------------------------------------------------------
 run_sub_case_a() {
     local branch="feature/check3-commit-implementer"
-    _setup_repo "$branch" "implementer"
+    _setup_repo "$branch" "guardian"
     trap 'rm -rf "$TMP_DIR"' RETURN
+    _seed_guardian_land_phase "$TEST_DB" "$WF_ID"
 
     # Set evaluation_state=ready_for_guardian with matching HEAD SHA
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
 
-    # Issue implementer lease (TKT-STAB-A3: lease now required for all git ops)
+    # Issue guardian lease (landing seat).
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "implementer" \
+        lease issue-for-dispatch "guardian" \
         --workflow-id "$WF_ID" \
         --worktree-path "$TMP_DIR" \
         --branch "$branch" \
-        --allowed-ops '["routine_local"]' >/dev/null 2>&1
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
     local cmd output decision
-    cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'implementer commit'"
+    cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'guardian commit'"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "A" "routine commit by implementer with lease + ready_for_guardian allowed"
+        pass "A" "routine commit by guardian:land with lease + ready_for_guardian allowed"
     else
         fail "A" "unexpected deny: $(_reason "$output")"
     fi
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case B: Routine commit by implementer WITH lease but WITHOUT ready_for_guardian → denied by Check 10
+# Sub-case B: Routine commit by guardian:land WITH lease but WITHOUT ready_for_guardian → denied by Check 10
 #
 # TKT-STAB-A3: Check 3 now requires a lease for all git ops. A lease is issued here
 # so Check 3 passes (validate_op allows routine_local). Check 10 then fires because
@@ -140,8 +160,9 @@ run_sub_case_a() {
 # ---------------------------------------------------------------------------
 run_sub_case_b() {
     local branch="feature/check3-commit-needs-changes"
-    _setup_repo "$branch" "implementer"
+    _setup_repo "$branch" "guardian"
     trap 'rm -rf "$TMP_DIR"' RETURN
+    _seed_guardian_land_phase "$TEST_DB" "$WF_ID"
 
     # Explicitly set needs_changes — no ready_for_guardian
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -149,11 +170,11 @@ run_sub_case_b() {
 
     # Issue a lease so Check 3 passes — Check 10 becomes the active gate
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "implementer" \
+        lease issue-for-dispatch "guardian" \
         --workflow-id "$WF_ID" \
         --worktree-path "$TMP_DIR" \
         --branch "$branch" \
-        --allowed-ops '["routine_local"]' >/dev/null 2>&1
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
     local cmd output decision reason
     cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'premature commit'"
@@ -174,7 +195,7 @@ run_sub_case_b() {
         fail "B" "deny reason mentions 'Guardian agent' — old Check 3 role-check fired: $reason"
         return
     fi
-    pass "B" "commit with lease but without ready_for_guardian denied by Check 10"
+    pass "B" "guardian:land commit with lease but without ready_for_guardian denied by Check 10"
 }
 
 # ---------------------------------------------------------------------------
@@ -206,23 +227,23 @@ run_sub_case_c() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case D: Push by guardian role, lease issued but no approval token → denied
+# Sub-case D: Push by guardian role, lease issued and ready_for_guardian → allowed
 #
-# Check 3 (lease-based, DEC-LEASE-002): a guardian lease with high_risk exists,
-# so validate_op checks pending approvals (read-only). None found → allowed=false,
-# reason mentions "approval". Deny must mention "approval" — NOT "No active lease"
-# (which would mean no lease was found by Check 3).
+# Push remains high_risk for lease/capability matching, but is no longer
+# approval-token gated. With a guardian lease and ready_for_guardian, the hook
+# must allow the push through.
 # ---------------------------------------------------------------------------
 run_sub_case_d() {
     local branch="feature/check3-push-guardian-no-token"
     _setup_repo "$branch" "guardian"
     trap 'rm -rf "$TMP_DIR"' RETURN
+    _seed_guardian_land_phase "$TEST_DB" "$WF_ID"
 
     # Set ready_for_guardian so Check 10 doesn't fire first
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
 
-    # Issue a guardian lease with high_risk so Check 3 passes to approval check
+    # Issue a guardian lease with high_risk so Check 3 and Check 10 can pass.
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         lease issue-for-dispatch "guardian" \
         --workflow-id "$WF_ID" \
@@ -236,29 +257,18 @@ run_sub_case_d() {
     decision=$(_decision "$output")
     reason=$(_reason "$output")
 
-    if [[ "$decision" != "deny" ]]; then
-        fail "D" "expected deny for push without approval token, got decision='$decision'"
-        return
+    if [[ -z "$output" || "$decision" != "deny" ]]; then
+        pass "D" "push by guardian:land with high_risk lease + ready_for_guardian allowed"
+    else
+        fail "D" "unexpected deny for guardian push: $reason"
     fi
-    if ! printf '%s' "$reason" | grep -qi "approval"; then
-        fail "D" "deny reason should mention 'approval' (lease validate_op or Check 13), got: $reason"
-        return
-    fi
-    # Confirm it's NOT the no-lease path — lease was issued, so deny is approval-related
-    if printf '%s' "$reason" | grep -qi "No active lease"; then
-        fail "D" "deny mentions 'No active lease' — lease was not found despite being issued: $reason"
-        return
-    fi
-    pass "D" "push by guardian with high_risk lease but no approval token → denied (approval required)"
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case E: Merge by implementer role + active lease + ready_for_guardian → allowed
+# Sub-case E: Merge by guardian:land + active guardian lease + ready_for_guardian → allowed
 #
-# TKT-STAB-A3: plain merge (no --no-ff) is routine_local. Check 3 now requires
-# a lease for all git ops — a lease with routine_local in allowed_ops is issued.
-# validate_op() returns allowed=true. Check 10 passes with ready_for_guardian +
-# matching merge-ref SHA. Uses separate main+feature branch setup to mirror a
+# Plain merge (no --no-ff) is routine_local, but landing authority still belongs
+# to guardian:land. This uses separate main+feature branch setup to mirror a
 # real merge scenario.
 # ---------------------------------------------------------------------------
 run_sub_case_e() {
@@ -286,10 +296,10 @@ run_sub_case_e() {
     # Return to main for the merge
     git -C "$TMP_DIR" checkout main -q 2>/dev/null || git -C "$TMP_DIR" checkout -b main -q
 
-    # Schema + implementer role
+    # Schema + guardian landing role
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        marker set "agent-test" "implementer" >/dev/null 2>&1
+        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Test status = pass (SQLite authority — Check 8 reads via rt_test_state_get, not flat file)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -304,20 +314,15 @@ run_sub_case_e() {
         workflow bind "$WF_ID" "$TMP_DIR" "$base_branch" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    _seed_guardian_land_phase "$TEST_DB" "$WF_ID"
 
-    # Check 12 binding: "main" workflow (current branch when merge runs)
+    # Issue guardian lease (landing seat).
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow bind "main" "$TMP_DIR" "main" >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow scope-set "main" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-
-    # Issue implementer lease (TKT-STAB-A3: lease now required for all git ops)
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "implementer" \
+        lease issue-for-dispatch "guardian" \
         --workflow-id "$WF_ID" \
         --worktree-path "$TMP_DIR" \
         --branch "$base_branch" \
-        --allowed-ops '["routine_local"]' >/dev/null 2>&1
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
 
     local cmd output decision
     cmd="git -C \"$TMP_DIR\" merge $base_branch"
@@ -325,7 +330,7 @@ run_sub_case_e() {
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "E" "plain merge by implementer with lease + ready_for_guardian allowed"
+        pass "E" "plain merge by guardian:land with lease + ready_for_guardian allowed"
     else
         fail "E" "unexpected deny: $(_reason "$output")"
     fi

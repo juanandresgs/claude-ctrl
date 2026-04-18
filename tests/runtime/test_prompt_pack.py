@@ -812,7 +812,7 @@ class TestCompilePromptPackForStage:
         # Granting an approval mutates the runtime_state_pack layer
         # via capture_runtime_state_snapshot. The content hash must
         # change in response.
-        _approvals.grant(compile_conn, "wf-cap", "push")
+        _approvals.grant(compile_conn, "wf-cap", "rebase")
         mutated_pack = _compile(compile_conn)
 
         assert base_pack.content_hash != mutated_pack.content_hash
@@ -870,7 +870,7 @@ class TestCompilePromptPackForStage:
             workflow_id="wf-cap",
             worktree_path="/tmp/wf-cap",
         )
-        _approvals.grant(compile_conn, "wf-cap", "push")
+        _approvals.grant(compile_conn, "wf-cap", "rebase")
 
         before = compile_conn.total_changes
         assert compile_conn.in_transaction is False

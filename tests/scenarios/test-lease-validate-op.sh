@@ -82,14 +82,21 @@ ISSUE_HR=$($CC lease issue-for-dispatch "guardian" \
 LEASE_HR_ID=$(printf '%s' "$ISSUE_HR" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 if [[ -n "$LEASE_HR_ID" ]]; then pass "high_risk lease issued"; else fail "high_risk lease issued"; fi
 
-# push should now reach approval check (requires_eval=false so eval won't block)
+# push should now be allowed without an approval token (requires_eval=false so
+# eval won't block either)
 VOP_PUSH2=$($CC lease validate-op "git push origin feature/test" \
     --worktree-path "$TMP_DIR" 2>/dev/null || echo '{}')
+VOP_PUSH2_ALLOWED=$(printf '%s' "$VOP_PUSH2" | jq -r '.allowed // "false"' 2>/dev/null || echo "false")
 VOP_PUSH2_REQUIRES_APPROVAL=$(printf '%s' "$VOP_PUSH2" | jq -r '.requires_approval // false' 2>/dev/null || echo "false")
-if [[ "$VOP_PUSH2_REQUIRES_APPROVAL" == "true" ]]; then
-    pass "validate-op: push requires_approval=true with high_risk lease"
+if [[ "$VOP_PUSH2_ALLOWED" == "true" ]]; then
+    pass "validate-op: push allowed with high_risk guardian lease"
 else
-    fail "validate-op: push requires_approval=true with high_risk lease (got: $VOP_PUSH2_REQUIRES_APPROVAL)"
+    fail "validate-op: push allowed with high_risk guardian lease (got: $VOP_PUSH2_ALLOWED)"
+fi
+if [[ "$VOP_PUSH2_REQUIRES_APPROVAL" == "false" ]]; then
+    pass "validate-op: push requires_approval=false with high_risk lease"
+else
+    fail "validate-op: push requires_approval=false with high_risk lease (got: $VOP_PUSH2_REQUIRES_APPROVAL)"
 fi
 
 # Test 4: Release lease, then validate — should return no active lease

@@ -765,10 +765,11 @@ EVALUATION_STATUSES: frozenset[str] = frozenset(
     }
 )
 # Approval token op_type values — must match approvals.py VALID_OP_TYPES.
+# These are the user-gated destructive/history-rewrite/admin-recovery ops;
+# straightforward Guardian push is no longer approval-token gated.
 # Enforcement happens in the domain layer (ValueError), not SQL CHECK.
 APPROVAL_OP_TYPES: frozenset[str] = frozenset(
     {
-        "push",
         "rebase",
         "reset",
         "force_push",

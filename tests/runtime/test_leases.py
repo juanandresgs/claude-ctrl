@@ -652,10 +652,27 @@ def test_validate_op_routine_landing_still_requires_eval(conn):
     assert "ready_for_guardian" in result["reason"]
 
 
-def test_validate_op_high_risk_still_requires_eval_and_approval(conn):
-    """high_risk ops are unchanged by the admin_recovery introduction.
+def test_validate_op_push_no_longer_requires_approval(conn):
+    """Guardian push remains high_risk but is no longer approval-token gated."""
+    leases.issue(
+        conn,
+        "guardian",
+        worktree_path="/wt6-push",
+        allowed_ops=["routine_local", "high_risk"],
+        requires_eval=False,
+        workflow_id="wf-6-push",
+    )
+    result = leases.validate_op(conn, "git push origin main", worktree_path="/wt6-push")
+    assert result["op_class"] == "high_risk"
+    assert result["requires_approval"] is False
+    assert result["approval_ok"] is None
+    assert result["allowed"] is True
 
-    A push/rebase/reset --hard must still fail both eval and approval gates.
+
+def test_validate_op_rebase_still_requires_eval_and_approval(conn):
+    """Approval-gated high_risk ops remain unchanged by the push exception.
+
+    A rebase without eval clearance must still fail before landing.
     """
     leases.issue(
         conn,
@@ -665,8 +682,8 @@ def test_validate_op_high_risk_still_requires_eval_and_approval(conn):
         requires_eval=True,
         workflow_id="wf-6",
     )
-    # No eval state, no approval — push must be denied at eval gate first.
-    result = leases.validate_op(conn, "git push origin main", worktree_path="/wt6")
+    # No eval state, no approval — rebase must be denied at eval gate first.
+    result = leases.validate_op(conn, "git rebase main", worktree_path="/wt6")
     assert result["op_class"] == "high_risk"
     assert result["eval_ok"] is False
     assert result["allowed"] is False

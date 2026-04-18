@@ -92,9 +92,17 @@ def seed_review_cursor(
     )
 
 
-def run_stop_hook(repo: Path, runs_dir: Path, payload: dict | None = None):
+def run_stop_hook(
+    repo: Path,
+    runs_dir: Path,
+    payload: dict | None = None,
+    *,
+    state_dir: Path | None = None,
+):
     env = {"BRIDGE_STATE_DIR": str(runs_dir)}
     env["CLAUDEX_SUPERVISOR"] = "1"
+    if state_dir is not None:
+        env["CLAUDEX_STATE_DIR"] = str(state_dir)
     return subprocess.run(
         ["/usr/bin/python3", str(STOP_HOOK)],
         cwd=repo,
@@ -260,3 +268,67 @@ def test_stop_hook_allows_terminal_supervisor_stop_token(tmp_path):
     payload = json.loads(result.stdout)
 
     assert payload == {"continue": False}
+
+
+def test_stop_hook_honors_lane_local_pending_review_via_state_dir(tmp_path):
+    repo = tmp_path / "repo"
+    init_git_repo(repo)
+    seed_prompt(repo, "lane-local pending review")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    seed_active_run(runs_dir, state="idle")
+
+    lane_state = tmp_path / "lane-state"
+    lane_state.mkdir(parents=True)
+    (lane_state / "pending-review.json").write_text(
+        json.dumps({
+            "run_id": "run-stop-hook",
+            "instruction_id": "inst-lane",
+            "completed_at": "2026-04-18T01:00:00Z",
+            "state": "waiting_for_codex",
+        })
+    )
+
+    result = run_stop_hook(repo, runs_dir, state_dir=lane_state)
+    payload = json.loads(result.stdout)
+
+    assert payload["decision"] == "block"
+    assert payload["reason"] == "lane-local pending review"
+
+
+def test_stop_hook_honors_lane_local_dispatch_stall_via_state_dir(tmp_path):
+    repo = tmp_path / "repo"
+    init_git_repo(repo)
+    seed_prompt(repo, "should not be used while stalled")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    seed_active_run(runs_dir, state="queued")
+
+    lane_state = tmp_path / "lane-state"
+    lane_state.mkdir(parents=True)
+    (lane_state / "dispatch-stall.state.json").write_text(
+        json.dumps({"run_id": "run-stop-hook", "state": "dispatch_stalled"})
+    )
+
+    result = run_stop_hook(repo, runs_dir, state_dir=lane_state)
+    payload = json.loads(result.stdout)
+
+    assert payload == {"continue": False}
+
+
+_STOP_LOOP_PROMPT = REPO_ROOT / ".codex" / "prompts" / "claudex_stop_loop.txt"
+
+
+class TestStopLoopPromptInvariants:
+    def test_waiting_for_codex_directs_blocking_wait(self):
+        text = _STOP_LOOP_PROMPT.read_text(encoding="utf-8")
+        assert "wait_for_codex_review(timeout_ms=1200000)" in text, (
+            "claudex_stop_loop.txt must direct blocking "
+            "wait_for_codex_review(timeout_ms=1200000) for idle waiting_for_codex"
+        )
+
+    def test_no_stop_rearm_churn(self):
+        text = _STOP_LOOP_PROMPT.read_text(encoding="utf-8")
+        assert "Do NOT stop and re-arm" in text, (
+            "claudex_stop_loop.txt must explicitly prohibit stop/re-arm churn"
+        )

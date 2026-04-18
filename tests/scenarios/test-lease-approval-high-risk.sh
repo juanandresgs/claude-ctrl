@@ -2,18 +2,18 @@
 # test-lease-approval-high-risk.sh — Lease with high_risk allowed_ops.
 #
 # Sub-cases:
-#   A: Lease has high_risk BUT no approval token → Check 13 still denies push
+#   A: Lease has high_risk BUT no approval token → Check 13 still denies rebase
 #      (Check 3 passes because lease allows high_risk; Check 13 fires next)
-#   B: Lease has high_risk + approval token granted → push allowed
+#   B: Lease has high_risk + approval token granted → rebase allowed
 #
-# Note: validate_op (Check 3) does a READ-ONLY check on pending approvals and
-# denies if none found. So Check 3 itself will deny before Check 13 for high_risk
-# with no approval. This test verifies the full cooperative behavior.
+# Note: validate_op (Check 3) does a READ-ONLY check on pending approvals for
+# approval-gated high_risk ops and denies if none found. Straightforward push is
+# no longer in this family. This test verifies the full cooperative behavior.
 #
 # @decision DEC-LEASE-002
 # @title Check 3 uses lease validate_op, not marker role
 # @status accepted
-# @rationale validate_op reads approvals read-only for high_risk ops. If no
+# @rationale validate_op reads approvals read-only for approval-gated high_risk ops. If no
 #   pending approval exists, it returns allowed=false. Check 3 propagates that.
 #   When approval IS pending, Check 3 allows. Check 13 then CONSUMES the token.
 set -euo pipefail
@@ -57,7 +57,8 @@ _setup() {
     CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -89,13 +90,13 @@ run_sub_case_a() {
     trap '_teardown' RETURN
 
     local cmd output decision reason
-    cmd="git -C \"$TMP_DIR\" push origin $branch"
+    cmd="git -C \"$TMP_DIR\" rebase main"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
     reason=$(_reason "$output")
 
     if [[ "$decision" != "deny" ]]; then
-        fail "A" "expected deny for push with high_risk lease but no approval, got='$decision'"
+        fail "A" "expected deny for rebase with high_risk lease but no approval, got='$decision'"
         return
     fi
     # Reason may come from Check 3 (validate_op sees no approval) or Check 13
@@ -107,7 +108,7 @@ run_sub_case_a() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case B: Lease allows high_risk + approval token granted → push allowed
+# Sub-case B: Lease allows high_risk + approval token granted → rebase allowed
 # validate_op reads approvals (read-only) → allowed=true; Check 13 consumes token
 # ---------------------------------------------------------------------------
 run_sub_case_b() {
@@ -117,15 +118,15 @@ run_sub_case_b() {
 
     # Grant approval token
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        approval grant "$WF_ID" "push" >/dev/null 2>&1
+        approval grant "$WF_ID" "rebase" >/dev/null 2>&1
 
     local cmd output decision
-    cmd="git -C \"$TMP_DIR\" push origin $branch"
+    cmd="git -C \"$TMP_DIR\" rebase main"
     output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "B" "high_risk lease + approval token → push allowed"
+        pass "B" "high_risk lease + approval token → rebase allowed"
     else
         fail "B" "unexpected deny with valid approval token: $(_reason "$output")"
     fi

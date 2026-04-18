@@ -579,9 +579,11 @@ lease_context() {
 #   Python policy engine and false-positive matched quoted prompt text. This
 #   shell wrapper now delegates to the canonical Python parser so hook and
 #   policy-engine enforcement classify the same command the same way.
-#   routine_local:  evaluation_state gates these (Check 10). high_risk: approval
-#   token required (Check 13). admin_recovery: merge --abort and reset --merge
-#   require lease + approval but NOT evaluation readiness (DEC-LEASE-002).
+#   routine_local:  evaluation_state gates these (Check 10). high_risk: Guardian
+#   lease/capability gate; selected high_risk ops (rebase/reset/non-ff merge)
+#   also require approval tokens (Check 13). admin_recovery: merge --abort and
+#   reset --merge require lease + approval but NOT evaluation readiness
+#   (DEC-LEASE-002).
 #   unclassified: not a git op of interest.
 #
 # Classification precedence (first match wins):

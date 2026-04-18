@@ -335,8 +335,8 @@ case "$AGENT_TYPE" in
         CONTEXT_PARTS+=("HANDOFF: Implementers do not own proof-of-work anymore. Gather test output, capture how to run the feature, and hand off to Reviewer for independent verification before Guardian commits.")
         ;;
     guardian)
-        CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
-        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Reviewer via REVIEW_VERDICT trailer).")
+        CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, and escalate to the user only for destructive/history-rewrite ops, ambiguous publish targets, or irreconcilable reviewer/implementer conflict.")
+        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Reviewer via REVIEW_VERDICT trailer). Straightforward push to the established upstream is part of normal Guardian landing, not a separate approval gate.")
         # Inject test status (WS3: via rt_test_state_get from SQLite authority)
         _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")

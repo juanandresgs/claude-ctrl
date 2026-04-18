@@ -1,12 +1,12 @@
 """Unit tests for bash_approval_gate policy.
 
-Exercises one-shot approval token requirement for high-risk and admin_recovery
-git operations (DEC-PE-W3-011).
-Production trigger: PreToolUse Bash hook — git push, rebase, reset (non-hard),
+Exercises one-shot approval token requirement for approval-gated git
+operations (DEC-PE-W3-011). Straightforward push is intentionally excluded.
+Production trigger: PreToolUse Bash hook — git rebase, reset (non-hard),
 merge --abort, reset --merge, merge --no-ff.
 
 The policy always returns a deny with effects={"check_and_consume_approval": ...}
-for high-risk/admin_recovery ops. The CLI handler is responsible for checking
+for approval-gated high-risk/admin_recovery ops. The CLI handler is responsible for checking
 whether an approval token exists and overriding the deny if so.
 
 @decision DEC-PE-W3-TEST-011
@@ -29,8 +29,8 @@ from tests.runtime.policies.conftest import make_context, make_request
 # ---------------------------------------------------------------------------
 
 
-def test_op_type_push():
-    assert _resolve_op_type("git push origin feature/foo") == "push"
+def test_op_type_push_not_approval_gated():
+    assert _resolve_op_type("git push origin feature/foo") is None
 
 
 def test_op_type_rebase():
@@ -63,17 +63,11 @@ def test_op_type_unknown_returns_none():
 # ---------------------------------------------------------------------------
 
 
-def test_push_requires_approval():
+def test_push_not_gated():
     ctx = make_context()
     req = make_request("git push origin feature/done", context=ctx)
     decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert decision.policy_name == "bash_approval_gate"
-    assert decision.effects is not None
-    payload = decision.effects.get("check_and_consume_approval", {})
-    assert payload.get("op_type") == "push"
-    assert "workflow_id" in payload
+    assert decision is None
 
 
 def test_rebase_requires_approval():
@@ -139,7 +133,7 @@ def test_reset_merge_requires_approval():
 
 def test_reason_contains_grant_guidance():
     ctx = make_context()
-    req = make_request("git push origin feature/done", context=ctx)
+    req = make_request("git rebase main", context=ctx)
     decision = check(req)
     assert decision is not None
     assert "cc-policy approval grant" in decision.reason

@@ -105,9 +105,11 @@ if [[ "$B_ID_FINAL" == "$LEASE_B" ]]; then pass "worktree-B: lease id unchanged 
 VOP_A_PUSH=$($CC lease validate-op "git push origin feature/test" \
     --worktree-path "$WT_A" 2>/dev/null || echo '{}')
 VOP_A_CLASS=$(printf '%s' "$VOP_A_PUSH" | jq -r '.op_class // empty' 2>/dev/null || true)
+VOP_A_ALLOWED=$(printf '%s' "$VOP_A_PUSH" | jq -r 'if .allowed == true then "true" else "false" end' 2>/dev/null || echo "false")
 VOP_A_REQ_APPROVAL=$(printf '%s' "$VOP_A_PUSH" | jq -r '.requires_approval // false' 2>/dev/null || echo "false")
 if [[ "$VOP_A_CLASS" == "high_risk" ]]; then pass "worktree-A new lease: push classified as high_risk"; else fail "worktree-A new lease: push classified as high_risk (got $VOP_A_CLASS)"; fi
-if [[ "$VOP_A_REQ_APPROVAL" == "true" ]]; then pass "worktree-A new lease: push requires_approval=true"; else fail "worktree-A new lease: push requires_approval=true (got $VOP_A_REQ_APPROVAL)"; fi
+if [[ "$VOP_A_ALLOWED" == "true" ]]; then pass "worktree-A new lease: push allowed under guardian landing"; else fail "worktree-A new lease: push allowed under guardian landing (got $VOP_A_ALLOWED)"; fi
+if [[ "$VOP_A_REQ_APPROVAL" == "false" ]]; then pass "worktree-A new lease: push requires_approval=false"; else fail "worktree-A new lease: push requires_approval=false (got $VOP_A_REQ_APPROVAL)"; fi
 
 # --- validate_op on B uses its own lease (reviewer only has routine_local) ---
 # Default to "true" (worst case) so a CLI failure does not hide a real denial.

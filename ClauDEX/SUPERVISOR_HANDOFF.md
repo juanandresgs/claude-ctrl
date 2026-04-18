@@ -391,6 +391,81 @@ The first soak counts below are preserved for traceability; final local verifica
 - **Combined clean-env verification**: `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT pytest -q tests/runtime/test_braid_v2.py tests/runtime/test_claudex_watchdog.py tests/runtime/test_subagent_start_payload_shape.py` → **40 passed, 1 skipped in 35.35s**.
 - No bounded Claude dispatch issued for this follow-up; the env isolation fix and auto-submit process fix are local worktree changes awaiting review/commit.
 
+### Runtime-authority drift between installed `cc-policy`/hooks and worktree convergence bundle (2026-04-17) — OPEN
+
+**Fact correction (post-preflight re-verification):** an earlier revision of
+this entry stated that the worktree HEAD `a1b3591` already removed `push` from
+`APPROVAL_OP_TYPES`. That was **incorrect** — `git show
+a1b3591:runtime/schemas.py` confirms `"push"` is STILL present in the frozenset
+at that committed HEAD (line 771). The push-not-gated model lives in the
+*unstaged* approval/guardian-push convergence bundle currently pending in the
+worktree (~34 modified files covering `runtime/schemas.py`,
+`runtime/core/approvals.py`, `runtime/core/leases.py`,
+`runtime/core/policies/bash_approval_gate.py`, `CLAUDE.md`,
+`agents/guardian.md`, `ClauDEX/CUTOVER_PLAN.md`, hooks, scripts, and matching
+tests/scenarios). The entry below reflects the corrected picture.
+
+- **Subject:** the installed `cc-policy` shim and live hook enforcement both
+  invoke the repo-root runtime at `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/cli.py`,
+  which is on `checkpoint/2026-04-17-docs-and-bash-write-who` @ `6b8cc5c`
+  (2026-04-14 Phase-8 cutover-bundle checkpoint). The worktree at
+  `worktrees/claudex-cutover-soak` is on `claudesox-local` @ `a1b3591`
+  (post-Integration-Wave-1 + post-merge hardening). Both committed runtimes
+  **still include `"push"` in `APPROVAL_OP_TYPES`**, so their approval-grant
+  enums currently agree. The convergence bundle pending in the worktree is
+  what introduces the model change.
+- **Concrete symptom at preflight time:** `cc-policy approval grant
+  claudesox-local push --help` and `python3 runtime/cli.py approval grant
+  --help` executed from the worktree both accept `push` when run against
+  committed content. The worktree-side rejection of `push` observed earlier
+  this session was produced by the unstaged convergence bundle, whose
+  `runtime/schemas.py` change explicitly removes `"push"` from the frozenset
+  and whose `bash_approval_gate._resolve_op_type` no longer returns `"push"`
+  (accompanying comment in `runtime/schemas.py:767-770`: *"straightforward
+  Guardian push is no longer approval-token gated"*).
+- **Runtime-path resolution (unchanged fact):** `hooks/lib/runtime-bridge.sh:23-30`
+  resolves `cc_policy` via `CLAUDE_RUNTIME_ROOT`, default `$HOME/.claude/runtime`.
+  `$HOME/.claude` is symlinked to the repo root (not the worktree), so live
+  hook enforcement uses the repo-root `6b8cc5c` runtime. Once the convergence
+  bundle is committed + pushed + the repo-root advanced, live enforcement
+  picks up the new push-not-gated model.
+- **Impact on push-debt clearing guidance:** the prior operator action card
+  (lease re-issue + `cc-policy approval grant claudesox-local push` + push)
+  remains **correct for live enforcement today** — both committed runtimes
+  still accept `push` as an approval op_type, and live `bash_approval_gate`
+  still consumes the token. The action card does not require changes.
+- **Impact on single-authority policy:** one operational fact ("is push
+  approval-token gated?") will have two conflicting authorities once the
+  convergence bundle commits. The drift window spans: [bundle committed
+  on `claudesox-local`] → [push to `origin/feat/claudex-cutover`] →
+  [repo-root checkout fast-forwarded to match]. Until the final step,
+  worktree-side tests exercising `python3 runtime/cli.py approval grant
+  push` (from a worktree carrying the bundle) will disagree with live
+  enforcement. This is the class of drift `CLAUDE.md` Architecture
+  Preservation § "No parallel authorities as a transition aid" forbids —
+  acceptable only as a transient during convergence landing, not as a
+  steady state.
+- **Recommended bounded remediation order:**
+  1. Checkpoint-land the convergence bundle on `claudesox-local`
+     (routine Guardian commit; already test-backed across touched areas).
+  2. Clear push debt via the live-authority path — installed `cc-policy
+     approval grant claudesox-local push` under the OLD model, then push
+     (Sacred Practice #8 user approval required for the token grant).
+  3. Immediately after the push lands on `origin/feat/claudex-cutover`,
+     fast-forward the repo-root checkout (`git -C
+     /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork pull --ff-only`
+     or equivalent branch swap to `feat/claudex-cutover`) so installed
+     `cc-policy`, hook enforcement, and the worktree all resolve the same
+     convergence-bundle runtime. Single authority restored in one
+     non-destructive step.
+  4. Do NOT pin `CLAUDE_RUNTIME_ROOT` to the worktree as a runtime bypass —
+     that would introduce a second authority vector and contradict Sacred
+     Practice #8 even when the new-model rationale is sound.
+- **Status:** OPEN pending steps 1–3 above. Will transition to RESOLVED
+  once the repo-root checkout is fast-forwarded past the convergence bundle
+  and installed `cc-policy approval grant --help` on the repo-root path no
+  longer lists `push`.
+
 ## Tonight's Priority Order
 
 The bridge exists to support the cutover, not to become the night's main

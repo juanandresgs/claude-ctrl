@@ -102,7 +102,7 @@ Before using AskUserQuestion, agents must pass this filter:
 
 1. **Is the answer prescribed?** Check MASTER_PLAN.md, auto-dispatch rules, and prior decisions first
 2. **Would any reasonable user say "of course"?** If one option is clearly Recommended/Default, just use it
-3. **Does a gate already handle this?** Commit/merge goes through Guardian — don't pre-ask
+3. **Does a gate already handle this?** Commit/merge/straightforward push goes through Guardian — don't pre-ask
 4. **Can you resolve it with 2 minutes of research?** Check plan, code, and prior traces before escalating
 
 - **Suggest next steps.** End every response with forward motion: a question, suggestion, or offer to continue.
@@ -248,13 +248,13 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 **Stop the chain only when:**
 - Hook output contains `BLOCKED`, `ERROR`, or `PROCESS ERROR`
 - The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
-- Guardian needs user approval for high-risk ops (push, rebase, force) — these are gated by `bash_approval_gate` policy, not by the orchestrator
+- Guardian has hit a real user-decision boundary (history rewrite / destructive recovery, ambiguous publish target, or irreconcilable reviewer-implementer conflict)
 
 Note: The Codex stop-review gate (`stop-review-gate-hook.mjs`) remains wired in `settings.json` for user-facing review but is **non-authoritative for workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001). Its `VERDICT: BLOCK` does not affect `auto_dispatch` or `next_role`.
 
 ### Guardian Landing Preflight (Required)
 
-Before any Guardian-local landing attempt (`git commit`, `git merge`) — including checkpoint-stewardship commits — the orchestrator MUST run a preflight and only attempt landing when all gates are green.
+Before any Guardian-local landing attempt (`git commit`, `git merge`, straightforward `git push`) — including checkpoint-stewardship commits — the orchestrator MUST run a preflight and only attempt landing when all gates are green.
 
 1. Resolve current workflow identity from runtime (do not infer from branch names):
    - `cc-policy context role`
@@ -268,13 +268,13 @@ Before any Guardian-local landing attempt (`git commit`, `git merge`) — includ
    - `cc-policy lease summary --workflow-id <workflow_id>`
    - Required: active Guardian lease that authorizes the intended landing operation.
 
-If any preflight gate fails, do **not** attempt `git commit`/`git merge` yet. Route immediately:
+If any preflight gate fails, do **not** attempt `git commit`/`git merge`/`git push` yet. Route immediately:
 - `evaluation_state=pending|needs_changes|blocked_by_plan` → dispatch `reviewer` and require a fresh verdict on current HEAD (`REVIEW_VERDICT=ready_for_guardian`).
 - `evaluation_state ready but head_sha mismatch` → dispatch `reviewer` for re-evaluation on current HEAD.
 - test-state not passing → dispatch `implementer` to produce a passing test state, then return to `reviewer`.
 - missing/invalid Guardian lease → dispatch Guardian provisioning flow first.
 
-When a landing denial still occurs (for example `bash_eval_readiness` or approval gate), treat it as a **state signal**, not a retry prompt. Record the blocker once, and only retry landing after at least one governing state changes (evaluation_state, head_sha, test_state, lease/approval state, or staged scope).
+When a landing denial still occurs (for example `bash_eval_readiness`, `bash_force_push`, or remote-placement failure), treat it as a **state signal**, not a retry prompt. Record the blocker once, and only retry landing after at least one governing state changes (evaluation_state, head_sha, test_state, lease state, remote/publish-target clarity, or staged scope).
 
 **After the chain completes** (guardian terminal state or error), report what each role did so the user sees the outcome.
 
@@ -304,9 +304,9 @@ These are not mere technical rules — they are sacred practices that honor the 
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
 6. **No Implementation Without Plan** — MASTER_PLAN.md before first line of code. Plan produces GitHub issues. Issues drive implementation. MASTER_PLAN.md is a living project record.
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
-8. **Approval Gates** — Permanent git operations go through Guardian. Local landing (commit, merge) is automatic when `ready_for_guardian` with SHA match and passing tests. Push, rebase, reset, force ops, and destructive actions require explicit user approval.
+8. **Approval Gates** — Permanent git operations go through Guardian. Evaluated Guardian landing (commit, merge, straightforward push to the established upstream) is automatic when `ready_for_guardian` with SHA match and passing tests. Rebase, reset, force/history-rewrite, destructive cleanup, ambiguous publish targets, and irreconcilable agent disagreement require explicit user adjudication.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues.
-10. **Evaluator Before Commit** — The evaluator runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for irreversible git actions or product signoff, not as fake proof of correctness.
+10. **Evaluator Before Commit** — The evaluator runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for destructive/history-rewrite git actions, ambiguous publish targets, irreconcilable agent disagreement, or product signoff, not as fake proof of correctness.
 11. **Worktrees Mean Concurrency** — Never assume single-session or linear execution. All shared state mutations must be atomic via SQLite backend helpers.
 12. **Single Source of Truth** — Every state domain has exactly one canonical authority. "I'll add the new way but keep the old way as a fallback" creates dual-authority bugs. Unify the implementation natively.
 

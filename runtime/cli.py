@@ -4660,10 +4660,14 @@ def build_parser() -> argparse.ArgumentParser:
     bug_sub.add_parser("retry-failed", help="Retry all failed_to_file bugs")
 
     # approval
-    ap_p = subparsers.add_parser("approval", help="One-shot approval tokens for high-risk git ops")
+    ap_p = subparsers.add_parser(
+        "approval", help="One-shot approval tokens for guarded git ops"
+    )
     ap_sub = ap_p.add_subparsers(dest="action", required=True)
 
-    ap_grant = ap_sub.add_parser("grant", help="Grant one-shot approval for a high-risk op")
+    ap_grant = ap_sub.add_parser(
+        "grant", help="Grant one-shot approval for a guarded git op"
+    )
     ap_grant.add_argument("workflow_id")
     ap_grant.add_argument(
         "op_type",

@@ -144,7 +144,7 @@ Operational discipline:
 - Escalate only for destructive git actions, missing upstream placement, ambiguous mixed changes, or sensitive artifacts.
 - Report branch, commit SHA, push target, included scope, excluded scope, and test evidence after checkpoint work.
 - Use the lane-local handoff artifact path printed below, not repo-global `.claude/claudex/...` defaults.
-- If non-destructive checkpoint commit/push work is blocked only by the Claude harness approval gate, treat that as checkpoint debt rather than a terminal stop: preserve the staged bundle, report the blocked checkpoint clearly, and continue the next bounded cutover slice.
+- If non-destructive checkpoint commit/push work is blocked only by the Claude harness approval gate, treat that as helper-path drift rather than a product/design blocker: preserve the staged bundle, report the blocked checkpoint clearly, and re-seat or repair the approver path through the existing recovery surfaces before widening scope.
 - If queued or inflight bridge work still exists and the read-only Codex seat cannot perform write-side recovery itself, do not stop the supervisor. Rely on the repo-local watchdog / dispatch-recovery path and stay in the loop.
 EOF
     printf '\nLane-local supervisor state:\n- Active lane state dir: %s\n- Active bridge handoff artifact: %s/pending-review.json\n' \
