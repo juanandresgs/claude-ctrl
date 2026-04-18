@@ -661,3 +661,25 @@ class TestSupervisorActiveRegionCoversSectionsBelowOpenSoakIssues:
             "has regressed — likely the delimiter was narrowed back to "
             "`## Open Soak Issues`, which is a regression."
         )
+
+
+def test_supervisor_handoff_pins_statusline_as_final_global_soak_gate() -> None:
+    """Global soak is not complete until the live CC worker visibly renders the
+    statusline. This must be stated in the active supervisor handoff surface.
+    """
+    active = _active_region_for_path(
+        SUPERVISOR_HANDOFF_DOC,
+        _read(SUPERVISOR_HANDOFF_DOC),
+    )
+    assert "live CC worker" in active and "statusline correctly" in active, (
+        "SUPERVISOR_HANDOFF.md does not pin live CC-worker statusline proof as "
+        "the final global-soak gate"
+    )
+    assert "not globally soak-ready" in active, (
+        "SUPERVISOR_HANDOFF.md must say the config is not globally soak-ready "
+        "until the live CC worker statusline proof exists"
+    )
+    assert "baseline failures remain at 4" not in active, (
+        "SUPERVISOR_HANDOFF.md still carries the stale 4-failure CLI-baseline "
+        "claim in the active region"
+    )
