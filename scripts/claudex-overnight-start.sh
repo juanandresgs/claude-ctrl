@@ -84,18 +84,15 @@ tmux new-window -d -a -t "$PAIR_WINDOW_TARGET" -n "claudex-monitor" -c "$ROOT" \
   "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && exec bash ./scripts/claudex-progress-monitor.sh --codex-target \"$CODEX_PANE_TARGET\""
 tmux new-window -d -a -t "$PAIR_WINDOW_TARGET" -n "claudex-helper" -c "$ROOT" \
   "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && mkdir -p \"$CLAUDEX_STATE_DIR\" && \
-  exec bash ./scripts/claudex-watchdog.sh --tmux-target \"$CLAUDE_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/watchdog.log\" 2>&1"
-
-mkdir -p "$CLAUDEX_STATE_DIR"
-nohup bash "$ROOT/scripts/claudex-codex-model-guard.sh" "$CODEX_PANE_TARGET" \
-  >>"$CLAUDEX_STATE_DIR/codex-model-guard.log" 2>&1 &
-echo "$!" > "$CLAUDEX_STATE_DIR/codex-model-guard.pid"
-nohup bash "$ROOT/scripts/claudex-codex-approver.sh" --tmux-target "$CODEX_PANE_TARGET" \
-  >>"$CLAUDEX_STATE_DIR/codex-approver.log" 2>&1 &
-echo "$!" > "$CLAUDEX_STATE_DIR/codex-approver.pid"
-nohup bash "$ROOT/scripts/claudex-worker-approver.sh" --tmux-target "$CLAUDE_PANE_TARGET" \
-  >>"$CLAUDEX_STATE_DIR/worker-approver.log" 2>&1 &
-echo "$!" > "$CLAUDEX_STATE_DIR/worker-approver.pid"
+  bash ./scripts/claudex-codex-model-guard.sh \"$CODEX_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/codex-model-guard.log\" 2>&1 & \
+  echo \$! > \"$CLAUDEX_STATE_DIR/codex-model-guard.pid\"; \
+  bash ./scripts/claudex-codex-approver.sh --tmux-target \"$CODEX_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/codex-approver.log\" 2>&1 & \
+  echo \$! > \"$CLAUDEX_STATE_DIR/codex-approver.pid\"; \
+  bash ./scripts/claudex-worker-approver.sh --tmux-target \"$CLAUDE_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/worker-approver.log\" 2>&1 & \
+  echo \$! > \"$CLAUDEX_STATE_DIR/worker-approver.pid\"; \
+  bash ./scripts/claudex-watchdog.sh --tmux-target \"$CLAUDE_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/watchdog.log\" 2>&1 & \
+  echo \$! > \"$CLAUDEX_STATE_DIR/watchdog.pid\"; \
+  wait"
 
 cat <<EOF
 ClauDEX overnight session is ready.
@@ -114,9 +111,9 @@ Inside tmux:
   left pane  = Codex operator
   right pane = fresh Claude worker under the cutover profile
 
-The bridge helper window owns the watchdog plus the Codex MCP trust
-approver and worker approval helper. The watchdog is the sole owner of
-the auto-submit loop.
+The bridge helper window owns the watchdog plus the Codex chooser/trust
+and worker approval helpers. The watchdog is the sole owner of the
+auto-submit loop.
 The progress monitor is started automatically in the tmux window
 'claudex-monitor' and samples the Codex pane every 30 minutes.
 Bridge status is available any time with:

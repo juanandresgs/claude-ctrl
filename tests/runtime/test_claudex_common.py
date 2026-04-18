@@ -283,21 +283,30 @@ def test_codex_model_guard_handles_offscreen_existing_model_prompt(
     assert "send-keys -t fake:1.1 Enter" in logged
 
 
-def test_overnight_start_detaches_helper_daemons_before_exec_watchdog() -> None:
+def test_overnight_start_helper_window_owns_helper_processes() -> None:
     script = (REPO_ROOT / "scripts" / "claudex-overnight-start.sh").read_text(
         encoding="utf-8"
     )
 
+    assert '-n "claudex-helper"' in script
     assert (
-        'nohup bash "$ROOT/scripts/claudex-codex-model-guard.sh" "$CODEX_PANE_TARGET"'
+        'bash ./scripts/claudex-codex-model-guard.sh \\"$CODEX_PANE_TARGET\\" >> \\"$CLAUDEX_STATE_DIR/codex-model-guard.log\\" 2>&1 &'
         in script
     )
     assert (
-        'nohup bash "$ROOT/scripts/claudex-codex-approver.sh" --tmux-target "$CODEX_PANE_TARGET"'
+        'bash ./scripts/claudex-codex-approver.sh --tmux-target \\"$CODEX_PANE_TARGET\\" >> \\"$CLAUDEX_STATE_DIR/codex-approver.log\\" 2>&1 &'
         in script
     )
     assert (
-        'nohup bash "$ROOT/scripts/claudex-worker-approver.sh" --tmux-target "$CLAUDE_PANE_TARGET"'
+        'bash ./scripts/claudex-worker-approver.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\" >> \\"$CLAUDEX_STATE_DIR/worker-approver.log\\" 2>&1 &'
         in script
     )
-    assert 'exec bash ./scripts/claudex-watchdog.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\"' in script
+    assert (
+        'bash ./scripts/claudex-watchdog.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\" >> \\"$CLAUDEX_STATE_DIR/watchdog.log\\" 2>&1 &'
+        in script
+    )
+    assert 'echo \\$! > \\"$CLAUDEX_STATE_DIR/codex-model-guard.pid\\"' in script
+    assert 'echo \\$! > \\"$CLAUDEX_STATE_DIR/codex-approver.pid\\"' in script
+    assert 'echo \\$! > \\"$CLAUDEX_STATE_DIR/worker-approver.pid\\"' in script
+    assert 'echo \\$! > \\"$CLAUDEX_STATE_DIR/watchdog.pid\\"' in script
+    assert "wait" in script
