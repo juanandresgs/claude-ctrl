@@ -292,12 +292,22 @@ if [[ -f "$PROGRESS_SNAPSHOT_FILE" ]]; then
       SNAPSHOT_LATEST_RESPONSE_MATCH="false"
     fi
   fi
+  # @decision DEC-GS1-SNAPSHOT-HEALTH-RACE-001
+  # Title: SNAPSHOT_AGE_OK is the single freshness authority for snapshot health
+  # Status: accepted
+  # Rationale: The progress monitor is a periodic writer; between samples, the
+  # live instruction-id fields (ACTIVE_LATEST_RESPONSE_INSTRUCTION_ID, etc.)
+  # race ahead of the last-sampled snapshot values. A race-based diff between
+  # live and snapshot fields is NOT a health signal — it is expected in any
+  # active+waiting_for_codex run. The *_MATCH lines remain as informational
+  # diagnostics only. Only SNAPSHOT_AGE_OK, SNAPSHOT_SUMMARY, and
+  # SNAPSHOT_ISSUES_COUNT are authoritative for health classification.
+  # The `lagging` branch that promoted *_MATCH==false to a health state has
+  # been removed; it produced false positives on every healthy active run.
   SNAPSHOT_HEALTH="healthy"
   if [[ "${SNAPSHOT_SUMMARY:-healthy}" != "healthy" ]] || [[ "$SNAPSHOT_ISSUES_COUNT" -gt 0 ]] || [[ "$SNAPSHOT_AGE_OK" == "false" ]]; then
     SNAPSHOT_HEALTH="degraded"
     HELPERS_NEED_RECOVERY=1
-  elif [[ "$SNAPSHOT_STATE_MATCH" == "false" ]] || [[ "$SNAPSHOT_PENDING_REVIEW_MATCH" == "false" ]] || [[ "$SNAPSHOT_LATEST_RESPONSE_MATCH" == "false" ]]; then
-    SNAPSHOT_HEALTH="lagging"
   fi
   echo "progress_monitor_snapshot_age_seconds: ${SNAPSHOT_AGE_SECONDS:-unknown}"
   echo "progress_monitor_snapshot_max_age_seconds: ${SNAPSHOT_MAX_AGE_SECONDS:-unknown}"

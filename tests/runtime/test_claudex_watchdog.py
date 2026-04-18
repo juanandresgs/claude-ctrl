@@ -1747,3 +1747,376 @@ class TestExpireStaleDispatchAttempts:
         result = _run_watchdog_once(bridge_env)
         assert result.returncode == 0
         assert "stale dispatch attempt" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# 8. Snapshot health race — DEC-GS1-SNAPSHOT-HEALTH-RACE-001
+#
+# Regression rationale: claudex-bridge-status.sh formerly promoted
+# SNAPSHOT_HEALTH to "lagging" whenever any *_MATCH field was false, even
+# when SNAPSHOT_AGE_OK was true and SNAPSHOT_SUMMARY was "healthy".  This
+# produced a persistent false alarm on every healthy active+waiting_for_codex
+# run because the live instruction-id fields race ahead of the periodic
+# snapshot between samples.
+#
+# The fix (DEC-GS1-SNAPSHOT-HEALTH-RACE-001) removes the *_MATCH branch from
+# the health decision entirely. SNAPSHOT_AGE_OK is the single freshness
+# authority; *_MATCH lines remain as informational diagnostics.
+#
+# These tests exercise claudex-bridge-status.sh directly (not the watchdog)
+# because the health decision lives entirely in that script.
+# ---------------------------------------------------------------------------
+
+
+def _run_bridge_status(bridge_env: dict, *, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run claudex-bridge-status.sh with standard bridge_env wiring."""
+    env = {
+        **os.environ,
+        "BRAID_ROOT": str(bridge_env["braid"]),
+        "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
+    }
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", str(_STATUS)],
+        cwd=str(bridge_env["repo"]),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _seed_fresh_snapshot(
+    bridge_env: dict,
+    *,
+    run_id: str,
+    bridge_state: str = "active",
+    summary: str = "healthy",
+    issues: list | None = None,
+    pending_review_instruction_id: str | None = None,
+    latest_response_instruction_id: str | None = None,
+    monitor_interval_seconds: int = 300,
+    age_offset_seconds: int = 10,
+) -> None:
+    """Write a progress-monitor.latest.json with a recent sampled_at.
+
+    age_offset_seconds controls how many seconds in the past sampled_at is set.
+    Set to a large value (e.g. 9999) to force age_ok=false.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    sampled_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=age_offset_seconds)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    snapshot = {
+        "sampled_at": sampled_at,
+        "codex_target": "fake:1.1",
+        "monitor_interval_seconds": monitor_interval_seconds,
+        "active_run_id": run_id,
+        "bridge_state": bridge_state,
+        "bridge_updated_at": "2026-04-08T00:00:00Z",
+        "latest_response_file": None,
+        "latest_response_instruction_id": latest_response_instruction_id,
+        "pending_review_run_id": None,
+        "pending_review_instruction_id": pending_review_instruction_id,
+        "codex_excerpt_hash": "abc123",
+        "codex_excerpt": "working",
+        "issues": issues if issues is not None else [],
+        "advancing": True,
+        "stale": False,
+        "summary": summary,
+    }
+    bridge_env["progress_snapshot"].write_text(json.dumps(snapshot))
+
+
+class TestSnapshotHealthRace:
+    """DEC-GS1-SNAPSHOT-HEALTH-RACE-001: *_MATCH fields must not affect health.
+
+    Covers the production sequence:
+      1. A run is active (state=active or waiting_for_codex).
+      2. The progress monitor snapshot is fresh (age_ok=true), healthy.
+      3. Live instruction-id fields race ahead of the snapshot values.
+      4. bridge-status.sh is invoked by the operator or an automation.
+
+    Before the fix, step 3 would cause SNAPSHOT_HEALTH=lagging even though
+    the snapshot was perfectly fresh and healthy. The fix makes age the only
+    freshness authority.
+    """
+
+    def test_healthy_race_on_latest_response_instruction_id(self, bridge_env):
+        """Test 1 (primary): latest_response mismatch + age_ok=true => healthy.
+
+        Seeds a run with:
+        - active state
+        - fresh snapshot (age_ok=true), summary=healthy, issues=[]
+        - snapshot latest_response_instruction_id=id-A
+        - a newer live response file on disk with instruction_id=id-B
+
+        Asserts:
+        - progress_monitor_snapshot_age_ok: true
+        - progress_monitor_snapshot_latest_response_match: false
+        - progress_monitor_snapshot_health: healthy  (NOT lagging, NOT degraded)
+        """
+        run_id = "run-health-race-latest-response"
+
+        # Seed a live response with instruction_id=id-B
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="active",
+            response_payload={
+                "instruction_id": "id-B",
+                "completed_at": "2026-04-08T01:00:00Z",
+                "transcript_path": "/tmp/fake/transcript.jsonl",
+                "response": "newer live response",
+            },
+            updated_at="2026-04-08T01:00:00Z",
+        )
+
+        # Snapshot still has id-A as latest_response — the race condition
+        _seed_fresh_snapshot(
+            bridge_env,
+            run_id=run_id,
+            bridge_state="active",
+            summary="healthy",
+            issues=[],
+            latest_response_instruction_id="id-A",
+            pending_review_instruction_id="id-A",
+            age_offset_seconds=10,  # very recent → age_ok=true
+        )
+
+        result = _run_bridge_status(bridge_env, extra_env={
+            "CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS": "1860",
+        })
+        assert result.returncode == 0, (
+            f"bridge-status.sh failed: stderr={result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "progress_monitor_snapshot_age_ok: true" in stdout, (
+            f"Expected age_ok=true; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_latest_response_match: false" in stdout, (
+            f"Expected latest_response_match=false; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: healthy" in stdout, (
+            f"Expected snapshot_health=healthy (not lagging/degraded); stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: lagging" not in stdout
+        assert "progress_monitor_snapshot_health: degraded" not in stdout
+
+    def test_healthy_race_on_pending_review_instruction_id(self, bridge_env):
+        """Test 2: pending_review mismatch + age_ok=true => healthy.
+
+        Snapshot pending_review_instruction_id=id-A, but the live pending-review
+        file has instruction_id=id-B. latest_response matches (id-A==id-A in
+        snapshot; no live response file → match is unknown, not false). Age fresh.
+        """
+        run_id = "run-health-race-pending-review"
+
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="waiting_for_codex",
+            updated_at="2026-04-08T01:00:00Z",
+        )
+
+        # Write pending-review.json with id-B (live pending-review instruction)
+        bridge_env["pending_review"].write_text(json.dumps({
+            "run_id": run_id,
+            "instruction_id": "id-B",
+            "response_available": True,
+            "response_path": "/tmp/fake/resp.json",
+            "response_preview": "preview",
+        }))
+
+        # Snapshot still has id-A as pending_review — race condition
+        _seed_fresh_snapshot(
+            bridge_env,
+            run_id=run_id,
+            bridge_state="waiting_for_codex",
+            summary="healthy",
+            issues=[],
+            pending_review_instruction_id="id-A",
+            latest_response_instruction_id=None,
+            age_offset_seconds=10,
+        )
+
+        result = _run_bridge_status(bridge_env, extra_env={
+            "CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS": "1860",
+        })
+        assert result.returncode == 0, (
+            f"bridge-status.sh failed: stderr={result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "progress_monitor_snapshot_age_ok: true" in stdout, (
+            f"Expected age_ok=true; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_pending_review_match: false" in stdout, (
+            f"Expected pending_review_match=false; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: healthy" in stdout, (
+            f"Expected snapshot_health=healthy; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: lagging" not in stdout
+        assert "progress_monitor_snapshot_health: degraded" not in stdout
+
+    def test_healthy_race_on_bridge_state(self, bridge_env):
+        """Test 3: bridge_state mismatch + age_ok=true => healthy.
+
+        Snapshot bridge_state=active, but live run status.json has
+        state=waiting_for_codex. Summary=healthy, issues=[], age fresh.
+        """
+        run_id = "run-health-race-bridge-state"
+
+        # Live run state is waiting_for_codex
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="waiting_for_codex",
+            updated_at="2026-04-08T01:00:00Z",
+        )
+
+        # Snapshot still reports bridge_state=active — the race condition
+        _seed_fresh_snapshot(
+            bridge_env,
+            run_id=run_id,
+            bridge_state="active",  # stale vs live waiting_for_codex
+            summary="healthy",
+            issues=[],
+            age_offset_seconds=10,
+        )
+
+        result = _run_bridge_status(bridge_env, extra_env={
+            "CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS": "1860",
+        })
+        assert result.returncode == 0, (
+            f"bridge-status.sh failed: stderr={result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "progress_monitor_snapshot_age_ok: true" in stdout, (
+            f"Expected age_ok=true; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_state_match: false" in stdout, (
+            f"Expected state_match=false; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: healthy" in stdout, (
+            f"Expected snapshot_health=healthy; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: lagging" not in stdout
+        assert "progress_monitor_snapshot_health: degraded" not in stdout
+
+    def test_regression_age_failure_still_degrades(self, bridge_env):
+        """Test 4 (regression guard): age_ok=false => degraded, even if matches are true.
+
+        All three *_MATCH fields are true (no race), but the snapshot is stale.
+        The health must still be degraded because age is the freshness authority.
+        """
+        run_id = "run-health-age-degraded"
+        state = "active"
+
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state=state,
+            updated_at="2026-04-08T00:00:00Z",
+        )
+
+        # Seed snapshot with far-past sampled_at (age > max) but matching fields
+        _seed_fresh_snapshot(
+            bridge_env,
+            run_id=run_id,
+            bridge_state=state,       # matches live state → state_match=true
+            summary="healthy",
+            issues=[],
+            age_offset_seconds=9999,  # far in the past → age_ok=false
+            monitor_interval_seconds=300,
+        )
+
+        result = _run_bridge_status(bridge_env, extra_env={
+            "CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS": "360",  # 6 min max; 9999s >> 360s
+        })
+        assert result.returncode == 0, (
+            f"bridge-status.sh failed: stderr={result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "progress_monitor_snapshot_age_ok: false" in stdout, (
+            f"Expected age_ok=false; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: degraded" in stdout, (
+            f"Expected snapshot_health=degraded due to stale age; stdout:\n{stdout}"
+        )
+
+    def test_regression_alert_summary_still_degrades(self, bridge_env):
+        """Test 5 (regression guard): summary=alert => degraded, even with age_ok=true."""
+        run_id = "run-health-alert-degraded"
+
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="active",
+            updated_at="2026-04-08T01:00:00Z",
+        )
+
+        _seed_fresh_snapshot(
+            bridge_env,
+            run_id=run_id,
+            bridge_state="active",
+            summary="alert",   # non-healthy summary
+            issues=[],
+            age_offset_seconds=10,  # fresh → age_ok=true
+        )
+
+        result = _run_bridge_status(bridge_env, extra_env={
+            "CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS": "1860",
+        })
+        assert result.returncode == 0, (
+            f"bridge-status.sh failed: stderr={result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "progress_monitor_snapshot_age_ok: true" in stdout, (
+            f"Expected age_ok=true; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: degraded" in stdout, (
+            f"Expected snapshot_health=degraded due to alert summary; stdout:\n{stdout}"
+        )
+
+    def test_regression_nonzero_issues_still_degrades(self, bridge_env):
+        """Test 6 (regression guard): issues=[...] => degraded, even with age_ok=true."""
+        run_id = "run-health-issues-degraded"
+
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="active",
+            updated_at="2026-04-08T01:00:00Z",
+        )
+
+        _seed_fresh_snapshot(
+            bridge_env,
+            run_id=run_id,
+            bridge_state="active",
+            summary="healthy",
+            issues=[{"code": "some_issue", "detail": "problem found"}],
+            age_offset_seconds=10,  # fresh → age_ok=true
+        )
+
+        result = _run_bridge_status(bridge_env, extra_env={
+            "CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS": "1860",
+        })
+        assert result.returncode == 0, (
+            f"bridge-status.sh failed: stderr={result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "progress_monitor_snapshot_age_ok: true" in stdout, (
+            f"Expected age_ok=true; stdout:\n{stdout}"
+        )
+        assert "progress_monitor_snapshot_health: degraded" in stdout, (
+            f"Expected snapshot_health=degraded due to non-zero issues; stdout:\n{stdout}"
+        )
