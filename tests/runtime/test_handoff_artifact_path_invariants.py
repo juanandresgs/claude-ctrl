@@ -1161,3 +1161,158 @@ def test_handoff_lane_truth_tip_claim_is_fresh_vs_head() -> None:
         "sections (top `## Current Lane Truth` and `## Next bounded cutover "
         "slice`) to current HEAD, HEAD^, or HEAD~2."
     )
+
+
+# ---------------------------------------------------------------------------
+# A35: Open Soak Issues heading/status mirror invariant
+# ---------------------------------------------------------------------------
+# Context: A34 reconciled an intra-entry heading-vs-body Status-line
+# ambiguity in the "Runtime-authority drift" Open Soak Issues entry. The
+# entry heading had been updated during A28 to "— RESOLVED on soak lane …"
+# but the final `- **Status:** OPEN pending steps 1–3 …` bullet was not
+# updated in the same pass. A reader landing on either end got a
+# different story about whether the soak-lane convergence was complete.
+#
+# A34 fixed the one occurrence but added no mechanical invariant. A35
+# closes the class: every Open Soak Issues entry whose heading contains
+# `— RESOLVED` must not carry a live `- **Status:** OPEN …` bullet in
+# its body.
+#
+# Key discrimination (legacy-quote-safe):
+#   - Live status bullets use the canonical markdown shape
+#     `- **Status[ ... ]:** OPEN …` where OPEN comes IMMEDIATELY after the
+#     closing `**` of the bold Status label (with optional `:`/whitespace).
+#   - Historical / audit-preserved mentions embed OPEN inside quoted
+#     text, different bullet labels (e.g., `- **Legacy "Status: OPEN …`,
+#     `- **Repro (…):** … Status: OPEN …`), or parenthetical context.
+#     The regex below does NOT match those shapes.
+# ---------------------------------------------------------------------------
+
+
+_OPEN_SOAK_HEADING_RE = re.compile(r"^## Open Soak Issues\b[^\n]*", re.MULTILINE)
+_ENTRY_HEADING_RE = re.compile(r"^### [^\n]+", re.MULTILINE)
+# Canonical resolved marker used throughout the handoff: ` — RESOLVED`
+# (em dash) or (fallback) ` -- RESOLVED`. Case-sensitive — the marker is
+# always rendered in uppercase per house style.
+_RESOLVED_MARKER_RE = re.compile(r"\s(?:—|--)\s*RESOLVED\b")
+# Live-status-OPEN bullet shape. Matches a bullet line whose bold label
+# starts with `**Status` and whose body (immediately after the closing
+# `**`, allowing optional `:` and whitespace) begins with `OPEN`.
+# Intentionally does NOT match:
+#   - `- **Legacy "Status: OPEN …`  (bold label is `**Legacy`)
+#   - `- **Repro …: … Status: OPEN …` (bold label is `**Repro`)
+#   - `- **Status:** RESOLVED (was "OPEN" …)` (OPEN not directly after **)
+_LIVE_STATUS_OPEN_BULLET_RE = re.compile(
+    r"^-\s+\*\*Status[^*\n]*\*\*:?\s*OPEN\b",
+    re.MULTILINE,
+)
+
+
+def _find_open_soak_issues_sections(text: str) -> list[tuple[int, int]]:
+    """Return (start, end) offsets for every `## Open Soak Issues` section
+    in `text`. End is the offset of the next `\n## ` heading or len(text).
+    Multiple sections are supported — the handoff doc has two.
+    """
+    spans: list[tuple[int, int]] = []
+    for match in _OPEN_SOAK_HEADING_RE.finditer(text):
+        start = match.start()
+        # Find next top-level `\n## ` after this heading.
+        next_h = re.search(r"\n## [^\n]", text[match.end():])
+        end = match.end() + next_h.start() if next_h else len(text)
+        spans.append((start, end))
+    return spans
+
+
+def _find_entries_in_section(section_text: str) -> list[tuple[str, str]]:
+    """Return (heading_line, entry_body) tuples for every `### ` entry
+    inside one Open Soak Issues section. entry_body runs from the heading
+    to the next `### ` heading or end of section.
+    """
+    entries: list[tuple[str, str]] = []
+    heading_matches = list(_ENTRY_HEADING_RE.finditer(section_text))
+    for i, match in enumerate(heading_matches):
+        start = match.start()
+        end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(section_text)
+        entry = section_text[start:end]
+        heading_line = entry.splitlines()[0] if entry else ""
+        entries.append((heading_line, entry))
+    return entries
+
+
+def test_resolved_entries_do_not_carry_live_status_open_bullets() -> None:
+    """A35 invariant: every Open Soak Issues entry whose heading contains
+    `— RESOLVED` must NOT carry a live `- **Status:** OPEN …` bullet.
+
+    Closes the intra-entry heading-vs-body drift class documented in
+    A34. A34 reconciled the one occurrence manually; A35 makes
+    reintroduction mechanically impossible.
+
+    The invariant is legacy-quote-safe: it only matches bullets whose
+    bold label is `**Status…**` AND whose body begins with `OPEN`
+    immediately after the closing `**`. Historical mentions with
+    different label shapes (e.g., `- **Legacy "Status: OPEN …` or
+    `- **Repro …: Status: OPEN …`) do not match — their bold label is
+    `**Legacy` or `**Repro`, not `**Status`. Quoted references where
+    OPEN does not come directly after the bold label close (e.g.,
+    `- **Status:** RESOLVED (was "OPEN" …)`) also do not match.
+    """
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+
+    violations: list[str] = []
+    for osi_start, osi_end in _find_open_soak_issues_sections(text):
+        section = text[osi_start:osi_end]
+        for heading_line, entry in _find_entries_in_section(section):
+            if not _RESOLVED_MARKER_RE.search(heading_line):
+                continue
+            # Entry heading claims RESOLVED — scan for live-status-OPEN bullets.
+            for m in _LIVE_STATUS_OPEN_BULLET_RE.finditer(entry):
+                # Record the violating bullet (truncated to 160 chars for
+                # readability in the failure diagnostic).
+                bullet = m.group(0)
+                if len(bullet) > 160:
+                    bullet = bullet[:157] + "..."
+                violations.append(
+                    f"heading={heading_line!r} — live status bullet: {bullet!r}"
+                )
+
+    assert not violations, (
+        "A35 heading/status mirror invariant violation: Open Soak Issues "
+        "entries whose heading contains `— RESOLVED` must not carry a "
+        "live `- **Status:** OPEN …` bullet in the body. If you intend to "
+        "preserve historical OPEN framing as audit, move it under a "
+        "different bold label (e.g., `- **Legacy framing (…):** …`) so it "
+        "is clearly historical, or embed it in quoted/italic text that "
+        "doesn't match the live-status-bullet shape.\n"
+        + "\n".join(f"  - {v}" for v in violations)
+    )
+
+
+def test_resolved_status_mirror_scanner_distinguishes_live_from_legacy() -> None:
+    """Scanner-self sanity pin: the A35 regex must match the live-status-
+    OPEN bullet shape AND must NOT match the canonical legacy / quoted
+    historical shapes. Catches regression if a future edit loosens the
+    pattern and allows re-introduction of the ambiguity.
+    """
+    live_fail_fixtures = [
+        "- **Status:** OPEN pending steps 1–3 above.",
+        "- **Status (2026-04-17):** OPEN pending the repo-root fast-forward.",
+        "- **Status:**  OPEN  (double-space formatting).",
+    ]
+    legacy_pass_fixtures = [
+        # A34 legacy-framing paragraph (exact shape preserved):
+        "- **Legacy \"Status: OPEN pending steps 1–3\" framing (2026-04-17, preserved for audit):** the original Status line read …",
+        # A35 / other repro bullets that reference OPEN inside quoted text:
+        "- **Repro (pre-A34, at HEAD `35a517c`):** body Status: OPEN pending 1–3.",
+        # Current-state Status bullet that is RESOLVED but references OPEN historically:
+        "- **Status:** RESOLVED (was \"OPEN\" until A34).",
+        # Bullet whose label isn't Status:
+        "- **Subject:** the entry was flagged OPEN before.",
+    ]
+    for fx in live_fail_fixtures:
+        assert _LIVE_STATUS_OPEN_BULLET_RE.search(fx), (
+            f"A35 scanner failed to detect a live-status-OPEN bullet: {fx!r}"
+        )
+    for fx in legacy_pass_fixtures:
+        assert not _LIVE_STATUS_OPEN_BULLET_RE.search(fx), (
+            f"A35 scanner false-positive on legacy/historical shape: {fx!r}"
+        )
