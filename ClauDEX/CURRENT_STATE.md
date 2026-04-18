@@ -148,16 +148,21 @@ Canonical cutover custody branch (remote):
   Phases 1-8 closeout") plus the follow-up auto-submit process-control
   fix (`d8fdf96`, "Fix ClauDEX auto-submit process growth").
 
-Soak worktree branch (this lane) — current as of 2026-04-17:
+Soak worktree branch (this lane) — 2026-04-17 mid-session snapshot (SUPERSEDED by late-session integration; see SUPERVISOR_HANDOFF.md `## Current Lane Truth (2026-04-17)` for live state):
 
 - `claudesox-local` at HEAD `696254a` (doc-reconciliation checkpoint on
   top of `d7db4ba`), **12 commits ahead** of `origin/feat/claudex-cutover`
-  (behind-count time-variant; 35 at last sample). Lane has **diverged**
-  from upstream — non-fast-forward push rejected. Integration via
-  `git merge origin/feat/claudex-cutover` is required before push can
-  succeed. Merge is blocked by 7 dirty tracked files that overlap remote
-  updates (must be checkpointed first — see "Recommended next supervisor
-  action" below).
+  (behind-count time-variant; 35 at last sample). Lane had **diverged**
+  from upstream at that mid-session point — non-fast-forward push rejected.
+  Integration via `git merge origin/feat/claudex-cutover` was required
+  before push could succeed. Merge was blocked by 7 dirty tracked files
+  that overlapped remote updates.
+- **Late-session status (authoritative):** the three-step integration
+  completed — pre-merge infrastructure checkpoint `49e71d5`, merge
+  `959c3b2` (5 conflicts resolved), follow-up merge `995341e`, and a
+  post-merge docs/config hardening tail (`ba1f9df`, `09780f9`, `49dd7fd`,
+  `747fb3a`) are all pushed. Lane is 0 ahead / 0 behind at HEAD
+  `747fb3a`. See SUPERVISOR_HANDOFF.md `## Current Lane Truth (2026-04-17)`.
 
 Soak worktree branch — historical snapshot (2026-04-14 closeout):
 
@@ -199,14 +204,19 @@ Implication (historical, as of 2026-04-14 closeout):
   explicitly scoped) or narrow maintenance (soak hygiene, documentation
   drift, focused gate reverification)
 
-Current implication (2026-04-17):
+Mid-session implication (2026-04-17, SUPERSEDED by late-session integration — kept for audit):
 
-- Push debt is present in the lane; the 30-file bundle (`d7db4ba`) plus
-  doc-reconciliation checkpoint (`696254a`) are committed locally but not
-  pushed. Lane has diverged from upstream (12 ahead / 35+ behind,
-  time-variant). The next clean action is a three-step integration:
-  (1) checkpoint the 7 dirty merge-blocker files, (2) merge upstream,
-  (3) push. No stash, reset, rebase, or force-push permitted.
+- At the mid-session snapshot, push debt was present; the 30-file bundle
+  (`d7db4ba`) plus doc-reconciliation checkpoint (`696254a`) were
+  committed locally but not pushed. Lane had diverged from upstream
+  (12 ahead / 35+ behind, time-variant). The planned next action was a
+  three-step integration: (1) checkpoint the 7 dirty merge-blocker
+  files, (2) merge upstream, (3) push. No stash, reset, rebase, or
+  force-push permitted.
+- **Late-session outcome:** the three-step integration completed
+  successfully; push debt is cleared and the lane is steady-state at
+  HEAD `747fb3a` (see SUPERVISOR_HANDOFF.md `## Current Lane Truth
+  (2026-04-17)`).
 
 ## cc-policy-who-remediation Slice 1 State (2026-04-17)
 
@@ -330,8 +340,12 @@ Current implication (2026-04-17):
   in `runtime/core/bridge_permissions.py` + `TestPostToolBashWiringPresent`
   in `tests/runtime/test_bridge_permissions.py`) are folded into those
   three existing staged paths, not new files.
-- Lane: branch `claudesox-local` at HEAD `d7db4ba`, 11 commits ahead of
-  `origin/feat/claudex-cutover` (behind-count time-variant).
+- Lane (2026-04-17 mid-session snapshot, SUPERSEDED): branch
+  `claudesox-local` was at HEAD `d7db4ba`, 11 commits ahead of
+  `origin/feat/claudex-cutover` (behind-count time-variant). Late-session
+  integration cleared this divergence; live lane is at HEAD `747fb3a`,
+  0 ahead / 0 behind (see SUPERVISOR_HANDOFF.md `## Current Lane Truth
+  (2026-04-17)`).
 - Focused test evidence (refreshed 2026-04-17 for full 30-file bundle):
   **309 passed in 8.18s** across the 11-file combined focused suite
   (pre-Invariant-#5 snapshot); plus
@@ -361,15 +375,19 @@ Current implication (2026-04-17):
   fallback + handoff-invariant pins), and `1776413883321-0003-e8mgaw`
   (Invariant #11 integration). Earlier seat numbers preserved for audit.
 
-### Recommended next supervisor action (current lane truth, 2026-04-17 late-session)
+### Recommended next supervisor action (2026-04-17 mid-session plan, COMPLETED — kept for audit)
 
-**This is the active recommended next action for the current lane.** The
-similarly-titled subsection further down under "Checkpoint Readiness (Phase
-8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT" is a historical
-artifact from the 2026-04-14 Phase-8 closeout and does NOT describe the
-current lane.
+**This subsection is a historical record of the three-step integration
+plan as it stood mid-session on 2026-04-17. The plan has since been
+executed in full; it does NOT describe any currently-pending action.**
+Live lane truth is in SUPERVISOR_HANDOFF.md `## Current Lane Truth
+(2026-04-17)`: push debt cleared, lane at HEAD `747fb3a`, 0 ahead /
+0 behind. The similarly-titled subsection further down under
+"Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) —
+HISTORICAL SNAPSHOT" is a separate, older 2026-04-14 Phase-8 closeout
+artifact.
 
-The recommended action is a strict three-step sequence:
+The planned three-step sequence (all three steps now completed):
 
 1. **Checkpoint the 7 dirty merge-blocker files.** These dirty tracked files
    overlap with files `origin/feat/claudex-cutover` would update on merge
@@ -440,17 +458,20 @@ a classified JSON status, not a traceback). Test coverage:
 tests/runtime/test_bridge_validate_settings_cli.py` → 73 passed, 0
 failed.
 
-**Integration throttle — updated.** The three-step sequence at the
-top of this subsection now applies: (1) checkpoint 7 dirty merge-blocker
-files, (2) merge upstream, (3) push. The probe CLIs' availability in
-the lane does NOT change the integration order, does NOT permit
-unthrottled retry, and does NOT supersede the `Checkpoint-retry throttle
-rule` recorded in `ClauDEX/SUPERVISOR_HANDOFF.md` § Checkpoint
-Stewardship.
+**Integration throttle — resolved.** The three-step sequence above was
+executed to completion: the dirty merge-blocker files were
+checkpointed (`49e71d5`), upstream was merged (`959c3b2` with 5
+conflicts resolved, follow-up `995341e` clean), and all commits were
+pushed to `origin/feat/claudex-cutover`. The probe CLIs landed within
+that sequence. The `Checkpoint-retry throttle rule` in
+`ClauDEX/SUPERVISOR_HANDOFF.md` § Checkpoint Stewardship continues to
+govern any future retries but is not active — the lane is
+steady-state (see SUPERVISOR_HANDOFF.md `## Current Lane Truth
+(2026-04-17)`).
 
 ## Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14) — HISTORICAL SNAPSHOT
 
-**This section is a historical snapshot as of 2026-04-14 closeout.** It describes the lane state at Phase-8 slice-12 acceptance. It does NOT describe the current lane (2026-04-17) — see the "Status (current, 2026-04-17)" header at the top of this file for current truth. The "No checkpoint debt remains" claim below applies to the 2026-04-14 Phase-8 state only, not to the 2026-04-17 lane which carries a **28-file** harness-blocked staged bundle.
+**This section is a historical snapshot as of 2026-04-14 closeout.** It describes the lane state at Phase-8 slice-12 acceptance. It does NOT describe the current lane (2026-04-17) — see the status block at the top of this file and SUPERVISOR_HANDOFF.md `## Current Lane Truth (2026-04-17)` for live truth. The "No checkpoint debt remains" claim below applies to the 2026-04-14 Phase-8 state only. The 2026-04-17 mid-session snapshot that referenced a 28-file harness-blocked staged bundle is itself superseded — late-session integration completed and the lane is now steady-state (0 ahead / 0 behind at HEAD `747fb3a`).
 
 **Status (historical, 2026-04-14):** **CHECKPOINT LANDED.** Phase 8 is closed as accepted
 (Slice 12 closeout and time-scoping correction accepted per Codex

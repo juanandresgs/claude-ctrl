@@ -2,8 +2,8 @@
 
 ## Current Lane Truth (2026-04-17)
 
-- Branch `claudesox-local` at HEAD `995341e` (merge commit integrating upstream), pushed to `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** — fully integrated.
-- **Push debt cleared.** The 30-file cc-policy-who-remediation bundle (committed as `d7db4ba`), doc-reconciliation checkpoint (`696254a`), pre-merge supervisor infrastructure checkpoint (`49e71d5`, 12 files), and two merge commits (`959c3b2` integrating 41 upstream commits with 5 conflicts resolved, `995341e` integrating 1 additional upstream commit clean) are all pushed to `origin/feat/claudex-cutover`.
+- Branch `claudesox-local` at HEAD `747fb3a` (post-merge docs/config hardening tip), pushed to `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** — fully integrated.
+- **Push debt cleared.** The 30-file cc-policy-who-remediation bundle (committed as `d7db4ba`), doc-reconciliation checkpoint (`696254a`), pre-merge supervisor infrastructure checkpoint (`49e71d5`, 12 files), and two merge commits (`959c3b2` integrating 41 upstream commits with 5 conflicts resolved, `995341e` integrating 1 additional upstream commit clean) are all pushed to `origin/feat/claudex-cutover`. Post-merge docs/config hardening tail also pushed: `ba1f9df` (post-merge docs coherence reconciliation), `09780f9` (stale Phase 2b active-slice claim qualified as historical), `49dd7fd` (stale checkpoint-debt claims qualified in invariant coverage matrix), `747fb3a` (bridge model authority moved from launcher to settings profile).
 - **No checkpoint debt, no merge blockers, no push debt.** The lane is in steady-state maintenance mode.
 - Historical: the pre-merge integration prep (7 merge-blocker files, non-destructive constraint, stash-pop contamination incident) is resolved. Those details are preserved in the Open Soak Issues section for audit.
 
