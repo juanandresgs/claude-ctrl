@@ -357,64 +357,69 @@ class TestSupervisorHandoffDocBanner:
             f"Banner region (first 1400 chars):\n{banner[:800]}..."
         )
 
-    def test_supervisor_handoff_banner_branch_matches_current_lane(self) -> None:
-        """A48 invariant: the first ``Branch `<name>``` claim in the
-        `## Current Lane Truth` banner must equal the live
-        `git rev-parse --abbrev-ref HEAD`. Prevents silent branch-identity
-        drift when parallel checkouts of `feat/claudex-cutover` (e.g. a
-        deploy checkout and a soak checkout) push doc reconciliations to the
-        same shared authority — whichever commits last otherwise silently
-        owns the lane identity claim.
+    def test_supervisor_handoff_banner_tracking_branch_matches_current_upstream(
+        self,
+    ) -> None:
+        """A48 invariant: the first ``Tracking branch `<name>``` claim in
+        the `## Current Lane Truth` banner must equal the live
+        `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}`.
 
-        Detached HEAD (`rev-parse --abbrev-ref HEAD == "HEAD"`) is exempt so
-        CI / harness runs that check out a SHA do not spuriously fail.
+        Prevents silent branch-identity drift when parallel checkouts of
+        `feat/claudex-cutover` (for example a deploy checkout and a soak
+        checkout) push doc reconciliations to the same shared authority —
+        whichever commits last otherwise silently owns the banner text.
+
+        Branches without an upstream (or detached HEAD harness checkouts)
+        are exempt so scratch/local-only checkouts do not spuriously fail.
         Dynamic check rather than a hardcoded branch literal so the
-        invariant survives any future rename of the soak branch.
+        invariant survives any future upstream rename.
         """
         import subprocess
 
         banner = _current_truth_banner_region(_read(SUPERVISOR_HANDOFF_DOC))
         try:
-            current_branch = subprocess.check_output(
+            current_upstream = subprocess.check_output(
                 [
                     "git",
                     "-C",
                     str(_REPO_ROOT),
                     "rev-parse",
                     "--abbrev-ref",
-                    "HEAD",
+                    "--symbolic-full-name",
+                    "@{upstream}",
                 ],
                 text=True,
             ).strip()
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             pytest.skip(
-                f"A48: git unavailable or not a repo ({exc}); branch-identity "
+                f"A48: git unavailable / no upstream / not a repo ({exc}); "
+                "tracking-branch identity "
                 "invariant cannot run in this environment"
             )
 
-        if current_branch == "HEAD":
+        if current_upstream == "HEAD":
             pytest.skip(
-                "A48: detached HEAD — banner branch-identity invariant is "
+                "A48: detached HEAD — banner tracking-branch invariant is "
                 "intentionally exempt for CI / harness SHA checkouts"
             )
 
-        match = re.search(r"Branch `([^`]+)`", banner)
+        match = re.search(r"Tracking branch `([^`]+)`", banner)
         assert match is not None, (
             "A48: SUPERVISOR_HANDOFF.md banner does not contain a "
-            "``Branch `<name>``` claim. Lane identity is unverifiable from "
-            "the current-truth banner — add a branch-identity line to the "
-            "top `## Current Lane Truth` bullet so parallel-checkout drift "
-            "is mechanically visible."
+            "``Tracking branch `<name>``` claim. Shared upstream identity is "
+            "unverifiable from the current-truth banner — add a tracking-"
+            "branch line to the top `## Current Lane Truth` bullet so "
+            "parallel-checkout drift is mechanically visible."
         )
         claimed = match.group(1)
-        assert claimed == current_branch, (
-            f"A48: SUPERVISOR_HANDOFF.md banner claims branch `{claimed}` "
-            f"but live worktree is on branch `{current_branch}`. Lane "
-            "identity drifted — update the top `## Current Lane Truth` "
-            "banner to match the active checkout. This typically happens "
-            "when a parallel checkout of the same published branch (e.g. "
-            "deploy vs soak) commits a doc reconciliation that overwrites "
-            "the other lane's identity claim."
+        assert claimed == current_upstream, (
+            f"A48: SUPERVISOR_HANDOFF.md banner claims tracking branch "
+            f"`{claimed}` but live checkout tracks `{current_upstream}`. "
+            "Shared lane identity drifted — update the top `## Current Lane "
+            "Truth` banner to match the configured upstream. This typically "
+            "happens when a parallel checkout of the same published branch "
+            "(e.g. deploy vs soak) commits a doc reconciliation that "
+            "overwrites the shared authority."
         )
 
 
@@ -542,7 +547,7 @@ _SUPERVISOR_SHAPE_STALE_AFTER_OPEN_SOAK_FIXTURE = """\
 
 ## Current Lane Truth (2026-04-17)
 
-- Branch `claudesox-local` at HEAD `f24df96`, ahead 10.
+- Tracking branch `origin/feat/claudex-cutover` at published tip `f24df96`.
 - **30-file checkpoint committed** as `d7db4ba`.
 
 ## Purpose
@@ -574,7 +579,7 @@ _SUPERVISOR_SHAPE_CLEAN_AFTER_OPEN_SOAK_FIXTURE = """\
 
 ## Current Lane Truth (2026-04-17)
 
-- Branch `claudesox-local` at HEAD `f24df96`, ahead 10.
+- Tracking branch `origin/feat/claudex-cutover` at published tip `f24df96`.
 - **30-file checkpoint committed** as `d7db4ba`.
 
 ## Purpose
