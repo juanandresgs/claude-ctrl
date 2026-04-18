@@ -213,6 +213,53 @@ authorisation either.
 
 ## Open Soak Issues
 
+### A14 reconciliation contract for A2/A3 archival test files — PATH R RECOMMENDED (2026-04-18)
+
+- **Subject:** A13 attempted to compose A-branch's `tests/runtime/test_pre_agent_hook_validation.py` + `tests/runtime/test_subagent_start_hook_validation.py` (34 + 44 = 78 tests) onto soak HEAD `75bc9c6`. 50/78 assertions failed against current soak hooks because A8 (`aeec494`) had already added semantically-similar-but-output-format-different fail-closed behaviors to `hooks/pre-agent.sh` and `hooks/subagent-start.sh`. A13 blocked with "irreconcilable semantic conflict requires planner-implementer chain." A14 produces the bounded reconciliation contract.
+
+- **A9 classification correction (second):** A9 labeled these two test files as "additive-safe"; A13 proved they are **retire-as-A8-subsumed-or-rewrite-required** (same defensive intent, different output format — A-branch tests assert old envelope, soak has new envelope). A11 earlier corrected `write_plan_guard.py` similarly (additive-safe → manual-composition-required, addressed by A12). This is now the second documented A9 over-classification; future convergence packets should test-run imports before classifying.
+
+- **A13 failing-assertion classification table (50 failures across 13 classes):**
+
+  | Class | Count | File | Classification |
+  |---|---|---|---|
+  | `TestContractBlockDenyCases` | 17 | pre-agent | `rewrite-test-to-current-A8-semantics` — A8 uses same reason-code tokens, different envelope |
+  | `TestStageSubagentTypeMismatch` | 9 | subagent-start | `rewrite-test-to-current-A8-semantics` — A8 covers via `stage_subagent_type_mismatch` |
+  | `TestUnknownStageId` | 7 | subagent-start | `rewrite-test-to-current-A8-semantics` — A8 has unknown-stage handling |
+  | `TestPassThroughCases` | 4 (3 sub + 1 pre) | both | `retire-as-A8-subsumed` — A8 intentionally changed legacy-path semantics for canonical seats |
+  | `TestFailureOrdering` | 3 | subagent-start | `retire-as-A8-subsumed` — A8's ordering is design-forward |
+  | `TestValidatorUnavailable` | 2 | subagent-start | `rewrite-test-to-current-A8-semantics` — A8 has validator-unavailable with different envelope |
+  | `TestMissingStageId` | 2 | subagent-start | `rewrite-test-to-current-A8-semantics` |
+  | `TestLegacyPathUnaffected` | 2 | subagent-start | `retire-as-A8-subsumed` — A8 deliberately changed legacy path for canonical seats |
+  | `TestPlanAlias` | 1 | subagent-start | `rewrite-test-to-current-A8-semantics` |
+  | `TestMalformedContractJson` | 1 | pre-agent | `rewrite-test-to-current-A8-semantics` |
+  | `TestContractBlockAllowCases` | 1 | pre-agent | `rewrite-test-to-current-A8-semantics` |
+  | `TestCompoundValidationAndCarrier` | 1 | pre-agent | `rewrite-test-to-current-A8-semantics` — A8 has `carrier_write_failed` |
+  | `TestCompoundInteractionProduction` | 1 | subagent-start | `rewrite-test-to-current-A8-semantics` |
+
+  **Totals:** 0 `preserve-via-hook-extension` / 41 `rewrite-test-to-current-A8-semantics` / 9 `retire-as-A8-subsumed`.
+
+  **Zero assertions require hook extension** — every failing assertion is either a cosmetic output-format mismatch (rewrite) or a deliberate A8 semantic design change (retire). The A8 hooks already provide equal-or-stronger coverage; no missing functional gate was identified.
+
+- **Path options (two bounded paths):**
+
+  **Path R — Retire archival debt (recommended).** Declare both A-branch test files archival; A8's test suites (`test_pre_agent_carrier.py`, `test_subagent_start_hook.py`) are canonical coverage on soak. A-branch retained as historical experiment per A9 Option 3. Zero runtime/hook/test edits. Zero functional gap because every "retire" AND every "rewrite" assertion already has functional coverage under A8's canonical tests. This is **routine** — no user-decision boundary; orchestrator can record the retirement decision in an Open Soak Issues update (already being done via this A14 entry).
+
+  **Path C — Compose archival debt (not recommended unless operator explicitly wants assertion-parity).** Split into three slices:
+  1. **A14a** — rewrite 41 `rewrite-test-to-current-A8-semantics` assertions to match A8 output format. Implementer slice; target files: both test files. Success criteria: `pytest -q tests/runtime/test_pre_agent_hook_validation.py tests/runtime/test_subagent_start_hook_validation.py` passes on soak HEAD with 41 rewrites + 9 removed = ~69 tests green. Risk: low (tests-only edits). Focused test list: the two files + `test_pre_agent_carrier.py` + `test_subagent_start_hook.py` (regression guard).
+  2. **A14b** — remove 9 `retire-as-A8-subsumed` tests. Micro-slice; no hook edits. Success criteria: remaining test count matches A-branch-minus-retired count. Risk: trivial.
+  3. **A14c** — optional docs update: note in test file docstrings that they cover A2/A3 original intent preserved via A8 semantics. Risk: trivial.
+
+  Path C totals: ≥2 slices, ~2-3h of implementer work, **zero functional gain** vs Path R. Only value: preserving exact-assertion-text compatibility with A-branch tests, which has archival/historical interest only.
+
+- **Recommended path order:** **Path R (retire).** Path C is available if operator explicitly wants test-assertion parity for archival reasons.
+
+- **User-decision boundary:** NONE for Path R (documenting retirement in Open Soak Issues is routine orchestrator-eligible). Path C is also routine (test-file edits, no hook edits), but is an explicit scope-widening choice that requires operator authorization to start.
+
+- **Blocking?** No. Soak's functional coverage is complete under A8. The "50 failing tests" exist only if A-branch's archival tests are imported; they are not on soak HEAD and cannot regress soak CI.
+
+- **Verification state:** 78-test collect-only verified via `pytest --collect-only -q`. 50 failures categorized by test class via `pytest -q` output parse. Classification decisions based on comparing A-branch test assertion patterns vs A8 hook output format (A8's `canonical_seat_no_carrier_contract`, `stage_subagent_type_mismatch`, `carrier_write_failed` reason codes vs A-branch tests' `contract_block_*` expectations). Docs-only packet; no runtime/hook/test edits in A14.
+
 ### A9 convergence packet — A-branch + A0-branch publish-debt adjudication (2026-04-18)
 
 - **Subject:** post-A8C, A5R→A8 soak chain is published to `origin/feat/claudex-cutover` at `aeec494`. Two local config-readiness feature branches remain un-published and carry config-readiness work that overlaps or is adjacent to the published bundle. A9 produces a docs-only convergence packet for operator adjudication — **no code edits, no push/merge execution**.
