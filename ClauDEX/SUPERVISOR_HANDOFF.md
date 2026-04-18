@@ -838,7 +838,17 @@ has been re-read and a clearly bounded slice is ready.
 
 For current detail, see `ClauDEX/CURRENT_STATE.md`.
 
-## Current Restart Slice
+### Current Restart Slice (2026-04-17 historical snapshot)
+
+> **Historical framing.** This subsection is a snapshot of the
+> fresh-run bootstrap action as scoped during the 2026-04-17
+> post-Integration-Wave-1 moment. It lives under
+> `## Historical Phase State Snapshot` and is NOT the authoritative
+> step-3 pointer for the steady-state loop. The authoritative
+> `## Current Restart Slice` heading appears above in the active
+> region of this file; on a fresh supervised run, the supervisor
+> dispatches what the incoming Codex instruction explicitly
+> authorises (see the active `## Current Restart Slice` section).
 
 **Status (post-checkpoint, post-integration):** no active cutover phase.
 Phases 1-8 are complete; the accepted bundle is landed as `6b8cc5c` on
