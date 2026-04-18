@@ -1,7 +1,6 @@
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -165,7 +164,6 @@ def test_supervisor_restart_resolves_codex_target_without_explicit_flag(
         "BRAID_ROOT": str(braid_root),
         "CLAUDEX_STATE_DIR": str(state_dir),
         "CLAUDEX_RUNTIME_CLI": str(REPO_ROOT / "runtime" / "cli.py"),
-        "CLAUDEX_PYTHON_BIN": sys.executable,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
         "PYTHONPATH": (
             f"{REPO_ROOT}{os.pathsep}{os.environ['PYTHONPATH']}"
