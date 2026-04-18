@@ -101,14 +101,15 @@ one-liner is the only adapter change in this closure chain.
 
 ## Next bounded cutover slice
 
-**Current lane truth (2026-04-18, post-A16 push `588d395`):** this
-worktree is the **global-soak config-readiness lane**. Category C is
-**paused-not-priority** in this overnight lane per operator direction
-— it is NOT the next bounded auto-selected action. Do not dispatch
-Category C planning or execution from this lane without an explicit
-fresh operator instruction that re-activates it; the historical
-Category C scoping packet below is retained for archival context
-only.
+**Current lane truth (2026-04-18, post-A23 push `fdcc38e`):** this
+worktree is the **global-soak config-readiness lane**. Lane is
+**0 ahead / 0 behind** `origin/feat/claudex-cutover`; push debt
+cleared. Category C is **paused-not-priority** in this overnight
+lane per operator direction — it is NOT the next bounded
+auto-selected action. Do not dispatch Category C planning or
+execution from this lane without an explicit fresh operator
+instruction that re-activates it; the historical Category C
+scoping packet below is retained for archival context only.
 
 **Published config-readiness bundle since `86795d0`:**
 `8ca3ac4` (A5R codec adapter) → `e69480b` (A6 single-authority
@@ -117,10 +118,25 @@ classification) → `1b0f187` (A7 supervisor guardrails) → `aeec494`
 `eaa8af0` (A10 A0 codec cherry-pick) → `75bc9c6` (A12 scope-forbidden
 plan_guard composition) → `e45f4aa` (A14 archival-test reconciliation)
 → `02443a8` (A15 runtime authority-boundary invariants) →
-`588d395` (A16 prompt/hook guardrail invariants). **Ten commits
-published on `origin/feat/claudex-cutover`.** Guardian remains sole
-landing actor; orchestrator is coordinate-only (no self-grant push,
-no self-run git push). Settings-file model authority fix preserved.
+`588d395` (A16 prompt/hook guardrail invariants) → `38fd0f7`
+(A17 lane-truth convergence) → `a3b5a20` (A18 non-CLI baseline
+reduction 10→5) → `9ec646f` (A19 `bash_write_who` shlex retirement
+via `command_intent`; landed on upstream via A19R runtime re-seat
+recovery) → `e44c5b1` (A20 post-A18/A19/A19R handoff convergence)
+→ `7ca2c5f` (A21 `marker set` project-root defaulting) →
+`db8382c` (A21R forward cleanup of bridge-topology scope leak)
+→ `b13e4b1` (A22 `dispatch agent-start` project-root defaulting
+symmetry) → `fdcc38e` (A23 handoff state convergence). **Seventeen
+commits published on `origin/feat/claudex-cutover`; current tip
+`fdcc38e`.** Guardian remains sole landing actor; orchestrator is
+coordinate-only (no self-grant push, no self-run git push).
+Settings-file model authority fix preserved. `NULL`-project-root
+reproduction is closed on both `marker set` and `dispatch
+agent-start` when args / `CLAUDE_PROJECT_DIR` / git toplevel
+resolves (A21 + A22). Non-CLI soak-baseline failure count stands
+at zero; residual `tests/runtime/test_cli.py` baseline failures
+remain at 4 (Bundle B cli-verbs WIP, out of config-readiness
+scope).
 
 **Routine next actions (no user-decision boundary):**
 - continue steady-state supervision on this lane;
@@ -139,6 +155,10 @@ no self-run git push). Settings-file model authority fix preserved.
   planning packet);
 - whether to push via a publish target other than `feat/claudex-cutover`
   (ambiguous-publish-target is user-decision per Sacred Practice §8).
+- **A24 status note (2026-04-18):** the three boundaries above
+  remain operator-owned and non-stale as of this reconciliation —
+  each is reviewed per-slice and no landing activity through A23
+  has implicitly ratified or retired any of them.
 
 ---
 
@@ -342,6 +362,17 @@ authorisation either.
 - **Class of defect:** `git commit -- <paths>` re-reads worktree, not index. When only a subset of a file's worktree changes are in scope, use `git apply --cached <patch>` + `git commit` (no path args) so the commit reflects the index only. The A21 error was invoking `git commit -- <paths>` after a precise `git apply --cached` had already staged the right hunks — the path args overrode the careful staging.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
+
+### A24 handoff-section internal desynchronization (2026-04-18) — docs-only reconciliation
+
+- **Subject:** the `## Next bounded cutover slice` section of this file claimed "Current lane truth (2026-04-18, post-A16 push `588d395`)" and listed the published config-readiness bundle as "Ten commits" ending at A16 (`588d395`), while the top-of-file `## Current Lane Truth` section independently named the tip as post-A22/A23 at `b13e4b1`/`fdcc38e`. Same file, two sections, two different lane-truth claims — a control-plane documentation drift defect (single source should not disagree with itself).
+- **Repro:** `grep -E "^\\*\\*Current lane truth|^\\*\\*Published config-readiness bundle|Ten commits published" ClauDEX/SUPERVISOR_HANDOFF.md` on any commit between A17 and A23 returns the pre-A24 A16-anchored claim verbatim. The post-A16 slices (A17 → A23, nine landed commits beyond the "Ten commits" bundle ceiling) accumulated in the `## Completed Slices` and Open Soak Issues sections but never updated the `Next bounded cutover slice` snapshot.
+- **Class of defect:** internal-to-doc desynchronization. `## Current Lane Truth` (top) was being updated per slice as the canonical lane status; `## Next bounded cutover slice` was authored once (around A16) and not re-touched because no routine slice produced a reason to edit it. The surrounding prose reads like live status ("Current lane truth …", "Published … since `86795d0`", "Ten commits published") so a reader landing on that section via the ToC or body-scroll would trust a stale claim.
+- **Fix applied (this slice):** rewrote the `Current lane truth` paragraph under `## Next bounded cutover slice` to name post-A23 tip `fdcc38e`, quote `0 ahead / 0 behind`, and retain the Category C paused-not-priority posture verbatim. Extended the `Published config-readiness bundle since 86795d0` chain through A23 (added A17 `38fd0f7` / A18 `a3b5a20` / A19 `9ec646f` + A19R runtime re-seat recovery note / A20 `e44c5b1` / A21 `7ca2c5f` / A21R `db8382c` / A22 `b13e4b1` / A23 `fdcc38e`) and updated the commit count (Ten → **Seventeen**). Added a concise status note that NULL-project-root reproduction is closed on both `marker set` and `dispatch agent-start` paths post-A21/A22, and that non-CLI baseline failure count is zero (4 residual CLI/proof failures remain in Bundle B WIP). True-user-decision-boundaries list preserved with an explicit A24 status note that all three boundaries remain operator-owned and non-stale — no landing activity through A23 has implicitly ratified or retired any of them.
+- **Class-of-defect prevention (future-oriented, not done this slice):** a mechanical invariant could assert that if the top-of-file `## Current Lane Truth` names tip X, then `## Next bounded cutover slice` must either name the same tip X or explicitly mark its own snapshot as historical. Bounded follow-on work — not required to close A24. For now the manual-reconciliation pattern (periodic handoff-state convergence slices: A17 / A20 / A23 / A24) is the working discipline.
+- **Verification:** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_braid_v2.py` — guardrail pins against re-introducing legacy push-token action-card phrase, the Step-4 response-surface fallback pins, and the staged-scope authority rule all remain in force after the reconciliation. Braid v2 smoke unfiltered.
+- **Blocking?** No — docs-only reconciliation. No runtime / hooks / scripts / test code touched.
+- **Decision annotation:** none (scoped internal-consistency reconciliation, not a behavior change).
 
 ### A23 supervisor handoff state convergence (2026-04-18) — docs-only reconciliation
 
