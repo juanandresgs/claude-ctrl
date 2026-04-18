@@ -256,6 +256,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 7d: A40 runtime-behavior tied-shape pin — state-specific word AND
+# parenthesized workflow-id must BOTH appear in the SAME HUD output for each
+# live eval-state.
+#
+# Closes A39 residual risk: tests 6/7/7b use weak `grep -q "eval"` substring
+# checks that would pass even if cc-policy schema drift broke `.eval_status`
+# or `.eval_workflow` serialization (the word "eval" appears via the static
+# label `eval:` regardless of state). This test asserts the HUD actually
+# reflects the live runtime projection — if eval-state serialization breaks,
+# either the state-specific word (`pending`/`ready`) or the workflow
+# parenthesized suffix (`(wf-sl-test)`) will drop, and this test fails
+# loudly with a diagnostic that identifies which piece broke.
+#
+# The two sub-checks are independent (pending-state + ready-state) so a
+# partial regression surfaces which direction is broken.
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- 7d: A40 runtime-behavior pin — tied (state-word, workflow-id) shape"
+
+# Sub-check 1: pending state — must render both `pending` word AND `(wf-sl-test)`.
+policy evaluation set "wf-sl-test" "pending" >/dev/null
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "pending" && \
+   printf '%s' "$output" | grep -q "(wf-sl-test)"; then
+    echo "  PASS: pending state renders tied shape (word 'pending' + '(wf-sl-test)')"
+else
+    echo "  FAIL: pending tied shape missing — cc-policy eval-state serialization"
+    echo "        may have drifted. output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Sub-check 2: ready_for_guardian state — must render both `ready` word AND `(wf-sl-test)`.
+policy evaluation set "wf-sl-test" "ready_for_guardian" --head-sha "abc123" >/dev/null
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "ready" && \
+   printf '%s' "$output" | grep -q "(wf-sl-test)"; then
+    echo "  PASS: ready state renders tied shape (word 'ready' + '(wf-sl-test)')"
+else
+    echo "  FAIL: ready tied shape missing — cc-policy eval-state serialization"
+    echo "        may have drifted. output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Test 8: active agent renders ⚡<role> in HUD
 # ---------------------------------------------------------------------------
 echo ""
