@@ -820,3 +820,91 @@ def test_handoff_tip_agreement_invariant_scanner_finds_claim_phrases() -> None:
             f"phrasing: {claim!r}. Update _TIP_CLAIM_PATTERN to cover the "
             "new phrasing, or keep the handoff doc using existing phrasings."
         )
+
+
+# ---------------------------------------------------------------------------
+# A27: branch-precondition contract pinned in the supervisor prompt
+# ---------------------------------------------------------------------------
+# Context: the Branch-Precondition Drift class in
+# ClauDEX/SUPERVISOR_HANDOFF.md recorded multiple slices (A5-class) that
+# were authored against A-branch state but executed on soak
+# `claudesox-local`, producing false-premise findings when the implementer
+# tried to apply the described patch. The A5R planner deliverable §1
+# (re-read target files on the live branch, assert pre-slice state BEFORE
+# issuing the scope manifest) was the working recovery pattern. A27
+# promotes that pattern from one-slice recovery into a mandatory dispatch
+# contract in the supervisor prompt and mechanically pins the contract so
+# future prompt drift surfaces as a test failure rather than as another
+# class-of-defect recurrence.
+# ---------------------------------------------------------------------------
+
+
+_SUPERVISOR_PROMPT_PATH = REPO_ROOT / ".codex" / "prompts" / "claudex_supervisor.txt"
+
+# Canonical phrase tokens that MUST appear in the supervisor prompt's
+# branch-precondition contract clause. Each token names one of the three
+# required elements (target branch / expected HEAD / precondition
+# verification) plus a header anchor so the clause itself is discoverable
+# by phrase-search. Phrasings are narrow enough to fail on meaningful
+# rewording but tolerant of whitespace variation.
+_BRANCH_PRECONDITION_REQUIRED_TOKENS: tuple[str, ...] = (
+    "Branch-precondition contract",
+    "target branch identity",
+    "expected HEAD SHA",
+    "precondition-verification deliverable",
+    "re-read the target file",
+    "assert the pre-slice state",
+    "BEFORE issuing the scope manifest",
+)
+
+
+def test_supervisor_prompt_carries_branch_precondition_contract() -> None:
+    """A27 invariant: `.codex/prompts/claudex_supervisor.txt` MUST pin the
+    branch-precondition contract clause naming all three required elements
+    (target branch identity, expected HEAD SHA, precondition-verification
+    deliverable) for every new bounded implementation slice.
+
+    This closes the Branch-Precondition Drift class documented in
+    `ClauDEX/SUPERVISOR_HANDOFF.md` where A5-class slices were authored
+    against A-branch line numbers but executed on soak `claudesox-local`,
+    producing false-premise findings. The clause was a recovery pattern
+    (A5R §1); A27 promotes it to a mandatory dispatch contract so future
+    prompt drift surfaces here as a failing test rather than as another
+    recurrence of the defect class.
+    """
+    assert _SUPERVISOR_PROMPT_PATH.exists(), (
+        f"supervisor prompt missing at {_SUPERVISOR_PROMPT_PATH}; the A27 "
+        "branch-precondition contract invariant cannot verify its anchors."
+    )
+    text = _SUPERVISOR_PROMPT_PATH.read_text(encoding="utf-8")
+
+    missing: list[str] = []
+    for token in _BRANCH_PRECONDITION_REQUIRED_TOKENS:
+        if token not in text:
+            missing.append(token)
+    assert not missing, (
+        f"A27 branch-precondition contract drift: "
+        f"{_SUPERVISOR_PROMPT_PATH.relative_to(REPO_ROOT)} is missing required "
+        f"token(s) {missing!r}. The supervisor prompt MUST pin the "
+        "branch-precondition contract clause naming target branch identity, "
+        "expected HEAD SHA, and a precondition-verification deliverable that "
+        "re-reads target files on the live branch BEFORE the scope manifest "
+        "is issued. If the clause has been intentionally reworded, update "
+        "the token list above in lockstep."
+    )
+
+
+def test_supervisor_prompt_branch_precondition_names_mandatory_discipline() -> None:
+    """A27 counterpart pin: the contract clause must be phrased as a hard
+    MANDATORY requirement, not advisory. A prompt that softens the clause
+    to "consider including" or "optionally" bypasses the defect closure
+    silently.
+    """
+    text = _SUPERVISOR_PROMPT_PATH.read_text(encoding="utf-8")
+    assert "MANDATORY" in text, (
+        f"{_SUPERVISOR_PROMPT_PATH.relative_to(REPO_ROOT)} must phrase the "
+        "branch-precondition contract as MANDATORY (or equivalently-strong "
+        "language). An advisory-only phrasing silently reopens the Branch-"
+        "Precondition Drift class. If the discipline word was intentionally "
+        "softened, update this invariant in lockstep and document why."
+    )

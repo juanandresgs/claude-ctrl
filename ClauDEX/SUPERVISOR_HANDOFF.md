@@ -1492,13 +1492,27 @@ The supervisor loop must keep Codex in charge of the live bridge session.
 - The `Stop` hook and `wait_for_codex_review()` exist specifically so Codex
   returns to a blocking review state instead of falling out of the loop.
 
-## Open Soak Issues — Branch-Precondition Drift (2026-04-18)
+## Open Soak Issues — Branch-Precondition Drift (2026-04-18) — RESOLVED by A27 (mechanical contract pin)
 
 **Issue class:** dispatch-slice premises assumed A-branch state but were executed on soak branch `claudesox-local`. Symptom: "fix X on file Y" slices arrive scoped against A-branch line numbers, but soak's Y has pre-existing edits or different content, producing false-premise findings when the implementer tries to apply the described patch.
 
 **Repro (concrete):** slice A5 (dispatch_contract.py adapter collapse) targeted A-branch HEAD. On A-branch tip `aef51ae`, `runtime/core/dispatch_contract.py` does NOT exist (never landed on that branch). On soak HEAD `86795d0`, the same file carried standalone `STAGE_SUBAGENT_TYPES` + `_SUBAGENT_TYPE_ALIASES` declarations (lines 61 and 72), requiring a soak-specific re-execution (A5R). A1 (frozenset retirement in `agent_contract_required.py`) landed only on A-branch; soak still has the frozensets. Following A5R, A6 must merge A1 semantics to soak before any slice that depends on frozenset retirement.
 
-**Suggested fix:** every slice dispatch context must carry (1) the **target branch** explicitly in the planner's mission (A-branch vs soak), (2) the expected **HEAD SHA** the slice was authored against, and (3) a **precondition-verification deliverable** that re-reads the target file(s) on the live branch and asserts the pre-slice state BEFORE issuing the scope manifest. A5R's planner deliverable §1 did exactly this and found no false premise; earlier slices that skipped §1 produced the drift.
+**Original suggested fix (pre-A27, recovery pattern):** every slice dispatch context must carry (1) the **target branch** explicitly in the planner's mission (A-branch vs soak), (2) the expected **HEAD SHA** the slice was authored against, and (3) a **precondition-verification deliverable** that re-reads the target file(s) on the live branch and asserts the pre-slice state BEFORE issuing the scope manifest. A5R's planner deliverable §1 did exactly this and found no false premise; earlier slices that skipped §1 produced the drift.
+
+**Fix landed (A27, 2026-04-18) — mechanical contract pin:** promoted the recovery pattern to a mandatory dispatch contract clause in `.codex/prompts/claudex_supervisor.txt`. New "Branch-precondition contract (MANDATORY for every new bounded implementation slice)" bullet under the primary mandate names all three required elements verbatim (target branch identity, expected HEAD SHA, precondition-verification deliverable with `re-read the target file(s) on the live branch` + `assert the pre-slice state BEFORE issuing the scope manifest`) and explicitly says "If any of the three elements is missing, do not dispatch — request the missing premise first." Paired with two invariant tests in `tests/runtime/test_handoff_artifact_path_invariants.py`:
+- `test_supervisor_prompt_carries_branch_precondition_contract` — phrase-anchor scan asserting seven canonical tokens are present (`Branch-precondition contract`, `target branch identity`, `expected HEAD SHA`, `precondition-verification deliverable`, `re-read the target file`, `assert the pre-slice state`, `BEFORE issuing the scope manifest`).
+- `test_supervisor_prompt_branch_precondition_names_mandatory_discipline` — counterpart pin asserting the word `MANDATORY` is present in the prompt, so a future softening to "consider including" / "optionally" fails loudly rather than silently reopening the defect class.
+
+**Effect:** any future supervisor-prompt edit that silently drops the three-element contract or softens it to advisory language will fail `pytest tests/runtime/test_handoff_artifact_path_invariants.py` at Guardian preflight. The recovery pattern is no longer operator-memory; it is test-enforced.
+
+**Deliberately NOT mechanized here:** a per-dispatch runtime check that the Agent tool call contract includes the three elements. That would require a new policy surface; the prompt-level pin is the bounded scope for A27 and produces the same practical outcome for supervisor-driven dispatches.
+
+**Verification (A27 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_braid_v2.py` — both A27 invariants pass on HEAD; the pre-existing 26 tests still pass.
+
+**Blocking?** No — class-of-defect closure. The recovery pattern (A5R §1) remains the operational contract; A27 makes it impossible to silently omit from future dispatches.
+
+**Decision annotation:** none (scoped invariant guarding an existing prompt discipline; no new architectural decision node).
 
 ### Forged/partial CLAUDEX_CONTRACT_BLOCK bypass class — RESOLVED by Slice A8 (2026-04-17)
 
