@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT_DIR="$(cd "$(dirname -- "$0")" && pwd)"
+# Use BASH_SOURCE[0] so the correct directory is resolved whether the script
+# is executed directly or sourced (e.g., for unit testing with the
+# CLAUDEX_BRIDGE_UP_SOURCED_ONLY guard).
+SCRIPT_DIR="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/claudex-common.sh"
 BRAID_ROOT="${BRAID_ROOT:-${ROOT}/.b2r}"
 AUTO_SUBMIT_SCRIPT="${ROOT}/scripts/claudex-auto-submit.sh"
@@ -21,6 +24,72 @@ BROKER_PID_FILE="${STATE_DIR}/braidd.pid"
 TMUX_TARGET=""
 CODEX_TARGET=""
 START_DAEMON=1
+
+# _claudex_start_broker: launch braidd, wait for readiness, persist PID.
+#
+# Reads globals: BRAID_ROOT, BROKER_SOCK, BROKER_PID_FILE, PID_DIR.
+# Sets globals:  BROKER_PID (the launched process PID), BROKER_READY.
+# Returns 0; the caller must check BROKER_READY and handle the non-ready case.
+#
+# Design: this block is a named helper so that tests can source the script
+# with CLAUDEX_BRIDGE_UP_SOURCED_ONLY=1 and invoke _claudex_start_broker
+# directly using a fake-node shim, without running bootstrap.sh or tmux.
+# The CLAUDEX_BRIDGE_UP_SOURCED_ONLY guard below prevents main-body execution
+# when sourced; only the function definitions are loaded.
+_claudex_start_broker() {
+  # Stale-pid and stale-socket cleanup: always remove prior state before
+  # launching a new broker instance. This is the canonical cleanup path.
+  if [[ -f "$BROKER_PID_FILE" ]]; then
+    OLD_BROKER_PID="$(tr -d '[:space:]' < "$BROKER_PID_FILE" || true)"
+    if [[ -n "$OLD_BROKER_PID" ]] && kill -0 "$OLD_BROKER_PID" 2>/dev/null; then
+      kill "$OLD_BROKER_PID" 2>/dev/null || true
+      sleep 0.5
+    fi
+    rm -f "$BROKER_PID_FILE"
+  fi
+  rm -f "$BROKER_SOCK"
+
+  nohup node "${BRAID_ROOT}/braidd.mjs" --socket "$BROKER_SOCK" >>"${PID_DIR}/broker.log" 2>&1 &
+  BROKER_PID="$!"
+
+  BROKER_READY=0
+  for _i in 1 2 3 4 5 6; do
+    sleep 0.5
+    if [[ -S "$BROKER_SOCK" ]]; then
+      BROKER_READY=1
+      break
+    fi
+    if ! kill -0 "$BROKER_PID" 2>/dev/null; then
+      break
+    fi
+  done
+
+  # @decision DEC-GS1-B-BROKER-PID-PERSIST-001
+  # Title: bridge-up is the canonical writer for braidd.pid at launch time
+  # Status: accepted
+  # Rationale: bridge-up captures BROKER_PID=$! at broker launch above
+  #   and waits for socket readiness before proceeding. Writing the PID only
+  #   after BROKER_READY=1 ensures no stale-pid-file scenario: if the broker
+  #   never binds the socket we return without writing and the caller exits 1.
+  #   Atomic write (.tmp + mv) prevents a concurrent reader (watchdog,
+  #   bridge-status) from ever seeing a partial file. watchdog remains the
+  #   canonical writer at adoption/re-launch time; bridge-up is canonical at
+  #   initial launch time. No parallel authority: the stale-pid cleanup above
+  #   removes any prior file before launch, and this write restores authority
+  #   exactly once per successful launch.
+  #   Chain: bridge-up → braidd.pid → watchdog / bridge-status consumers.
+  if [[ "$BROKER_READY" -eq 1 ]]; then
+    printf '%s\n' "$BROKER_PID" > "${BROKER_PID_FILE}.tmp" && mv -f "${BROKER_PID_FILE}.tmp" "$BROKER_PID_FILE"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Guard: if CLAUDEX_BRIDGE_UP_SOURCED_ONLY=1 the caller only wants the
+# function definitions above (for unit testing). Skip main-body execution.
+# ---------------------------------------------------------------------------
+if [[ "${CLAUDEX_BRIDGE_UP_SOURCED_ONLY:-0}" == "1" ]]; then
+  return 0 2>/dev/null || true
+fi
 
 usage() {
   cat <<EOF
@@ -94,30 +163,7 @@ fi
 
 mkdir -p "$PID_DIR"
 
-if [[ -f "$BROKER_PID_FILE" ]]; then
-  OLD_BROKER_PID="$(tr -d '[:space:]' < "$BROKER_PID_FILE" || true)"
-  if [[ -n "$OLD_BROKER_PID" ]] && kill -0 "$OLD_BROKER_PID" 2>/dev/null; then
-    kill "$OLD_BROKER_PID" 2>/dev/null || true
-    sleep 0.5
-  fi
-  rm -f "$BROKER_PID_FILE"
-fi
-rm -f "$BROKER_SOCK"
-
-nohup node "${BRAID_ROOT}/braidd.mjs" --socket "$BROKER_SOCK" >>"${PID_DIR}/broker.log" 2>&1 &
-BROKER_PID="$!"
-
-BROKER_READY=0
-for _i in 1 2 3 4 5 6; do
-  sleep 0.5
-  if [[ -S "$BROKER_SOCK" ]]; then
-    BROKER_READY=1
-    break
-  fi
-  if ! kill -0 "$BROKER_PID" 2>/dev/null; then
-    break
-  fi
-done
+_claudex_start_broker
 
 if [[ "$BROKER_READY" -ne 1 ]]; then
   echo "Bridge broker failed to start cleanly." >&2
