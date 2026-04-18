@@ -1055,8 +1055,10 @@ expire_stale_dispatch_attempts() {
   if [[ ! -f "$RUNTIME_CLI" ]]; then
     return 0
   fi
+  local runtime_python
+  runtime_python="$(claudex_runtime_python)" || return 0
   local result expired
-  result=$(CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_CLI" dispatch attempt-expire-stale 2>/dev/null) || return 0
+  result=$(CLAUDE_POLICY_DB="$db" "$runtime_python" "$RUNTIME_CLI" dispatch attempt-expire-stale 2>/dev/null) || return 0
   expired=$(printf '%s' "$result" | jq -r '.expired // 0' 2>/dev/null || echo 0)
   if [[ "$expired" =~ ^[0-9]+$ ]] && (( expired > 0 )); then
     log "expired ${expired} stale dispatch attempt(s)"
@@ -1066,7 +1068,7 @@ expire_stale_dispatch_attempts() {
   # with past-grace terminal attempts as dead, cascade-closes their
   # supervision_threads, and transitions every-seat-terminal sessions to
   # completed / dead.  Best-effort — failures must never block the tick.
-  CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_CLI" dispatch sweep-dead >/dev/null 2>&1 || true
+  CLAUDE_POLICY_DB="$db" "$runtime_python" "$RUNTIME_CLI" dispatch sweep-dead >/dev/null 2>&1 || true
 }
 
 watchdog_tick() {
