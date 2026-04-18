@@ -241,9 +241,30 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 7c: review indicator — codex review ALLOW renders in HUD (DEC-SL-160)
+#
+# A42 stabilization: the `last_review` snapshot projection uses a strict
+# `events.created_at > evaluation_state.updated_at` SQL filter (runtime/
+# core/statusline.py:312) to prevent a review from a previous eval cycle
+# carrying forward when a same-second eval reset happens (Bug #2 fix).
+# Tests 6/7 above set evaluation_state at second tick T; the
+# `codex_stop_review` event below was previously emitted in the SAME
+# second, so the strict `>` filter dropped the event and the snapshot
+# returned `reviewed=False`, producing the fallback HUD and a failed
+# Test 7c. Root cause reproduced deterministically: no-sleep = 4/5 FAIL;
+# 1s-sleep = 5/5 PASS across isolated-DB repro runs.
+#
+# Fix is scenario-harness-local: force a second-tick boundary between
+# the last evaluation_state write and the review event emit. 1-second
+# sleep is the minimum that guarantees a monotonic SQLite `CURRENT_TIMESTAMP`
+# advance in the worst case. The strict `>` semantic in statusline.py
+# remains intentional and correct; only the scenario timing was racy.
 # ---------------------------------------------------------------------------
 echo ""
 echo "-- 7c: review indicator — ALLOW review renders in HUD"
+
+# A42: second-tick separator — ensures codex_stop_review.created_at strictly
+# postdates the most recent evaluation_state.updated_at (set by Test 7).
+sleep 1
 
 policy event emit "codex_stop_review" --detail "VERDICT: ALLOW — workflow=wf-sl-test | looks good" >/dev/null
 

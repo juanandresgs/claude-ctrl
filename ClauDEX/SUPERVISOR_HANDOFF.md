@@ -420,6 +420,63 @@ authorisation either.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
 
+### A42 Test 7c flake — same-second race root-caused and stabilized (2026-04-18) — RESOLVED
+
+- **Subject:** closes the A41R-narrowed Test 7c flakiness residual. Root cause deterministically reproduced; fix is scoped to the scenario harness; stabilization verified across 10 consecutive scenario runs (10/10 Test 7c PASS, 10/10 Test 10 PASS, 10/10 Test 7d both-sub-checks PASS).
+- **Root cause (same-second race, deterministic):** `runtime/core/statusline.py::snapshot` constructs the `last_review` section with this SQL:
+  ```sql
+  SELECT source, detail, created_at
+  FROM   events
+  WHERE  type = 'codex_stop_review'
+    AND  created_at > ?          -- strict >, intentional (Bug #2 fix)
+    AND  detail LIKE '%' || ? || '%'
+  ORDER  BY id DESC
+  LIMIT  1
+  ```
+  The bind parameter is `evaluation_state.updated_at` for the current workflow (statusline.py:303-318). The **strict `>`** is intentional (documented at statusline.py:281-283: *"Strict greater-than (created_at > updated_at) prevents same-second eval resets from retaining a stale review (Bug #2 fix)."*). In the scenario, Tests 6 and 7 set `evaluation_state` to `pending` then `ready_for_guardian` at second tick `T`. Test 7c immediately emits `codex_stop_review` in the **same second `T`**; the event's `created_at == T`, so `created_at > T` is FALSE → the row is filtered out → `last_review.reviewed = False` → `statusline.sh`'s `review_reviewed != "true"` skips the review indicator → no "codex" token in the HUD (combined with `_cc statusline snapshot` falling back for the Line-1 workspace path under certain race conditions) → Test 7c `grep -q "codex"` fails.
+- **Reproduction (deterministic, isolated-DB, pre-A42 fix):**
+  ```
+  run 1 no-sleep:  reviewed=False
+  run 2 no-sleep:  reviewed=False
+  run 3 no-sleep:  reviewed=False
+  run 4 no-sleep:  reviewed=False
+  run 5 no-sleep:  reviewed=True     ← occasional pass when second boundary
+                                       happened to fall between eval-set and
+                                       event-emit
+  — versus —
+  run 1 1s-sleep:  reviewed=True
+  run 2 1s-sleep:  reviewed=True
+  run 3 1s-sleep:  reviewed=True
+  run 4 1s-sleep:  reviewed=True
+  run 5 1s-sleep:  reviewed=True
+  ```
+  The pre-A42 scenario was racing the wall-clock second boundary.
+- **Fix applied (A42, scenario-harness-local, minimal):** single `sleep 1` statement inserted in `tests/scenarios/test-statusline-render.sh` immediately before Test 7c's `policy event emit "codex_stop_review" ...`. An accompanying inline comment block (~15 lines) documents the root cause, the strict `>` SQL filter's intent, the deterministic reproduction numbers, and why the fix belongs in the scenario rather than in the runtime. **No runtime / hook / script behavior changes.** The strict `>` filter in `runtime/core/statusline.py` remains intentional and correct — the scenario was racy, not the runtime.
+- **Why the fix belongs in the harness, not the runtime:** the `created_at > updated_at` strict filter is load-bearing for a documented production invariant (Bug #2: "prevents same-second eval resets from retaining a stale review"). Loosening the filter to `>=` would re-open that bug. In production, `codex_stop_review` events arrive via `.codex/hooks/stop-review-gate-hook.mjs` after Codex processes a response (typically many seconds of thinking/tool-call latency), so same-second races are nearly impossible under real operation — only synthetic scenario tests that chain commands in sub-second succession hit the race. The scenario harness is therefore the correct repair surface.
+- **Stabilization verification (required >=10 runs):**
+  ```
+  run  1: 7c=PASS 10=PASS 7d=2/2
+  run  2: 7c=PASS 10=PASS 7d=2/2
+  run  3: 7c=PASS 10=PASS 7d=2/2
+  run  4: 7c=PASS 10=PASS 7d=2/2
+  run  5: 7c=PASS 10=PASS 7d=2/2
+  run  6: 7c=PASS 10=PASS 7d=2/2
+  run  7: 7c=PASS 10=PASS 7d=2/2
+  run  8: 7c=PASS 10=PASS 7d=2/2
+  run  9: 7c=PASS 10=PASS 7d=2/2
+  run 10: 7c=PASS 10=PASS 7d=2/2
+
+  Aggregate across 10 runs:
+    Test 7c : 10 PASS / 0 FAIL      (was ~50/50 pre-A42)
+    Test 10 : 10 PASS / 0 FAIL      (A41R stable, unchanged)
+    Test 7d : 10 PASS (both subs)   (A40 invariant, unchanged)
+  ```
+  Full-scenario totals on a representative run: **26 PASS / 0 FAIL**, script exits cleanly.
+- **Pytest verification (required, exact):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_current_lane_state_invariants.py` → 55 passed. `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed unfiltered.
+- **Residual risk (narrow, documented):** none specific to Test 7c. The `sleep 1` adds 1 second to scenario runtime (negligible). If a future scenario extension chains `evaluation_state` writes before new review events without considering the strict `>` filter, the same race could recur — the A42 inline comment block in the scenario explains the pattern so future authors spot it.
+- **Blocking?** No — class-of-defect closure. Test 7c is now stable 10/10 PASS; A40/A41R/A42 statusline-gate trio is fully green on HEAD.
+- **Decision annotation:** none (scoped scenario-harness repair tied to a documented runtime invariant; no architectural change).
+
 ### A41R statusline scenario baseline — Test 10 fixed, Test 7c flakiness narrowed (2026-04-18) — RESOLVED (Test 10); PARTIAL (Test 7c observed flake, narrowed residual)
 
 - **Subject (A41R is the narrowed re-dispatch of the A41 slice that precondition-failed):** A41 targeted "Tests 7c + 10 baseline reconciliation" based on the A40 entry's claim that both were pre-existing FAIL. Live-branch re-verification during A41's precondition check showed Test 7c actually passed in canonical sequential execution. The A41 scope assumption was therefore partially incorrect. A41R narrows scope to the real failing surface (Test 10, stable FAIL) and corrects the stale A40 prose about Test 7c. Investigating Test 7c during A41R precondition capture revealed genuine flakiness (not a stable FAIL) — documented as a narrowed residual here.
