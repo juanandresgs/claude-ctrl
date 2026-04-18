@@ -1524,18 +1524,46 @@ def test_a36_published_chain_scanner_exercises_canonical_shapes() -> None:
 #   - `R`          (recovery / re-seat slice; e.g., A19R, A21R)
 #   - `-followup`  (embedded tip-claim update within the parent slice's bullet)
 # Both suffix forms preserve the primary integer for monotonic comparison.
-_CHAIN_A_ID_RE = re.compile(r"\bA(\d+)(R)?(-followup)?\b")
-# Matches `post-A<N>[<suffix>]` in the Next-bounded lane-truth paragraph.
-_LANE_TRUTH_POST_A_RE = re.compile(r"\bpost-A(\d+)(R)?\b")
+#
+# @decision DEC-HANDOFF-INVARIANT-GS1-EXT-001
+# Title: GS1 commit-naming scheme accepted alongside A-series in chain invariants
+# Status: active
+# Rationale: Post-GS1 lane maintenance introduced a new commit-naming convention
+# (GS1-<letter>[-<n>]) for global-soak stabilization fixes that sit after the
+# A-series but before the next planned cutover phase. Both terminal-marker
+# schemes are valid for `post-<ID> push \`<sha>\`` narratives. The A-series
+# chain ordering and final-ID alignment invariants (A37) are extended to accept
+# GS1 identifiers using a sentinel primary (10000) that preserves monotonicity
+# after A58 without breaking any existing A-series behavior or scanner tests.
+# GS1 entries use suffix strings of the form "GS1-<letter>[-<n>]" so the
+# alignment check can compare full identifiers when both chain terminal and
+# lane-truth marker are GS1-type.
+_CHAIN_A_ID_RE = re.compile(
+    r"\b(?:A(\d+)(R)?(-followup)?|GS1-([A-Za-z]+)(?:-(\d+))?)\b"
+)
+# Matches `post-A<N>[<suffix>]` or `post-GS1-<letter>[-<n>]` in the
+# Next-bounded lane-truth paragraph.
+_LANE_TRUTH_POST_A_RE = re.compile(
+    r"\b(?:post-A(\d+)(R)?|post-GS1-([A-Za-z]+)(?:-(\d+))?)\b"
+)
 
 
 def _extract_chain_a_ids(chain_body: str) -> list[tuple[int, str]]:
     """Walk each backtick-wrapped short SHA in `chain_body`; for each,
     scan forward (up to the next short SHA) for the FIRST A-identifier
-    match. Return a list of `(primary_int, suffix_str)` tuples in chain
-    order.
+    or GS1-identifier match. Return a list of `(primary_int, suffix_str)`
+    tuples in chain order.
 
-    suffix_str is one of: "" (bare `A<N>`), "R" (recovery), "-followup".
+    For A-series entries:
+      suffix_str is one of: "" (bare `A<N>`), "R" (recovery), "-followup".
+      primary_int is the numeric A-series integer.
+
+    For GS1 entries (DEC-HANDOFF-INVARIANT-GS1-EXT-001):
+      primary_int is the sentinel value 10000 (greater than any A-series
+      number, preserving monotonicity after A58).
+      suffix_str encodes the full GS1 identifier, e.g. "GS1-F-2", so the
+      alignment check in A37 can compare full identifiers when both the
+      chain terminal and the lane-truth marker are GS1-type.
     """
     # Find every hash occurrence (start offset + length).
     hash_matches = list(_BACKTICK_SHORT_SHA_RE.finditer(chain_body))
@@ -1552,16 +1580,31 @@ def _extract_chain_a_ids(chain_body: str) -> list[tuple[int, str]]:
             # silently.
             results.append((-1, "<no A-id found>"))
             continue
-        primary = int(m.group(1))
-        suffix = m.group(2) or m.group(3) or ""
-        results.append((primary, suffix))
+        if m.group(4) is not None:
+            # GS1 branch: groups 4=letter, 5=optional-n
+            letter = m.group(4)
+            n = m.group(5)
+            gs1_id = f"GS1-{letter}" + (f"-{n}" if n else "")
+            results.append((10000, gs1_id))
+        else:
+            # A-series branch: groups 1=primary, 2=R-suffix, 3=-followup
+            primary = int(m.group(1))
+            suffix = m.group(2) or m.group(3) or ""
+            results.append((primary, suffix))
     return results
 
 
 def _extract_post_a_marker(text: str) -> tuple[int, str]:
-    """Return (primary_int, suffix_str) of the `post-A<N>[<suffix>]` marker
-    in the `## Next bounded cutover slice` "Current lane truth" paragraph.
-    Returns (-1, "") when no marker is found.
+    """Return (primary_int, suffix_str) of the `post-A<N>[<suffix>]` or
+    `post-GS1-<letter>[-<n>]` marker in the `## Next bounded cutover slice`
+    "Current lane truth" paragraph. Returns (-1, "") when no marker is found.
+
+    For A-series markers: primary_int is the numeric A-series integer;
+    suffix_str is "" or "R".
+
+    For GS1 markers (DEC-HANDOFF-INVARIANT-GS1-EXT-001): primary_int is
+    the sentinel 10000; suffix_str is the full GS1 identifier (e.g.
+    "GS1-F-2") so the A37 alignment check can compare full identifiers.
     """
     nb_start = text.find("\n## Next bounded cutover slice")
     if nb_start == -1:
@@ -1573,6 +1616,13 @@ def _extract_post_a_marker(text: str) -> tuple[int, str]:
     m = _LANE_TRUTH_POST_A_RE.search(section)
     if m is None:
         return (-1, "")
+    if m.group(3) is not None:
+        # GS1 branch: groups 3=letter, 4=optional-n
+        letter = m.group(3)
+        n = m.group(4)
+        gs1_id = f"GS1-{letter}" + (f"-{n}" if n else "")
+        return (10000, gs1_id)
+    # A-series branch: groups 1=primary, 2=R-suffix
     return (int(m.group(1)), m.group(2) or "")
 
 
@@ -1624,37 +1674,59 @@ def test_published_chain_a_series_ids_are_monotonic_non_decreasing() -> None:
 
 
 def test_published_chain_final_a_id_matches_lane_truth_post_a_marker() -> None:
-    """A37 alignment invariant: the highest primary A-number in the
-    published-chain block must equal the `post-A<N>[<suffix>]` marker in
-    the `## Next bounded cutover slice` "Current lane truth" paragraph.
+    """A37 alignment invariant: the highest primary identifier in the
+    published-chain block must equal the `post-A<N>[<suffix>]` or
+    `post-GS1-<letter>[-<n>]` marker in the `## Next bounded cutover
+    slice` "Current lane truth" paragraph.
 
     This catches the class where the chain was extended to a new slice
     but the surrounding lane-truth narrative still claims an older
     post-A<N> marker. A26 tip-agreement verifies hash agreement between
     the two snapshot sections; A37 adds label-level agreement for the
     slice identity.
+
+    GS1 entries (DEC-HANDOFF-INVARIANT-GS1-EXT-001): when the chain
+    terminal is a GS1 entry (primary sentinel=10000), both the chain
+    terminal suffix and the marker suffix must encode the same full GS1
+    identifier (e.g. "GS1-F-2"). The sentinel-equality check confirms
+    both sides are GS1-type; the suffix-equality check confirms they
+    name the same GS1 slice.
     """
     text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
     chain_body, _ = _extract_published_chain_block(text)
     a_ids = _extract_chain_a_ids(chain_body)
-    primaries = [p for p, _ in a_ids if p >= 0]
-    assert primaries, "A37: no classifiable A-ids in the chain block"
-    chain_highest = max(primaries)
+    classifiable = [(p, s) for p, s in a_ids if p >= 0]
+    assert classifiable, "A37: no classifiable A-ids in the chain block"
+    chain_highest = max(p for p, _ in classifiable)
+    # When multiple entries share the highest primary (possible for GS1
+    # sentinel=10000), the terminal suffix is the last one in chain order.
+    chain_terminal_suffix = next(
+        s for p, s in reversed(classifiable) if p == chain_highest
+    )
 
     marker_primary, marker_suffix = _extract_post_a_marker(text)
     assert marker_primary >= 0, (
         "A37: `## Next bounded cutover slice` does not carry a "
-        "`post-A<N>` marker in its lane-truth paragraph. If the "
-        "wording was intentionally changed, update "
-        "`_LANE_TRUTH_POST_A_RE` in lockstep."
+        "`post-A<N>` or `post-GS1-<letter>[-<n>]` marker in its "
+        "lane-truth paragraph. If the wording was intentionally changed, "
+        "update `_LANE_TRUTH_POST_A_RE` in lockstep."
     )
     assert chain_highest == marker_primary, (
-        f"A37 chain/lane-truth mismatch: chain's highest A-primary is "
-        f"A{chain_highest}; Next-bounded lane-truth marker names "
-        f"`post-A{marker_primary}{marker_suffix}`. When a new slice lands, "
-        "update BOTH the chain enumeration and the `post-A<N>` marker in "
-        "the same edit so A37 stays green."
+        f"A37 chain/lane-truth mismatch: chain's highest primary sentinel "
+        f"is {chain_highest} (terminal={chain_terminal_suffix!r}); "
+        f"Next-bounded lane-truth marker primary is {marker_primary} "
+        f"(suffix={marker_suffix!r}). When a new slice lands, update BOTH "
+        "the chain enumeration and the post-<ID> marker in the same edit "
+        "so A37 stays green."
     )
+    # For GS1 entries: also verify that both sides name the same GS1 id.
+    if chain_highest == 10000:
+        assert chain_terminal_suffix == marker_suffix, (
+            f"A37 GS1 id mismatch: chain terminal is {chain_terminal_suffix!r} "
+            f"but lane-truth marker names {marker_suffix!r}. Both must agree "
+            "on the full GS1 identifier (e.g. 'GS1-F-2') so the slice identity "
+            "is unambiguous."
+        )
 
 
 def test_a37_chain_ordering_scanner_exercises_canonical_shapes() -> None:
