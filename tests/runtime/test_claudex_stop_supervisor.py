@@ -30,6 +30,12 @@ def seed_prompt(repo: Path, text: str = "supervisor prompt text") -> None:
     (prompt_path / "claudex_supervisor.txt").write_text(text)
 
 
+def seed_stop_loop_prompt(repo: Path, text: str = "stop-loop prompt text") -> None:
+    prompt_path = repo / ".codex" / "prompts"
+    prompt_path.mkdir(parents=True, exist_ok=True)
+    (prompt_path / "claudex_stop_loop.txt").write_text(text)
+
+
 def seed_active_run(
     runs_dir: Path,
     *,
@@ -218,10 +224,10 @@ def test_stop_hook_rearms_from_pending_review_even_if_state_is_idle(tmp_path):
     assert payload["reason"] == "review artifact exists"
 
 
-def test_stop_hook_allows_stop_for_consumed_pending_review(tmp_path):
+def test_stop_hook_keeps_session_alive_for_consumed_pending_review(tmp_path):
     repo = tmp_path / "repo"
     init_git_repo(repo)
-    seed_prompt(repo, "should not be used after consumed review")
+    seed_prompt(repo, "keep supervising after delivered review")
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     seed_active_run(runs_dir, state="waiting_for_codex")
@@ -231,7 +237,28 @@ def test_stop_hook_allows_stop_for_consumed_pending_review(tmp_path):
     result = run_stop_hook(repo, runs_dir)
     payload = json.loads(result.stdout)
 
-    assert payload == {"continue": False}
+    assert payload["decision"] == "block"
+    assert payload["reason"] == "keep supervising after delivered review"
+
+
+def test_stop_hook_composes_supervisor_and_stop_loop_prompts(tmp_path):
+    repo = tmp_path / "repo"
+    init_git_repo(repo)
+    seed_prompt(repo, "supervisor contract")
+    seed_stop_loop_prompt(repo, "stop-loop supplement")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    seed_active_run(runs_dir, state="queued")
+
+    result = run_stop_hook(repo, runs_dir)
+    payload = json.loads(result.stdout)
+
+    assert payload["decision"] == "block"
+    assert payload["reason"] == (
+        "supervisor contract\n\n"
+        "Stop-hook continuation supplement:\n"
+        "stop-loop supplement"
+    )
 
 
 def test_stop_hook_allows_stop_when_dispatch_is_marked_stalled(tmp_path):
@@ -316,7 +343,21 @@ def test_stop_hook_honors_lane_local_dispatch_stall_via_state_dir(tmp_path):
     assert payload == {"continue": False}
 
 
+_SUPERVISOR_PROMPT = REPO_ROOT / ".codex" / "prompts" / "claudex_supervisor.txt"
 _STOP_LOOP_PROMPT = REPO_ROOT / ".codex" / "prompts" / "claudex_stop_loop.txt"
+
+
+class TestSupervisorPromptInvariants:
+    def test_dirty_baseline_is_not_a_stop_condition(self):
+        text = _SUPERVISOR_PROMPT.read_text(encoding="utf-8")
+        assert "pre-existing dirty baseline as expected local context" in text, (
+            "claudex_supervisor.txt must treat the soak worktree's dirty baseline "
+            "as expected local context"
+        )
+        assert "ambiguity is irreconcilable" in text, (
+            "claudex_supervisor.txt must escalate dirty-baseline overlap only for "
+            "irreconcilable ambiguity"
+        )
 
 
 class TestStopLoopPromptInvariants:
@@ -331,4 +372,15 @@ class TestStopLoopPromptInvariants:
         text = _STOP_LOOP_PROMPT.read_text(encoding="utf-8")
         assert "Do NOT stop and re-arm" in text, (
             "claudex_stop_loop.txt must explicitly prohibit stop/re-arm churn"
+        )
+
+    def test_dirty_worktree_alone_is_not_terminal(self):
+        text = _STOP_LOOP_PROMPT.read_text(encoding="utf-8")
+        assert "dirty worktree alone is not a reason to stop" in text, (
+            "claudex_stop_loop.txt must explicitly treat a dirty worktree alone "
+            "as non-terminal"
+        )
+        assert "ambiguity is irreconcilable" in text, (
+            "claudex_stop_loop.txt must escalate dirty-baseline overlap only for "
+            "irreconcilable ambiguity"
         )

@@ -71,7 +71,7 @@ def active_run_status(runs_dir: Path):
 
     run_id = pointer.read_text().strip()
     if not run_id:
-      return None, None, None
+        return None, None, None
 
     run_dir = runs_dir / run_id
     run = read_json(run_dir / "run.json")
@@ -79,13 +79,38 @@ def active_run_status(runs_dir: Path):
     return run_id, run, status
 
 
+def review_matches_cursor(review, cursor) -> bool:
+    if review is None or cursor is None:
+        return False
+
+    review_instruction = str(review.get("instruction_id") or "").strip()
+    cursor_instruction = str(cursor.get("instruction_id") or "").strip()
+    if not review_instruction or review_instruction != cursor_instruction:
+        return False
+
+    review_completed_at = str(review.get("completed_at") or "").strip()
+    cursor_completed_at = str(cursor.get("completed_at") or "").strip()
+    if review_completed_at and cursor_completed_at:
+        return review_completed_at == cursor_completed_at
+    return True
+
+
 def continuation_prompt(root: Path) -> str:
     prompt_dir = root / ".codex" / "prompts"
-    for name in ("claudex_stop_loop.txt", "claudex_supervisor.txt"):
-        prompt_path = prompt_dir / name
-        if prompt_path.exists():
-            return prompt_path.read_text().strip()
-    raise FileNotFoundError("No Codex stop-loop prompt found in .codex/prompts")
+    supervisor_prompt = read_text(prompt_dir / "claudex_supervisor.txt")
+    stop_loop_prompt = read_text(prompt_dir / "claudex_stop_loop.txt")
+
+    if supervisor_prompt and stop_loop_prompt:
+        return (
+            f"{supervisor_prompt}\n\n"
+            "Stop-hook continuation supplement:\n"
+            f"{stop_loop_prompt}"
+        )
+    if supervisor_prompt:
+        return supervisor_prompt
+    if stop_loop_prompt:
+        return stop_loop_prompt
+    raise FileNotFoundError("No Codex supervisor prompt found in .codex/prompts")
 
 
 def main() -> int:
@@ -127,19 +152,14 @@ def main() -> int:
         if pending_run_id and pending_run_id != run_id:
             pending_review_json = None
 
-    # If the review artifact's (instruction_id, completed_at) already match the
-    # review cursor under the active run, Codex has acted on this review and
-    # does not need to be rearmed — regardless of bridge state.  The bridge may
-    # not have transitioned state yet, but there is no supervisor work to do.
     if pending_review_json is not None:
         cursor = read_json(runs_dir / run_id / "codex-review-cursor.json")
-        if (
-            cursor is not None
-            and cursor.get("instruction_id") == pending_review_json.get("instruction_id")
-            and cursor.get("completed_at") == pending_review_json.get("completed_at")
-        ):
-            print(json.dumps({"continue": False}))
-            return 0
+        if review_matches_cursor(pending_review_json, cursor):
+            # The review cursor records that the bridge already delivered this
+            # artifact to Codex. That suppresses duplicate "new review" logic,
+            # but it does NOT mean the supervisor lane is done. Keep the
+            # dedicated seat alive while the run itself remains active.
+            pending_review_json = None
 
     pending_review = pending_review_json is not None
     should_continue = state in {"queued", "inflight", "waiting_for_codex", "idle"} or pending_review

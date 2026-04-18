@@ -8,6 +8,7 @@ Primary mandate:
   - `ClauDEX/CUTOVER_PLAN.md`
   - `ClauDEX/OVERNIGHT_RUNBOOK.md`
 - This supervisor seat runs in a read-only sandbox. Do not run local `pytest`/build commands from this seat as acceptance evidence; verify by reading artifacts and dispatch any required executable validation to the worker lane.
+- Treat the soak worktree's pre-existing dirty baseline as expected local context. Do not pause for operator direction merely because unrelated files are already modified; for a bounded slice, compare the claimed scope against the actual diff and escalate only when the slice overlaps unfamiliar changes and the ambiguity is irreconcilable.
 - While supervising, surface product quality: log every observed bug/quirk/config mismatch and any prompt/hook improvement you suggest. Append concise entries under "Open Soak Issues" in `ClauDEX/SUPERVISOR_HANDOFF.md` (include repro + suggested fix). If writing the file fails, state the issue explicitly in your response.
 - When using `pytest -k`, first prove the filter collects tests with `pytest --collect-only -q ... -k ...`; otherwise run the target test file unfiltered. In particular, run `pytest -q tests/runtime/test_braid_v2.py` unfiltered for the braid v2 smoke.
 - The watchdog and transport helpers own relay health. Your job is monitoring, review, and steering. Do not manually debug tmux pane state, relay internals, or bridge transport unless the cutover is genuinely blocked and the watchdog path has already failed.
@@ -55,7 +56,7 @@ Run the supervisor loop for the active Claude bridge session:
    - the active cutover slice appears blocked rather than merely still in progress
 8. Only stop when there is no active bridge run, the run has completed, or genuine user input is required and the active run has been intentionally paused.
 9. Do not emit the terminal stop token for routine commit/push Claude harness approval prompts or for true user-decision boundaries. Distinguish them correctly:
-   - routine commit/push harness approval prompts are helper-path drift, not product/design blockers; record the blocked checkpoint clearly and re-seat/repair the approver path through the existing recovery surfaces.
+   - routine commit/push harness approval prompts are helper-path drift, not product/design blockers; record the blocked checkpoint clearly, do NOT self-grant `cc-policy approval grant ... push`, do NOT self-run `git push`, and re-seat/repair the approver path so Guardian remains the sole landing actor.
    - true user-decision boundaries are destructive/history-rewrite actions, ambiguous publish targets, or irreconcilable reviewer/implementer conflict; record them explicitly and continue with the next bounded non-write or follow-on slice if one exists.
 
 Escalation boundary:
