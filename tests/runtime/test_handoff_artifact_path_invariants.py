@@ -1486,3 +1486,220 @@ def test_a36_published_chain_scanner_exercises_canonical_shapes() -> None:
         f"A36 short-SHA extractor failed on embedded-hash bullet: "
         f"expected ['ffe0a83', 'c80ce6c', '519a5f4'], got {hashes!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# A37: published-chain A-series ordering/label invariant
+# ---------------------------------------------------------------------------
+# Context: A36 closed chain-count drift but explicitly disclaimed ordering
+# and label text. A reordered or mislabeled chain would still pass A36
+# (cardinality unchanged). A37 closes the narrower ordering class.
+#
+# Each chain entry labels its landing slice as `A<N>` (e.g., `A5R`, `A10`,
+# `A21R`, `A34-followup`). A37 extracts the A-identifier from the label
+# text that immediately follows each backtick-wrapped short SHA and
+# asserts the sequence is MONOTONICALLY NON-DECREASING on the primary
+# integer.
+#
+# Suffix variants at the same primary (e.g., `A21` followed by `A21R`, or
+# `A34` followed by `A34-followup`) are allowed — primary numbers match
+# but suffix orders them deterministically. Skips (e.g., A10 → A12 due
+# to retired A11/A13 trials) are also allowed — monotonic-non-decreasing
+# permits forward jumps.
+#
+# Final A-id alignment: the highest extracted primary must equal the
+# post-A<N> marker claimed in the `## Next bounded cutover slice`
+# "Current lane truth" paragraph. This catches the class where the
+# chain was extended but the narrative still claims an older tip A-id.
+#
+# A37 is narrow on purpose: it enforces the ORDER and FINAL-ID agreement.
+# It does not enforce that every slice label is spelled correctly or that
+# label text matches some canonical registry — those classes remain
+# unpinned and are candidates for future invariants.
+# ---------------------------------------------------------------------------
+
+
+# Matches a slice identifier at the start of a chain entry's label text.
+# Primary integer is the ordering key. Suffix variants:
+#   - `R`          (recovery / re-seat slice; e.g., A19R, A21R)
+#   - `-followup`  (embedded tip-claim update within the parent slice's bullet)
+# Both suffix forms preserve the primary integer for monotonic comparison.
+_CHAIN_A_ID_RE = re.compile(r"\bA(\d+)(R)?(-followup)?\b")
+# Matches `post-A<N>[<suffix>]` in the Next-bounded lane-truth paragraph.
+_LANE_TRUTH_POST_A_RE = re.compile(r"\bpost-A(\d+)(R)?\b")
+
+
+def _extract_chain_a_ids(chain_body: str) -> list[tuple[int, str]]:
+    """Walk each backtick-wrapped short SHA in `chain_body`; for each,
+    scan forward (up to the next short SHA) for the FIRST A-identifier
+    match. Return a list of `(primary_int, suffix_str)` tuples in chain
+    order.
+
+    suffix_str is one of: "" (bare `A<N>`), "R" (recovery), "-followup".
+    """
+    # Find every hash occurrence (start offset + length).
+    hash_matches = list(_BACKTICK_SHORT_SHA_RE.finditer(chain_body))
+    results: list[tuple[int, str]] = []
+    for i, h in enumerate(hash_matches):
+        # Window: from end of this hash to start of next hash (or end of body).
+        window_start = h.end()
+        window_end = hash_matches[i + 1].start() if i + 1 < len(hash_matches) else len(chain_body)
+        window = chain_body[window_start:window_end]
+        m = _CHAIN_A_ID_RE.search(window)
+        if m is None:
+            # Cannot classify — explicitly append (-1, "") sentinel so the
+            # ordering test surfaces the exact problem rather than skipping
+            # silently.
+            results.append((-1, "<no A-id found>"))
+            continue
+        primary = int(m.group(1))
+        suffix = m.group(2) or m.group(3) or ""
+        results.append((primary, suffix))
+    return results
+
+
+def _extract_post_a_marker(text: str) -> tuple[int, str]:
+    """Return (primary_int, suffix_str) of the `post-A<N>[<suffix>]` marker
+    in the `## Next bounded cutover slice` "Current lane truth" paragraph.
+    Returns (-1, "") when no marker is found.
+    """
+    nb_start = text.find("\n## Next bounded cutover slice")
+    if nb_start == -1:
+        return (-1, "")
+    # Next top-level `## ` after this heading bounds the section.
+    nb_section_end_m = re.search(r"\n## [^\n]", text[nb_start + 1:])
+    nb_end = (nb_start + 1 + nb_section_end_m.start()) if nb_section_end_m else len(text)
+    section = text[nb_start:nb_end]
+    m = _LANE_TRUTH_POST_A_RE.search(section)
+    if m is None:
+        return (-1, "")
+    return (int(m.group(1)), m.group(2) or "")
+
+
+def test_published_chain_a_series_ids_are_monotonic_non_decreasing() -> None:
+    """A37 invariant: A-series identifiers extracted from each published-
+    chain entry's label must be monotonically non-decreasing on primary
+    integer.
+
+    Suffix variants at the same primary (e.g., `A21` → `A21R`, `A34` →
+    `A34-followup`) are allowed. Skips are allowed (e.g., `A10` → `A12`
+    when intermediate trials were retired without landing).
+
+    An unclassifiable entry (no A-id found in the window after its hash)
+    contributes `(-1, "<no A-id found>")`, producing a loud failure at
+    that specific hash rather than a silent skip.
+    """
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+    chain_body, _declared_count = _extract_published_chain_block(text)
+    a_ids = _extract_chain_a_ids(chain_body)
+
+    assert a_ids, (
+        "A37: published-chain block contains no backtick-short-SHA entries. "
+        "If the chain was intentionally emptied, update the A36/A37 "
+        "invariants in lockstep."
+    )
+
+    violations: list[str] = []
+    previous = -1
+    for idx, (primary, suffix) in enumerate(a_ids):
+        label = f"A{primary}{suffix}" if primary >= 0 else suffix
+        if primary < 0:
+            violations.append(
+                f"entry #{idx + 1}: could not extract A-identifier from the "
+                "text following the hash — label is malformed or missing."
+            )
+            continue
+        if primary < previous:
+            violations.append(
+                f"entry #{idx + 1}: `{label}` (primary={primary}) follows "
+                f"a higher A-number (previous primary={previous}) — chain "
+                "ordering must be monotonically non-decreasing."
+            )
+        previous = primary
+
+    assert not violations, (
+        "A37 published-chain ordering / label violation:\n"
+        + "\n".join(f"  - {v}" for v in violations)
+    )
+
+
+def test_published_chain_final_a_id_matches_lane_truth_post_a_marker() -> None:
+    """A37 alignment invariant: the highest primary A-number in the
+    published-chain block must equal the `post-A<N>[<suffix>]` marker in
+    the `## Next bounded cutover slice` "Current lane truth" paragraph.
+
+    This catches the class where the chain was extended to a new slice
+    but the surrounding lane-truth narrative still claims an older
+    post-A<N> marker. A26 tip-agreement verifies hash agreement between
+    the two snapshot sections; A37 adds label-level agreement for the
+    slice identity.
+    """
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+    chain_body, _ = _extract_published_chain_block(text)
+    a_ids = _extract_chain_a_ids(chain_body)
+    primaries = [p for p, _ in a_ids if p >= 0]
+    assert primaries, "A37: no classifiable A-ids in the chain block"
+    chain_highest = max(primaries)
+
+    marker_primary, marker_suffix = _extract_post_a_marker(text)
+    assert marker_primary >= 0, (
+        "A37: `## Next bounded cutover slice` does not carry a "
+        "`post-A<N>` marker in its lane-truth paragraph. If the "
+        "wording was intentionally changed, update "
+        "`_LANE_TRUTH_POST_A_RE` in lockstep."
+    )
+    assert chain_highest == marker_primary, (
+        f"A37 chain/lane-truth mismatch: chain's highest A-primary is "
+        f"A{chain_highest}; Next-bounded lane-truth marker names "
+        f"`post-A{marker_primary}{marker_suffix}`. When a new slice lands, "
+        "update BOTH the chain enumeration and the `post-A<N>` marker in "
+        "the same edit so A37 stays green."
+    )
+
+
+def test_a37_chain_ordering_scanner_exercises_canonical_shapes() -> None:
+    """Scanner-self sanity pin for A37. Exercises the A-id extractor
+    against canonical label shapes (primary, suffix-R, suffix-followup,
+    skipped intermediates) and confirms ordering violations are detected
+    when they appear.
+    """
+    # Accept-fixture: canonical monotonic chain with suffixes and skips.
+    accept_chain = (
+        "`aaaaaaa` (A5R codec) → `bbbbbbb` (A6 auth) → "
+        "`ccccccc` (A10 cherry) → `ddddddd` (A12 compose) → "
+        "`eeeeeee` (A21 marker) → `fffffff` (A21R cleanup) → "
+        "`1111111` (A34 status + `2222222` A34-followup tip-update) → "
+        "`3333333` (A36 chain-card)."
+    )
+    accept = _extract_chain_a_ids(accept_chain)
+    primaries = [p for p, _ in accept]
+    assert primaries == [5, 6, 10, 12, 21, 21, 34, 34, 36], (
+        f"A37 canonical accept chain extracted {primaries!r}; expected "
+        "[5, 6, 10, 12, 21, 21, 34, 34, 36]"
+    )
+    # Monotonicity must hold across the accept chain.
+    for i in range(1, len(primaries)):
+        assert primaries[i] >= primaries[i - 1], (
+            f"canonical chain violates monotonicity at index {i}: {primaries!r}"
+        )
+
+    # Reject-fixture: backward jump (A10 → A7 is a backward violation).
+    reject_chain = (
+        "`aaaaaaa` (A5R codec) → `bbbbbbb` (A10 cherry) → `ccccccc` (A7 oops)."
+    )
+    reject_ids = _extract_chain_a_ids(reject_chain)
+    reject_primaries = [p for p, _ in reject_ids]
+    assert reject_primaries == [5, 10, 7], (
+        f"A37 reject fixture extracted {reject_primaries!r}; expected [5, 10, 7]"
+    )
+    # Ordering violation must be detectable (A7 < A10).
+    assert reject_primaries[2] < reject_primaries[1], (
+        "A37 scanner failed to detect backward jump in reject fixture"
+    )
+
+    # Missing-A-id fixture: hash followed by no A-id in window.
+    missing_chain = "`aaaaaaa` landed without a slice-id label → `bbbbbbb` (A6)."
+    missing_ids = _extract_chain_a_ids(missing_chain)
+    assert missing_ids[0] == (-1, "<no A-id found>"), (
+        f"A37 scanner missed malformed label fixture; got {missing_ids!r}"
+    )
