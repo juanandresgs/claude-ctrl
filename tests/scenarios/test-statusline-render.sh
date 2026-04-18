@@ -336,21 +336,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 10: dispatch status renders in HUD
+# Test 10: HUD renders without error after dispatch-state mutation
 # DEC-WS6-001: dispatch_queue is non-authoritative. The statusline derives
 # dispatch status from completion records, not the queue. This test verifies
-# that the statusline renders without errors after a dispatch cycle start.
+# that the statusline renders without errors after a dispatch-state mutation
+# via the canonical dispatch lifecycle path.
+#
+# A41R update: replaced retired `policy dispatch cycle-start <cycle>` with
+# the canonical `policy dispatch agent-start <role> <agent_id>` lifecycle
+# invocation. Preserves the test's intent ("HUD renders healthy after
+# dispatch-related state activity") against the post-dispatch_queue-retirement
+# CLI surface. `agent-start` writes to `agent_markers` via
+# `lifecycle_mod.on_agent_start` — same canonical surface Test 8 exercises
+# via `marker set`, routed through the dispatch subcommand instead.
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 10: dispatch cycle — HUD renders without error"
+echo "-- 10: dispatch agent-start — HUD renders without error"
 
-policy dispatch cycle-start "TKT012-CYCLE" >/dev/null
+policy dispatch agent-start reviewer "agent-sl-test-10" >/dev/null
 
 output=$(run_statusline)
 if [[ -n "$output" ]]; then
-    echo "  PASS: dispatch cycle renders in HUD"
+    echo "  PASS: HUD renders after dispatch agent-start"
 else
-    echo "  FAIL: HUD empty after dispatch cycle start"
+    echo "  FAIL: HUD empty after dispatch agent-start"
     FAILURES=$((FAILURES + 1))
 fi
 
