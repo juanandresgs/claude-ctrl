@@ -6,9 +6,20 @@ That block is produced by ``cc-policy dispatch agent-prompt`` and carries the
 six contract fields that pre-agent.sh extracts for the carrier path
 (DEC-CLAUDEX-SA-CARRIER-001).
 
-Lightweight subagent types (Explore, general-purpose, statusline-setup, empty)
-pass through without a contract requirement only when they are *not* attempting
-to carry a runtime dispatch contract.
+Non-canonical subagent types (Explore, general-purpose, statusline-setup, empty,
+and any unknown value) pass through without a contract requirement only when they
+are *not* attempting to carry a runtime dispatch contract.
+
+@decision DEC-CLAUDEX-AGENT-CONTRACT-REQUIRED-AUTHORITY-SOAK-001
+@title Retire DISPATCH_SIGNIFICANT/LIGHTWEIGHT frozensets; route through authority_registry
+@status accepted
+@rationale A6 soak-parity slice. Mirrors the A1 pattern already applied on the
+  A-branch: instead of a module-level frozen set that must be kept in sync with
+  authority_registry.CANONICAL_DISPATCH_SUBAGENT_TYPES, we call
+  authority_registry.canonical_dispatch_subagent_type(subagent_type) at call
+  time. A non-None return means the type is dispatch-significant; None means
+  pass-through. Single authority for dispatch-seat classification per
+  DEC-CLAUDEX-SA-CARRIER-001.
 """
 
 from __future__ import annotations
@@ -16,23 +27,9 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+import runtime.core.authority_registry as authority_registry
 from runtime.core.dispatch_contract import dispatch_subagent_type_for_stage
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-
-DISPATCH_SIGNIFICANT: frozenset[str] = frozenset({
-    "planner",
-    "implementer",
-    "guardian",
-    "reviewer",
-    "Plan",
-})
-
-LIGHTWEIGHT: frozenset[str] = frozenset({
-    "Explore",
-    "general-purpose",
-    "statusline-setup",
-    "",
-})
 
 _CONTRACT_PREFIX = "CLAUDEX_CONTRACT_BLOCK:"
 
@@ -101,23 +98,23 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             )
         return None
 
-    if subagent_type in LIGHTWEIGHT or not subagent_type:
+    # A6: classification resolved via authority_registry at call time.
+    if not subagent_type:
         return None
-
-    if subagent_type in DISPATCH_SIGNIFICANT:
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                f"Dispatch-significant Agent launch (subagent_type={subagent_type!r}) "
-                f"requires a runtime-issued contract. The prompt must start with "
-                f"'{_CONTRACT_PREFIX}' on line 1. Call `cc-policy dispatch agent-prompt "
-                f"--workflow-id <id> --stage-id <stage>` and prepend the returned "
-                f"`prompt_prefix` verbatim to the Agent prompt."
-            ),
-            policy_name="agent_contract_required",
-        )
-
-    return None
+    canonical = authority_registry.canonical_dispatch_subagent_type(subagent_type)
+    if not canonical:
+        return None  # non-canonical → pass-through
+    return PolicyDecision(
+        action="deny",
+        reason=(
+            f"Dispatch-significant Agent launch (subagent_type={subagent_type!r}) "
+            f"requires a runtime-issued contract. The prompt must start with "
+            f"'{_CONTRACT_PREFIX}' on line 1. Call `cc-policy dispatch agent-prompt "
+            f"--workflow-id <id> --stage-id <stage>` and prepend the returned "
+            f"`prompt_prefix` verbatim to the Agent prompt."
+        ),
+        policy_name="agent_contract_required",
+    )
 
 
 def register(registry) -> None:

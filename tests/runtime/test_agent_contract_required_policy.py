@@ -3,17 +3,24 @@
 Exercises contract enforcement for dispatch-significant Agent/Task tool
 invocations (DEC-POLICY-AGENT-CONTRACT-001). Dispatch-significant subagent
 types (planner, implementer, guardian, reviewer, Plan) are denied when their
-prompt does not start with CLAUDEX_CONTRACT_BLOCK: on line 1. Lightweight
-types (Explore, general-purpose, statusline-setup, empty, missing) pass
-through unaffected.
+prompt does not start with CLAUDEX_CONTRACT_BLOCK: on line 1. Non-canonical
+types (Explore, general-purpose, statusline-setup, empty, missing, and any
+unknown value) pass through unaffected.
+
+Classification is now resolved at call time via
+authority_registry.canonical_dispatch_subagent_type — not via module-level
+frozen sets. This is the A6 soak-parity implementation of the A1 pattern
+(DEC-CLAUDEX-AGENT-CONTRACT-REQUIRED-AUTHORITY-SOAK-001).
 
 @decision DEC-POLICY-AGENT-CONTRACT-TEST-001
 @title Unit tests for agent_contract_required policy
 @status accepted
 @rationale Verify all deny branches (dispatch-significant without contract),
-  all allow branches (dispatch-significant with contract, lightweight types,
+  all allow branches (dispatch-significant with contract, non-canonical types,
   non-Agent tools), deny reason text includes remediation CLI, and policy_name
   is correct. PolicyRequest objects are constructed by hand — no DB I/O.
+  Single-authority classification via authority_registry enforced by
+  TestSingleAuthorityClassification.
 """
 
 from __future__ import annotations
@@ -26,12 +33,9 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import runtime.core.policies.agent_contract_required as _acr_mod
 from runtime.core.authority_registry import capabilities_for
-from runtime.core.policies.agent_contract_required import (
-    DISPATCH_SIGNIFICANT,
-    LIGHTWEIGHT,
-    check,
-)
+from runtime.core.policies.agent_contract_required import check
 from runtime.core.policy_engine import PolicyContext, PolicyDecision, PolicyRequest
 
 # ---------------------------------------------------------------------------
@@ -357,7 +361,7 @@ def test_empty_prompt_dispatch_significant_denied():
 
 
 def test_unknown_subagent_type_is_lightweight():
-    """Unknown subagent types not in DISPATCH_SIGNIFICANT are treated as lightweight."""
+    """Unknown subagent types (not canonical per authority_registry) are treated as pass-through."""
     req = _make_agent_request(subagent_type="custom-tool", prompt="Do something")
     decision = check(req)
     assert decision is None
@@ -391,19 +395,111 @@ def test_register_adds_to_registry():
 
 
 # ---------------------------------------------------------------------------
-# Set membership invariants
+# Single-authority classification invariants (A6 soak-parity)
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_significant_set_contents():
-    expected = {"planner", "implementer", "guardian", "reviewer", "Plan"}
-    assert DISPATCH_SIGNIFICANT == expected
+class TestSingleAuthorityClassification:
+    """Verify classification is resolved via authority_registry at call time.
 
+    These tests replace the three set-membership invariants that enforced
+    module-level DISPATCH_SIGNIFICANT / LIGHTWEIGHT frozensets. The policy
+    no longer owns a local copy of the canonical seat list — it delegates
+    to authority_registry.canonical_dispatch_subagent_type exclusively.
+    (DEC-CLAUDEX-AGENT-CONTRACT-REQUIRED-AUTHORITY-SOAK-001)
+    """
 
-def test_lightweight_set_contents():
-    expected = {"Explore", "general-purpose", "statusline-setup", ""}
-    assert LIGHTWEIGHT == expected
+    def test_no_module_level_classification_frozensets(self):
+        """The module must NOT export DISPATCH_SIGNIFICANT or LIGHTWEIGHT."""
+        assert not hasattr(_acr_mod, "DISPATCH_SIGNIFICANT"), (
+            "DISPATCH_SIGNIFICANT frozenset must be removed; "
+            "use authority_registry at call time"
+        )
+        assert not hasattr(_acr_mod, "LIGHTWEIGHT"), (
+            "LIGHTWEIGHT frozenset must be removed; "
+            "use authority_registry at call time"
+        )
 
+    def test_denies_every_canonical_dispatch_seat_without_contract(self):
+        """All canonical seats must be denied when no contract is provided."""
+        canonical_seats = ["planner", "implementer", "guardian", "reviewer", "Plan"]
+        for seat in canonical_seats:
+            req = _make_agent_request(subagent_type=seat, prompt="Do some work")
+            decision = check(req)
+            assert decision is not None, (
+                f"Expected deny for canonical seat {seat!r} but got None"
+            )
+            assert decision.action == "deny", (
+                f"Expected action=deny for {seat!r}, got {decision.action!r}"
+            )
+            assert decision.policy_name == "agent_contract_required", (
+                f"Wrong policy_name for {seat!r}: {decision.policy_name!r}"
+            )
 
-def test_no_overlap_between_sets():
-    assert DISPATCH_SIGNIFICANT.isdisjoint(LIGHTWEIGHT)
+    def test_allows_every_non_canonical_subagent_type_without_contract(self):
+        """All non-canonical types must pass through (return None) without contract."""
+        non_canonical = ["Explore", "general-purpose", "statusline-setup", "", "custom-tool"]
+        for seat in non_canonical:
+            req = _make_agent_request(subagent_type=seat, prompt="Some work")
+            decision = check(req)
+            assert decision is None, (
+                f"Expected None (pass-through) for non-canonical seat {seat!r} "
+                f"but got decision.action={getattr(decision, 'action', None)!r}"
+            )
+
+    def test_classification_tracks_authority_registry_monkeypatch(self, monkeypatch):
+        """Classification must change when authority_registry is patched.
+
+        CRITICAL: we patch the module-local alias (the ``authority_registry``
+        name inside agent_contract_required), not the authority module directly.
+        This proves the policy calls through the alias at call time rather than
+        a cached copy.
+        """
+        original_fn = _acr_mod.authority_registry.canonical_dispatch_subagent_type
+
+        # "newseat" → canonical; "planner" → non-canonical (inverted for test)
+        def patched(subagent_type: str):
+            if subagent_type == "newseat":
+                return "newseat"
+            if subagent_type == "planner":
+                return None
+            return original_fn(subagent_type)
+
+        monkeypatch.setattr(
+            _acr_mod.authority_registry,
+            "canonical_dispatch_subagent_type",
+            patched,
+        )
+
+        # "newseat" is now canonical — must be denied without contract
+        req_new = _make_agent_request(subagent_type="newseat", prompt="New seat work")
+        decision_new = check(req_new)
+        assert decision_new is not None, "newseat should be denied after monkeypatch"
+        assert decision_new.action == "deny"
+
+        # "planner" is now non-canonical — must pass through
+        req_planner = _make_agent_request(subagent_type="planner", prompt="Plan it")
+        decision_planner = check(req_planner)
+        assert decision_planner is None, (
+            "planner should pass through when patched to non-canonical"
+        )
+
+    def test_canonical_matching_contract_allowed(self):
+        """Contract-bearing prompt with stage=planner and subagent=planner must pass."""
+        prompt = f"{_contract_block('planner')}\n\nBuild the plan."
+        req = _make_agent_request(subagent_type="planner", prompt=prompt)
+        decision = check(req)
+        assert decision is None, (
+            f"Expected None for valid planner contract but got {decision!r}"
+        )
+
+    def test_stage_subagent_type_mismatch_denied(self):
+        """Contract-bearing prompt where stage=reviewer but subagent=general-purpose must deny."""
+        prompt = f"{_contract_block('reviewer')}\n\nReview the changes."
+        req = _make_agent_request(subagent_type="general-purpose", prompt=prompt)
+        decision = check(req)
+        assert decision is not None, (
+            "Expected deny for stage/subagent_type mismatch"
+        )
+        assert decision.action == "deny"
+        assert "stage_id='reviewer'" in decision.reason
