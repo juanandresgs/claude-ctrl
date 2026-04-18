@@ -37,7 +37,6 @@ import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
 import runtime.core.hook_doc_validation as hook_doc_validation_mod
 import runtime.core.hook_manifest as hook_manifest_mod
-import runtime.core.lane_topology as lane_topology_mod
 import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
 import runtime.core.eval_report as eval_report_mod
 import runtime.core.eval_runner as eval_runner_mod
@@ -564,27 +563,6 @@ def _handle_bridge(args) -> int:
             )
             return 1
         print(json.dumps(diagnostic.to_json_dict()))
-        return 0
-
-    if args.action == "topology":
-        try:
-            payload = lane_topology_mod.probe_lane_topology(
-                braid_root=getattr(args, "braid_root", None),
-                state_dir=getattr(args, "state_dir", None),
-                codex_target=getattr(args, "codex_target", None),
-                claude_target=getattr(args, "claude_target", None),
-            )
-        except Exception as exc:  # pragma: no cover — probe is fail-closed
-            print(
-                json.dumps(
-                    {
-                        "status": "error",
-                        "error_detail": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-            )
-            return 1
-        print(json.dumps(payload))
         return 0
 
     return _err(f"unknown bridge action: {args.action}")
@@ -3876,33 +3854,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--state-dir",
         default=None,
         help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
-    )
-    bridge_topology = bridge_sub.add_parser(
-        "topology",
-        help=(
-            "Resolve live Codex/Claude tmux topology for the active lane "
-            "without guessing in shell wrappers."
-        ),
-    )
-    bridge_topology.add_argument(
-        "--braid-root",
-        default=None,
-        help="Override $BRAID_ROOT for the probe (defaults to env).",
-    )
-    bridge_topology.add_argument(
-        "--state-dir",
-        default=None,
-        help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
-    )
-    bridge_topology.add_argument(
-        "--codex-target",
-        default=None,
-        help="Optional explicit Codex pane target override.",
-    )
-    bridge_topology.add_argument(
-        "--claude-target",
-        default=None,
-        help="Optional explicit Claude pane target override.",
     )
 
     # constitution — read-only constitution registry inspection/validation

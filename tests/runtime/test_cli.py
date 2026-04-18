@@ -312,44 +312,6 @@ def test_statusline_snapshot_keys(db):
     ):
         assert key in out, f"missing key: {key}"
     # W-CONV-4: proof_status/proof_workflow removed from snapshot
-
-
-def test_bridge_topology_reports_non_authoritative_legacy_codex_target(db, tmp_path, monkeypatch):
-    braid = tmp_path / "braid"
-    state = tmp_path / "state"
-    run_dir = braid / "runs" / "run-topology-cli"
-    run_dir.mkdir(parents=True)
-    state.mkdir(parents=True)
-    (braid / "runs" / "active-run").write_text("run-topology-cli\n", encoding="utf-8")
-    (run_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "run-topology-cli",
-                "project_root": str(tmp_path),
-                "project_slug": "fake",
-                "tmux_target": "fake:1.2",
-                "claude_pane_id": "%12",
-                "created_at": "2026-04-18T00:00:00Z",
-                "completed_at": None,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "status.json").write_text(
-        json.dumps({"state": "queued", "updated_at": "2026-04-18T00:00:01Z"}),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("BRAID_ROOT", str(braid))
-    monkeypatch.setenv("CLAUDEX_STATE_DIR", str(state))
-
-    code, out = run(["bridge", "topology"], db)
-    assert code == 0
-    assert out["active_run_id"] == "run-topology-cli"
-    assert out["claude"]["target"] == "fake:1.2"
-    assert out["claude"]["target_exists"] is False
-    assert out["codex"]["target"] == "fake:1.1"
-    assert out["codex"]["authoritative"] is False
     assert "proof_status" not in out
     assert "proof_workflow" not in out
 
