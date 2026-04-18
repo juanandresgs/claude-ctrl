@@ -100,6 +100,49 @@ one-liner is the only adapter change in this closure chain.
 
 ## Next bounded cutover slice
 
+**Current lane truth (2026-04-18, post-A16 push `588d395`):** this
+worktree is the **global-soak config-readiness lane**. Category C is
+**paused-not-priority** in this overnight lane per operator direction
+— it is NOT the next bounded auto-selected action. Do not dispatch
+Category C planning or execution from this lane without an explicit
+fresh operator instruction that re-activates it; the historical
+Category C scoping packet below is retained for archival context
+only.
+
+**Published config-readiness bundle since `86795d0`:**
+`8ca3ac4` (A5R codec adapter) → `e69480b` (A6 single-authority
+classification) → `1b0f187` (A7 supervisor guardrails) → `aeec494`
+(A8 contract authenticity) → `ee3d1b5` (A9 convergence packet) →
+`eaa8af0` (A10 A0 codec cherry-pick) → `75bc9c6` (A12 scope-forbidden
+plan_guard composition) → `e45f4aa` (A14 archival-test reconciliation)
+→ `02443a8` (A15 runtime authority-boundary invariants) →
+`588d395` (A16 prompt/hook guardrail invariants). **Ten commits
+published on `origin/feat/claudex-cutover`.** Guardian remains sole
+landing actor; orchestrator is coordinate-only (no self-grant push,
+no self-run git push). Settings-file model authority fix preserved.
+
+**Routine next actions (no user-decision boundary):**
+- continue steady-state supervision on this lane;
+- if a new config-readiness gap is surfaced, open a bounded slice
+  scoped to this lane only;
+- if an A-branch archival test parity is explicitly requested,
+  Path C (A14a/b/c) is documented and ready to dispatch.
+
+**True user-decision boundaries that remain pending:**
+- whether to formally retire feature branches
+  `feature/config-readiness-slice-a-agent-contract` and
+  `feature/config-readiness-slice-a0-codec` (A9 Option 3 already
+  recommended retain-as-archival — deletion is user-owned);
+- whether to re-activate Category C execution (currently paused
+  pending operator ratification per the original Category C Step-1
+  planning packet);
+- whether to push via a publish target other than `feat/claudex-cutover`
+  (ambiguous-publish-target is user-decision per Sacred Practice §8).
+
+---
+
+### Historical Category C scoping packet (archived context; NOT auto-selected)
+
 **Category C retirement scoping packet (planning-only,
 2026-04-17).** Both Category C code surfaces are already retired
 (`proof_state` at `f72e656`, `dispatch_queue`/`dispatch_cycles` at
@@ -212,6 +255,33 @@ or amend any value, and §3.2 carries no Step-2 / Step-3
 authorisation either.
 
 ## Open Soak Issues
+
+### A16 prompt-invariant substring-vs-regex matching nuance (2026-04-18)
+
+- **Subject:** during A16 authoring, regex-based assertions like `do\s*not\s+self-?grant[^.]*push` failed against actual prompt text that contains backtick-wrapped literals with embedded ellipsis: ``do NOT self-grant `cc-policy approval grant ... push` ``. The `[^.]*` class excludes periods, so the literal `...` in the prompt broke the regex anchor.
+- **Repro:** apply `do\s*not\s+self-?grant[^.]*push` regex (IGNORECASE) to the string ``do NOT self-grant `cc-policy approval grant ... push` `` — match fails because of the `...` period run.
+- **Impact:** if A16 had shipped with the original regex, the test would have failed against a correct prompt text and either (a) the test author fixes the regex, or (b) someone "fixes" the prompt to match the regex (dropping the backticks or ellipsis), silently degrading documentation. Either way, a mismatch between test and content existed.
+- **Suggested fix (applied in A16 commit `588d395`):** prefer **substring co-occurrence assertions** (e.g., `"self-grant" in text and "approval grant" in text and "push" in text`) over regex for backtick/ellipsis-heavy prompt literals. Substring tests tolerate formatting drift while still failing deterministically on semantic drift (a prompt edit that removes `self-grant` still fails). Pair substring tests with a forbidden-phrase negative scan (e.g., `directly write source`) for symmetry — substring alone can't detect a positive-polarity drift where someone adds `you MAY self-grant push for X`. A16's test class `TestOrchestratorMustNotSelfPush` uses substring; `TestOrchestratorRoutesDoesNotSelfExecute` uses forbidden-phrase scan — together they pin both polarities.
+- **Class of defect:** any future prompt-inspection test must choose between regex (precise but brittle to formatting), substring (robust but loose polarity), or AST-like parse (heaviest but most precise). For `.codex/prompts/*.txt` the substring+forbidden-phrase pairing is canonical.
+- **Blocking?** No — resolved in A16 before landing. Documented here so future prompt-inspection tests adopt the same pattern by default.
+- **Verification state:** A16 commit `588d395` ships 17 tests using substring + forbidden-phrase patterns; all 17 pass at soak HEAD; braid v2 smoke 5/5.
+
+### A15 pre-existing 10-test soak baseline (2026-04-18)
+
+- **Subject:** during A15 landing (commit `02443a8`), running the full `tests/runtime/` suite on soak surfaced exactly 10 pre-existing failures unrelated to A15 itself. These failures have persisted unchanged across A5R → A6 → A7 → A8 → A9 → A10-A0 → A12-A4 → A14 → A15 → A16. Zero A-slice commit regressed or introduced any of them.
+- **Repro (from any post-86795d0 soak HEAD):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/` → 10 failed, ~4950 passed, 1 xfailed.
+- **Baseline 10-failure classification:**
+  1. `test_cli.py::test_proof_get_missing`, `test_proof_set_and_get`, `test_proof_list`, `test_dispatch_full_lifecycle` (4 tests) — exercise a `proof` subcommand that is NOT at HEAD but IS in soak's uncommitted `runtime/cli.py` work-in-progress (Bundle B cli-verbs additions). **Scoped remediation:** dedicated Bundle B cli-verb slice that either lands the pending work-in-progress, or reverts the soak-local modifications, or updates the tests to match HEAD's cli.py surface.
+  2. `test_command_intent_single_authority::TestNoPolicyImportsShlex::test_no_policy_imports_shlex` (1 test) — static scan flags `runtime/core/policies/bash_write_who.py` for importing shlex. **Scoped remediation:** replace shlex usage with the existing `command_intent` token-splitter helper, OR add `bash_write_who.py` to the module-level `_KNOWN_EXEMPT_MODULES` allowlist with rationale comment. Bounded ~1 policy + 1 test.
+  3. `test_decision_work_registry::TestSchemaBootstrap::test_work_items_table_has_expected_columns`, `test_goal_contracts_table_has_expected_columns` (2 tests) — schema-bootstrap column expectations lag actual runtime DDL. **Scoped remediation:** update expected column lists in the test to match current `runtime/schemas.py` DDL, OR add a schema-version check that fails loudly when DDL evolves.
+  4. `test_evaluation::test_full_evaluator_lifecycle` (1 test) — sqlite lifecycle expectation drift; likely tied to evaluation_state schema evolution. **Scoped remediation:** diagnose + adjust test fixture.
+  5. `test_policy_engine::test_default_registry_has_all_policies` (1 test) — asserts default registry policy count `26` but current registry has `25` (or vice versa). **Scoped remediation:** update expected count to match current registry, OR assert on registry's `_registry` list contents by name instead of count (more robust to future adds/removes).
+  6. `test_sidecars::TestObservatory::test_health_detects_many_active_agents` (1 test) — observatory health threshold. **Scoped remediation:** diagnose threshold change + update assertion.
+- **Impact:** these 10 tests fail on every A-slice commit but are noise-floor, not regression. They do NOT block any config-readiness publish (A5R through A16 all landed successfully on `origin/feat/claudex-cutover` despite these failures). They DO obscure the signal-to-noise ratio of `pytest -q tests/runtime/` results — a reviewer must subtract "10 pre-existing" from the failure count to find actual regressions.
+- **Suggested fix direction:** a single "soak baseline cleanup" slice, bounded to docs+test-fixture updates, closes items 2-6 (~6 tests, all test-fixture nudges). Item 1 (4 tests) ties to Bundle B work-in-progress which may need planner adjudication before remediation. Total estimated scope: 2 bounded slices (test-fixture cleanup + Bundle B cli-verb cleanup).
+- **Class of defect:** accumulated test-fixture drift. Root cause is the lane is "soak" (runs many sessions, accumulates adjacent work) without a per-session baseline reset. Mechanical invariant would be: CI check that `tests/runtime/` green-count matches a committed expected count, so each slice's `pass_complete` status reflects actual green health rather than "10 below the moving baseline."
+- **Blocking?** No — every A-slice has published successfully on top of these failures. Config-readiness lane remains functionally green.
+- **Verification state:** failure list enumerated via `pytest -q tests/runtime/` output parse. Individual failing test names cross-checked across A15 commit (`02443a8`) and A16 commit (`588d395`) — identical failure set, confirming baseline-not-regression nature.
 
 ### A14 reconciliation contract for A2/A3 archival test files — PATH R RECOMMENDED (2026-04-18)
 
