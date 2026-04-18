@@ -21,16 +21,16 @@ below).
   reference. A regression (row removed, empty cell) fails the test with a
   structured diagnostic.
 - **Produced by:** the cutover continuation track on `claudesox-local`
-  (branch `claudesox-local` at HEAD `f24df96aeec7e74a8fd7ac82bc2cfd7c3daa52fb`,
-  ahead 10 of `origin/feat/claudex-cutover`, **28-file staged checkpoint
-  debt harness-blocked as of 2026-04-17 late-session**). Earlier turns
-  in the same 2026-04-17 session observed the staged bundle at smaller
-  interim sizes (notably 22, 23, 24, 25, and 27 files) as successive
-  invariant pins were added; those counts are historical and are
-  superseded by the 28-file current-lane truth. `ClauDEX/CURRENT_STATE.md`
-  and `ClauDEX/SUPERVISOR_HANDOFF.md` are the authoritative lane-state
-  surfaces; if any count here drifts from those two files, those files
-  win and this artifact must be corrected in the same change.
+  during the 2026-04-17 cc-policy-who-remediation session (originally at
+  HEAD `f24df96`, staged as a 28-file bundle that subsequently grew to
+  30 files and was committed as `d7db4ba`, then merged with upstream and
+  pushed to `origin/feat/claudex-cutover`). The staged bundle grew
+  through interim sizes (22, 23, 24, 25, 27, 28, 30) as successive
+  invariant pins were added; all checkpoint debt is now cleared.
+  `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md` are the
+  authoritative lane-state surfaces; if any count here drifts from those
+  two files, those files win and this artifact must be corrected in the
+  same change.
 - **Decision record:** `DEC-CLAUDEX-CUTOVER-INVARIANT-COVERAGE-MATRIX-001`.
 
 ## Coverage table
@@ -68,12 +68,10 @@ cite at least one non-empty test-reference cell.
   multiple test classes and / or multiple sibling files.
 - Three invariants (#5, #11, #13-symmetric) received dedicated mechanical
   pins in the 2026-04-17 cc-policy-who-remediation session; those pins
-  are part of the currently-harness-blocked **28-file** staged checkpoint
-  bundle (current lane truth as of 2026-04-17 late-session; earlier
-  turns in the same session observed interim sizes of 22/23/24/25/27
-  files as pins were added incrementally). Invariant #15 bridge-parity
+  were committed as part of the 30-file bundle (`d7db4ba`) and are now
+  pushed to `origin/feat/claudex-cutover`. Invariant #15 bridge-parity
   extension was also part of that session. All other rows were already
-  covered by pre-existing tests from Phases 3–8 of the cutover.
+  covered by pre-existing tests from Phases 3-8 of the cutover.
 
 ## Why this document exists
 
