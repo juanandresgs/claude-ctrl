@@ -1,33 +1,25 @@
-"""Regression pin for the Claude worker launcher's default model.
+"""Regression pins for Claude worker model authority.
 
-The ClauDEX bridge's overnight-start path invokes
-``scripts/claudex-claude-launch.sh`` with no explicit
-``CLAUDEX_CLAUDE_MODEL`` override in the checked-in launch chain
-(``claudex-overnight-start.sh`` / ``claudex-bridge-up.sh`` /
-``claudex-common.sh``).  The launcher's own default therefore
-determines the effective model for the active lane.  A drift from the
-intended 1M-context Opus model to a non-1M variant therefore has
-exactly one authoritative source: the ``MODEL="${CLAUDEX_CLAUDE_MODEL:-...}"``
-default in the launcher script itself.
-
-This test pins that default so any future edit that silently
-downgrades it (e.g. to ``claude-opus-4-6`` or a non-``[1m]`` variant)
-fails CI before it can reach a live lane.
+The bridge worker must launch under the 1M-context Opus model, but the
+authority for that choice belongs in the bridge settings profile rather
+than the launcher shell wrapper. The launcher's job is only to point
+Claude Code at ``ClauDEX/bridge/claude-settings.json`` and preserve the
+other launch flags.
 
 @decision DEC-CLAUDEX-LAUNCH-MODEL-001
-@title Claude worker launcher defaults to the 1M-context Opus model
+@title Bridge settings own the Claude worker model
 @status accepted
-@rationale The bridge's overnight loop runs long-horizon work whose
-  context window regularly exceeds the standard Opus limit.  The
-  effective default must be the 1M-context variant so a lane that
-  omits the optional ``CLAUDEX_CLAUDE_MODEL`` override still gets the
-  correct model.  Pinning the default here guards against silent
-  drift.
+@rationale The worker model is a control-plane fact, so it must have
+  one checked-in owner. The bridge settings profile is the correct
+  owner because it already defines the worker's permissions and hooks.
+  Keeping a second model default in the launcher recreates parallel
+  authority and allows the wrong context window to slip into live lanes.
 """
 
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import pytest
@@ -35,6 +27,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LAUNCH_SCRIPT = _REPO_ROOT / "scripts" / "claudex-claude-launch.sh"
+_SETTINGS_FILE = _REPO_ROOT / "ClauDEX" / "bridge" / "claude-settings.json"
 
 
 @pytest.fixture(scope="module")
@@ -45,52 +38,36 @@ def launch_src() -> str:
     return _LAUNCH_SCRIPT.read_text(encoding="utf-8")
 
 
-def test_default_model_is_1m_context_opus(launch_src):
-    """The launcher's default must be the 1M-context Opus identifier.
+@pytest.fixture(scope="module")
+def bridge_settings() -> dict:
+    assert _SETTINGS_FILE.is_file(), (
+        f"bridge settings file missing at expected path: {_SETTINGS_FILE}"
+    )
+    return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
 
-    We match the exact literal the shell script uses so a future
-    downgrade cannot sneak past a permissive regex.
-    """
-    expected_line = 'MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-opus-4-7[1m]}"'
-    assert expected_line in launch_src, (
-        "claudex-claude-launch.sh must default MODEL to the 1M-context "
-        "Opus identifier 'claude-opus-4-7[1m]'; found:\n"
-        f"{launch_src}"
+
+def test_bridge_settings_pin_1m_opus_model(bridge_settings):
+    assert bridge_settings.get("model") == "opus[1m]", (
+        "ClauDEX/bridge/claude-settings.json must be the sole checked-in "
+        "authority for the worker model and must pin 'opus[1m]'."
     )
 
 
-def test_default_model_is_not_a_non_1m_variant(launch_src):
-    """No non-1M Opus default is allowed."""
-    for forbidden in (
-        'MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-opus-4-6}"',
-        'MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-opus-4-7}"',      # missing [1m]
-        'MODEL="${CLAUDEX_CLAUDE_MODEL:-opus}"',
-        'MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-sonnet-4-6}"',
-        'MODEL="${CLAUDEX_CLAUDE_MODEL:-claude-haiku-4-5-20251001}"',
-    ):
-        assert forbidden not in launch_src, (
-            f"claudex-claude-launch.sh must not carry a non-1M default: "
-            f"found forbidden line {forbidden!r}"
-        )
-
-
-def test_launcher_still_passes_model_flag(launch_src):
-    """The --model flag must still be passed; a silent removal would
-    let whatever the local `claude` CLI defaults to take over."""
-    assert '--model "$MODEL"' in launch_src, (
-        "claudex-claude-launch.sh must forward the resolved MODEL to "
-        "the Claude CLI via --model; without that, the local default "
-        "wins and the launcher default becomes non-authoritative."
+def test_launcher_no_longer_carries_model_authority(launch_src):
+    assert "CLAUDEX_CLAUDE_MODEL" not in launch_src, (
+        "claudex-claude-launch.sh must not keep a launcher-side model "
+        "override surface once the bridge settings file owns the model."
+    )
+    assert "--model" not in launch_src, (
+        "claudex-claude-launch.sh must not pass --model once "
+        "ClauDEX/bridge/claude-settings.json owns model authority."
     )
 
 
-def test_launcher_leaves_env_override_path_open(launch_src):
-    """The default must still come from the CLAUDEX_CLAUDE_MODEL env var
-    when set — operators need an override surface for lane-specific
-    experiments without editing the script."""
-    assert '${CLAUDEX_CLAUDE_MODEL:-' in launch_src, (
-        "claudex-claude-launch.sh must keep CLAUDEX_CLAUDE_MODEL as "
-        "the override env var so operators can set it per-lane."
+def test_launcher_still_points_at_bridge_settings(launch_src):
+    assert '--settings "$SETTINGS_FILE"' in launch_src, (
+        "claudex-claude-launch.sh must still point Claude Code at the "
+        "bridge settings profile."
     )
 
 

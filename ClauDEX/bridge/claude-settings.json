@@ -1,4 +1,5 @@
 {
+  "model": "opus[1m]",
   "permissions": {
     "allow": [
       "Bash(awk *)",
