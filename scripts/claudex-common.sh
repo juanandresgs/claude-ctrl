@@ -86,6 +86,32 @@ claudex_resolve_braid_root() {
     fi
   fi
 
+  local state_root="${root}/.claude/claudex"
+  if [[ -d "$state_root" ]]; then
+    local lane_dir="" lane_hint="" unique_hint=""
+    shopt -s nullglob
+    for lane_dir in "${state_root}/"*; do
+      [[ -d "$lane_dir" ]] || continue
+      [[ -f "${lane_dir}/braid-root" ]] || continue
+      lane_hint="$(tr -d '[:space:]' < "${lane_dir}/braid-root" 2>/dev/null || true)"
+      [[ -n "$lane_hint" ]] || continue
+      if [[ -z "$unique_hint" ]]; then
+        unique_hint="$lane_hint"
+        continue
+      fi
+      if [[ "$lane_hint" != "$unique_hint" ]]; then
+        unique_hint=""
+        break
+      fi
+    done
+    shopt -u nullglob
+
+    if [[ -n "$unique_hint" ]]; then
+      printf '%s\n' "$unique_hint"
+      return 0
+    fi
+  fi
+
   printf '%s\n' "${root}/.b2r"
 }
 

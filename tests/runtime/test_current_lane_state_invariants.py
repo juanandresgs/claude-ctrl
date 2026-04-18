@@ -686,20 +686,22 @@ def test_supervisor_handoff_pins_statusline_as_final_global_soak_gate() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A39: statusline-gate regression pins (mechanical guard for A38 satisfaction)
+# A39: statusline-gate regression pins (mechanical guard for A38 supporting
+# evidence while final live-worker proof remains pending)
 # ---------------------------------------------------------------------------
-# Context: A38 captured end-to-end proof that the live CC worker renders the
-# statusline correctly and marked the global-soak gate SATISFIED. The A38
-# entry's "What could still fail" residual-risk note called out two gaps
+# Context: A38 captured supporting renderer/config evidence for the statusline
+# gate, but the final global-soak acceptance still requires direct live
+# worker-pane proof. The A38 entry's residual-risk note called out two gaps
 # that were not pinned by any invariant:
 #   1. A future `settings.json` edit could retarget `statusLine.command` to
-#      a different script (or clear it entirely). The A38 satisfaction claim
+#      a different script (or clear it entirely). The supporting evidence
 #      rests on Claude Code invoking `scripts/statusline.sh`; if the wiring
-#      moves silently, the claim goes stale without a test failing.
-#   2. The handoff doc's gate-satisfaction evidence anchors (artifact path,
-#      reproduction command reference, verdict token) could be edited away
-#      while the surrounding gate language is preserved; the A31 invariant
-#      pins only the gate-language substrings, not the evidence anchors.
+#      moves silently, the evidence goes stale without a test failing.
+#   2. The handoff doc's A38 supporting-evidence anchors and explicit
+#      "renderer/config/scenario evidence is not enough" boundary could be
+#      edited away while the surrounding gate language is preserved; the A31
+#      invariant pins only the gate-language substrings, not the supporting
+#      anchor set or the direct-proof boundary.
 #
 # A39 closes both gaps with docs/tests-only invariants. Robust to wording
 # changes where possible: key token anchors rather than full-sentence
@@ -707,37 +709,39 @@ def test_supervisor_handoff_pins_statusline_as_final_global_soak_gate() -> None:
 # ---------------------------------------------------------------------------
 
 
-_SETTINGS_JSON = _REPO_ROOT / "settings.json"
+_BRIDGE_SETTINGS_JSON = _REPO_ROOT / "ClauDEX" / "bridge" / "claude-settings.json"
 
 # Canonical statusLine.command value. The renderer MUST live at
 # `$HOME/.claude/scripts/statusline.sh` so Claude Code invokes the
 # runtime-backed HUD. Any other value (different script, empty string,
-# missing key) breaks the A38 satisfaction chain.
+# missing key) breaks the A38 supporting-evidence chain.
 _CANONICAL_STATUSLINE_COMMAND = "$HOME/.claude/scripts/statusline.sh"
 
-# Required evidence anchors for the A38 gate-satisfaction claim in the
-# handoff doc's active region. Each token names a distinct piece of the
-# reproducible evidence chain so a partial drift (e.g., artifact path
-# retained but reproduction command dropped) is caught.
-_A38_EVIDENCE_REQUIRED_TOKENS: tuple[str, ...] = (
-    "SATISFIED",                            # verdict token
-    "tmp/A38-statusline-capture.txt",       # artifact path
-    "scripts/statusline.sh",                # reproduction-command renderer reference
-    "bash scripts/statusline.sh",           # reproduction-command invocation shape
+# Required anchors for the active-region statusline gate. Together these pin
+# both the A38 supporting evidence and the rule that renderer/config/scenario
+# proof is NOT the final gate.
+_STATUSLINE_GATE_REQUIRED_TOKENS: tuple[str, ...] = (
+    "renderer/config/scenario evidence",
+    "does NOT satisfy this gate",
+    "worker pane",
+    "tmp/A38-statusline-capture.txt",
+    "scripts/statusline.sh",
+    "bash scripts/statusline.sh",
 )
 
 
 def test_settings_statusline_command_anchored_to_canonical_renderer() -> None:
-    """A39 invariant: `settings.json` MUST keep `statusLine.command` pointing
+    """A39 invariant: `ClauDEX/bridge/claude-settings.json` MUST keep
+    `statusLine.command` pointing
     at `$HOME/.claude/scripts/statusline.sh`.
 
-    Claude Code consults `settings.json` on session startup (and hot
-    reloads on file change) to resolve which script to invoke for the
-    HUD. The A38 satisfaction claim rests on this wiring; any future
-    edit that retargets the command to a different script or clears the
-    field silently invalidates the proof. This pin fails loudly at
-    Guardian preflight so the drift cannot reach `origin/feat/claudex-
-    cutover`.
+    The active bridge worker launch path points Claude Code at
+    `ClauDEX/bridge/claude-settings.json`, so this file is the actual
+    worker authority for statusline wiring. Any future edit that
+    retargets the command to a different script or clears the field
+    silently invalidates live-worker HUD proof. This pin fails loudly
+    at Guardian preflight so the drift cannot reach
+    `origin/feat/claudex-cutover`.
 
     Robustness: parses `settings.json` with `json.loads` rather than
     string matching so whitespace / key ordering changes do not produce
@@ -747,74 +751,80 @@ def test_settings_statusline_command_anchored_to_canonical_renderer() -> None:
     import json
     import pytest
 
-    assert _SETTINGS_JSON.exists(), (
-        f"A39: settings.json missing at {_SETTINGS_JSON}; the statusline "
-        "wiring cannot be verified. If settings.json was intentionally "
-        "relocated, update `_SETTINGS_JSON` in lockstep."
+    assert _BRIDGE_SETTINGS_JSON.exists(), (
+        f"A39: bridge settings file missing at {_BRIDGE_SETTINGS_JSON}; the "
+        "worker statusline wiring cannot be verified. If the bridge worker "
+        "settings path was intentionally relocated, update "
+        "`_BRIDGE_SETTINGS_JSON` in lockstep."
     )
     try:
-        data = json.loads(_SETTINGS_JSON.read_text(encoding="utf-8"))
+        data = json.loads(_BRIDGE_SETTINGS_JSON.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         pytest.fail(
-            f"A39: settings.json is not valid JSON ({exc}). The A38 "
-            "satisfaction chain depends on Claude Code being able to "
-            "parse this file — a syntax error here silently breaks the "
-            "live HUD."
+            f"A39: bridge settings file is not valid JSON ({exc}). The A38 "
+            "supporting evidence depends on Claude Code being able to parse "
+            "the actual worker settings file — a syntax error here silently "
+            "breaks the live HUD."
         )
 
     status_line = data.get("statusLine")
     assert isinstance(status_line, dict), (
-        "A39: settings.json does not define a `statusLine` object. "
+        "A39: ClauDEX/bridge/claude-settings.json does not define a "
+        "`statusLine` object. "
         "Claude Code will not render the HUD, invalidating the A38 "
-        "satisfaction claim. Restore "
+        "supporting evidence. Restore "
         f'`{{"statusLine": {{"type": "command", "command": "{_CANONICAL_STATUSLINE_COMMAND}"}}}}`.'
     )
     assert status_line.get("type") == "command", (
-        f"A39: `settings.json::statusLine.type` must equal `\"command\"`; "
+        f"A39: `ClauDEX/bridge/claude-settings.json::statusLine.type` must "
+        f"equal `\"command\"`; "
         f"got {status_line.get('type')!r}. Claude Code only invokes the "
         "canonical renderer when the type is `command`."
     )
     observed_command = status_line.get("command")
     assert observed_command == _CANONICAL_STATUSLINE_COMMAND, (
-        f"A39: `settings.json::statusLine.command` must equal "
+        f"A39: `ClauDEX/bridge/claude-settings.json::statusLine.command` must equal "
         f"{_CANONICAL_STATUSLINE_COMMAND!r} to preserve the A38 "
-        f"statusline-gate satisfaction chain; observed {observed_command!r}. "
+        f"statusline supporting-evidence chain; observed {observed_command!r}. "
         "If the renderer was intentionally relocated, update this "
         "invariant AND the A38 Open Soak Issues entry evidence chain in "
         "lockstep."
     )
 
 
-def test_supervisor_handoff_statusline_gate_carries_a38_evidence_anchors() -> None:
+def test_supervisor_handoff_statusline_gate_keeps_direct_proof_boundary() -> None:
     """A39 invariant: the `ClauDEX/SUPERVISOR_HANDOFF.md` active lane-truth
-    region must keep all A38 gate-satisfaction evidence anchors.
+    region must keep both the A38 supporting anchors and the explicit rule
+    that they do not close the final gate.
 
     A31 pins the gate-LANGUAGE substrings (`live CC worker`,
     `statusline correctly`, `not globally soak-ready`) but does not
-    verify that the accompanying A38 evidence anchors survive future
-    edits. Without A39, someone could edit away the artifact path /
-    reproduction command / SATISFIED verdict while preserving the
-    gate-language prose — the gate would visually read as satisfied
-    with no underlying evidence reference. A39 requires each
-    canonical evidence-chain token to appear in the active region.
+    verify that the accompanying A38 supporting anchors and "renderer
+    proof is insufficient" boundary survive future edits. Without A39,
+    someone could edit away the artifact path / reproduction command /
+    worker-pane boundary while preserving the gate-language prose — the
+    gate would visually read as closed or under-specified with no
+    underlying proof reference. A39 requires each canonical token to
+    appear in the active region and forbids the stale "gate satisfied"
+    claim from reappearing.
 
     Robustness: token-level substring scan with distinct anchors for
-    each evidence piece (verdict, artifact path, renderer reference,
-    reproduction-command shape) so a partial drift is caught at the
-    specific missing anchor.
+    each supporting-evidence piece and the direct-proof boundary so a
+    partial drift is caught at the specific missing anchor.
     """
     active = _active_region_for_path(
         SUPERVISOR_HANDOFF_DOC,
         _read(SUPERVISOR_HANDOFF_DOC),
     )
-    missing = [tok for tok in _A38_EVIDENCE_REQUIRED_TOKENS if tok not in active]
+    missing = [tok for tok in _STATUSLINE_GATE_REQUIRED_TOKENS if tok not in active]
     assert not missing, (
-        f"A39 statusline-gate evidence anchor drift: "
-        f"SUPERVISOR_HANDOFF.md active region is missing required A38 "
-        f"evidence token(s) {missing!r}. The gate-satisfaction claim "
-        "cannot be audited without these anchors. Required tokens: "
-        f"{list(_A38_EVIDENCE_REQUIRED_TOKENS)!r}. If the evidence chain "
-        "was intentionally reshaped, update this invariant in lockstep "
-        "and document the new anchor set in the A38 / A39 Open Soak "
-        "Issues entries."
+        f"A39 statusline-gate anchor drift: SUPERVISOR_HANDOFF.md active "
+        f"region is missing required statusline-gate token(s) {missing!r}. "
+        "The final gate cannot be audited correctly without these anchors. "
+        f"Required tokens: {list(_STATUSLINE_GATE_REQUIRED_TOKENS)!r}. "
+        "If the evidence chain or direct-proof boundary was intentionally "
+        "reshaped, update this invariant in lockstep and document the new "
+        "anchor set in the A38 / A39 Open Soak Issues entries."
     )
+    assert "global-soak gate SATISFIED" not in active
+    assert "The soak lane is now globally soak-ready" not in active

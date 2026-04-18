@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 source "${SCRIPT_DIR}/claudex-common.sh"
-BRAID_ROOT="${BRAID_ROOT:-${ROOT}/.b2r}"
+BRAID_ROOT="$(claudex_resolve_braid_root "$ROOT" "${BRAID_ROOT:-}" "${CLAUDEX_STATE_DIR:-}")"
 PID_DIR="${CLAUDEX_STATE_DIR:-$(claudex_state_dir "$ROOT" "$BRAID_ROOT")}"
 PID_FILE="${PID_DIR}/auto-submit.pid"
 LOG_FILE="${PID_DIR}/auto-submit.log"

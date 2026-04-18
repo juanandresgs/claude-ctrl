@@ -36,6 +36,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -774,6 +775,55 @@ class TestBridgeStatusSurface:
         )
         assert status.returncode == 0
         assert "--- pending_review ---" not in status.stdout
+
+    def test_status_script_autodiscovers_named_lane_without_env(self, bridge_env):
+        run_id = "run-status-autodiscover"
+        instruction_id = "inst-status-autodiscover"
+        lane_dir = bridge_env["repo"] / ".claude" / "claudex" / "b2r-v2-stable"
+        lane_dir.mkdir(parents=True, exist_ok=True)
+        (lane_dir / "braid-root").write_text(f"{bridge_env['braid']}\n")
+        (lane_dir / "pending-review.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "instruction_id": instruction_id,
+                    "response": "lane-local artifact",
+                }
+            )
+        )
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="waiting_for_codex",
+            response_payload={
+                "instruction_id": instruction_id,
+                "completed_at": "2026-04-08T00:35:10Z",
+                "transcript_path": "/tmp/fake/transcript.jsonl",
+                "response": "status script should auto-discover this lane",
+            },
+            updated_at="2026-04-08T00:35:15Z",
+        )
+
+        env = {
+            **os.environ,
+            "CLAUDEX_RUNTIME_CLI": str(_REPO_ROOT / "runtime" / "cli.py"),
+            "CLAUDEX_PYTHON_BIN": sys.executable,
+        }
+        status = subprocess.run(
+            ["bash", str(_STATUS)],
+            cwd=str(bridge_env["repo"]),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert status.returncode == 0, (
+            f"bridge-status.sh failed during autodiscovery: stderr={status.stderr!r}"
+        )
+        stdout = status.stdout
+        assert f"braid_root: {bridge_env['braid']}" in stdout
+        assert f"lane_state_dir: {lane_dir}" in stdout
+        assert f"active_run: {run_id}" in stdout
+        assert instruction_id in stdout
 
 
 # ---------------------------------------------------------------------------

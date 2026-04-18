@@ -53,6 +53,23 @@ def test_bridge_settings_pin_1m_opus_model(bridge_settings):
     )
 
 
+def test_bridge_settings_pin_worker_statusline_command(bridge_settings):
+    status_line = bridge_settings.get("statusLine")
+    assert isinstance(status_line, dict), (
+        "ClauDEX/bridge/claude-settings.json must define `statusLine` for the "
+        "actual worker launch path; otherwise a fresh bridge worker can never "
+        "render the runtime-backed HUD."
+    )
+    assert status_line.get("type") == "command", (
+        "ClauDEX/bridge/claude-settings.json must set `statusLine.type` to "
+        "`command` for the worker launch path."
+    )
+    assert status_line.get("command") == "$HOME/.claude/scripts/statusline.sh", (
+        "ClauDEX/bridge/claude-settings.json must point `statusLine.command` "
+        "at the canonical runtime-backed HUD renderer."
+    )
+
+
 def test_launcher_no_longer_carries_model_authority(launch_src):
     assert "CLAUDEX_CLAUDE_MODEL" not in launch_src, (
         "claudex-claude-launch.sh must not keep a launcher-side model "

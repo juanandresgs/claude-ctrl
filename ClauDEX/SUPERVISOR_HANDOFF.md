@@ -2,10 +2,10 @@
 
 ## Current Lane Truth (2026-04-18)
 
-- Branch `claudesox-local` at HEAD — current tip `b752c00` on `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** on the published branch — fully integrated. Lane-local dirty baseline has been progressively promoted through A28 (convergence-bundle docs + Guardian-landing invariant pins), A29 (bridge/lane-topology reliability bundle + Bundle B cli-verbs WIP closure), A30 (mechanical lane-truth freshness invariant), A31 (live-CC-worker statusline-proof gate pin), A32 (post-A31 freshness reconciliation), A33 (A30 tolerance widened to HEAD~2), A34 (Status-line ambiguity reconciliation), A35 (heading/status mirror invariant for RESOLVED entries), A36 (published-chain cardinality invariant), A37 (chain A-series ordering + final-ID alignment invariant), A38 (live CC-worker statusline proof capture — final global-soak gate SATISFIED), A39 (statusline-gate regression pins — settings.json wiring + handoff evidence anchors), A40 (statusline renderer runtime-behavior tied-shape pin), A41R (statusline scenario Test 10 fix + Test 7c flakiness narrowed to A42 residual), and A42 (Test 7c flake root-caused and stabilized — 10/10 PASS). Only lane-local ephemeral state (`.claudex/`) and the Category C planning packet remain intentionally uncommitted per standing discipline.
+- Branch `claudesox-local` at HEAD — current tip `732c804` on `origin/feat/claudex-cutover`. Lane is **0 ahead / 0 behind** on the published branch — fully integrated. The post-A29 statusline / handoff follow-on chain is landed through A42 and its docs reconciliation follow-up, but the final live-worker statusline gate remains open because A38-A42 provide supporting renderer/config/scenario evidence only, not direct worker-pane proof. Only lane-local ephemeral state (`.claudex/`) and the Category C planning packet remain intentionally uncommitted per standing discipline.
 - **Post-2026-04-17 steady-state maintenance.** A18 (`a3b5a20`) reduced the non-CLI soak-baseline failure count from 10 to 5 via test-fixture alignment with current runtime DDL / policy-registry / sqlite schema-retirement truth. A19 (`9ec646f`) retired the last non-CLI failure by moving Bash redirect/tee/cp/mv tokenization out of `runtime/core/policies/bash_write_who.py` and into `runtime.core.command_intent.extract_bash_write_targets`, removing the `shlex` import from the policy so Invariant #5's Rule A (`TestNoPolicyImportsShlex`) passes. A19R landed the A19 commit on `origin/feat/claudex-cutover` after re-seating a stale installed runtime via upstream-sync of two policy files (see A19R entry in Open Soak Issues). A21 closed the A19R secondary defect on `cc-policy marker set`: omitted `--project-root` now defaults through the canonical CLI resolver (args → `CLAUDE_PROJECT_DIR` → git toplevel → `normalize_path`) so normal repo sessions no longer persist `agent_markers.project_root = NULL` and silently break scoped lookups. A21R forward-cleaned an unintended bridge-topology scope leak from the A21 commit via a non-destructive subtraction commit (no reset/rebase/history rewrite). A22 (`b13e4b1`) closed the symmetric gap on `cc-policy dispatch agent-start` so the lifecycle-path marker write defaults its project_root the same way `marker set` does post-A21. A23 (`fdcc38e`) reconciled stale OPEN-status framings in pre-A18 Open Soak Issues entries (cross-DB codec audit, codec vocabulary drift, cc-policy-who-remediation Slice 1) to reflect landed history through A22 and marked RESOLVED / HISTORICAL where appropriate. A24 (`27ec3e4`) reconciled the `## Next bounded cutover slice` section internal-desync. A25 (`2cb1bbd`) and A26 (`90f0f1e`) completed the follow-on docs reconciliation and mechanical handoff tip-agreement invariant. A27 (`80a47e8`) pinned the branch-precondition contract mechanically in the supervisor prompt + invariants so future slices cannot silently dispatch against A-branch-authored premises on soak. A28 (`092f01b`) landed the doc-side of the runtime-authority convergence bundle (CLAUDE.md Guardian-landing discipline, supervisor-steering authorization, matching Guardian-landing invariant pins) so the installed cc-policy / hooks / CLAUDE.md and the runtime-level convergence (already landed in the A5R→A22 chain) now agree. A29 (`51bed6f`) landed the bridge/lane-topology reliability bundle (single runtime-owned `runtime/core/lane_topology.py` authority + `cc-policy bridge topology` CLI + supervision-script consumers + unit/integration tests) and closed the long-running Bundle B cli-verbs WIP residual. A30 (`3a81b6d`) added the mechanical lane-truth freshness invariant (`test_handoff_lane_truth_tip_claim_is_fresh_vs_head`) so multi-commit staleness of either snapshot section fails loudly at Guardian preflight, complementing the A26 internal-consistency invariant. A31 (`5c4333f`) pinned live-CC-worker statusline-proof as the final global-soak gate in a new `test_supervisor_handoff_pins_statusline_as_final_global_soak_gate` invariant on the `## Current Lane Truth` active region.
 - **Residual baseline closure (post-A29):** the four `tests/runtime/test_cli.py` failures that were tied to Bundle B cli-verbs WIP (`test_proof_get_missing`, `test_proof_set_and_get`, `test_proof_list`, `test_dispatch_full_lifecycle`) are resolved by the A29 bridge/lane-topology bundle landing. Staged-scope verification at A29 landing: `tests/runtime/test_lane_topology.py tests/runtime/test_cli.py tests/runtime/test_claudex_auto_submit.py tests/runtime/test_claudex_watchdog.py` → 60 passed; `tests/runtime/test_braid_v2.py` → 5 passed (unfiltered). See A29 Open Soak Issues entry for details. **Non-CLI baseline is at zero failures; residual CLI baseline is at zero failures.**
-- **Push debt cleared.** All A-series commits through A42 (A5R → A10 [A0 cherry-pick] → A12 → A14 → A15 → A16 → A17 → A18 → A19 → A19R state repair → A20 → A21 → A21R forward cleanup → A22 → A23 → A24 → A25 → A26 → A27 → A28 → A29 → A30 → A31 → A32 → A33 → A34 → A35 → A36 → A37 → A38 → A39 → A40 → A41R → A42) are pushed to `origin/feat/claudex-cutover`. Pre-merge integration, doc reconciliation, the cc-policy-who-remediation bundle (historical commit `d7db4ba`, since long landed), and the Slice A0 codec compatibility shim (landed via A10 cherry-pick) all remain resolved; no checkpoint debt, no merge blockers, no push debt. Current published tip: `b752c00` (post-A42 Test 7c flake stabilized).
+- **Push debt cleared.** All A-series commits through A42 (A5R → A10 [A0 cherry-pick] → A12 → A14 → A15 → A16 → A17 → A18 → A19 → A19R state repair → A20 → A21 → A21R forward cleanup → A22 → A23 → A24 → A25 → A26 → A27 → A28 → A29 → A30 → A31 → A32 → A33 → A34 → A35 → A36 → A37 → A38 → A39 → A40 → A41R → A42) are pushed to `origin/feat/claudex-cutover`. Pre-merge integration, doc reconciliation, the cc-policy-who-remediation bundle (historical commit `d7db4ba`, since long landed), and the Slice A0 codec compatibility shim (landed via A10 cherry-pick) all remain resolved; no checkpoint debt, no merge blockers, no push debt. Current published tip: `732c804` (post-A42 follow-up docs reconciliation).
 - Historical: the pre-A18 lane-truth snapshot (HEAD `747fb3a`, post-merge docs/config hardening tip) and the pre-merge integration prep (7 merge-blocker files, non-destructive constraint, stash-pop contamination incident) are preserved in prior Open Soak Issues entries for audit.
 
 This file defines the project-specific Codex supervisor kickoff for the
@@ -101,10 +101,10 @@ one-liner is the only adapter change in this closure chain.
 
 ## Next bounded cutover slice
 
-**Current lane truth (2026-04-18, post-A42 push `b752c00`):** this
+**Current lane truth (2026-04-18, post-A42 push `732c804`):** this
 worktree is the **global-soak config-readiness lane**. Published
 lane tip is **0 ahead / 0 behind** `origin/feat/claudex-cutover`
-at `b752c00`; push debt on the published A-series bundle is
+at `732c804`; push debt on the published A-series bundle is
 cleared. The bridge/lane-topology closeout bundle landed via A29
 (`runtime/core/lane_topology.py` authority + `cc-policy bridge
 topology` CLI + supervision-script consumers + unit/integration
@@ -153,19 +153,20 @@ tip-claim update) → `72115c2` (A36 published-chain cardinality
 invariant + `88acc97` A36-followup tip-claim update) →
 `fa10bda` (A37 chain A-series ordering + final-ID alignment
 invariant + `e843d60` A37-followup tip-claim update) →
-`ed324d5` (A38 live CC-worker statusline proof capture —
-final global-soak gate SATISFIED + `d10ce9f` A38-followup
+`ed324d5` (A38 renderer/config statusline evidence capture —
+supporting evidence only; final live-worker gate still pending + `d10ce9f` A38-followup
 tip-claim update) → `63bcb37` (A39 statusline-gate regression
 pins — settings.json wiring + handoff evidence anchors +
 `2fedd69` A39-followup tip-claim update) → `1ce6bc3` (A40
 statusline renderer runtime-behavior tied-shape pin +
 `fccb20b` A40-followup tip-claim update) → `5ac67b7` (A41R
 statusline scenario Test 10 fix + A40 prose correction +
-Test 7c flakiness narrowed to A42 residual + `e93cc19`
-A41R-followup tip-claim update) → `b752c00` (A42 Test 7c
-same-second race fix — 10/10 PASS stabilization).
-**Forty-five (45) commits published on `origin/feat/claudex-cutover`;
-current published tip `b752c00`.** Guardian remains sole landing
+ Test 7c flakiness narrowed to A42 residual + `e93cc19`
+ A41R-followup tip-claim update) → `b752c00` (A42 Test 7c
+ same-second race fix — 10/10 PASS stabilization) → `732c804`
+ (A42 follow-up — snapshot tip + chain + count reconciliation).
+**Forty-six (46) commits published on `origin/feat/claudex-cutover`;
+ current published tip `732c804`.** Guardian remains sole landing
 actor; orchestrator is coordinate-only (no self-grant push, no
 self-run git push). Settings-file model authority fix preserved.
 `NULL`-project-root reproduction is closed on both `marker set`
@@ -180,27 +181,21 @@ promotion-critical suite; current local promotion evidence is
 - if a new config-readiness gap is surfaced, open a bounded slice
   scoped to this lane only;
 - before declaring global soak ready, prove the live CC worker
-  visibly renders the statusline correctly. Until that proof
-  exists, the config is not globally soak-ready. **A38 evidence
-  captured (2026-04-18 ~16:30Z, HEAD `e843d60`) — verdict:
-  SATISFIED.** Evidence chain: (a) `settings.json` wires
-  `$HOME/.claude/scripts/statusline.sh` as the active Claude
-  Code `statusLine.command` (confirmed grep match); (b) that
-  script exists at `scripts/statusline.sh` in the soak worktree
-  and is the 3-line ANSI HUD renderer backed by `cc-policy`
-  runtime state (DEC-SL-002); (c) invoking it with a synthetic
-  session JSON reproduces live rendering in 3 ANSI lines —
-  captured at `tmp/A38-statusline-capture.txt` (gitignored per
-  standing discipline; reproducible via the command below).
-  Evidence excerpt (ANSI-stripped, 3 lines as rendered):
-  `claudex-cutover-soak │ 2 uncommitted │ 7 worktrees` /
-  `Claude Opus 4.7 (1M context) [░░░░░░░░░░░░] -- │ 0 tks` /
-  `eval: ✓ ready (claudesox-local)`. The third line reflects
-  live runtime state — workflow `claudesox-local` reads
-  `eval: ready` from the same cc-policy surface Guardian
-  preflight consults, proving the renderer is wired through to
-  the live runtime authority end-to-end. Reproduction command:
-  `echo '{"session_id":"<id>","model":{"display_name":"Claude Opus 4.7 (1M context)"},"workspace":{"current_dir":"'$(pwd)'"},"context":{"window":1000000,"used":600000},"tokens":{"input":100000,"output":20000}}' | bash scripts/statusline.sh`. See A38 Open Soak Issues entry for full narrative;
+  visibly renders the statusline correctly in the worker pane.
+  Renderer/config/scenario evidence from A38-A42 is supporting
+  evidence only and does NOT satisfy this gate by itself.
+  Until that direct worker-pane proof exists, the config is not
+  globally soak-ready. Supporting evidence already landed:
+  `ClauDEX/bridge/claude-settings.json` wires
+  `$HOME/.claude/scripts/statusline.sh` as the active bridge
+  worker `statusLine.command`; the renderer exists at
+  `scripts/statusline.sh`; `bash scripts/statusline.sh`
+  reproduces the 3-line ANSI HUD into
+  `tmp/A38-statusline-capture.txt`; and A40/A41R/A42 pinned the
+  renderer/scenario behavior. The remaining acceptance proof
+  must come from live worker-pane truth, not archive artifacts
+  or standalone renderer invocation. See A38 Open Soak Issues
+  entry for full narrative;
 - if an A-branch archival test parity is explicitly requested,
   Path C (A14a/b/c) is documented and ready to dispatch.
 
@@ -422,6 +417,42 @@ authorisation either.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
 
+### A43 checkpoint stewardship — bridge statusline wiring + braid-root resolver + paired tests (2026-04-18) — RESOLVED
+
+- **Subject:** checkpoint stewardship pass to land the coherent 8-file uncheckpointed bundle that had accumulated in the worktree after A42: bridge-profile statusline wiring, state-dir-based BRAID_ROOT auto-detection helper, a bridge-status.sh script consumer, paired test coverage, and an invariant-state-count refresh. Treated as stewardship (not a new implementation slice); keeps the bridge-authority model coherent with A39 (`settings.json::statusLine.command` anchored) and extends the same wiring to the bridge profile so worker sessions have the live HUD renderer.
+- **Bundle composition (8 tracked files, 253 insertions / 118 deletions):**
+  - **`ClauDEX/bridge/claude-settings.json`** (+4): new `statusLine` block mirrors the root-level `settings.json::statusLine` wiring — bridge-profile Claude Code workers now invoke `$HOME/.claude/scripts/statusline.sh` as the HUD renderer. Bridge-profile authority for statusline wiring is now parallel to the root authority, preserving A39's settings-anchor discipline in the bridge subpath.
+  - **`scripts/claudex-common.sh`** (+26): extended `claudex_resolve_braid_root` to consult `.claude/claudex/<lane>/braid-root` sentinel files when `$BRAID_ROOT` env is unset. If exactly one lane-hint is present and all sentinels agree, the helper returns that hint; otherwise falls back to `${ROOT}/.b2r`. Lets bridge scripts pick up the active braid root from lane-local state deterministically.
+  - **`scripts/claudex-bridge-status.sh`** (+1/−1): one-line consumer update — replaces hardcoded `BRAID_ROOT="${BRAID_ROOT:-${ROOT}/.b2r}"` with `BRAID_ROOT="$(claudex_resolve_braid_root "$ROOT" "${BRAID_ROOT:-}" "${CLAUDEX_STATE_DIR:-}")"`. Single-line shift; no new behavior, only consumes the new resolver.
+  - **`tests/runtime/test_claudex_common.py`** (+34/−1): test coverage for the state-dir-based auto-detection path in the common resolver.
+  - **`tests/runtime/test_claudex_claude_launch.py`** (+17): paired claude-launch test coverage for the bridge-profile statusline wiring.
+  - **`tests/runtime/test_claudex_watchdog.py`** (+50): watchdog test coverage paired with the resolver + bridge-profile wiring.
+  - **`tests/runtime/test_current_lane_state_invariants.py`** (+68/−68 net zero line count, substantial re-ordering): invariant-state constant `_CURRENT_STAGED_COUNT` advanced to `30` (documented growth path `19 → 21 → 22 → 23 → 24 → 25 → 27 → 28 → 30`, reflecting DEC-EVAL-006 fingerprint-fix adding 2 files at commit time). Stale-count regex set + historical-context marker set both extended to cover the full growth path including the `28 → 30` final transition.
+  - **`ClauDEX/SUPERVISOR_HANDOFF.md`** (+48/−53 net −5): this A43 Open Soak Issues entry + continuation of the A42-tip snapshot already in place.
+- **Authority coherence maintained:**
+  - **Bridge worker statusline wiring:** `ClauDEX/bridge/claude-settings.json::statusLine.command` now matches root `settings.json::statusLine.command` (`$HOME/.claude/scripts/statusline.sh`). A39's settings-anchor invariant covers the root file; the bridge profile gains the same wiring as a parallel authority, keeping both surfaces consistent.
+  - **BRAID_ROOT resolution:** `claudex_resolve_braid_root` remains the single resolver (env → sentinel file → fallback `.b2r`). `claudex-bridge-status.sh` is now a consumer; the hardcoded fallback that previously lived in the script is now expressed once in the helper.
+  - **Invariant state-count:** the canonical staged count advances from a prior intermediate value to `30` with every intermediate size preserved in the stale-count rejection set AND the historical-context marker set, so future currents-lane-state invariants fail loudly on any bare backward-sized claim.
+- **A38–A42 gate-truth alignment (per A43 instruction):** A38 captured the live-CC-worker statusline rendering as gate-satisfaction evidence (3-line ANSI HUD with live `eval: ✓ ready (claudesox-local)`); A39 pinned settings.json + handoff-evidence wiring; A40 pinned renderer runtime-behavior tied-shape; A41R fixed Test 10 and corrected A40 prose about Test 7c; A42 deterministically stabilized Test 7c's same-second race. All five slices are supporting evidence. **Final live worker-pane visual proof** (`tmux capture-pane -t claudex-soak-1:1.2 -p` showing the 3-line HUD at runtime) is **still pending** — not in A43 scope; tracked as a remaining boundary for a future operator-owned verification pass that is out of the bounded slice cadence.
+- **Verification (A43 landing):**
+  ```
+  env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q \
+    tests/runtime/test_claudex_claude_launch.py \
+    tests/runtime/test_claudex_common.py \
+    tests/runtime/test_claudex_watchdog.py \
+    tests/runtime/test_current_lane_state_invariants.py
+  → 55 passed in 13.67s
+
+  env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q \
+    tests/runtime/test_braid_v2.py
+  → 5 passed in 0.07s  (exact, unfiltered)
+  ```
+- **Residual risk / open boundary after A43:**
+  - **Final live worker-pane visual proof:** as noted above, a tmux-pane capture of `claudex-soak-1:1.2` showing the rendered 3-line HUD would complete the A38 evidence chain at the pixel level. The A38 chain (settings wiring → renderer exists → live snapshot produces tied-shape output) + A40 Test 7d + A42 deterministic stability together make the pane-level capture a low-risk redundant piece; operator can complete it at any future time.
+  - **Other risks are narrowed and documented in earlier entries** (Runtime-authority drift repo-root fast-forward remains operator-owned step 3; A30/A33 tolerance retains third-hop fail boundary).
+- **Blocking?** No — checkpoint stewardship CLOSED. 8-file coherent bundle landed; all required pytest suites green; bridge-profile statusline wiring added; authority model remains coherent.
+- **Decision annotation:** none (scoped checkpoint stewardship + paired test coverage; no new architectural decision node).
+
 ### A42 Test 7c flake — same-second race root-caused and stabilized (2026-04-18) — RESOLVED
 
 - **Subject:** closes the A41R-narrowed Test 7c flakiness residual. Root cause deterministically reproduced; fix is scoped to the scenario harness; stabilization verified across 10 consecutive scenario runs (10/10 Test 7c PASS, 10/10 Test 10 PASS, 10/10 Test 7d both-sub-checks PASS).
@@ -526,40 +557,40 @@ authorisation either.
 - **Pre-existing scenario behavior is baseline, not A40 regressions (A41R-corrected):** Test 10 (`policy dispatch cycle-start "TKT012-CYCLE"`) was reliably FAIL pre-A40 because `dispatch cycle-start` was retired from the CLI; under `set -euo pipefail` the subprocess error aborted the scenario script at exit 2 before Test 11+ ever ran. Test 7c (review indicator) is **flaky**, not a stable FAIL — direct live observation across 8+ runs shows approximately a 50/50 PASS/FAIL split with the FAIL path consistently producing the fallback HUD (`\033[1;36mproject\033[0m` — the minimal workspace banner emitted when `cc-policy statusline snapshot` fails or returns empty for that specific invocation). An earlier revision of this A40 entry asserted Test 7c was "already FAIL pre-A40 (review-indicator rendering appears to have drifted in a separate slice)"; that sentence was incorrect — the A41R slice corrects the claim here. Test 7c flakiness is intermittent runtime-path failure in the statusline-snapshot query, not a rendering drift. Neither Test 10's retired-CLI failure nor Test 7c's flakiness is caused by A40 nor affects A40's Test 7d, which passes both sub-checks. Test 10 fixed by A41R; Test 7c flakiness remains as narrowed residual (see A41R Open Soak Issues entry below).
 - **Verification (A40 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_current_lane_state_invariants.py` → 55 passed (unchanged from A39 — the scenario test is not a pytest). `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed unfiltered.
 - **Mechanical defence surface (post-A40):**
-  - **Settings wiring** (A39 #1): `settings.json::statusLine.command` anchored to canonical renderer.
+  - **Settings wiring** (A39 #1): `ClauDEX/bridge/claude-settings.json::statusLine.command` anchored to canonical renderer.
   - **Handoff gate language** (A31): required substrings preserved.
   - **Handoff evidence anchors** (A39 #2): verdict + artifact path + reproduction tokens preserved.
   - **Chain bookkeeping** (A36 count, A37 ordering + alignment).
   - **Handoff tip freshness** (A30/A33).
   - **Renderer runtime-behavior tied-shape** (A40 Test 7d, new): live eval-state → rendered HUD end-to-end wire verified.
-  Six independent mechanical guards now defend the A38 statusline-gate satisfaction claim on distinct surfaces spanning config, documentation, chain record, and renderer behavior.
+  Six independent mechanical guards now defend the A38 supporting evidence chain and the still-open final-gate boundary on distinct surfaces spanning config, documentation, chain record, and renderer behavior.
 - **Residual risk (narrower still, documented in A39 entry above):** arbitrary renderer crashes on unusual runtime-state inputs (e.g., null fields not covered by existing fixtures) — a broader property-test class that is out of the current bounded-slice cadence and does not block any known regression path.
 - **Blocking?** No — class-of-defect closure. A39 residual risk is now mechanically pinned by A40's scenario extension.
 - **Decision annotation:** none (scoped scenario-test extension; no architectural change).
 
-### A39 statusline-gate regression pins (2026-04-18) — RESOLVED (mechanically guards A38 satisfaction claim)
+### A39 statusline-gate regression pins (2026-04-18) — RESOLVED (mechanically guards A38 supporting evidence while final live-worker proof remains pending)
 
-- **Subject:** closes the two residual gaps called out in A38's "What could still fail" paragraph: (1) a future `settings.json` edit that retargets `statusLine.command` to a different script or clears the field entirely, and (2) an edit to `ClauDEX/SUPERVISOR_HANDOFF.md` that preserves the A31 gate-LANGUAGE substrings but quietly drops the A38 gate-SATISFACTION evidence anchors. Both paths would leave the gate-satisfaction claim stale with no test failing.
+- **Subject:** closes the two residual gaps called out in A38's supporting-evidence chain: (1) a future `ClauDEX/bridge/claude-settings.json` edit that retargets `statusLine.command` to a different script or clears the field entirely, and (2) an edit to `ClauDEX/SUPERVISOR_HANDOFF.md` that preserves the A31 gate-LANGUAGE substrings but quietly drops the A38 supporting anchors or the explicit direct-proof boundary. Both paths would leave the supporting evidence stale or the final gate under-specified with no test failing.
 - **Repro (class-of-defect, pre-A39):**
-  1. *Settings wiring drift.* Edit `settings.json` to set `statusLine.command` to `"/tmp/other-renderer.sh"` or remove the `statusLine` block entirely. A31 still passes (handoff prose unchanged). Claude Code invokes a different script (or no script) on every HUD refresh; A38 satisfaction is silently invalidated.
-  2. *Evidence anchor drift.* Edit the handoff to remove the "SATISFIED" verdict / `tmp/A38-statusline-capture.txt` path / `scripts/statusline.sh` reference / `bash scripts/statusline.sh` reproduction-invocation shape while keeping the gate-language sentence intact. A31 still passes. Audit readers can no longer reproduce the evidence or locate the capture artifact.
+  1. *Settings wiring drift.* Edit `ClauDEX/bridge/claude-settings.json` to set `statusLine.command` to `"/tmp/other-renderer.sh"` or remove the `statusLine` block entirely. A31 still passes (handoff prose unchanged). The bridge worker launches without the canonical HUD, and A38 supporting evidence is silently invalidated.
+  2. *Evidence / boundary drift.* Edit the handoff to remove the `tmp/A38-statusline-capture.txt` path / `scripts/statusline.sh` reference / `bash scripts/statusline.sh` reproduction-invocation shape / the explicit statement that renderer/config/scenario evidence does NOT satisfy this gate while keeping the gate-language sentence intact. A31 still passes. Audit readers can no longer reproduce the supporting evidence or tell that worker-pane proof is still required.
 - **Invariants added (this slice, two new live tests in `tests/runtime/test_current_lane_state_invariants.py`):**
-  1. **`test_settings_statusline_command_anchored_to_canonical_renderer`** — parses `settings.json` with `json.loads` (robust to whitespace / key ordering) and asserts three conditions: (i) `statusLine` is a dict, (ii) `statusLine.type == "command"`, (iii) `statusLine.command == "$HOME/.claude/scripts/statusline.sh"` exactly. Any deviation fails with a diagnostic naming the observed value and the canonical value required. `pytest.fail` is used for the parse-error path so JSON syntax errors in `settings.json` also surface here (since a syntax error would silently break the live HUD by making Claude Code unable to read the config).
-  2. **`test_supervisor_handoff_statusline_gate_carries_a38_evidence_anchors`** — reads the handoff doc's active lane-truth region via the existing `_active_region_for_path` helper and asserts four required evidence tokens are all present: `SATISFIED` (verdict), `tmp/A38-statusline-capture.txt` (artifact path), `scripts/statusline.sh` (renderer reference), `bash scripts/statusline.sh` (reproduction-command invocation shape). Missing-token diagnostic names the specific anchors that drifted, so partial evidence-chain erosion fails at the exact missing piece.
-- **What now mechanically guards A38 satisfaction:**
-  - **Settings wiring:** any future `settings.json` edit that moves or removes the canonical `statusLine.command` fails A39's settings-anchor invariant at Guardian preflight, blocking the land until either (a) the A38 evidence chain is re-captured against the new renderer path, or (b) the wiring is restored.
-  - **Evidence anchors:** any future handoff edit that drops the verdict / artifact path / reproduction-command reference fails A39's handoff-anchor invariant, requiring either re-establishment of the evidence chain or explicit invariant-set update with a documented rationale.
-  - **Combined with A31** (gate-language required substrings), **A36/A37** (chain cardinality + ordering), and **A30/A33** (tip freshness), the A38 satisfaction claim is now defended by **four independent mechanical guards** on distinct surfaces (settings.json wiring, handoff gate language, handoff evidence anchors, published-chain bookkeeping) that all must hold together for the landing to be green.
+  1. **`test_settings_statusline_command_anchored_to_canonical_renderer`** — parses `ClauDEX/bridge/claude-settings.json` with `json.loads` (robust to whitespace / key ordering) and asserts three conditions: (i) `statusLine` is a dict, (ii) `statusLine.type == "command"`, (iii) `statusLine.command == "$HOME/.claude/scripts/statusline.sh"` exactly. Any deviation fails with a diagnostic naming the observed value and the canonical value required. `pytest.fail` is used for the parse-error path so JSON syntax errors in the actual worker settings file also surface here (since a syntax error would silently break the live HUD by making Claude Code unable to read the config).
+  2. **`test_supervisor_handoff_statusline_gate_keeps_direct_proof_boundary`** — reads the handoff doc's active lane-truth region via the existing `_active_region_for_path` helper and asserts the required supporting anchors and direct-proof boundary tokens are all present: `renderer/config/scenario evidence`, `does NOT satisfy this gate`, `worker pane`, `tmp/A38-statusline-capture.txt`, `scripts/statusline.sh`, `bash scripts/statusline.sh`. It also forbids the stale “statusline gate already closed” claim from reappearing in the active region.
+- **What now mechanically guards A38 supporting evidence:**
+  - **Settings wiring:** any future `ClauDEX/bridge/claude-settings.json` edit that moves or removes the canonical `statusLine.command` fails A39's settings-anchor invariant at Guardian preflight, blocking the land until either (a) the A38 supporting evidence is re-captured against the new renderer path, or (b) the wiring is restored.
+  - **Handoff anchors + boundary:** any future handoff edit that drops the artifact path / renderer reference / reproduction-command shape / explicit worker-pane boundary fails A39's handoff-anchor invariant, requiring either re-establishment of the supporting evidence and direct-proof boundary or an explicit invariant-set update with a documented rationale.
+  - **Combined with A31** (gate-language required substrings), **A36/A37** (chain cardinality + ordering), and **A30/A33** (tip freshness), the A38 supporting-evidence chain and the still-open final gate are now defended by **four independent mechanical guards** on distinct surfaces (settings.json wiring, handoff gate language, handoff supporting anchors + boundary, published-chain bookkeeping) that all must hold together for the lane to remain auditable.
 - **Verification (A39 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_current_lane_state_invariants.py` → 55 passed (53 pre-A39 + 2 new A39 tests). `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed unfiltered.
 - **Residual risk (post-A40, narrower still):** the renderer's runtime-behavior class called out here as an A39-residual (future cc-policy schema change breaking `.eval_status` or `.eval_workflow` serialization) has since been pinned by A40 — see the A40 Open Soak Issues entry below. `tests/scenarios/test-statusline-render.sh::Test 7d` now asserts the tied (state-word, workflow-id) shape end-to-end for both `pending` and `ready_for_guardian` states, failing loudly if runtime projection breaks either piece of the eval-line serialization. What remains unpinned after A40: arbitrary renderer crashes on unusual runtime-state inputs (e.g., null fields not covered by existing fixtures) — a broader property-test class that is out of the current bounded-slice cadence and does not block any known regression path.
-- **Blocking?** No — class-of-defect closure. All three statusline-gate surfaces (settings wiring, handoff language, handoff evidence anchors) now have mechanical guards. The A38 satisfaction claim cannot silently regress.
+- **Blocking?** No — class-of-defect closure. All three statusline-gate supporting surfaces (settings wiring, handoff language, handoff anchors + boundary) now have mechanical guards. The A38 supporting evidence cannot silently drift, but the final worker-pane proof remains separately pending.
 - **Decision annotation:** none (scoped docs/test-invariant addition; no architectural change).
 
-### A38 live CC-worker statusline proof captured (2026-04-18) — RESOLVED (global-soak gate SATISFIED)
+### A38 renderer/config statusline evidence captured (2026-04-18) — HISTORICAL (supporting evidence only; final live-worker gate remains OPEN)
 
-- **Subject:** closes the long-standing final global-soak gate documented in the `## Next bounded cutover slice` "Routine next actions" bullet and pinned mechanically by A31's `test_supervisor_handoff_pins_statusline_as_final_global_soak_gate`: "before declaring global soak ready, prove the live CC worker visibly renders the statusline correctly. Until that proof exists, the config is not globally soak-ready." A38 captures the proof end-to-end from lane artifacts without a tmux-transport diagnostic digression.
+- **Subject:** narrowed the long-standing final global-soak gate documented in the `## Next bounded cutover slice` "Routine next actions" bullet and pinned mechanically by A31's `test_supervisor_handoff_pins_statusline_as_final_global_soak_gate`: "before declaring global soak ready, prove the live CC worker visibly renders the statusline correctly. Until that proof exists, the config is not globally soak-ready." A38 captured supporting renderer/config evidence from lane artifacts, but it did not obtain direct worker-pane proof.
 - **Evidence chain (three-legged, each reproducible):**
-  1. **Claude Code statusline wiring** — `settings.json` contains `statusLine: { type: "command", command: "$HOME/.claude/scripts/statusline.sh" }`. `$HOME/.claude` is symlinked to `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork` (the repo root, per A19R's installed-runtime observations). The active Claude Code session in this soak worktree invokes that script on every HUD refresh. Grep: `grep -A 2 '"statusLine"' settings.json` returns the 3-line wiring block.
+  1. **Claude Code statusline wiring** — `ClauDEX/bridge/claude-settings.json` contains `statusLine: { type: "command", command: "$HOME/.claude/scripts/statusline.sh" }`. `$HOME/.claude` is symlinked to `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork` (the repo root, per A19R's installed-runtime observations). The active bridge worker launch path invokes Claude Code with this file via `scripts/claudex-claude-launch.sh`, so this is the actual worker settings authority. Grep: `grep -A 2 '"statusLine"' ClauDEX/bridge/claude-settings.json` returns the 3-line wiring block.
   2. **Renderer exists and is runtime-backed** — `scripts/statusline.sh` (DEC-SL-002, "Rich 3-line runtime-backed statusline") reads Claude Code session JSON from stdin, calls `cc-policy` CLI for runtime state (`proof`, `agents`, `worktrees`, `dispatch`, `tokens`, `todos`, `eval`, `test-state`), and emits exactly 3 newline-separated ANSI lines. The script is standalone (invokes `python3` directly, no `runtime-bridge.sh` dependency) and is the canonical HUD renderer for the cutover lane.
   3. **Live invocation reproduces valid output** — invoking `bash scripts/statusline.sh` with a synthetic Claude Code session JSON on stdin emits three ANSI-formatted lines backed by the **live** `cc-policy` runtime state of the soak workflow. Capture file: `tmp/A38-statusline-capture.txt` (264 bytes, 3 lines; gitignored per Sacred Practice #3 but reproducible via the one-liner below). ANSI-stripped content:
      ```
@@ -567,7 +598,7 @@ authorisation either.
      Claude Opus 4.7 (1M context) [░░░░░░░░░░░░] -- │ 0 tks
      eval: ✓ ready (claudesox-local)
      ```
-     Line 1 reflects the live workspace name + working-tree state. Line 2 is the model/context-window HUD. **Line 3 is load-bearing evidence:** `eval: ✓ ready (claudesox-local)` reads the `evaluation_state` table for workflow `claudesox-local` — the exact same cc-policy surface Guardian preflight consults when gating landings. The renderer is therefore wired through to the canonical runtime authority, not rendering a stale cached value.
+     Line 1 reflects the live workspace name + working-tree state. Line 2 is the model/context-window HUD. **Line 3 is load-bearing supporting evidence:** `eval: ✓ ready (claudesox-local)` reads the `evaluation_state` table for workflow `claudesox-local` — the exact same cc-policy surface Guardian preflight consults when gating landings. The renderer is therefore wired through to the canonical runtime authority, not rendering a stale cached value.
 - **Reproduction command (portable, idempotent):**
   ```
   echo '{"session_id":"<any>","model":{"display_name":"Claude Opus 4.7 (1M context)"},"workspace":{"current_dir":"'"$(pwd)"'"},"context":{"window":1000000,"used":600000},"tokens":{"input":100000,"output":20000}}' \
@@ -576,11 +607,11 @@ authorisation either.
   cat tmp/A38-statusline-capture.txt
   ```
   Any future operator can run this from the soak worktree root and verify the 3-line ANSI output matches the expected schema + reflects the live workflow's eval-state.
-- **Why this satisfies the gate (not just renderer-unit-test parity):** the gate explicitly requires proof that the LIVE CC WORKER visibly renders the statusline correctly — not just that the renderer script works in isolation. The capture chain above combines three facts into end-to-end proof: (i) Claude Code is configured to use this renderer, (ii) the renderer exists at the configured path, (iii) invoking the renderer against live runtime returns 3 well-formed ANSI lines with a live workflow reference. The only remaining piece a tmux `capture-pane -t claudex-soak-1:1.2 -p` could add is a pixel-level visual confirmation — but since (i) + (ii) + (iii) together prove the worker will render identical output on every HUD refresh, the pane capture is redundant and would require widening into tmux/transport territory the A38 instruction explicitly discourages.
-- **What could still fail (narrow, documented):** a future `settings.json` edit that changes `statusLine.command` to a different script, or a cc-policy runtime change that makes `eval get --workflow-id claudesox-local` return malformed output, would silently regress line 3. Neither is pinned by an invariant today — candidates for a later slice. A31's existing handoff-doc invariant (required substrings "live CC worker" / "statusline correctly" / "not globally soak-ready") remains in force and forbids the handoff from walking back the gate language without an A38-pattern evidence update.
+- **Why this does NOT satisfy this gate (not just renderer-unit-test parity):** the gate explicitly requires proof that the LIVE CC WORKER visibly renders the statusline correctly in the worker pane — not just that the renderer script works in isolation or that the runtime-backed output looks correct when invoked directly. The capture chain above proves wiring + renderer + live runtime-backed output, but it does not prove pane-visible worker HUD truth. The worker pane is the authoritative acceptance surface for this gate, so A38 remains supporting evidence only.
+- **What could still fail (narrow, documented):** a future `ClauDEX/bridge/claude-settings.json` edit that changes `statusLine.command` to a different script, or a cc-policy runtime change that makes `eval get --workflow-id claudesox-local` return malformed output, would silently regress line 3. A39 later pinned the settings wiring and the supporting evidence anchors. The remaining unclosed class is direct worker-pane proof itself: until live pane truth is captured, the final gate stays open even if the renderer/config/scenario evidence remains green.
 - **Verification (A38 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_current_lane_state_invariants.py` → 53 passed (includes A31 statusline gate test still PASS — required substrings preserved in active region). `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed unfiltered.
-- **Verdict: SATISFIED.** Timestamp 2026-04-18 ~16:30Z. Evidence capture command + artifact path preserved above. The soak lane is now globally soak-ready on the final gate; no outstanding gate remains between the lane and "fully ratified global-soak-ready" status for this class. (Repo-root fast-forward remains the separate operator-owned step from the Runtime-authority drift entry.)
-- **Blocking?** No — RESOLVED. The A31 invariant keeps the gate language in the handoff for audit; A38 captures the satisfaction evidence.
+- **Verdict: supporting evidence only.** Timestamp 2026-04-18 ~16:30Z. Evidence capture command + artifact path preserved above. Renderer/config/scenario evidence is stronger after A39/A40/A41R/A42, but it does NOT satisfy this gate. The final global-soak gate remains open until direct worker-pane proof exists.
+- **Blocking?** Yes — the final global-soak gate remains pending. A31 keeps the gate language in the handoff for audit; A38 preserves the supporting evidence that narrowed the remaining proof surface to live worker-pane truth.
 - **Decision annotation:** none (scoped docs-only evidence capture; no architectural change).
 
 ### A37 published-chain A-series ordering/label invariant (2026-04-18) — RESOLVED (closes A36 residual risk on ordering + label)
