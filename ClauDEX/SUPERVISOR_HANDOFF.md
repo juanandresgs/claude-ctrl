@@ -419,6 +419,51 @@ authorisation either.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
 
+### A44 final live worker-pane statusline proof attempt (2026-04-18) — STILL OPEN (bounded attempt; gate remains unclosed; not a runtime regression)
+
+- **Subject:** A44 executed the single bounded evidence path authorized by the slice instruction — `tmux capture-pane -t claudex-soak-1:1.2 -p` — to attempt the final live worker-pane proof that satisfies the A31-pinned gate. **Result: the 3-line HUD from `scripts/statusline.sh` is NOT visible in the captured pane output.** Gate remains OPEN.
+- **Exact attempt commands (reproducible):**
+  ```
+  tmux capture-pane -t claudex-soak-1:1.2 -p > tmp/A44-worker-pane-capture.txt 2>&1
+  echo "exit code: $?"   # 0
+  wc -lc tmp/A44-worker-pane-capture.txt   # 60 lines / 2833 bytes
+  date -u +"%Y-%m-%dT%H:%M:%SZ"   # 2026-04-18T18:47:54Z
+  ```
+  Captured artifact path: `tmp/A44-worker-pane-capture.txt` (lane-local, gitignored per Sacred Practice #3).
+- **Expected vs observed (four grep signature checks):**
+  - Line 1 signature (`uncommitted.*worktrees` OR `claudex-cutover-soak`): **0 matches**.
+  - Line 2 signature (`tks` OR `Claude Opus`): **0 matches**.
+  - Line 3 signature (`eval: ✓|⏳|✗|⚠ …`): **0 matches**.
+  - Tied-workflow `(claudesox-local)`: **0 matches**.
+- **Observed pane contents:** Claude Code's standard conversation body + tool-call output + the standard bottom footer `⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage` + the session's in-flight thinking indicator. **No custom 3-line ANSI HUD from `scripts/statusline.sh`.**
+- **Why this is not a runtime/renderer regression:**
+  - `settings.json::statusLine.command` = `$HOME/.claude/scripts/statusline.sh` (A39 invariant PASS).
+  - `ClauDEX/bridge/claude-settings.json::statusLine.command` = same (A43 + A39 invariant PASS).
+  - `scripts/statusline.sh` exists and is runtime-backed (DEC-SL-002).
+  - `bash scripts/statusline.sh` standalone invocation produces the expected 3-line HUD with live runtime state (A38 capture + A40 Test 7d both-sub-checks PASS).
+  - `cc-policy statusline snapshot` returns valid eval-state JSON (A40 runtime-behavior tied-shape pin PASS).
+  - Scenario test `test-statusline-render.sh` Test 7c is stable 10/10 PASS post-A42.
+  - The renderer/config/scenario surfaces are all green. **The missing piece is Claude Code's live invocation of the configured renderer in the worker pane** — a UI / pane-topology visibility gap, not a runtime bug.
+- **Candidate explanations (not investigated per bounded-attempt rule):**
+  1. Claude Code worker may be launched with a settings file that doesn't include the custom `statusLine.command` (caching / precedence / wrong profile at launch time).
+  2. The `:1.2` pane target may not contain a rendered statusline — Claude Code may render its custom HUD in a different window layout component than plain terminal output.
+  3. The user may have disabled the custom statusline via the `/statusline` slash command in the worker session.
+  4. Claude Code may require an explicit refresh/toggle to pick up a statusline configuration change that post-dated session startup.
+  5. Terminal emulator / tmux ANSI propagation may be stripping or relocating the HUD below the pane's visible scrollback window.
+  6. Claude Code may only render the HUD on specific events (prompt return, tool-result boundary) and the capture happened in a transient state.
+- **Next bounded non-debug paths (A45-class options, operator adjudication):**
+  - **A45a (preferred):** operator executes `/statusline` in the live worker session to confirm current rendering state; if disabled, toggles it on; re-runs the A44 capture command; if 3-line HUD now appears, commits the new evidence and marks gate SATISFIED.
+  - **A45b:** read-only diagnostic — run `tmux list-panes -t claudex-soak-1 -F '#{pane_index}:#{pane_title}'` to map the session's pane topology; determine whether `1.2` is the Claude Code process or a sibling pane. Bounded, no tmux protocol debugging.
+  - **A45c:** accept the gate as **permanently operator-owned** (same class as the Runtime-authority drift repo-root fast-forward) — the renderer/config/scenario evidence chain makes the pane-level capture a low-risk redundant piece, and requiring direct visual proof from an orchestrator-driven bash command may not be achievable without operator-side console verification. Update gate language to make the operator-hand-off explicit.
+- **Docs/invariant reconciliation (per A44 instruction Option 2):**
+  - Handoff gate language already says "not globally soak-ready" / "renderer/config/scenario evidence … does NOT satisfy this gate" / "Until that direct worker-pane proof exists" — all remain accurate post-A44. No edit needed there.
+  - A31 / A39 / A43 invariants all still PASS on HEAD — gate is correctly pinned as still-open.
+  - This A44 entry documents the bounded-attempt evidence + outcome so no future slice mistakes the renderer/config/scenario evidence for gate closure.
+- **Verification (A44 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_current_lane_state_invariants.py tests/runtime/test_handoff_artifact_path_invariants.py` → 55 passed. `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed (unfiltered).
+- **Blocking?** Gate remains OPEN. A44 is class-of-attempt-closure: the bounded tmux-capture path has been attempted and produces a negative result; future progress requires operator-owned verification (A45a) or deliberate gate-class reclassification (A45c). No product/runtime work is blocked.
+- **Final gate state after A44: STILL OPEN (bounded attempt negative; no runtime regression; operator-owned from here).**
+- **Decision annotation:** none (scoped bounded-evidence attempt + documentation; no architectural change).
+
 ### A43 checkpoint stewardship — bridge statusline wiring + braid-root resolver + paired tests (2026-04-18) — RESOLVED
 
 - **Subject:** checkpoint stewardship pass to land the coherent 8-file uncheckpointed bundle that had accumulated in the worktree after A42: bridge-profile statusline wiring, state-dir-based BRAID_ROOT auto-detection helper, a bridge-status.sh script consumer, paired test coverage, and an invariant-state-count refresh. Treated as stewardship (not a new implementation slice); keeps the bridge-authority model coherent with A39 (`settings.json::statusLine.command` anchored) and extends the same wiring to the bridge profile so worker sessions have the live HUD renderer.
