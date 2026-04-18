@@ -191,3 +191,91 @@ def test_supervisor_restart_resolves_codex_target_without_explicit_flag(
     assert result.returncode == 0, result.stderr
     assert "codex_target: fake:1.1" in result.stdout
     assert "session: fake" in result.stdout
+
+
+def test_codex_approver_ignores_model_upgrade_prompt_when_existing_option_is_offscreen() -> None:
+    prompt = (
+        "Introducing GPT-5.4\n\n"
+        "Choose how you'd like Codex to proceed.\n\n"
+        "1. Try new model\n"
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/claudex-codex-approver.sh",
+            "--classify-stdin",
+        ],
+        cwd=REPO_ROOT,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "ignore"
+
+
+def test_codex_model_guard_handles_offscreen_existing_model_prompt(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_tmux = fake_bin / "tmux"
+    send_log = tmp_path / "tmux-send.log"
+    fake_bin.mkdir(parents=True)
+
+    fake_tmux.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "case \"${1:-}\" in\n"
+        "  list-panes)\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  capture-pane)\n"
+        "    cat <<'EOF'\n"
+        "Introducing GPT-5.4\n"
+        "\n"
+        "Choose how you'd like Codex to proceed.\n"
+        "\n"
+        "1. Try new model\n"
+        "EOF\n"
+        "    ;;\n"
+        "  select-pane)\n"
+        "    printf '%s\\n' \"$*\" >> \"${CLAUDEX_FAKE_TMUX_SEND_LOG}\"\n"
+        "    ;;\n"
+        "  send-keys)\n"
+        "    printf '%s\\n' \"$*\" >> \"${CLAUDEX_FAKE_TMUX_SEND_LOG}\"\n"
+        "    ;;\n"
+        "  *)\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+    )
+    fake_tmux.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+        "CLAUDEX_FAKE_TMUX_SEND_LOG": str(send_log),
+        "CLAUDEX_CODEX_MODEL_GUARD_TIMEOUT_SECONDS": "1",
+        "CLAUDEX_CODEX_MODEL_GUARD_POLL_SECONDS": "0.1",
+        "CLAUDEX_CODEX_MODEL_GUARD_RETRY_SECONDS": "999",
+    }
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/claudex-codex-model-guard.sh",
+            "fake:1.1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    logged = send_log.read_text()
+    assert "select-pane -t fake:1.1 -e" in logged
+    assert "send-keys -t fake:1.1 Down" in logged
+    assert "send-keys -t fake:1.1 Enter" in logged

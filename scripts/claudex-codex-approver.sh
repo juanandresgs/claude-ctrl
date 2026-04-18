@@ -54,7 +54,7 @@ is_directory_trust_prompt() {
 is_model_upgrade_prompt() {
   local capture="$1"
   [[ "$capture" == *"Choose how you'd like Codex to proceed."* ]] &&
-    [[ "$capture" == *"Use existing model"* ]]
+    [[ "$capture" == *"Try new model"* || "$capture" == *"Use existing model"* ]]
 }
 
 codex_prompt_policy() {

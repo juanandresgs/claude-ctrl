@@ -194,6 +194,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 5b: clean workspace does not show uncommitted count
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- 5b: clean workspace — HUD does not claim uncommitted files"
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "uncommitted"; then
+    echo "  FAIL: clean workspace rendered an unexpected uncommitted count; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "  PASS: clean workspace renders without uncommitted count"
+fi
+
+# ---------------------------------------------------------------------------
 # Test 6: pending eval renders ⏳ eval in HUD (TKT-024)
 # ---------------------------------------------------------------------------
 echo ""

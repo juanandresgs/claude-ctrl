@@ -50,7 +50,7 @@ while true; do
 
   pane_text="$(tmux capture-pane -pt "$PANE_TARGET" -S -120 2>/dev/null || true)"
   if [[ "$pane_text" == *"Choose how you'd like Codex to proceed."* ]] && \
-     [[ "$pane_text" == *"Use existing model"* ]]; then
+     [[ "$pane_text" == *"Try new model"* || "$pane_text" == *"Use existing model"* ]]; then
     now="$(date +%s)"
     if (( now - last_sent_at >= RETRY_SECONDS )); then
       tmux select-pane -t "$PANE_TARGET" -e >/dev/null 2>&1 || true
