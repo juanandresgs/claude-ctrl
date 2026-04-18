@@ -19,18 +19,19 @@ BROKER_SOCK="${STATE_DIR}/braidd.sock"
 BROKER_PID_FILE="${STATE_DIR}/braidd.pid"
 
 TMUX_TARGET=""
+CODEX_TARGET=""
 START_DAEMON=1
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --tmux-target SESSION:WINDOW.PANE [--no-daemon]
+Usage: $(basename "$0") --tmux-target SESSION:WINDOW.PANE [--codex-target SESSION:WINDOW.PANE] [--no-daemon]
 
 Bootstraps a braid bridge run for this repo and, by default, starts the
-auto-submit daemon in the background.
+watchdog / helper daemons for the lane.
 
 Examples:
   $(basename "$0") --tmux-target overnight:0.1
-  $(basename "$0") --tmux-target overnight:0.1 --no-daemon
+  $(basename "$0") --tmux-target overnight:0.1 --codex-target overnight:0.0 --no-daemon
 EOF
 }
 
@@ -38,6 +39,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tmux-target)
       TMUX_TARGET="$2"
+      shift 2
+      ;;
+    --codex-target)
+      CODEX_TARGET="$2"
       shift 2
       ;;
     --no-daemon)
@@ -129,28 +134,31 @@ RUN_ID="$(
 RUN_JSON="${STATE_DIR}/${RUN_ID}/run.json"
 if [[ -f "$RUN_JSON" ]]; then
   PANE_ID="$(tmux display-message -p -t "$TMUX_TARGET" '#{pane_id}' 2>/dev/null || true)"
-  if [[ -n "$PANE_ID" ]]; then
-    jq --arg cpid "$PANE_ID" '. + {claude_pane_id: $cpid}' "$RUN_JSON" > "${RUN_JSON}.tmp"
+  CODEX_PANE_ID=""
+  if [[ -n "$CODEX_TARGET" ]]; then
+    CODEX_PANE_ID="$(tmux display-message -p -t "$CODEX_TARGET" '#{pane_id}' 2>/dev/null || true)"
+  fi
+  if [[ -n "$PANE_ID" || -n "$CODEX_TARGET" || -n "$CODEX_PANE_ID" ]]; then
+    jq \
+      --arg cpid "$PANE_ID" \
+      --arg codex_target "$CODEX_TARGET" \
+      --arg codex_pane_id "$CODEX_PANE_ID" \
+      '
+      . as $run
+      | if ($cpid | length) > 0 then $run + {claude_pane_id: $cpid} else $run end
+      | if ($codex_target | length) > 0 then . + {codex_target: $codex_target} else . end
+      | if ($codex_pane_id | length) > 0 then . + {codex_pane_id: $codex_pane_id} else . end
+      ' \
+      "$RUN_JSON" > "${RUN_JSON}.tmp"
     mv "${RUN_JSON}.tmp" "$RUN_JSON"
   fi
 fi
 
-DAEMON_STARTED="no"
+AUTO_SUBMIT_STATUS="not-started"
 WATCHDOG_STARTED="no"
 WORKER_APPROVER_STARTED="no"
 if [[ "$START_DAEMON" -eq 1 ]]; then
-  if [[ -f "$PID_FILE" ]]; then
-    EXISTING_PID="$(tr -d '[:space:]' < "$PID_FILE" || true)"
-    if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-      kill "$EXISTING_PID" 2>/dev/null || true
-      sleep 0.2
-    fi
-    rm -f "$PID_FILE"
-  fi
-
-  BRAID_ROOT="$BRAID_ROOT" CLAUDEX_STATE_DIR="$PID_DIR" nohup "$AUTO_SUBMIT_SCRIPT" >>"$LOG_FILE" 2>&1 &
-  echo "$!" > "$PID_FILE"
-  DAEMON_STARTED="yes"
+  AUTO_SUBMIT_STATUS="watchdog-owned"
 
   if [[ -f "$WATCHDOG_PID_FILE" ]]; then
     EXISTING_WATCHDOG_PID="$(tr -d '[:space:]' < "$WATCHDOG_PID_FILE" || true)"
@@ -186,7 +194,8 @@ ClauDEX bridge bootstrapped.
 repo_root: $ROOT
 run_id: $RUN_ID
 tmux_target: $TMUX_TARGET
-auto_submit: $DAEMON_STARTED
+codex_target: ${CODEX_TARGET:-none}
+auto_submit: $AUTO_SUBMIT_STATUS
 watchdog: $WATCHDOG_STARTED
 worker_approver: $WORKER_APPROVER_STARTED
 state_dir: $STATE_DIR

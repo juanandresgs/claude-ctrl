@@ -464,7 +464,7 @@ def _handle_hook(args) -> int:
 def _handle_bridge(args) -> int:
     """Handle ``cc-policy bridge`` subcommands (read-only bridge tools).
 
-    Currently supports one action:
+    Current actions:
 
     * ``validate-settings`` (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001) —
       reads ``ClauDEX/bridge/claude-settings.json`` (or the file
@@ -473,6 +473,9 @@ def _handle_bridge(args) -> int:
       and reports drift. Exit 0 with ``{"status": "ok"}`` on clean;
       exit non-zero with ``{"status": "drift", "messages": [...]}``
       on violation.
+    * ``broker-health`` — classify broker pid/socket health.
+    * ``probe-response-drift`` — classify response-surface drift for a run.
+    * ``topology`` — return the runtime-owned live lane topology probe.
 
     This command is strictly read-only — it does not rewrite the
     bridge file, does not write to the runtime DB, and does not emit
@@ -539,6 +542,29 @@ def _handle_bridge(args) -> int:
             )
             return 1
         print(json.dumps(snapshot.to_json_dict()))
+        return 0
+
+    if args.action == "topology":
+        import runtime.core.lane_topology as lane_topology_mod
+
+        try:
+            snapshot = lane_topology_mod.probe_lane_topology(
+                braid_root=getattr(args, "braid_root", None),
+                state_dir=getattr(args, "state_dir", None),
+            )
+        except Exception as exc:  # pragma: no cover — probe is fail-closed
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error_detail": (
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                )
+            )
+            return 1
+        print(json.dumps(snapshot))
         return 0
 
     if args.action == "probe-response-drift":
@@ -3842,6 +3868,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--braid-root",
         default=None,
         help="Override $BRAID_ROOT for the probe (defaults to env).",
+    )
+    bridge_topology = bridge_sub.add_parser(
+        "topology",
+        help=(
+            "Probe the runtime-owned live lane topology (Codex/Claude pane "
+            "targets + authority classification). Read-only."
+        ),
+    )
+    bridge_topology.add_argument(
+        "--braid-root",
+        default=None,
+        help="Override $BRAID_ROOT for the probe (defaults to env).",
+    )
+    bridge_topology.add_argument(
+        "--state-dir",
+        default=None,
+        help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
     )
     bridge_probe = bridge_sub.add_parser(
         "probe-response-drift",

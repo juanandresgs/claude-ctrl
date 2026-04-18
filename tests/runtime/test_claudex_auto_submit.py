@@ -397,3 +397,58 @@ def test_long_running_auto_submit_exits_on_sigterm_and_releases_singleton(auto_s
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=3)
+
+
+def test_long_running_auto_submit_exits_when_singleton_lock_is_reassigned(
+    auto_submit_env,
+):
+    env = {
+        **auto_submit_env["env"],
+        "CLAUDEX_FAKE_TMUX_COMMAND": "zsh",
+        "CLAUDEX_FAKE_TMUX_CAPTURE": "shell not ready",
+        "BRIDGE_POLL_INTERVAL": "1",
+    }
+    proc = subprocess.Popen(
+        ["bash", str(_AUTO_SUBMIT)],
+        cwd=str(_REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        state_dir = auto_submit_env["state_dir"]
+        pid_file = state_dir / "auto-submit.pid"
+        lock_pid_file = Path(auto_submit_env["env"]["BRAID_ROOT"]) / "runs" / ".auto-submit.lock.d" / "pid"
+
+        deadline = time.time() + 3
+        while time.time() < deadline and (not pid_file.exists() or not lock_pid_file.exists()):
+            time.sleep(0.05)
+        assert pid_file.exists(), "auto-submit did not publish pid file"
+        assert lock_pid_file.exists(), "auto-submit did not publish lock owner"
+
+        lock_pid_file.write_text(f"{os.getpid()}\n")
+
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise AssertionError("auto-submit kept running after losing singleton ownership")
+
+        assert proc.returncode == 0
+        stderr = (proc.stderr.read() if proc.stderr is not None else "") or ""
+        assert "Lost singleton lock" in stderr
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+def test_launchers_delegate_auto_submit_lifecycle_to_watchdog() -> None:
+    bridge_up = (_REPO_ROOT / "scripts" / "claudex-bridge-up.sh").read_text()
+    overnight_start = (_REPO_ROOT / "scripts" / "claudex-overnight-start.sh").read_text()
+
+    assert 'nohup "$AUTO_SUBMIT_SCRIPT"' not in bridge_up
+    assert 'bash ./scripts/claudex-auto-submit.sh' not in overnight_start
+    assert 'nohup "${ROOT}/scripts/claudex-watchdog.sh"' in bridge_up
+    assert 'exec bash ./scripts/claudex-watchdog.sh' in overnight_start

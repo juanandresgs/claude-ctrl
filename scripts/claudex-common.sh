@@ -88,3 +88,45 @@ claudex_resolve_braid_root() {
 
   printf '%s\n' "${root}/.b2r"
 }
+
+claudex_runtime_cli() {
+  local common_dir
+  common_dir="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s\n' "${CLAUDEX_RUNTIME_CLI:-${common_dir}/../runtime/cli.py}"
+}
+
+claudex_runtime_python() {
+  if [[ -n "${CLAUDEX_PYTHON_BIN:-}" ]]; then
+    printf '%s\n' "${CLAUDEX_PYTHON_BIN}"
+    return 0
+  fi
+
+  local candidate=""
+  for candidate in python3 /opt/homebrew/bin/python3 /usr/bin/python3; do
+    if [[ "$candidate" != */* ]]; then
+      command -v "$candidate" >/dev/null 2>&1 || continue
+      candidate="$(command -v "$candidate")"
+    elif [[ ! -x "$candidate" ]]; then
+      continue
+    fi
+
+    if "$candidate" -c 'import yaml' >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "python3"
+}
+
+claudex_bridge_topology_json() {
+  local braid_root="$1"
+  local state_dir="$2"
+  shift 2 || true
+
+  "$(claudex_runtime_python)" "$(claudex_runtime_cli)" \
+    bridge topology \
+    --braid-root "$braid_root" \
+    --state-dir "$state_dir" \
+    "$@"
+}

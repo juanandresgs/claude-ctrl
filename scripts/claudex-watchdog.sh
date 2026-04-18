@@ -916,14 +916,7 @@ write_supervisor_recovery_state() {
 
 recover_supervisor_if_needed() {
   local run_id="$1"
-  local run_json="$2"
-
-  local fallback_codex_target=""
-  local claude_target=""
-  claude_target="$(jq -r '.tmux_target // empty' "$run_json" 2>/dev/null || true)"
-  if [[ "$claude_target" == *.* ]]; then
-    fallback_codex_target="${claude_target%.*}.1"
-  fi
+  local _run_json="$2"
 
   local reason=""
   local sampled_at=""
@@ -963,11 +956,31 @@ recover_supervisor_if_needed() {
 
   [[ -n "$reason" ]] || return 0
 
-  if [[ -z "$codex_target" ]]; then
-    codex_target="$fallback_codex_target"
+  local topology_json="" codex_authoritative="false" codex_target_exists="false"
+  topology_json="$(claudex_bridge_topology_json "$BRAID_ROOT" "$PID_DIR" 2>/dev/null || true)"
+  if [[ -n "$topology_json" ]]; then
+    if [[ -z "$codex_target" ]]; then
+      codex_target="$(printf '%s\n' "$topology_json" | jq -r '.codex.target // empty' 2>/dev/null || true)"
+    fi
+    codex_authoritative="$(printf '%s\n' "$topology_json" | jq -r '.codex.authoritative // false' 2>/dev/null || printf 'false')"
+    codex_target_exists="$(printf '%s\n' "$topology_json" | jq -r '.codex.target_exists // false' 2>/dev/null || printf 'false')"
   fi
+
+  local attempted_at=""
+  attempted_at="$(timestamp)"
   if [[ -z "$codex_target" ]]; then
-    log "supervisor recovery needed (${reason}) but no Codex pane target is available"
+    log "supervisor recovery needed (${reason}) but no Codex pane target is available from lane topology"
+    write_supervisor_recovery_state "${run_id}|${reason}|unresolved" "$run_id" "" "$reason" "missing_codex_target" "$attempted_at"
+    return 0
+  fi
+  if [[ "$codex_authoritative" != "true" ]]; then
+    log "supervisor recovery needed (${reason}) but Codex target ${codex_target} is non-authoritative; refusing legacy fallback"
+    write_supervisor_recovery_state "${run_id}|${reason}|${codex_target}" "$run_id" "$codex_target" "$reason" "non_authoritative_codex_target" "$attempted_at"
+    return 0
+  fi
+  if [[ "$codex_target_exists" != "true" ]]; then
+    log "supervisor recovery needed (${reason}) but Codex pane target ${codex_target} is unavailable"
+    write_supervisor_recovery_state "${run_id}|${reason}|${codex_target}" "$run_id" "$codex_target" "$reason" "codex_target_unavailable" "$attempted_at"
     return 0
   fi
 
@@ -984,16 +997,17 @@ recover_supervisor_if_needed() {
     fi
   fi
 
-  local attempted_at=""
-  attempted_at="$(timestamp)"
   if [[ ! -x "$SUPERVISOR_RESTART_SCRIPT" ]]; then
     log "supervisor recovery needed (${reason}) but restart script is unavailable: $SUPERVISOR_RESTART_SCRIPT"
     write_supervisor_recovery_state "$recovery_key" "$run_id" "$codex_target" "$reason" "missing_restart_script" "$attempted_at"
     return 0
   fi
 
+  # The watchdog is the transport authority. When it repairs the supervisor
+  # path, it must not invoke the restart script's transport branch or it will
+  # kill/reseed itself before writing cooldown state for this recovery.
   log "progress monitor degraded (${reason}); restarting supervisor path for ${codex_target}"
-  if BRAID_ROOT="$BRAID_ROOT" "$SUPERVISOR_RESTART_SCRIPT" --codex-target "$codex_target" >>"$SUPERVISOR_RECOVERY_LOG_FILE" 2>&1; then
+  if BRAID_ROOT="$BRAID_ROOT" "$SUPERVISOR_RESTART_SCRIPT" --codex-target "$codex_target" --no-transport >>"$SUPERVISOR_RECOVERY_LOG_FILE" 2>&1; then
     write_supervisor_recovery_state "$recovery_key" "$run_id" "$codex_target" "$reason" "restarted" "$attempted_at"
     return 0
   fi

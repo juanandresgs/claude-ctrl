@@ -33,8 +33,10 @@ ACTIVE_INSTRUCTION_ID=""
 ACTIVE_LATEST_RESPONSE_FILE=""
 ACTIVE_LATEST_RESPONSE_INSTRUCTION_ID=""
 ACTIVE_CLAUDE_TARGET=""
+ACTIVE_CLAUDE_TARGET_EXISTS=""
 ACTIVE_CODEX_TARGET=""
-GUESSED_CODEX_TARGET=""
+ACTIVE_CODEX_TARGET_EXISTS=""
+TOPOLOGY_JSON=""
 ACTIVE_INTERACTION_GATE_FILE=""
 PENDING_REVIEW_RUN_ID=""
 PENDING_REVIEW_INSTRUCTION_ID=""
@@ -138,10 +140,6 @@ if [[ -f "$POINTER" ]]; then
     jq '{run_id, project_root, project_slug, claude_session_id, transcript_path, tmux_target, created_at, completed_at}' \
       "${BRAID_ROOT}/runs/${RUN_ID}/run.json"
     ACTIVE_CLAUDE_TARGET="$(jq -r '.tmux_target // empty' "${BRAID_ROOT}/runs/${RUN_ID}/run.json" 2>/dev/null || true)"
-    if [[ "$ACTIVE_CLAUDE_TARGET" == *.* ]]; then
-      GUESSED_CODEX_TARGET="${ACTIVE_CLAUDE_TARGET%.*}.1"
-      ACTIVE_CODEX_TARGET="$GUESSED_CODEX_TARGET"
-    fi
   fi
   if [[ -f "${BRAID_ROOT}/runs/${RUN_ID}/status.json" ]]; then
     echo "--- status ---"
@@ -159,6 +157,37 @@ if [[ -f "$POINTER" ]]; then
   echo "queue_depth_fs: ${QUEUE_COUNT}"
 else
   echo "active_run: none"
+fi
+
+TOPOLOGY_JSON="$(claudex_bridge_topology_json "$BRAID_ROOT" "$PID_DIR" 2>/dev/null || true)"
+if [[ -n "$TOPOLOGY_JSON" ]]; then
+  echo "--- lane_topology ---"
+  printf '%s\n' "$TOPOLOGY_JSON" | jq '{
+    active_run_id,
+    session_name,
+    pair_window_target,
+    claude: {
+      target: .claude.target,
+      target_source: .claude.target_source,
+      target_exists: .claude.target_exists,
+      pane_id: .claude.pane_id,
+      pane_id_source: .claude.pane_id_source,
+      authoritative: .claude.authoritative
+    },
+    codex: {
+      target: .codex.target,
+      target_source: .codex.target_source,
+      target_exists: .codex.target_exists,
+      pane_id: .codex.pane_id,
+      pane_id_source: .codex.pane_id_source,
+      authoritative: .codex.authoritative
+    },
+    issues
+  }'
+  ACTIVE_CLAUDE_TARGET="$(printf '%s\n' "$TOPOLOGY_JSON" | jq -r '.claude.target // empty' 2>/dev/null || true)"
+  ACTIVE_CLAUDE_TARGET_EXISTS="$(printf '%s\n' "$TOPOLOGY_JSON" | jq -r '.claude.target_exists // empty' 2>/dev/null || true)"
+  ACTIVE_CODEX_TARGET="$(printf '%s\n' "$TOPOLOGY_JSON" | jq -r '.codex.target // empty' 2>/dev/null || true)"
+  ACTIVE_CODEX_TARGET_EXISTS="$(printf '%s\n' "$TOPOLOGY_JSON" | jq -r '.codex.target_exists // empty' 2>/dev/null || true)"
 fi
 
 if [[ -S "$BROKER_SOCK" ]]; then
@@ -220,7 +249,7 @@ if [[ -f "$PROGRESS_SNAPSHOT_FILE" ]]; then
   SNAPSHOT_PENDING_REVIEW_INSTRUCTION_ID="$(jq -r '.pending_review_instruction_id // empty' "$PROGRESS_SNAPSHOT_FILE" 2>/dev/null || true)"
   SNAPSHOT_LATEST_RESPONSE_INSTRUCTION_ID="$(jq -r '.latest_response_instruction_id // empty' "$PROGRESS_SNAPSHOT_FILE" 2>/dev/null || true)"
   SNAPSHOT_AGE_SECONDS="$(timestamp_age_seconds "$SNAPSHOT_SAMPLED_AT" 2>/dev/null || true)"
-  if [[ -n "$SNAPSHOT_CODEX_TARGET" ]] && { [[ -z "$ACTIVE_RUN_ID" ]] || [[ "$SNAPSHOT_RUN_ID" == "$ACTIVE_RUN_ID" ]]; }; then
+  if [[ -n "$SNAPSHOT_CODEX_TARGET" ]] && { [[ -z "$ACTIVE_RUN_ID" ]] || [[ "$SNAPSHOT_RUN_ID" == "$ACTIVE_RUN_ID" ]]; } && [[ -z "$ACTIVE_CODEX_TARGET" ]]; then
     ACTIVE_CODEX_TARGET="$SNAPSHOT_CODEX_TARGET"
   fi
   SNAPSHOT_MAX_AGE_SECONDS="${CLAUDEX_PROGRESS_MONITOR_MAX_AGE_SECONDS:-}"
@@ -282,8 +311,8 @@ if [[ -f "$PROGRESS_SNAPSHOT_FILE" ]]; then
       echo "progress_monitor_snapshot_run_match: false"
     fi
   fi
-  if [[ -n "$GUESSED_CODEX_TARGET" ]]; then
-    if [[ "$SNAPSHOT_CODEX_TARGET" == "$GUESSED_CODEX_TARGET" ]]; then
+  if [[ -n "$ACTIVE_CODEX_TARGET" ]]; then
+    if [[ "$SNAPSHOT_CODEX_TARGET" == "$ACTIVE_CODEX_TARGET" ]]; then
       echo "progress_monitor_snapshot_codex_target_match: true"
     else
       echo "progress_monitor_snapshot_codex_target_match: false"
@@ -334,7 +363,7 @@ echo "codex_approver_log: $APPROVER_LOG_FILE"
 echo "worker_approver_log: $WORKER_APPROVER_LOG_FILE"
 echo "dispatch_recovery_log: $DISPATCH_RECOVERY_LOG_FILE"
 
-if [[ -n "$ACTIVE_CODEX_TARGET" && "$HELPERS_NEED_RECOVERY" -eq 1 ]]; then
+if [[ -n "$ACTIVE_CODEX_TARGET" && "$ACTIVE_CODEX_TARGET_EXISTS" == "true" && "$HELPERS_NEED_RECOVERY" -eq 1 ]]; then
   echo "--- supervisor_recovery ---"
   echo "codex_target: $ACTIVE_CODEX_TARGET"
   echo "restart_command: ./scripts/claudex-supervisor-restart.sh --codex-target $ACTIVE_CODEX_TARGET"

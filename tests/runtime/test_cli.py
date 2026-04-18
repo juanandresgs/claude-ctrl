@@ -31,9 +31,14 @@ _WORKTREE = Path(__file__).resolve().parent.parent.parent
 _CLI = str(_WORKTREE / "runtime" / "cli.py")
 
 
-def run(args: list[str], db_path: str) -> tuple[int, dict]:
+def run(args: list[str], db_path: str, extra_env: dict[str, str] | None = None) -> tuple[int, dict]:
     """Run cc-policy with the given args, return (exit_code, parsed_json)."""
-    env = {**os.environ, "CLAUDE_POLICY_DB": db_path, "PYTHONPATH": str(_WORKTREE)}
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": db_path,
+        "PYTHONPATH": str(_WORKTREE),
+        **(extra_env or {}),
+    }
     result = subprocess.run(
         [sys.executable, _CLI] + args,
         capture_output=True,
@@ -55,6 +60,39 @@ def db(tmp_path):
     return str(tmp_path / "test-state.db")
 
 
+def _seed_bridge_run(
+    tmp_path: Path,
+    *,
+    run_id: str,
+    tmux_target: str | None = None,
+    codex_target: str | None = None,
+) -> tuple[Path, Path]:
+    braid = tmp_path / "braid"
+    state = tmp_path / "state"
+    run_dir = braid / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True)
+    (braid / "runs" / "active-run").write_text(f"{run_id}\n")
+
+    run_payload: dict[str, str | None] = {
+        "run_id": run_id,
+        "project_root": str(tmp_path),
+        "project_slug": "fake",
+        "created_at": "2026-04-18T00:00:00Z",
+        "completed_at": None,
+    }
+    if tmux_target:
+        run_payload["tmux_target"] = tmux_target
+    if codex_target:
+        run_payload["codex_target"] = codex_target
+
+    (run_dir / "run.json").write_text(json.dumps(run_payload))
+    (run_dir / "status.json").write_text(
+        json.dumps({"state": "queued", "updated_at": "2026-04-18T00:00:01Z"})
+    )
+    return braid, state
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -73,40 +111,61 @@ def test_init_alias(db):
 
 
 # ---------------------------------------------------------------------------
-# Proof
+# Bridge
 # ---------------------------------------------------------------------------
 
 
-def test_proof_get_missing(db):
-    code, out = run(["proof", "get", "wf-x"], db)
+def test_bridge_topology_without_active_run_returns_probe_payload(db, tmp_path):
+    braid = tmp_path / "braid"
+    state = tmp_path / "state"
+    (braid / "runs").mkdir(parents=True)
+    state.mkdir(parents=True)
+
+    code, out = run(
+        ["bridge", "topology", "--braid-root", str(braid), "--state-dir", str(state)],
+        db,
+    )
     assert code == 0
-    # proof get returns status="idle" (the proof status) when not found,
-    # not status="ok" — "ok" is the envelope default but proof status wins
-    assert out["found"] is False
-    assert out["workflow_id"] == "wf-x"
-    # status field reflects proof status ("idle"), not envelope status
-    assert out["status"] == "idle"
+    assert out["status"] == "ok"
+    assert out["active_run_id"] is None
+    assert out["claude"]["target"] is None
+    assert out["codex"]["target"] is None
 
 
-def test_proof_set_and_get(db):
-    code, out = run(["proof", "set", "wf-1", "pending"], db)
+def test_bridge_topology_prefers_run_json_codex_target(db, tmp_path):
+    braid, state = _seed_bridge_run(
+        tmp_path,
+        run_id="run-topology-cli-primary",
+        tmux_target="soak:1.2",
+        codex_target="soak:1.1",
+    )
+
+    code, out = run(
+        ["bridge", "topology", "--braid-root", str(braid), "--state-dir", str(state)],
+        db,
+    )
     assert code == 0
-    # proof set returns the new status as the "status" field
-    assert out["workflow_id"] == "wf-1"
-    assert out["status"] == "pending"
+    assert out["active_run_id"] == "run-topology-cli-primary"
+    assert out["codex"]["target"] == "soak:1.1"
+    assert out["codex"]["target_source"] == "run_json.codex_target"
 
-    code, out = run(["proof", "get", "wf-1"], db)
+
+def test_bridge_topology_marks_legacy_codex_fallback_non_authoritative(db, tmp_path):
+    braid, state = _seed_bridge_run(
+        tmp_path,
+        run_id="run-topology-cli-legacy",
+        tmux_target="soak:1.2",
+    )
+
+    code, out = run(
+        ["bridge", "topology", "--braid-root", str(braid), "--state-dir", str(state)],
+        db,
+    )
     assert code == 0
-    assert out["status"] == "pending"
-    assert out["found"] is True
-
-
-def test_proof_list(db):
-    run(["proof", "set", "wf-a", "idle"], db)
-    run(["proof", "set", "wf-b", "verified"], db)
-    code, out = run(["proof", "list"], db)
-    assert code == 0
-    assert out["count"] == 2
+    assert out["active_run_id"] == "run-topology-cli-legacy"
+    assert out["codex"]["target"] == "soak:1.1"
+    assert out["codex"]["target_source"] == "legacy_derived_from_claude_target"
+    assert out["codex"]["authoritative"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -255,37 +314,18 @@ def test_worktree_register_list_remove(db):
 
 
 def test_dispatch_full_lifecycle(db):
-    # Start a cycle
-    code, out = run(["dispatch", "cycle-start", "INIT-002"], db)
-    assert code == 0
-    _ = out["id"]
-
-    # current-cycle returns it
-    code, out = run(["dispatch", "cycle-current"], db)
-    assert out["found"] is True
-    assert out["initiative"] == "INIT-002"
-
-    # Enqueue an item
-    code, out = run(["dispatch", "enqueue", "implementer", "--ticket", "TKT-6"], db)
-    assert code == 0
-    qid = out["id"]
-
-    # next returns it
-    code, out = run(["dispatch", "next"], db)
-    assert out["found"] is True
-    assert out["id"] == qid
-
-    # start it
-    code, out = run(["dispatch", "start", str(qid)], db)
-    assert code == 0
-
-    # next now empty
-    code, out = run(["dispatch", "next"], db)
-    assert out["found"] is False
-
-    # complete it
-    code, out = run(["dispatch", "complete", str(qid)], db)
-    assert code == 0
+    legacy_actions = (
+        "enqueue",
+        "next",
+        "start",
+        "complete",
+        "cycle-start",
+        "cycle-current",
+    )
+    for action in legacy_actions:
+        code, out = run(["dispatch", action, "--help"], db)
+        assert code != 0
+        assert f"invalid choice: '{action}'" in out["_raw"]
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +335,6 @@ def test_dispatch_full_lifecycle(db):
 
 def test_statusline_snapshot_keys(db):
     # Populate some state
-    run(["proof", "set", "wf-1", "verified"], db)
     run(["marker", "set", "agent-1", "implementer"], db)
     run(["worktree", "register", "/wt/a", "feature/a"], db)
 
@@ -332,16 +371,15 @@ def test_statusline_snapshot_empty_db(db):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="subprocess latency is environment-sensitive")
-def test_proof_get_latency_under_200ms(db):
-    """cc-policy proof get must complete in under 200ms on a warm DB."""
-    # Warm up: ensure schema exists
-    run(["proof", "set", "wf-lat", "idle"], db)
+def test_statusline_snapshot_latency_under_300ms(db):
+    """cc-policy statusline snapshot should stay sub-300ms on a warm DB."""
+    run(["marker", "set", "agent-lat", "implementer"], db)
 
     start = time.perf_counter()
-    code, out = run(["proof", "get", "wf-lat"], db)
+    code, out = run(["statusline", "snapshot"], db)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     assert code == 0
-    print(f"\n  proof get latency: {elapsed_ms:.1f}ms")
-    assert elapsed_ms < 200, f"latency {elapsed_ms:.1f}ms exceeds 200ms threshold"
+    assert out["status"] == "ok"
+    print(f"\n  statusline snapshot latency: {elapsed_ms:.1f}ms")
+    assert elapsed_ms < 300, f"latency {elapsed_ms:.1f}ms exceeds 300ms threshold"

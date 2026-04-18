@@ -73,7 +73,10 @@ CODEX_PANE_TARGET="$(tmux display-message -p -t "$LEFT_PANE_ID" '#{session_name}
 PAIR_WINDOW_TARGET="$(tmux display-message -p -t "$LEFT_PANE_ID" '#{session_name}:#{window_index}')"
 
 BRAID_ROOT="$ACTIVE_BRAID_ROOT" CLAUDEX_STATE_DIR="$CLAUDEX_STATE_DIR" \
-  "$ROOT/scripts/claudex-bridge-up.sh" --tmux-target "$CLAUDE_PANE_TARGET" --no-daemon
+  "$ROOT/scripts/claudex-bridge-up.sh" \
+    --tmux-target "$CLAUDE_PANE_TARGET" \
+    --codex-target "$CODEX_PANE_TARGET" \
+    --no-daemon
 
 tmux send-keys -t "$RIGHT_PANE_ID" "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && clear && ./scripts/claudex-claude-launch.sh" C-m
 tmux send-keys -t "$LEFT_PANE_ID" "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && clear && ./scripts/claudex-codex-launch.sh" C-m
@@ -81,7 +84,6 @@ tmux new-window -d -a -t "$PAIR_WINDOW_TARGET" -n "claudex-monitor" -c "$ROOT" \
   "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && exec bash ./scripts/claudex-progress-monitor.sh --codex-target \"$CODEX_PANE_TARGET\""
 tmux new-window -d -a -t "$PAIR_WINDOW_TARGET" -n "claudex-helper" -c "$ROOT" \
   "${LAUNCH_ENV_PREFIX}cd \"$ROOT\" && mkdir -p \"$CLAUDEX_STATE_DIR\" && \
-  bash ./scripts/claudex-auto-submit.sh >> \"$CLAUDEX_STATE_DIR/auto-submit.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/auto-submit.pid\" && \
   bash ./scripts/claudex-codex-model-guard.sh \"$CODEX_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/codex-model-guard.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/codex-model-guard.pid\" && \
   bash ./scripts/claudex-codex-approver.sh --tmux-target \"$CODEX_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/codex-approver.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/codex-approver.pid\" && \
   bash ./scripts/claudex-worker-approver.sh --tmux-target \"$CLAUDE_PANE_TARGET\" >> \"$CLAUDEX_STATE_DIR/worker-approver.log\" 2>&1 & echo \$! > \"$CLAUDEX_STATE_DIR/worker-approver.pid\" && \
@@ -104,8 +106,9 @@ Inside tmux:
   left pane  = Codex operator
   right pane = fresh Claude worker under the cutover profile
 
-The bridge helper window owns the watchdog, auto-submit loop, Codex MCP
-trust approver, and worker approval helper.
+The bridge helper window owns the watchdog plus the Codex MCP trust
+approver and worker approval helper. The watchdog is the sole owner of
+the auto-submit loop.
 The progress monitor is started automatically in the tmux window
 'claudex-monitor' and samples the Codex pane every 30 minutes.
 Bridge status is available any time with:

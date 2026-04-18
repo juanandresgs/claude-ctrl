@@ -20,6 +20,7 @@ WATCHDOG_PID_FILE="${PID_DIR}/watchdog.pid"
 WATCHDOG_LOG_FILE="${PID_DIR}/watchdog.log"
 AUTO_SUBMIT_PID_FILE="${PID_DIR}/auto-submit.pid"
 BROKER_PID_FILE="${BRAID_ROOT}/runs/braidd.pid"
+TOPOLOGY_JSON=""
 
 CODEX_TARGET=""
 DRY_RUN=0
@@ -36,8 +37,8 @@ Restarts the dedicated ClauDEX Codex supervisor pane in place and, by default,
 re-arms the transport watchdog window, progress monitor window, codex approver
 helper, and worker approver helper.
 
-If --codex-target is omitted, the script will try to resolve it from the latest
-progress-monitor snapshot first, then from the active run's Claude pane target.
+If --codex-target is omitted, the script resolves both supervisor and worker
+targets through the runtime lane-topology probe instead of guessing in shell.
 EOF
 }
 
@@ -123,36 +124,39 @@ else:
 PY
 }
 
+load_lane_topology() {
+  if [[ -n "$TOPOLOGY_JSON" ]]; then
+    return 0
+  fi
+
+  local args=()
+  if [[ -n "$CODEX_TARGET" ]]; then
+    args+=(--codex-target "$CODEX_TARGET")
+  fi
+
+  TOPOLOGY_JSON="$(claudex_bridge_topology_json "$BRAID_ROOT" "$PID_DIR" "${args[@]}" 2>/dev/null || true)"
+  [[ -n "$TOPOLOGY_JSON" ]]
+}
+
+lane_topology_field() {
+  local jq_expr="$1"
+  if ! load_lane_topology; then
+    return 1
+  fi
+  printf '%s\n' "$TOPOLOGY_JSON" | jq -r "$jq_expr" 2>/dev/null
+}
+
 resolve_codex_target() {
   if [[ -n "$CODEX_TARGET" ]]; then
     printf '%s\n' "$CODEX_TARGET"
     return 0
   fi
 
-  if [[ -f "$PROGRESS_SNAPSHOT_FILE" ]]; then
-    local snapshot_target
-    snapshot_target="$(jq -r '.codex_target // empty' "$PROGRESS_SNAPSHOT_FILE" 2>/dev/null || true)"
-    if [[ -n "$snapshot_target" ]]; then
-      printf '%s\n' "$snapshot_target"
-      return 0
-    fi
-  fi
-
-  if [[ -f "$ACTIVE_RUN_POINTER" ]]; then
-    local run_id run_json claude_target prefix
-    run_id="$(tr -d '[:space:]' < "$ACTIVE_RUN_POINTER" 2>/dev/null || true)"
-    run_json="${BRAID_ROOT}/runs/${run_id}/run.json"
-    if [[ -n "$run_id" && -f "$run_json" ]]; then
-      claude_target="$(jq -r '.tmux_target // empty' "$run_json" 2>/dev/null || true)"
-      if [[ "$claude_target" == *.* ]]; then
-        prefix="${claude_target%.*}"
-        printf '%s.1\n' "$prefix"
-        return 0
-      fi
-    fi
-  fi
-
-  return 1
+  local target authoritative
+  target="$(lane_topology_field '.codex.target // empty' || true)"
+  authoritative="$(lane_topology_field '.codex.authoritative // false' || printf 'false')"
+  [[ -n "$target" && "$authoritative" == "true" ]] || return 1
+  printf '%s\n' "$target"
 }
 
 kill_pid_file() {
@@ -192,20 +196,10 @@ kill_pid_file() {
 }
 
 resolve_worker_target() {
-  if [[ -f "$ACTIVE_RUN_POINTER" ]]; then
-    local run_id run_json worker_target
-    run_id="$(tr -d '[:space:]' < "$ACTIVE_RUN_POINTER" 2>/dev/null || true)"
-    run_json="${BRAID_ROOT}/runs/${run_id}/run.json"
-    if [[ -n "$run_id" && -f "$run_json" ]]; then
-      worker_target="$(jq -r '.tmux_target // empty' "$run_json" 2>/dev/null || true)"
-      if [[ -n "$worker_target" ]]; then
-        printf '%s\n' "$worker_target"
-        return 0
-      fi
-    fi
-  fi
-
-  return 1
+  local target
+  target="$(lane_topology_field '.claude.target // empty' || true)"
+  [[ -n "$target" ]] || return 1
+  printf '%s\n' "$target"
 }
 
 SESSION_NAME=""
@@ -348,7 +342,7 @@ transport_health_report() {
   [[ "$RESTART_TRANSPORT" -eq 1 ]] || return 0
   [[ "$DRY_RUN" -eq 0 ]] || return 0
 
-  python3 "$ROOT/runtime/cli.py" bridge broker-health --braid-root "$BRAID_ROOT" 2>/dev/null || true
+  "$(claudex_runtime_python)" "$(claudex_runtime_cli)" bridge broker-health --braid-root "$BRAID_ROOT" 2>/dev/null || true
 }
 
 restart_supervisor_pane() {
@@ -375,6 +369,39 @@ restart_model_guard() {
   echo "$!" > "$MODEL_GUARD_PID_FILE"
 }
 
+refresh_active_run_topology_metadata() {
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  [[ -f "$ACTIVE_RUN_POINTER" ]] || return 0
+
+  local run_id run_json worker_target worker_pane_id codex_pane_id
+  run_id="$(tr -d '[:space:]' < "$ACTIVE_RUN_POINTER" 2>/dev/null || true)"
+  run_json="${BRAID_ROOT}/runs/${run_id}/run.json"
+  [[ -n "$run_id" && -f "$run_json" ]] || return 0
+
+  TOPOLOGY_JSON=""
+  worker_target="$(resolve_worker_target 2>/dev/null || true)"
+  codex_pane_id="$(tmux display-message -p -t "$CODEX_TARGET" '#{pane_id}' 2>/dev/null || true)"
+  worker_pane_id=""
+  if [[ -n "$worker_target" ]] && tmux list-panes -t "$worker_target" >/dev/null 2>&1; then
+    worker_pane_id="$(tmux display-message -p -t "$worker_target" '#{pane_id}' 2>/dev/null || true)"
+  fi
+
+  jq \
+    --arg worker_target "$worker_target" \
+    --arg worker_pane_id "$worker_pane_id" \
+    --arg codex_target "$CODEX_TARGET" \
+    --arg codex_pane_id "$codex_pane_id" \
+    '
+    . as $run
+    | if ($worker_target | length) > 0 then $run + {tmux_target: $worker_target} else $run end
+    | if ($worker_pane_id | length) > 0 then . + {claude_pane_id: $worker_pane_id} else . end
+    | if ($codex_target | length) > 0 then . + {codex_target: $codex_target} else . end
+    | if ($codex_pane_id | length) > 0 then . + {codex_pane_id: $codex_pane_id} else . end
+    ' \
+    "$run_json" > "${run_json}.tmp"
+  mv "${run_json}.tmp" "$run_json"
+}
+
 CODEX_TARGET="$(resolve_codex_target)" || {
   echo "Unable to resolve the Codex supervisor pane target. Pass --codex-target explicitly." >&2
   exit 1
@@ -393,6 +420,7 @@ restart_codex_approver
 restart_worker_approver
 restart_supervisor_pane
 restart_model_guard
+refresh_active_run_topology_metadata
 
 cat <<EOF
 ClauDEX supervisor restart queued.

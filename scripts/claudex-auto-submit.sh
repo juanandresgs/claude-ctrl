@@ -76,15 +76,19 @@ cleanup_singleton_lock() {
   fi
 }
 
+publish_singleton_identity() {
+  printf '%s\n' "$$" > "${AUTO_LOCK_DIR}/pid"
+  printf '%s\n' "$$" > "$GLOBAL_AUTO_PID_FILE"
+  printf '%s\n' "$$" > "$AUTO_PID_FILE"
+}
+
 acquire_singleton_lock() {
   mkdir -p "$PID_DIR"
   mkdir -p "$RUNS_DIR"
 
   while true; do
     if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
-      printf '%s\n' "$$" > "${AUTO_LOCK_DIR}/pid"
-      printf '%s\n' "$$" > "$GLOBAL_AUTO_PID_FILE"
-      printf '%s\n' "$$" > "$AUTO_PID_FILE"
+      publish_singleton_identity
       trap cleanup_singleton_lock EXIT
       trap 'cleanup_singleton_lock; exit 130' INT
       trap 'cleanup_singleton_lock; exit 143' TERM
@@ -103,6 +107,23 @@ acquire_singleton_lock() {
     rm -rf "$AUTO_LOCK_DIR" 2>/dev/null || true
     sleep 0.2
   done
+}
+
+ensure_singleton_lock_ownership() {
+  local recorded_pid=""
+  recorded_pid="$(tr -d '[:space:]' < "${AUTO_LOCK_DIR}/pid" 2>/dev/null || true)"
+
+  if [[ "$recorded_pid" != "$$" ]]; then
+    if [[ -n "$recorded_pid" ]]; then
+      log "Lost singleton lock to ${recorded_pid}; exiting."
+    else
+      log "Singleton lock metadata is missing; exiting."
+    fi
+    cleanup_singleton_lock
+    exit 0
+  fi
+
+  publish_singleton_identity
 }
 
 read_submit_state() {
@@ -330,6 +351,10 @@ send_and_wait() {
   local instruction_id="$3"
   local state_path="${run_dir}/auto-submit.state.json"
 
+  if [[ "$RUN_ONCE" -eq 0 ]]; then
+    ensure_singleton_lock_ownership
+  fi
+
   log "Queued work detected. Sending sentinel to ${tmux_target}"
   tmux send-keys -t "$tmux_target" "__BRAID_RELAY__" Enter
   write_submit_state "$state_path" "$instruction_id" "$(date +%s)"
@@ -343,6 +368,10 @@ submit_lodged_prompt() {
   local state_path="$2"
   local tmux_target="$3"
   local instruction_id="$4"
+
+  if [[ "$RUN_ONCE" -eq 0 ]]; then
+    ensure_singleton_lock_ownership
+  fi
 
   log "Relay prompt is still live in ${tmux_target}; submitting it in place."
   tmux send-keys -t "$tmux_target" Enter
@@ -490,6 +519,7 @@ poll_once() {
 
 if [[ "$RUN_ONCE" -eq 0 ]]; then
   acquire_singleton_lock
+  ensure_singleton_lock_ownership
 fi
 
 log "Starting. Poll interval: ${POLL_INTERVAL}s"
@@ -497,6 +527,9 @@ log "Runs dir: ${RUNS_DIR}"
 [[ "$RUN_ONCE" -eq 1 ]] && log "Single-pass mode enabled."
 
 while true; do
+  if [[ "$RUN_ONCE" -eq 0 ]]; then
+    ensure_singleton_lock_ownership
+  fi
   poll_once
   if [[ "$RUN_ONCE" -eq 1 ]]; then
     exit 0

@@ -211,6 +211,7 @@ def _run_watchdog_once(
         **os.environ,
         "BRAID_ROOT": str(bridge_env["braid"]),
         "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
+        "CLAUDEX_RUNTIME_CLI": str(_REPO_ROOT / "runtime" / "cli.py"),
         # Drop poll/grace so the tick stays cheap; --once avoids the loop
         # anyway, but tighten in case a future refactor changes that.
         "CLAUDEX_WATCHDOG_POLL_INTERVAL": "1",
@@ -286,6 +287,55 @@ def _run_progress_monitor_once(
         capture_output=True,
         text=True,
     )
+
+
+def _install_fake_topology_tmux(
+    bridge_env: dict,
+    *,
+    worker_target: str | None = None,
+    codex_target: str | None = None,
+) -> str:
+    fake_bin = bridge_env["repo"] / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    fake_tmux = fake_bin / "tmux"
+
+    target_cases: list[str] = []
+    pane_cases: list[str] = []
+    if worker_target:
+        target_cases.append(f"    {worker_target}) printf '%%12\\n' ;;")
+        pane_cases.append("    %12) printf 'fake:1.2\\n' ;;")
+    if codex_target:
+        target_cases.append(f"    {codex_target}) printf '%%11\\n' ;;")
+        pane_cases.append("    %11) printf 'fake:1.1\\n' ;;")
+
+    fake_tmux.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [[ \"${1:-}\" != \"display-message\" ]]; then\n"
+        "  exit 64\n"
+        "fi\n"
+        "target=\"${4:-}\"\n"
+        "fmt=\"${5:-}\"\n"
+        "if [[ \"$fmt\" == '#{pane_id}' ]]; then\n"
+        "  case \"$target\" in\n"
+        + "\n".join(target_cases)
+        + ("\n" if target_cases else "")
+        + "    *) exit 1 ;;\n"
+        "  esac\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$fmt\" == '#{session_name}:#{window_index}.#{pane_index}' ]]; then\n"
+        "  case \"$target\" in\n"
+        + "\n".join(pane_cases)
+        + ("\n" if pane_cases else "")
+        + "    *) exit 1 ;;\n"
+        "  esac\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 64\n"
+    )
+    fake_tmux.chmod(0o755)
+    return str(fake_bin)
 
 
 def test_watchdog_dedupes_auto_submit_when_pidfile_and_pgrep_disagree(bridge_env):
@@ -911,17 +961,31 @@ class TestSupervisorAutoRecovery:
             )
         )
 
-        first = _run_watchdog_once(bridge_env)
+        fake_bin = _install_fake_topology_tmux(
+            bridge_env,
+            codex_target="fake:1.1",
+        )
+        first = _run_watchdog_once(
+            bridge_env,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
         assert first.returncode == 0, (
             f"watchdog --once failed during supervisor recovery: stderr={first.stderr!r}"
         )
         restart_lines = bridge_env["supervisor_recovery_log"].read_text().splitlines()
-        assert restart_lines == ["--codex-target fake:1.1"]
+        assert restart_lines == ["--codex-target fake:1.1 --no-transport"], (
+            "watchdog supervisor recovery must restart only the supervisor path; "
+            "restarting transport from inside the watchdog kills the watchdog "
+            "before it can write cooldown state"
+        )
 
-        second = _run_watchdog_once(bridge_env)
+        second = _run_watchdog_once(
+            bridge_env,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
         assert second.returncode == 0
         restart_lines = bridge_env["supervisor_recovery_log"].read_text().splitlines()
-        assert restart_lines == ["--codex-target fake:1.1"], (
+        assert restart_lines == ["--codex-target fake:1.1 --no-transport"], (
             "watchdog retried identical supervisor recovery without cooldown expiry"
         )
 
@@ -966,16 +1030,86 @@ class TestSupervisorAutoRecovery:
             )
         )
 
-        tick = _run_watchdog_once(bridge_env)
+        fake_bin = _install_fake_topology_tmux(
+            bridge_env,
+            codex_target="fake:1.1",
+        )
+        tick = _run_watchdog_once(
+            bridge_env,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
         assert tick.returncode == 0, (
             f"watchdog --once failed on stale snapshot recovery: stderr={tick.stderr!r}"
         )
         restart_lines = bridge_env["supervisor_recovery_log"].read_text().splitlines()
-        assert restart_lines == ["--codex-target fake:1.1"]
+        assert restart_lines == ["--codex-target fake:1.1 --no-transport"], (
+            "watchdog stale-snapshot recovery must leave transport in place "
+            "so the watchdog survives long enough to write cooldown state"
+        )
 
         recovery_state = json.loads(bridge_env["supervisor_recovery_state"].read_text())
         assert recovery_state["reason"] == "progress_snapshot_stale"
         assert recovery_state["status"] == "restarted"
+
+    def test_watchdog_refuses_legacy_codex_guess_for_supervisor_recovery(
+        self, bridge_env
+    ):
+        run_id = "run-supervisor-legacy-fallback"
+        _install_fake_supervisor_restart(bridge_env)
+
+        _seed_run(
+            bridge_env,
+            run_id=run_id,
+            state="waiting_for_codex",
+            tmux_target="fake:1.2",
+            updated_at="2026-04-08T01:05:00Z",
+        )
+        bridge_env["progress_alert"].write_text(
+            json.dumps(
+                {
+                    "sampled_at": "2026-04-08T01:05:01Z",
+                    "monitor_interval_seconds": 300,
+                    "active_run_id": run_id,
+                    "bridge_state": "waiting_for_codex",
+                    "bridge_updated_at": "2026-04-08T01:05:00Z",
+                    "latest_response_file": None,
+                    "latest_response_instruction_id": None,
+                    "pending_review_run_id": None,
+                    "pending_review_instruction_id": None,
+                    "codex_excerpt_hash": None,
+                    "codex_excerpt": "",
+                    "issues": [{"code": "codex_pane_empty", "severity": "error"}],
+                    "advancing": False,
+                    "stale": False,
+                    "summary": "alert",
+                }
+            )
+        )
+
+        fake_bin = _install_fake_topology_tmux(
+            bridge_env,
+            worker_target="fake:1.2",
+            codex_target="fake:1.1",
+        )
+
+        tick = _run_watchdog_once(
+            bridge_env,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert tick.returncode == 0, (
+            f"watchdog --once failed on legacy topology fallback: stderr={tick.stderr!r}"
+        )
+        restart_log = (
+            bridge_env["supervisor_recovery_log"].read_text()
+            if bridge_env["supervisor_recovery_log"].exists()
+            else ""
+        )
+        assert restart_log == ""
+
+        recovery_state = json.loads(bridge_env["supervisor_recovery_state"].read_text())
+        assert recovery_state["reason"] == "progress_alert:alert"
+        assert recovery_state["status"] == "non_authoritative_codex_target"
+        assert recovery_state["codex_target"] == "fake:1.1"
 
 
 # ---------------------------------------------------------------------------
@@ -1362,6 +1496,7 @@ class TestWatchdogSelfExecOnScriptDrift:
             **os.environ,
             "BRAID_ROOT": str(bridge_env["braid"]),
             "CLAUDEX_STATE_DIR": str(bridge_env["pid_dir"]),
+            "CLAUDEX_RUNTIME_CLI": str(_REPO_ROOT / "runtime" / "cli.py"),
             # Tight poll so the test runs fast.
             "CLAUDEX_WATCHDOG_POLL_INTERVAL": "1",
         }
