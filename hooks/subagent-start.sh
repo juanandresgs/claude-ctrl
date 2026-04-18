@@ -20,6 +20,10 @@ source "$(dirname "$0")/context-lib.sh"
 HOOK_INPUT=$(read_input)
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+# DEC-CLAUDEX-SA-IDENTITY-001: payload agent_id is the sole authority for marker+lease seating.
+# Shell PID (agent-$$) is per-process and unreachable from downstream cc-policy context role
+# resolvers. Extract once here; all seating calls below use this variable exclusively.
+_PAYLOAD_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // empty' 2>/dev/null || echo "")
 
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
@@ -145,11 +149,24 @@ elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
 fi
 
 # Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
-# Using PID as the agent_id gives a stable per-process key that the
-# check-*.sh SubagentStop hooks can match when deactivating the marker.
 # Calls dispatch agent-start (lifecycle.py) via local CLI resolution so
 # this reaches the in-worktree runtime in isolated worktrees before merge.
 # rt_marker_set direct call removed — lifecycle.py is the sole authority.
+#
+# @decision DEC-CLAUDEX-SA-IDENTITY-001
+# Title: Payload agent_id is sole authority for SubagentStart marker+lease seating
+# Status: accepted
+# Rationale: The harness delivers the subagent's canonical agent_id in the
+#   SubagentStart payload (HOOK_INPUT.agent_id). Shell PID (agent-$$) is
+#   per-process and unstable across SubagentStart/SubagentStop boundaries;
+#   it is unreachable from any downstream cc-policy context role resolver.
+#   Single source of truth: HOOK_INPUT.agent_id → agent_markers.agent_id →
+#   dispatch_leases.agent_id. Empty payload agent_id = fail-closed with
+#   no_payload_agent_id (seating skipped, lease claim skipped, exit 0 clean).
+#   Hard sweep of stale markers deferred to GS1-F-3 per planner risk #3
+#   (CLI surface marker deactivate-stale does not exist); this slice adds
+#   observatory-only diagnostic breadcrumbs in CONTEXT_PARTS when a stale
+#   active marker of a different role is detected before seating.
 #
 # W-CONV-2 (DEC-CONV-002): Only dispatch-significant roles write markers.
 # Explore, Bash, and general-purpose agents are lightweight coordinators
@@ -166,15 +183,39 @@ case "${_MARKER_ROLE:-}" in
 esac
 
 if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
-    # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
-    # workflow_id is derived from the current branch via current_workflow_id()
-    # so the marker is queryable via get_active(project_root=X, workflow_id=W).
-    _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
-    _local_cc_policy dispatch agent-start \
-        "${_MARKER_ROLE:-unknown}" "agent-$$" \
-        --project-root "$PROJECT_ROOT" \
-        ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
-        >/dev/null 2>&1 || true
+    # DEC-CLAUDEX-SA-IDENTITY-001: fail-closed when payload agent_id is absent.
+    # Without a payload agent_id, marker+lease seating cannot be correlated to
+    # the harness-delivered identity. Skip seating and append a diagnostic note
+    # to CONTEXT_PARTS so orchestrators can detect the gap. The hook continues
+    # to the runtime-first path so contract-present dispatches still receive
+    # their prompt-pack even if the harness doesn't deliver agent_id yet.
+    if [[ -z "$_PAYLOAD_AGENT_ID" ]]; then
+        CONTEXT_PARTS+=("SubagentStart seating skipped (no_payload_agent_id): HOOK_INPUT.agent_id was empty or absent. Marker and lease will not be claimed for role '${_MARKER_ROLE:-unknown}'. Ensure the harness is delivering agent_id in the SubagentStart payload.")
+    else
+        # Observatory-only stale-marker breadcrumb (DEC-CLAUDEX-SA-IDENTITY-001).
+        # If an active marker of a DIFFERENT role exists for this project_root,
+        # append a warning. Hard deactivation is deferred to GS1-F-3.
+        _STALE_MARKER_JSON=$(_local_cc_policy marker get-active \
+            --project-root "$PROJECT_ROOT" 2>/dev/null || echo "")
+        _STALE_FOUND=$(printf '%s' "${_STALE_MARKER_JSON:-}" | jq -r '.found // false' 2>/dev/null || echo "false")
+        if [[ "$_STALE_FOUND" == "true" ]]; then
+            _STALE_ROLE=$(printf '%s' "$_STALE_MARKER_JSON" | jq -r '.active_agent.role // empty' 2>/dev/null || true)
+            _STALE_AID=$(printf '%s' "$_STALE_MARKER_JSON" | jq -r '.active_agent.agent_id // empty' 2>/dev/null || true)
+            if [[ -n "$_STALE_ROLE" && "$_STALE_ROLE" != "${_MARKER_ROLE:-}" ]]; then
+                CONTEXT_PARTS+=("stale active marker: role=${_STALE_ROLE} agent_id=${_STALE_AID} will be superseded by role=${_MARKER_ROLE:-unknown} agent_id=${_PAYLOAD_AGENT_ID}")
+            fi
+        fi
+
+        # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
+        # workflow_id is derived from the current branch via current_workflow_id()
+        # so the marker is queryable via get_active(project_root=X, workflow_id=W).
+        _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
+        _local_cc_policy dispatch agent-start \
+            "${_MARKER_ROLE:-unknown}" "$_PAYLOAD_AGENT_ID" \
+            --project-root "$PROJECT_ROOT" \
+            ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
+            >/dev/null 2>&1 || true
+    fi
 fi
 
 # --- Lease claim: bind this agent to an active dispatch lease if one exists ---
@@ -183,7 +224,14 @@ fi
 # its role, allowed ops, and next step without re-inferring from environment.
 # If no lease exists, inject a warning — high-risk git ops will be denied by
 # guard.sh Check 3 (validate_op fallback path) when no lease is active.
-_CLAIM=$(rt_lease_claim "agent-$$" "$PROJECT_ROOT" "$_EFFECTIVE_LEASE_ROLE")
+# DEC-CLAUDEX-SA-IDENTITY-001: use payload agent_id (not PID) for correlation.
+# When agent_id is absent (no_payload_agent_id guard fired), skip lease claim
+# so dispatch_leases.agent_id is never set to an empty or PID-shaped string.
+if [[ -n "$_PAYLOAD_AGENT_ID" ]]; then
+    _CLAIM=$(rt_lease_claim "$_PAYLOAD_AGENT_ID" "$PROJECT_ROOT" "$_EFFECTIVE_LEASE_ROLE")
+else
+    _CLAIM='{"found":false}'
+fi
 _LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
 if [[ -n "$_LEASE_ID" ]]; then
     _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
