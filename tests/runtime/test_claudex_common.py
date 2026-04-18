@@ -279,3 +279,23 @@ def test_codex_model_guard_handles_offscreen_existing_model_prompt(
     assert "select-pane -t fake:1.1 -e" in logged
     assert "send-keys -t fake:1.1 Down" in logged
     assert "send-keys -t fake:1.1 Enter" in logged
+
+
+def test_overnight_start_detaches_helper_daemons_before_exec_watchdog() -> None:
+    script = (REPO_ROOT / "scripts" / "claudex-overnight-start.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'nohup bash ./scripts/claudex-codex-model-guard.sh \\"$CODEX_PANE_TARGET\\"'
+        in script
+    )
+    assert (
+        'nohup bash ./scripts/claudex-codex-approver.sh --tmux-target \\"$CODEX_PANE_TARGET\\"'
+        in script
+    )
+    assert (
+        'nohup bash ./scripts/claudex-worker-approver.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\"'
+        in script
+    )
+    assert 'exec bash ./scripts/claudex-watchdog.sh --tmux-target \\"$CLAUDE_PANE_TARGET\\"' in script
