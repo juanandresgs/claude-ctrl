@@ -149,7 +149,7 @@ reconciliation) → `2cb1bbd` (A25 docs reconciliation) →
 `ffe0a83` (A34 Status-line ambiguity reconciliation + `c80ce6c`
 A34-followup tip-claim update) → `519a5f4` (A35 heading/status
 mirror invariant for RESOLVED entries).
-**Thirty-one commits published on `origin/feat/claudex-cutover`;
+**Thirty-one (31) commits published on `origin/feat/claudex-cutover`;
 current published tip `519a5f4`.** Guardian remains sole landing
 actor; orchestrator is coordinate-only (no self-grant push, no
 self-run git push). Settings-file model authority fix preserved.
@@ -387,6 +387,24 @@ authorisation either.
 - **Class of defect:** `git commit -- <paths>` re-reads worktree, not index. When only a subset of a file's worktree changes are in scope, use `git apply --cached <patch>` + `git commit` (no path args) so the commit reflects the index only. The A21 error was invoking `git commit -- <paths>` after a precise `git apply --cached` had already staged the right hunks — the path args overrode the careful staging.
 - **Suggested prevention:** a small `scripts/` helper (future slice) that wraps "commit exactly what the index currently holds, refuse if worktree diverges on the named paths" would harden this class of operator error. Not urgent — mechanical rule is well-known and the forward-cleanup pattern is cheap.
 - **Blocking?** No — A21 + A21R both on `origin/feat/claudex-cutover`. Net behavior change = intended A21 scope only.
+
+### A36 published-chain cardinality invariant (2026-04-18) — RESOLVED (closes A30/A33 residual risk on chain-count drift)
+
+- **Subject:** closes the residual-risk class that both A30 and A33 explicitly disclaimed — the published-chain list and declared commit count are not covered by the tip-hash freshness invariant. A future slice could advance the tip claim without updating the surrounding chain enumeration or count and pass A26/A30/A33 while leaving stale narrative downstream. A36 adds a bounded mechanical check: the declared count in the trailing `**<WORD> (<N>) commits published on ...**` line must equal the number of 7-character hex short SHAs wrapped in backticks inside the chain block.
+- **Repro (class-of-defect, pre-A36):** edit the chain block to add a new entry for the just-landed commit but forget to increment the count word (or vice versa). Before A36, the drift was undetectable by any automated check — only a careful read.
+- **Fix applied (this slice, two files):**
+  1. `ClauDEX/SUPERVISOR_HANDOFF.md` — trailing declared-count line normalized from `**Thirty-one commits published on …**` to `**Thirty-one (31) commits published on …**`. The word form preserves prose readability; the parenthesized integer literal makes parsing trivial (regex `\((\d+)\)`). Pre-A36 the line carried only the word form, which would have required a word-to-int table for robust parsing.
+  2. `tests/runtime/test_handoff_artifact_path_invariants.py` — two new tests:
+     - `test_published_chain_commit_count_matches_listed_hash_count` (live invariant): extracts the chain block (text strictly AFTER the `Published config-readiness bundle since <baseline>` heading line, up to the declared-count claim line), counts backtick-wrapped 7-hex SHAs, and asserts equality with the declared integer.
+     - `test_a36_published_chain_scanner_exercises_canonical_shapes` (scanner-self pin): exercises the count-line regex against three match-fixture shapes and three reject-fixture shapes (pure word form, non-integer in parens, wrong separator) so a future edit that loosens the pattern cannot silently bypass the invariant. Also validates the short-SHA extractor contributes 2 for a canonical A34-followup embedded-hash bullet shape (`ffe0a83 (A34 … + c80ce6c A34-followup …)`).
+- **Declared count at landing:** `31`. **Computed hash count at landing:** `31` (verified via live-fixture test run). Match.
+- **Embedded-hash tolerance (A34-followup pattern):** a single chain bullet may carry more than one hash when a follow-up commit lands within the same logical slice (the A34 bullet carries both `ffe0a83` and `c80ce6c`). The scanner counts every backtick-wrapped 7-hex literal in the block, so that single bullet contributes 2 to the total — matching how the declared count is incremented (one per landed commit).
+- **Baseline anchor exclusion:** the chain heading `**Published config-readiness bundle since \`86795d0\`:**` contains the baseline hash `86795d0`, which is the anchor commit BEFORE the chain starts. The scanner extracts only text strictly AFTER the heading line, so the baseline hash is never counted as a chain entry.
+- **Verification (A36 landing):** `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_handoff_artifact_path_invariants.py tests/runtime/test_current_lane_state_invariants.py` → 50 passed (48 pre-A36 + 2 new A36 tests). `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT PYTHONPATH=. python3 -m pytest -q tests/runtime/test_braid_v2.py` → 5 passed unfiltered.
+- **Effect:** any future slice that advances the tip claim without co-updating the chain enumeration (add a new backtick-hash entry) AND the declared count integer fails at Guardian preflight. The A30/A33 residual risk class is now mechanically closed.
+- **Residual risk (narrower):** A36 enforces cardinality only. The ordering of chain entries (A5R before A6 before A7 …) and the label text for each entry (e.g., `(A5R codec adapter)`) are not checked. A reordered or mislabeled chain would still pass A36. Those classes are out of A36 scope; a future invariant could add order-checking via slice-id extraction from each bullet label.
+- **Blocking?** No — class-of-defect closure. All snapshot-level invariants green together on HEAD (A26 tip-agreement, A27 branch-precondition, A30/A33 freshness, A31 statusline gate, A35 heading/status mirror, A36 chain cardinality).
+- **Decision annotation:** none (scoped docs/test-invariant addition; no architectural change).
 
 ### A35 heading/status mirror invariant for RESOLVED entries (2026-04-18) — RESOLVED (class-of-defect closure)
 

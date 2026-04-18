@@ -1316,3 +1316,173 @@ def test_resolved_status_mirror_scanner_distinguishes_live_from_legacy() -> None
         assert not _LIVE_STATUS_OPEN_BULLET_RE.search(fx), (
             f"A35 scanner false-positive on legacy/historical shape: {fx!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# A36: published-chain cardinality invariant
+# ---------------------------------------------------------------------------
+# Context: A30/A33 enforce tip-hash freshness within a `{HEAD, HEAD^, HEAD~2}`
+# tolerance window, but both residual-risk notes explicitly disclaim that the
+# published-chain list and declared commit count are NOT in scope — a future
+# slice could advance the tip claim without updating the surrounding chain
+# enumeration or count, passing A30/A33 while still leaving stale narrative
+# downstream. A36 closes that class with a narrow mechanical check: the
+# declared count in the "**<WORD> (<N>) commits published on ...**" line
+# must equal the number of short-hash-in-backticks entries in the
+# `## Next bounded cutover slice` published-chain block.
+#
+# Machine-checkability: A36 normalizes the declared-count line to include a
+# parenthesized integer literal (e.g., `Thirty-one (31) commits published`).
+# The word form preserves prose readability; the integer makes parsing
+# trivial via `\((\d+)\)`. Pre-A36 the line carried only the word form,
+# which would have required a word-to-int table for robust parsing.
+#
+# Baseline anchor exclusion: the block heading `**Published config-readiness
+# bundle since \`86795d0\`:**` contains the baseline hash (`86795d0`), which
+# is the anchor commit BEFORE the chain starts. The scanner extracts only
+# the text STRICTLY AFTER the heading line so the baseline hash is never
+# counted as a chain entry.
+#
+# Embedded-hash tolerance (A34-followup pattern): a single chain bullet
+# may carry more than one hash when a follow-up commit lands within the
+# same logical slice (e.g., `\`ffe0a83\` (A34 … + \`c80ce6c\` A34-followup
+# …)`). The scanner counts every backtick-wrapped 7-hex literal in the
+# block, so a single bullet with two embedded hashes contributes 2 to the
+# total — matching how the declared count is incremented on each commit.
+# ---------------------------------------------------------------------------
+
+
+_PUBLISHED_CHAIN_HEADING = (
+    "**Published config-readiness bundle since `86795d0`:**"
+)
+# Match the declared-count line: "**<WORD> (<N>) commits published on ...**"
+# The `<N>` integer inside `()` is the machine-checkable value.
+_PUBLISHED_COUNT_CLAIM_RE = re.compile(
+    r"\*\*[A-Za-z-]+\s*\((\d+)\)\s+commits\s+published\s+on\b",
+)
+# Match 7-hex short SHAs wrapped in single backticks (NOT triple-backtick
+# code fences). Intentionally strict on 7 chars to avoid false-matching
+# longer literals like `86795d0` + suffix or `abcdef1234` hex bytes.
+_BACKTICK_SHORT_SHA_RE = re.compile(r"`([0-9a-f]{7})`")
+
+
+def _extract_published_chain_block(text: str) -> tuple[str, int]:
+    """Return (chain_body, declared_count) from the handoff doc. `chain_body`
+    is the text strictly AFTER the `**Published config-readiness bundle
+    since …:**` heading line up to the `**<WORD> (<N>) commits published
+    on …**` claim line (exclusive on both ends). `declared_count` is the
+    integer inside `(<N>)`.
+
+    Raises AssertionError with a diagnostic when either anchor is missing
+    or the count literal is not present.
+    """
+    heading_idx = text.find(_PUBLISHED_CHAIN_HEADING)
+    assert heading_idx != -1, (
+        f"SUPERVISOR_HANDOFF.md is missing the published-chain heading "
+        f"{_PUBLISHED_CHAIN_HEADING!r}; A36 cannot locate the block. "
+        "If the heading was intentionally renamed, update "
+        "`_PUBLISHED_CHAIN_HEADING` in lockstep."
+    )
+    body_start = heading_idx + len(_PUBLISHED_CHAIN_HEADING)
+    # Find the declared-count claim AFTER the heading.
+    match = _PUBLISHED_COUNT_CLAIM_RE.search(text, pos=body_start)
+    assert match is not None, (
+        "SUPERVISOR_HANDOFF.md does not carry a machine-checkable "
+        "published-count claim in the expected shape: "
+        "`**<WORD> (<N>) commits published on ...**`. If the count wording "
+        "was changed intentionally, update `_PUBLISHED_COUNT_CLAIM_RE` in "
+        "lockstep. A36 requires a parenthesized integer literal so the "
+        "count is unambiguous at parse time."
+    )
+    chain_body = text[body_start:match.start()]
+    declared = int(match.group(1))
+    return chain_body, declared
+
+
+def test_published_chain_commit_count_matches_listed_hash_count() -> None:
+    """A36 invariant: the declared commit count in the published-chain
+    block's trailing `**<WORD> (<N>) commits published on ...**` line MUST
+    equal the number of 7-character hex short SHAs wrapped in single
+    backticks inside the chain block.
+
+    Closes the residual-risk class called out in A30 and A33: a slice that
+    advances the tip claim without updating the surrounding chain
+    enumeration or count passes A26/A30/A33 (tip claims still agree and
+    are within freshness tolerance) but leaves stale narrative. A36 makes
+    count-vs-list drift fail loudly.
+
+    The parser is robust to the A34-followup pattern where a single chain
+    bullet may carry two embedded hashes (e.g., bullets of shape
+    "backtick+ffe0a83+backtick (A34 ... + backtick+c80ce6c+backtick ...)").
+    Each backtick-wrapped 7-hex literal contributes 1 to the computed count,
+    matching the cadence at which the declared count is incremented
+    (one per landed commit).
+
+    The baseline anchor (`86795d0`) in the heading itself is excluded by
+    construction — the scanner only searches text strictly AFTER the
+    heading line.
+    """
+    text = SUPERVISOR_HANDOFF_DOC.read_text(encoding="utf-8")
+    chain_body, declared = _extract_published_chain_block(text)
+    hashes = _BACKTICK_SHORT_SHA_RE.findall(chain_body)
+    computed = len(hashes)
+
+    assert declared == computed, (
+        f"A36 chain-cardinality drift: declared count "
+        f"`**<WORD> ({declared}) commits published on ...**` does not match "
+        f"the {computed} backtick-wrapped short SHAs in the "
+        f"`{_PUBLISHED_CHAIN_HEADING}` block. When a slice lands that "
+        "advances the tip claim, update BOTH the chain enumeration (add "
+        "the new commit's short SHA in backticks with a short label) AND "
+        "the declared count integer in the same edit so A36 stays green. "
+        f"Computed hashes: {hashes!r}"
+    )
+
+
+def test_a36_published_chain_scanner_exercises_canonical_shapes() -> None:
+    """Scanner-self sanity pin for A36. Exercises the count-line regex
+    against canonical shapes and the short-SHA regex against mixed-bullet
+    fixtures (including the A34-followup embedded-hash pattern).
+    """
+    # Count-line fixture shapes — each must yield the expected integer.
+    count_fixtures: list[tuple[str, int]] = [
+        ("**Thirty-one (31) commits published on `origin/feat/claudex-cutover`;", 31),
+        ("**Forty-two (42) commits published on `foo`; tip `abc1234`.**", 42),
+        ("**Nine (9) commits published on `x`;", 9),
+    ]
+    for line, expected in count_fixtures:
+        m = _PUBLISHED_COUNT_CLAIM_RE.search(line)
+        assert m is not None, (
+            f"A36 count-line scanner failed to match canonical shape: {line!r}"
+        )
+        assert int(m.group(1)) == expected, (
+            f"A36 count-line scanner extracted wrong integer from {line!r}: "
+            f"got {int(m.group(1))}, expected {expected}"
+        )
+
+    # Count-line shapes the scanner must REJECT (would silently pass the
+    # invariant with no claim to check against).
+    reject_fixtures: list[str] = [
+        # Missing parenthesized integer (pre-A36 pure word form):
+        "**Thirty-one commits published on `origin/feat/claudex-cutover`;",
+        # Parenthesized non-integer:
+        "**Thirty (N) commits published on `x`;",
+        # Wrong separator (commas instead of space):
+        "**Thirty-one (31),commits published on `x`;",
+    ]
+    for line in reject_fixtures:
+        m = _PUBLISHED_COUNT_CLAIM_RE.search(line)
+        assert m is None, (
+            f"A36 count-line scanner false-positive on non-canonical shape: {line!r}"
+        )
+
+    # Short-SHA extractor fixture: verify embedded-hash bullet contributes 2.
+    bullet_with_two_hashes = (
+        "→ `ffe0a83` (A34 Status-line ambiguity reconciliation + `c80ce6c` "
+        "A34-followup tip-claim update) → `519a5f4` (A35)."
+    )
+    hashes = _BACKTICK_SHORT_SHA_RE.findall(bullet_with_two_hashes)
+    assert hashes == ["ffe0a83", "c80ce6c", "519a5f4"], (
+        f"A36 short-SHA extractor failed on embedded-hash bullet: "
+        f"expected ['ffe0a83', 'c80ce6c', '519a5f4'], got {hashes!r}"
+    )
