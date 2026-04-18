@@ -93,6 +93,93 @@ operator approval per Sacred Practice #8 (destructive ops). No
 code change was made in this slice; the packet is a docs-only
 artifact grounded in `CUTOVER_PLAN.md` (no Phase 9 defined).
 
+**Step-1 draft artifact landed (2026-04-18, rev 2 after
+discovery-hardening pass).** The machine-verifiable portion of
+packet §Pre-execution operator prerequisites step 1 ("Target-DB
+enumeration") has been materialised as a docs-only draft at
+`ClauDEX/CATEGORY_C_TARGET_DB_ENUMERATION_2026-04-18.md`. After
+the 2026-04-18 discovery-hardening pass (Codex instruction
+`1776484473001-0006-8ll8il`), the artifact enumerates **3 in-scope
+DBs and 19 excluded entries**:
+
+- Row 1: `worktree/.claude/state.db` — empty Category C tables.
+- Row 2: `hardFork/state.db` (resolved from `~/.claude/state.db`
+  via the `~/.claude` → hardFork symlink; `default_db_path()`
+  step-4 global fallback) — `proof_state=10`, dispatch tables
+  empty.
+- **Row 14 (newly discovered rev 2):** `hardFork/.claude/state.db`
+  (a distinct file from row 2 at a different inode; the step-3
+  git-root target when CWD is hardFork repo root) —
+  `proof_state=9`, **`dispatch_queue=107`**, **`dispatch_cycles=1`**.
+
+**Row-14 writer-drift adjudication (technically resolved 2026-04-18,
+pending operator confirmation).** A bounded read-only adjudication
+pass (Codex instruction `1776484774491-0007-0ta3rd`) collected three
+independent evidence streams at lane HEAD `86795d0`: temporal (zero
+rows on row 14 carry any Category C timestamp at or after either
+retirement commit; the maximum recorded timestamp 2026-04-10 17:58:55
+precedes the earliest retirement commit `f72e656` at 2026-04-17
+12:19:56 by 6 days 18 hours), code-level writer audit (zero non-test
+write-shaped matches in live source at HEAD), and mechanical invariant
+(`pytest -q tests/runtime/test_authority_table_writers.py` → 15/15
+pass in 0.18s). The three streams converge on **likely benign residue
+— HIGH confidence**; option (b) (active-era writer drift,
+escalation-grade per Escalation boundary §3) is **ruled out** at this
+confidence level. Full evidence is captured in the draft artifact
+§1.c.1. The adjudication is **technical** (agent-produced) — §3
+item 5 still requires operator confirmation before Step 1 is sealed;
+residual low-probability edges (timestamp-trust, out-of-tree-writer,
+invariant-coverage) are enumerated in §1.c.1 and must be acknowledged
+by the operator if the adjudication is confirmed as-is. Rows 1 and 2
+do not carry this ambiguity.
+
+The artifact is authored docs-only (no runtime / hook / bridge /
+settings / schema edits) and does not seal Step 1 on its own. The
+packet continues to authoritatively gate execution — Step 1 is
+draft-only until operator ratification; Step 2 (per-target forensic
+snapshots) and Step 3 (per-target approval tokens per Sacred
+Practice #8) remain pending; no `DROP TABLE` is authorised anywhere
+in the enumeration. This does not reopen Phase 8 and does not
+create Phase 9.
+
+**Next action (operator-ratification round).** Before Step 1 can be
+sealed, the operator must answer the five §3 items in the draft
+artifact: (a) ClauDEX version-of-last-writer for the 3 in-scope
+DBs, (b) live / archival / read-only classification for each, (c)
+explicit naming of any additional target DBs outside the hardFork
+lane footprint or an explicit "no additional targets" assertion,
+(d) ratification of the 19 exclusions, and (e) confirm-or-amend
+the technical adjudication of row-14 writer-drift. Items (a)-(d)
+remain direct operator assertions; item (e) now has a technical
+adjudication already captured (likely benign residue, HIGH
+confidence, three converging evidence streams — see §1.c.1 of
+the draft artifact) and the operator's ratification response
+either confirms it verbatim and accepts the enumerated residual
+edges (timestamp-trust / out-of-tree-writer / invariant-coverage)
+as acceptable risk, OR requests additional hardening (row-level
+dump of row 14's Category C tables, extension of
+`test_authority_table_writers.py` coverage, bounded
+out-of-tree-writer search — each a separate docs-only or
+read-only slice). The ratification round is itself docs-only
+(append to §3 of the draft artifact). Only after Step 1 is sealed
+may a separate authorising instruction open a Step-2
+forensic-snapshot slice, and only after Step 2 completes for a
+specific DB may a Step-3 approval-token slice be opened for that
+DB + sub-slice pair, each requiring explicit user approval per
+Sacred Practice #8. Rows 1 and 2 carry no writer-drift ambiguity
+and are not gated on item (e); only row 14 is. **Ratification
+response template:** a verbatim-fillable form for items (a)-(e)
+is provided in `ClauDEX/CATEGORY_C_TARGET_DB_ENUMERATION_2026-04-18.md`
+§3.1 ("Operator Ratification Response Template") — fill that
+template in-place so §3 state is recorded mechanically; the
+template carries no Step-2 / Step-3 authorisation. **Optional
+non-authoritative draft fill:** §3.2 ("Suggested Draft Fill —
+Operator Review Required") offers machine-supported `candidate`
+values for items (a)-(e) to reduce operator friction; no candidate
+is binding, operator retains full authority to reject or amend, and
+§3.2 carries no Step-2 / Step-3 authorisation either. No execution
+slice of any kind is pre-authorised by the presence of the draft.
+
 No `Phase 9` exists in `ClauDEX/CUTOVER_PLAN.md`; the cutover is closed. The
 integrated bundles are post-Phase-8 hardening (Category C retirements +
 Invariant #8 coverage + Phase 2/2b/3 continuations + constitution doc
@@ -405,9 +492,14 @@ The planned three-step sequence (all three steps now completed):
    `git merge origin/feat/claudex-cutover --no-edit`. Expect conflicts
    in up to 11 overlap files; resolve, test, commit merge.
 
-3. **Push.** `cc-policy approval grant claudesox-local push` then
-   `git push origin claudesox-local:feat/claudex-cutover`. Do NOT start
-   a new implementation slice before the push lands.
+3. **Historical OLD-model push step.** At that point in the session the
+   repo-root runtime still treated straightforward `push` as approval-token
+   gated, so Guardian had to clear legacy push debt and publish
+   `claudesox-local` to `origin/feat/claudex-cutover`. This line is retained
+   as audit history only. Under the current authority model, the
+   supervisor/orchestrator must not self-grant a push token and must not
+   self-run `git push`; Guardian owns evaluated `commit`/`merge`/
+   straightforward `push`.
 
 2. **Then, bounded probe implementation slice for the
    `waiting_for_codex` response-surface drift** (post-checkpoint

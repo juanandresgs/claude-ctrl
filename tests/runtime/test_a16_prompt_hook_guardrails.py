@@ -11,6 +11,8 @@ Objectives:
 3. Routine commit/merge/straightforward push remains on the guardian-land path.
 4. Orchestrator must NOT self-run `git push` or self-grant
    `cc-policy approval grant ... push`.
+5. Canonical dispatch inside an approved bounded slice must not invent a
+   second "user-only confirmation" boundary.
 
 This file inspects the prompt and hook source files by content-substring
 and by structural properties. It does NOT duplicate logic tested elsewhere
@@ -196,6 +198,48 @@ class TestOrchestratorMustNotSelfPush:
 
 
 # ---------------------------------------------------------------------------
+# Objective 5: canonical dispatch does not require extra user-only confirmation
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalDispatchNeedsNoSecondUserConfirmation:
+    """Prompt surfaces must treat live supervisor/operator steering as sufficient."""
+
+    def test_claude_md_rejects_second_user_only_confirmation(self):
+        text = _read_repo_file("CLAUDE.md")
+        assert "second user-only confirmation" in text, (
+            "CLAUDE.md does not explicitly reject second user-only confirmation "
+            "before canonical dispatch"
+        )
+        assert "supervisor steering instruction is sufficient authority" in text, (
+            "CLAUDE.md does not state that supervisor steering is sufficient "
+            "authority for canonical dispatch inside the active slice"
+        )
+
+    def test_supervisor_prompt_rejects_second_user_only_confirmation(self):
+        text = _read_repo_file(".codex/prompts/claudex_supervisor.txt")
+        assert "second user-only confirmation" in text, (
+            "claudex_supervisor.txt does not explicitly reject second user-only "
+            "confirmation before canonical dispatch"
+        )
+        assert "supervisor steering instruction is sufficient authority" in text, (
+            "claudex_supervisor.txt does not treat supervisor steering as "
+            "sufficient authority for canonical dispatch"
+        )
+
+    def test_handoff_prompt_rejects_second_user_only_confirmation(self):
+        text = _read_repo_file(".codex/prompts/claudex_handoff.txt")
+        assert "second user-only confirmation" in text, (
+            "claudex_handoff.txt does not explicitly reject second user-only "
+            "confirmation before canonical dispatch"
+        )
+        assert "supervisor steering instruction is sufficient authority" in text, (
+            "claudex_handoff.txt does not treat supervisor steering as "
+            "sufficient authority for canonical dispatch"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Hook-layer corroboration: write_who gates source writes at PreToolUse
 # ---------------------------------------------------------------------------
 
@@ -237,12 +281,12 @@ class TestWriteHookLayerEnforcesCoordinateOnly:
 
 
 # ---------------------------------------------------------------------------
-# Smoke: all four objectives hold at soak HEAD
+# Smoke: all five objectives hold at soak HEAD
 # ---------------------------------------------------------------------------
 
 
 def test_a16_all_objectives_hold_at_soak_head():
-    """Compound smoke: the four A16 objectives' key substrings are present."""
+    """Compound smoke: the five A16 objectives' key substrings are present."""
     supervisor = _read_repo_file(".codex/prompts/claudex_supervisor.txt")
     handoff = _read_repo_file(".codex/prompts/claudex_handoff.txt")
     pre_write = _read_repo_file("hooks/pre-write.sh")
@@ -262,6 +306,8 @@ def test_a16_all_objectives_hold_at_soak_head():
     # Objective 4: no-self-push, no-self-grant.
     assert "self-grant" in supervisor and "approval grant" in supervisor and "push" in supervisor
     assert "self-run" in supervisor and "git push" in supervisor
+    assert "second user-only confirmation" in supervisor
+    assert "supervisor steering instruction is sufficient authority" in supervisor
 
     # Hook-layer corroboration: both pre-write and pre-bash route to cc-policy.
     assert "cc-policy" in pre_write or "cc_policy" in pre_write

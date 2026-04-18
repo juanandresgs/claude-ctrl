@@ -694,6 +694,123 @@ class TestCheckpointRetryThrottleRule:
 
 
 # ---------------------------------------------------------------------------
+# Guardian-only landing guidance pins
+# ---------------------------------------------------------------------------
+# Context: the runtime already enforces guardian-only landing via
+# bash_git_who / authority_registry, but active prompt + handoff surfaces
+# previously still preserved an operator action card that told the
+# orchestrator to run a push-approval grant followed by `git push`.
+# That guidance reintroduced the wrong authority model even though the
+# runtime policy was correct. These pins keep the active surfaces aligned:
+# Guardian owns evaluated commit/merge/straightforward push, and the
+# orchestrator must treat routine push-approval prompts as helper/runtime
+# drift rather than self-granting or self-pushing.
+# ---------------------------------------------------------------------------
+
+GUARDIAN_LANDING_SURFACES: tuple[Path, ...] = (
+    REPO_ROOT / "CLAUDE.md",
+    REPO_ROOT / ".codex" / "prompts" / "claudex_handoff.txt",
+    REPO_ROOT / ".codex" / "prompts" / "claudex_supervisor.txt",
+    REPO_ROOT / "ClauDEX" / "SUPERVISOR_HANDOFF.md",
+    REPO_ROOT / "ClauDEX" / "CURRENT_STATE.md",
+)
+
+_GUARDIAN_ACTIVE_REGION_DELIMITERS_BY_DOC: dict[str, tuple[str, ...]] = {
+    "SUPERVISOR_HANDOFF.md": ("## Historical Phase State Snapshot",),
+    "CURRENT_STATE.md": (
+        "## Checkpoint Readiness (Phase 8 Slice 12 closeout, 2026-04-14)",
+    ),
+}
+
+_LEGACY_PUSH_TOKEN_PHRASES: tuple[str, ...] = (
+    "cc-policy approval grant claudesox-local push",
+)
+
+_PROMPT_REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
+    "claudex_supervisor.txt": (
+        "do NOT self-grant",
+        "do NOT self-run `git push`",
+        "Guardian remains the sole landing actor",
+    ),
+    "claudex_handoff.txt": (
+        "do NOT self-grant",
+        "do NOT self-run `git push`",
+        "Guardian remains the sole landing actor",
+    ),
+}
+
+
+def _guardian_active_region(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    delimiters = _GUARDIAN_ACTIVE_REGION_DELIMITERS_BY_DOC.get(path.name)
+    if not delimiters:
+        return text
+    earliest = len(text)
+    for delim in delimiters:
+        if text.startswith(delim):
+            earliest = min(earliest, 0)
+            continue
+        anchored = "\n" + delim
+        idx = text.find(anchored)
+        if idx != -1:
+            earliest = min(earliest, idx + 1)
+    return text[:earliest]
+
+
+def test_active_surfaces_do_not_reintroduce_push_token_action_cards() -> None:
+    """Active operator surfaces must not reintroduce the old
+    `approval grant ... push` action card. Historical snapshots are
+    excluded by the doc-specific active-region delimiters above.
+    """
+    hits: list[str] = []
+    for surface in GUARDIAN_LANDING_SURFACES:
+        active = _guardian_active_region(surface)
+        for phrase in _LEGACY_PUSH_TOKEN_PHRASES:
+            if phrase in active:
+                hits.append(
+                    f"{surface.relative_to(REPO_ROOT)}: legacy push-token phrase "
+                    f"reappeared in active guidance: {phrase!r}"
+                )
+    assert not hits, (
+        "Active landing guidance must not tell the orchestrator to run the "
+        "legacy push-token workaround:\n" + "\n".join(hits)
+    )
+
+
+def test_claude_md_guardian_land_bullet_mentions_straightforward_push() -> None:
+    """CLAUDE.md must state that guardian:land owns straightforward push.
+    Omitting push from that bullet leaves room for the orchestrator to
+    treat push as outside Guardian's landing authority.
+    """
+    text = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert (
+        "- `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push`"
+        in text
+    ), (
+        "CLAUDE.md must explicitly say guardian (land) owns straightforward "
+        "push, not just commit/merge."
+    )
+
+
+def test_supervisor_prompts_forbid_self_grant_or_self_push() -> None:
+    """Supervisor-facing prompts must explicitly reject self-grant/self-push
+    behavior when a routine push approval prompt appears.
+    """
+    missing: list[str] = []
+    for basename, tokens in _PROMPT_REQUIRED_TOKENS.items():
+        path = REPO_ROOT / ".codex" / "prompts" / basename
+        text = path.read_text(encoding="utf-8")
+        for token in tokens:
+            if token not in text:
+                missing.append(f"{path.relative_to(REPO_ROOT)}: missing {token!r}")
+    assert not missing, (
+        "Supervisor-facing prompt surfaces must explicitly forbid self-grant / "
+        "self-push drift and keep Guardian as the sole landing actor:\n"
+        + "\n".join(missing)
+    )
+
+
+# ---------------------------------------------------------------------------
 # A26: mechanical handoff-tip agreement invariant
 # ---------------------------------------------------------------------------
 # The SUPERVISOR_HANDOFF.md file contains TWO live snapshot sections that both

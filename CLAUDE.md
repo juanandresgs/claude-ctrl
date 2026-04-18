@@ -102,8 +102,9 @@ Before using AskUserQuestion, agents must pass this filter:
 
 1. **Is the answer prescribed?** Check MASTER_PLAN.md, auto-dispatch rules, and prior decisions first
 2. **Would any reasonable user say "of course"?** If one option is clearly Recommended/Default, just use it
-3. **Does a gate already handle this?** Commit/merge/straightforward push goes through Guardian — don't pre-ask
+3. **Does a gate already handle this?** Commit/merge/straightforward push goes through Guardian — don't pre-ask and don't self-run it from the orchestrator
 4. **Can you resolve it with 2 minutes of research?** Check plan, code, and prior traces before escalating
+5. **Is the slice already approved and still within canonical routing?** Do not require a second user-only confirmation before dispatching planner/implementer/reviewer/guardian inside the active bounded slice. A direct operator request or live supervisor steering instruction is sufficient authority to continue canonical routing; only bounce for destructive/history-rewrite actions, ambiguous publish targets, irreconcilable agent disagreement, or explicit product signoff.
 
 - **Suggest next steps.** End every response with forward motion: a question, suggestion, or offer to continue.
 - **Verify and demonstrate.** Run tests, show output, prove it works. Never just say "done."
@@ -217,12 +218,14 @@ Subagent authority model (enforce this in routing):
 - `guardian (provision)`: worktree/lease/bootstrap authority; no source implementation.
 - `implementer`: source implementation within scope; no landing authority.
 - `reviewer`: read-only technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`).
-- `guardian (land)`: local landing authority (`commit`/`merge`) once readiness gates are green.
-- `orchestrator`: coordination/dispatch/review only; does not perform source edits or bypass stage authorities.
+- `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push` to the established upstream) once readiness gates are green.
+- `orchestrator`: coordination/dispatch/review only; does not perform source edits, landing operations, or bypass stage authorities.
 
 When `cc-policy` denies, treat the denial as routing guidance:
 - evaluate/test/lease denial before landing → dispatch the owning stage to fix that state.
+- landing-helper / approval drift on `commit`/`merge`/straightforward `push` → do **not** self-run `git push` or `cc-policy approval grant ... push`; keep landing on `guardian (land)` and repair the helper/runtime path instead.
 - do not retry the same denied operation until governing state changes.
+- a live operator request or supervisor steering instruction to continue the current bounded slice is enough authority to dispatch the next canonical stage. Do **not** stop for a second user-only confirmation before planner/implementer/reviewer/guardian dispatch.
 
 ### Uncertainty Reporting
 

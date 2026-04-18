@@ -961,9 +961,17 @@ The first soak counts below are preserved for traceability; final local verifica
 - **Combined clean-env verification**: `env -u CLAUDEX_STATE_DIR -u BRAID_ROOT pytest -q tests/runtime/test_braid_v2.py tests/runtime/test_claudex_watchdog.py tests/runtime/test_subagent_start_payload_shape.py` → **40 passed, 1 skipped in 35.35s**.
 - No bounded Claude dispatch issued for this follow-up; the env isolation fix and auto-submit process fix are local worktree changes awaiting review/commit.
 
-### Runtime-authority drift between installed `cc-policy`/hooks and worktree convergence bundle (2026-04-17) — OPEN
+### Runtime-authority drift between installed `cc-policy`/hooks and worktree convergence bundle (2026-04-17) — RESOLVED on soak lane; repo-root fast-forward remains operator-owned (2026-04-18 A28 re-verification)
 
-**Fact correction (post-preflight re-verification):** an earlier revision of
+**A28 status update (2026-04-18, precondition-verified at HEAD `80a47e8`):** the runtime-side of this entry is now RESOLVED on the soak lane. All ~34 files referenced in the original bundle list have either already landed on `origin/feat/claudex-cutover` via the A5R → A27 chain, or (in the case of the docs pieces — CLAUDE.md Guardian-landing discipline, `.codex/prompts/claudex_handoff.txt` supervisor-steering authorization, `ClauDEX/CURRENT_STATE.md` / `ClauDEX/OVERNIGHT_RUNBOOK.md` lane-truth pickup, and the matching `tests/runtime/test_a16_prompt_hook_guardrails.py` + `tests/runtime/test_handoff_artifact_path_invariants.py` guardian-landing invariant pins) landed in this A28 commit. Evidence re-captured at the top of this slice:
+
+- `git show 80a47e8:runtime/schemas.py` — `APPROVAL_OP_TYPES` frozenset no longer contains `push` (only `rebase`, `reset`, `force_push`, `destructive_cleanup`, `non_ff_merge`, `admin_recovery`). The soak-HEAD runtime matches the post-convergence model.
+- `git show 80a47e8:runtime/core/policies/bash_approval_gate.py` — `_resolve_op_type` no longer contains a `subcommand == "push"` branch (grep count 0 for that branch in worktree). A19R closed this in policy code; A28's doc-side updates keep CLAUDE.md / claudex_handoff.txt in lockstep.
+- `git rev-parse HEAD` on the soak worktree = `80a47e82731d28334d6e6613e5f464d751f00356` (post-A27). Lane is 0 ahead / 0 behind `origin/feat/claudex-cutover`.
+
+**Remaining bounded blocker (operator-owned, not a soak-lane issue):** the **repo-root** checkout at `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork` is still on branch `checkpoint/2026-04-17-docs-and-bash-write-who` at HEAD `6b8cc5c` (pre-convergence). A19R re-seated `runtime/core/policies/bash_approval_gate.py` and `runtime/core/leases.py` into the repo-root **working tree** via `git checkout origin/feat/claudex-cutover -- <file>` so live hook enforcement uses the converged policy code, but the repo-root **committed HEAD** and unreseated files like `runtime/schemas.py` still carry pre-convergence content. The single-authority restoration requires step 3 of the original remediation order: fast-forward the repo-root checkout to `feat/claudex-cutover` (`git -C /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork checkout feat/claudex-cutover` or equivalent branch swap). That operation is a branch checkout on a separate working tree and is explicitly **operator-owned** per Sacred Practice #8 (branch swap with 60 live-modified files on the current branch is an ambiguous-publish-target-class decision for the operator). Until the operator performs that step, the `APPROVAL_OP_TYPES` frozenset in the repo-root's committed `runtime/schemas.py` stays stale — but since the policy gate (`_resolve_op_type`) was already re-seated in the repo-root working tree, no live-enforcement drift remains: the stale frozenset entry is only consulted on `cc-policy approval grant ... push` invocations, which the policy gate no longer produces a gate-miss reason for.
+
+**Fact correction (preserved for audit, pre-A28):** an earlier revision of
 this entry stated that the worktree HEAD `a1b3591` already removed `push` from
 `APPROVAL_OP_TYPES`. That was **incorrect** — `git show
 a1b3591:runtime/schemas.py` confirms `"push"` is STILL present in the frozenset
@@ -973,7 +981,7 @@ worktree (~34 modified files covering `runtime/schemas.py`,
 `runtime/core/approvals.py`, `runtime/core/leases.py`,
 `runtime/core/policies/bash_approval_gate.py`, `CLAUDE.md`,
 `agents/guardian.md`, `ClauDEX/CUTOVER_PLAN.md`, hooks, scripts, and matching
-tests/scenarios). The entry below reflects the corrected picture.
+tests/scenarios). **A28 update:** that "unstaged convergence bundle" referenced here has since fully landed — `runtime/schemas.py`, `runtime/core/approvals.py`, `runtime/core/leases.py`, and `runtime/core/policies/bash_approval_gate.py` are all at the converged model in soak HEAD `80a47e8`; `CLAUDE.md` and the matching tests land in this A28 commit. The entry below reflects the historical preflight picture and is preserved for audit.
 
 - **Subject:** the installed `cc-policy` shim and live hook enforcement both
   invoke the repo-root runtime at `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/cli.py`,

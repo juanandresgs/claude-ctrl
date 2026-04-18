@@ -125,7 +125,7 @@ tmux new-window -d -t overnight -n claudex-monitor -c /Users/turla/Code/ConfigRe
     is nothing immediate to review
   - Codex: `send_instruction()` for the next bounded Claude slice
 - `claudex-bridge-up.sh` also starts the watchdog. Its job is only transport and handoff:
-  - restart `auto-submit` if the pid is stale
+  - own the only `auto-submit` launcher for the lane and restart it if the pid is stale
   - restart the broker if the socket disappears
   - classify `queued + no inflight + repeated auto-submit timeout` as
     `dispatch_stalled`, not healthy
@@ -137,6 +137,9 @@ tmux new-window -d -t overnight -n claudex-monitor -c /Users/turla/Code/ConfigRe
     latest snapshot ages past its freshness window
   - write a `ready-for-codex` flag and a `pending-review.json` artifact when
     Claude finishes and returns to `waiting_for_codex`
+- Codex/Claude pane topology is now resolved through the runtime
+  `cc-policy bridge topology` probe. Recovery/status surfaces must not infer
+  the supervisor pane by rewriting the worker pane target in shell.
 - `claudex-progress-monitor.sh` samples the run every 30 minutes and records:
   - active run id
   - bridge state and updated_at
