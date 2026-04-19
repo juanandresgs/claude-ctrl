@@ -482,11 +482,30 @@ def test_default_registry_is_registry():
 
 
 def test_default_registry_has_all_policies():
-    """29 policies registered."""
+    """Registry name-coverage invariant.
+
+    The set of policy names returned by default_registry() must equal the
+    explicitly enumerated union of W2 write-path policies, W3 bash-path
+    policies, and a small `_extras` set covering W5 write-gates plus
+    bash_write_who. The total count is DERIVED from that union — never a
+    hand-maintained literal — so adding a new policy requires an explicit,
+    reviewable change to one of the three expected sets, not a silent bump.
+
+    @decision DEC-DISCIPLINE-REGISTRY-INVARIANT-COMPUTED-001
+    Title: registry invariant uses computed expected-set, not literal count
+    Status: accepted
+    Rationale: Slices 6/8/10 each triggered a needs_changes cycle solely to
+      bump `len(policies) == N`. Replacing the literal with set equality
+      plus a derived-length assertion forces additions to be categorized
+      explicitly, closes the directional gap in the prior
+      issubset-only checks, and yields a readable failure diff
+      (missing=..., unexpected=...) on drift.
+    """
     reg = default_registry()
     policies = reg.list_policies()
     names = {p.name for p in policies}
-    # W2 write-path policies
+
+    # W2 write-path policies (priorities 100–600).
     w2_expected = {
         "branch_guard",
         "write_who",
@@ -496,7 +515,7 @@ def test_default_registry_has_all_policies():
         "plan_immutability",
         "decision_log",
     }
-    # W3 bash-path policies (including enforcement-gaps additions)
+    # W3 bash-path policies (priorities 100–1100, plus enforcement-gap adds).
     w3_expected = {
         "bash_tmp_safety",
         "agent_contract_required",  # Agent/Task canonical contract enforcement
@@ -517,13 +536,28 @@ def test_default_registry_has_all_policies():
         "bash_cross_branch_restore_ban",  # slice 8, DEC-DISCIPLINE-NONSTASH-RESTORE-BAN-001
         "bash_shell_copy_ban",  # slice 10, DEC-DISCIPLINE-SHELL-COPY-BAN-001
     }
-    assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
-    assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
-    assert (
-        len(policies) == 29
-        # 28 previous + bash_shell_copy_ban (slice 10, DEC-DISCIPLINE-SHELL-COPY-BAN-001)
+    # Policies outside the W2/W3 classifications above.
+    # W5 write-gate ports (doc_gate, mock_gate, test_gate_pretool) plus
+    # bash_write_who — the capability-gated bash sibling of write_who.
+    _extras = {
+        "test_gate_pretool",
+        "doc_gate",
+        "mock_gate",
+        "bash_write_who",
+    }
+
+    expected_names = w2_expected | w3_expected | _extras
+
+    assert names == expected_names, (
+        "Registry name-coverage drift: "
+        f"missing={sorted(expected_names - names)}, "
+        f"unexpected={sorted(names - expected_names)}"
     )
-    # Priority order must be ascending
+
+    # Count is derived from the expected union, not a hand-maintained literal.
+    assert len(policies) == len(expected_names)
+
+    # Priority order must be ascending.
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)
     assert all(p.enabled for p in policies)
