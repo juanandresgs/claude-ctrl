@@ -118,6 +118,7 @@ __all__ = [
     "list_goals",
     "insert_work_item",
     "upsert_work_item",
+    "update_work_item_scope_json",
     "get_work_item",
     "list_work_items",
 ]
@@ -730,6 +731,52 @@ def upsert_work_item(
             ),
         )
     return dataclasses.replace(record, created_at=created, updated_at=updated)
+
+
+def update_work_item_scope_json(
+    conn: sqlite3.Connection,
+    work_item_id: str,
+    scope_json: str,
+) -> None:
+    """Narrow-column UPDATE of work_items.scope_json + updated_at only.
+
+    Raises ValueError if work_item_id not found. Other columns
+    (title, status, evaluation_json, head_sha, reviewer_round, version,
+    author) are byte-identical after the call.
+
+    Intended to be called from the atomic scope-sync write path so that
+    work_items.scope_json stays in lock-step with the workflow_scope
+    enforcement authority row. Standalone callers that need to update
+    scope_json without touching workflow_scope may also use this helper
+    directly, but the blessed path for orchestrators is
+    ``cc-policy workflow scope-sync`` which wraps both writes in a
+    single SQLite transaction.
+
+    @decision DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001
+    Title: update_work_item_scope_json is the sole narrow-column helper
+      for updating work_items.scope_json without touching other columns
+    Status: accepted
+    Rationale: The scope-sync CLI verb (DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001)
+      must write workflow_scope and work_items.scope_json atomically.
+      A wide upsert (via upsert_work_item) would require re-reading and
+      re-supplying all other columns, creating a read-modify-write window
+      that a concurrent writer could corrupt. This helper surgically
+      updates only the two columns whose values change during a scope-sync,
+      and the invariant test (T1 in test_scope_triad_unified_write_authority_invariant.py)
+      asserts byte-for-byte that every other column is untouched.
+    """
+    now = _now()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE work_items SET scope_json = ?, updated_at = ? WHERE work_item_id = ?",
+            (scope_json, now, work_item_id),
+        )
+    if cursor.rowcount == 0:
+        raise ValueError(
+            f"update_work_item_scope_json: work_item_id '{work_item_id}' not found "
+            f"in work_items table; cannot update scope_json. "
+            f"Seed the work_item first via 'cc-policy workflow work-item-set'."
+        )
 
 
 def get_work_item(

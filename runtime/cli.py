@@ -2424,6 +2424,167 @@ def _handle_workflow(args) -> int:
             )
             return _ok({"workflow_id": args.workflow_id, "action": "scope-set"})
 
+        elif args.action == "scope-sync":
+            # @decision DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001
+            # Title: scope-sync atomically writes workflow_scope + work_items.scope_json
+            #   from a single scope file, eliminating the dual-write-path drift that
+            #   causes _validate_work_item_scope_matches_authority to fire.
+            # Status: accepted
+            # Rationale: Prior to this verb, workflow_scope and work_items.scope_json were
+            #   written by two independent CLI paths (scope-set and work-item-set) with no
+            #   transactional bridge. Any orchestrator that refreshed workflow_scope without
+            #   mirroring the same triad into work_items.scope_json would produce a
+            #   prompt-pack compile failure from the guard in prompt_pack_resolver.py.
+            #   This verb reads the scope file once, validates its shape, checks the
+            #   work_item_id exists, then executes BOTH SQL writes inside a single
+            #   SQLite transaction — so either both commit or both roll back.
+            #   The legacy scope-set and work-item-set primitives remain intact as
+            #   lower-level escape hatches; scope-sync is the blessed orchestrator path.
+            import json as _json
+            import time as _time
+
+            scope_file_path = getattr(args, "scope_file", None)
+            work_item_id = getattr(args, "work_item_id", None)
+
+            # Step 1: Parse and validate scope file (before any write).
+            try:
+                with open(scope_file_path, "r", encoding="utf-8") as _fh:
+                    raw_text = _fh.read()
+                scope_data = _json.loads(raw_text)
+            except (OSError, IOError) as e:
+                return _err(f"scope-sync: cannot read scope file '{scope_file_path}': {e}")
+            except _json.JSONDecodeError as e:
+                return _err(f"scope-sync: scope file is not valid JSON: {e}")
+
+            if not isinstance(scope_data, dict):
+                return _err(
+                    f"scope-sync: scope file must be a JSON object (dict), "
+                    f"got {type(scope_data).__name__}"
+                )
+
+            # Validate key set — only these keys are legal (mirrors _SCOPE_KEYS +
+            # authority_domains alias; unknown keys are an error so the caller
+            # cannot silently pass a stale full-manifest slice file).
+            _LEGAL_SCOPE_FILE_KEYS = frozenset({
+                "allowed_paths",
+                "required_paths",
+                "forbidden_paths",
+                "state_domains",
+                "authority_domains",  # alias for state_domains / authority_domains column
+            })
+            unknown_keys = set(scope_data.keys()) - _LEGAL_SCOPE_FILE_KEYS
+            if unknown_keys:
+                return _err(
+                    f"scope-sync: scope file contains unknown key(s): "
+                    f"{sorted(unknown_keys)}. "
+                    f"Legal keys are: {sorted(_LEGAL_SCOPE_FILE_KEYS)}. "
+                    f"Did you accidentally pass the full slice manifest instead of "
+                    f"a narrow scope-triad file?"
+                )
+
+            # Validate that path values are lists of strings.
+            _PATH_KEYS = ("allowed_paths", "required_paths", "forbidden_paths")
+            for _pk in _PATH_KEYS:
+                _val = scope_data.get(_pk, [])
+                if not isinstance(_val, list):
+                    return _err(
+                        f"scope-sync: '{_pk}' must be a JSON array of strings, "
+                        f"got {type(_val).__name__}"
+                    )
+                for _item in _val:
+                    if not isinstance(_item, str):
+                        return _err(
+                            f"scope-sync: '{_pk}' must be a JSON array of strings; "
+                            f"found non-string element {_item!r}"
+                        )
+
+            # Validate auxiliary domain lists.
+            for _dk in ("state_domains", "authority_domains"):
+                _val = scope_data.get(_dk, [])
+                if not isinstance(_val, list):
+                    return _err(
+                        f"scope-sync: '{_dk}' must be a JSON array of strings, "
+                        f"got {type(_val).__name__}"
+                    )
+
+            allowed_paths = scope_data.get("allowed_paths", [])
+            required_paths = scope_data.get("required_paths", [])
+            forbidden_paths = scope_data.get("forbidden_paths", [])
+            # authority_domains on the workflow_scope row uses the name from
+            # workflows.set_scope; scope file may use either name.
+            authority_domains = scope_data.get("authority_domains") or scope_data.get("state_domains") or []
+
+            # Serialize scope_json for work_items using the canonical key names
+            # (_SCOPE_KEYS: allowed_paths, required_paths, forbidden_paths, state_domains).
+            # state_domains carries whichever domain list the file provided.
+            state_domains = scope_data.get("state_domains") or scope_data.get("authority_domains") or []
+            scope_json_payload = {
+                "allowed_paths": allowed_paths,
+                "required_paths": required_paths,
+                "forbidden_paths": forbidden_paths,
+                "state_domains": state_domains,
+            }
+            scope_json_str = _json.dumps(scope_json_payload)
+
+            # Step 2: Validate workflow binding exists (guard replicates set_scope check).
+            if workflows_mod.get_binding(conn, args.workflow_id) is None:
+                return _err(
+                    f"scope-sync: workflow_id '{args.workflow_id}' not found in "
+                    f"workflow_bindings. Run 'cc-policy workflow bind' first."
+                )
+
+            # Step 3: Validate work_item_id exists (must happen before any write).
+            import runtime.core.decision_work_registry as _dwr
+
+            existing_wi = _dwr.get_work_item(conn, work_item_id)
+            if existing_wi is None:
+                return _err(
+                    f"scope-sync: work_item_id '{work_item_id}' not found in "
+                    f"work_items table. Seed it first via 'cc-policy workflow work-item-set'. "
+                    f"No writes performed (atomic rollback)."
+                )
+
+            # Step 4: Both writes in a single SQLite transaction.
+            # We bypass workflows_mod.set_scope (which has its own with conn:) and
+            # _dwr.update_work_item_scope_json (same) to ensure TRUE atomicity —
+            # both SQL statements commit or neither does.
+            now = int(_time.time())
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO workflow_scope
+                        (workflow_id, allowed_paths, required_paths, forbidden_paths,
+                         authority_domains, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workflow_id) DO UPDATE SET
+                        allowed_paths     = excluded.allowed_paths,
+                        required_paths    = excluded.required_paths,
+                        forbidden_paths   = excluded.forbidden_paths,
+                        authority_domains = excluded.authority_domains,
+                        updated_at        = excluded.updated_at
+                    """,
+                    (
+                        args.workflow_id,
+                        _json.dumps(allowed_paths),
+                        _json.dumps(required_paths),
+                        _json.dumps(forbidden_paths),
+                        _json.dumps(authority_domains),
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE work_items SET scope_json = ?, updated_at = ? WHERE work_item_id = ?",
+                    (scope_json_str, now, work_item_id),
+                )
+
+            return _ok({
+                "workflow_id": args.workflow_id,
+                "work_item_id": work_item_id,
+                "action": "scope-sync",
+                "paths_written": 3,
+                "status": "ok",
+            })
+
         elif args.action == "scope-get":
             result = workflows_mod.get_scope(conn, args.workflow_id)
             if result is None:
@@ -4858,6 +5019,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wf_scope_set.add_argument(
         "--authorities", default="[]", help="JSON array of authority domain names"
+    )
+
+    # DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001: scope-sync atomically
+    # writes BOTH the workflow_scope enforcement row and work_items.scope_json in
+    # a single SQLite transaction, preventing the dual-write-path drift that causes
+    # _validate_work_item_scope_matches_authority to fire at prompt-pack compile time.
+    # This is the blessed orchestrator path; scope-set and work-item-set --scope-json
+    # remain as lower-level primitives.
+    wf_scope_sync = wf_sub.add_parser(
+        "scope-sync",
+        help=(
+            "Atomically write ScopeManifest to both workflow_scope and "
+            "work_items.scope_json from a single scope file "
+            "(DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001)"
+        ),
+    )
+    wf_scope_sync.add_argument("workflow_id")
+    wf_scope_sync.add_argument(
+        "--work-item-id",
+        dest="work_item_id",
+        required=True,
+        help="work_item_id whose scope_json column will be updated (must already exist)",
+    )
+    wf_scope_sync.add_argument(
+        "--scope-file",
+        dest="scope_file",
+        required=True,
+        help=(
+            "Path to a JSON file containing the scope triad: allowed_paths, "
+            "required_paths, forbidden_paths (JSON arrays of strings), and "
+            "optionally state_domains or authority_domains. Unknown keys are rejected."
+        ),
     )
 
     wf_scope_get = wf_sub.add_parser("scope-get", help="Get scope manifest for a workflow")

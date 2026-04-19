@@ -2598,3 +2598,37 @@ class TestScopeAuthoritativeHelpers:
             "forbidden_paths": [],
         }
         ppr._validate_work_item_scope_matches_authority(wi, auth)
+
+    def test_scope_triad_guard_does_not_fire_after_scope_sync(self):
+        """Regression (slice 34): after scope-sync, work_item.scope == workflow_scope_record.
+
+        This test verifies that the fix introduced by
+        DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001 (the scope-sync write
+        path) produces a work_item.scope that passes the guard without modification
+        to _validate_work_item_scope_matches_authority itself.
+
+        The guard must NOT fire when both sides carry the same path triad — which
+        is exactly what scope-sync guarantees by writing both rows from a single
+        source of truth. This is an additive regression guard that ensures the
+        existing enforcement function is not inadvertently weakened.
+        """
+        # Simulate the post-scope-sync state: work_item.scope decoded from
+        # scope_json matches the workflow_scope_record triad exactly.
+        synced_allowed = ("runtime/cli.py", "tmp/**")
+        synced_required = ("runtime/cli.py",)
+        synced_forbidden = ("CLAUDE.md", "hooks/**")
+
+        wi = contracts.ScopeManifest(
+            allowed_paths=synced_allowed,
+            required_paths=synced_required,
+            forbidden_paths=synced_forbidden,
+        )
+        # workflow_scope_record as returned by workflows.get_scope() — same triad.
+        auth = {
+            "allowed_paths": list(synced_allowed),
+            "required_paths": list(synced_required),
+            "forbidden_paths": list(synced_forbidden),
+        }
+
+        # Must NOT raise — the guard passes when both sides agree.
+        ppr._validate_work_item_scope_matches_authority(wi, auth)
