@@ -482,7 +482,7 @@ def test_default_registry_is_registry():
 
 
 def test_default_registry_has_all_policies():
-    """28 policies registered."""
+    """29 policies registered."""
     reg = default_registry()
     policies = reg.list_policies()
     names = {p.name for p in policies}
@@ -515,13 +515,13 @@ def test_default_registry_has_all_policies():
         "bash_approval_gate",
         "bash_stash_ban",  # slice 6, DEC-DISCIPLINE-STASH-BAN-001
         "bash_cross_branch_restore_ban",  # slice 8, DEC-DISCIPLINE-NONSTASH-RESTORE-BAN-001
+        "bash_shell_copy_ban",  # slice 10, DEC-DISCIPLINE-SHELL-COPY-BAN-001
     }
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
     assert (
-        len(policies) == 28
-        # 26 previous + bash_stash_ban (slice 6, DEC-DISCIPLINE-STASH-BAN-001)
-        # + bash_cross_branch_restore_ban (slice 8, DEC-DISCIPLINE-NONSTASH-RESTORE-BAN-001)
+        len(policies) == 29
+        # 28 previous + bash_shell_copy_ban (slice 10, DEC-DISCIPLINE-SHELL-COPY-BAN-001)
     )
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
