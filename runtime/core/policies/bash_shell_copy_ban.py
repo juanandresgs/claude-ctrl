@@ -76,6 +76,31 @@ Rationale: bash_stash_ban (priority 625, slice 6) closes the stash-pop vector.
   Integration note: This policy does not fire on git invocations (guarded by
   git_invocation is not None → return None). See risk register §9 in
   tmp/slice10-plan.md for false-positive and double-fire analysis.
+
+@decision DEC-DISCIPLINE-SHELL-COPY-BAN-002
+Title: Absolute destination paths are normalized to repo-relative before
+  forbidden-glob matching (slice 10R hotfix).
+Status: accepted
+Rationale: The original slice 10 implementation matched destination tokens
+  against scope.forbidden_paths using fnmatch as raw shell tokens. A relative
+  destination like "hooks/pre-bash.sh" matched "hooks/**" correctly, but an
+  absolute path like "/project/.worktrees/lane/hooks/pre-bash.sh" did NOT match
+  because fnmatch("/.../hooks/pre-bash.sh", "hooks/**") is False — the absolute
+  prefix prevents the glob match. The fix normalizes each destination via
+  _normalize_dest(): if it is an absolute path that is a subpath of the
+  worktree root (context.worktree_path), strip the prefix to get the
+  repo-relative form, then apply the existing _is_path_forbidden() unchanged.
+  If the absolute path is outside the worktree root entirely, it cannot pollute
+  the worktree — pass the raw token to _is_path_forbidden(), which will return
+  False (no forbidden glob matches a fully-external absolute path). The fix is
+  intentionally minimal and local to this module: no shared normalizer is added
+  to policy_utils.py (F8-02 follow-on out of scope for this hotfix). The
+  worktree_path authority is request.context.worktree_path, which is populated
+  by build_context() and is the same authority surface used by sibling policies.
+  Conservative design: if worktree_path is empty/unavailable, the raw token is
+  passed through unchanged (pre-fix behavior — no regression for unrooted
+  contexts). Trailing slashes on rsync-style directory destinations are stripped
+  before prefix comparison and restored to the normalized form consistently.
 """
 
 from __future__ import annotations
@@ -165,6 +190,68 @@ def _extract_scope_patterns(scope: object) -> tuple[list[str], list[str]]:
     forbidden = _parse_scope_list(scope.get("forbidden_paths", []))
     allowed = _parse_scope_list(scope.get("allowed_paths", []))
     return forbidden, allowed
+
+
+def _normalize_dest(dest: str, worktree_path: str, project_root: str = "") -> str:
+    """Normalize a shell destination token to a repo-relative path for fnmatch.
+
+    Relative destinations (e.g., "hooks/pre-bash.sh") are returned as-is —
+    they are already repo-relative from the implicit CWD assumption.
+
+    Absolute destinations are resolved against two candidate roots in order:
+      1. worktree_path — the lane-specific worktree root
+         (e.g., "/project/.worktrees/lane").
+      2. project_root — the bare project root
+         (e.g., "/project"), used when the absolute dest points directly into
+         the project root rather than a worktree subdirectory.
+
+    For each candidate root:
+      - If the absolute dest is under that root, strip the prefix to yield
+        a repo-relative path ("hooks/pre-bash.sh") and match normally.
+      - If the absolute dest matches exactly that root, treat as "." (repo root).
+
+    If the dest is NOT under either root (fully external path such as
+    "/usr/local/bin/x"), return the raw token unchanged. The raw absolute
+    path cannot match any of the repo-relative forbidden globs
+    (e.g., "hooks/**"), so _is_path_forbidden() will return False — correct
+    behavior: an external destination cannot contaminate the worktree.
+
+    Trailing slashes (rsync-style directory destinations, e.g., "hooks/") are
+    preserved so that fnmatch("hooks/", "hooks/**") works correctly; they are
+    NOT stripped before matching.
+
+    Conservative fallback: if both worktree_path and project_root are empty,
+    or dest is empty, return dest unchanged (pre-hotfix behavior, no regression
+    for unrooted contexts).
+
+    @decision DEC-DISCIPLINE-SHELL-COPY-BAN-002
+    """
+    if not dest:
+        return dest
+    if not os.path.isabs(dest):
+        # Relative path — already repo-relative.
+        return dest
+
+    def _try_strip(root: str, d: str) -> str | None:
+        """Return repo-relative form if d is under root, else None."""
+        r = root.rstrip("/")
+        if not r:
+            return None
+        if d == r:
+            return "."
+        if d.startswith(r + "/"):
+            return d[len(r) + 1:]
+        return None
+
+    # Try worktree_path first (more specific), then project_root.
+    for root in (worktree_path, project_root):
+        if root:
+            result = _try_strip(root, dest)
+            if result is not None:
+                return result
+
+    # dest is not under either root — external path, cannot pollute worktree.
+    return dest
 
 
 def _extract_rsync_ln_tar_targets(command: str) -> set[str]:
@@ -323,9 +410,21 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not targets:
         return None
 
-    # Check each target against forbidden/allowed patterns.
+    # Normalize each target to repo-relative before forbidden-glob matching.
+    # Absolute paths that point inside the worktree (or project root) are stripped
+    # to repo-relative form so that fnmatch("hooks/pre-bash.sh", "hooks/**") fires
+    # correctly even when the implementer spelled out the full worktree path.
+    # (DEC-DISCIPLINE-SHELL-COPY-BAN-002)
+    worktree_path: str = request.context.worktree_path or ""
+    project_root: str = request.context.project_root or ""
+    normalized_targets = {
+        _normalize_dest(t, worktree_path, project_root) for t in targets
+    }
+
+    # Check each normalized target against forbidden/allowed patterns.
     forbidden_targets = [
-        t for t in targets if _is_path_forbidden(t, forbidden_patterns, allowed_patterns)
+        t for t in normalized_targets
+        if _is_path_forbidden(t, forbidden_patterns, allowed_patterns)
     ]
     if not forbidden_targets:
         return None

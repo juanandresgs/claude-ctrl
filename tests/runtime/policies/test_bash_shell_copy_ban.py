@@ -913,3 +913,148 @@ class TestIntegrationFullRegistry:
         req = make_request("cp /ref/CLAUDE.md CLAUDE.md", context=ctx)
         decision = check(req)
         assert decision is None
+
+
+# ---------------------------------------------------------------------------
+# Class 19: Absolute-path bypass regression (slice 10R hotfix)
+# ---------------------------------------------------------------------------
+# These tests must FAIL pre-hotfix and PASS post-hotfix.
+# They cover the P0 defect: destination tokens that are absolute paths were
+# matched against scope.forbidden_paths as raw tokens, bypassing the glob.
+# DEC-DISCIPLINE-SHELL-COPY-BAN-002
+# ---------------------------------------------------------------------------
+
+_HOOKS_SCOPE = _make_scope(forbidden=["hooks/**", "CLAUDE.md"], allowed=["tmp/**"])
+
+# The conftest worktree_path is "/project/.worktrees/feature-test" and
+# project_root is "/project". These match the defaults in make_context().
+_WORKTREE = "/project/.worktrees/feature-test"
+_PROJECT_ROOT = "/project"
+
+
+class TestAbsolutePathNormalizationHotfix:
+    """Regression suite for slice 10R hotfix (DEC-DISCIPLINE-SHELL-COPY-BAN-002).
+
+    Verifies that absolute destination paths are normalized to repo-relative
+    before forbidden-glob matching, closing the bypass documented in the P0
+    defect report.
+
+    Production trigger: any cp/mv/rsync/ln/install/tar/redirect from an
+    implementer where the destination is spelled as an absolute path pointing
+    into the worktree or project root.
+    """
+
+    # -----------------------------------------------------------------------
+    # Test 1: cp with absolute destination under worktree → deny
+    # -----------------------------------------------------------------------
+
+    def test_absolute_path_under_worktree_denied(self):
+        """cp src/x /project/.worktrees/feature-test/hooks/pre-bash.sh → deny.
+
+        This is the canonical supervisor repro case. The absolute path
+        /project/.worktrees/feature-test/hooks/pre-bash.sh normalizes to
+        hooks/pre-bash.sh which matches forbidden "hooks/**".
+
+        @decision DEC-DISCIPLINE-SHELL-COPY-BAN-002
+        """
+        cmd = f"cp src/x {_WORKTREE}/hooks/pre-bash.sh"
+        decision = check(_impl_req(cmd, scope=_HOOKS_SCOPE))
+        assert decision is not None, (
+            f"Expected deny for absolute-path cp into worktree hooks/ but got None. "
+            f"This was the P0 bypass: {cmd!r}"
+        )
+        assert decision.action == "deny"
+        assert decision.policy_name == "bash_shell_copy_ban"
+
+    # -----------------------------------------------------------------------
+    # Test 2: cp with absolute destination OUTSIDE project root → allow
+    # -----------------------------------------------------------------------
+
+    def test_absolute_path_outside_project_allowed(self):
+        """cp src/x /some/path/outside/project/hooks/pre-bash.sh → allow.
+
+        The destination is not under the worktree or project root, so it
+        cannot pollute the worktree. The policy must not false-positive here.
+
+        @decision DEC-DISCIPLINE-SHELL-COPY-BAN-002
+        """
+        cmd = "cp src/x /some/external/hooks/pre-bash.sh"
+        decision = check(_impl_req(cmd, scope=_HOOKS_SCOPE))
+        assert decision is None, (
+            f"Expected allow for external absolute path but got {decision!r}. "
+            f"External destinations cannot pollute the worktree: {cmd!r}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 3: mv with absolute destination under project root → deny
+    # -----------------------------------------------------------------------
+
+    def test_mv_absolute_path_under_project_root_denied(self):
+        """mv old_name /project/CLAUDE.md → deny.
+
+        The project root /project is the second fallback after worktree_path.
+        /project/CLAUDE.md normalizes to CLAUDE.md which matches forbidden
+        "CLAUDE.md".
+
+        @decision DEC-DISCIPLINE-SHELL-COPY-BAN-002
+        """
+        cmd = f"mv old_name {_PROJECT_ROOT}/CLAUDE.md"
+        decision = check(_impl_req(cmd, scope=_HOOKS_SCOPE))
+        assert decision is not None, (
+            f"Expected deny for absolute mv to project root CLAUDE.md but got None. "
+            f"cmd: {cmd!r}"
+        )
+        assert decision.action == "deny"
+        assert decision.policy_name == "bash_shell_copy_ban"
+
+    # -----------------------------------------------------------------------
+    # Test 4: rsync with absolute destination directory (trailing slash) → deny
+    # -----------------------------------------------------------------------
+
+    def test_rsync_absolute_path_trailing_slash_denied(self):
+        """rsync -av src/ /project/.worktrees/feature-test/hooks/ → deny.
+
+        Trailing slash on the rsync destination (directory form) must not
+        break normalization. hooks/ still matches "hooks/**".
+
+        @decision DEC-DISCIPLINE-SHELL-COPY-BAN-002
+        """
+        cmd = f"rsync -av src/ {_WORKTREE}/hooks/"
+        decision = check(_impl_req(cmd, scope=_HOOKS_SCOPE))
+        assert decision is not None, (
+            f"Expected deny for absolute rsync trailing-slash into hooks/ but got None. "
+            f"cmd: {cmd!r}"
+        )
+        assert decision.action == "deny"
+        assert decision.policy_name == "bash_shell_copy_ban"
+
+    # -----------------------------------------------------------------------
+    # Test 5: relative destination still denied (non-regression)
+    # -----------------------------------------------------------------------
+
+    def test_relative_destination_still_denied(self):
+        """cp src/x hooks/pre-bash.sh → still denied (pre-fix behavior preserved).
+
+        Ensures the hotfix did not break the original relative-path case.
+        """
+        decision = check(_impl_req("cp src/x hooks/pre-bash.sh", scope=_HOOKS_SCOPE))
+        assert decision is not None
+        assert decision.action == "deny"
+        assert decision.policy_name == "bash_shell_copy_ban"
+
+    # -----------------------------------------------------------------------
+    # Test 6: absolute dest within project but in allowed_paths → allow
+    # -----------------------------------------------------------------------
+
+    def test_absolute_allowed_path_within_project_still_allowed(self):
+        """cp src/x /project/.worktrees/feature-test/tmp/out.py → allow.
+
+        Absolute path normalization must not break allowed_paths precedence.
+        tmp/** is in allowed_paths; after normalization, tmp/out.py is allowed.
+        """
+        cmd = f"cp src/x {_WORKTREE}/tmp/out.py"
+        decision = check(_impl_req(cmd, scope=_HOOKS_SCOPE))
+        assert decision is None, (
+            f"Expected allow for absolute path to allowed tmp/ but got {decision!r}. "
+            f"cmd: {cmd!r}"
+        )
