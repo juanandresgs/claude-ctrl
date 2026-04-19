@@ -708,8 +708,71 @@ def _handle_decision(args) -> int:
     # builder / validator + DB registry, so we import once at the
     # handler boundary and share the read-only open helper across
     # branches.
-    if args.action not in {"digest", "digest-check"}:
+    if args.action not in {"digest", "digest-check", "ingest-commit"}:
         return _err(f"unknown decision action: {args.action}")
+
+    # ----------------------- ingest-commit --------------------------------
+    # Phase 7 Slice 14 — write path: parse commit-message trailers and
+    # upsert matching DEC-* ids into the canonical decisions table.
+    # (DEC-CLAUDEX-DEC-TRAILER-INGEST-001)
+    if args.action == "ingest-commit":
+        sha = getattr(args, "sha", None)
+        if not sha:
+            return _err("decision ingest-commit: --sha is required")
+
+        project_root = getattr(args, "project_root", None) or str(_PROJECT_ROOT)
+        dry_run = getattr(args, "dry_run", False)
+
+        # Function-scope import — shadow-only discipline; must not appear
+        # at module scope.  The ingest module itself imports
+        # decision_work_registry at its own function scope.
+        from runtime.core import decision_trailer_ingest as dti
+
+        # Resolve commit message from the git repo.
+        try:
+            message, author, committed_at = dti.load_commit_message(
+                sha, worktree_path=project_root
+            )
+        except ValueError as exc:
+            return _err(f"decision ingest-commit: {exc}")
+
+        if dry_run:
+            # Dry-run: parse and report without writing.
+            dec_ids = dti.parse_decision_trailers(message)
+            payload = {
+                "sha": sha,
+                "decisions_found": dec_ids,
+                "decisions_ingested": 0,
+                "rows": [],
+                "dry_run": True,
+                "status": "ok",
+            }
+            return _ok(payload)
+
+        # Live ingest: open the DB read-write and call ingest_commit.
+        import sqlite3 as _sqlite3
+
+        from runtime.schemas import ensure_schema
+
+        db_path = default_db_path()
+        try:
+            conn = _sqlite3.connect(str(db_path))
+            conn.row_factory = _sqlite3.Row
+            ensure_schema(conn)
+            rows = dti.ingest_commit(conn, sha, message, author, committed_at)
+            conn.close()
+        except _sqlite3.Error as exc:
+            return _err(
+                f"decision ingest-commit: DB error at {db_path}: {exc}"
+            )
+
+        payload = {
+            "sha": sha,
+            "decisions_ingested": len(rows),
+            "rows": rows,
+            "status": "ok",
+        }
+        return _ok(payload)
 
     from runtime.core import decision_digest_projection as ddp
     from runtime.core import decision_work_registry as dwr
@@ -4011,6 +4074,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--scope",
         default=None,
         help="Filter decisions by DecisionRecord.scope (optional)",
+    )
+
+    # decision ingest-commit — Phase 7 Slice 14 write path
+    # (DEC-CLAUDEX-DEC-TRAILER-INGEST-001)
+    dec_ingest = dec_sub.add_parser(
+        "ingest-commit",
+        help=(
+            "Parse commit-message trailers (Decision: DEC-*) and upsert "
+            "matching decision IDs into the canonical decision registry; "
+            "exits 0 on success (including when no trailers are found)"
+        ),
+    )
+    dec_ingest.add_argument(
+        "--sha",
+        required=True,
+        help="Commit SHA to ingest (resolved via git show in --project-root)",
+    )
+    dec_ingest.add_argument(
+        "--project-root",
+        default=None,
+        dest="project_root",
+        help=(
+            "Path to the git repository root. Defaults to the cc-policy "
+            "project root if omitted."
+        ),
+    )
+    dec_ingest.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help=(
+            "Parse trailers and report what would be ingested without "
+            "writing to the database; exits 0."
+        ),
     )
 
     # prompt-pack — read-only ClauDEX prompt-pack drift validation

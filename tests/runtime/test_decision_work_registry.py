@@ -1334,3 +1334,51 @@ class TestGoalPersistence:
         a = dwr.get_goal(conn, "G-stable")
         b = dwr.get_goal(conn, "G-stable")
         assert a == b == original
+
+
+# ---------------------------------------------------------------------------
+# 10. Slice 14 regression — ingest_commit path round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestSlice14IngestRoundTrip:
+    """Verify that ingest_commit → list_decisions is a consistent round-trip.
+
+    This test confirms that a record ingested via the new
+    ``decision_trailer_ingest.ingest_commit`` helper is subsequently
+    retrievable via ``list_decisions`` — the same read path used by the
+    ``cc-policy decision digest`` projection surface.  This pins the
+    integration boundary between the ingestion writer and the projection
+    reader so they cannot silently diverge.
+    """
+
+    def test_ingest_via_trailer_ingest_readable_via_list_decisions(self, conn):
+        """ingest_commit → list_decisions returns the ingested record."""
+        from runtime.core import decision_trailer_ingest as dti
+
+        sha = "cafe0000000000000000000000000000000000001"
+        msg = (
+            "land: test regression commit\n"
+            "\n"
+            "Regression: verify ingest path round-trip.\n"
+            "\n"
+            "decision: DEC-REGRESSION-ROUNDTRIP-001"
+        )
+        rows = dti.ingest_commit(conn, sha, msg, author="planner")
+        assert len(rows) == 1
+        assert rows[0]["action"] == "inserted"
+
+        decisions = dwr.list_decisions(conn)
+        ids = [d.decision_id for d in decisions]
+        assert "DEC-REGRESSION-ROUNDTRIP-001" in ids
+
+    def test_ingest_record_has_commit_sha_in_rationale(self, conn):
+        """Provenance: commit SHA appears in rationale so digest cross-checks work."""
+        from runtime.core import decision_trailer_ingest as dti
+
+        sha = "deadcafe000000000000000000000000000000002"
+        msg = "Subject\n\ndecision: DEC-PROV-REGRESS-001"
+        dti.ingest_commit(conn, sha, msg)
+        rec = dwr.get_decision(conn, "DEC-PROV-REGRESS-001")
+        assert rec is not None
+        assert sha in rec.rationale

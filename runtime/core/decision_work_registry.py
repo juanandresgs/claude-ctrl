@@ -21,8 +21,9 @@ Rationale: CUTOVER_PLAN §Decision and Work Record Architecture (lines
       the decision-digest projection is covered by the pure builder
       in ``runtime/core/decision_digest_projection.py`` as of Phase
       7 Slice 13; other projection families are still future work)
-    * commit-trailer linkage (deferred to a Phase 4+ slice alongside
-      guardian landing authority)
+    * commit-trailer linkage — landed in slice 14 via
+      ``runtime.core.decision_trailer_ingest`` (DEC-CLAUDEX-DEC-TRAILER-INGEST-001).
+      Use ``cc-policy decision ingest-commit --sha <SHA>`` to populate this table.
     * CLI mutations or broad CLI exposure. The only CLI surfaces
       that reach this registry are the read-only
       ``cc-policy decision digest`` adapter (Phase 7 Slice 14) and
