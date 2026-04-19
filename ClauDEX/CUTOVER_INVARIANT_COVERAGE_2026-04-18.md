@@ -1,9 +1,11 @@
-# ClauDEX CUTOVER_PLAN Invariants — Coverage Matrix (2026-04-17)
+# ClauDEX CUTOVER_PLAN Invariants — Coverage Matrix (2026-04-18)
 
-> **SUPERSEDED by `ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-18.md`**
-> This artifact is historical. The successor (2026-04-18) carries the full
-> 16-row table forward with post-4/17 GS1 mechanical pins. Do not edit
-> this file; correct the successor instead.
+> **SUPERSEDES:** `ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md`
+> Predecessor covered the original 16 invariants as of the 2026-04-17
+> cc-policy-who-remediation session (committed `d7db4ba`). This successor
+> refreshes eight rows with post-4/17 mechanical pins from the
+> global-soak stabilization track (GS1-A through GS1-F-5, handoff sync).
+> Date range: 2026-04-17 — 2026-04-18.
 
 Scope: this document captures the mechanical-pin coverage status for every
 invariant declared in `ClauDEX/CUTOVER_PLAN.md` § "Invariants That Must
@@ -25,17 +27,15 @@ below).
   rows are present, (b) every row cites at least one non-empty test file
   reference. A regression (row removed, empty cell) fails the test with a
   structured diagnostic.
-- **Produced by:** the cutover continuation track on `claudesox-local`
-  during the 2026-04-17 cc-policy-who-remediation session (originally at
-  HEAD `f24df96`, staged as a 28-file bundle that subsequently grew to
-  30 files and was committed as `d7db4ba`, then merged with upstream and
-  pushed to `origin/feat/claudex-cutover`). The staged bundle grew
-  through interim sizes (22, 23, 24, 25, 27, 28, 30) as successive
-  invariant pins were added; all checkpoint debt is now cleared.
-  `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md` are the
-  authoritative lane-state surfaces; if any count here drifts from those
-  two files, those files win and this artifact must be corrected in the
-  same change.
+- **Produced by:** the global-soak stabilization track on `global-soak-main`
+  during the 2026-04-18 session. Pre-landing HEAD `9762dc7` caps the GS1
+  chain (GS1-A `d8e9096`, GS1-F-1 `68b88c8`, GS1-B-1 `ea5e4a0`,
+  GS1-F-2 `0038efe`, GS1-F-3 `bf08423`, GS1-F-4 `1de81c0`,
+  GS1-F-5 `2127fe9`, handoff sync `f42baec`). All GS1 checkpoint debt is
+  now cleared. `ClauDEX/CURRENT_STATE.md` and `ClauDEX/SUPERVISOR_HANDOFF.md`
+  are the authoritative lane-state surfaces; if any count here drifts from
+  those two files, those files win and this artifact must be corrected in
+  the same change.
 - **Decision record:** `DEC-CLAUDEX-CUTOVER-INVARIANT-COVERAGE-MATRIX-001`.
 
 ## Coverage table
@@ -51,9 +51,9 @@ cite at least one non-empty test-reference cell.
 | 1 | No stage transitions are defined outside the stage registry | covered | `tests/runtime/test_stage_registry.py::TestTargetGraphTable`, `::TestInnerLoop`, `::TestOuterLoop`; consumed as sole authority by `tests/runtime/test_dispatch_engine.py` |
 | 2 | No workflow-routing dependency remains on Stop-review events | covered | `tests/runtime/test_dispatch_engine.py` (`DEC-PHASE5-STOP-REVIEW-SEPARATION-001` cases around line 837+) |
 | 3 | No repo-owned hook path in `settings.json` points to a missing file | covered | `tests/runtime/test_hook_manifest.py`; `tests/runtime/test_hook_validate_settings.py`; `cc-policy hook validate-settings` CLI with `invalid_adapter_files` report |
-| 4 | No constitution-level config default is defined outside the schema/bootstrap authority | covered | `tests/runtime/test_constitution_registry.py` (74+ tests including `TestCutoverPlanDocRegistryParity`) |
+| 4 | No constitution-level config default is defined outside the schema/bootstrap authority | covered | `tests/runtime/test_constitution_registry.py` (74+ tests including `TestCutoverPlanDocRegistryParity`); post-4/17: `runtime/schemas.py` `_MARKER_ACTIVE_ROLES` derivation from `runtime.core.stage_registry.ACTIVE_STAGES` (commit `1de81c0`, DEC-CONV-002-AMEND-001) ensures compound-stage whitelist never drifts from declared stages |
 | 5 | No policy module reparses command semantics already supplied by runtime intent objects | covered | `tests/runtime/policies/test_command_intent_single_authority.py` (Rules A/B/C + `TestRuleABAbsoluteNoExemptBypass`, DEC-CLAUDEX-COMMAND-INTENT-SOLE-AUTHORITY-001) |
-| 6 | Reviewer capabilities are read-only and cannot land git or edit source | covered | `tests/runtime/policies/test_bash_git_who.py` (CAN_LAND_GIT gate); `tests/runtime/policies/test_capability_gate_invariants.py` |
+| 6 | Reviewer capabilities are read-only and cannot land git or edit source | covered | `tests/runtime/policies/test_bash_git_who.py` (CAN_LAND_GIT gate); `tests/runtime/policies/test_capability_gate_invariants.py`; post-4/17: `tests/runtime/test_marker_compound_stage_persistence.py::test_guardian_land_marker_grants_can_land_git_capability` (commit `2127fe9`) locks compound-stage guardian:land → CAN_LAND_GIT capability invariant, proving the converse: only the guardian role (not reviewer) acquires landing authority |
 | 7 | Regular Stop review and workflow review cannot mutate each other's routing state | covered | `tests/runtime/test_dispatch_engine.py` (same DEC-PHASE5-STOP-REVIEW-SEPARATION-001 block) |
 | 8 | Docs that claim harness behavior are either generated, validated, or clearly marked as non-authoritative reference | covered | `tests/runtime/test_hook_doc_validation.py`; `tests/runtime/test_hook_doc_projection.py`; `tests/runtime/test_hook_doc_check_cli.py`; `cc-policy hook doc-check` exact-hash validator |
 | 9 | Prompt packs are generated from runtime authority and carry freshness metadata | covered | `tests/runtime/test_prompt_pack.py`; `tests/runtime/test_prompt_pack_resolver.py`; `tests/runtime/test_prompt_pack_validation.py`; `tests/runtime/test_prompt_pack_compile_cli.py`; `tests/runtime/test_prompt_pack_check_cli.py`; `tests/runtime/test_prompt_pack_state.py`; `tests/runtime/test_prompt_pack_decisions.py` |
@@ -62,8 +62,8 @@ cite at least one non-empty test-reference cell.
 | 12 | Derived projections fail validation when upstream canonical state changed without reflow | covered | `tests/runtime/test_projection_reflow.py` (`TestAssessProjectionFreshness`, `TestExtractProjectionMetadata`, `TestAssessInputValidation`, `TestPlanProjectionReflow`, `TestRealBuilderOutputs`, `TestStatusVocabulary`, `TestModuleSurface`, `TestShadowOnlyDiscipline`); `tests/runtime/test_projection_schemas.py` |
 | 13 | Retrieval and graph layers are derived read models and never treated as legal source of truth | covered | `tests/runtime/test_memory_retrieval.py::TestShadowOnlyDiscipline` (retrieval -> live direction); `tests/runtime/test_retrieval_layer_downstream_invariant.py` (live -> retrieval direction, DEC-CLAUDEX-RETRIEVAL-LAYER-DOWNSTREAM-INVARIANT-001) |
 | 14 | Post-guardian continuation is planner-owned, not reviewer- or hook-owned | covered | `tests/runtime/test_goal_continuation.py::TestPlannerOwnedBoundary`, `::TestDispatchEngineIntegration`, `::TestUpdateGoalStatusForVerdict` |
-| 15 | Any source change after reviewer clearance invalidates readiness | covered | Write/Edit path: `hooks/track.sh` (DEC-EVAL-005); Bash path: `hooks/post-bash.sh` (DEC-EVAL-006) with `tests/runtime/policies/test_post_bash_eval_invalidation.py`; bridge parity: `tests/runtime/test_bridge_permissions.py::TestPostToolBashWiringPresent` |
-| 16 | Automatic continuation beyond guardian is allowed only within the active goal contract and autonomy budget | covered | `tests/runtime/test_goal_continuation.py::TestCheckContinuationBudget`; `tests/runtime/test_goal_contract_codec.py` |
+| 15 | Any source change after reviewer clearance invalidates readiness | covered | Write/Edit path: `hooks/track.sh` (DEC-EVAL-005); Bash path: `hooks/post-bash.sh` (DEC-EVAL-006) with `tests/runtime/policies/test_post_bash_eval_invalidation.py`; bridge parity: `tests/runtime/test_bridge_permissions.py::TestPostToolBashWiringPresent`; post-4/17: `hooks/lib/runtime-bridge.sh::_resolve_policy_db()` unified 3-tier resolver (commit `bf08423`, DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001) ensures DB-path is consistent across all hook sites; `tests/hooks/test_runtime_bridge_resolver.py` (10 unit tests, commit `bf08423`); `tests/runtime/test_pre_agent_carrier.py::TestPreAgentCarrierDBRoutingNoEnv`, `::TestPreAgentToSubagentStartRoundTrip` |
+| 16 | Automatic continuation beyond guardian is allowed only within the active goal contract and autonomy budget | covered | `tests/runtime/test_goal_continuation.py::TestCheckContinuationBudget`; `tests/runtime/test_goal_contract_codec.py`; post-4/17: `tests/runtime/test_marker_compound_stage_persistence.py` (6 subprocess-driven integration tests, commit `1de81c0`) prove compound-stage guardian markers survive `ensure_schema` cleanup so guardian auto-continuation operates on a correctly-seated marker — a precondition for the autonomy-budget gate to be consulted at all; `tests/runtime/test_handoff_artifact_path_invariants.py` GS1 regex extension (commit `f42baec`, DEC-HANDOFF-INVARIANT-GS1-EXT-001) preserves lane-truth monotonicity across GS1 work items |
 
 ## Summary
 
@@ -71,12 +71,32 @@ cite at least one non-empty test-reference cell.
 - Status breakdown: covered = 16, partial = 0, missing = 0.
 - Every `covered` row cites at least one concrete test file. Many cite
   multiple test classes and / or multiple sibling files.
-- Three invariants (#5, #11, #13-symmetric) received dedicated mechanical
-  pins in the 2026-04-17 cc-policy-who-remediation session; those pins
-  were committed as part of the 30-file bundle (`d7db4ba`) and are now
-  pushed to `origin/feat/claudex-cutover`. Invariant #15 bridge-parity
-  extension was also part of that session. All other rows were already
-  covered by pre-existing tests from Phases 3-8 of the cutover.
+- Eight rows (#4, #6, #15, #16, and the GS1-reinforced invariants below)
+  received updated or additional mechanical pins in the 2026-04-18
+  global-soak stabilization session:
+  - **GS1-A** (`d8e9096`): `tests/runtime/test_claudex_watchdog.py` pins
+    `SNAPSHOT_AGE_OK` as sole freshness authority; stops false 'lagging'
+    signals on active+waiting_for_codex runs.
+  - **GS1-F-1** (`68b88c8`): `tests/hooks/test_subagent_start_identity.py`
+    (7 tests) pins payload `agent_id` as sole SubagentStart identity
+    authority (DEC-CLAUDEX-SA-IDENTITY-001).
+  - **GS1-B-1** (`ea5e4a0`): `tests/runtime/test_claudex_bridge_up_broker_pid.py`
+    pins broker PID atomic write at bridge-up (DEC-GS1-B-BROKER-PID-PERSIST-001).
+  - **GS1-F-2** (`0038efe`): `tests/hooks/test_subagent_start_identity.py::TestMarkerSeatingReliability`
+    (3 tests) pins 3-tier DB routing fallback when `CLAUDE_PROJECT_DIR`
+    absent (DEC-CLAUDEX-SA-MARKER-RELIABILITY-001).
+  - **GS1-F-3** (`bf08423`): `hooks/lib/runtime-bridge.sh::_resolve_policy_db()`
+    unified resolver; `tests/hooks/test_runtime_bridge_resolver.py` (10 tests),
+    extended `tests/runtime/test_pre_agent_carrier.py` (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001).
+  - **GS1-F-4** (`1de81c0`): `runtime/schemas.py` derives `_MARKER_ACTIVE_ROLES`
+    from `ACTIVE_STAGES ∪ {"guardian"}`; `tests/runtime/test_marker_compound_stage_persistence.py`
+    (6 subprocess integration tests) prove compound-stage markers survive
+    `ensure_schema` cleanup (DEC-CONV-002-AMEND-001).
+  - **GS1-F-5** (`2127fe9`): `tests/runtime/test_marker_compound_stage_persistence.py::test_guardian_land_marker_grants_can_land_git_capability`
+    locks guardian:land → CAN_LAND_GIT capability chain.
+  - **Handoff sync** (`f42baec`): `tests/runtime/test_handoff_artifact_path_invariants.py`
+    GS1 regex extension accepts `GS1-<letter>[-<n>]` scheme alongside
+    existing `A<N>` series (DEC-HANDOFF-INVARIANT-GS1-EXT-001).
 
 ## Why this document exists
 
@@ -111,28 +131,17 @@ itself is being reorganized.
 
 ## Successor history
 
-- 2026-04-17 (initial landing, interim bundle size 25): this document.
+- 2026-04-17 (initial landing, bundle `d7db4ba`): `ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md`.
   Backed by `tests/runtime/test_cutover_invariant_coverage_matrix.py`.
-  Produced during cc-policy-who-remediation session after the Invariant
-  #13 symmetric pin landed, at which point the interim staged bundle
-  measured 25 files. That 25-file figure is **historical** and applies
-  only to that single landing moment.
-- 2026-04-17 (late-session update, bundle grew to 28 files): subsequent
-  slices in the same session added further mechanical pins (notably the
-  CUTOVER_PLAN phase-closure time-scoping pin and the checkpoint-report
-  staged-scope + excluded-scope authority pins), growing the staged
-  checkpoint debt from 25 → 27 → 28 files. This document's non-
-  historical lane-state references (`Produced by`, `Summary`) were
-  reconciled to the **28-file** current-lane truth in this update.
-  Authoritative cross-references: `ClauDEX/CURRENT_STATE.md`,
-  `ClauDEX/SUPERVISOR_HANDOFF.md`.
+  Produced during cc-policy-who-remediation session. All 16 invariants covered
+  as of the 30-file bundle committed to `origin/feat/claudex-cutover`.
+- 2026-04-18 (GS1 stabilization track, HEAD `9762dc7`): this document.
+  Refreshes rows #4, #6, #15, #16 with post-4/17 GS1 mechanical pins
+  (GS1-A through GS1-F-5 + handoff sync). Supersedes the 2026-04-17 artifact.
 
-**Successor:** `ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-18.md` (GS1 stabilization
-track, HEAD `9762dc7`). That document refreshes rows #4, #6, #15, #16 with
-post-4/17 GS1 mechanical pins (GS1-A through GS1-F-5, handoff sync).
-
-When a future slice supersedes the current active artifact, the successor should:
+When a future slice supersedes this artifact (e.g., `CUTOVER_INVARIANT_COVERAGE_2026-MM-DD.md`),
+the successor should:
 
 1. Copy the table forward, updating rows that changed.
 2. Carry over the Successor History with a new dated entry at the top.
-3. Mark the predecessor as superseded to prevent drift.
+3. Mark this file as superseded to prevent drift.

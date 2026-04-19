@@ -1,7 +1,7 @@
 """Mechanical pin for the dated cutover invariant-coverage matrix.
 
 @decision DEC-CLAUDEX-CUTOVER-INVARIANT-COVERAGE-MATRIX-001
-Title: ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md must remain structurally complete across all 16 CUTOVER_PLAN invariants
+Title: ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-18.md must remain structurally complete across all 16 CUTOVER_PLAN invariants
 Status: proposed
 Rationale: CUTOVER_PLAN.md's "cutover is not complete without mechanical
   checks" acceptance bar (line 1430) is satisfied for each invariant
@@ -14,7 +14,7 @@ Rationale: CUTOVER_PLAN.md's "cutover is not complete without mechanical
   the matrix's structural shape so downstream audits silently degrade.
 
   The artifact being pinned is
-  ``ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md``. This pin does NOT
+  ``ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-18.md``. This pin does NOT
   assert the artifact's cited test files actually exist on disk — that is
   the job of the dated artifact's own authors plus the sibling invariant-
   pin tests. This pin's narrower job is:
@@ -37,8 +37,8 @@ Rationale: CUTOVER_PLAN.md's "cutover is not complete without mechanical
 Adjacent authorities:
   - ``ClauDEX/CUTOVER_PLAN.md`` § "Invariants That Must Become Tests" —
     the primary authority for what invariants exist.
-  - ``ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-17.md`` — the dated
-    coverage artifact this test validates.
+  - ``ClauDEX/CUTOVER_INVARIANT_COVERAGE_2026-04-18.md`` — the dated
+    coverage artifact this test validates (successor to 2026-04-17).
   - Sibling invariant-pin tests (the individual rows backing each
     invariant): ``test_decision_ref_resolution.py``,
     ``tests/runtime/policies/test_command_intent_single_authority.py``,
@@ -83,7 +83,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 COVERAGE_DOC = (
-    _REPO_ROOT / "ClauDEX" / "CUTOVER_INVARIANT_COVERAGE_2026-04-17.md"
+    _REPO_ROOT / "ClauDEX" / "CUTOVER_INVARIANT_COVERAGE_2026-04-18.md"
 )
 
 # The canonical invariant numbers from CUTOVER_PLAN.md § Invariants That
@@ -151,9 +151,10 @@ class TestCoverageDocExists:
     def test_coverage_doc_file_is_present(self) -> None:
         assert COVERAGE_DOC.exists(), (
             f"Coverage matrix artifact missing at {COVERAGE_DOC}. "
-            "If this artifact is being superseded by a newer dated file, "
-            "update the COVERAGE_DOC constant in this test module in the "
-            "same slice that introduces the successor."
+            "The active pinned artifact is CUTOVER_INVARIANT_COVERAGE_2026-04-18.md "
+            "(successor to 2026-04-17). If this artifact is being superseded "
+            "by a newer dated file, update the COVERAGE_DOC constant in this "
+            "test module in the same slice that introduces the successor."
         )
 
 
