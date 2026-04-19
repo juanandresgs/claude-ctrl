@@ -1,5 +1,20 @@
 """Pure prompt-pack layer resolver (shadow-only).
 
+@decision DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001
+Title: Extend _render_evaluation_summary to render 9 EvaluationContract fields
+Status: accepted
+Rationale: Prior to slice 33, ``_render_evaluation_summary`` rendered only
+  4 sections (desired_end_state + required_tests + required_evidence +
+  acceptance_notes). The 5 new fields added to ``contracts.EvaluationContract``
+  by DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001 would round-trip through the
+  codec silently without reaching the compiled prompt body — silent data loss.
+  This extension adds rendering for the 5 new fields with pinned group-order
+  section headers so the compiled prompt body is always in sync with the
+  schema. Group order: (tests/evidence) → (real-path/authority/integration/
+  forbidden) → (rollback/acceptance/ready-for-guardian). The test suite pins
+  this order so future slices cannot silently reorder it (novel design element 1).
+  Cross-reference: DEC-CLAUDEX-PROMPT-PACK-RESOLVER-001 (parent resolver decision).
+
 @decision DEC-CLAUDEX-PROMPT-PACK-RESOLVER-001
 Title: runtime/core/prompt_pack_resolver.py composes the six canonical prompt-pack layers from existing shadow authorities plus explicit caller summaries
 Status: proposed (shadow-mode, Phase 2 prompt-pack resolver bootstrap)
@@ -736,6 +751,23 @@ def _render_evaluation_summary(
     Combines ``goal.desired_end_state`` with the work-item's
     ``EvaluationContract`` fields. Every field has an explicit
     marker for its empty case so the output is never blank.
+
+    Section group order is pinned by tests (DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001):
+
+    Group 1 — Tests / Evidence:
+      ``Required tests:`` → ``Required evidence:``
+
+    Group 2 — Integration surface + constraints (NEW — slice 33):
+      ``Required real-path checks:`` → ``Required authority invariants:``
+      → ``Required integration points:`` → ``Forbidden shortcuts:`` → ``Notes:``
+
+    Group 3 — Readiness boundaries:
+      ``Rollback boundary: ...`` → ``Acceptance notes: ...``
+      → ``Ready for guardian when: ...``
+
+    Future implementers: do NOT reorder sections without updating the
+    test_renderer_group_order test in
+    tests/runtime/test_work_item_contract_codec_eval_schema_parity.py.
     """
     lines: list[str] = []
 
@@ -745,6 +777,7 @@ def _render_evaluation_summary(
     else:
         lines.append("Desired end state: (unspecified)")
 
+    # Group 1: tests / evidence
     lines.append("Required tests:")
     if evaluation.required_tests:
         for test in evaluation.required_tests:
@@ -759,11 +792,54 @@ def _render_evaluation_summary(
     else:
         lines.append("  - (none)")
 
+    # Group 2: integration surface + constraints
+    # (NEW in slice 33 — DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001)
+    lines.append("Required real-path checks:")
+    if evaluation.required_real_path_checks:
+        for item in evaluation.required_real_path_checks:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("Required authority invariants:")
+    if evaluation.required_authority_invariants:
+        for item in evaluation.required_authority_invariants:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("Required integration points:")
+    if evaluation.required_integration_points:
+        for item in evaluation.required_integration_points:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("Forbidden shortcuts:")
+    if evaluation.forbidden_shortcuts:
+        for item in evaluation.forbidden_shortcuts:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - (none)")
+
+    # Group 3: readiness boundaries
+    rollback = evaluation.rollback_boundary.strip()
+    if rollback:
+        lines.append(f"Rollback boundary: {rollback}")
+    else:
+        lines.append("Rollback boundary: (unspecified)")
+
     acceptance = evaluation.acceptance_notes.strip()
     if acceptance:
         lines.append(f"Acceptance notes: {acceptance}")
     else:
         lines.append("Acceptance notes: (none)")
+
+    guardian_def = evaluation.ready_for_guardian_definition.strip()
+    if guardian_def:
+        lines.append(f"Ready for guardian when: {guardian_def}")
+    else:
+        lines.append("Ready for guardian when: (unspecified)")
 
     return "\n".join(lines)
 

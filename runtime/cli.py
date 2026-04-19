@@ -4980,7 +4980,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--evaluation-json",
         dest="evaluation_json",
         default="{}",
-        help="JSON Evaluation Contract (required_tests/evidence/rollback_boundary/notes)",
+        help=(
+            "JSON Evaluation Contract — 9 legal keys (DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001): "
+            "required_tests, required_evidence, "
+            "required_real_path_checks, required_authority_invariants, "
+            "required_integration_points, forbidden_shortcuts, "
+            "rollback_boundary, acceptance_notes, "
+            "ready_for_guardian_definition. "
+            "Tuple-valued keys accept JSON arrays of strings; "
+            "string-valued keys accept JSON strings. "
+            "Unknown keys raise ValueError at decode time."
+        ),
     )
     wf_wi_set.add_argument(
         "--head-sha",

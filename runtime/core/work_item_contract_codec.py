@@ -1,5 +1,28 @@
 """Pure typed decode bridge from ``WorkItemRecord`` to ``WorkItemContract`` (shadow-only).
 
+@decision DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001
+Title: Widen _EVAL_TUPLE_KEYS and _EVAL_STRING_KEYS to match CLAUDE.md Phase 3b
+Status: accepted
+Rationale: Prior to slice 33, the closed key set for ``evaluation_json`` declared
+  only 4 keys (``required_tests``, ``required_evidence``, ``rollback_boundary``,
+  ``acceptance_notes``). CLAUDE.md Phase 3b and agents/planner.md instructed
+  planners to populate 6 semantic categories, creating a dual-authority bug:
+  well-formed planner payloads were rejected at decode time inside the prompt-pack
+  compile path. This slice widens the closed key set to 9 keys (adding
+  ``required_real_path_checks``, ``required_authority_invariants``,
+  ``required_integration_points``, ``forbidden_shortcuts``, and
+  ``ready_for_guardian_definition``) so the machine authority matches the prose
+  authority without introducing a parallel relaxation path.
+
+  The error message emitted by ``_require_closed_key_set`` carries the *widened*
+  legal key list so operators can identify the correct schema at rejection time —
+  "the error message IS the runtime schema documentation" (novel design element 2).
+
+  ``_EVAL_ALIASES`` is unchanged: existing aliases ``acceptance``→``acceptance_notes``
+  and ``evidence``→``required_evidence`` are not affected by the widening.
+
+  Cross-reference: DEC-CLAUDEX-WORK-ITEM-CONTRACT-CODEC-001 (parent decode decision).
+
 @decision DEC-CLAUDEX-WORK-ITEM-CONTRACT-CODEC-LEGACY-ALIAS-001
 Title: Decode-time legacy vocabulary normalization for scope_json and evaluation_json
 Status: accepted
@@ -68,11 +91,19 @@ Rationale: The Phase 2 prompt-pack capstone helper
        closed key set:
          - ``scope_json``: ``allowed_paths``, ``required_paths``,
            ``forbidden_paths``, ``state_domains``.
-         - ``evaluation_json``: ``required_tests``,
-           ``required_evidence``, ``rollback_boundary``,
-           ``acceptance_notes``.
+         - ``evaluation_json`` (widened in slice 33,
+           DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001):
+           ``required_tests``, ``required_evidence``,
+           ``required_real_path_checks``,
+           ``required_authority_invariants``,
+           ``required_integration_points``,
+           ``forbidden_shortcuts``,
+           ``rollback_boundary``, ``acceptance_notes``,
+           ``ready_for_guardian_definition``.
+           (9 keys total; sole authority: ``_EVAL_KEYS`` frozenset)
        The ``ValueError`` names the field, the unexpected key, and
-       the legal key set so the caller can repair the row.
+       the full widened legal key set so the caller can repair the
+       row without consulting the codec source.
     6. Missing keys default to the dataclass defaults — empty
        tuple for tuple-valued fields, empty string for
        ``rollback_boundary`` / ``acceptance_notes``. This keeps
@@ -138,19 +169,36 @@ _SCOPE_KEYS: frozenset = frozenset(
 
 #: Tuple-valued keys for ``evaluation_json`` (each value must be a
 #: JSON list of strings).
+#:
+#: Widened in slice 33 (DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001) from
+#: 2 keys to 6 keys to match CLAUDE.md Phase 3b vocabulary.
 _EVAL_TUPLE_KEYS: Tuple[str, ...] = (
+    # Group 1: evidence / tests
     "required_tests",
     "required_evidence",
+    # Group 2: integration surface + constraints (NEW — slice 33)
+    "required_real_path_checks",
+    "required_authority_invariants",
+    "required_integration_points",
+    "forbidden_shortcuts",
 )
 
 #: String-valued keys for ``evaluation_json`` (each value must be a
 #: JSON string).
+#:
+#: Widened in slice 33 (DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001) from
+#: 2 keys to 3 keys to match CLAUDE.md Phase 3b vocabulary.
 _EVAL_STRING_KEYS: Tuple[str, ...] = (
+    # Group 3: readiness boundaries
     "rollback_boundary",
     "acceptance_notes",
+    "ready_for_guardian_definition",  # NEW — slice 33
 )
 
 #: Closed key set for ``evaluation_json``.
+#: This is the SOLE authority declaring the legal key surface for
+#: ``work_items.evaluation_json``; no other module may re-declare it.
+#: Contains 9 keys total (6 tuple-valued + 3 string-valued).
 _EVAL_KEYS: frozenset = frozenset(_EVAL_TUPLE_KEYS) | frozenset(_EVAL_STRING_KEYS)
 
 #: Legacy alias map for ``scope_json`` keys.  Renames are applied at decode
@@ -413,17 +461,36 @@ def _decode_evaluation_contract(
     payload = _coerce_legacy_evidence_shape(payload, aliased)
     _require_closed_key_set("evaluation_json", payload, _EVAL_KEYS)
     return contracts.EvaluationContract(
+        # Group 1: evidence / tests
         required_tests=_decode_string_list(
             "evaluation_json", "required_tests", payload
         ),
         required_evidence=_decode_string_list(
             "evaluation_json", "required_evidence", payload
         ),
+        # Group 2: integration surface + constraints (NEW — slice 33,
+        # DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001)
+        required_real_path_checks=_decode_string_list(
+            "evaluation_json", "required_real_path_checks", payload
+        ),
+        required_authority_invariants=_decode_string_list(
+            "evaluation_json", "required_authority_invariants", payload
+        ),
+        required_integration_points=_decode_string_list(
+            "evaluation_json", "required_integration_points", payload
+        ),
+        forbidden_shortcuts=_decode_string_list(
+            "evaluation_json", "forbidden_shortcuts", payload
+        ),
+        # Group 3: readiness boundaries
         rollback_boundary=_decode_string(
             "evaluation_json", "rollback_boundary", payload
         ),
         acceptance_notes=_decode_string(
             "evaluation_json", "acceptance_notes", payload
+        ),
+        ready_for_guardian_definition=_decode_string(
+            "evaluation_json", "ready_for_guardian_definition", payload
         ),
     )
 

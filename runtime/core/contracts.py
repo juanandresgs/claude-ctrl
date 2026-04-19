@@ -1,5 +1,25 @@
 """ClauDEX goal-contract and work-item contract scaffolding (shadow-only).
 
+@decision DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001
+Title: Widen EvaluationContract to 9 fields matching CLAUDE.md Phase 3b vocabulary
+Status: accepted
+Rationale: CLAUDE.md Phase 3b and agents/planner.md instruct planners to populate
+  six semantic fields (required_tests, required_real_path_checks,
+  required_authority_invariants, required_integration_points, forbidden_shortcuts,
+  ready_for_guardian_definition) plus the base rollback_boundary and acceptance_notes.
+  Prior to this slice the runtime codec recognized only 4 fields, causing a
+  dual-authority drift: the planner-prose authority prescribed 6 content categories
+  while the machine authority accepted 4, silently rejecting well-formed planner
+  payloads at compile time. This slice collapses the drift by widening the
+  EvaluationContract dataclass to carry all 9 canonical fields. All new fields
+  default to empty (tuple → (), string → ""), so persisted legacy rows need no
+  migration. The work_item_contract_codec.py closed-key-set is the sole machine
+  authority for the legal key list; this module is the sole typed shape authority.
+  Architecture Preservation §6 ("No parallel authorities as a transition aid")
+  and §2 ("Generate or validate derived surfaces from the authority") both require
+  this to be a closure change, not a coexistence patch.
+  Cross-reference: DEC-CLAUDEX-CONTRACTS-001 (parent scaffolding decision).
+
 @decision DEC-CLAUDEX-CONTRACTS-001
 Title: runtime/core/contracts.py owns the shadow-mode goal and work-item contract shapes
 Status: proposed (shadow-mode)
@@ -125,12 +145,44 @@ class ScopeManifest:
 
 @dataclass(frozen=True)
 class EvaluationContract:
-    """The readiness bar a work-item must clear before ``ready_for_guardian``."""
+    """The readiness bar a work-item must clear before ``ready_for_guardian``.
 
+    Field groupings (pinned by test_work_item_contract_codec_eval_schema_parity.py):
+
+    Group 1 — Evidence / tests (original fields):
+      ``required_tests``, ``required_evidence``
+
+    Group 2 — Integration surface + implementation constraints (new fields):
+      ``required_real_path_checks``, ``required_authority_invariants``,
+      ``required_integration_points``, ``forbidden_shortcuts``
+
+    Group 3 — Readiness boundaries (mixed original / new):
+      ``rollback_boundary``, ``acceptance_notes``,
+      ``ready_for_guardian_definition``
+
+    All new fields default to empty so existing persisted rows decode
+    without migration. The codec (work_item_contract_codec._EVAL_TUPLE_KEYS /
+    _EVAL_STRING_KEYS) is the machine authority for the legal key set;
+    this dataclass is the typed shape authority consumed by the
+    prompt-pack render layer.
+
+    DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001 (see module docstring).
+    """
+
+    # Group 1: evidence / tests
     required_tests: Tuple[str, ...] = ()
     required_evidence: Tuple[str, ...] = ()
+
+    # Group 2: integration surface + constraints (NEW — slice 33)
+    required_real_path_checks: Tuple[str, ...] = ()
+    required_authority_invariants: Tuple[str, ...] = ()
+    required_integration_points: Tuple[str, ...] = ()
+    forbidden_shortcuts: Tuple[str, ...] = ()
+
+    # Group 3: readiness boundaries
     rollback_boundary: str = ""
     acceptance_notes: str = ""
+    ready_for_guardian_definition: str = ""  # NEW — slice 33
 
 
 # ---------------------------------------------------------------------------
