@@ -51,36 +51,16 @@ Rationale: Slice 8 extends write_who with a secondary scope check: when the
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 from typing import Optional
 
 from runtime.core.authority_registry import CAN_WRITE_SOURCE
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_skippable_path, is_source_file
+from runtime.core.policy_utils import is_skippable_path, is_source_file, parse_scope_list
 
-
-# ---------------------------------------------------------------------------
-# Scope-forbidden helpers
-# ---------------------------------------------------------------------------
-
-
-def _parse_scope_list(raw: object) -> list[str]:
-    """Decode a workflow_scope JSON-TEXT column to list[str].
-
-    Mirrors write_plan_guard._parse_scope_list semantics: list passthrough,
-    JSON-string decode, malformed/unknown → []. Fail-open on malformed.
-    """
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str)]
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-            if isinstance(decoded, list):
-                return [str(x) for x in decoded if isinstance(x, str)]
-        except (ValueError, TypeError):
-            pass
-    return []
+# Module-level alias — delegates to canonical single-authority parser.
+# @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+_parse_scope_list = parse_scope_list
 
 
 def _strip_worktree_prefix(path: str) -> str:

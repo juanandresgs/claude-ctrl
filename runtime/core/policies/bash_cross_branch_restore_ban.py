@@ -58,12 +58,16 @@ Rationale: bash_stash_ban (priority 625, slice 6) closes the stash-pop vector.
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 from typing import Optional
 
 from runtime.core.authority_registry import CAN_WRITE_SOURCE
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policy_utils import parse_scope_list
+
+# Module-level alias — delegates to canonical single-authority parser.
+# @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+_parse_scope_list = parse_scope_list
 
 # ---------------------------------------------------------------------------
 # Sub-command sets
@@ -72,29 +76,6 @@ from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 # Git subcommands that can extract file content from a ref into the worktree
 # when combined with a source ref argument.
 _RESTORE_SUBCOMMANDS: frozenset[str] = frozenset({"checkout", "restore"})
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _parse_scope_list(raw: object) -> list[str]:
-    """Decode a workflow_scope JSON-TEXT column to list[str].
-
-    Mirrors write_plan_guard._parse_scope_list semantics: list passthrough,
-    JSON-string decode, malformed/unknown → []. Fail-open on malformed.
-    """
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str)]
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-            if isinstance(decoded, list):
-                return [str(x) for x in decoded if isinstance(x, str)]
-        except (ValueError, TypeError):
-            pass
-    return []
 
 
 def _is_path_forbidden(

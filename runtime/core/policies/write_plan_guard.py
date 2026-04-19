@@ -61,34 +61,20 @@ Rationale: Phase 7 Slice 6 extends plan_guard to deny writes to any file
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE
 from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_governance_markdown
+from runtime.core.policy_utils import is_governance_markdown, parse_scope_list
 
-
-def _parse_scope_list(raw: Any) -> list[str]:
-    """Decode a workflow_scope JSON-TEXT column to list[str].
-
-    Mirrors bash_workflow_scope._parse_list semantics: list passthrough,
-    JSON-string decode, malformed/unknown → []. Fail-open on malformed
-    (operational issues are not policy concerns; strict fail-closed would
-    regress workflows with corrupt rows).
-    """
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str)]
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-            if isinstance(decoded, list):
-                return [str(x) for x in decoded if isinstance(x, str)]
-        except (ValueError, TypeError):
-            pass
-    return []
+# Module-level alias preserves the legacy import surface for existing tests:
+#   from runtime.core.policies.write_plan_guard import _parse_scope_list
+# Identity: _parse_scope_list is policy_utils.parse_scope_list (verified by
+# tests/runtime/policies/test_scope_parser_single_authority.py).
+# @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+_parse_scope_list = parse_scope_list
 
 
 def _strip_worktree_prefix(path: str) -> str:

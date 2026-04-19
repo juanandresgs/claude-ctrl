@@ -106,7 +106,6 @@ Rationale: The original slice 10 implementation matched destination tokens
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 from typing import Optional
 
@@ -114,6 +113,12 @@ from runtime.core.authority_registry import CAN_WRITE_SOURCE
 from runtime.core.command_intent import extract_bash_write_targets
 from runtime.core.leases import _shell_tokens
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policy_utils import parse_scope_list
+
+# Module-level alias — delegates to canonical single-authority parser.
+# Slice-10 deferred-consolidation NOTE is now resolved: consolidation
+# completed in slice 11. @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+_parse_scope_list = parse_scope_list
 
 # ---------------------------------------------------------------------------
 # Command sets
@@ -126,34 +131,6 @@ _LAST_POSITIONAL_DEST_CMDS: frozenset[str] = frozenset({"cp", "mv", "rsync", "ln
 
 # Subset not covered by extract_bash_write_targets (slice-safe, no new tokenizer).
 _EXTRA_COPY_CMDS: frozenset[str] = frozenset({"rsync", "ln"})
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _parse_scope_list(raw: object) -> list[str]:
-    """Decode a workflow_scope JSON-TEXT column to list[str].
-
-    Mirrors bash_cross_branch_restore_ban._parse_scope_list semantics:
-    list passthrough, JSON-string decode, malformed/unknown → [].
-    Fail-open on malformed (conservative: no-op rather than crash).
-
-    NOTE (deferred): _parse_scope_list consolidation into policy_utils.py is
-    out of scope for slice 10 (F8-02 follow-on). Do NOT consolidate here — that
-    would require touching policy_utils.py which is outside the slice 10 scope.
-    """
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str)]
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-            if isinstance(decoded, list):
-                return [str(x) for x in decoded if isinstance(x, str)]
-        except (ValueError, TypeError):
-            pass
-    return []
 
 
 def _is_path_forbidden(

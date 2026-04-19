@@ -28,6 +28,7 @@ from runtime.core.policy_utils import (
     is_governance_markdown,
     is_skippable_path,
     is_source_file,
+    parse_scope_list,
     resolve_path_from_base,
     sanitize_token,
 )
@@ -476,3 +477,108 @@ def test_extract_git_target_dir_fallback_cwd(tmp_path):
 def test_resolve_path_from_base_expands_home():
     result = resolve_path_from_base("/tmp/project", "~")
     assert result == os.path.expanduser("~")
+
+
+# ---------------------------------------------------------------------------
+# parse_scope_list — canonical single-authority scope-list parser
+# DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+# ---------------------------------------------------------------------------
+
+
+def test_parse_scope_list_none_returns_empty():
+    """None input → empty list (fail-open for missing DB column)."""
+    assert parse_scope_list(None) == []
+
+
+def test_parse_scope_list_empty_string_returns_empty():
+    """Empty string is not valid JSON → fail-open → empty list."""
+    assert parse_scope_list("") == []
+
+
+def test_parse_scope_list_json_encoded_list():
+    """JSON-encoded list (production DB format) is decoded correctly."""
+    import json
+    raw = json.dumps(["runtime/**", "hooks/**", "agents/*.md"])
+    result = parse_scope_list(raw)
+    assert result == ["runtime/**", "hooks/**", "agents/*.md"]
+
+
+def test_parse_scope_list_plain_list():
+    """Native list input passes through, coercing each element to str."""
+    raw = ["runtime/**", "hooks/**"]
+    result = parse_scope_list(raw)
+    assert result == ["runtime/**", "hooks/**"]
+
+
+def test_parse_scope_list_tuple_not_supported():
+    """Tuple is not list or str → fail-open → empty list."""
+    result = parse_scope_list(("runtime/**", "hooks/**"))
+    assert result == []
+
+
+def test_parse_scope_list_single_string_not_json():
+    """A bare non-JSON string (not a JSON array) → fail-open → empty list."""
+    result = parse_scope_list("runtime/**")
+    assert result == []
+
+
+def test_parse_scope_list_json_encoded_empty_array():
+    """JSON-encoded empty array → empty list."""
+    import json
+    assert parse_scope_list(json.dumps([])) == []
+
+
+def test_parse_scope_list_duplicates_preserved():
+    """Duplicate entries in the list are preserved (not collapsed).
+
+    The caller decides whether to deduplicate; the parser is faithful.
+    """
+    import json
+    raw = json.dumps(["runtime/**", "runtime/**", "hooks/**"])
+    result = parse_scope_list(raw)
+    assert result == ["runtime/**", "runtime/**", "hooks/**"]
+
+
+def test_parse_scope_list_non_string_elements_filtered():
+    """Non-string elements in a native list are silently filtered out.
+
+    The filter `if isinstance(x, str)` drops ints, None, etc.
+    """
+    raw = ["runtime/**", 42, None, "hooks/**"]
+    result = parse_scope_list(raw)
+    assert result == ["runtime/**", "hooks/**"]
+
+
+def test_parse_scope_list_json_non_string_elements_filtered():
+    """Non-string elements in a JSON-decoded list are silently filtered."""
+    import json
+    raw = json.dumps(["runtime/**", 42, None, "hooks/**"])
+    result = parse_scope_list(raw)
+    assert result == ["runtime/**", "hooks/**"]
+
+
+def test_parse_scope_list_malformed_json_returns_empty():
+    """Malformed JSON string → fail-open → empty list."""
+    result = parse_scope_list("{not-json}")
+    assert result == []
+
+
+def test_parse_scope_list_json_object_not_list_returns_empty():
+    """JSON-decoded dict is not a list → fail-open → empty list."""
+    import json
+    raw = json.dumps({"key": "value"})
+    result = parse_scope_list(raw)
+    assert result == []
+
+
+def test_parse_scope_list_integer_input_returns_empty():
+    """Integer input (not list or str) → fail-open → empty list."""
+    assert parse_scope_list(42) == []  # type: ignore[arg-type]
+
+
+def test_parse_scope_list_return_type_is_list():
+    """Return type is always list[str], never frozenset or tuple."""
+    import json
+    result = parse_scope_list(json.dumps(["runtime/**"]))
+    assert isinstance(result, list)
+    assert all(isinstance(x, str) for x in result)

@@ -33,11 +33,63 @@ Rationale: On macOS /tmp is a symlink to /private/tmp and /var/folders resolves
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# Scope-list parsing — single canonical authority
+# @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+# Title: parse_scope_list is the sole canonical parser for workflow_scope JSON-TEXT
+# Status: accepted
+# Rationale: Four policy modules (write_plan_guard, write_who,
+#   bash_cross_branch_restore_ban, bash_shell_copy_ban) each carried a byte-identical
+#   local copy of _parse_scope_list. Independent copies can drift silently (e.g.,
+#   one copy adds a new input type) and each update requires touching N files
+#   instead of one. Slice 11 consolidates into this single authority so that:
+#   (a) One function, one location, one place to audit, one place to test.
+#   (b) All callers import via `from runtime.core.policy_utils import parse_scope_list
+#       as _parse_scope_list` — the local alias preserves existing call-sites
+#       unchanged while `<module>._parse_scope_list is parse_scope_list` becomes
+#       a testable identity invariant.
+#   (c) The single-authority invariant test
+#       (tests/runtime/policies/test_scope_parser_single_authority.py) fails loudly
+#       if any future maintainer re-introduces a local redefinition.
+# ---------------------------------------------------------------------------
+
+
+def parse_scope_list(raw: Any) -> list[str]:
+    """Decode a workflow_scope JSON-TEXT column to list[str].
+
+    Canonical single-authority parser shared by all policy modules that consume
+    workflow_scope.forbidden_paths / allowed_paths rows. See
+    DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001.
+
+    Semantics (match legacy callers exactly):
+      - list  → keep only str elements, coerce each with str()
+      - str   → JSON-decode; if result is a list, apply same str-filter
+      - other → return []  (fail-open: malformed rows are not policy concerns)
+
+    Return type is list[str] to match the historical callers' type annotation.
+    The function is intentionally NOT renamed to use frozenset so existing
+    caller logic (e.g. ``if forbidden:`` truthiness checks) remains unchanged.
+
+    @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
+    """
+    if isinstance(raw, list):
+        return [str(x) for x in raw if isinstance(x, str)]
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, list):
+                return [str(x) for x in decoded if isinstance(x, str)]
+        except (ValueError, TypeError):
+            pass
+    return []
+
 
 # ---------------------------------------------------------------------------
 # Path identity normalization
