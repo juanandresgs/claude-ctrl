@@ -28,8 +28,11 @@
 set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
-
+# Source runtime-bridge.sh for _resolve_policy_db (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001).
+# context-lib.sh is not sourced here (forbidden per scope manifest for pre-agent.sh);
+# runtime-bridge.sh is the self-contained authority for the DB resolver.
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$_HOOK_DIR/lib/runtime-bridge.sh"
 
 _deny() {
     local reason="$1"
@@ -198,20 +201,23 @@ if [[ "$ISOLATION" != "worktree" ]]; then
 
     if [[ -n "$_SESSION_ID" ]]; then
         _CARRIER_MODULE="$_HOOK_DIR/../runtime/core/pending_agent_requests.py"
-        _CARRIER_DB="${CLAUDE_POLICY_DB:-}"
+        # Use shared 3-tier resolver — replaces former 2-tier (CLAUDE_POLICY_DB →
+        # CLAUDE_PROJECT_DIR) that silently skipped the write when both were absent.
+        # (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001)
+        _CARRIER_DB="$(_resolve_policy_db)"
         _ATTEMPT_TIMEOUT_SECONDS="${CLAUDEX_DISPATCH_ATTEMPT_TIMEOUT_SECONDS:-2700}"
         _ATTEMPT_TIMEOUT_AT=""
         if [[ "$_ATTEMPT_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( _ATTEMPT_TIMEOUT_SECONDS > 0 )); then
             _ATTEMPT_TIMEOUT_AT="$(( $(date +%s) + _ATTEMPT_TIMEOUT_SECONDS ))"
         fi
-        if [[ -z "$_CARRIER_DB" && -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-            _CARRIER_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
-        fi
         # A8: fail-closed on carrier-write failure for canonical seats.
-        # Removing the prior `|| true` — if the write fails, this canonical
-        # seat launch is denied with reason carrier_write_failed so the
-        # orchestrator knows the carrier path is broken and must not proceed.
-        # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
+        # _CARRIER_DB must resolve via _resolve_policy_db (3-tier). If all three
+        # tiers fail (no env vars, no git tree), deny rather than silently skip —
+        # a canonical seat launched without a DB cannot deliver its contract to
+        # subagent-start.sh. (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
+        if [[ -z "$_CARRIER_DB" ]]; then
+            _deny "BLOCKED: carrier write failed for canonical seat '${_EXPECTED_SUBAGENT_TYPE}' (carrier_write_failed). No policy DB path could be resolved (CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR are unset and no git toplevel found). Set CLAUDE_POLICY_DB or run from inside a git repo."
+        fi
         if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
             if ! python3 "$_CARRIER_MODULE" write "$_CARRIER_DB" "$_SESSION_ID" "$_EXPECTED_SUBAGENT_TYPE" "$_CONTRACT_JSON" >/dev/null 2>&1; then
                 _deny "BLOCKED: carrier write failed for canonical seat '${_EXPECTED_SUBAGENT_TYPE}' (carrier_write_failed). The pending_agent_requests row could not be written; the subagent-start.sh carrier path cannot deliver the contract. Check DB health and retry."

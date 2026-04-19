@@ -17,14 +17,67 @@
 # Never call this file directly.
 
 # ---------------------------------------------------------------------------
+# DB path resolver — single source of truth for all hook callers
+# ---------------------------------------------------------------------------
+
+# @decision DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001
+# @title _resolve_policy_db is the single authoritative resolver for carrier/marker/lease DB routing
+# @status accepted
+# @rationale pre-agent.sh L201-209 and subagent-start.sh L117-120 each had a
+#   2-tier resolver (CLAUDE_POLICY_DB → CLAUDE_PROJECT_DIR) that silently skipped
+#   the carrier write/consume when both env vars were absent in the harness launch
+#   env (the real production path for guardian SubagentStart on the global-soak lane).
+#   The result: _CARRIER_DB was empty, the guard evaluated false, and carrier
+#   operations were silently skipped — causing _HAS_CONTRACT=no, A8 deny at
+#   canonical_seat_no_carrier_contract, and no marker seating.  This function
+#   adds a 3rd tier (git rev-parse --show-toplevel) to cover the production path
+#   and is called from BOTH hooks at BOTH writer and reader sites.
+#   Inline git rev-parse is used intentionally — hooks/context-lib.sh must not
+#   be sourced from pre-agent.sh (forbidden file per scope manifest).
+#   Extends DEC-CLAUDEX-SA-MARKER-RELIABILITY-001 by making the resolver
+#   reachable from both hooks at both writer and reader sites.
+# @chain pre-agent.sh carrier-write → pending_agent_requests → subagent-start.sh
+#   carrier-consume → _HAS_CONTRACT=yes → marker seating → lease claim → context role
+_resolve_policy_db() {
+    # Priority order (single source of truth):
+    #   1. $CLAUDE_POLICY_DB if already set and non-empty  (caller wins)
+    #   2. $CLAUDE_PROJECT_DIR/.claude/state.db if CLAUDE_PROJECT_DIR is set
+    #   3. <git_toplevel>/.claude/state.db via git rev-parse --show-toplevel
+    # Returns the resolved path on stdout. Empty string if all three fail
+    # (e.g., cwd is outside a git tree and no env vars set).
+    # Also exports CLAUDE_POLICY_DB when resolution succeeded via tier 2 or 3.
+    # Side-effect-free if CLAUDE_POLICY_DB is already set.
+    local resolved=""
+    if [[ -n "${CLAUDE_POLICY_DB:-}" ]]; then
+        printf '%s\n' "$CLAUDE_POLICY_DB"
+        return 0
+    fi
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+        resolved="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    else
+        local toplevel
+        toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [[ -n "$toplevel" ]]; then
+            resolved="$toplevel/.claude/state.db"
+        fi
+    fi
+    if [[ -n "$resolved" ]]; then
+        export CLAUDE_POLICY_DB="$resolved"
+        printf '%s\n' "$resolved"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Core entry point
 # ---------------------------------------------------------------------------
 
 cc_policy() {
     local runtime_root="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
-    # Scope db to project root when CLAUDE_PROJECT_DIR is set
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    # Delegate DB resolution to the single authoritative resolver so cc_policy
+    # callers inherit the same 3-tier fallback without duplicating the logic.
+    # (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001)
+    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        _resolve_policy_db >/dev/null
     fi
     python3 "$runtime_root/cli.py" "$@"
 }

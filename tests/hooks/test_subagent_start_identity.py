@@ -1035,3 +1035,152 @@ class TestMarkerSeatingReliability:
             f"Expected workflow_id={_WORKFLOW_ID!r}, got {ctx_data.get('workflow_id')!r}. "
             f"Full context output: {ctx_json}"
         )
+
+
+# ---------------------------------------------------------------------------
+# GS1-F-3: TestSubagentStartCarrierConsumeNoEnv
+# ---------------------------------------------------------------------------
+# Regression: subagent-start.sh consumes the carrier row using git-based DB
+# resolution when neither CLAUDE_POLICY_DB nor CLAUDE_PROJECT_DIR is in env.
+# Pre-fix: _CARRIER_DB was empty → consume block skipped → _HAS_CONTRACT=no →
+# A8 deny (canonical_seat_no_carrier_contract). Post-fix: _resolve_policy_db
+# tier-3 resolves via git rev-parse and consume succeeds.
+# ---------------------------------------------------------------------------
+
+
+def _make_git_repo_with_schema_sa(tmp_path: Path, subdir_name: str = "repo") -> Path:
+    """Create a minimal git repo with a seeded DB at <root>/.claude/state.db."""
+    import subprocess as _sp
+
+    root = tmp_path / subdir_name
+    root.mkdir()
+    _sp.run(["git", "init", str(root)], capture_output=True, check=True)
+    _sp.run(
+        ["git", "-C", str(root), "config", "user.email", "test@test.com"],
+        capture_output=True,
+        check=True,
+    )
+    _sp.run(
+        ["git", "-C", str(root), "config", "user.name", "Test"],
+        capture_output=True,
+        check=True,
+    )
+    dot_claude = root / ".claude"
+    dot_claude.mkdir()
+    db_path = dot_claude / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _seed_db(conn, project_root=str(_REPO_ROOT))
+        conn.commit()
+    finally:
+        conn.close()
+    return root
+
+
+def _run_hook_no_env_git_cwd(payload: dict, cwd: str) -> tuple[int, str, str]:
+    """Invoke subagent-start.sh without CLAUDE_POLICY_DB or CLAUDE_PROJECT_DIR.
+
+    cwd is set to the git repo root so that _resolve_policy_db tier-3 fires.
+    """
+    import subprocess as _sp
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(_REPO_ROOT),
+        "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
+    }
+    env.pop("CLAUDE_POLICY_DB", None)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+
+    result = _sp.run(
+        ["bash", _HOOK],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=cwd,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+class TestSubagentStartCarrierConsumeNoEnv:
+    """GS1-F-3: carrier consume succeeds via git-based DB resolution.
+
+    Tests that removing CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR from the
+    subagent-start.sh environment does NOT prevent carrier consume — as long
+    as cwd is inside a git repo.  The pre-fix hook had a 2-tier resolver that
+    silently skipped consume when both env vars were absent.
+
+    Evaluation Contract:
+    - test_consume_carrier_without_claude_project_dir_or_policy_db:
+        seed carrier row → invoke hook without env vars, cwd=git_root →
+        assert consume succeeded (marker row written, role=guardian:land).
+    """
+
+    def test_consume_carrier_without_claude_project_dir_or_policy_db(self, tmp_path):
+        """seed carrier row in git-based DB → invoke subagent-start.sh without
+        CLAUDE_POLICY_DB or CLAUDE_PROJECT_DIR → assert:
+        - consume succeeds (_HAS_CONTRACT=yes path taken)
+        - marker row written with role='guardian:land'
+        - no 'canonical_seat_no_carrier_contract' A8 block in stdout
+
+        Pre-fix: _CARRIER_DB empty → consume skipped → A8 deny in additionalContext.
+        Post-fix: _resolve_policy_db tier-3 finds git-based DB → consume succeeds.
+        """
+        repo_root = _make_git_repo_with_schema_sa(tmp_path)
+        db_path = repo_root / ".claude" / "state.db"
+
+        # Seed a guardian:land carrier row in the git-based DB.
+        session_id = "gs1f3-no-env-consume-session"
+        conn = _open_db(db_path)
+        try:
+            _write_carrier(conn, session_id=session_id)
+        finally:
+            conn.close()
+
+        payload_agent_id = "gs1f3-no-env-agent-001"
+        payload = {
+            "session_id": session_id,
+            "agent_type": _GUARDIAN_AGENT_TYPE,
+            "agent_id": payload_agent_id,
+            "hook_event_name": "SubagentStart",
+        }
+
+        rc, stdout, stderr = _run_hook_no_env_git_cwd(payload, cwd=str(repo_root))
+        assert rc == 0, f"Hook must exit 0; rc={rc}; stderr={stderr!r}"
+
+        # The A8 block must NOT appear — _HAS_CONTRACT=yes path must have fired.
+        parsed = json.loads(stdout.strip())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "canonical_seat_no_carrier_contract" not in ctx, (
+            "A8 deny must NOT appear when carrier row was consumed via git-based resolution. "
+            "Pre-fix: _CARRIER_DB empty → consume skipped → A8 fires here. "
+            f"ctx={ctx[:500]!r}"
+        )
+
+        # Runtime-first path must have fired (contract consumed from carrier).
+        assert "# ClauDEX Prompt Pack:" in ctx, (
+            "subagent-start.sh must take the runtime-first path after consuming the "
+            f"carrier row via git-based DB resolution. ctx={ctx[:500]!r}"
+        )
+
+        # Marker row must have been written with role='guardian:land'.
+        conn = _open_db(db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM agent_markers WHERE agent_id = ?",
+                (payload_agent_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None, (
+            f"Expected agent_markers row for agent_id={payload_agent_id!r}. "
+            f"Pre-fix: seating skipped because carrier consume was skipped. "
+            f"stdout={stdout!r}"
+        )
+        assert row["role"] == _STAGE_ID, (
+            f"Expected role={_STAGE_ID!r} (guardian:land), got {row['role']!r}"
+        )

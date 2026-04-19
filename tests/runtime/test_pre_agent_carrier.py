@@ -652,16 +652,22 @@ class TestPreAgentA8CarrierWriteFailDeny:
             ro_db.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
 
     def test_no_db_path_skips_carrier_write_gracefully(self, tmp_path):
-        """When CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR are unset, no carrier attempt
-        is made for canonical seats — the hook allows the dispatch to proceed
-        (missing DB is not a hard fail for sessions without a project DB).
+        """When CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR are unset, the hook uses
+        the git-toplevel fallback (tier 3) to locate the DB.  Since cwd is inside
+        a git repo, the carrier write succeeds and no deny is produced.
+
+        Note: after GS1-F-3 the hook no longer skips the carrier write when env
+        vars are absent — it falls back to git rev-parse.  When cwd is inside a
+        git repo the write succeeds normally.  Only when ALL three tiers fail (no
+        env vars AND no git tree) does the hook deny with carrier_write_failed.
         """
         payload = _agent_payload()
         env = {
             **os.environ,
             "PYTHONPATH": str(_REPO_ROOT),
+            "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
         }
-        # Remove both DB env vars so the carrier path is skipped entirely.
+        # Remove both DB env vars so the hook must fall back to git-based resolution.
         env.pop("CLAUDE_POLICY_DB", None)
         env.pop("CLAUDE_PROJECT_DIR", None)
         result = subprocess.run(
@@ -672,7 +678,7 @@ class TestPreAgentA8CarrierWriteFailDeny:
             env=env,
             cwd=str(_REPO_ROOT),
         )
-        # Without a DB path, the hook exits 0 without a deny (no carrier path taken).
+        # Hook resolves DB via git toplevel, writes successfully, exits 0 without deny.
         assert result.returncode == 0
         # No deny output (empty stdout or non-deny JSON):
         if result.stdout.strip():
@@ -680,7 +686,209 @@ class TestPreAgentA8CarrierWriteFailDeny:
                 parsed = json.loads(result.stdout.strip())
                 hso = parsed.get("hookSpecificOutput", {})
                 assert hso.get("permissionDecision") != "deny", (
-                    "Hook must not deny when DB path is absent — carrier is simply skipped."
+                    "Hook must not deny when DB is resolved via git fallback — "
+                    "carrier write succeeded."
                 )
             except json.JSONDecodeError:
                 pass  # non-JSON stdout is also acceptable (hook may emit nothing)
+
+
+# ---------------------------------------------------------------------------
+# GS1-F-3: DB routing via git fallback when no env vars set
+# ---------------------------------------------------------------------------
+
+
+def _make_git_repo_with_schema(tmp_path: Path, subdir_name: str = "repo") -> Path:
+    """Create a minimal git repo with a seeded DB at <root>/.claude/state.db.
+
+    Returns the git repo root path.
+    """
+    root = tmp_path / subdir_name
+    root.mkdir()
+    subprocess.run(["git", "init", str(root)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "test@test.com"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "Test"],
+        capture_output=True,
+        check=True,
+    )
+    dot_claude = root / ".claude"
+    dot_claude.mkdir()
+    db_path = dot_claude / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        from runtime.schemas import ensure_schema
+        ensure_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    return root
+
+
+def _env_no_db_vars(repo_root: Path) -> dict:
+    """Env with no CLAUDE_POLICY_DB or CLAUDE_PROJECT_DIR; cwd expected inside repo_root."""
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(_REPO_ROOT),
+        "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
+    }
+    env.pop("CLAUDE_POLICY_DB", None)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    return env
+
+
+class TestPreAgentCarrierDBRoutingNoEnv:
+    """GS1-F-3: carrier write resolves DB via git fallback when both env vars absent.
+
+    These tests prove that removing CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR
+    from the hook's environment does NOT prevent the carrier write — as long
+    as cwd is inside a git repo.  The pre-fix hook would silently skip the
+    write; post-fix it resolves via git rev-parse.
+
+    Companion test for the no-git-tree case (deny path) also lives here.
+    """
+
+    def test_pre_agent_writes_carrier_when_no_env_but_git_cwd(self, tmp_path):
+        """pre-agent.sh writes carrier row when neither env var is set but cwd is
+        inside a git tree.  Pre-fix: _CARRIER_DB empty → write silently skipped.
+        Post-fix: _resolve_policy_db tier 3 resolves via git rev-parse.
+
+        This test FAILS on pre-fix code (no row written).
+        """
+        repo_root = _make_git_repo_with_schema(tmp_path)
+        db_path = repo_root / ".claude" / "state.db"
+
+        env = _env_no_db_vars(repo_root)
+        result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(_agent_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(repo_root),
+        )
+        assert result.returncode == 0, f"pre-agent.sh exited {result.returncode}; stderr={result.stderr!r}"
+
+        # Carrier row must be present in the git-resolved DB.
+        assert _row_exists(db_path, _SESSION_ID, _AGENT_TYPE), (
+            "pre-agent.sh must have written a pending_agent_requests row via git-based "
+            "DB resolution.  Pre-fix: no row (DB path unresolved); post-fix: row present. "
+            f"db_path={db_path}; stdout={result.stdout!r}"
+        )
+
+    def test_pre_agent_denies_when_no_env_no_git(self, tmp_path):
+        """pre-agent.sh must deny with carrier_write_failed when neither env var is
+        set AND cwd is outside any git tree.  Pre-fix: silent skip (exit 0, no deny).
+        Post-fix: deny with carrier_write_failed reason code.
+        """
+        no_git_dir = tmp_path / "not-a-repo"
+        no_git_dir.mkdir()
+
+        # Use a fake HOME so git global config doesn't accidentally place us in a repo.
+        env = _env_no_db_vars(no_git_dir)
+        env["HOME"] = str(tmp_path / "fakehome")
+
+        result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(_agent_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(no_git_dir),
+        )
+        assert result.returncode == 0, f"Hook must always exit 0; rc={result.returncode}"
+        assert result.stdout.strip(), "Expected deny JSON on stdout, got empty output"
+        parsed = json.loads(result.stdout.strip())
+        hso = parsed["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "deny", (
+            f"Expected deny, got {hso['permissionDecision']!r}. "
+            f"Pre-fix: hook silently exits 0 without a deny when DB is unresolvable."
+        )
+        assert "carrier_write_failed" in hso["permissionDecisionReason"], (
+            f"Expected 'carrier_write_failed' in reason, got: {hso['permissionDecisionReason']!r}"
+        )
+
+
+class TestPreAgentToSubagentStartRoundTrip:
+    """GS1-F-3: end-to-end carrier round-trip with no env vars — git-based resolution.
+
+    pre-agent.sh writes carrier → subagent-start.sh consumes carrier.
+    Both invocations use a tmp git repo and neither CLAUDE_POLICY_DB nor
+    CLAUDE_PROJECT_DIR is set.  This is the production-sequence proof.
+    """
+
+    def test_carrier_round_trip_no_env(self, tmp_path):
+        """pre-agent.sh writes carrier row via git-based DB resolution.
+        subagent-start.sh consumes it via the same git-based resolution.
+        Both use no CLAUDE_POLICY_DB and no CLAUDE_PROJECT_DIR.
+
+        Asserts:
+        - carrier row written by pre-agent is consumed by subagent-start
+        - subagent-start takes the runtime-first (contract) path
+        - carrier row is absent after subagent-start completes (atomic delete)
+
+        This test exercises the REAL production sequence for guardian landings
+        where the harness injects neither CLAUDE_POLICY_DB nor CLAUDE_PROJECT_DIR.
+        """
+        repo_root = _make_git_repo_with_schema(tmp_path)
+        db_path = repo_root / ".claude" / "state.db"
+
+        # Seed the DB with the goal/work_item/workflow required by the runtime.
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            _seed_db(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        env = _env_no_db_vars(repo_root)
+
+        # Step 1: run pre-agent.sh — writes carrier row via git-based resolution.
+        pre_result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(_agent_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(repo_root),
+        )
+        assert pre_result.returncode == 0, (
+            f"pre-agent.sh must succeed; rc={pre_result.returncode}; stderr={pre_result.stderr!r}"
+        )
+        assert _row_exists(db_path, _SESSION_ID, _AGENT_TYPE), (
+            "pre-agent.sh must have written a carrier row via git-based DB resolution"
+        )
+
+        # Step 2: run subagent-start.sh — consumes carrier row via git-based resolution.
+        subagent_payload = {"agent_type": _AGENT_TYPE, "session_id": _SESSION_ID}
+        sa_result = subprocess.run(
+            ["bash", _SUBAGENT_START],
+            input=json.dumps(subagent_payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(repo_root),
+        )
+        assert sa_result.returncode == 0, (
+            f"subagent-start.sh must exit 0; rc={sa_result.returncode}; stderr={sa_result.stderr!r}"
+        )
+
+        # Verify runtime-first path fired (contract was consumed from carrier).
+        parsed = json.loads(sa_result.stdout.strip())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "# ClauDEX Prompt Pack:" in ctx, (
+            "subagent-start.sh must have taken the runtime-first path via the carrier row "
+            "written (and resolved via git) by pre-agent.sh.  "
+            f"ctx (first 400 chars)={ctx[:400]!r}"
+        )
+
+        # Carrier row must be gone (atomic delete on consume).
+        assert not _row_exists(db_path, _SESSION_ID, _AGENT_TYPE), (
+            "Carrier row must be atomically deleted after subagent-start.sh consumes it"
+        )

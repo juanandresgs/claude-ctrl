@@ -41,26 +41,19 @@ _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 _local_cc_policy() {
     # @decision DEC-CLAUDEX-SA-MARKER-RELIABILITY-001
     # Title: SubagentStart marker-seating is authoritative and failures are observable
-    # Status: accepted
+    # Status: accepted — DB routing now delegates to _resolve_policy_db (shared helper).
     # Rationale: CLAUDE_POLICY_DB must be deterministically routed to the
     #   in-project state.db regardless of whether CLAUDE_PROJECT_DIR is present
-    #   in the SubagentStart env invocation. Previously, DB routing only fired
-    #   when CLAUDE_PROJECT_DIR was already exported, causing marker writes to
-    #   land in the default (home-dir) DB while context role reads from
-    #   PROJECT_ROOT/.claude/state.db — a silent split-brain. Fix: prefer
-    #   CLAUDE_POLICY_DB if already set (caller wins), then fall back to
-    #   CLAUDE_PROJECT_DIR, then fall back to PROJECT_ROOT (computed by
-    #   detect_project_root at hook startup). Any seating failure is now
-    #   captured and emitted as a CONTEXT_PARTS breadcrumb rather than silently
-    #   swallowed.  Extends DEC-CLAUDEX-SA-IDENTITY-001.
-    # Chain: detect_project_root → CLAUDE_POLICY_DB → cc-policy dispatch agent-start
+    #   in the SubagentStart env invocation. The 3-tier fallback logic (CLAUDE_POLICY_DB
+    #   → CLAUDE_PROJECT_DIR → git rev-parse) now lives exclusively in _resolve_policy_db
+    #   (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001) so both the carrier consume block and
+    #   the marker-seating CLI call share the same authoritative path resolution.
+    #   Any seating failure is captured and emitted as a CONTEXT_PARTS breadcrumb.
+    #   Extends DEC-CLAUDEX-SA-IDENTITY-001.
+    # Chain: _resolve_policy_db → CLAUDE_POLICY_DB → cc-policy dispatch agent-start
     #   → agent_markers → context role
     if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-            export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
-        elif [[ -n "${PROJECT_ROOT:-}" ]]; then
-            export CLAUDE_POLICY_DB="${PROJECT_ROOT}/.claude/state.db"
-        fi
+        _resolve_policy_db >/dev/null
     fi
     python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
@@ -114,10 +107,10 @@ EOF
 # ---------------------------------------------------------------------------
 if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
     _CARRIER_MODULE="$_HOOK_DIR/../runtime/core/pending_agent_requests.py"
-    _CARRIER_DB="${CLAUDE_POLICY_DB:-}"
-    if [[ -z "$_CARRIER_DB" && -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        _CARRIER_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
-    fi
+    # Use shared 3-tier resolver — replaces former 2-tier (CLAUDE_POLICY_DB →
+    # CLAUDE_PROJECT_DIR) that silently skipped the consume when both were absent.
+    # (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001)
+    _CARRIER_DB="$(_resolve_policy_db)"
     if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
         _CARRIER_AGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" "${AGENT_TYPE:-}" 2>/dev/null || echo "")
         [[ -z "$_CARRIER_AGENT_TYPE" ]] && _CARRIER_AGENT_TYPE="$AGENT_TYPE"
