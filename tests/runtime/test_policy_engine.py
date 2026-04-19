@@ -482,7 +482,7 @@ def test_default_registry_is_registry():
 
 
 def test_default_registry_has_all_policies():
-    """25 policies registered (10 write + 14 bash + 1 agent launch guard)."""
+    """28 policies registered."""
     reg = default_registry()
     policies = reg.list_policies()
     names = {p.name for p in policies}
@@ -513,13 +513,16 @@ def test_default_registry_has_all_policies():
         "bash_eval_readiness",
         "bash_workflow_scope",
         "bash_approval_gate",
+        "bash_stash_ban",  # slice 6, DEC-DISCIPLINE-STASH-BAN-001
+        "bash_cross_branch_restore_ban",  # slice 8, DEC-DISCIPLINE-NONSTASH-RESTORE-BAN-001
     }
     assert w2_expected.issubset(names), f"Missing W2: {w2_expected - names}"
     assert w3_expected.issubset(names), f"Missing W3: {w3_expected - names}"
     assert (
-        len(policies) == 26
-    )  # previous 25 + A18: count updated to current registry snapshot (includes
-    # post-A12 write_plan_guard scope-forbidden-path composition as canonical)
+        len(policies) == 28
+        # 26 previous + bash_stash_ban (slice 6, DEC-DISCIPLINE-STASH-BAN-001)
+        # + bash_cross_branch_restore_ban (slice 8, DEC-DISCIPLINE-NONSTASH-RESTORE-BAN-001)
+    )
     # Priority order must be ascending
     priorities = [p.priority for p in policies]
     assert priorities == sorted(priorities)
