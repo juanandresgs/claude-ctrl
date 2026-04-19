@@ -22,7 +22,9 @@ import pytest
 from runtime.schemas import ensure_schema
 from runtime.core.workflows import (
     bind_workflow,
+    classify_scope_paths,
     check_scope_compliance,
+    find_binding_for_worktree,
     get_binding,
     get_scope,
     list_bindings,
@@ -116,6 +118,13 @@ def test_bind_workflow_upserts_on_conflict(conn):
 
 def test_get_binding_returns_none_for_unknown(conn):
     assert get_binding(conn, "no-such-workflow") is None
+
+
+def test_find_binding_for_worktree_returns_matching_row(conn):
+    bind_workflow(conn, "wf-path", "/tmp/wf-path", "feature/path")
+    binding = find_binding_for_worktree(conn, "/tmp/wf-path")
+    assert binding is not None
+    assert binding["workflow_id"] == "wf-path"
 
 
 def test_list_bindings_empty(conn):
@@ -261,6 +270,27 @@ def test_compliance_empty_allowed_accepts_everything(conn):
               required_paths=[], forbidden_paths=[], authority_domains=[])
     result = check_scope_compliance(conn, "wf-empty-allowed", ["anything/file.py"])
     assert result["compliant"] is True
+
+
+def test_classify_scope_paths_returns_reasoned_entries(conn):
+    bind_workflow(conn, "wf-classify", "/p", "b")
+    set_scope(
+        conn,
+        "wf-classify",
+        allowed_paths=["runtime/*.py"],
+        required_paths=[],
+        forbidden_paths=["hooks/*.sh"],
+        authority_domains=[],
+    )
+    result = classify_scope_paths(
+        conn,
+        "wf-classify",
+        ["runtime/cli.py", "hooks/pre-agent.sh", "docs/spec.md"],
+    )
+    assert result["scope_found"] is True
+    assert result["in_scope"] == ["runtime/cli.py"]
+    assert {"path": "hooks/pre-agent.sh", "reason": "FORBIDDEN"} in result["unexpected"]
+    assert {"path": "docs/spec.md", "reason": "OUT_OF_SCOPE"} in result["unexpected"]
 
 
 # ---------------------------------------------------------------------------

@@ -150,7 +150,16 @@ This context is what prevents parallel mechanisms. Without it, every implementer
 Before issuing any Agent tool call that dispatches a role (planner, implementer,
 guardian, reviewer), the orchestrator MUST:
 
-1. Call the producer CLI:
+1. Prefer the high-level stage packet producer:
+   ```bash
+   cc-policy workflow stage-packet <workflow_id> --stage-id <stage_id>
+   ```
+   This is the canonical execution bundle authority. It returns the Agent-tool
+   launch spec (`agent_tool_spec`) plus the current workflow binding, scope,
+   contracts, readiness snapshots, and canonical follow-up command shapes for
+   the slice.
+
+2. If a caller only needs the low-level prompt contract, it may call:
    ```bash
    cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <stage_id>
    ```
@@ -159,15 +168,17 @@ guardian, reviewer), the orchestrator MUST:
    `--goal-id`, `--work-item-id`, `--decision-scope` to override runtime-resolved
    defaults.
 
-2. Take the `prompt_prefix` field from the returned JSON and prepend it verbatim
+3. Take `agent_tool_spec.prompt_prefix` from `workflow stage-packet`, or the
+   top-level `prompt_prefix` from `dispatch agent-prompt`, and prepend it verbatim
    as the first content of the Agent tool's `prompt` parameter:
    - `prompt_prefix` begins with `CLAUDEX_CONTRACT_BLOCK:{...}` on line 1
    - That line must remain at column 0 — do not indent, reformat, or wrap it
    - Append task instructions after the prefix unchanged
 
-3. **Set `subagent_type` explicitly on every Agent tool call that participates
+4. **Set `subagent_type` explicitly on every Agent tool call that participates
    in the ClauDEX delivery path, and use the runtime-returned canonical value.**
-   `cc-policy dispatch agent-prompt` returns `required_subagent_type`; the
+   `cc-policy workflow stage-packet` returns `agent_tool_spec.subagent_type`;
+   `cc-policy dispatch agent-prompt` returns `required_subagent_type`. The
    orchestrator MUST use that exact value on the Agent tool call. For
    delivery-path stages the canonical values are the repo-owned agent names:
    `"planner"`, `"implementer"`, `"reviewer"`, and `"guardian"`. Do NOT use
@@ -177,7 +188,7 @@ guardian, reviewer), the orchestrator MUST:
    empty string and the delivery-tracking path is silently skipped — no carrier
    row, no `dispatch_attempts` row.
 
-4. If the CLI returns a non-zero exit code or `"status": "error"`, report the
+5. If the CLI returns a non-zero exit code or `"status": "error"`, report the
    error and halt the dispatch until the issue is resolved.
 
 **Verification:** After wiring, confirm by inspecting `runtime/dispatch-debug.jsonl`.
@@ -195,11 +206,14 @@ Common queries and dispatch calls (copy/adapt these forms):
 # Who am I / which workflow is active?
 cc-policy context role
 
-# Build canonical dispatch prompt contract for a stage
+# Build the canonical execution bundle for a stage
+cc-policy workflow stage-packet <workflow_id> --stage-id <planner|implementer|reviewer|guardian>
+
+# Low-level prompt contract primitive (use when only the prompt block is needed)
 cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <planner|implementer|reviewer|guardian>
 
 # Workflow readiness checks before landing
-cc-policy eval get --workflow-id <workflow_id>
+cc-policy evaluation get <workflow_id>
 cc-policy test-state get --project-root <repo_root>
 cc-policy lease summary --workflow-id <workflow_id>
 

@@ -113,6 +113,28 @@ def get_binding(conn: sqlite3.Connection, workflow_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def find_binding_for_worktree(
+    conn: sqlite3.Connection, worktree_path: str
+) -> Optional[dict]:
+    """Return the binding row for ``worktree_path``, or None when unbound.
+
+    ``worktree_path`` is normalized through :func:`normalize_path` so callers
+    may pass a symlinked or non-canonical path and still resolve the canonical
+    binding row.
+    """
+    canonical_worktree = normalize_path(worktree_path)
+    row = conn.execute(
+        """
+        SELECT workflow_id, worktree_path, branch, base_branch, ticket, initiative,
+               created_at, updated_at
+        FROM   workflow_bindings
+        WHERE  worktree_path = ?
+        """,
+        (canonical_worktree,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def set_scope(
     conn: sqlite3.Connection,
     workflow_id: str,
@@ -204,8 +226,8 @@ def check_scope_compliance(
     in violations (advisory, not blocking — guard.sh enforces the hard deny
     separately when scope is absent).
     """
-    scope = get_scope(conn, workflow_id)
-    if scope is None:
+    classified = classify_scope_paths(conn, workflow_id, changed_files)
+    if not classified["scope_found"]:
         return {
             "compliant": True,
             "violations": [],
@@ -213,29 +235,83 @@ def check_scope_compliance(
             "note": "no scope manifest; all files accepted",
         }
 
-    allowed = scope["allowed_paths"]
-    forbidden = scope["forbidden_paths"]
-
-    violations: list[str] = []
-    in_scope: list[str] = []
-
-    for f in changed_files:
-        # Rule 2 + 3: forbidden takes precedence
-        if any(fnmatch.fnmatch(f, pat) for pat in forbidden):
-            violations.append(f"FORBIDDEN: {f}")
-            continue
-
-        # Rule 1: must match at least one allowed pattern
-        if allowed and not any(fnmatch.fnmatch(f, pat) for pat in allowed):
-            violations.append(f"OUT_OF_SCOPE: {f}")
-            continue
-
-        in_scope.append(f)
+    violations = [
+        f"{item['reason']}: {item['path']}"
+        for item in classified["classifications"]
+        if item["reason"] is not None
+    ]
+    in_scope = [
+        item["path"]
+        for item in classified["classifications"]
+        if item["reason"] is None
+    ]
 
     return {
         "compliant": len(violations) == 0,
         "violations": violations,
         "in_scope": in_scope,
+    }
+
+
+def classify_scope_paths(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    changed_files: list[str],
+) -> dict:
+    """Classify each changed file against the workflow scope manifest.
+
+    Returns:
+        {
+          "scope_found": bool,
+          "classifications": [
+              {"path": str, "reason": None | "FORBIDDEN" | "OUT_OF_SCOPE"}
+          ],
+          "in_scope": list[str],
+          "unexpected": list[{"path": str, "reason": str}],
+        }
+
+    This is the single workflow-scope classification authority. Callers that
+    need a boolean compliance verdict should use :func:`check_scope_compliance`,
+    which derives its return shape from this richer classification instead of
+    reimplementing the matching logic.
+    """
+    scope = get_scope(conn, workflow_id)
+    if scope is None:
+        classifications = [{"path": path, "reason": None} for path in changed_files]
+        return {
+            "scope_found": False,
+            "classifications": classifications,
+            "in_scope": list(changed_files),
+            "unexpected": [],
+        }
+
+    allowed = scope["allowed_paths"]
+    forbidden = scope["forbidden_paths"]
+    classifications: list[dict] = []
+    in_scope: list[str] = []
+    unexpected: list[dict] = []
+
+    for path in changed_files:
+        if any(fnmatch.fnmatch(path, pat) for pat in forbidden):
+            item = {"path": path, "reason": "FORBIDDEN"}
+            classifications.append(item)
+            unexpected.append(item)
+            continue
+
+        if allowed and not any(fnmatch.fnmatch(path, pat) for pat in allowed):
+            item = {"path": path, "reason": "OUT_OF_SCOPE"}
+            classifications.append(item)
+            unexpected.append(item)
+            continue
+
+        classifications.append({"path": path, "reason": None})
+        in_scope.append(path)
+
+    return {
+        "scope_found": True,
+        "classifications": classifications,
+        "in_scope": in_scope,
+        "unexpected": unexpected,
     }
 
 

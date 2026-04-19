@@ -2336,10 +2336,20 @@ def _handle_lifecycle(args) -> int:
 def _handle_statusline(args) -> int:
     conn = _get_conn()
     try:
-        snap = statusline_mod.snapshot(conn)
-        return _ok(snap)
+        if args.action == "snapshot":
+            snap = statusline_mod.snapshot(conn)
+            return _ok(snap)
+        if args.action == "hygiene":
+            from runtime.core.checkout_hygiene import classify_checkout_hygiene
+
+            result = classify_checkout_hygiene(
+                conn,
+                worktree_path=args.worktree_path,
+            )
+            return _ok(result)
     finally:
         conn.close()
+    return _err(f"unknown statusline action: {args.action}")
 
 
 def _handle_trace(args) -> int:
@@ -2613,6 +2623,23 @@ def _handle_workflow(args) -> int:
             except _json.JSONDecodeError as e:
                 return _err(f"invalid JSON in --changed: {e}")
             result = workflows_mod.check_scope_compliance(conn, args.workflow_id, changed)
+            return _ok(result)
+
+        elif args.action == "stage-packet":
+            from runtime.core.stage_packet import build_stage_packet as _build_stage_packet
+
+            try:
+                result = _build_stage_packet(
+                    conn,
+                    workflow_id=args.workflow_id,
+                    stage_id=args.stage_id,
+                    goal_id=getattr(args, "goal_id", None),
+                    work_item_id=getattr(args, "work_item_id", None),
+                    decision_scope=getattr(args, "decision_scope", "kernel"),
+                    generated_at=getattr(args, "generated_at", None),
+                )
+            except ValueError as e:
+                return _err(f"stage-packet: {e}")
             return _ok(result)
 
         elif args.action == "list":
@@ -4988,6 +5015,16 @@ def build_parser() -> argparse.ArgumentParser:
     sl_p = subparsers.add_parser("statusline", help="Runtime-backed statusline snapshot")
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
     sl_sub.add_parser("snapshot")
+    sl_h = sl_sub.add_parser(
+        "hygiene",
+        help="Classify checkout dirt into active, baseline, ephemeral, and unexpected buckets",
+    )
+    sl_h.add_argument(
+        "--worktree-path",
+        dest="worktree_path",
+        required=True,
+        help="Path to the git worktree whose dirt should be classified",
+    )
 
     # doc — hook-surface reference validation (Invariant #8,
     # DEC-DOC-REF-VALIDATION-001)
@@ -5128,6 +5165,21 @@ def build_parser() -> argparse.ArgumentParser:
     wf_scope_check = wf_sub.add_parser("scope-check", help="Check changed files against scope")
     wf_scope_check.add_argument("workflow_id")
     wf_scope_check.add_argument("--changed", default="[]", help="JSON array of changed file paths")
+
+    wf_stage_packet = wf_sub.add_parser(
+        "stage-packet",
+        help=(
+            "Return the canonical execution packet for a workflow stage: "
+            "dispatch contract, agent tool spec, contracts, scope, runtime state, "
+            "and canonical readback command forms."
+        ),
+    )
+    wf_stage_packet.add_argument("workflow_id")
+    wf_stage_packet.add_argument("--stage-id", dest="stage_id", required=True)
+    wf_stage_packet.add_argument("--goal-id", dest="goal_id", default=None)
+    wf_stage_packet.add_argument("--work-item-id", dest="work_item_id", default=None)
+    wf_stage_packet.add_argument("--decision-scope", dest="decision_scope", default="kernel")
+    wf_stage_packet.add_argument("--generated-at", dest="generated_at", type=int, default=None)
 
     wf_sub.add_parser("list", help="List all workflow bindings")
 

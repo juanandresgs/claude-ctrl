@@ -114,12 +114,26 @@ if (( total_tokens_int > 0 )) && [[ -n "$project_hash" && "$project_hash" != "un
     _cc tokens upsert "pid:${PPID:-$$}" "$project_hash" "$total_tokens_int" >/dev/null || true
 fi
 
-# Dirty count
+# Checkout hygiene — runtime-owned classification replaces raw git dirt counting.
 dirty=0
+active_slice_count=0
+baseline_tolerated_count=0
+unexpected_drift_count=0
 if [[ -n "${workspace_dir:-}" ]]; then
-    dirty=$(git -C "$workspace_dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || dirty=0
+    _hygiene=$(_cc statusline hygiene --worktree-path "$workspace_dir" 2>/dev/null || true)
+    if [[ -n "$_hygiene" ]]; then
+        dirty=$(printf '%s' "$_hygiene" | jq -r '.display_dirty_count // 0' 2>/dev/null) || dirty=0
+        active_slice_count=$(printf '%s' "$_hygiene" | jq -r '.active_slice_count // 0' 2>/dev/null) || active_slice_count=0
+        baseline_tolerated_count=$(printf '%s' "$_hygiene" | jq -r '.baseline_tolerated_count // 0' 2>/dev/null) || baseline_tolerated_count=0
+        unexpected_drift_count=$(printf '%s' "$_hygiene" | jq -r '.unexpected_drift_count // 0' 2>/dev/null) || unexpected_drift_count=0
+    else
+        dirty=$(git -C "$workspace_dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || dirty=0
+    fi
 fi
 [[ "${dirty:-0}" =~ ^[0-9]+$ ]] || dirty=0
+[[ "${active_slice_count:-0}" =~ ^[0-9]+$ ]] || active_slice_count=0
+[[ "${baseline_tolerated_count:-0}" =~ ^[0-9]+$ ]] || baseline_tolerated_count=0
+[[ "${unexpected_drift_count:-0}" =~ ^[0-9]+$ ]] || unexpected_drift_count=0
 
 # Extract snapshot fields (safe defaults when snapshot unavailable)
 eval_status="idle"
@@ -377,11 +391,25 @@ ansi_visible_width "$_s"; _p1_w_0=$_AVW; _p1_t_0="$_s"
 # P1.1: dirty + lines changed (priority 2, conditional)
 if (( dirty > 0 )); then
   total_lines_l1=$(( lines_add + lines_rm ))
+  _status_parts=()
+  if (( unexpected_drift_count > 0 )); then
+    _status_parts+=("$(printf '\033[31m%d drift\033[0m' "$unexpected_drift_count")")
+  fi
+  if (( active_slice_count > 0 )); then
+    _status_parts+=("$(printf '\033[33m%d active\033[0m' "$active_slice_count")")
+  fi
+  if (( baseline_tolerated_count > 0 )); then
+    _status_parts+=("$(printf '\033[2m%d baseline\033[0m' "$baseline_tolerated_count")")
+  fi
+  if (( ${#_status_parts[@]} == 0 )); then
+    _status_parts+=("$(printf '\033[31m%d uncommitted\033[0m' "$dirty")")
+  fi
+  _status_summary="${_status_parts[*]}"
   if (( total_lines_l1 > 0 )); then
-    _s=$(printf '\033[31m%d uncommitted\033[0m \033[32m+%d\033[0m/\033[31m-%d\033[0m \033[2mlines\033[0m' \
-      "$dirty" "$lines_add" "$lines_rm")
+    _s=$(printf '%s \033[32m+%d\033[0m/\033[31m-%d\033[0m \033[2mlines\033[0m' \
+      "$_status_summary" "$lines_add" "$lines_rm")
   else
-    _s=$(printf '\033[31m%d uncommitted\033[0m' "$dirty")
+    _s="$_status_summary"
   fi
   ansi_visible_width "$_s"; _p1_w_1=$_AVW; _p1_t_1="$_s"
 fi
