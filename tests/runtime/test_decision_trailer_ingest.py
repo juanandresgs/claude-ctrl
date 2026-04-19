@@ -364,3 +364,208 @@ class TestIngestCommit:
         assert all(r["action"] == "updated" for r in rows2)
         decisions2 = dwr.list_decisions(conn)
         assert len(decisions2) == 2  # still exactly 2
+
+
+# ---------------------------------------------------------------------------
+# TestTrailingContiguousTrailerBlock — DEC-CLAUDEX-DEC-TRAILER-INGEST-002
+# Regression tests for multi-paragraph trailer block walk (Slice 14R hotfix).
+# ---------------------------------------------------------------------------
+
+
+class TestTrailingContiguousTrailerBlock:
+    """Tests for the trailing-contiguous-block walk introduced by
+    DEC-CLAUDEX-DEC-TRAILER-INGEST-002.
+
+    These tests pin the motivating bug (decision trailer in a penultimate
+    trailer paragraph was dropped) and the guard against body-prose
+    false-positives, while confirming existing slice-13/14 shapes continue
+    to work correctly.
+    """
+
+    def test_decision_in_penultimate_trailer_paragraph_ingested(self):
+        """The motivating case (test 1): decision: in the penultimate trailer
+        paragraph must be extracted even when the final paragraph is a
+        Co-Authored-By: block.
+
+        Pre-fix: returns [].  Post-fix: returns ["DEC-A-001"].
+        """
+        msg = (
+            "Subject line\n"
+            "\n"
+            "Body prose paragraph.\n"
+            "\n"
+            "decision: DEC-A-001\n"
+            "Workflow: global-soak-main\n"
+            "\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == ["DEC-A-001"]
+
+    def test_multiple_decision_lines_in_same_penultimate_trailer_paragraph(self):
+        """Multiple decision: lines in the same penultimate trailer paragraph
+        are all extracted (test 2).
+        """
+        msg = (
+            "Subject\n"
+            "\n"
+            "Body.\n"
+            "\n"
+            "decision: DEC-A-001\n"
+            "decision: DEC-B-002\n"
+            "\n"
+            "Co-Authored-By: X <x@example.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == ["DEC-A-001", "DEC-B-002"]
+
+    def test_decisions_across_multiple_trailer_paragraphs(self):
+        """DEC-IDs spread across three trailing trailer paragraphs are all
+        collected (test 3).
+        """
+        msg = (
+            "Subject\n"
+            "\n"
+            "Body.\n"
+            "\n"
+            "decision: DEC-A-001\n"
+            "decision: DEC-B-002\n"
+            "\n"
+            "decision: DEC-C-003\n"
+            "\n"
+            "Co-Authored-By: X <x@example.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == ["DEC-A-001", "DEC-B-002", "DEC-C-003"]
+
+    def test_body_paragraph_with_trailer_shaped_prose_still_excluded(self):
+        """A body paragraph whose first line starts with a verb ("Added
+        decision: ...") does NOT match the pure-trailer-paragraph heuristic
+        because "Added" followed by a space does not satisfy the anchored
+        key-token form (key must be directly followed by colon, not by space
+        then another word).  Guards against Design-B drift (test 4).
+        """
+        msg = (
+            "Subject\n"
+            "\n"
+            "Added decision: DEC-BODY-999 per review discussion.\n"
+            "\n"
+            "decision: DEC-TRAILER-001\n"
+            "\n"
+            "Co-Authored-By: X <x@example.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == ["DEC-TRAILER-001"]
+        assert "DEC-BODY-999" not in result
+
+    def test_non_trailer_paragraph_before_trailer_block_stops_walk(self):
+        """A decision: trailer that sits BEFORE a prose paragraph is NOT
+        in the trailing contiguous block and must NOT be extracted (test 5).
+
+        The trailing contiguous block is: only Co-Authored-By: X (the final
+        paragraph).  The preceding paragraph is prose — walk stops.
+        DEC-ISOLATED-001 is in a paragraph further back, outside the block.
+        """
+        msg = (
+            "decision: DEC-ISOLATED-001\n"
+            "\n"
+            "Some prose paragraph.\n"
+            "\n"
+            "Co-Authored-By: X <x@example.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == []
+        assert "DEC-ISOLATED-001" not in result
+
+    def test_slice13_style_single_trailer_paragraph_still_works(self):
+        """Slice-13-style commit where all trailers including decision: live
+        in the single final paragraph (test 6).  Regression pin: the
+        backward walk must continue to correctly scan a single final trailer
+        paragraph with no preceding trailer paragraphs.
+        """
+        msg = (
+            "land: slice 13 decision digest projection\n"
+            "\n"
+            "Delivers the decision digest projection module that reads the\n"
+            "canonical decision registry and produces a human-readable view.\n"
+            "\n"
+            "decision: DEC-DISCIPLINE-REGISTRY-INVARIANT-COMPUTED-001\n"
+            "Workflow: global-soak-main\n"
+            "Work-item: slice13-implementer\n"
+            "Lease: abc123def456\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert "DEC-DISCIPLINE-REGISTRY-INVARIANT-COMPUTED-001" in result
+
+    def test_slice14_landing_shape_decision_now_extracted(self):
+        """The EXACT motivating repro: a slice-14-shaped message with
+        decision: DEC-CLAUDEX-DEC-TRAILER-INGEST-001 in the penultimate
+        trailer paragraph and Co-Authored-By: as the final paragraph (test 7).
+
+        Pre-fix: returns [].  Post-fix: returns the DEC-ID.
+        This is the canonical regression test for DEC-CLAUDEX-DEC-TRAILER-INGEST-002.
+        """
+        msg = (
+            "land: slice 14 decision trailer ingestion\n"
+            "\n"
+            "Delivers the commit-trailer ingestion path (layer 2 of the\n"
+            "three-layer decision-registry architecture) that extracts\n"
+            "Decision: DEC-* trailers from git commits and upserts them\n"
+            "into the canonical decisions table.\n"
+            "\n"
+            "decision: DEC-CLAUDEX-DEC-TRAILER-INGEST-001\n"
+            "Workflow: global-soak-main\n"
+            "Work-item: slice14-implementer\n"
+            "Lease: 0e8053abf3514ea6a777ac4d03d90238\n"
+            "\n"
+            "Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == ["DEC-CLAUDEX-DEC-TRAILER-INGEST-001"]
+
+    def test_only_co_authored_by_returns_empty(self):
+        """A commit whose only trailer is Co-Authored-By: (no decision:
+        anywhere) returns [] (test 8).
+        """
+        msg = (
+            "Fix a minor bug\n"
+            "\n"
+            "Addresses a small edge case in the configuration loader.\n"
+            "\n"
+            "Co-Authored-By: Alice <alice@example.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == []
+
+    def test_body_only_no_trailing_trailer_paragraph_returns_empty(self):
+        """Body-only commit with no trailing trailer paragraphs (recommended
+        test 9).
+        """
+        msg = (
+            "Subject\n"
+            "\n"
+            "Just body prose, no trailers at all."
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert result == []
+
+    def test_whitespace_continuation_line_in_trailer_paragraph_accepted(self):
+        """A trailer paragraph with a continuation line (indented with a
+        leading space) is still accepted as a pure trailer paragraph, and
+        the decision: trailer in the same paragraph is extracted (recommended
+        test 10).
+        """
+        msg = (
+            "Subject\n"
+            "\n"
+            "Body.\n"
+            "\n"
+            "Lease: abc123\n"
+            "  continuation-of-lease-value\n"
+            "decision: DEC-CONT-001\n"
+            "\n"
+            "Co-Authored-By: X <x@example.com>"
+        )
+        result = dti.parse_decision_trailers(msg)
+        assert "DEC-CONT-001" in result

@@ -24,12 +24,28 @@ Rationale: CUTOVER_PLAN lines 163-164 and 862-897 name three layers:
       ``runtime/cli.py`` (``cc-policy decision ingest-commit``).
     * No schema changes: the ``decisions`` table already has all
       required columns per DEC-CLAUDEX-DW-REGISTRY-001.
-    * Trailer parsing is conservative: only the LAST paragraph
-      (the git-trailer block) is scanned.  Mentions of ``DEC-*`` in
-      the commit body proper are NOT treated as decision trailers.
+    * Trailer parsing is conservative: only the TRAILING CONTIGUOUS BLOCK
+      of pure-trailer paragraphs is scanned (see DEC-CLAUDEX-DEC-TRAILER-INGEST-002
+      below).  Mentions of ``DEC-*`` in the commit body proper are NOT
+      treated as decision trailers.
     * Git subprocess access (``load_commit_message``) lives here so the
       pure parser (``parse_decision_trailers``) remains I/O-free and
       trivially testable without a real git repo.
+
+@decision DEC-CLAUDEX-DEC-TRAILER-INGEST-002
+Title: Extend trailer-block scanning to the trailing contiguous block of
+  pure trailer paragraphs, matching git interpret-trailers convention.
+Status: proposed (Slice 14R hotfix)
+Rationale: The strict-last-paragraph sub-rule of DEC-CLAUDEX-DEC-TRAILER-INGEST-001
+  caused ``decisions_ingested: 0`` for commits where the ``decision:`` trailer
+  lived in a penultimate trailer paragraph (e.g., slice-14's own landing commit
+  ``a0d60e3b`` has the ``decision:`` block separated by a blank line from the
+  ``Co-Authored-By:`` block). The fix walks backward from the end, collecting
+  every paragraph that is a pure trailer paragraph (all non-empty,
+  non-continuation lines match RFC-5322 key-token form), and stops at the first
+  non-trailer paragraph. This matches git's own ``interpret-trailers`` convention
+  and preserves all other constraints: single-writer discipline, shadow-only
+  ingestion, and body-prose exclusion.
 """
 
 from __future__ import annotations
@@ -63,6 +79,70 @@ _TRAILER_RE = re.compile(
 # the entire message is treated as the body (no trailer block).
 _BLANK_LINE_RE = re.compile(r"\n\s*\n")
 
+# Matches a single RFC-5322-style trailer line: a key token (starts with a
+# letter, followed by letters/digits/hyphens) then a colon, optional
+# whitespace, and a non-empty value.  Used by _is_pure_trailer_paragraph to
+# decide whether every non-empty, non-continuation line in a paragraph is
+# trailer-shaped.
+#
+# Conservative anchoring: the key token must begin with [A-Za-z] and contain
+# only [A-Za-z0-9-] before the colon.  This rejects lines like:
+#   "Added decision: DEC-X per review."  (starts with a capital verb, but
+#    the full line isn't key:value — there's prose after the colon)
+# while accepting:
+#   "decision: DEC-CLAUDEX-DEC-TRAILER-INGEST-001"
+#   "Co-Authored-By: Claude <noreply@anthropic.com>"
+#   "Workflow: global-soak-main"
+_TRAILER_LINE_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9-]*\s*:\s*\S.*$",
+)
+
+
+# ---------------------------------------------------------------------------
+# Pure parser helpers (no I/O)
+# ---------------------------------------------------------------------------
+
+
+def _is_pure_trailer_paragraph(para: str) -> bool:
+    """Return True iff every non-empty, non-continuation line in ``para``
+    matches the RFC-5322 trailer token shape (key: value).
+
+    A paragraph qualifies as a pure trailer paragraph when:
+    - It has at least one non-empty line.
+    - Its first non-empty line is a ``key: value`` line (not a continuation).
+    - EVERY non-empty line is either:
+        (a) a trailer key-value line matching ``_TRAILER_LINE_RE``, or
+        (b) a continuation line (starts with whitespace, belonging to the
+            preceding trailer value per git's continuation convention).
+
+    Empty paragraphs (all whitespace) return False to avoid collecting
+    spurious blank separators.
+
+    This helper is deliberately conservative: a single prose sentence
+    like "Fix: a long description of the fix" would pass the shape
+    check, but a typical body paragraph contains at least one line
+    without a colon or with a colon mid-prose that doesn't fit the
+    anchored key-token form, disqualifying the whole paragraph.
+    """
+    lines = para.splitlines()
+    non_empty_lines = [ln for ln in lines if ln.strip()]
+    if not non_empty_lines:
+        return False
+
+    # The first non-empty line must be a trailer line (not a continuation).
+    if not _TRAILER_LINE_RE.match(non_empty_lines[0]):
+        return False
+
+    # Every non-empty line must be either a trailer line or a continuation.
+    for ln in non_empty_lines:
+        is_continuation = ln and ln[0] in (" ", "\t")
+        if is_continuation:
+            continue
+        if not _TRAILER_LINE_RE.match(ln):
+            return False
+
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Pure parser (no I/O)
@@ -80,10 +160,16 @@ def parse_decision_trailers(message: str) -> list[str]:
     Returns a list of DEC-* IDs (deduplicated, order preserved from
     first appearance in the trailer block).
 
-    Only the LAST paragraph (the trailer block, the block of lines
-    after the final blank line) is scanned.  Occurrences of
-    ``decision: DEC-*`` in the commit subject or body paragraphs are
-    intentionally ignored to avoid false positives.
+    Scans the TRAILING CONTIGUOUS BLOCK of pure-trailer paragraphs.
+    Walking backward from the end of the message, every paragraph that
+    qualifies as a pure trailer paragraph (per ``_is_pure_trailer_paragraph``)
+    is included in the scan region.  The walk stops at the first paragraph
+    that is NOT a pure trailer paragraph (body prose, subject line, etc.).
+    This matches git's own ``interpret-trailers`` convention
+    (DEC-CLAUDEX-DEC-TRAILER-INGEST-002).
+
+    Occurrences of ``decision: DEC-*`` in the commit subject or body
+    paragraphs are intentionally ignored to avoid false positives.
 
     Edge cases:
       - Empty or whitespace-only message → []
@@ -95,13 +181,33 @@ def parse_decision_trailers(message: str) -> list[str]:
     if not message or not message.strip():
         return []
 
-    # Split on the LAST blank line to isolate the trailer block.
+    # Split into paragraphs on blank lines.
     parts = _BLANK_LINE_RE.split(message)
     if len(parts) < 2:
         # No blank line → no trailer block.
         return []
 
-    trailer_block = parts[-1]
+    # Walk backward collecting all trailing contiguous pure-trailer paragraphs.
+    # The last paragraph (parts[-1]) is ALWAYS included in the scan region to
+    # preserve pre-existing behavior for commits where the final paragraph mixes
+    # trailer and non-trailer lines (e.g., test_malformed_lines_ignored).
+    # From parts[-2] onward we require each paragraph to be a pure trailer
+    # paragraph; the walk stops at the first non-trailer paragraph.
+    # This handles commits with multiple trailing trailer paragraphs separated
+    # by blank lines (e.g., a decision:/Workflow: block followed by a blank
+    # line and a Co-Authored-By: block — the motivating slice-14 repro case).
+    trailer_paragraphs: list[str] = [parts[-1]]  # always include the last paragraph
+
+    # Walk backwards through the preceding paragraphs adding any that are
+    # pure trailer paragraphs (contiguous run only — stop at first non-trailer).
+    for para in reversed(parts[:-1]):
+        if _is_pure_trailer_paragraph(para):
+            trailer_paragraphs.insert(0, para)
+        else:
+            break  # First non-trailer paragraph terminates the trailing block.
+
+    # Concatenate all collected trailer paragraphs for a single regex scan.
+    trailer_block = "\n\n".join(trailer_paragraphs)
 
     seen: dict[str, None] = {}  # ordered-set via dict
     for match in _TRAILER_RE.finditer(trailer_block):
