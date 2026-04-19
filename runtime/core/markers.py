@@ -39,6 +39,44 @@ Rationale: Before W-CONV-2, get_active() returned the globally newest active
   lightweight agents from ever writing markers in the first place, but the
   cleanup migration in schemas.py handles accumulated ghost markers from
   before the filter was deployed.
+
+@decision DEC-CLAUDEX-HARNESS-AGENT-ID-SOLE-IDENTITY-AUTHORITY-001
+Title: One-active-marker-per-project-workflow invariant (Part A — supersede scope)
+Status: accepted
+Rationale: Bug A: set_active formerly scoped its supersede UPDATE by
+  (role, project_root, workflow_id). This left prior markers of OTHER roles
+  with is_active=1 in the same project+workflow. A new guardian:land seating
+  did NOT deactivate a prior reviewer or implementer marker for the same
+  workflow, causing multiple active markers to coexist. markers.get_active()
+  then returned whichever had the latest started_at — NOT necessarily the
+  live harness agent.
+
+  Fix (conditional supersede — two paths):
+
+  Path A — Scoped caller (project_root is not None): the supersede UPDATE
+  removes the `role = ?` discriminator, retaining only
+  (project_root, workflow_id, agent_id <> ?) as the scope. This enforces
+  the invariant: at most one active marker per (project_root, workflow_id)
+  at any time. Sequential dispatch — planner → guardian:provision →
+  implementer → reviewer → guardian:land — is the only production pattern
+  within a single workflow; each SubagentStart supersedes the prior stage's
+  marker for that workflow. This is the P1-relevant path: real harness
+  seating always provides project_root.
+
+  Path B — Unscoped caller (project_root is None AND workflow_id is None):
+  retains the legacy role-scoped supersede (`role = ?` is kept). Callers
+  such as statusline.py that do not supply a project context create
+  informational-only markers. Different roles in this context-less space are
+  intentionally independent — expire_stale must be able to age out old
+  markers without a newer different-role marker having already converted them
+  to 'replaced'. Keeping role-scoped supersede here preserves that behavior.
+
+  Multi-workflow independence is preserved: markers in the same project_root
+  but different workflow_ids are NOT superseded by each other, consistent
+  with the pre-existing test_markers.py scoping behaviour.
+
+  The INSERT/ON CONFLICT block (upsert semantics for same agent_id restarts)
+  is unchanged. Only the preceding supersede UPDATE WHERE clauses change.
 """
 
 from __future__ import annotations
@@ -76,21 +114,40 @@ def set_active(
                       Stored alongside project_root for fine-grained scoping.
     """
     now = int(time.time())
-    # Keep one live authority seat per (role, project_root, workflow_id) scope.
-    # Any older active marker in the same scope is deactivated as "replaced"
-    # before the new marker is upserted.
-    clauses = ["is_active = 1", "role = ?", "agent_id <> ?"]
-    params: list[object] = [role, agent_id]
-    if project_root is None:
+    # DEC-CLAUDEX-HARNESS-AGENT-ID-SOLE-IDENTITY-AUTHORITY-001 (Part A):
+    # Conditional supersede scope — see @decision block at top of module.
+    #
+    # Path A (project_root is not None — real harness seating): drop `role = ?`
+    # so the new stage supersedes ALL prior active markers for this
+    # project+workflow, regardless of role. Enforces the one-active-per-workflow
+    # invariant on the P1-relevant sequential dispatch chain.
+    #
+    # Path B (project_root is None AND workflow_id is None — legacy/statusline
+    # context-less callers): keep `role = ?` so different-role markers remain
+    # independent. expire_stale must still find and age out old-role markers
+    # when a newer different-role marker is present; converting them to
+    # 'replaced' here would hide them from expire_stale's 'active' filter.
+    clauses = ["is_active = 1", "agent_id <> ?"]
+    params: list[object] = [agent_id]
+    unscoped = project_root is None and workflow_id is None
+    if unscoped:
+        # Path B: legacy context-less caller — keep role-scoped supersede.
+        clauses.append("role = ?")
+        params.append(role)
         clauses.append("project_root IS NULL")
-    else:
-        clauses.append("project_root = ?")
-        params.append(project_root)
-    if workflow_id is None:
         clauses.append("workflow_id IS NULL")
     else:
-        clauses.append("workflow_id = ?")
-        params.append(workflow_id)
+        # Path A: scoped caller — project-scoped supersede (no role filter).
+        if project_root is None:
+            clauses.append("project_root IS NULL")
+        else:
+            clauses.append("project_root = ?")
+            params.append(project_root)
+        if workflow_id is None:
+            clauses.append("workflow_id IS NULL")
+        else:
+            clauses.append("workflow_id = ?")
+            params.append(workflow_id)
     where = " AND ".join(clauses)
     with conn:
         conn.execute(

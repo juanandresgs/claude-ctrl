@@ -17,6 +17,29 @@ Rationale: Marker activation and deactivation is a distinct concern from
   with agent identity tracking. The module is intentionally thin — all
   persistence is delegated to runtime.core.markers, which owns the
   agent_markers table.
+
+@decision DEC-CLAUDEX-HARNESS-AGENT-ID-SOLE-IDENTITY-AUTHORITY-001
+Title: Compound-stage equality via lease_role_for_stage canonicalization (Part B)
+Status: accepted
+Rationale: Bug B: on_stop_by_role compared active.get("role") (compound form,
+  e.g. "guardian:land") against agent_type (base short form, e.g. "guardian").
+  These are string-unequal, so the equality at line 135 never matched for
+  compound-stage dispatches. SubagentStop hooks (check-guardian.sh, etc.)
+  always call `cc-policy lifecycle on-stop guardian` with the base short form
+  because AGENT_TYPE in the SubagentStop payload is the harness-level agent_type
+  (short form), while subagent-start.sh seats the marker with the compound
+  stage_id from the CLAUDEX_CONTRACT_BLOCK (e.g. "guardian:land"). The
+  mismatch caused markers to accumulate as is_active=1 indefinitely.
+
+  Fix: canonicalize BOTH sides via authority_registry.lease_role_for_stage
+  before the equality compare. This function maps compound stages ("guardian:land",
+  "guardian:provision") to their base role ("guardian"), and returns the input
+  unchanged for base roles and simple stages. The `or <side>` fallback handles
+  the case where lease_role_for_stage returns None (e.g. plain "guardian" is not
+  in STAGE_CAPABILITIES, so None is returned; `or agent_type` preserves it).
+
+  This reuses the EXISTING canonical authority at authority_registry.py:672 —
+  no new primitive, no ad-hoc compound-stripping (no role.split(':')[0]).
 """
 
 from __future__ import annotations
@@ -24,6 +47,7 @@ from __future__ import annotations
 import sqlite3
 
 from runtime.core import markers
+from runtime.core.authority_registry import lease_role_for_stage
 
 
 def on_agent_start(
@@ -132,7 +156,23 @@ def on_stop_by_role(
         workflow_id:  Optional workflow_id to further scope within a project.
     """
     active = markers.get_active(conn, project_root=project_root, workflow_id=workflow_id)
-    if active is None or active.get("role") != agent_type:
+    if active is None:
+        return {"found": False, "deactivated": False, "agent_id": None, "role": None}
+    # DEC-CLAUDEX-HARNESS-AGENT-ID-SOLE-IDENTITY-AUTHORITY-001 (Part B):
+    # Canonicalize both sides via lease_role_for_stage before equality compare.
+    # The active marker stores the compound stage_id (e.g. "guardian:land")
+    # because subagent-start.sh uses _MARKER_ROLE="$_EFFECTIVE_STAGE_ID".
+    # SubagentStop hooks call `cc-policy lifecycle on-stop <agent_type>` with
+    # the base short form (e.g. "guardian"). Without canonicalization,
+    # "guardian:land" != "guardian" → found=False → no deactivation → accumulation.
+    # With canonicalization: both sides map to "guardian" → equal → deactivated.
+    # The `or <side>` fallback handles cases where lease_role_for_stage returns
+    # None (e.g. plain "guardian" is not in STAGE_CAPABILITIES; see authority_registry
+    # line ~681). No ad-hoc compound-stripping; authority_registry is the sole canonicalizer.
+    active_role = active.get("role") or ""
+    canonical_active = lease_role_for_stage(active_role) or active_role
+    canonical_agent = lease_role_for_stage(agent_type) or agent_type
+    if canonical_active != canonical_agent:
         return {"found": False, "deactivated": False, "agent_id": None, "role": None}
     agent_id = active["agent_id"]
     markers.deactivate(conn, agent_id)
