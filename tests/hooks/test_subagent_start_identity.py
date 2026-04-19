@@ -266,10 +266,12 @@ class TestMarkerUsesPayloadAgentId:
         assert rc == 0, f"Hook exited {rc}; stderr={stderr!r}"
 
         # Inspect agent_markers for the expected row.
-        # Note: ensure_schema's cleanup migration deactivates stage-qualified roles
-        # like 'guardian:land' (only base roles 'guardian', 'implementer', 'planner',
-        # 'reviewer' are whitelisted). The core invariant tested here is that the
-        # agent_id field carries the payload value — not that is_active=1.
+        # GS1-F-4 (DEC-CONV-002-AMEND-001): the is_active=1 assertion was
+        # previously omitted because ensure_schema's cleanup UPDATE wiped
+        # compound-stage roles like 'guardian:land' (hardcoded 4-role whitelist).
+        # That bug is now fixed — _MARKER_ACTIVE_ROLES derives from ACTIVE_STAGES
+        # and includes all compound-stage roles. This assertion is now a true
+        # regression gate: if is_active=0, the GS1-F-4 fix has regressed.
         conn = _open_db(db_path)
         try:
             row = conn.execute(
@@ -294,6 +296,15 @@ class TestMarkerUsesPayloadAgentId:
         # not a PID-shaped string.
         assert row["agent_id"] == payload_agent_id, (
             f"Expected agent_id={payload_agent_id!r}, got {row['agent_id']!r}"
+        )
+        # GS1-F-4 regression gate: is_active must remain 1 after hook seating.
+        # If this fails, ensure_schema's cleanup UPDATE is again wiping
+        # compound-stage roles. See DEC-CONV-002-AMEND-001 in runtime/schemas.py.
+        assert row["is_active"] == 1, (
+            f"Expected is_active=1 for {_STAGE_ID!r} marker after hook seating, "
+            f"got is_active={row['is_active']!r}. GS1-F-4 regression: "
+            f"ensure_schema cleanup wiped the compound-stage marker. "
+            f"Check _MARKER_ACTIVE_ROLES in runtime/schemas.py."
         )
 
         # No PID-shaped row should have been written.
@@ -494,11 +505,11 @@ class TestStalePreviousRoleMarkerIsolated:
 
         conn = _open_db(db_path)
         try:
-            # Guardian:land marker must now exist.
-            # Note: ensure_schema cleanup deactivates stage-qualified roles like
-            # 'guardian:land' (not in the base-role whitelist), so we query without
-            # the is_active filter. The key invariant is that the row was written
-            # with the correct agent_id.
+            # Guardian:land marker must now exist and remain active.
+            # GS1-F-4 (DEC-CONV-002-AMEND-001): the is_active=1 filter was
+            # previously omitted because ensure_schema's cleanup UPDATE wiped
+            # compound-stage roles. That bug is fixed — guardian:land is now in
+            # _MARKER_ACTIVE_ROLES. If is_active=0 here, the fix has regressed.
             guardian_row = conn.execute(
                 "SELECT * FROM agent_markers WHERE agent_id = ?",
                 (guardian_payload_id,),
@@ -528,6 +539,11 @@ class TestStalePreviousRoleMarkerIsolated:
         )
         assert guardian_row["role"] == _STAGE_ID
         assert guardian_row["agent_id"] == guardian_payload_id
+        # GS1-F-4 regression gate: is_active must remain 1 after hook seating.
+        assert guardian_row["is_active"] == 1, (
+            f"guardian:land marker was deactivated by ensure_schema cleanup. "
+            f"GS1-F-4 regression: check _MARKER_ACTIVE_ROLES in runtime/schemas.py."
+        )
 
         # Stale marker should still exist (observatory-only sweep).
         assert reviewer_row is not None, (

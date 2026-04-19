@@ -16,6 +16,34 @@ from __future__ import annotations
 
 import sqlite3
 
+from runtime.core.stage_registry import ACTIVE_STAGES
+
+# ---------------------------------------------------------------------------
+# Marker cleanup whitelist — derived from the single authority (stage_registry)
+#
+# @decision DEC-CONV-002-AMEND-001
+# Title: _MARKER_ACTIVE_ROLES derives from stage_registry.ACTIVE_STAGES
+# Status: accepted
+# Rationale: The original DEC-CONV-002 cleanup UPDATE used a hardcoded 4-role
+#   whitelist ('planner','implementer','reviewer','guardian'). This excluded
+#   compound-stage roles like 'guardian:land' and 'guardian:provision', causing
+#   every SubagentStart that correctly seated a compound-stage marker to have
+#   it silently wiped on the very next CLI invocation (since every _get_conn()
+#   triggers ensure_schema()). Root cause confirmed in GS1-F-4 (global-soak-main).
+#
+#   Fix: derive the whitelist from runtime.core.stage_registry.ACTIVE_STAGES —
+#   the declared single authority for dispatch-significant roles (DEC-CLAUDEX-
+#   STAGE-REGISTRY-001). The bare "guardian" string is retained in the union for
+#   backward compatibility with legacy statusline seeders and test helpers that
+#   write bare-role markers; a follow-up cleanup slice will remove it once those
+#   callers are migrated to compound-stage form.
+#
+#   Any future addition to ACTIVE_STAGES automatically propagates here —
+#   making architectural divergence mechanically difficult (CLAUDE.md
+#   "Architecture Preservation").
+# ---------------------------------------------------------------------------
+_MARKER_ACTIVE_ROLES: frozenset = frozenset(ACTIVE_STAGES) | {"guardian"}
+
 # ---------------------------------------------------------------------------
 # DDL — one constant per table so callers can reference individual statements
 # ---------------------------------------------------------------------------
@@ -1007,19 +1035,24 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         #   were returned by get_active() as the "newest active" marker, silently
         #   overriding the real implementer/reviewer/guardian role. The cleanup
         #   runs every time ensure_schema() is called (idempotent: rows already
-        #   stopped are not touched). Dispatch-significant roles are whitelisted;
+        #   stopped are not touched). Dispatch-significant roles are whitelisted
+        #   via _MARKER_ACTIVE_ROLES (see module-level DEC-CONV-002-AMEND-001);
         #   everything else is deactivated with status='stopped'. Phase 8
         #   Slice 11 removed the legacy ``tester`` role from the retained set —
         #   stale tester markers are now deactivated on ensure_schema().
+        #   GS1-F-4 (DEC-CONV-002-AMEND-001) replaced the hardcoded 4-role
+        #   whitelist with the dynamic _MARKER_ACTIVE_ROLES derived from
+        #   stage_registry.ACTIVE_STAGES so compound-stage roles like
+        #   'guardian:land' and 'guardian:provision' survive the cleanup.
+        _placeholders = ",".join("?" * len(_MARKER_ACTIVE_ROLES))
         conn.execute(
-            """
-            UPDATE agent_markers
-            SET    is_active  = 0,
-                   status     = 'stopped',
-                   stopped_at = COALESCE(stopped_at, CAST(strftime('%s', 'now') AS INTEGER))
-            WHERE  is_active  = 1
-              AND  role NOT IN ('planner', 'implementer', 'reviewer', 'guardian')
-            """
+            f"UPDATE agent_markers "
+            f"SET    is_active  = 0, "
+            f"       status     = 'stopped', "
+            f"       stopped_at = COALESCE(stopped_at, CAST(strftime('%s', 'now') AS INTEGER)) "
+            f"WHERE  is_active  = 1 "
+            f"  AND  role NOT IN ({_placeholders})",
+            tuple(sorted(_MARKER_ACTIVE_ROLES)),
         )
 
         # Seed enforcement_config global defaults if not yet present.
