@@ -935,7 +935,14 @@ class TestDriftCheck:
         assert result["status"] == "ok"
 
     def test_drift_check_missing_from_commits(self, git_repo_range, conn):
-        """Registry has DEC-Z not in any commit in range → missing_from_commits populated."""
+        """Registry has DEC-Z not in any commit in range → missing_from_commits informational.
+
+        Under Option B (DEC-CLAUDEX-DEC-DRIFT-CHECK-002), missing_from_commits
+        is purely informational and does NOT affect aligned.  aligned=True
+        because all trailer-DECs in the range ARE present in the registry.
+        DEC-EXTRA-001 appears in missing_from_commits to signal that the registry
+        has a DEC not witnessed in this scan range (expected for subset scans).
+        """
         repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
         # Populate registry with known DECs plus an extra DEC-EXTRA-001.
         for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002", "DEC-EXTRA-001"):
@@ -945,7 +952,10 @@ class TestDriftCheck:
             ))
         range_spec = f"{sha_0}..{sha_c}"
         result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
-        assert result["aligned"] is False
+        # Under Option B: missing_from_commits is informational; aligned is driven
+        # solely by missing_from_registry (which is empty here → aligned=True).
+        assert result["aligned"] is True
+        assert result["missing_from_registry"] == []
         assert "DEC-EXTRA-001" in result["missing_from_commits"]
         assert result["status"] == "ok"
 
@@ -978,9 +988,15 @@ class TestDriftCheck:
                 conn, "nonexistent_ref_xyz..HEAD", worktree_path=str(repo)
             )
 
-    def test_drift_check_out_of_range_registry_ignored(self, git_repo_range, conn):
-        """Registry DEC from a commit OUTSIDE the scan range is not flagged as missing_from_commits
-        when the range is scoped to a subset of commits where that DEC appears."""
+    def test_drift_check_out_of_range_registry_informational_only(self, git_repo_range, conn):
+        """A DEC whose provenance commit lies outside the scan range appears in
+        the informational missing_from_commits set but MUST NOT drive aligned to False.
+
+        Under Option B (DEC-CLAUDEX-DEC-DRIFT-CHECK-002): aligned is True iff
+        every DEC in commit-trailer evidence within the scan range is present in
+        the registry.  DECs from out-of-scope commits appear in missing_from_commits
+        as an informational diagnostic, never as an alarm signal.
+        """
         repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
         # DEC-RANGE-C-001 and C-002 come from sha_c.
         # If we only scan sha_0..sha_a (just sha_a), those DECs are from outside the range.
@@ -992,14 +1008,16 @@ class TestDriftCheck:
         # Scan only sha_0..sha_a = just sha_a → trailer: DEC-RANGE-A-001
         range_spec = f"{sha_0}..{sha_a}"
         result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
-        # DEC-RANGE-A-001 is in both trailer and registry → not in either diff list
+        # DEC-RANGE-A-001 is in both trailer and registry → not in either diff list.
         assert "DEC-RANGE-A-001" not in result["missing_from_registry"]
         # DEC-RANGE-C-001 and C-002 are in the registry but not in this scan range.
-        # They WILL appear in missing_from_commits (informational/scoped).
+        # They appear in missing_from_commits as informational diagnostics.
         assert "DEC-RANGE-C-001" in result["missing_from_commits"]
         assert "DEC-RANGE-C-002" in result["missing_from_commits"]
-        # No alarm (missing_from_registry is empty), but aligned=False because missing_from_commits.
+        # missing_from_registry is empty → no real drift within the scanned range.
         assert result["missing_from_registry"] == []
+        # KEY Option B assertion: out-of-scope registry DECs MUST NOT cause aligned=False.
+        assert result["aligned"] is True
 
     def test_drift_check_read_only_no_mutation(self, git_repo_range, conn):
         """Registry row count before + after drift_check → unchanged."""
@@ -1187,3 +1205,98 @@ class TestDriftCheck:
         assert result2["missing_from_registry"] == []
         assert result2["missing_from_commits"] == []
         assert result2["commits_scanned"] == 3
+
+    # ------------------------------------------------------------------
+    # Option B (DEC-CLAUDEX-DEC-DRIFT-CHECK-002) subset-range tests.
+    # These tests explicitly exercise partial-range semantics introduced
+    # in Slice 16R hotfix.  They are required by the evaluation contract
+    # for work item slice16R-hotfix.
+    # ------------------------------------------------------------------
+
+    def test_drift_check_subset_range_aligned_when_trailers_all_registered(
+        self, git_repo_range, conn
+    ):
+        """Subset range: last 2 commits with all trailer DECs registered → aligned=True.
+
+        Registry contains DECs from ALL commits (including commits before the
+        scan range).  Under Option B, missing_from_commits will contain the
+        older DECs (informational only); aligned must be True because every
+        in-range trailer DEC is present in the registry.
+        """
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Register all known DECs including ones from sha_a (outside subset range below).
+        for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002"):
+            dwr.upsert_decision(conn, dwr.DecisionRecord(
+                decision_id=dec_id, title=dec_id, status="proposed",
+                rationale="test", version=1, author="t", scope="kernel",
+            ))
+        # Scan sha_a..sha_c = sha_b and sha_c only (sha_a excluded as the base).
+        # sha_b has no trailers; sha_c has DEC-RANGE-C-001 and DEC-RANGE-C-002.
+        # DEC-RANGE-A-001 (from sha_a, outside this range) is in the registry
+        # but NOT in any in-range trailer → appears in missing_from_commits.
+        range_spec = f"{sha_a}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+
+        # In-range trailers (sha_c) are all registered → no alarm.
+        assert result["missing_from_registry"] == []
+        # Option B: aligned is True even though missing_from_commits is non-empty.
+        assert result["aligned"] is True
+        # DEC-RANGE-A-001 is out-of-range; informational presence in missing_from_commits.
+        assert "DEC-RANGE-A-001" in result["missing_from_commits"]
+        # In-range DECs are NOT missing from commits.
+        assert "DEC-RANGE-C-001" not in result["missing_from_commits"]
+        assert "DEC-RANGE-C-002" not in result["missing_from_commits"]
+        assert result["status"] == "ok"
+
+    def test_drift_check_subset_range_drift_when_trailer_missing_from_registry(
+        self, git_repo_range, conn
+    ):
+        """Subset range: a commit in range has a DEC trailer NOT in registry → aligned=False.
+
+        This verifies that the Option B fix does not suppress real drift:
+        missing_from_registry is still the alarm signal and correctly drives
+        aligned=False when there is a genuine registry gap.
+        """
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Only DEC-RANGE-A-001 is registered; DEC-RANGE-C-001 and C-002 are not.
+        dwr.upsert_decision(conn, dwr.DecisionRecord(
+            decision_id="DEC-RANGE-A-001", title="DEC-RANGE-A-001", status="proposed",
+            rationale="test", version=1, author="t", scope="kernel",
+        ))
+        # Scan sha_0..sha_c = sha_a, sha_b, sha_c.
+        # sha_c carries DEC-RANGE-C-001 and DEC-RANGE-C-002 which are NOT registered.
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+
+        # Real drift: in-range trailer DECs missing from registry.
+        assert "DEC-RANGE-C-001" in result["missing_from_registry"]
+        assert "DEC-RANGE-C-002" in result["missing_from_registry"]
+        # aligned=False because missing_from_registry is non-empty (genuine drift).
+        assert result["aligned"] is False
+        assert result["status"] == "ok"
+
+    def test_drift_check_full_range_aligned(self, git_repo_range, conn):
+        """Full-history range with all trailers registered → aligned=True, both diff lists empty.
+
+        Confirms the Option B unified rule degenerates correctly for the full-range
+        case: when the entire history is scanned against a properly backfilled
+        registry, missing_from_commits is empty and aligned=True (same as before).
+        """
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Register all known DECs.
+        for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002"):
+            dwr.upsert_decision(conn, dwr.DecisionRecord(
+                decision_id=dec_id, title=dec_id, status="proposed",
+                rationale="test", version=1, author="t", scope="kernel",
+            ))
+        # Full range from the root commit.
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+
+        assert result["aligned"] is True
+        assert result["missing_from_registry"] == []
+        # Full range → all in-range trailers are accounted for in registry;
+        # missing_from_commits is empty (all registry DECs appear in trailers).
+        assert result["missing_from_commits"] == []
+        assert result["commits_scanned"] == 3
+        assert result["status"] == "ok"

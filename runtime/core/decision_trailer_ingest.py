@@ -585,27 +585,31 @@ def drift_check(
             ],
         }
 
-    Alignment semantics:
+    Alignment semantics (Option B — DEC-CLAUDEX-DEC-DRIFT-CHECK-002):
 
     * ``missing_from_registry``: DEC-IDs found in any trailer within
       ``range_spec`` but absent from the ``decisions`` table (full registry).
-      This is the primary alarm signal.  Always globally meaningful for the
-      scan range.
+      This is the **primary alarm signal** and the sole driver of ``aligned``.
+      Always globally meaningful for the scan range: a trailer-DEC absent from
+      the registry is definitively a consistency violation regardless of range.
 
     * ``missing_from_commits``: DEC-IDs present in the ``decisions`` table
       (full registry) that are NOT found in any trailer within ``range_spec``.
-      This is *scoped* to the scan range — a DEC in the registry from a
-      commit OUTSIDE the range is not a bug; it is expected.  Consumers
-      who want strict global enforcement should scan the full history
-      (``--range <root>..HEAD``).  Documented as ``scope_note`` in the
-      payload.
+      This is purely **informational** — it is scoped to the scan range.  A
+      DEC in the registry whose provenance commit lies OUTSIDE the scan range
+      will appear here; this is expected and is NOT a drift condition.
+      Consumers wanting strict global enforcement should use a full-history
+      range (``--range <root>..HEAD``).  Registry-phantom detection (DECs in
+      the registry with no commit evidence anywhere in full history) is NOT
+      supported by this function — it requires a provenance-sha column in the
+      registry schema, which is deferred to a future slice.
 
-    * ``aligned = True`` iff BOTH ``missing_from_registry`` and
-      ``missing_from_commits`` are empty.  Exception: when
-      ``commits_scanned == 0`` (empty range), ``aligned`` evaluates to
-      ``True`` if and only if ``missing_from_registry`` is empty, regardless
-      of ``missing_from_commits``, because no scan-range evidence exists to
-      compare against.  This prevents false negatives on empty ranges.
+    * ``aligned = True`` iff ``missing_from_registry`` is empty, i.e., every
+      DEC appearing in commit-trailer evidence within the scan range is present
+      in the decision registry.  ``missing_from_commits`` does NOT participate
+      in the alignment decision — it is informational only.  This rule applies
+      uniformly to both empty and non-empty ranges; the previous empty-range
+      branch is now a stylistic no-op under the unified rule.
 
     Raises ``ValueError`` on invalid range (same semantics as
     ``ingest_range`` / ``_resolve_revision_range``).
@@ -626,6 +630,22 @@ def drift_check(
       zero new upsert_decision call sites; single-writer discipline
       (DEC-CLAUDEX-DW-REGISTRY-001) is preserved because this function
       never writes to the DB.
+
+    @decision DEC-CLAUDEX-DEC-DRIFT-CHECK-002
+    Title: aligned is defined solely by missing_from_registry (Option B)
+    Status: accepted (Phase 7 Slice 16R — partial-range alignment fix)
+    Rationale: The slice-16 conjunction `aligned = (missing_from_registry
+      == [] AND missing_from_commits == [])` produced false drift alarms on
+      subset-range scans because missing_from_commits is computed against the
+      full unfiltered registry — historical DECs outside the range appear as
+      "missing from commits" even though they are simply out of scope.  Option
+      B drops the asymmetric conjunction: aligned is True iff every in-range
+      trailer DEC is reflected in the registry.  missing_from_commits is
+      retained as an informational diagnostic.  Option A (filter registry by
+      provenance SHA) was rejected because the decisions table has no
+      provenance-sha column (runtime/core/decision_work_registry.py,
+      DecisionRecord, _DECISION_COLUMNS) and both decision_work_registry.py
+      and runtime/schemas.py are forbidden paths for this hotfix slice.
     """
     # Function-scope import of the read-only registry helper.
     # Module-scope import of decision_work_registry is banned per
@@ -661,14 +681,17 @@ def drift_check(
     missing_from_registry = sorted(trailer_set - registry_set)
     missing_from_commits = sorted(registry_set - trailer_set)
 
-    # Step 5: Determine alignment.  Empty-range edge case: when no commits
-    # were scanned, ``missing_from_commits`` equals the full registry
-    # (informational, not an alarm).  ``aligned`` evaluates only on
-    # ``missing_from_registry`` for empty ranges to avoid false negatives.
-    if len(shas) == 0:
-        aligned = len(missing_from_registry) == 0
-    else:
-        aligned = len(missing_from_registry) == 0 and len(missing_from_commits) == 0
+    # Step 5: Determine alignment (Option B — DEC-CLAUDEX-DEC-DRIFT-CHECK-002).
+    # aligned is True iff every DEC in commit-trailer evidence within the
+    # scan range is present in the decision registry.
+    # missing_from_commits is informational only and does NOT affect aligned:
+    #   - For subset-range scans, out-of-scope historical DECs appear here
+    #     naturally and are NOT drift conditions.
+    #   - For full-history scans against a backfilled registry,
+    #     missing_from_commits will be empty.
+    # The empty-range branch is a no-op under this unified rule (both paths
+    # evaluate to len(missing_from_registry) == 0) and is collapsed for clarity.
+    aligned = len(missing_from_registry) == 0
 
     return {
         "range": range_spec,
@@ -681,9 +704,13 @@ def drift_check(
         "status": "ok",
         "commit_provenance": commit_provenance,
         "scope_note": (
-            "missing_from_commits is scoped to the scan range; "
-            "DECs in the registry from commits outside the range are "
-            "not alarm signals — use a full-history range to enforce "
-            "globally."
+            "missing_from_commits is informational only (Option B semantics, "
+            "DEC-CLAUDEX-DEC-DRIFT-CHECK-002): DECs in the registry whose "
+            "provenance commits lie outside the scan range appear here as "
+            "expected — they are NOT drift conditions. aligned=True means "
+            "every DEC trailer found in the scanned commits is present in "
+            "the registry. For global enforcement, use a full-history range. "
+            "Registry-phantom detection (DECs with no commit evidence) "
+            "requires provenance-sha in the registry schema (future slice)."
         ),
     }
