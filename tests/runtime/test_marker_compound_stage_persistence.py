@@ -47,6 +47,8 @@ from runtime.core.db import connect_memory  # noqa: E402
 from runtime.schemas import ensure_schema, _MARKER_ACTIVE_ROLES  # noqa: E402
 from runtime.core import markers  # noqa: E402
 from runtime.core.stage_registry import ACTIVE_STAGES  # noqa: E402
+from runtime.core.policy_engine import build_context  # noqa: E402
+from runtime.core.authority_registry import CAN_LAND_GIT  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -417,3 +419,80 @@ def test_cleanup_whitelist_derives_from_active_stages() -> None:
         )
 
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 7: guardian:land marker grants CAN_LAND_GIT via build_context
+# (GS1-F-5 — compound-stage → can_land_git capability lock)
+# ---------------------------------------------------------------------------
+
+
+def test_guardian_land_marker_grants_can_land_git_capability(tmp_path: Path) -> None:
+    """GS1-F-5: seated guardian:land marker must yield CAN_LAND_GIT in PolicyContext.
+
+    Authority chain verified:
+      marker (guardian:land) → build_context → PolicyContext.capabilities ⊇ {CAN_LAND_GIT}
+
+    This is the load-bearing invariant consumed by bash_git_who when it checks
+    whether the active actor holds can_land_git before allowing git landing ops.
+
+    Production sequence replicated here:
+      1. SubagentStart hook calls cc-policy dispatch agent-start guardian:land <id>
+         (subprocess via _run_cli — same path as production).
+      2. Policy engine resolves DB state → PolicyContext via build_context().
+      3. ctx.capabilities must contain CAN_LAND_GIT — proves the compound stage
+         routing from authority_registry.capabilities_for('guardian:land') is wired.
+
+    Stash-and-rerun proof: stashing the GS1-F-4 fix (schemas.py _MARKER_ACTIVE_ROLES)
+    causes ensure_schema() cleanup to wipe guardian:land from the DB before
+    build_context() queries it → ctx.actor_role resolves to '' → no capabilities →
+    CAN_LAND_GIT assertion fails. This confirms the test is a live regression gate.
+    """
+    db_path = tmp_path / "test.db"
+    agent_id = "gs1-f5-guardian-land-cap"
+    project_root = str(_REPO_ROOT)
+
+    # Step 1: seat the guardian:land marker via subprocess (production path)
+    rc, _ = _run_cli(
+        ["dispatch", "agent-start", "guardian:land", agent_id,
+         "--project-root", project_root, "--workflow-id", "wf-gs1-f5-cap"],
+        db_path=db_path,
+    )
+    assert rc == 0, f"agent-start failed for guardian:land"
+
+    # Step 2: open a fresh connection, run ensure_schema (cleanup round-trip),
+    # then call build_context() — the real production path for policy resolution.
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)  # triggers cleanup UPDATE — marker must survive (GS1-F-4)
+
+        ctx = build_context(
+            conn,
+            cwd=project_root,
+            actor_role="",
+            actor_id="",
+            project_root=project_root,
+        )
+
+        # Canonical compound stage must be preserved through the full resolution chain
+        assert ctx.actor_role == "guardian:land", (
+            f"Expected actor_role='guardian:land', got {ctx.actor_role!r}. "
+            "Marker was likely wiped by ensure_schema cleanup (GS1-F-4 regression) "
+            "or capabilities_for() failed to map the compound stage."
+        )
+
+        # Load-bearing assertion: CAN_LAND_GIT in capabilities (GS1-F-5)
+        assert CAN_LAND_GIT in ctx.capabilities, (
+            f"guardian:land actor does not hold CAN_LAND_GIT capability. "
+            f"Got capabilities: {ctx.capabilities!r}. "
+            "Check authority_registry.capabilities_for('guardian:land') includes can_land_git."
+        )
+
+        # Identity tie: capability is bound to the specific seated agent
+        assert ctx.actor_id == agent_id, (
+            f"Expected actor_id={agent_id!r}, got {ctx.actor_id!r}. "
+            "Marker resolution returned wrong agent identity."
+        )
+    finally:
+        conn.close()
