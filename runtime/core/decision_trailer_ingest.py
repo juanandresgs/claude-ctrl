@@ -388,3 +388,154 @@ def ingest_commit(
         results.append({"decision_id": dec_id, "sha": sha, "action": action})
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Range resolver (private helper)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_revision_range(
+    range_spec: str,
+    worktree_path: str | None = None,
+) -> list[str]:
+    """Return the list of SHAs in ``range_spec``, oldest-first.
+
+    Calls ``git rev-list --reverse <range_spec>`` via a list-form
+    subprocess (no ``shell=True``) so the range spec is never
+    subject to shell interpolation.
+
+    Returns an empty list when the range resolves to zero commits
+    (e.g., ``HEAD..HEAD``).
+
+    Raises ``ValueError`` when git reports an error (unknown ref,
+    ambiguous name, invalid syntax) with the git stderr preserved
+    in the message.
+
+    ``worktree_path`` defaults to the current working directory
+    when ``None``.
+    """
+    cmd = ["git", "rev-list", "--reverse", range_spec]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        cwd=worktree_path,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise ValueError(
+            f"git rev-list failed for range {range_spec!r}: "
+            f"{stderr or '(no stderr)'}"
+        )
+    shas = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return shas
+
+
+# ---------------------------------------------------------------------------
+# Range ingestion orchestrator
+# ---------------------------------------------------------------------------
+
+
+def ingest_range(
+    conn: sqlite3.Connection,
+    range_spec: str,
+    worktree_path: str | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Ingest decision trailers from every commit in ``range_spec``.
+
+    ``range_spec`` uses git rev-list syntax (e.g., ``"A..B"`` for
+    exclusive A, inclusive B; a single SHA means just that commit;
+    branch names are resolved by git).
+
+    Iterates oldest → newest via ``git rev-list --reverse <range_spec>``.
+    For each SHA, calls ``load_commit_message`` and then ``ingest_commit``
+    and aggregates results.
+
+    When ``dry_run=True``, loads and parses each commit message but does
+    NOT call ``ingest_commit`` (i.e., nothing is written to the database).
+    Returns a payload shaped identically to the live path, with
+    ``decisions_ingested=0`` and ``rows=[]`` so callers can inspect
+    what *would* be ingested.
+
+    Returns::
+
+        {
+            "range": range_spec,
+            "commits_scanned": N,
+            "decisions_ingested": total_ingested,
+            "rows": [
+                {"sha": sha, "decision_id": dec, "action": "inserted"|"updated"},
+                ...
+            ],
+            "dry_run": bool,
+            "status": "ok"
+        }
+
+    On range resolution failure (invalid SHA, empty range): raises
+    ``ValueError`` with the git stderr preserved so callers (the CLI
+    handler) can surface a structured error.
+
+    Idempotency: re-running against the same range yields
+    ``"action": "updated"`` for already-ingested DECs; the registry
+    accumulates no duplicates (inherited from ``ingest_commit``
+    idempotency).
+
+    @decision DEC-CLAUDEX-DEC-INGEST-BACKFILL-001
+    Title: ingest_range is the canonical batch backfill surface for
+      commit-trailer decisions; it is a PURE ORCHESTRATOR over ingest_commit
+      and introduces zero new upsert_decision call sites.
+    Status: proposed (Phase 7 Slice 15 — batch backfill)
+    Rationale: CUTOVER_PLAN §"Decision and Work Record Architecture"
+      lines 862-865 names git commit trailers as landed evidence (layer 2).
+      Slices 14/14R delivered the per-SHA ingestion primitive
+      (ingest_commit).  Slice 15 converts that primitive into operational
+      authority value by making single-command batch backfill possible, so
+      the registry on a deployable machine reflects landed git history
+      without operator shell scripting.
+      Design constraint: NO new direct upsert_decision call sites.
+      ingest_range calls ingest_commit exclusively, preserving
+      single-writer discipline (DEC-CLAUDEX-DW-REGISTRY-001).
+    """
+    # Resolve the SHA list.  Raises ValueError on git failure.
+    shas = _resolve_revision_range(range_spec, worktree_path)
+
+    if not shas:
+        return {
+            "range": range_spec,
+            "commits_scanned": 0,
+            "decisions_ingested": 0,
+            "rows": [],
+            "dry_run": dry_run,
+            "status": "ok",
+        }
+
+    all_rows: list[dict] = []
+
+    for sha in shas:
+        # Load commit metadata — raises ValueError on git failure for a
+        # specific SHA (propagated to the caller so the partial-results
+        # state is visible in the error).
+        message, author, committed_at = load_commit_message(sha, worktree_path)
+
+        if dry_run:
+            # Dry-run: parse only; do NOT call ingest_commit (no DB write).
+            # The returned rows list stays empty for dry-run mode.
+            # We still iterate all SHAs so commits_scanned is accurate.
+            continue
+
+        # Live path: delegate to the single-writer path.
+        # NO direct upsert_decision call; only ingest_commit is called.
+        rows = ingest_commit(conn, sha, message, author, committed_at)
+        all_rows.extend(rows)
+
+    return {
+        "range": range_spec,
+        "commits_scanned": len(shas),
+        "decisions_ingested": len(all_rows),
+        "rows": all_rows,
+        "dry_run": dry_run,
+        "status": "ok",
+    }

@@ -353,3 +353,200 @@ class TestIngestCommitCLI:
             db_path,
         )
         assert payload.get("sha") == sha
+
+
+# ---------------------------------------------------------------------------
+# TestCliIngestRange — CLI integration tests for ingest-range
+# (DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)
+# ---------------------------------------------------------------------------
+
+
+def _make_git_repo_with_range(tmp_path: Path) -> tuple[Path, str, str, str, str]:
+    """Create a 4-commit git repo (anchor + A + B + C) for range CLI tests.
+
+    Commit 0 (anchor): no trailers
+    Commit A: decision: DEC-CLI-RANGE-A-001
+    Commit B: no trailers
+    Commit C: decision: DEC-CLI-RANGE-C-001 + decision: DEC-CLI-RANGE-C-002
+
+    Returns (repo_path, sha_0, sha_a, sha_b, sha_c).
+    """
+    repo = tmp_path / "range_repo"
+    repo.mkdir()
+    rp = str(repo)
+
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "t@t.com",
+           "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "t@t.com"}
+
+    subprocess.run(["git", "init", rp], check=True, capture_output=True)
+    subprocess.run(["git", "-C", rp, "config", "user.email", "t@t.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", rp, "config", "user.name", "Test"],
+                   check=True, capture_output=True)
+
+    def commit(filename, msg):
+        (repo / filename).write_text(filename)
+        subprocess.run(["git", "-C", rp, "add", filename],
+                       check=True, capture_output=True, env=env)
+        subprocess.run(["git", "-C", rp, "commit", "-m", msg],
+                       check=True, capture_output=True, env=env)
+        r = subprocess.run(["git", "-C", rp, "rev-parse", "HEAD"],
+                           capture_output=True, text=True, check=True)
+        return r.stdout.strip()
+
+    sha_0 = commit("anchor.txt", "chore: anchor commit (lower range bound)")
+    sha_a = commit("a.txt", "feat: A\n\nBody.\n\ndecision: DEC-CLI-RANGE-A-001")
+    sha_b = commit("b.txt", "fix: B\n\nNo trailers.")
+    sha_c = commit("c.txt", (
+        "feat: C\n\nBody.\n\n"
+        "decision: DEC-CLI-RANGE-C-001\n"
+        "decision: DEC-CLI-RANGE-C-002"
+    ))
+    return repo, sha_0, sha_a, sha_b, sha_c
+
+
+class TestCliIngestRange:
+    """Subprocess-level CLI integration tests for ``cc-policy decision ingest-range``.
+
+    These tests exercise the argparse wiring, handler logic, DB open/schema,
+    and the ``ingest_range`` orchestrator together via the real CLI entry-point.
+    """
+
+    def test_happy_path_range_exits_zero_and_populates(self, tmp_path, db_path):
+        """Valid range → rc=0, JSON payload, DB rows present."""
+        repo, sha_0, sha_a, sha_b, sha_c = _make_git_repo_with_range(tmp_path)
+        range_spec = f"{sha_0}..{sha_c}"
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "ingest-range", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc == 0, f"Expected rc=0; stderr: {stderr}; stdout: {stdout}"
+        assert payload.get("status") == "ok", f"Payload: {payload}"
+        assert payload.get("commits_scanned") == 3
+        # sha_a has 1, sha_c has 2, sha_b has 0 → 3 decisions
+        assert payload.get("decisions_ingested") == 3
+        assert payload.get("range") == range_spec
+
+        # Verify DB has the rows
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from runtime.core import decision_work_registry as dwr
+        decisions = dwr.list_decisions(conn)
+        conn.close()
+        ids = {d.decision_id for d in decisions}
+        assert "DEC-CLI-RANGE-A-001" in ids
+        assert "DEC-CLI-RANGE-C-001" in ids
+        assert "DEC-CLI-RANGE-C-002" in ids
+
+    def test_dry_run_reports_but_does_not_write(self, tmp_path, db_path):
+        """--dry-run: commits_scanned populated, decisions_ingested=0, DB empty."""
+        repo, sha_0, sha_a, sha_b, sha_c = _make_git_repo_with_range(tmp_path)
+        range_spec = f"{sha_0}..{sha_c}"
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "ingest-range", "--range", range_spec,
+             "--project-root", str(repo), "--dry-run"],
+            db_path,
+        )
+        assert rc == 0, f"Expected rc=0; stderr: {stderr}"
+        assert payload.get("status") == "ok"
+        assert payload.get("dry_run") is True
+        assert payload.get("decisions_ingested") == 0
+        assert payload.get("rows") == []
+
+        # DB must remain empty
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from runtime.core import decision_work_registry as dwr
+        decisions = dwr.list_decisions(conn)
+        conn.close()
+        assert len(decisions) == 0, "dry-run must not write to DB"
+
+    def test_no_trailers_in_range_decisions_zero(self, tmp_path, db_path):
+        """Range where no commit has trailers → rc=0, decisions_ingested=0."""
+        repo, sha_0, sha_a, sha_b, sha_c = _make_git_repo_with_range(tmp_path)
+        # sha_a..sha_b = just sha_b (no trailers)
+        range_spec = f"{sha_a}..{sha_b}"
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "ingest-range", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc == 0, f"Expected rc=0; stderr: {stderr}"
+        assert payload.get("status") == "ok"
+        assert payload.get("decisions_ingested") == 0
+        assert payload.get("commits_scanned") == 1
+
+    def test_invalid_range_exits_nonzero(self, tmp_path, db_path):
+        """Bogus --range → rc!=0, status=error."""
+        repo, sha_0, sha_a, sha_b, sha_c = _make_git_repo_with_range(tmp_path)
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "ingest-range", "--range", "bogus_ref_xyz..HEAD",
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc != 0, f"Expected non-zero exit; rc={rc}; stdout={stdout}"
+        assert payload.get("status") == "error", f"Payload: {payload}"
+
+    def test_idempotent_range_second_run_updates(self, tmp_path, db_path):
+        """Two runs of the same range → second run rows all show action=updated."""
+        repo, sha_0, sha_a, sha_b, sha_c = _make_git_repo_with_range(tmp_path)
+        range_spec = f"{sha_0}..{sha_c}"
+        cli_args = [
+            "decision", "ingest-range", "--range", range_spec,
+            "--project-root", str(repo),
+        ]
+        # First run
+        rc1, payload1, _, _ = _run_cli(cli_args, db_path)
+        assert rc1 == 0
+        assert payload1.get("decisions_ingested") == 3
+
+        # Second run
+        rc2, payload2, _, _ = _run_cli(cli_args, db_path)
+        assert rc2 == 0
+        rows2 = payload2.get("rows", [])
+        assert all(r.get("action") == "updated" for r in rows2), (
+            f"Expected all 'updated' on second run; rows: {rows2}"
+        )
+
+        # DB must have exactly 3 unique rows
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from runtime.core import decision_work_registry as dwr
+        decisions = dwr.list_decisions(conn)
+        conn.close()
+        assert len(decisions) == 3
+
+    def test_sha_list_in_payload(self, tmp_path, db_path):
+        """Payload carries per-SHA rows; ordering matches oldest-first."""
+        repo, sha_0, sha_a, sha_b, sha_c = _make_git_repo_with_range(tmp_path)
+        range_spec = f"{sha_0}..{sha_c}"
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "ingest-range", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc == 0
+        rows = payload.get("rows", [])
+        # sha_a's row must appear before sha_c's rows (oldest-first)
+        sha_keys = [r.get("sha") for r in rows]
+        # sha_a produces DEC-CLI-RANGE-A-001; sha_c produces C-001 and C-002
+        a_indices = [i for i, r in enumerate(rows) if r.get("sha") == sha_a]
+        c_indices = [i for i, r in enumerate(rows) if r.get("sha") == sha_c]
+        assert a_indices, "sha_a must appear in rows"
+        assert c_indices, "sha_c must appear in rows"
+        assert max(a_indices) < min(c_indices), (
+            "sha_a rows must appear before sha_c rows (oldest-first)"
+        )
+
+    def test_ingest_range_help_lists_flags(self, tmp_path, db_path):
+        """``cc-policy decision ingest-range --help`` mentions --range and --dry-run."""
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "ingest-range", "--help"],
+            db_path,
+        )
+        # --help exits 0
+        assert rc == 0, f"Expected rc=0 for --help; rc={rc}"
+        combined = stdout + stderr
+        assert "--range" in combined, f"--range not in help output: {combined}"
+        assert "--dry-run" in combined, f"--dry-run not in help output: {combined}"

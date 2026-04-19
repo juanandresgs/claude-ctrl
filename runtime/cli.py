@@ -708,7 +708,7 @@ def _handle_decision(args) -> int:
     # builder / validator + DB registry, so we import once at the
     # handler boundary and share the read-only open helper across
     # branches.
-    if args.action not in {"digest", "digest-check", "ingest-commit"}:
+    if args.action not in {"digest", "digest-check", "ingest-commit", "ingest-range"}:
         return _err(f"unknown decision action: {args.action}")
 
     # ----------------------- ingest-commit --------------------------------
@@ -773,6 +773,63 @@ def _handle_decision(args) -> int:
             "status": "ok",
         }
         return _ok(payload)
+
+    # ----------------------- ingest-range --------------------------------
+    # Phase 7 Slice 15 — batch write path: resolve a git revision range
+    # via ``git rev-list``, iterate SHAs oldest→newest, and call the
+    # existing ``ingest_commit`` per SHA.  No new upsert_decision call
+    # sites — this is a pure orchestrator over ingest_commit.
+    # (DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)
+    if args.action == "ingest-range":
+        range_spec = getattr(args, "range", None)
+        if not range_spec:
+            return _err("decision ingest-range: --range is required")
+
+        project_root = getattr(args, "project_root", None) or str(_PROJECT_ROOT)
+        dry_run = getattr(args, "dry_run", False)
+
+        # Function-scope import — shadow-only discipline; must not appear
+        # at module scope.  (DEC-CLAUDEX-DEC-TRAILER-INGEST-001)
+        from runtime.core import decision_trailer_ingest as dti
+
+        if dry_run:
+            # Dry-run: call ingest_range with dry_run=True — no DB needed.
+            try:
+                result = dti.ingest_range(
+                    None,  # conn is unused in dry-run mode
+                    range_spec,
+                    worktree_path=project_root,
+                    dry_run=True,
+                )
+            except ValueError as exc:
+                return _err(f"decision ingest-range: {exc}")
+            return _ok(result)
+
+        # Live ingest: open the DB read-write, ensure schema, call ingest_range.
+        import sqlite3 as _sqlite3
+
+        from runtime.schemas import ensure_schema
+
+        db_path = default_db_path()
+        try:
+            conn = _sqlite3.connect(str(db_path))
+            conn.row_factory = _sqlite3.Row
+            ensure_schema(conn)
+            result = dti.ingest_range(
+                conn,
+                range_spec,
+                worktree_path=project_root,
+                dry_run=False,
+            )
+            conn.close()
+        except ValueError as exc:
+            return _err(f"decision ingest-range: {exc}")
+        except _sqlite3.Error as exc:
+            return _err(
+                f"decision ingest-range: DB error at {db_path}: {exc}"
+            )
+
+        return _ok(result)
 
     from runtime.core import decision_digest_projection as ddp
     from runtime.core import decision_work_registry as dwr
@@ -4108,6 +4165,46 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Parse trailers and report what would be ingested without "
             "writing to the database; exits 0."
+        ),
+    )
+
+    # decision ingest-range — Phase 7 Slice 15 batch backfill write path
+    # (DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)
+    dec_ingest_range = dec_sub.add_parser(
+        "ingest-range",
+        help=(
+            "Batch-ingest Decision: DEC-* trailers from every commit in a "
+            "git revision range (oldest→newest) into the canonical decision "
+            "registry; exits 0 on success (including empty ranges). "
+            "(DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)"
+        ),
+    )
+    dec_ingest_range.add_argument(
+        "--range",
+        required=True,
+        dest="range",
+        help=(
+            "Git rev-list range spec (e.g. '6869fd3..origin/main' or "
+            "'HEAD~10..HEAD'). Passed verbatim to git rev-list --reverse."
+        ),
+    )
+    dec_ingest_range.add_argument(
+        "--project-root",
+        default=None,
+        dest="project_root",
+        help=(
+            "Path to the git repository root used for git rev-list and "
+            "git show. Defaults to the cc-policy project root if omitted."
+        ),
+    )
+    dec_ingest_range.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help=(
+            "Iterate and parse commits but do not write to the database; "
+            "reports commits_scanned and status=ok without DB mutations."
         ),
     )
 

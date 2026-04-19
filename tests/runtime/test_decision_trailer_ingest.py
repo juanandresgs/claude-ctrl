@@ -24,7 +24,10 @@ Rationale: The pure parser (``parse_decision_trailers``) and the
 
 from __future__ import annotations
 
+import inspect
+import os
 import sqlite3
+import subprocess
 
 import pytest
 
@@ -569,3 +572,317 @@ class TestTrailingContiguousTrailerBlock:
         )
         result = dti.parse_decision_trailers(msg)
         assert "DEC-CONT-001" in result
+
+
+# ---------------------------------------------------------------------------
+# Fixtures shared by TestResolveRevisionRange and TestIngestRange
+# ---------------------------------------------------------------------------
+
+
+_GIT_ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "t@t.com",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "t@t.com",
+}
+
+
+def _make_commit(repo: "os.PathLike[str]", filename: str, msg: str) -> str:
+    """Create a file, stage it, commit with ``msg``, and return the SHA."""
+    repo_path = str(repo)
+    fp = os.path.join(repo_path, filename)
+    with open(fp, "w") as fh:
+        fh.write(filename)
+    subprocess.run(["git", "-C", repo_path, "add", filename],
+                   check=True, capture_output=True, env=_GIT_ENV)
+    subprocess.run(["git", "-C", repo_path, "commit", "-m", msg],
+                   check=True, capture_output=True, env=_GIT_ENV)
+    result = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+@pytest.fixture
+def git_repo_range(tmp_path):
+    """Four-commit git repo for range-ingestion tests.
+
+    Commit 0 (root/anchor): no trailers — used as the exclusive lower bound
+      so we can do "sha_0..sha_a" to select exactly sha_a.
+    Commit A: decision: DEC-RANGE-A-001
+    Commit B (middle): no trailers
+    Commit C (newest): decision: DEC-RANGE-C-001 + decision: DEC-RANGE-C-002
+
+    Returns ``(repo_path, sha_0, sha_a, sha_b, sha_c)``.
+    Using ``sha_0..sha_c`` as the range_spec selects sha_a, sha_b, sha_c.
+    Using ``sha_0..sha_a`` selects exactly sha_a.
+    """
+    repo = tmp_path / "range_repo"
+    repo.mkdir()
+    rp = str(repo)
+    subprocess.run(["git", "init", rp], check=True, capture_output=True, env=_GIT_ENV)
+    subprocess.run(["git", "-C", rp, "config", "user.email", "t@t.com"],
+                   check=True, capture_output=True, env=_GIT_ENV)
+    subprocess.run(["git", "-C", rp, "config", "user.name", "Test"],
+                   check=True, capture_output=True, env=_GIT_ENV)
+
+    msg_0 = "chore: initial commit (anchor)"
+    msg_a = "feat: commit A\n\nBody.\n\ndecision: DEC-RANGE-A-001"
+    msg_b = "fix: commit B\n\nNo trailers in B."
+    msg_c = (
+        "feat: commit C\n"
+        "\n"
+        "Body.\n"
+        "\n"
+        "decision: DEC-RANGE-C-001\n"
+        "decision: DEC-RANGE-C-002"
+    )
+    sha_0 = _make_commit(repo, "anchor.txt", msg_0)
+    sha_a = _make_commit(repo, "a.txt", msg_a)
+    sha_b = _make_commit(repo, "b.txt", msg_b)
+    sha_c = _make_commit(repo, "c.txt", msg_c)
+    return repo, sha_0, sha_a, sha_b, sha_c
+
+
+# ---------------------------------------------------------------------------
+# TestResolveRevisionRange — private helper
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRevisionRange:
+    """Unit tests for the private _resolve_revision_range helper."""
+
+    def test_resolve_empty_range_returns_empty_list(self, git_repo_range):
+        """HEAD..HEAD is a valid empty range and must return []."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        shas = dti._resolve_revision_range("HEAD..HEAD", worktree_path=str(repo))
+        assert shas == []
+
+    def test_resolve_returns_oldest_first(self, git_repo_range):
+        """git rev-list --reverse produces SHAs oldest→newest."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Range from sha_a (exclusive) to sha_c (inclusive) = sha_b, sha_c
+        range_spec = f"{sha_a}..{sha_c}"
+        shas = dti._resolve_revision_range(range_spec, worktree_path=str(repo))
+        assert shas == [sha_b, sha_c]
+
+    def test_resolve_invalid_range_raises(self, git_repo_range):
+        """A bogus ref raises ValueError containing git stderr."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        with pytest.raises(ValueError, match="git rev-list failed"):
+            dti._resolve_revision_range(
+                "nonexistent_ref_abc..HEAD", worktree_path=str(repo)
+            )
+
+
+# ---------------------------------------------------------------------------
+# TestIngestRange — main batch orchestrator
+# ---------------------------------------------------------------------------
+
+
+class TestIngestRange:
+    """Tests for ingest_range — the Slice 15 batch backfill orchestrator.
+
+    @decision DEC-CLAUDEX-DEC-INGEST-BACKFILL-001 (tests exercise this invariant)
+    """
+
+    def test_ingest_range_empty_returns_zero(self, git_repo_range, conn):
+        """Empty range (HEAD..HEAD) → commits_scanned=0, decisions_ingested=0."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        result = dti.ingest_range(conn, "HEAD..HEAD", worktree_path=str(repo))
+        assert result["status"] == "ok"
+        assert result["commits_scanned"] == 0
+        assert result["decisions_ingested"] == 0
+        assert result["rows"] == []
+        assert result["range"] == "HEAD..HEAD"
+        assert result["dry_run"] is False
+
+    def test_ingest_range_single_commit_one_trailer(self, git_repo_range, conn):
+        """Range of exactly one commit (sha_0..sha_a = just sha_a)."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # sha_0 is exclusive lower bound; sha_a is inclusive upper bound.
+        range_spec = f"{sha_0}..{sha_a}"
+        result = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result["commits_scanned"] == 1
+        assert result["decisions_ingested"] == 1
+        assert result["rows"][0]["decision_id"] == "DEC-RANGE-A-001"
+        assert result["rows"][0]["sha"] == sha_a
+        assert result["rows"][0]["action"] == "inserted"
+
+    def test_ingest_range_multiple_commits_order_preserved(self, git_repo_range, conn):
+        """Three-commit range: rows are in oldest-first (rev-list --reverse) order."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # sha_0..sha_c selects sha_a, sha_b, sha_c (3 commits)
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result["commits_scanned"] == 3
+        # sha_b has no trailers; sha_a has 1, sha_c has 2 → 3 total
+        assert result["decisions_ingested"] == 3
+        dec_ids = [r["decision_id"] for r in result["rows"]]
+        # sha_a's DEC must appear before sha_c's DECs (oldest-first)
+        assert dec_ids.index("DEC-RANGE-A-001") < dec_ids.index("DEC-RANGE-C-001")
+        assert dec_ids.index("DEC-RANGE-A-001") < dec_ids.index("DEC-RANGE-C-002")
+
+    def test_ingest_range_idempotency(self, git_repo_range, conn):
+        """Re-ingesting the same range → second run rows show action='updated';
+        no duplicate rows in DB."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        range_spec = f"{sha_0}..{sha_c}"
+        # First run
+        result1 = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result1["decisions_ingested"] == 3
+        assert all(r["action"] == "inserted" for r in result1["rows"])
+
+        # Second run — same range
+        result2 = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result2["decisions_ingested"] == 3
+        assert all(r["action"] == "updated" for r in result2["rows"])
+
+        # DB must have exactly 3 rows (no duplicates)
+        decisions = dwr.list_decisions(conn)
+        assert len(decisions) == 3
+
+    def test_ingest_range_invalid_range_raises(self, git_repo_range, conn):
+        """Bogus range spec → ValueError with clear message."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        with pytest.raises(ValueError, match="git rev-list failed"):
+            dti.ingest_range(
+                conn, "total_nonsense_xyz..HEAD", worktree_path=str(repo)
+            )
+
+    def test_ingest_range_dry_run_no_writes(self, git_repo_range, conn):
+        """dry_run=True → commits_scanned reported, decisions_ingested=0, no DB writes."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.ingest_range(conn, range_spec, worktree_path=str(repo), dry_run=True)
+        assert result["status"] == "ok"
+        assert result["dry_run"] is True
+        assert result["commits_scanned"] == 3
+        assert result["decisions_ingested"] == 0
+        assert result["rows"] == []
+        # Verify DB is actually empty
+        decisions = dwr.list_decisions(conn)
+        assert len(decisions) == 0
+
+    def test_ingest_range_single_writer_discipline(self):
+        """Guard: ingest_range MUST call ingest_commit, NOT upsert_decision directly.
+
+        Uses the ``ast`` module to walk the AST of ``ingest_range`` and verify:
+          1. At least one ``Call`` node invokes ``ingest_commit``.
+          2. Zero ``Call`` nodes invoke ``upsert_decision``.
+
+        This is the authoritative guard for DEC-CLAUDEX-DEC-INGEST-BACKFILL-001's
+        single-writer invariant. It is immune to mentions of ``upsert_decision``
+        in comments or docstrings because the AST only captures executable nodes.
+        """
+        import ast as _ast
+        import inspect as _inspect
+        import textwrap as _textwrap
+
+        # Get the source of ingest_range and dedent so ast.parse can handle it.
+        raw_source = _inspect.getsource(dti.ingest_range)
+        source = _textwrap.dedent(raw_source)
+        tree = _ast.parse(source)
+
+        called_names: set[str] = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Call):
+                # Direct call: ingest_commit(...)
+                if isinstance(node.func, _ast.Name):
+                    called_names.add(node.func.id)
+                # Attribute call: obj.ingest_commit(...) — unlikely here but checked
+                elif isinstance(node.func, _ast.Attribute):
+                    called_names.add(node.func.attr)
+
+        assert "ingest_commit" in called_names, (
+            f"ingest_range must call ingest_commit; calls found: {called_names}"
+        )
+        assert "upsert_decision" not in called_names, (
+            "ingest_range must NOT call upsert_decision directly; "
+            "single-writer discipline requires routing through ingest_commit. "
+            f"Calls found: {called_names}"
+        )
+
+    def test_ingest_range_commits_with_no_trailers(self, git_repo_range, conn):
+        """Range with no-trailer commits → 0 DECs ingested."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # sha_a..sha_b selects just sha_b (which has no trailers)
+        range_spec = f"{sha_a}..{sha_b}"
+        result = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result["commits_scanned"] == 1
+        assert result["decisions_ingested"] == 0
+        assert result["rows"] == []
+        decisions = dwr.list_decisions(conn)
+        assert len(decisions) == 0
+
+    def test_ingest_range_range_and_worktree_path_honored(self, tmp_path, conn):
+        """worktree_path argument is honored: a secondary repo's SHAs are used."""
+        # Create a separate repo with an anchor commit and a commit with a trailer,
+        # so we can use sha_anchor..sha_trailer as the range_spec.
+        repo2 = tmp_path / "secondary_repo"
+        repo2.mkdir()
+        rp2 = str(repo2)
+        subprocess.run(["git", "init", rp2], check=True, capture_output=True,
+                       env=_GIT_ENV)
+        subprocess.run(["git", "-C", rp2, "config", "user.email", "t@t.com"],
+                       check=True, capture_output=True, env=_GIT_ENV)
+        subprocess.run(["git", "-C", rp2, "config", "user.name", "Test"],
+                       check=True, capture_output=True, env=_GIT_ENV)
+        # Anchor commit (lower bound, exclusive)
+        sha_anchor = _make_commit(repo2, "anchor.txt", "chore: anchor")
+        # Commit with a trailer
+        sha_trailer = _make_commit(
+            repo2, "x.txt",
+            "feat: secondary\n\nBody.\n\ndecision: DEC-SECONDARY-001"
+        )
+        # sha_anchor..sha_trailer = exactly sha_trailer
+        range_spec = f"{sha_anchor}..{sha_trailer}"
+        result = dti.ingest_range(conn, range_spec, worktree_path=rp2)
+        assert result["commits_scanned"] == 1
+        assert result["decisions_ingested"] == 1
+        assert result["rows"][0]["decision_id"] == "DEC-SECONDARY-001"
+
+    def test_ingest_range_compound_production_sequence(self, git_repo_range, conn):
+        """Compound interaction test: exercises the real production sequence.
+
+        Production sequence:
+          1. git rev-list resolves SHAs
+          2. load_commit_message loads each commit
+          3. parse_decision_trailers extracts DEC-IDs
+          4. ingest_commit upserts via upsert_decision
+          5. list_decisions confirms registry state
+          6. Second run shows idempotency (updated, not inserted)
+
+        This crosses all internal component boundaries in the module.
+        """
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # sha_0..sha_c selects sha_a, sha_b, sha_c (3 commits)
+        range_spec = f"{sha_0}..{sha_c}"
+
+        # Step 1: first ingest — 3 commits, 3 decisions (sha_b contributes 0)
+        result1 = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result1["status"] == "ok"
+        assert result1["commits_scanned"] == 3
+        assert result1["decisions_ingested"] == 3
+
+        # Step 2: verify via list_decisions
+        decisions = dwr.list_decisions(conn)
+        ids = {d.decision_id for d in decisions}
+        assert "DEC-RANGE-A-001" in ids
+        assert "DEC-RANGE-C-001" in ids
+        assert "DEC-RANGE-C-002" in ids
+        assert len(decisions) == 3
+
+        # Step 3: verify provenance captured
+        rec_a = dwr.get_decision(conn, "DEC-RANGE-A-001")
+        assert rec_a is not None
+        assert sha_a in rec_a.rationale
+
+        # Step 4: idempotency — second run → all rows updated, no new rows
+        result2 = dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert result2["decisions_ingested"] == 3
+        assert all(r["action"] == "updated" for r in result2["rows"])
+        decisions2 = dwr.list_decisions(conn)
+        assert len(decisions2) == 3  # no duplicates
