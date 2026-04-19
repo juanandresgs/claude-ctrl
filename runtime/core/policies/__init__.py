@@ -54,6 +54,7 @@ def register_all(registry: PolicyRegistry) -> None:
       400  bash_main_sacred          -- deny commits on main/master
       500  bash_force_push           -- deny unsafe force push
       600  bash_destructive_git      -- hard deny reset --hard, clean -f, branch -D
+      625  bash_stash_ban            -- deny destructive stash sub-ops for can_write_source actors
       700  bash_worktree_removal     -- safe worktree removal enforcement
       800  bash_test_gate_merge      -- test-pass gate for git merge
       850  bash_test_gate_commit     -- test-pass gate for git commit
@@ -146,6 +147,7 @@ def register_all(registry: PolicyRegistry) -> None:
         bash_force_push,
         bash_git_who,
         bash_main_sacred,
+        bash_stash_ban,
         bash_test_gate,
         bash_tmp_safety,
         bash_write_who,
@@ -168,6 +170,7 @@ def register_all(registry: PolicyRegistry) -> None:
     bash_main_sacred.register(registry)
     bash_force_push.register(registry)
     bash_destructive_git.register(registry)
+    bash_stash_ban.register(registry)  # priority 625: cross-lane stash contamination guard
     bash_worktree_removal.register(registry)
     bash_test_gate.register(registry)
     bash_eval_readiness.register(registry)
