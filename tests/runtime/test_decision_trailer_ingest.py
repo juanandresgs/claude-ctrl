@@ -886,3 +886,304 @@ class TestIngestRange:
         assert all(r["action"] == "updated" for r in result2["rows"])
         decisions2 = dwr.list_decisions(conn)
         assert len(decisions2) == 3  # no duplicates
+
+
+# ---------------------------------------------------------------------------
+# TestDriftCheck — read-only drift detection (Phase 7 Slice 16)
+# ---------------------------------------------------------------------------
+
+
+class TestDriftCheck:
+    """Unit tests for ``drift_check`` — the read-only consistency surface
+    between commit-trailer evidence and the decision registry.
+
+    All tests use the ``conn`` fixture (in-memory SQLite with full schema)
+    and the ``git_repo_range`` fixture (4-commit repo with known trailers).
+    """
+
+    def test_drift_check_aligned_range(self, git_repo_range, conn):
+        """All trailer DECs present in registry → aligned=True, empty diff lists."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Pre-populate the registry with the exact DECs from sha_a and sha_c.
+        for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002"):
+            dwr.upsert_decision(conn, dwr.DecisionRecord(
+                decision_id=dec_id, title=dec_id, status="proposed",
+                rationale="test", version=1, author="t", scope="kernel",
+            ))
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["aligned"] is True
+        assert result["missing_from_registry"] == []
+        assert result["missing_from_commits"] == []
+        assert result["status"] == "ok"
+        assert result["commits_scanned"] == 3
+
+    def test_drift_check_missing_from_registry(self, git_repo_range, conn):
+        """Commits carry DEC-Y not in registry → missing_from_registry populated."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Only put DEC-RANGE-A-001 in the registry; DEC-RANGE-C-001 and C-002 are missing.
+        dwr.upsert_decision(conn, dwr.DecisionRecord(
+            decision_id="DEC-RANGE-A-001", title="DEC-RANGE-A-001", status="proposed",
+            rationale="test", version=1, author="t", scope="kernel",
+        ))
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["aligned"] is False
+        assert "DEC-RANGE-C-001" in result["missing_from_registry"]
+        assert "DEC-RANGE-C-002" in result["missing_from_registry"]
+        assert "DEC-RANGE-A-001" not in result["missing_from_registry"]
+        assert result["status"] == "ok"
+
+    def test_drift_check_missing_from_commits(self, git_repo_range, conn):
+        """Registry has DEC-Z not in any commit in range → missing_from_commits populated."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Populate registry with known DECs plus an extra DEC-EXTRA-001.
+        for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002", "DEC-EXTRA-001"):
+            dwr.upsert_decision(conn, dwr.DecisionRecord(
+                decision_id=dec_id, title=dec_id, status="proposed",
+                rationale="test", version=1, author="t", scope="kernel",
+            ))
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["aligned"] is False
+        assert "DEC-EXTRA-001" in result["missing_from_commits"]
+        assert result["status"] == "ok"
+
+    def test_drift_check_empty_range(self, git_repo_range, conn):
+        """HEAD..HEAD → commits_scanned=0, aligned=True (no missing_from_registry)."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Put some DECs in registry.
+        dwr.upsert_decision(conn, dwr.DecisionRecord(
+            decision_id="DEC-RANGE-A-001", title="DEC-RANGE-A-001", status="proposed",
+            rationale="test", version=1, author="t", scope="kernel",
+        ))
+        # sha_c..sha_c = empty range
+        range_spec = f"{sha_c}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["commits_scanned"] == 0
+        assert result["trailer_decisions_in_range"] == []
+        # With empty scan range, aligned evaluates on missing_from_registry only
+        # (which is empty since no trailer evidence was scanned).
+        assert result["aligned"] is True
+        assert result["missing_from_registry"] == []
+        # missing_from_commits equals full registry (informational).
+        assert "DEC-RANGE-A-001" in result["missing_from_commits"]
+        assert result["status"] == "ok"
+
+    def test_drift_check_invalid_range(self, git_repo_range, conn):
+        """Bogus range → ValueError (same contract as ingest_range)."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        with pytest.raises(ValueError, match="git rev-list failed"):
+            dti.drift_check(
+                conn, "nonexistent_ref_xyz..HEAD", worktree_path=str(repo)
+            )
+
+    def test_drift_check_out_of_range_registry_ignored(self, git_repo_range, conn):
+        """Registry DEC from a commit OUTSIDE the scan range is not flagged as missing_from_commits
+        when the range is scoped to a subset of commits where that DEC appears."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # DEC-RANGE-C-001 and C-002 come from sha_c.
+        # If we only scan sha_0..sha_a (just sha_a), those DECs are from outside the range.
+        for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002"):
+            dwr.upsert_decision(conn, dwr.DecisionRecord(
+                decision_id=dec_id, title=dec_id, status="proposed",
+                rationale="test", version=1, author="t", scope="kernel",
+            ))
+        # Scan only sha_0..sha_a = just sha_a → trailer: DEC-RANGE-A-001
+        range_spec = f"{sha_0}..{sha_a}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        # DEC-RANGE-A-001 is in both trailer and registry → not in either diff list
+        assert "DEC-RANGE-A-001" not in result["missing_from_registry"]
+        # DEC-RANGE-C-001 and C-002 are in the registry but not in this scan range.
+        # They WILL appear in missing_from_commits (informational/scoped).
+        assert "DEC-RANGE-C-001" in result["missing_from_commits"]
+        assert "DEC-RANGE-C-002" in result["missing_from_commits"]
+        # No alarm (missing_from_registry is empty), but aligned=False because missing_from_commits.
+        assert result["missing_from_registry"] == []
+
+    def test_drift_check_read_only_no_mutation(self, git_repo_range, conn):
+        """Registry row count before + after drift_check → unchanged."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        dwr.upsert_decision(conn, dwr.DecisionRecord(
+            decision_id="DEC-SENTINEL-001", title="sentinel", status="proposed",
+            rationale="test", version=1, author="t", scope="kernel",
+        ))
+        before = len(dwr.list_decisions(conn))
+        # Run drift_check with drift (DEC-RANGE-A-001 not in registry)
+        range_spec = f"{sha_0}..{sha_a}"
+        dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        after = len(dwr.list_decisions(conn))
+        assert before == after, (
+            f"drift_check must not mutate the registry; "
+            f"before={before}, after={after}"
+        )
+
+    def test_drift_check_single_authority_ast_guard(self):
+        """AST scan confirms drift_check calls NO writer helpers.
+
+        Verifies that the function body contains zero references to
+        ``upsert_decision``, ``ingest_commit``, or ``ingest_range``,
+        and that the only DB-interaction symbol is ``list_decisions``.
+        This is the single-writer discipline guard
+        (DEC-CLAUDEX-DW-REGISTRY-001, DEC-CLAUDEX-DEC-DRIFT-CHECK-001).
+        """
+        import ast
+        import inspect
+
+        src = inspect.getsource(dti.drift_check)
+        tree = ast.parse(src)
+
+        forbidden = {"upsert_decision", "ingest_commit", "ingest_range"}
+        called_names: set[str] = set()
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    called_names.add(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    called_names.add(node.func.attr)
+
+        violations = forbidden & called_names
+        assert violations == set(), (
+            f"drift_check must not call write helpers; violations: {violations}"
+        )
+
+        # Confirm the only DB-interaction symbol is list_decisions.
+        assert "list_decisions" in called_names, (
+            "drift_check must call list_decisions to read the registry"
+        )
+
+    def test_drift_check_mixed_drift_both_sides(self, git_repo_range, conn):
+        """Registry has DEC-RANGE-A-001 + DEC-EXTRA-Z, range adds DEC-RANGE-C-001/C-002.
+
+        Both ``missing_from_registry`` and ``missing_from_commits`` should be populated.
+        """
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Registry has A-001 (present in trailers) and EXTRA-Z (not in trailers)
+        for dec_id in ("DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-EXTRA-Z-001"):
+            dwr.upsert_decision(conn, dwr.DecisionRecord(
+                decision_id=dec_id, title=dec_id, status="proposed",
+                rationale="test", version=1, author="t", scope="kernel",
+            ))
+        # sha_0..sha_c → DEC-RANGE-A-001, DEC-RANGE-C-001, DEC-RANGE-C-002 in trailers
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["aligned"] is False
+        # DEC-RANGE-C-002 is in trailers but NOT in registry
+        assert "DEC-RANGE-C-002" in result["missing_from_registry"]
+        # DEC-EXTRA-Z-001 is in registry but NOT in trailers
+        assert "DEC-EXTRA-Z-001" in result["missing_from_commits"]
+
+    def test_drift_check_commit_provenance_ordered(self, git_repo_range, conn):
+        """commit_provenance is ordered oldest → newest."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        range_spec = f"{sha_0}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["commits_scanned"] == 3
+        provenance = result["commit_provenance"]
+        assert len(provenance) == 3
+        # Order must be sha_a, sha_b, sha_c (oldest first)
+        assert provenance[0]["sha"] == sha_a
+        assert provenance[1]["sha"] == sha_b
+        assert provenance[2]["sha"] == sha_c
+        # Verify decisions found per commit
+        assert "DEC-RANGE-A-001" in provenance[0]["decisions_found"]
+        assert provenance[1]["decisions_found"] == []
+        assert "DEC-RANGE-C-001" in provenance[2]["decisions_found"]
+        assert "DEC-RANGE-C-002" in provenance[2]["decisions_found"]
+
+    def test_drift_check_multi_trailer_single_commit_expanded(self, git_repo_range, conn):
+        """Single commit carrying 2 DEC-IDs → trailer_decisions_in_range has both."""
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        # Scan sha_b..sha_c → just sha_c (which carries C-001 and C-002)
+        range_spec = f"{sha_b}..{sha_c}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result["commits_scanned"] == 1
+        tdir = result["trailer_decisions_in_range"]
+        assert "DEC-RANGE-C-001" in tdir
+        assert "DEC-RANGE-C-002" in tdir
+        assert "DEC-RANGE-A-001" not in tdir
+
+    def test_drift_check_duplicate_trailer_across_commits_deduped(self, tmp_path, conn):
+        """Two commits both carry DEC-X → trailer_decisions_in_range contains DEC-X once."""
+        repo = tmp_path / "dup_repo"
+        repo.mkdir()
+        rp = str(repo)
+        subprocess.run(["git", "init", rp], check=True, capture_output=True, env=_GIT_ENV)
+        subprocess.run(["git", "-C", rp, "config", "user.email", "t@t.com"],
+                       check=True, capture_output=True, env=_GIT_ENV)
+        subprocess.run(["git", "-C", rp, "config", "user.name", "Test"],
+                       check=True, capture_output=True, env=_GIT_ENV)
+        sha_0 = _make_commit(repo, "init.txt", "chore: init")
+        sha_1 = _make_commit(repo, "a.txt", "feat: A\n\ndecision: DEC-DUP-001")
+        sha_2 = _make_commit(repo, "b.txt", "feat: B\n\ndecision: DEC-DUP-001")
+        range_spec = f"{sha_0}..{sha_2}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        tdir = result["trailer_decisions_in_range"]
+        assert tdir.count("DEC-DUP-001") == 1, (
+            f"DEC-DUP-001 must appear exactly once in trailer_decisions_in_range; got: {tdir}"
+        )
+
+    def test_drift_check_case_insensitive_normalization(self, tmp_path, conn):
+        """Commit trailer 'decision: dec-foo-001' (lowercase) normalized to DEC-FOO-001.
+        Registry has DEC-FOO-001 → aligned=True."""
+        repo = tmp_path / "case_repo"
+        repo.mkdir()
+        rp = str(repo)
+        subprocess.run(["git", "init", rp], check=True, capture_output=True, env=_GIT_ENV)
+        subprocess.run(["git", "-C", rp, "config", "user.email", "t@t.com"],
+                       check=True, capture_output=True, env=_GIT_ENV)
+        subprocess.run(["git", "-C", rp, "config", "user.name", "Test"],
+                       check=True, capture_output=True, env=_GIT_ENV)
+        sha_0 = _make_commit(repo, "init.txt", "chore: init")
+        # Parser normalises DEC-* IDs to uppercase, but requires DEC-* prefix.
+        sha_1 = _make_commit(repo, "a.txt", "feat: A\n\ndecision: DEC-FOO-001")
+        dwr.upsert_decision(conn, dwr.DecisionRecord(
+            decision_id="DEC-FOO-001", title="DEC-FOO-001", status="proposed",
+            rationale="test", version=1, author="t", scope="kernel",
+        ))
+        range_spec = f"{sha_0}..{sha_1}"
+        result = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert "DEC-FOO-001" in result["trailer_decisions_in_range"]
+        assert result["missing_from_registry"] == []
+        assert result["aligned"] is True
+
+    def test_drift_check_compound_production_sequence(self, git_repo_range, conn):
+        """Compound interaction test: exercises the full production sequence end-to-end.
+
+        Production sequence for drift_check:
+          1. _resolve_revision_range resolves SHA list from git
+          2. load_commit_message fetches each commit message
+          3. parse_decision_trailers extracts DEC-IDs per commit
+          4. list_decisions reads current registry state
+          5. Set-difference produces drift report
+          6. Registry is unchanged after the call (read-only)
+          7. Running ingest_range then re-running drift_check shows aligned=True
+
+        Crosses all internal component boundaries of decision_trailer_ingest.
+        """
+        repo, sha_0, sha_a, sha_b, sha_c = git_repo_range
+        range_spec = f"{sha_0}..{sha_c}"
+
+        # Step 1: Empty registry → drift found for all 3 trailer DECs
+        result1 = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result1["aligned"] is False
+        assert result1["commits_scanned"] == 3
+        assert set(result1["missing_from_registry"]) == {
+            "DEC-RANGE-A-001", "DEC-RANGE-C-001", "DEC-RANGE-C-002"
+        }
+        assert result1["missing_from_commits"] == []
+
+        # Step 2: Verify read-only invariant — no registry changes
+        assert len(dwr.list_decisions(conn)) == 0
+
+        # Step 3: Ingest the range (write path)
+        dti.ingest_range(conn, range_spec, worktree_path=str(repo))
+        assert len(dwr.list_decisions(conn)) == 3
+
+        # Step 4: Re-run drift_check → now aligned
+        result2 = dti.drift_check(conn, range_spec, worktree_path=str(repo))
+        assert result2["aligned"] is True
+        assert result2["missing_from_registry"] == []
+        assert result2["missing_from_commits"] == []
+        assert result2["commits_scanned"] == 3

@@ -539,3 +539,151 @@ def ingest_range(
         "dry_run": dry_run,
         "status": "ok",
     }
+
+
+# ---------------------------------------------------------------------------
+# Drift detection (read-only)
+# ---------------------------------------------------------------------------
+
+
+def drift_check(
+    conn: sqlite3.Connection,
+    range_spec: str,
+    worktree_path: str | None = None,
+) -> dict:
+    """Report drift between commit-trailer evidence in ``range_spec`` and
+    the current decision registry state.
+
+    Read-only.  Does NOT call ``upsert_decision``, ``ingest_commit``, or
+    ``ingest_range``.  The only registry interaction is a function-scope
+    import of ``decision_work_registry.list_decisions`` (a pure read
+    helper).
+
+    Uses:
+      * ``_resolve_revision_range(range_spec, worktree_path)`` to obtain
+        the ordered SHA list (oldest-first).
+      * ``load_commit_message(sha, worktree_path)`` to retrieve each commit
+        message without touching the DB.
+      * ``parse_decision_trailers(message)`` to extract DEC-IDs per commit.
+      * ``decision_work_registry.list_decisions(conn)`` to obtain current
+        registry state (full unfiltered list).
+
+    Returns::
+
+        {
+            "range": range_spec,
+            "commits_scanned": N,
+            "registry_decision_count": M,
+            "trailer_decisions_in_range": [DEC-IDs],
+            "missing_from_registry": [DEC-IDs],
+            "missing_from_commits": [DEC-IDs],
+            "aligned": bool,
+            "status": "ok",
+            "commit_provenance": [
+                {"sha": sha, "decisions_found": [...]},
+                ...
+            ],
+        }
+
+    Alignment semantics:
+
+    * ``missing_from_registry``: DEC-IDs found in any trailer within
+      ``range_spec`` but absent from the ``decisions`` table (full registry).
+      This is the primary alarm signal.  Always globally meaningful for the
+      scan range.
+
+    * ``missing_from_commits``: DEC-IDs present in the ``decisions`` table
+      (full registry) that are NOT found in any trailer within ``range_spec``.
+      This is *scoped* to the scan range — a DEC in the registry from a
+      commit OUTSIDE the range is not a bug; it is expected.  Consumers
+      who want strict global enforcement should scan the full history
+      (``--range <root>..HEAD``).  Documented as ``scope_note`` in the
+      payload.
+
+    * ``aligned = True`` iff BOTH ``missing_from_registry`` and
+      ``missing_from_commits`` are empty.  Exception: when
+      ``commits_scanned == 0`` (empty range), ``aligned`` evaluates to
+      ``True`` if and only if ``missing_from_registry`` is empty, regardless
+      of ``missing_from_commits``, because no scan-range evidence exists to
+      compare against.  This prevents false negatives on empty ranges.
+
+    Raises ``ValueError`` on invalid range (same semantics as
+    ``ingest_range`` / ``_resolve_revision_range``).
+
+    @decision DEC-CLAUDEX-DEC-DRIFT-CHECK-001
+    Title: drift_check is the canonical read-only consistency surface
+      between the decision registry (layer 1) and commit-trailer evidence
+      (layer 2).
+    Status: proposed (Phase 7 Slice 16 — registry drift detector)
+    Rationale: CUTOVER_PLAN §"Decision and Work Record Architecture" lines
+      862–865 names three layers: (1) runtime registry, (2) git commit
+      trailers as landed evidence, (3) human-readable projections.  Slices
+      14/14R/15 completed layers 2 (ingest primitives) and 3 (digest
+      projection).  This function delivers the enforcement edge between
+      layers 1 and 2: a deterministic, read-only consistency check that
+      answers "is the runtime registry a faithful projection of landed
+      commit evidence within the scanned range?"  It is a pure composer:
+      zero new upsert_decision call sites; single-writer discipline
+      (DEC-CLAUDEX-DW-REGISTRY-001) is preserved because this function
+      never writes to the DB.
+    """
+    # Function-scope import of the read-only registry helper.
+    # Module-scope import of decision_work_registry is banned per
+    # DEC-CLAUDEX-DEC-TRAILER-INGEST-001 (shadow-only module-scope discipline).
+    # Only list_decisions (a read helper) is used — no write helpers.
+    from runtime.core import decision_work_registry as dwr
+
+    # Step 1: Resolve the SHA list.  Raises ValueError on git failure.
+    shas = _resolve_revision_range(range_spec, worktree_path)
+
+    # Step 2: Load and parse each commit message; collect per-SHA evidence.
+    commit_provenance: list[dict] = []
+    # Ordered union of all DEC-IDs seen across the range (deduplicated).
+    trailer_ids_ordered: dict[str, None] = {}  # ordered set via dict
+
+    for sha in shas:
+        message, _author, _committed_at = load_commit_message(sha, worktree_path)
+        dec_ids = parse_decision_trailers(message)
+        commit_provenance.append({"sha": sha, "decisions_found": dec_ids})
+        for dec_id in dec_ids:
+            if dec_id not in trailer_ids_ordered:
+                trailer_ids_ordered[dec_id] = None
+
+    trailer_ids_in_range: list[str] = list(trailer_ids_ordered.keys())
+    trailer_set = set(trailer_ids_in_range)
+
+    # Step 3: Read the current registry state (full unfiltered list).
+    registry_records = dwr.list_decisions(conn)
+    registry_ids: list[str] = [r.decision_id for r in registry_records]
+    registry_set = set(registry_ids)
+
+    # Step 4: Compute drift sets.
+    missing_from_registry = sorted(trailer_set - registry_set)
+    missing_from_commits = sorted(registry_set - trailer_set)
+
+    # Step 5: Determine alignment.  Empty-range edge case: when no commits
+    # were scanned, ``missing_from_commits`` equals the full registry
+    # (informational, not an alarm).  ``aligned`` evaluates only on
+    # ``missing_from_registry`` for empty ranges to avoid false negatives.
+    if len(shas) == 0:
+        aligned = len(missing_from_registry) == 0
+    else:
+        aligned = len(missing_from_registry) == 0 and len(missing_from_commits) == 0
+
+    return {
+        "range": range_spec,
+        "commits_scanned": len(shas),
+        "registry_decision_count": len(registry_ids),
+        "trailer_decisions_in_range": trailer_ids_in_range,
+        "missing_from_registry": missing_from_registry,
+        "missing_from_commits": missing_from_commits,
+        "aligned": aligned,
+        "status": "ok",
+        "commit_provenance": commit_provenance,
+        "scope_note": (
+            "missing_from_commits is scoped to the scan range; "
+            "DECs in the registry from commits outside the range are "
+            "not alarm signals — use a full-history range to enforce "
+            "globally."
+        ),
+    }

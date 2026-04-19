@@ -708,7 +708,7 @@ def _handle_decision(args) -> int:
     # builder / validator + DB registry, so we import once at the
     # handler boundary and share the read-only open helper across
     # branches.
-    if args.action not in {"digest", "digest-check", "ingest-commit", "ingest-range"}:
+    if args.action not in {"digest", "digest-check", "ingest-commit", "ingest-range", "drift-check"}:
         return _err(f"unknown decision action: {args.action}")
 
     # ----------------------- ingest-commit --------------------------------
@@ -830,6 +830,75 @@ def _handle_decision(args) -> int:
             )
 
         return _ok(result)
+
+    # ----------------------- drift-check --------------------------------
+    # Phase 7 Slice 16 — read-only drift detection between commit-trailer
+    # evidence (layer 2) and the runtime decision registry (layer 1).
+    # Exits 0 when aligned, 1 when drift detected, ≥2 on fatal error.
+    # (DEC-CLAUDEX-DEC-DRIFT-CHECK-001)
+    if args.action == "drift-check":
+        range_spec = getattr(args, "range", None)
+        if not range_spec:
+            return _err("decision drift-check: --range is required", code=2)
+
+        project_root = getattr(args, "project_root", None) or str(_PROJECT_ROOT)
+        exit_on_drift = getattr(args, "exit_on_drift", True)
+
+        # Function-scope import — shadow-only discipline; must not appear
+        # at module scope.  (DEC-CLAUDEX-DEC-TRAILER-INGEST-001,
+        # DEC-CLAUDEX-DECISION-DIGEST-CLI-001)
+        from runtime.core import decision_trailer_ingest as dti
+
+        # Drift-check is read-only: open the DB in read-only mode
+        # (mode=ro primary, mode=ro&immutable=1 fallback) so this command
+        # can never accidentally write to the decisions table.
+        import sqlite3 as _sqlite3
+
+        db_path = default_db_path()
+
+        def _try_open_ro(uri: str):
+            connection = _sqlite3.connect(uri, uri=True)
+            connection.row_factory = _sqlite3.Row
+            return connection
+
+        ro_uri = f"file:{db_path}?mode=ro"
+        immutable_uri = f"file:{db_path}?mode=ro&immutable=1"
+
+        try:
+            conn_ro = _try_open_ro(ro_uri)
+        except _sqlite3.Error:
+            try:
+                conn_ro = _try_open_ro(immutable_uri)
+            except _sqlite3.Error as exc2:
+                return _err(
+                    f"decision drift-check: failed to read DB at {db_path} "
+                    f"read-only: {exc2}",
+                    code=2,
+                )
+
+        try:
+            result = dti.drift_check(conn_ro, range_spec, worktree_path=project_root)
+        except ValueError as exc:
+            conn_ro.close()
+            return _err(f"decision drift-check: {exc}", code=2)
+        except _sqlite3.Error as exc:
+            conn_ro.close()
+            return _err(f"decision drift-check: DB error at {db_path}: {exc}", code=2)
+        finally:
+            conn_ro.close()
+
+        # Exit-code CI semantics (matches digest-check convention):
+        #   0 = aligned=True, status=ok
+        #   1 = aligned=False, status=ok (drift detected, valid payload)
+        #  ≥2 = status=error (handled above via _err())
+        if result.get("aligned"):
+            return _ok(result)
+        # Drift detected.
+        if not exit_on_drift:
+            return _ok(result)
+        # Exit 1: drift detected and --exit-on-drift (default).
+        print(json.dumps(result))
+        return 1
 
     from runtime.core import decision_digest_projection as ddp
     from runtime.core import decision_work_registry as dwr
@@ -4205,6 +4274,49 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Iterate and parse commits but do not write to the database; "
             "reports commits_scanned and status=ok without DB mutations."
+        ),
+    )
+
+    # decision drift-check — Phase 7 Slice 16 read-only drift detection
+    # (DEC-CLAUDEX-DEC-DRIFT-CHECK-001)
+    dec_drift_check = dec_sub.add_parser(
+        "drift-check",
+        help=(
+            "Compare commit-trailer evidence in a git revision range against "
+            "the current decision registry state; exits 0 when aligned, 1 "
+            "when drift detected (rc=1 with status=ok payload), ≥2 on fatal "
+            "error. Pure read-only — never writes to the decisions table. "
+            "(DEC-CLAUDEX-DEC-DRIFT-CHECK-001)"
+        ),
+    )
+    dec_drift_check.add_argument(
+        "--range",
+        required=True,
+        dest="range",
+        help=(
+            "Git rev-list range spec (e.g. '6869fd3..HEAD' or 'A..B'). "
+            "Passed verbatim to git rev-list --reverse. "
+            "Use the full history root..HEAD for global enforcement."
+        ),
+    )
+    dec_drift_check.add_argument(
+        "--project-root",
+        default=None,
+        dest="project_root",
+        help=(
+            "Path to the git repository root used for git rev-list and "
+            "git show. Defaults to the cc-policy project root if omitted."
+        ),
+    )
+    dec_drift_check.add_argument(
+        "--exit-on-drift",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        dest="exit_on_drift",
+        help=(
+            "When drift is detected, exit with code 1 (default: enabled). "
+            "Use --no-exit-on-drift to emit the drift payload with exit 0 "
+            "(useful for informational CI steps that should never block)."
         ),
     )
 

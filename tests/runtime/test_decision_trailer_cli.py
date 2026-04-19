@@ -550,3 +550,206 @@ class TestCliIngestRange:
         combined = stdout + stderr
         assert "--range" in combined, f"--range not in help output: {combined}"
         assert "--dry-run" in combined, f"--dry-run not in help output: {combined}"
+
+
+# ---------------------------------------------------------------------------
+# TestCliDriftCheck — CLI integration tests for drift-check
+# (DEC-CLAUDEX-DEC-DRIFT-CHECK-001, Phase 7 Slice 16)
+# ---------------------------------------------------------------------------
+
+
+class TestCliDriftCheck:
+    """Subprocess-level CLI integration tests for ``cc-policy decision drift-check``.
+
+    These tests exercise the argparse wiring, handler logic, read-only DB open,
+    and the ``drift_check`` function together via the real CLI entry-point.
+    Mirrors the existing ``TestCliIngestRange`` shape.
+    """
+
+    def _make_drift_repo(self, tmp_path: Path):
+        """Create a 3-commit repo (anchor, A with DEC-DRIFT-A-001, B with DEC-DRIFT-B-001).
+
+        Returns ``(repo_path, sha_0, sha_a, sha_b)``.
+        """
+        repo = tmp_path / "drift_repo"
+        repo.mkdir()
+        rp = str(repo)
+
+        env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "t@t.com",
+               "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "t@t.com"}
+
+        subprocess.run(["git", "init", rp], check=True, capture_output=True)
+        subprocess.run(["git", "-C", rp, "config", "user.email", "t@t.com"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", rp, "config", "user.name", "Test"],
+                       check=True, capture_output=True)
+
+        def commit(filename, msg):
+            (repo / filename).write_text(filename)
+            subprocess.run(["git", "-C", rp, "add", filename],
+                           check=True, capture_output=True, env=env)
+            subprocess.run(["git", "-C", rp, "commit", "-m", msg],
+                           check=True, capture_output=True, env=env)
+            r = subprocess.run(["git", "-C", rp, "rev-parse", "HEAD"],
+                               capture_output=True, text=True, check=True)
+            return r.stdout.strip()
+
+        sha_0 = commit("anchor.txt", "chore: anchor")
+        sha_a = commit("a.txt", "feat: A\n\nBody.\n\ndecision: DEC-DRIFT-A-001")
+        sha_b = commit("b.txt", "feat: B\n\nBody.\n\ndecision: DEC-DRIFT-B-001")
+        return repo, sha_0, sha_a, sha_b
+
+    def test_cli_drift_check_aligned_exit_zero(self, tmp_path, db_path):
+        """Registry pre-populated with all trailer DECs → rc=0, aligned=True."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        # Pre-ingest the range so the registry is aligned.
+        range_spec = f"{sha_0}..{sha_b}"
+        rc_ingest, _, _, _ = _run_cli(
+            ["decision", "ingest-range", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc_ingest == 0, "ingest-range precondition failed"
+
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc == 0, f"Expected rc=0 on aligned; rc={rc}; stderr={stderr}; stdout={stdout}"
+        assert payload.get("aligned") is True
+        assert payload.get("status") == "ok"
+        assert payload.get("missing_from_registry") == []
+        assert payload.get("missing_from_commits") == []
+
+    def test_cli_drift_check_drift_exit_one(self, tmp_path, db_path):
+        """Trailer DEC missing from registry → rc=1 (not 2), status=ok, aligned=False."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        range_spec = f"{sha_0}..{sha_b}"
+
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc == 1, f"Expected rc=1 on drift; rc={rc}; stdout={stdout}; stderr={stderr}"
+        assert payload.get("aligned") is False
+        assert payload.get("status") == "ok"
+        assert "DEC-DRIFT-A-001" in payload.get("missing_from_registry", [])
+        assert "DEC-DRIFT-B-001" in payload.get("missing_from_registry", [])
+
+    def test_cli_drift_check_invalid_range_exit_nonzero(self, tmp_path, db_path):
+        """Bogus --range → rc != 0 and rc != 1, status=error."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "drift-check", "--range", "nonexistent_ref..HEAD",
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc != 0, f"Expected non-zero exit; rc={rc}"
+        assert rc != 1, f"Expected rc != 1 for fatal error; rc={rc}"
+        assert payload.get("status") == "error", f"Payload: {payload}"
+
+    def test_cli_drift_check_no_exit_on_drift_flag(self, tmp_path, db_path):
+        """With --no-exit-on-drift, drift detected → rc=0 with drift payload."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        range_spec = f"{sha_0}..{sha_b}"
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo), "--no-exit-on-drift"],
+            db_path,
+        )
+        assert rc == 0, f"Expected rc=0 with --no-exit-on-drift; rc={rc}; stderr={stderr}"
+        assert payload.get("aligned") is False
+        assert payload.get("status") == "ok"
+        missing = payload.get("missing_from_registry", [])
+        assert "DEC-DRIFT-A-001" in missing or "DEC-DRIFT-B-001" in missing
+
+    def test_cli_drift_check_help_lists_flags(self, tmp_path, db_path):
+        """``cc-policy decision drift-check --help`` mentions --range, --exit-on-drift, --project-root."""
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "drift-check", "--help"],
+            db_path,
+        )
+        assert rc == 0, f"Expected rc=0 for --help; rc={rc}"
+        combined = stdout + stderr
+        assert "--range" in combined, f"--range not in help; output: {combined}"
+        assert "--exit-on-drift" in combined, f"--exit-on-drift not in help; output: {combined}"
+        assert "--project-root" in combined, f"--project-root not in help; output: {combined}"
+
+    def test_cli_drift_check_no_write_on_drift(self, tmp_path, db_path):
+        """drift-check with drift detected leaves the decisions table unchanged."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        range_spec = f"{sha_0}..{sha_b}"
+
+        # Get row count before
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from runtime.core import decision_work_registry as dwr_local
+        count_before = len(dwr_local.list_decisions(conn))
+        conn.close()
+
+        _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        count_after = len(dwr_local.list_decisions(conn))
+        conn.close()
+
+        assert count_before == count_after, (
+            f"drift-check must not write to DB; before={count_before}, after={count_after}"
+        )
+
+    def test_cli_drift_check_json_shape_fields_present(self, tmp_path, db_path):
+        """Payload carries all contract fields from the drift-check spec."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        range_spec = f"{sha_0}..{sha_b}"
+        rc, payload, stdout, stderr = _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        required_keys = {
+            "range", "commits_scanned", "registry_decision_count",
+            "trailer_decisions_in_range", "missing_from_registry",
+            "missing_from_commits", "aligned", "status",
+        }
+        missing_keys = required_keys - set(payload.keys())
+        assert missing_keys == set(), f"Missing payload keys: {missing_keys}; payload: {payload}"
+
+    def test_cli_drift_then_ingest_then_aligned(self, tmp_path, db_path):
+        """E2E convergence: drift → ingest-range → aligned. Pins slice-15/slice-16 relationship."""
+        repo, sha_0, sha_a, sha_b = self._make_drift_repo(tmp_path)
+        range_spec = f"{sha_0}..{sha_b}"
+
+        # Step 1: drift-check shows drift (rc=1)
+        rc1, payload1, stdout1, stderr1 = _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc1 == 1, f"Expected rc=1 on drift; rc={rc1}; stderr={stderr1}"
+        assert payload1.get("aligned") is False
+
+        # Step 2: ingest-range to fill the gap
+        rc_ingest, _, _, _ = _run_cli(
+            ["decision", "ingest-range", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc_ingest == 0, "ingest-range should succeed"
+
+        # Step 3: drift-check now aligned (rc=0)
+        rc2, payload2, stdout2, stderr2 = _run_cli(
+            ["decision", "drift-check", "--range", range_spec,
+             "--project-root", str(repo)],
+            db_path,
+        )
+        assert rc2 == 0, f"Expected rc=0 after ingest; rc={rc2}; stderr={stderr2}"
+        assert payload2.get("aligned") is True
+        assert payload2.get("missing_from_registry") == []
+        assert payload2.get("missing_from_commits") == []
