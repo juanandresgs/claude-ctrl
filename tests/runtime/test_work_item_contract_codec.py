@@ -976,3 +976,115 @@ class TestLegacyVocabularyCompatibility:
 
         assert contract1.scope == contract2.scope
         assert contract1.evaluation == contract2.evaluation
+
+
+# ---------------------------------------------------------------------------
+# 14. Regression: notes key rejection
+# ---------------------------------------------------------------------------
+
+
+class TestEvalNotesKeyRejection:
+    """Pin that 'notes' is not and has never been a legal evaluation_json key.
+
+    @decision DEC-CLAUDEX-ORCHESTRATOR-EVAL-NOTES-NARROW-001
+    Title: Narrow orchestrator producer for evaluation_json.notes
+    Status: active
+    Rationale: The orchestrator emitted "notes": [...] inside evaluation_json
+      payloads since slice 26 as an informal DEC-id traceability convention.
+      That key has zero machine authority — it is not declared in
+      EvaluationContract, _EVAL_TUPLE_KEYS, or _EVAL_STRING_KEYS. Slice 35
+      pins the decoder rejection here so any future producer-side regression
+      is immediately caught; DEC-id traceability moves to acceptance_notes
+      (a string field already declared on EvaluationContract).
+
+    The 9 legal keys are:
+      required_tests, required_evidence,
+      required_real_path_checks, required_authority_invariants,
+      required_integration_points, forbidden_shortcuts,
+      rollback_boundary, acceptance_notes, ready_for_guardian_definition
+    """
+
+    def test_decode_evaluation_contract_rejects_notes_key(self):
+        """evaluation_json with a 'notes' key must raise ValueError naming it.
+
+        Exercises the full production sequence:
+          orchestrator sets evaluation_json → persisted in work_items row
+          → SubagentStart hook calls decode_work_item_contract
+          → must reject with a clear error naming 'notes' and the legal keys.
+
+        This is a compound-interaction test: it crosses the JSON persistence
+        layer (WorkItemRecord) and the closed-key-set decoder in
+        _require_closed_key_set, exercising the real production decode path
+        that the SubagentStart hook uses to compile a prompt pack.
+        """
+        payload = {
+            "required_tests": ["pytest tests/runtime/test_work_item_contract_codec.py"],
+            "notes": ["DEC-CLAUDEX-ORCHESTRATOR-EVAL-NOTES-NARROW-001"],
+        }
+        record = _record(evaluation_json=json.dumps(payload))
+        with pytest.raises(ValueError) as exc_info:
+            wcc.decode_work_item_contract(record)
+
+        err = str(exc_info.value)
+
+        # Error must name the offending key.
+        assert "notes" in err, (
+            f"Expected error message to contain 'notes', got: {err!r}"
+        )
+
+        # Error must enumerate all 9 legal keys so the error IS the schema doc.
+        legal_keys = [
+            "acceptance_notes",
+            "forbidden_shortcuts",
+            "ready_for_guardian_definition",
+            "required_authority_invariants",
+            "required_evidence",
+            "required_integration_points",
+            "required_real_path_checks",
+            "required_tests",
+            "rollback_boundary",
+        ]
+        for key in legal_keys:
+            assert key in err, (
+                f"Expected error message to enumerate legal key {key!r}, got: {err!r}"
+            )
+
+    def test_notes_key_with_no_other_keys_rejected(self):
+        """Bare notes-only payload is also rejected."""
+        record = _record(evaluation_json='{"notes": ["some-dec-id"]}')
+        with pytest.raises(ValueError, match="notes"):
+            wcc.decode_work_item_contract(record)
+
+    def test_notes_key_alongside_all_legal_keys_rejected(self):
+        """notes is rejected even when all 9 legal keys are present alongside it."""
+        payload = {
+            "required_tests": ["t"],
+            "required_evidence": ["e"],
+            "required_real_path_checks": ["r"],
+            "required_authority_invariants": ["a"],
+            "required_integration_points": ["i"],
+            "forbidden_shortcuts": ["f"],
+            "rollback_boundary": "rb",
+            "acceptance_notes": "an",
+            "ready_for_guardian_definition": "rg",
+            "notes": ["DEC-id"],
+        }
+        record = _record(evaluation_json=json.dumps(payload))
+        with pytest.raises(ValueError, match="notes"):
+            wcc.decode_work_item_contract(record)
+
+    def test_notes_key_is_not_an_alias(self):
+        """'notes' has no alias entry; it is neither a canonical key nor a
+        legacy alias. Must reach the closed-key-set rejector, not silently
+        normalise to an existing field.
+        """
+        record = _record(evaluation_json='{"notes": ["DEC-id"]}')
+        with pytest.raises(ValueError) as exc_info:
+            wcc.decode_work_item_contract(record)
+        err = str(exc_info.value)
+        # Confirm it's an unexpected-key error, not a type or alias error.
+        assert "unexpected key" in err or "notes" in err, (
+            f"Unexpected error shape: {err!r}"
+        )
+        # Must NOT have been silently translated to acceptance_notes.
+        assert "acceptance_notes" not in err.split("unexpected key")[0] if "unexpected key" in err else True
