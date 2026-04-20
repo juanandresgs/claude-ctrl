@@ -41,6 +41,7 @@ from typing import Optional
 from runtime.core import completions
 from runtime.core import reviewer_findings as rf
 from runtime.core.stage_registry import REVIEWER_VERDICTS
+from runtime.schemas import FINDING_SEVERITY_BLOCKING
 
 __all__ = [
     "ReviewerReadiness",
@@ -169,7 +170,14 @@ def assess(
     head_stale = reviewer_head_sha != current_head_sha
 
     # Count open blocking findings.
-    finding_filters = {"workflow_id": workflow_id, "status": "open", "severity": "blocking"}
+    # @decision DEC-CLAUDEX-FINDING-SEVERITY-SENTINEL-AUTH-001
+    # Title: severity filter value MUST be FINDING_SEVERITY_BLOCKING, not a bare literal
+    # Status: accepted
+    # Rationale: using a bare "blocking" string would create a parallel authority to
+    #   schemas.FINDING_SEVERITIES. If the vocabulary renames this member the filter
+    #   silently becomes a no-op (zero matches → false-ready-for-guardian). The named
+    #   sentinel from runtime.schemas ensures a single authoritative definition.
+    finding_filters = {"workflow_id": workflow_id, "status": "open", "severity": FINDING_SEVERITY_BLOCKING}
     if work_item_id is not None:
         finding_filters["work_item_id"] = work_item_id
     open_blocking = rf.list_findings(conn, **finding_filters)

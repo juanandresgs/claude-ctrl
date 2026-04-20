@@ -779,6 +779,26 @@ FINDING_STATUSES: frozenset[str] = frozenset({"open", "resolved", "waived"})
 #   note     — informational observation, no action required
 FINDING_SEVERITIES: frozenset[str] = frozenset({"blocking", "concern", "note"})
 
+# Named sentinel for the "blocking" severity — sole read-path authority for
+# constructing severity filter values in runtime/core consumers.  Consumers
+# MUST import this constant rather than hard-coding the literal "blocking" so
+# that any future rename of the vocabulary member propagates automatically and
+# no read-path filter silently becomes a no-op.
+# Single-authority invariant: FINDING_SEVERITY_BLOCKING is definitionally a
+# member of FINDING_SEVERITIES; tests enforce this at import time.
+# @decision DEC-CLAUDEX-FINDING-SEVERITY-SENTINEL-AUTH-001
+# Title: FINDING_SEVERITY_BLOCKING is the sole named sentinel for the "blocking"
+#   severity; no runtime/core consumer may use a bare string literal for severity
+#   filtering or comparison — they must import this constant.
+# Status: accepted
+# Rationale: reviewer_convergence.py:172 used a bare "blocking" literal in
+#   finding_filters; if the vocabulary ever renames that member the filter
+#   becomes a no-op (false-ready-for-guardian). Introducing a named sentinel
+#   colocated with FINDING_SEVERITIES makes the single-authority contract
+#   mechanically enforceable via an AST-scanner invariant test (T2 in
+#   tests/runtime/test_finding_severity_sentinel_auth.py).
+FINDING_SEVERITY_BLOCKING: str = "blocking"
+
 # Valid status values — enforced at the domain layer, not via SQL CHECK
 # so that the error message is human-readable JSON rather than a constraint
 # violation traceback.
