@@ -868,6 +868,17 @@ SEAT_STATUSES: frozenset[str] = frozenset({"active", "released", "dead"})
 # Named roles a seat may occupy (DEC-CLAUDEX-SUPERVISION-DOMAIN-001).
 SEAT_ROLES: frozenset[str] = frozenset({"worker", "supervisor", "reviewer", "observer"})
 
+# @decision DEC-CLAUDEX-SEAT-ROLE-SENTINEL-AUTH-001
+# Named sentinel constants for every member of SEAT_ROLES. Any runtime/core
+# seat-write call site that constructs a seats row (seats.create or direct
+# INSERT INTO seats) MUST reference these sentinels rather than bare string
+# literals. Pinned exhaustively by tests/runtime/test_seat_role_sentinel_auth.py
+# T1 (sentinel coverage) + T2 (narrow AST ratchet on seat-write call sites).
+SEAT_ROLE_WORKER: str = "worker"
+SEAT_ROLE_SUPERVISOR: str = "supervisor"
+SEAT_ROLE_REVIEWER: str = "reviewer"
+SEAT_ROLE_OBSERVER: str = "observer"
+
 #   supervision_threads: active — thread relationship is live
 #                        completed — thread ended normally (e.g. reviewer gave verdict)
 #                        abandoned — supervisor seat went dead before completing
