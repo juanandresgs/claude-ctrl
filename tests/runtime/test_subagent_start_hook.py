@@ -847,6 +847,7 @@ class TestA8CanonicalSeatNoCarrierContractDeny:
             f"Canonical seat {agent_type!r} without contract must produce "
             f"canonical_seat_no_carrier_contract in additionalContext, got:\n{ctx}"
         )
+        assert "workflow stage-packet" in ctx
         # Must NOT fall through to legacy guidance path.
         assert "Context:" not in ctx, (
             f"Canonical seat {agent_type!r} must NOT take legacy path; got:\n{ctx}"

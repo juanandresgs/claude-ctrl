@@ -102,7 +102,7 @@ def test_deny_implementer_no_contract():
     assert decision is not None
     assert decision.action == "deny"
     assert decision.policy_name == "agent_contract_required"
-    assert "cc-policy dispatch agent-prompt" in decision.reason
+    assert "cc-policy workflow stage-packet" in decision.reason
 
 
 def test_deny_planner_no_contract():
@@ -202,7 +202,7 @@ def test_deny_general_purpose_with_reviewer_contract():
     assert decision is not None
     assert decision.action == "deny"
     assert "stage_id='reviewer'" in decision.reason
-    assert "required_subagent_type" in decision.reason
+    assert "agent_tool_spec.subagent_type" in decision.reason or "subagent_type" in decision.reason
 
 
 def test_deny_missing_subagent_type_with_contract():
@@ -315,8 +315,7 @@ def test_deny_reason_includes_remediation_cli():
     req = _make_agent_request(subagent_type="implementer", prompt="Do work")
     decision = check(req)
     assert decision is not None
-    assert "cc-policy dispatch agent-prompt" in decision.reason
-    assert "--workflow-id" in decision.reason
+    assert "cc-policy workflow stage-packet" in decision.reason
     assert "--stage-id" in decision.reason
 
 

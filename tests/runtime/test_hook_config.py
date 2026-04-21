@@ -148,6 +148,7 @@ def test_check_reviewer_has_local_runtime_lifecycle_pattern() -> None:
     check_reviewer = _ROOT / "hooks" / "check-reviewer.sh"
     content = check_reviewer.read_text(encoding="utf-8")
     assert "_local_cc_policy" in content
-    assert "_LOCAL_RUNTIME_CLI" in content
+    assert "_LOCAL_RUNTIME_ROOT" in content
+    assert 'cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"' in content
     assert "lifecycle on-stop" in content
     assert "_local_cc_policy lease current" in content

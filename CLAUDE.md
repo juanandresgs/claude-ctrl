@@ -152,12 +152,17 @@ guardian, reviewer), the orchestrator MUST:
 
 1. Prefer the high-level stage packet producer:
    ```bash
-   cc-policy workflow stage-packet <workflow_id> --stage-id <stage_id>
+   cc-policy workflow stage-packet [<workflow_id>] --stage-id <stage_id>
    ```
    This is the canonical execution bundle authority. It returns the Agent-tool
    launch spec (`agent_tool_spec`) plus the current workflow binding, scope,
    contracts, readiness snapshots, and canonical follow-up command shapes for
    the slice.
+   `workflow_id` may be omitted only when runtime can resolve a bound workflow
+   from `--worktree-path`, `CLAUDE_PROJECT_DIR`, or the current git worktree.
+   Canonical seats are not generic helper seats: they require a bound workflow,
+   an active goal, and an in-progress work item. If that bootstrap state does
+   not exist yet, seed it first or use a non-canonical/general-purpose helper.
 
 2. If a caller only needs the low-level prompt contract, it may call:
    ```bash
@@ -206,8 +211,11 @@ Common queries and dispatch calls (copy/adapt these forms):
 # Who am I / which workflow is active?
 cc-policy context role
 
+# Fresh local planner adoption (git repo/worktree required)
+cc-policy workflow bootstrap-planner <workflow_id> --desired-end-state "<text>"
+
 # Build the canonical execution bundle for a stage
-cc-policy workflow stage-packet <workflow_id> --stage-id <planner|implementer|reviewer|guardian>
+cc-policy workflow stage-packet [<workflow_id>] --stage-id <planner|implementer|reviewer|guardian>
 
 # Low-level prompt contract primitive (use when only the prompt block is needed)
 cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <planner|implementer|reviewer|guardian>
@@ -222,7 +230,8 @@ cc-policy workflow scope-set --workflow-id <workflow_id> --scope-file tmp/<scope
 ```
 
 Parameter discipline:
-- `--workflow-id`: runtime workflow identity; resolve from `cc-policy context role` / lease context, do not invent from branch names.
+- `--workflow-id`: runtime workflow identity; prefer to supply it explicitly. It may be omitted only when runtime can resolve a bound workflow from the active worktree/lease context.
+- `bootstrap-planner`: the sanctioned bootstrap for a fresh local canonical planner seat. Do not hand-assemble `workflow bind` + `goal-set` + `work-item-set` for ordinary planner adoption.
 - `--stage-id`: canonical stage target. Use planner/implementer/reviewer/guardian dispatch chain; for guardian actions, include mode intent in task (`provision` vs `merge/land`).
 - `--project-root`: absolute repo/worktree root for state checks.
 - `--scope-file`: canonical scope manifest for source slices (required before implementer coding work).

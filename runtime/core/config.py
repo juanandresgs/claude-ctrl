@@ -21,6 +21,16 @@ import subprocess
 from pathlib import Path
 
 
+def _forbidden_policy_db_override(path: Path) -> bool:
+    """Return True when ``path`` is a known-invalid policy DB override.
+
+    ``runtime/policy.db`` surfaced in the field as an empty untracked artifact
+    that poisoned carrier/bootstrap routing. The runtime state DB authority is
+    ``state.db`` under ``.claude/``; ``policy.db`` is not a valid override.
+    """
+    return path.expanduser().name == "policy.db"
+
+
 def resolve_project_db() -> Path | None:
     """Detect project DB from git root.
 
@@ -71,7 +81,9 @@ def default_db_path() -> Path:
     # Step 1: explicit override
     override = os.environ.get("CLAUDE_POLICY_DB")
     if override:
-        return Path(override).expanduser()
+        override_path = Path(override).expanduser()
+        if not _forbidden_policy_db_override(override_path):
+            return override_path
 
     # Step 2: project dir env var (hook-exported, avoids git subprocess)
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR")

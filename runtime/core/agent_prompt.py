@@ -189,13 +189,25 @@ def build_agent_dispatch_prompt(
             conn, status="active", workflow_id=workflow_id
         )
         if not active_goals:
+            planner_bootstrap_note = ""
+            if resolved_stage_id == "planner":
+                from runtime.core.planner_bootstrap import planner_bootstrap_guidance
+
+                planner_bootstrap_note = planner_bootstrap_guidance() + " "
             raise ValueError(
                 f"no active goal found for workflow {workflow_id!r}; "
                 "a goal scoped to this workflow must be in 'active' status "
-                "before an Agent prompt can be produced. The previous "
-                "behaviour of falling back to the first globally-active "
-                "goal was removed under DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 "
-                "to prevent cross-workflow contract bleed."
+                "before a canonical stage launch can be produced. "
+                + planner_bootstrap_note
+                + "Seed a goal first with `cc-policy workflow goal-set`, "
+                "then seed an in-progress work item with "
+                "`cc-policy workflow work-item-set`. "
+                "If you only want ad hoc helper parallelism, use a "
+                "general-purpose/non-canonical seat instead of planner/implementer/"
+                "reviewer/guardian. The previous behaviour of falling back "
+                "to the first globally-active goal was removed under "
+                "DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 to prevent cross-workflow "
+                "contract bleed."
             )
         goal_id = active_goals[0].goal_id
 
@@ -210,12 +222,22 @@ def build_agent_dispatch_prompt(
             workflow_id=workflow_id,
         )
         if not in_progress:
+            planner_bootstrap_note = ""
+            if resolved_stage_id == "planner":
+                from runtime.core.planner_bootstrap import planner_bootstrap_guidance
+
+                planner_bootstrap_note = planner_bootstrap_guidance() + " "
             raise ValueError(
                 f"no in_progress work item found for goal {goal_id!r} "
                 f"scoped to workflow {workflow_id!r}; a workflow-scoped "
                 "work item must be in 'in_progress' status before "
-                "dispatch. See DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 for "
-                "why the global fall-through was removed."
+                "dispatch. "
+                + planner_bootstrap_note
+                + "Seed one with `cc-policy workflow work-item-set`, "
+                "or use a general-purpose/non-canonical seat for ad hoc helper "
+                "work that should not enter the canonical workflow chain. "
+                "See DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 for why the global "
+                "fall-through was removed."
             )
         work_item_id = in_progress[0].work_item_id
 

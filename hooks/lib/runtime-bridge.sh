@@ -49,8 +49,13 @@ _resolve_policy_db() {
     # Side-effect-free if CLAUDE_POLICY_DB is already set.
     local resolved=""
     if [[ -n "${CLAUDE_POLICY_DB:-}" ]]; then
-        printf '%s\n' "$CLAUDE_POLICY_DB"
-        return 0
+        local explicit_name=""
+        explicit_name="$(basename "$CLAUDE_POLICY_DB" 2>/dev/null || printf '%s' "$CLAUDE_POLICY_DB")"
+        if [[ "$explicit_name" != "policy.db" ]]; then
+            printf '%s\n' "$CLAUDE_POLICY_DB"
+            return 0
+        fi
+        unset CLAUDE_POLICY_DB
     fi
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
         resolved="$CLAUDE_PROJECT_DIR/.claude/state.db"
@@ -71,6 +76,52 @@ _resolve_policy_db() {
 # Core entry point
 # ---------------------------------------------------------------------------
 
+# _resolve_runtime_python
+# Single authoritative Python resolver for shell → runtime calls.
+#
+# Priority:
+#   1. CLAUDEX_PYTHON_BIN override
+#   2. First executable python that can import yaml
+#   3. Fallback to python3 on PATH
+#
+# The yaml import check matches the real runtime dependency surface used by
+# prompt-pack compilation. Without it, hooks can silently select the system
+# interpreter and collapse valid runtime-first paths into generic failures.
+_CLAUDEX_RUNTIME_PYTHON=""
+_resolve_runtime_python() {
+    if [[ -n "${CLAUDEX_PYTHON_BIN:-}" ]]; then
+        printf '%s\n' "${CLAUDEX_PYTHON_BIN}"
+        return 0
+    fi
+
+    if [[ -n "${_CLAUDEX_RUNTIME_PYTHON:-}" ]]; then
+        printf '%s\n' "${_CLAUDEX_RUNTIME_PYTHON}"
+        return 0
+    fi
+
+    local candidate=""
+    local resolved=""
+    for candidate in python3 /opt/homebrew/bin/python3 /usr/bin/python3; do
+        resolved="$candidate"
+        if [[ "$candidate" != */* ]]; then
+            resolved="$(command -v "$candidate" 2>/dev/null || true)"
+            [[ -z "$resolved" ]] && continue
+        elif [[ ! -x "$candidate" ]]; then
+            continue
+        fi
+
+        if "$resolved" -c 'import yaml' >/dev/null 2>&1; then
+            _CLAUDEX_RUNTIME_PYTHON="$resolved"
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    done
+
+    resolved="$(command -v python3 2>/dev/null || echo "python3")"
+    _CLAUDEX_RUNTIME_PYTHON="$resolved"
+    printf '%s\n' "$resolved"
+}
+
 cc_policy() {
     local runtime_root="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
     # Delegate DB resolution to the single authoritative resolver so cc_policy
@@ -79,7 +130,16 @@ cc_policy() {
     if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
         _resolve_policy_db >/dev/null
     fi
-    python3 "$runtime_root/cli.py" "$@"
+    "$(_resolve_runtime_python)" "$runtime_root/cli.py" "$@"
+}
+
+# cc_policy_local_runtime <runtime_root> <args...>
+# Uses the same Python and DB authority as cc_policy(), but lets callers bind
+# the runtime root to the current worktree instead of the installed default.
+cc_policy_local_runtime() {
+    local runtime_root="$1"
+    shift || true
+    CLAUDE_RUNTIME_ROOT="$runtime_root" cc_policy "$@"
 }
 
 # ---------------------------------------------------------------------------

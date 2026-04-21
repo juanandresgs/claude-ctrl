@@ -121,6 +121,28 @@ def test_build_stage_packet_returns_agent_tool_spec_and_command_recipes(conn):
     assert result["commands"]["evaluation_get"] == "cc-policy evaluation get wf-stage"
 
 
+def test_build_stage_packet_can_resolve_workflow_from_bound_worktree(conn):
+    result = build_stage_packet(
+        conn,
+        workflow_id=None,
+        worktree_path=str(_REPO_ROOT),
+        stage_id="implementer",
+    )
+
+    assert result["workflow_id"] == "wf-stage"
+    assert result["workflow_binding"]["worktree_path"] == str(_REPO_ROOT)
+
+
+def test_build_stage_packet_rejects_mismatched_explicit_worktree(conn, tmp_path: Path):
+    with pytest.raises(ValueError, match="is bound to worktree"):
+        build_stage_packet(
+            conn,
+            workflow_id="wf-stage",
+            worktree_path=str(tmp_path / "other"),
+            stage_id="implementer",
+        )
+
+
 def test_build_stage_packet_includes_contracts_scope_and_runtime_state(conn):
     result = build_stage_packet(
         conn,
@@ -179,3 +201,110 @@ def test_workflow_stage_packet_cli_returns_json(tmp_path: Path):
     assert payload["agent_tool_spec"]["subagent_type"] == "implementer"
     assert payload["commands"]["work_item_get"] == "cc-policy workflow work-item-get WI-STAGE-1"
     assert payload["scope_parity"]["matches_work_item_scope"] is True
+
+
+def test_workflow_stage_packet_cli_allows_explicit_workflow_id_outside_git(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _seed(conn)
+    conn.commit()
+    conn.close()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "stage-packet",
+            "wf-stage",
+            "--stage-id",
+            "planner",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CLAUDE_POLICY_DB": str(db_path),
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(tmp_path),
+    )
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["workflow_id"] == "wf-stage"
+
+
+def test_workflow_stage_packet_cli_without_workflow_or_git_fails_loud(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    conn.commit()
+    conn.close()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "stage-packet",
+            "--stage-id",
+            "planner",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
+            "CLAUDE_POLICY_DB": str(db_path),
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(tmp_path),
+    )
+    assert proc.returncode != 0
+    payload = json.loads(proc.stderr)
+    assert payload["status"] == "error"
+    assert "no workflow_id supplied and no worktree path could be resolved" in payload["message"]
+    assert "git init" in payload["message"]
+    assert "workflow stage-packet [<workflow_id>] --stage-id planner" in payload["message"]
+
+
+def test_workflow_stage_packet_cli_requires_binding_for_inferred_worktree(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    conn.commit()
+    conn.close()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "stage-packet",
+            "--stage-id",
+            "planner",
+            "--worktree-path",
+            str(repo),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
+            "CLAUDE_POLICY_DB": str(db_path),
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(tmp_path),
+    )
+    assert proc.returncode != 0
+    payload = json.loads(proc.stderr)
+    assert payload["status"] == "error"
+    assert "no workflow binding found" in payload["message"]
+    assert "bootstrap-planner" in payload["message"]

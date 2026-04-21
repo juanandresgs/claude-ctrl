@@ -37,7 +37,7 @@ get_plan_status "$PROJECT_ROOT"
 # Must resolve here too so agent-start reaches the in-worktree CLI.
 # ---------------------------------------------------------------------------
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
 _local_cc_policy() {
     # @decision DEC-CLAUDEX-SA-MARKER-RELIABILITY-001
     # Title: SubagentStart marker-seating is authoritative and failures are observable
@@ -55,17 +55,18 @@ _local_cc_policy() {
     if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
         _resolve_policy_db >/dev/null
     fi
-    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+    cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
 }
 
 _authority_python() {
     local mode="$1"
     local value="$2"
-    python3 - "$_HOOK_DIR/.." "$mode" "$value" <<'PY'
+    "$(_resolve_runtime_python)" - "$_HOOK_DIR/.." "$mode" "$value" <<'PY'
 import sys
 repo_root, mode, value = sys.argv[1:4]
 sys.path.insert(0, repo_root)
 from runtime.core import authority_registry as ar
+from runtime.core import stage_packet as sp
 
 if mode == "dispatch_subagent_type_for_stage":
     result = ar.dispatch_subagent_type_for_stage(value)
@@ -73,6 +74,8 @@ elif mode == "canonical_dispatch_subagent_type":
     result = ar.canonical_dispatch_subagent_type(value)
 elif mode == "canonical_stage_id":
     result = ar.canonical_stage_id(value)
+elif mode == "dispatch_bootstrap_guidance":
+    result = sp.dispatch_bootstrap_guidance(value or None)
 else:
     raise SystemExit(2)
 
@@ -114,7 +117,7 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
     if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
         _CARRIER_AGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" "${AGENT_TYPE:-}" 2>/dev/null || echo "")
         [[ -z "$_CARRIER_AGENT_TYPE" ]] && _CARRIER_AGENT_TYPE="$AGENT_TYPE"
-        _CARRIER_JSON=$(python3 "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$_CARRIER_AGENT_TYPE" 2>/dev/null || echo "")
+        _CARRIER_JSON=$("$(_resolve_runtime_python)" "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$_CARRIER_AGENT_TYPE" 2>/dev/null || echo "")
         if [[ -n "$_CARRIER_JSON" ]]; then
             HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
             # Claim delivery only when the carrier-backed correlation path matched
@@ -158,7 +161,8 @@ elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
     # with reason canonical_seat_no_carrier_contract.  Do NOT fall through to the
     # legacy guidance path — that would silently misguide a forged/stripped launch.
     # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
-    _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. Use 'cc-policy dispatch agent-prompt --stage-id <stage>' and retry the dispatch."
+    _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "" 2>/dev/null || echo "")
+    _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. ${_BOOTSTRAP_GUIDANCE}"
 fi
 
 # Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).

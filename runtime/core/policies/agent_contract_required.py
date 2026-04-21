@@ -56,8 +56,13 @@ from typing import Optional
 import runtime.core.authority_registry as authority_registry
 from runtime.core.dispatch_contract import dispatch_subagent_type_for_stage
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.stage_packet import dispatch_bootstrap_guidance
 
 _CONTRACT_PREFIX = "CLAUDEX_CONTRACT_BLOCK:"
+
+
+def _repair_hint(stage_id: str | None = None) -> str:
+    return dispatch_bootstrap_guidance(stage_id)
 
 
 def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
@@ -72,9 +77,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK is missing required field workflow_id "
-                "(contract_block_missing_workflow_id). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_workflow_id). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -84,9 +88,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK has empty or non-string workflow_id "
-                "(contract_block_empty_workflow_id). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_empty_workflow_id). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -98,8 +101,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK is missing stage_id "
-                "(contract_block_missing_stage). Dispatch-significant subagents "
-                "must be launched from a runtime-issued contract."
+                "(contract_block_missing_stage). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -110,9 +113,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK is missing required field goal_id "
-                "(contract_block_missing_goal_id). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_goal_id). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -122,9 +124,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK has empty or non-string goal_id "
-                "(contract_block_missing_goal_id). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_goal_id). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -135,9 +136,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK is missing required field work_item_id "
-                "(contract_block_missing_work_item_id). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_work_item_id). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -147,9 +147,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK has empty or non-string work_item_id "
-                "(contract_block_missing_work_item_id). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_work_item_id). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -160,9 +159,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK is missing required field decision_scope "
-                "(contract_block_missing_decision_scope). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_decision_scope). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -172,9 +170,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK has empty or non-string decision_scope "
-                "(contract_block_missing_decision_scope). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_decision_scope). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -187,9 +184,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             action="deny",
             reason=(
                 "CLAUDEX_CONTRACT_BLOCK is missing required field generated_at "
-                "(contract_block_missing_generated_at). Call `cc-policy dispatch "
-                "agent-prompt --workflow-id <id> --stage-id <stage>` to mint a "
-                "valid runtime-owned contract."
+                "(contract_block_missing_generated_at). "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -210,9 +206,8 @@ def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
             reason=(
                 f"CLAUDEX_CONTRACT_BLOCK has invalid generated_at={raw_ga!r} "
                 "(contract_block_invalid_generated_at). Must be a positive integer "
-                "Unix timestamp. Call `cc-policy dispatch agent-prompt "
-                "--workflow-id <id> --stage-id <stage>` to mint a valid "
-                "runtime-owned contract."
+                "Unix timestamp. "
+                + _repair_hint()
             ),
             policy_name="agent_contract_required",
         )
@@ -241,9 +236,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 reason=(
                     "Dispatch-significant Agent launch carries an invalid "
                     "CLAUDEX_CONTRACT_BLOCK payload (contract_block_malformed_json). "
-                    "Call `cc-policy dispatch agent-prompt --workflow-id <id> "
-                    "--stage-id <stage>` and prepend the returned `prompt_prefix` "
-                    "verbatim."
+                    + _repair_hint()
                 ),
                 policy_name="agent_contract_required",
             )
@@ -253,9 +246,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 action="deny",
                 reason=(
                     "CLAUDEX_CONTRACT_BLOCK JSON payload must be an object "
-                    "(contract_block_malformed_json). Call `cc-policy dispatch "
-                    "agent-prompt --workflow-id <id> --stage-id <stage>` to mint "
-                    "a valid runtime-owned contract."
+                    "(contract_block_malformed_json). "
+                    + _repair_hint()
                 ),
                 policy_name="agent_contract_required",
             )
@@ -273,8 +265,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 reason=(
                     f"Dispatch contract names unknown stage_id={stage_id!r} "
                     "(contract_block_unknown_stage). "
-                    "Call `cc-policy dispatch agent-prompt --workflow-id <id> "
-                    "--stage-id <stage>` to mint a valid runtime-owned contract."
+                    + _repair_hint(stage_id)
                 ),
                 policy_name="agent_contract_required",
             )
@@ -284,9 +275,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 reason=(
                     f"Dispatch contract for stage_id={stage_id!r} omitted "
                     "tool_input.subagent_type "
-                    "(contract_block_missing_subagent_type). Call `cc-policy dispatch "
-                    "agent-prompt --workflow-id <id> --stage-id <stage>` and "
-                    "set subagent_type to the returned required_subagent_type."
+                    "(contract_block_missing_subagent_type). "
+                    + _repair_hint(stage_id)
                 ),
                 policy_name="agent_contract_required",
             )
@@ -298,9 +288,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                     f"with subagent_type={expected_subagent_type!r}, not "
                     f"{subagent_type!r} "
                     f"(contract_block_stage_subagent_type_mismatch). "
-                    f"Call `cc-policy dispatch agent-prompt "
-                    f"--workflow-id <id> --stage-id {stage_id}` and use the "
-                    "returned `required_subagent_type` / `prompt_prefix` verbatim."
+                    + _repair_hint(stage_id)
                 ),
                 policy_name="agent_contract_required",
             )
@@ -317,9 +305,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         reason=(
             f"Dispatch-significant Agent launch (subagent_type={subagent_type!r}) "
             f"requires a runtime-issued contract. The prompt must start with "
-            f"'{_CONTRACT_PREFIX}' on line 1. Call `cc-policy dispatch agent-prompt "
-            f"--workflow-id <id> --stage-id <stage>` and prepend the returned "
-            f"`prompt_prefix` verbatim to the Agent prompt."
+            f"'{_CONTRACT_PREFIX}' on line 1. "
+            + _repair_hint()
         ),
         policy_name="agent_contract_required",
     )

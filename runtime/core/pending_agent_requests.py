@@ -26,7 +26,14 @@ import json
 import sqlite3
 import sys
 import time
+from pathlib import Path
 from typing import Optional
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from runtime.schemas import ensure_schema
 
 __all__ = [
     "write_pending_request",
@@ -41,6 +48,16 @@ _CONTRACT_FIELDS = (
     "decision_scope",
     "generated_at",
 )
+
+
+def _connect_cli_db(db_path: str) -> sqlite3.Connection:
+    """Open a carrier DB for CLI use, creating parent dirs/schema as needed."""
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    return conn
 
 
 def write_pending_request(
@@ -157,8 +174,7 @@ def _cli_write(db_path: str, session_id: str, agent_type: str, contract_json: st
     if missing:
         print(f"error: contract missing fields: {missing}", file=sys.stderr)
         sys.exit(1)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = _connect_cli_db(db_path)
     try:
         write_pending_request(
             conn,
@@ -181,8 +197,7 @@ def _cli_consume(db_path: str, session_id: str, agent_type: str) -> None:
     Prints nothing (no output) if the row does not exist — the calling shell
     script tests for empty stdout to detect a cache miss.
     """
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = _connect_cli_db(db_path)
     try:
         result = consume_pending_request(conn, session_id=session_id, agent_type=agent_type)
     finally:

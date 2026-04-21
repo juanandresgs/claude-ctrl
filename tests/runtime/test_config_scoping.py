@@ -48,6 +48,22 @@ class TestDefaultDbPath:
         }, clear=False):
             assert default_db_path() == explicit
 
+    def test_step1_policy_db_override_is_rejected_and_falls_through(self, tmp_path):
+        """runtime/policy.db is not a valid state DB override."""
+        poisoned = tmp_path / "runtime" / "policy.db"
+        project = tmp_path / "project"
+        project.mkdir()
+        expected = project / ".claude" / "state.db"
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDE_POLICY_DB": str(poisoned),
+                "CLAUDE_PROJECT_DIR": str(project),
+            },
+            clear=False,
+        ):
+            assert default_db_path() == expected
+
     def test_step2_claude_project_dir(self, tmp_path):
         """CLAUDE_PROJECT_DIR resolves to project .claude/state.db."""
         project = tmp_path / "myproject"

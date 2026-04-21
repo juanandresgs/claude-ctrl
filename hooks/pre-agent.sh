@@ -54,16 +54,19 @@ EOF
 _python_authority() {
     local mode="$1"
     local value="$2"
-    python3 - "$_HOOK_DIR/.." "$mode" "$value" <<'PY'
+    "$(_resolve_runtime_python)" - "$_HOOK_DIR/.." "$mode" "$value" <<'PY'
 import sys
 repo_root, mode, value = sys.argv[1:4]
 sys.path.insert(0, repo_root)
 from runtime.core import authority_registry as ar
+from runtime.core import stage_packet as sp
 
 if mode == "dispatch_subagent_type_for_stage":
     result = ar.dispatch_subagent_type_for_stage(value)
 elif mode == "canonical_dispatch_subagent_type":
     result = ar.canonical_dispatch_subagent_type(value)
+elif mode == "dispatch_bootstrap_guidance":
+    result = sp.dispatch_bootstrap_guidance(value or None)
 else:
     raise SystemExit(2)
 
@@ -102,6 +105,7 @@ if [[ "$ISOLATION" != "worktree" ]]; then
     _SUBAGENT_TYPE=$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || echo "")
     _BLOCK_LINE=$(printf '%s' "$_PROMPT_TEXT" | grep '^CLAUDEX_CONTRACT_BLOCK:' 2>/dev/null | head -1 || echo "")
     _CANONICAL_DISPATCH_TYPE=""
+    _BOOTSTRAP_GUIDANCE=$(_python_authority "dispatch_bootstrap_guidance" "" 2>/dev/null || echo "")
     if [[ -n "$_SUBAGENT_TYPE" ]]; then
         _CANONICAL_DISPATCH_TYPE=$(_python_authority "canonical_dispatch_subagent_type" "$_SUBAGENT_TYPE" 2>/dev/null || echo "")
     fi
@@ -112,7 +116,7 @@ if [[ "$ISOLATION" != "worktree" ]]; then
         # dispatch role but the contract block is absent, deny — this is
         # a runtime-owned classification, not shell-side intent inference.
         if [[ -n "$_CANONICAL_DISPATCH_TYPE" ]]; then
-            _deny "BLOCKED: dispatch-significant subagent '${_SUBAGENT_TYPE}' launched without CLAUDEX_CONTRACT_BLOCK. Use 'cc-policy dispatch agent-prompt --stage-id <stage>' and set subagent_type to the returned required_subagent_type."
+            _deny "BLOCKED: dispatch-significant subagent '${_SUBAGENT_TYPE}' launched without CLAUDEX_CONTRACT_BLOCK. ${_BOOTSTRAP_GUIDANCE}"
         fi
         # No runtime-declared dispatch-significance and no contract block:
         # let the Agent call proceed as an orchestrator/general-purpose
@@ -134,39 +138,40 @@ if [[ "$ISOLATION" != "worktree" ]]; then
     # substring (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001).
     _WF_ID_FIELD=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.workflow_id // "__MISSING__"' 2>/dev/null || echo "__MISSING__")
     if [[ "$_WF_ID_FIELD" == "__MISSING__" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field workflow_id (contract_block_missing_workflow_id). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field workflow_id (contract_block_missing_workflow_id). ${_BOOTSTRAP_GUIDANCE}"
     fi
     if [[ -z "${_WF_ID_FIELD// /}" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty workflow_id (contract_block_empty_workflow_id). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty workflow_id (contract_block_empty_workflow_id). ${_BOOTSTRAP_GUIDANCE}"
     fi
 
     _STAGE_ID=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.stage_id // empty' 2>/dev/null || echo "")
     if [[ -z "$_STAGE_ID" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing stage_id (contract_block_missing_stage). Dispatch-significant subagents must be launched from a runtime-issued contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing stage_id (contract_block_missing_stage). ${_BOOTSTRAP_GUIDANCE}"
     fi
+    _BOOTSTRAP_GUIDANCE=$(_python_authority "dispatch_bootstrap_guidance" "$_STAGE_ID" 2>/dev/null || echo "$_BOOTSTRAP_GUIDANCE")
 
     _GOAL_ID_FIELD=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.goal_id // "__MISSING__"' 2>/dev/null || echo "__MISSING__")
     if [[ "$_GOAL_ID_FIELD" == "__MISSING__" ]] || [[ "$_GOAL_ID_FIELD" == "null" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field goal_id (contract_block_missing_goal_id). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field goal_id (contract_block_missing_goal_id). ${_BOOTSTRAP_GUIDANCE}"
     fi
     if [[ -z "${_GOAL_ID_FIELD// /}" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty goal_id (contract_block_missing_goal_id). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty goal_id (contract_block_missing_goal_id). ${_BOOTSTRAP_GUIDANCE}"
     fi
 
     _WI_ID_FIELD=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.work_item_id // "__MISSING__"' 2>/dev/null || echo "__MISSING__")
     if [[ "$_WI_ID_FIELD" == "__MISSING__" ]] || [[ "$_WI_ID_FIELD" == "null" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field work_item_id (contract_block_missing_work_item_id). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field work_item_id (contract_block_missing_work_item_id). ${_BOOTSTRAP_GUIDANCE}"
     fi
     if [[ -z "${_WI_ID_FIELD// /}" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty work_item_id (contract_block_missing_work_item_id). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty work_item_id (contract_block_missing_work_item_id). ${_BOOTSTRAP_GUIDANCE}"
     fi
 
     _DS_FIELD=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.decision_scope // "__MISSING__"' 2>/dev/null || echo "__MISSING__")
     if [[ "$_DS_FIELD" == "__MISSING__" ]] || [[ "$_DS_FIELD" == "null" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field decision_scope (contract_block_missing_decision_scope). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field decision_scope (contract_block_missing_decision_scope). ${_BOOTSTRAP_GUIDANCE}"
     fi
     if [[ -z "${_DS_FIELD// /}" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty decision_scope (contract_block_missing_decision_scope). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has empty decision_scope (contract_block_missing_decision_scope). ${_BOOTSTRAP_GUIDANCE}"
     fi
 
     # generated_at: must be present + integer (not bool in JSON) + >0.
@@ -176,7 +181,7 @@ if [[ "$ISOLATION" != "worktree" ]]; then
     # the raw JSON type.
     _GA_TYPE=$(printf '%s' "$_CONTRACT_JSON" | jq -r 'if has("generated_at") then (.generated_at | type) else "__MISSING__" end' 2>/dev/null || echo "__MISSING__")
     if [[ "$_GA_TYPE" == "__MISSING__" ]]; then
-        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field generated_at (contract_block_missing_generated_at). Use 'cc-policy dispatch agent-prompt' to mint a valid contract."
+        _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK is missing required field generated_at (contract_block_missing_generated_at). ${_BOOTSTRAP_GUIDANCE}"
     fi
     if [[ "$_GA_TYPE" == "boolean" || "$_GA_TYPE" == "null" || "$_GA_TYPE" == "string" || "$_GA_TYPE" == "array" || "$_GA_TYPE" == "object" ]]; then
         _deny "BLOCKED: CLAUDEX_CONTRACT_BLOCK has invalid generated_at type '${_GA_TYPE}' (contract_block_invalid_generated_at). Must be a positive integer timestamp."
@@ -219,14 +224,14 @@ if [[ "$ISOLATION" != "worktree" ]]; then
             _deny "BLOCKED: carrier write failed for canonical seat '${_EXPECTED_SUBAGENT_TYPE}' (carrier_write_failed). No policy DB path could be resolved (CLAUDE_POLICY_DB and CLAUDE_PROJECT_DIR are unset and no git toplevel found). Set CLAUDE_POLICY_DB or run from inside a git repo."
         fi
         if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
-            if ! python3 "$_CARRIER_MODULE" write "$_CARRIER_DB" "$_SESSION_ID" "$_EXPECTED_SUBAGENT_TYPE" "$_CONTRACT_JSON" >/dev/null 2>&1; then
+            if ! "$(_resolve_runtime_python)" "$_CARRIER_MODULE" write "$_CARRIER_DB" "$_SESSION_ID" "$_EXPECTED_SUBAGENT_TYPE" "$_CONTRACT_JSON" >/dev/null 2>&1; then
                 _deny "BLOCKED: carrier write failed for canonical seat '${_EXPECTED_SUBAGENT_TYPE}' (carrier_write_failed). The pending_agent_requests row could not be written; the subagent-start.sh carrier path cannot deliver the contract. Check DB health and retry."
             fi
             # Issue a pending dispatch_attempts row for delivery tracking
             # (DEC-CLAUDEX-HOOK-WIRING-001). Best-effort: never blocks dispatch.
-            _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+            _LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
             _DISPATCH_WF_ID=$(printf '%s' "$_CONTRACT_JSON" | jq -r '.workflow_id // empty' 2>/dev/null || echo "")
-            CLAUDE_POLICY_DB="$_CARRIER_DB" python3 "$_LOCAL_RUNTIME_CLI" dispatch attempt-issue \
+            CLAUDE_POLICY_DB="$_CARRIER_DB" cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" dispatch attempt-issue \
                 --session-id "$_SESSION_ID" \
                 --agent-type "$_EXPECTED_SUBAGENT_TYPE" \
                 --instruction "$_BLOCK_LINE" \

@@ -5,7 +5,7 @@ bare command, which resolves to $HOME/.claude/runtime/cli.py — that global
 CLI does NOT have the `context` subcommand.
 
 PE-W4 superseded the per-hook `_LOCAL_CLI` resolution pattern with a shared
-`_local_cc_policy()` wrapper function and a single `_LOCAL_RUNTIME_CLI`
+`_local_cc_policy()` wrapper function and a single `_LOCAL_RUNTIME_ROOT`
 variable. Lifecycle deactivation is now:
   _local_cc_policy lifecycle on-stop "$AGENT_TYPE"
 
@@ -14,13 +14,13 @@ These tests verify:
   2. The check-*.sh hook files use the W4 lifecycle authority pattern —
      `_local_cc_policy lifecycle on-stop` — not a bare `cc-policy context
      role` invocation, and not the deprecated per-hook `_LOCAL_CLI` pattern.
-  3. The full production sequence: hook resolves local CLI via
-     _LOCAL_RUNTIME_CLI, calls lifecycle on-stop, marker is cleared.
+  3. The full production sequence: hook resolves the local runtime root via
+     _LOCAL_RUNTIME_ROOT, calls lifecycle on-stop, marker is cleared.
 
 Production sequence (W4+):
   SubagentStop event -> check-{role}.sh
   -> _local_cc_policy lifecycle on-stop "$AGENT_TYPE"
-  -> python3 "$_LOCAL_RUNTIME_CLI" lifecycle on-stop <role>
+  -> cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" lifecycle on-stop <role>
   -> marker deactivated via Python lifecycle authority (DEC-LIFECYCLE-003)
 
 @decision DEC-PE-W5-BRIDGE-001
@@ -292,8 +292,8 @@ class TestHookLocalCLIPattern:
     """Verify that check-*.sh hooks use the W4 lifecycle authority pattern.
 
     The correct pattern (W4+, DEC-LIFECYCLE-003):
-      _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
-      _local_cc_policy() { ... python3 "$_LOCAL_RUNTIME_CLI" "$@" ... }
+      _LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
+      _local_cc_policy() { ... cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@" ... }
       _local_cc_policy lifecycle on-stop "$AGENT_TYPE"
 
     Forbidden patterns:
@@ -335,35 +335,34 @@ class TestHookLocalCLIPattern:
         )
 
     @pytest.mark.parametrize("hook_name", CHECK_HOOKS)
-    def test_hook_uses_local_cli_resolution(self, hook_name):
-        """Hook must resolve runtime/cli.py locally via _LOCAL_RUNTIME_CLI.
+    def test_hook_uses_local_runtime_root_resolution(self, hook_name):
+        """Hook must resolve the worktree runtime root via _LOCAL_RUNTIME_ROOT.
 
-        W4 replaced the per-hook _LOCAL_CLI pattern with a shared _local_cc_policy()
-        wrapper backed by _LOCAL_RUNTIME_CLI. Both the variable and the path must
-        be present so that no global cc-policy binary is required.
+        Hooks now delegate through cc_policy_local_runtime(), which centralizes
+        runtime CLI selection and Python interpreter selection in
+        hooks/lib/runtime-bridge.sh.
         """
         hook_path = _HOOKS_DIR / hook_name
         assert hook_path.exists(), f"Hook file not found: {hook_path}"
 
         content = hook_path.read_text(encoding="utf-8")
 
-        # Must use the W4 local runtime CLI variable (not the old _LOCAL_CLI)
-        assert "_LOCAL_RUNTIME_CLI" in content, (
-            f"{hook_name} missing _LOCAL_RUNTIME_CLI local path resolution. "
-            'Expected: _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"'
+        assert "_LOCAL_RUNTIME_ROOT" in content, (
+            f"{hook_name} missing _LOCAL_RUNTIME_ROOT local path resolution. "
+            'Expected: _LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"'
         )
-        assert "runtime/cli.py" in content, (
-            f"{hook_name} missing runtime/cli.py path in local resolution."
+        assert 'cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"' in content, (
+            f"{hook_name} missing cc_policy_local_runtime wrapper."
         )
 
     @pytest.mark.parametrize("hook_name", CHECK_HOOKS)
-    def test_hook_invokes_python3_with_local_cli(self, hook_name):
-        """Hook must delegate lifecycle deactivation to _local_cc_policy, not direct python3.
+    def test_hook_invokes_bridge_local_runtime_wrapper(self, hook_name):
+        """Hook must delegate lifecycle deactivation to the bridge wrapper.
 
         W4 (DEC-LIFECYCLE-003): lifecycle on-stop is the single authority.
         The hook calls `_local_cc_policy lifecycle on-stop` which internally
-        invokes `python3 "$_LOCAL_RUNTIME_CLI"`. No direct python3 call needed
-        at the hook level.
+        invokes `cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"`. No direct
+        hook-local `python3 runtime/cli.py` call is needed.
         """
         hook_path = _HOOKS_DIR / hook_name
         assert hook_path.exists()
@@ -374,9 +373,8 @@ class TestHookLocalCLIPattern:
             f"{hook_name} missing: _local_cc_policy lifecycle on-stop (DEC-LIFECYCLE-003). "
             "Hook must delegate marker deactivation to the Python lifecycle authority."
         )
-        # The wrapper itself must invoke python3 with local CLI
-        assert 'python3 "$_LOCAL_RUNTIME_CLI"' in content, (
-            f'{hook_name} missing: python3 "$_LOCAL_RUNTIME_CLI" inside _local_cc_policy wrapper.'
+        assert 'cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"' in content, (
+            f'{hook_name} missing: cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" inside _local_cc_policy wrapper.'
         )
 
 

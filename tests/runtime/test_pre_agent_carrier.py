@@ -334,7 +334,9 @@ class TestPreAgentCarrierWriteNegative:
         assert rc == 0
         parsed = json.loads(out.strip())
         assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "without CLAUDEX_CONTRACT_BLOCK" in parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        reason = parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "without CLAUDEX_CONTRACT_BLOCK" in reason
+        assert "workflow stage-packet" in reason
         assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
     def test_contract_stage_with_general_purpose_subagent_is_denied(self, carrier_db):
@@ -811,6 +813,35 @@ class TestPreAgentCarrierDBRoutingNoEnv:
         )
         assert "carrier_write_failed" in hso["permissionDecisionReason"], (
             f"Expected 'carrier_write_failed' in reason, got: {hso['permissionDecisionReason']!r}"
+        )
+
+    def test_pre_agent_ignores_policy_db_poison_and_falls_back_to_project_db(self, tmp_path):
+        """runtime/policy.db must not win DB resolution for carrier writes."""
+        repo_root = _make_git_repo_with_schema(tmp_path)
+        db_path = repo_root / ".claude" / "state.db"
+        poisoned = repo_root / "runtime" / "policy.db"
+        poisoned.parent.mkdir(parents=True, exist_ok=True)
+
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(_REPO_ROOT),
+            "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
+            "CLAUDE_POLICY_DB": str(poisoned),
+        }
+        env.pop("CLAUDE_PROJECT_DIR", None)
+
+        result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(_agent_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(repo_root),
+        )
+        assert result.returncode == 0, result.stderr
+        assert _row_exists(db_path, _SESSION_ID, _AGENT_TYPE), (
+            "pre-agent.sh must ignore runtime/policy.db and fall back to the "
+            "git-resolved project .claude/state.db"
         )
 
 

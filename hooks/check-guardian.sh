@@ -26,12 +26,12 @@ _HOOK_START_AT=$(date +%s)
 # Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
 # ---------------------------------------------------------------------------
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
 _local_cc_policy() {
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
         export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
-    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+    cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
 }
 
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
