@@ -50,6 +50,24 @@ call_process_stop() {
         | CLAUDE_POLICY_DB="$TEST_DB" $CC dispatch process-stop 2>/dev/null || echo '{}'
 }
 
+seed_clear_implementer_transition() {
+    local root="$1"
+    local db="${2:-$TEST_DB}"
+    local wf_id lease_json lease_id
+    wf_id="$(workflow_id_for_root "$root")"
+    lease_json=$(CLAUDE_POLICY_DB="$db" $CC \
+        lease issue-for-dispatch implementer \
+        --workflow-id "$wf_id" \
+        --worktree-path "$root" 2>/dev/null || echo '{}')
+    lease_id=$(printf '%s' "$lease_json" | jq -r '.lease.lease_id // empty' 2>/dev/null || echo "")
+    [[ -n "$lease_id" ]] || return 1
+    CLAUDE_POLICY_DB="$db" $CC completion submit \
+        --lease-id "$lease_id" \
+        --workflow-id "$wf_id" \
+        --role implementer \
+        --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"deadbeef"}' >/dev/null 2>&1
+}
+
 # Helper: derive the runtime workflow_id/source key for a project root.
 workflow_id_for_root() {
     local root="$1"
@@ -124,7 +142,8 @@ get_context() {
 WD1="$TMP_DIR/wt-no-event"
 mkdir -p "$WD1"
 
-OUT1=$(call_process_stop "planner" "$WD1")
+seed_clear_implementer_transition "$WD1"
+OUT1=$(call_process_stop "implementer" "$WD1")
 AUTO1=$(get_field "$OUT1" "auto_dispatch")
 CB1=$(get_field "$OUT1" "codex_blocked")
 
@@ -148,7 +167,8 @@ WD2="$TMP_DIR/wt-allow"
 mkdir -p "$WD2"
 emit_codex_event "$WD2" "VERDICT: ALLOW — workflow=$(workflow_id_for_root "$WD2") | work looks good"
 
-OUT2=$(call_process_stop "planner" "$WD2")
+seed_clear_implementer_transition "$WD2"
+OUT2=$(call_process_stop "implementer" "$WD2")
 AUTO2=$(get_field "$OUT2" "auto_dispatch")
 CB2=$(get_field "$OUT2" "codex_blocked")
 
@@ -174,7 +194,8 @@ mkdir -p "$WD3"
 BLOCK_REASON="Insufficient test coverage for edge cases"
 emit_codex_event "$WD3" "VERDICT: BLOCK — workflow=$(workflow_id_for_root "$WD3") | $BLOCK_REASON"
 
-OUT3=$(call_process_stop "planner" "$WD3")
+seed_clear_implementer_transition "$WD3"
+OUT3=$(call_process_stop "implementer" "$WD3")
 AUTO3=$(get_field "$OUT3" "auto_dispatch")
 CB3=$(get_field "$OUT3" "codex_blocked")
 CTX3=$(get_context "$OUT3")
@@ -211,7 +232,8 @@ WD4="$TMP_DIR/wt-stale"
 mkdir -p "$WD4"
 emit_stale_codex_event "$WD4" "VERDICT: BLOCK — workflow=$(workflow_id_for_root "$WD4") | stale reason should be ignored" "$STALE_DB"
 
-OUT4=$(printf '{"agent_type":"planner","project_root":"%s"}' "$WD4" \
+seed_clear_implementer_transition "$WD4" "$STALE_DB"
+OUT4=$(printf '{"agent_type":"implementer","project_root":"%s"}' "$WD4" \
     | CLAUDE_POLICY_DB="$STALE_DB" $CC dispatch process-stop 2>/dev/null || echo '{}')
 AUTO4=$(get_field "$OUT4" "auto_dispatch")
 CB4=$(get_field "$OUT4" "codex_blocked")

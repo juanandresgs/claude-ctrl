@@ -23,7 +23,7 @@ import sqlite3
 
 import pytest
 
-from runtime.core import completions, decision_work_registry as dwr, evaluation, leases
+from runtime.core import critic_reviews, completions, decision_work_registry as dwr, evaluation, leases
 from runtime.core.dispatch_engine import process_agent_stop
 from runtime.core.policy_utils import current_workflow_id
 from runtime.schemas import ensure_schema
@@ -330,6 +330,118 @@ def test_implementer_includes_worktree_path_for_reviewer(conn, project_root):
     assert result.get("worktree_path") == worktree
 
 
+def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_root):
+    """Persisted TRY_AGAIN critic verdict loops back to implementer."""
+    wf_id = "wf-impl-critic-try-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "TRY_AGAIN",
+        lease_id=lease["lease_id"],
+        summary="Need another implementation pass.",
+        detail="The happy path still lacks tests.",
+        fingerprint="fp-try-1",
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["critic_found"] is True
+    assert result["critic_verdict"] == "TRY_AGAIN"
+    assert result["next_role"] == "implementer"
+    assert result["auto_dispatch"] is True
+    assert result["suggestion"].startswith("AUTO_DISPATCH: implementer")
+    assert "CRITIC_RETRY" in result["suggestion"]
+
+
+def test_implementer_critic_blocked_by_plan_routes_to_planner(conn, project_root):
+    """Persisted BLOCKED_BY_PLAN critic verdict escalates to planner."""
+    wf_id = "wf-impl-critic-plan-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "BLOCKED_BY_PLAN",
+        lease_id=lease["lease_id"],
+        summary="Plan gap detected.",
+        detail="The change requires planner authority to split the authority migration.",
+        fingerprint="fp-plan-1",
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["critic_found"] is True
+    assert result["critic_verdict"] == "BLOCKED_BY_PLAN"
+    assert result["next_role"] == "planner"
+    assert result["auto_dispatch"] is True
+    assert result["worktree_path"] == ""
+
+
+def test_implementer_critic_unavailable_routes_to_reviewer(conn, project_root):
+    """Persisted CRITIC_UNAVAILABLE falls through to reviewer adjudication."""
+    wf_id = "wf-impl-critic-unavail-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "CRITIC_UNAVAILABLE",
+        lease_id=lease["lease_id"],
+        summary="Codex unavailable.",
+        detail="The Codex runtime was not reachable, so reviewer must adjudicate.",
+        fingerprint="fp-unavail-1",
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["critic_found"] is True
+    assert result["critic_verdict"] == "CRITIC_UNAVAILABLE"
+    assert result["next_role"] == "reviewer"
+    assert result["auto_dispatch"] is True
+
+
+def test_implementer_critic_retry_limit_escalates_to_reviewer(conn, project_root):
+    """Third TRY_AGAIN critic verdict escalates to reviewer adjudication."""
+    wf_id = "wf-impl-critic-limit-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn, wf_id, "TRY_AGAIN", lease_id="lease-1", fingerprint="fp-limit-1"
+    )
+    _submit_critic_review(
+        conn, wf_id, "TRY_AGAIN", lease_id="lease-2", fingerprint="fp-limit-2"
+    )
+    _submit_critic_review(
+        conn, wf_id, "TRY_AGAIN", lease_id=lease["lease_id"], fingerprint="fp-limit-3"
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["critic_verdict"] == "TRY_AGAIN"
+    assert result["critic_escalated"] is True
+    assert result["critic_escalation_reason"] == critic_reviews.ESCALATION_RETRY_LIMIT
+    assert result["next_role"] == "reviewer"
+    assert result["auto_dispatch"] is True
+
+
+def test_implementer_critic_repeated_fingerprint_escalates_to_reviewer(conn, project_root):
+    """Repeated TRY_AGAIN fingerprints escalate to reviewer before infinite looping."""
+    from runtime.core import enforcement_config
+
+    wf_id = "wf-impl-critic-fp-001"
+    enforcement_config.set_(conn, "critic_retry_limit", "5", actor_role="planner")
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn, wf_id, "TRY_AGAIN", lease_id="lease-1", fingerprint="same-fingerprint"
+    )
+    _submit_critic_review(
+        conn, wf_id, "TRY_AGAIN", lease_id=lease["lease_id"], fingerprint="same-fingerprint"
+    )
+    result = process_agent_stop(conn, "implementer", project_root)
+    assert result["critic_escalated"] is True
+    assert (
+        result["critic_escalation_reason"]
+        == critic_reviews.ESCALATION_REPEATED_FINGERPRINT
+    )
+    assert result["next_role"] == "reviewer"
+    assert result["auto_dispatch"] is True
+
+
 # ---------------------------------------------------------------------------
 # tester — retired (Phase 8 Slice 11): not a known runtime role
 # ---------------------------------------------------------------------------
@@ -415,6 +527,23 @@ def test_guardian_lease_released_after_routing(conn, project_root):
     assert refreshed["status"] == "released"
 
 
+def test_implementer_lease_released_after_routing(conn, project_root):
+    """Implementer lease is released after critic-driven routing is resolved."""
+    wf_id = "wf-release-impl-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-release-impl",
+    )
+    process_agent_stop(conn, "implementer", project_root)
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "released"
+
+
 # ---------------------------------------------------------------------------
 # workflow_id resolution: lease takes priority over branch-derived
 # ---------------------------------------------------------------------------
@@ -485,6 +614,28 @@ def _submit_valid_implementer_completion(conn, lease_id, workflow_id, status="co
             "IMPL_STATUS": status,
             "IMPL_HEAD_SHA": "abc123",
         },
+    )
+
+
+def _submit_critic_review(
+    conn,
+    workflow_id,
+    verdict,
+    *,
+    lease_id="",
+    summary="critic summary",
+    detail="critic detail",
+    fingerprint="fp-default",
+):
+    return critic_reviews.submit(
+        conn,
+        workflow_id=workflow_id,
+        lease_id=lease_id,
+        verdict=verdict,
+        provider="codex",
+        summary=summary,
+        detail=detail,
+        fingerprint=fingerprint,
     )
 
 

@@ -62,6 +62,11 @@ def test_get_global_default_returns_seeded_value(conn):
     )
 
 
+def test_get_global_default_critic_retry_limit(conn):
+    """ensure_schema() seeds critic_retry_limit=2 in the global scope."""
+    assert ec.get(conn, "critic_retry_limit") == "2"
+
+
 def test_get_unknown_key_returns_none(conn):
     """A key that has never been written must return None — not False or empty string."""
     value = ec.get(conn, "nonexistent_key_xyz")
@@ -149,9 +154,10 @@ def test_workflow_scope_overrides_project_overrides_global(conn):
 
 
 def test_list_all_returns_seeded_rows(conn):
-    """list_all() returns at least the two seeded defaults from ensure_schema()."""
+    """list_all() returns the seeded defaults from ensure_schema()."""
     rows = ec.list_all(conn)
     keys = {r["key"] for r in rows}
+    assert "critic_retry_limit" in keys
     assert "review_gate_regular_stop" in keys
     assert "review_gate_provider" in keys
 

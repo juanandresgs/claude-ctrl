@@ -56,17 +56,56 @@ run_hook() {
           CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null
 }
 
+seed_planner_happy_path() {
+    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$TMP_DIR" <<'PYEOF'
+import sqlite3, sys
+from runtime.core import completions, decision_work_registry as dwr, leases
+from runtime.schemas import ensure_schema
+
+db_path, project_root = sys.argv[1], sys.argv[2]
+workflow_id = "wf-post-task-planner"
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+ensure_schema(conn)
+dwr.insert_goal(
+    conn,
+    dwr.GoalRecord(
+        goal_id=workflow_id,
+        desired_end_state="Planner post-task test",
+        status="active",
+        autonomy_budget=5,
+    ),
+)
+lease = leases.issue(
+    conn,
+    role="planner",
+    workflow_id=workflow_id,
+    worktree_path=project_root,
+)
+completions.submit(
+    conn,
+    lease_id=lease["lease_id"],
+    workflow_id=workflow_id,
+    role="planner",
+    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "test"},
+)
+conn.close()
+PYEOF
+}
+
 # -----------------------------------------------------------------------
-# Test 1: planner completion → suggests implementer
+# Test 1: planner completion → suggests guardian
 # -----------------------------------------------------------------------
+seed_planner_happy_path
 output=$(run_hook "planner") || true
 if ! echo "$output" | jq '.' >/dev/null 2>&1; then
     echo "  FAIL: planner — output is not valid JSON (got: $output)"
     FAILURES=$((FAILURES + 1))
 else
     ctx=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty')
-    if [[ "$ctx" != *"implementer"* ]]; then
-        echo "  FAIL: planner — expected 'implementer' in additionalContext, got: $ctx"
+    if [[ "$ctx" != *"guardian"* ]]; then
+        echo "  FAIL: planner — expected 'guardian' in additionalContext, got: $ctx"
         FAILURES=$((FAILURES + 1))
     fi
 fi

@@ -26,10 +26,14 @@ Rationale: post-task.sh contained ~200 lines of routing logic in bash including
   exclusively via completions.determine_next_role(). No case statement maps
   verdicts to roles in this module — that table lives only in completions.py.
 
-  Phase 5 (DEC-PHASE5-ROUTING-001): implementer routes to reviewer. The
-  tester role is retired (Phase 8 Slice 11) — it is no longer a known
-  runtime type and stop events that carry ``agent_type="tester"`` are
-  handled by the generic unknown-type path (silent exit).
+  Phase 5 fallback (DEC-PHASE5-ROUTING-001): when no persisted implementer
+  critic review exists, implementer still falls back to reviewer. With the
+  critic loop active, implementer routing is owned by critic_reviews:
+  READY_FOR_REVIEWER → reviewer, TRY_AGAIN → implementer, BLOCKED_BY_PLAN
+  → planner, CRITIC_UNAVAILABLE → reviewer. The tester role is retired
+  (Phase 8 Slice 11) — it is no longer a known runtime type and stop events
+  that carry ``agent_type="tester"`` are handled by the generic unknown-type
+  path (silent exit).
 
 @decision DEC-STOP-ASSESS-002
 Title: agent_complete vs agent_stopped gating via stop_assessment event
@@ -50,8 +54,8 @@ Rationale: The heuristic (DEC-STOP-ASSESS-001) detects interrupted implementers
   via future-tense trailing signals — a narrow proxy. When IMPL_STATUS and
   IMPL_HEAD_SHA trailers are present and valid, the structured contract is
   authoritative for agent_complete vs agent_stopped. The heuristic is fallback
-  only when no valid completion record exists. Routing (implementer → reviewer)
-  is unchanged — the contract affects stop quality, not routing.
+  only when no valid completion record exists. The contract still affects stop
+  quality only. Implementer routing is owned separately by critic_reviews.
 
   Implementation: stop-event emission is deferred past the implementer role block
   so the contract lookup can override is_interrupted before the event is written.
@@ -100,6 +104,17 @@ Rationale: The Codex stop-review gate (W-AD-3 / DEC-AD-002) was originally wired
   its VERDICT: BLOCK no longer overrides auto_dispatch or injects CODEX BLOCK into
   the workflow suggestion. _check_codex_gate has been deleted — no runtime consumer
   remains.
+
+@decision DEC-IMPLEMENTER-CRITIC-LOOP-001
+Title: Implementer inner-loop routing is owned by persisted critic reviews
+Status: accepted
+Rationale: The implementer previously routed straight to reviewer, forcing every
+  tactical deficiency to be adjudicated in the outer loop. The new critic loop
+  introduces a runtime-owned critic_reviews domain whose persisted verdicts drive
+  implementer routing: READY_FOR_REVIEWER → reviewer, TRY_AGAIN → implementer,
+  BLOCKED_BY_PLAN → planner, CRITIC_UNAVAILABLE → reviewer. Retry-limit and
+  repeated-fingerprint escalation are computed from critic_reviews state, not from
+  hook-local heuristics, so the routing authority stays in Python/runtime.
 """
 
 from __future__ import annotations
@@ -109,7 +124,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from runtime.core import completions, dispatch_shadow, events, leases
+from runtime.core import completions, critic_reviews, dispatch_shadow, events, leases
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -157,6 +172,17 @@ def process_agent_stop(
         # W-GWT-1: worktree_path is extracted from the guardian completion record
         # payload (provisioned verdict) or from workflow_bindings (rework path).
         "worktree_path": "",
+        # DEC-IMPLEMENTER-CRITIC-LOOP-001: implementer critic routing metadata.
+        "critic_found": False,
+        "critic_verdict": "",
+        "critic_provider": "",
+        "critic_summary": "",
+        "critic_detail": "",
+        "critic_try_again_streak": 0,
+        "critic_retry_limit": 0,
+        "critic_repeated_fingerprint_streak": 0,
+        "critic_escalated": False,
+        "critic_escalation_reason": "",
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -268,20 +294,22 @@ def process_agent_stop(
                 pass  # Goal-status update is best-effort.
 
     elif normalised == "implementer":
-        # Phase 5 (DEC-PHASE5-ROUTING-001): implementer routes to reviewer.
-        # (The previous tester-readiness coupling that wrote
-        # evaluation_state=pending here was removed in Phase 5; the tester
-        # role itself was retired in Phase 8 Slice 11.)
+        # Default fallback (legacy/no-critic path): implementer routes to reviewer.
+        # DEC-IMPLEMENTER-CRITIC-LOOP-001 replaces this whenever a persisted
+        # critic review exists for the workflow.
         result["next_role"] = "reviewer"
 
         # Populate worktree_path so the reviewer runs in the same worktree
-        # as the implementer. Read from the active lease or workflow binding.
+        # as the implementer. Prefer the live worktree root, then refine from
+        # workflow bindings when available.
+        if project_root:
+            result["worktree_path"] = project_root
         if workflow_id:
             try:
                 from runtime.core import workflows
 
                 binding = workflows.get_binding(conn, workflow_id)
-                if binding:
+                if binding and binding.get("worktree_path"):
                     result["worktree_path"] = binding.get("worktree_path") or ""
             except Exception:
                 pass  # Advisory; routing is not gated on the binding lookup.
@@ -315,6 +343,39 @@ def process_agent_stop(
                             pass
             except Exception:
                 pass  # Contract lookup is best-effort; never block routing.
+
+        critic_resolution = None
+        if workflow_id:
+            try:
+                critic_resolution = critic_reviews.assess_latest(
+                    conn,
+                    workflow_id=workflow_id,
+                    project_root=project_root,
+                )
+            except Exception:
+                critic_resolution = None
+
+        if critic_resolution and critic_resolution.found:
+            result["critic_found"] = True
+            result["critic_verdict"] = critic_resolution.verdict
+            result["critic_provider"] = critic_resolution.provider
+            result["critic_summary"] = critic_resolution.summary
+            result["critic_detail"] = critic_resolution.detail
+            result["critic_try_again_streak"] = critic_resolution.try_again_streak
+            result["critic_retry_limit"] = critic_resolution.retry_limit
+            result["critic_repeated_fingerprint_streak"] = (
+                critic_resolution.repeated_fingerprint_streak
+            )
+            result["critic_escalated"] = critic_resolution.escalated
+            result["critic_escalation_reason"] = critic_resolution.escalation_reason
+            result["next_role"] = critic_resolution.next_role
+            if critic_resolution.next_role == "planner":
+                result["worktree_path"] = ""
+            elif critic_resolution.next_role == "implementer" and not result["worktree_path"]:
+                result["worktree_path"] = project_root or ""
+
+        if active_lease_id:
+            _safe_release(conn, active_lease_id)
 
     elif normalised == "reviewer":
         next_role, error = _route_from_completion(
@@ -381,7 +442,10 @@ def process_agent_stop(
         result["next_role"] is not None
         and result["next_role"] != ""
         and result["error"] is None
-        and not is_interrupted
+        and (
+            not is_interrupted
+            or (normalised == "implementer" and bool(result.get("critic_found")))
+        )
     )
 
     # ---------------------------------------------------------------------------
@@ -432,6 +496,10 @@ def process_agent_stop(
         if params:
             suggestion += f" ({', '.join(params)})"
 
+        critic_suffix = _format_critic_context(result)
+        if critic_suffix:
+            suggestion += critic_suffix
+
         result["suggestion"] = suggestion
     elif normalised == "planner" and not result["error"]:
         # Planner terminal or budget-gated state: next_role=None.
@@ -474,7 +542,9 @@ def process_agent_stop(
     # Append interruption warning to suggestion when check-* hooks flagged an
     # interrupted stop. Advisory only — does not change routing.
     try:
-        if is_interrupted:
+        if is_interrupted and not (
+            normalised == "implementer" and bool(result.get("critic_found"))
+        ):
             warning = (
                 f"\nWARNING: Agent appears interrupted mid-task"
                 f"{': ' + _interrupt_reason if _interrupt_reason else ''}. "
@@ -836,6 +906,44 @@ def _safe_release(conn: sqlite3.Connection, lease_id: str) -> None:
         leases.release(conn, lease_id)
     except Exception:
         pass
+
+
+def _format_critic_context(result: dict) -> str:
+    """Render implementer critic routing metadata for hook output."""
+    if not result.get("critic_found"):
+        return ""
+
+    verdict = str(result.get("critic_verdict") or "")
+    provider = str(result.get("critic_provider") or "")
+    summary = str(result.get("critic_summary") or "")
+    detail = str(result.get("critic_detail") or "")
+    retry_limit = int(result.get("critic_retry_limit") or 0)
+    try_again_streak = int(result.get("critic_try_again_streak") or 0)
+    repeated_fp_streak = int(result.get("critic_repeated_fingerprint_streak") or 0)
+    escalated = bool(result.get("critic_escalated"))
+    escalation_reason = str(result.get("critic_escalation_reason") or "")
+
+    lines: list[str] = [
+        f"CRITIC: provider={provider or 'unknown'}, verdict={verdict}"
+    ]
+    if verdict == "TRY_AGAIN":
+        if escalated:
+            lines.append(
+                f"CRITIC_RETRY: reviewer_adjudication after {escalation_reason}"
+            )
+        else:
+            lines.append(
+                f"CRITIC_RETRY: try_again={try_again_streak}, retry_limit={retry_limit}"
+            )
+        if repeated_fp_streak >= 2:
+            lines.append(
+                f"CRITIC_CONVERGENCE: repeated_fingerprint_streak={repeated_fp_streak}"
+            )
+    if summary:
+        lines.append(f"CRITIC_SUMMARY: {summary}")
+    if detail:
+        lines.append(f"CRITIC_DETAIL: {detail}")
+    return "\n" + "\n".join(lines) if lines else ""
 
 
 def _emit_shadow_stage_decision(

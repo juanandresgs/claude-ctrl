@@ -111,6 +111,48 @@ def test_init_alias(db):
 
 
 # ---------------------------------------------------------------------------
+# Critic review
+# ---------------------------------------------------------------------------
+
+
+def test_critic_review_submit_and_latest(db):
+    code, out = run(
+        [
+            "critic-review",
+            "submit",
+            "--workflow-id",
+            "wf-cli-critic-001",
+            "--lease-id",
+            "lease-cli-001",
+            "--verdict",
+            "TRY_AGAIN",
+            "--summary",
+            "Need one more pass.",
+            "--detail",
+            "Coverage is still missing on the main path.",
+            "--fingerprint",
+            "fp-cli-001",
+            "--metadata",
+            '{"hook":"cli-test"}',
+        ],
+        db,
+    )
+    assert code == 0, out
+    assert out["verdict"] == "TRY_AGAIN"
+    assert out["resolution"]["next_role"] == "implementer"
+    assert out["metadata"]["hook"] == "cli-test"
+
+    code, latest = run(
+        ["critic-review", "latest", "--workflow-id", "wf-cli-critic-001"],
+        db,
+    )
+    assert code == 0, latest
+    assert latest["workflow_id"] == "wf-cli-critic-001"
+    assert latest["lease_id"] == "lease-cli-001"
+    assert latest["verdict"] == "TRY_AGAIN"
+
+
+# ---------------------------------------------------------------------------
 # Bridge
 # ---------------------------------------------------------------------------
 

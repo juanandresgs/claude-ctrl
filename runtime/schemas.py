@@ -237,6 +237,29 @@ CREATE TABLE IF NOT EXISTS completion_records (
 )
 """
 
+CRITIC_REVIEWS_DDL = """
+CREATE TABLE IF NOT EXISTS critic_reviews (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id  TEXT    NOT NULL,
+    lease_id     TEXT,
+    role         TEXT    NOT NULL,
+    provider     TEXT    NOT NULL,
+    verdict      TEXT    NOT NULL,
+    summary      TEXT,
+    detail       TEXT,
+    fingerprint  TEXT,
+    metadata_json TEXT   NOT NULL DEFAULT '{}',
+    created_at   INTEGER NOT NULL
+)
+"""
+
+CRITIC_REVIEWS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_critic_reviews_workflow_role_time
+       ON critic_reviews (workflow_id, role, created_at DESC, id DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_critic_reviews_lease
+       ON critic_reviews (lease_id) WHERE lease_id IS NOT NULL AND lease_id != ''""",
+]
+
 TEST_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS test_state (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -667,6 +690,7 @@ ALL_DDL: list[str] = [
     BUGS_DDL,
     DISPATCH_LEASES_DDL,
     COMPLETION_RECORDS_DDL,
+    CRITIC_REVIEWS_DDL,
     TEST_STATE_DDL,
     OBS_METRICS_DDL,
     OBS_SUGGESTIONS_DDL,
@@ -962,6 +986,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             conn.execute(ddl)
         for idx_ddl in DISPATCH_LEASES_INDEXES_DDL:
             conn.execute(idx_ddl)
+        for idx_ddl in CRITIC_REVIEWS_INDEXES_DDL:
+            conn.execute(idx_ddl)
         conn.execute(TEST_STATE_INDEX_DDL)
         for idx_ddl in OBS_METRICS_INDEXES_DDL:
             conn.execute(idx_ddl)
@@ -1092,6 +1118,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         # Fail-safe defaults: all review gates on, provider=codex.
         # (DEC-CONFIG-AUTHORITY-001)
         _defaults = [
+            ("global", "critic_retry_limit", "2"),
             ("global", "review_gate_subagent_stop", "true"),
             ("global", "review_gate_regular_stop", "true"),
             ("global", "review_gate_provider", "codex"),

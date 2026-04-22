@@ -70,6 +70,8 @@ Generator version: `1.0.0`
   - _Thin post-task adapter — routes to dispatch_engine.process_agent_stop (DEC-DISPATCH-ENGINE-001)._
 - matcher `implementer` → `hooks/check-implementer.sh`
   - _Implementer completion assessment (CUTOVER_PLAN W2)._
+- matcher `implementer` → `hooks/implementer-critic.sh`
+  - _Dedicated Codex tactical critic for implementer inner-loop routing._
 - matcher `implementer` → `hooks/post-task.sh`
   - _Thin post-task adapter for implementer stops._
 - matcher `guardian` → `hooks/check-guardian.sh`
@@ -99,4 +101,3 @@ Generator version: `1.0.0`
 
 - matcher `(unconditional)` → `hooks/session-end.sh`
   - _Session teardown diagnostics._
-

@@ -32,6 +32,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 import runtime.core.approvals as approvals_mod
 import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
+import runtime.core.critic_reviews as critic_reviews_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.eval_metrics as eval_metrics_mod
@@ -1915,6 +1916,18 @@ def _handle_dispatch(args) -> int:
                     # primary carrier to the orchestrator via additionalContext.
                     "worktree_path": result.get("worktree_path", ""),
                     "guardian_mode": result.get("guardian_mode", ""),
+                    "critic_found": result.get("critic_found", False),
+                    "critic_verdict": result.get("critic_verdict", ""),
+                    "critic_provider": result.get("critic_provider", ""),
+                    "critic_summary": result.get("critic_summary", ""),
+                    "critic_detail": result.get("critic_detail", ""),
+                    "critic_try_again_streak": result.get("critic_try_again_streak", 0),
+                    "critic_retry_limit": result.get("critic_retry_limit", 0),
+                    "critic_repeated_fingerprint_streak": result.get(
+                        "critic_repeated_fingerprint_streak", 0
+                    ),
+                    "critic_escalated": result.get("critic_escalated", False),
+                    "critic_escalation_reason": result.get("critic_escalation_reason", ""),
                     "error": result["error"],
                     "hookSpecificOutput": hook_output,
                 }
@@ -3022,6 +3035,62 @@ def _handle_completion(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown completion action: {args.action}")
+
+
+def _handle_critic_review(args) -> int:
+    """Handle all ``cc-policy critic-review`` subcommands."""
+    import json as _json
+
+    conn = _get_conn()
+    try:
+        if args.action == "submit":
+            metadata = {}
+            if getattr(args, "metadata", None):
+                try:
+                    metadata = _json.loads(args.metadata)
+                except _json.JSONDecodeError as e:
+                    return _err(f"invalid JSON metadata: {e}")
+            result = critic_reviews_mod.submit(
+                conn,
+                workflow_id=args.workflow_id,
+                lease_id=getattr(args, "lease_id", "") or "",
+                role=getattr(args, "role", critic_reviews_mod.IMPLEMENTER_ROLE),
+                provider=getattr(args, "provider", "codex") or "codex",
+                verdict=args.verdict,
+                summary=getattr(args, "summary", "") or "",
+                detail=getattr(args, "detail", "") or "",
+                fingerprint=getattr(args, "fingerprint", "") or "",
+                metadata=metadata,
+                project_root=getattr(args, "project_root", "") or "",
+            )
+            return _ok(result)
+
+        elif args.action == "latest":
+            record = critic_reviews_mod.latest(
+                conn,
+                workflow_id=getattr(args, "workflow_id", None),
+                lease_id=getattr(args, "lease_id", None),
+                role=getattr(args, "role", critic_reviews_mod.IMPLEMENTER_ROLE),
+            )
+            if record is None:
+                return _ok({"found": False})
+            return _ok(record)
+
+        elif args.action == "list":
+            rows = critic_reviews_mod.list_reviews(
+                conn,
+                workflow_id=getattr(args, "workflow_id", None),
+                lease_id=getattr(args, "lease_id", None),
+                role=getattr(args, "role", None),
+                limit=getattr(args, "limit", None),
+            )
+            return _ok({"items": rows, "count": len(rows)})
+
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown critic-review action: {args.action}")
 
 
 # ---------------------------------------------------------------------------
@@ -5361,6 +5430,40 @@ def build_parser() -> argparse.ArgumentParser:
     co_route.add_argument("role", help="Completing role (reviewer, guardian, implementer, planner)")
     co_route.add_argument("verdict", help="Verdict string from the completion record")
 
+    # critic-review
+    cr_p = subparsers.add_parser(
+        "critic-review",
+        help="Persist and query implementer critic reviews that drive inner-loop routing",
+    )
+    cr_sub = cr_p.add_subparsers(dest="action", required=True)
+
+    cr_submit = cr_sub.add_parser("submit", help="Record a critic verdict")
+    cr_submit.add_argument("--workflow-id", dest="workflow_id", required=True)
+    cr_submit.add_argument("--lease-id", dest="lease_id", default="")
+    cr_submit.add_argument("--role", default="implementer")
+    cr_submit.add_argument("--provider", default="codex")
+    cr_submit.add_argument("--verdict", required=True)
+    cr_submit.add_argument("--summary", default="")
+    cr_submit.add_argument("--detail", default="")
+    cr_submit.add_argument("--fingerprint", default="")
+    cr_submit.add_argument("--project-root", dest="project_root", default="")
+    cr_submit.add_argument(
+        "--metadata",
+        default="{}",
+        help="JSON object with hook/runtime metadata for this critic run",
+    )
+
+    cr_latest = cr_sub.add_parser("latest", help="Return the most recent critic review")
+    cr_latest.add_argument("--workflow-id", dest="workflow_id", default=None)
+    cr_latest.add_argument("--lease-id", dest="lease_id", default=None)
+    cr_latest.add_argument("--role", default="implementer")
+
+    cr_list = cr_sub.add_parser("list", help="List critic reviews")
+    cr_list.add_argument("--workflow-id", dest="workflow_id", default=None)
+    cr_list.add_argument("--lease-id", dest="lease_id", default=None)
+    cr_list.add_argument("--role", default=None)
+    cr_list.add_argument("--limit", type=int, default=None)
+
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
     sc_sub = sc_p.add_subparsers(dest="action", required=True)
@@ -5863,6 +5966,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_lease(args)
     if args.domain == "completion":
         return _handle_completion(args)
+    if args.domain == "critic-review":
+        return _handle_critic_review(args)
     if args.domain == "test-state":
         return _handle_test_state(args)
     if args.domain == "eval":

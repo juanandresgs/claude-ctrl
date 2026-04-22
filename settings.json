@@ -258,7 +258,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "$HOME/.claude/hooks/implementer-critic.sh",
             "timeout": 900
           },
           {

@@ -253,7 +253,7 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 - The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
 - Guardian has hit a real user-decision boundary (history rewrite / destructive recovery, ambiguous publish target, or irreconcilable reviewer-implementer conflict)
 
-Note: The Codex stop-review gate (`stop-review-gate-hook.mjs`) remains wired in `settings.json` for user-facing review but is **non-authoritative for workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001). Its `VERDICT: BLOCK` does not affect `auto_dispatch` or `next_role`.
+Note: Implementer SubagentStop now uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. The broad Codex stop-review gate (`stop-review-gate-hook.mjs`) remains the separate user-facing Stop audit lane and is **non-authoritative for workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
 
 ### Guardian Landing Preflight (Required)
 

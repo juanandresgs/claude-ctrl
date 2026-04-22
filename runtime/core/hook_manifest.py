@@ -409,6 +409,13 @@ HOOK_MANIFEST: Tuple[HookManifestEntry, ...] = (
     _e(
         "SubagentStop",
         "implementer",
+        "hooks/implementer-critic.sh",
+        STATUS_ACTIVE,
+        "Dedicated Codex tactical critic for implementer inner-loop routing.",
+    ),
+    _e(
+        "SubagentStop",
+        "implementer",
         "hooks/post-task.sh",
         STATUS_ACTIVE,
         "Thin post-task adapter for implementer stops.",
