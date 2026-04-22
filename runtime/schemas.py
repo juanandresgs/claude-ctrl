@@ -1118,6 +1118,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         # Fail-safe defaults: all review gates on, provider=codex.
         # (DEC-CONFIG-AUTHORITY-001)
         _defaults = [
+            ("global", "critic_enabled_implementer_stop", "true"),
             ("global", "critic_retry_limit", "2"),
             ("global", "review_gate_subagent_stop", "true"),
             ("global", "review_gate_regular_stop", "true"),

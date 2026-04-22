@@ -41,6 +41,15 @@ _resolve_context() {
     printf '%s\t%s\n' "$workflow_id" "$lease_id"
 }
 
+_critic_enabled() {
+    local workflow_id="$1"
+    local project_root="$2"
+    local raw value
+    raw=$(_local_cc_policy config get critic_enabled_implementer_stop --workflow-id "$workflow_id" --project-root "$project_root" 2>/dev/null || echo "")
+    value=$(printf '%s' "$raw" | jq -r '.value // empty' 2>/dev/null || true)
+    [[ -z "$value" || "$value" == "true" ]]
+}
+
 _emit_unavailable() {
     local detail="$1"
     local workflow_id lease_id metadata_json escaped
@@ -67,6 +76,23 @@ _emit_unavailable() {
 }
 EOF
 }
+
+_emit_disabled() {
+    local workflow_id="$1"
+    local escaped
+    escaped=$(printf 'Implementer critic disabled for this scope.\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: disabled, routing directly to reviewer.' "$workflow_id" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $escaped
+}
+EOF
+}
+
+IFS=$'\t' read -r WORKFLOW_ID LEASE_ID < <(_resolve_context)
+if ! _critic_enabled "$WORKFLOW_ID" "$PROJECT_ROOT"; then
+    _emit_disabled "$WORKFLOW_ID"
+    exit 0
+fi
 
 if [[ ! -f "$_LOCAL_CRITIC_HOOK" ]]; then
     _emit_unavailable "Implementer critic hook not found at $_LOCAL_CRITIC_HOOK"

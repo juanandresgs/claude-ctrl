@@ -108,6 +108,55 @@ else
     fail "dispatch consumes persisted TRY_AGAIN critic verdict (next_role=$NEXT_ROLE critic_verdict=$CRITIC_VERDICT auto_dispatch=$AUTO)"
 fi
 
+CLAUDE_POLICY_DB="$TEST_DB" CLAUDE_AGENT_ROLE="planner" python3 "$RUNTIME" \
+    config set critic_enabled_implementer_stop false \
+    --scope "project=$WORKTREE" >/dev/null 2>&1
+
+LEASE_JSON_2=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
+    lease issue-for-dispatch implementer \
+    --workflow-id "wf-critic-disabled" \
+    --worktree-path "$WORKTREE" 2>/dev/null)
+LEASE_ID_2=$(printf '%s' "$LEASE_JSON_2" | jq -r '.lease.lease_id // empty')
+
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
+    completion submit \
+    --lease-id "$LEASE_ID_2" \
+    --workflow-id "wf-critic-disabled" \
+    --role implementer \
+    --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"abc123"}' >/dev/null 2>&1
+
+DISABLED_OUTPUT=$(printf '%s' "$PAYLOAD" \
+    | CLAUDE_PROJECT_DIR="$WORKTREE" \
+      CLAUDE_POLICY_DB="$TEST_DB" \
+      CLAUDEX_IMPLEMENTER_CRITIC_TEST_RESPONSE="$TEST_RESPONSE" \
+      "$HOOK" 2>/dev/null || true)
+
+DISABLED_CONTEXT=$(printf '%s' "$DISABLED_OUTPUT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+if [[ "$DISABLED_CONTEXT" == *"Implementer critic disabled for this scope."* ]]; then
+    pass "hook reports disabled critic path"
+else
+    fail "hook reports disabled critic path (got: $DISABLED_CONTEXT)"
+fi
+
+LATEST_DISABLED=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
+    critic-review latest --workflow-id "wf-critic-disabled" 2>/dev/null)
+DISABLED_FOUND=$(printf '%s' "$LATEST_DISABLED" | jq -r '.found // false')
+if [[ "$DISABLED_FOUND" == "false" ]]; then
+    pass "disabled critic path does not persist a critic review"
+else
+    fail "disabled critic path does not persist a critic review (got: $LATEST_DISABLED)"
+fi
+
+DISPATCH_DISABLED=$(printf '{"agent_type":"implementer","project_root":"%s"}' "$WORKTREE" \
+    | CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" dispatch process-stop 2>/dev/null || echo '{}')
+DISABLED_NEXT_ROLE=$(printf '%s' "$DISPATCH_DISABLED" | jq -r '.next_role // empty')
+DISABLED_CRITIC=$(printf '%s' "$DISPATCH_DISABLED" | jq -r '.critic_found // false')
+if [[ "$DISABLED_NEXT_ROLE" == "reviewer" && "$DISABLED_CRITIC" == "false" ]]; then
+    pass "disabled critic path falls back to reviewer"
+else
+    fail "disabled critic path falls back to reviewer (next_role=$DISABLED_NEXT_ROLE critic_found=$DISABLED_CRITIC)"
+fi
+
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
     echo "PASS: $TEST_NAME"
