@@ -79,6 +79,8 @@ _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
 _PASSTHROUGH_WRAPPERS = frozenset({"command", "builtin", "nohup", "time"})
 _SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh"})
+_COMMAND_SUB_GIT_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=)?(?:\$\(|`)\s*git$")
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\1")
 _GIT_GLOBAL_OPTS_WITH_VALUE = frozenset(
     {
         "-C",
@@ -104,9 +106,66 @@ class GitInvocation:
 
 def _shell_tokens(command: str) -> list[str]:
     """Tokenize a shell command string while preserving unquoted separators."""
+    command = _replace_unquoted_newlines(_strip_heredoc_bodies(command))
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
     return list(lexer)
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc body lines before shell-token scanning.
+
+    The policy parser is interested in executable shell, not commit-message or
+    script payload text. Stripping simple heredoc bodies prevents a body line
+    that happens to start with ``git`` from being mistaken for an invocation.
+    """
+    if "<<" not in command:
+        return command
+
+    output: list[str] = []
+    pending_delims: list[str] = []
+    for line in command.splitlines():
+        if pending_delims:
+            if line.strip() == pending_delims[0]:
+                pending_delims.pop(0)
+            continue
+
+        output.append(line)
+        for match in _HEREDOC_RE.finditer(line):
+            pending_delims.append(match.group(2))
+
+    return "\n".join(output)
+
+
+def _replace_unquoted_newlines(command: str) -> str:
+    """Turn unquoted newlines into shell separators before shlex tokenization."""
+    if "\n" not in command:
+        return command
+
+    result: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if escaped:
+            result.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            result.append(ch)
+            escaped = True
+            continue
+        if ch in ("'", '"'):
+            if quote == ch:
+                quote = None
+            elif quote is None:
+                quote = ch
+            result.append(ch)
+            continue
+        if ch == "\n" and quote is None:
+            result.append(" ; ")
+            continue
+        result.append(ch)
+    return "".join(result)
 
 
 def _split_shell_segments(tokens: list[str]) -> list[list[str]]:
@@ -141,7 +200,11 @@ def _extract_shell_c_payload(tokens: list[str]) -> Optional[str]:
 def _git_argv_from_segment(segment: list[str], *, depth: int = 0) -> Optional[list[str]]:
     """Resolve a shell segment to the git argv it actually executes, if any."""
     index = 0
+    if segment and _COMMAND_SUB_GIT_PREFIX_RE.match(segment[0]):
+        return ["git", *segment[1:]]
     while index < len(segment) and _ENV_ASSIGN_RE.match(segment[index]):
+        if _COMMAND_SUB_GIT_PREFIX_RE.match(segment[index]):
+            return ["git", *segment[index + 1 :]]
         index += 1
     if index >= len(segment):
         return None
@@ -172,18 +235,118 @@ def _git_argv_from_segment(segment: list[str], *, depth: int = 0) -> Optional[li
     return segment[index:]
 
 
+def _dedupe_git_argvs(argvs: list[list[str]]) -> list[list[str]]:
+    seen: set[tuple[str, ...]] = set()
+    result: list[list[str]] = []
+    for argv in argvs:
+        key = tuple(argv)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(argv)
+    return result
+
+
+def _inline_command_substitution_payloads(token: str) -> list[str]:
+    """Extract simple one-token $(...) or `...` command substitutions."""
+    payloads: list[str] = []
+    start = 0
+    while True:
+        open_index = token.find("$(", start)
+        if open_index < 0:
+            break
+        depth = 1
+        cursor = open_index + 2
+        while cursor < len(token) and depth:
+            if token.startswith("$(", cursor):
+                depth += 1
+                cursor += 2
+                continue
+            if token[cursor] == ")":
+                depth -= 1
+                if depth == 0:
+                    payloads.append(token[open_index + 2 : cursor])
+                    break
+            cursor += 1
+        start = cursor + 1
+
+    start = 0
+    while True:
+        open_index = token.find("`", start)
+        if open_index < 0:
+            break
+        close_index = token.find("`", open_index + 1)
+        if close_index < 0:
+            break
+        payloads.append(token[open_index + 1 : close_index])
+        start = close_index + 1
+
+    return payloads
+
+
+def _git_argvs_from_segment(segment: list[str], *, depth: int = 0) -> list[list[str]]:
+    """Resolve every git argv represented by a shell segment."""
+    index = 0
+    while index < len(segment) and _ENV_ASSIGN_RE.match(segment[index]):
+        if _COMMAND_SUB_GIT_PREFIX_RE.match(segment[index]):
+            break
+        index += 1
+    if index < len(segment):
+        command = os.path.basename(segment[index])
+        if command == "env":
+            env_index = index + 1
+            while env_index < len(segment) and (
+                _ENV_ASSIGN_RE.match(segment[env_index]) or segment[env_index].startswith("-")
+            ):
+                env_index += 1
+            return _git_argvs_from_segment(segment[env_index:], depth=depth)
+        if command in _PASSTHROUGH_WRAPPERS:
+            return _git_argvs_from_segment(segment[index + 1 :], depth=depth)
+        if command in _SHELL_WRAPPERS:
+            if depth >= 2:
+                return []
+            inner = _extract_shell_c_payload(segment[index + 1 :])
+            return _extract_git_argvs(inner, depth=depth + 1) if inner else []
+
+    argvs: list[list[str]] = []
+    direct = _git_argv_from_segment(segment, depth=depth)
+    if direct is not None:
+        argvs.append(direct)
+
+    index = 0
+    while index < len(segment):
+        token = segment[index]
+
+        if _COMMAND_SUB_GIT_PREFIX_RE.match(token):
+            argvs.append(["git", *segment[index + 1 :]])
+            index += 1
+            continue
+
+        for payload in _inline_command_substitution_payloads(token):
+            if depth < 2:
+                argvs.extend(_extract_git_argvs(payload, depth=depth + 1))
+        index += 1
+
+    return _dedupe_git_argvs(argvs)
+
+
 def _extract_git_argv(command: str, *, depth: int = 0) -> Optional[list[str]]:
     """Extract the argv for the first real git invocation in a shell command."""
+    argvs = _extract_git_argvs(command, depth=depth)
+    return argvs[0] if argvs else None
+
+
+def _extract_git_argvs(command: str, *, depth: int = 0) -> list[list[str]]:
+    """Extract every real git invocation embedded in a shell command."""
     try:
         tokens = _shell_tokens(command)
     except ValueError:
-        return None
+        return []
 
+    argvs: list[list[str]] = []
     for segment in _split_shell_segments(tokens):
-        argv = _git_argv_from_segment(segment, depth=depth)
-        if argv is not None:
-            return argv
-    return None
+        argvs.extend(_git_argvs_from_segment(segment, depth=depth))
+    return _dedupe_git_argvs(argvs)
 
 
 def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
@@ -219,79 +382,25 @@ def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
 
 def parse_git_invocation(command: str) -> Optional[GitInvocation]:
     """Parse the first real git invocation embedded in a shell command string."""
-    argv = _extract_git_argv(command)
-    if not argv:
-        return None
-
-    subcommand, args = _git_subcommand(argv)
-    if not subcommand:
-        return None
-
-    return GitInvocation(tuple(argv), subcommand, tuple(args))
+    invocations = parse_git_invocations(command)
+    return invocations[0] if invocations else None
 
 
-def classify_git_op(command: str) -> str:
-    """Classify a git command string into an operation class.
+def parse_git_invocations(command: str) -> tuple[GitInvocation, ...]:
+    """Parse every real git invocation embedded in a shell command string."""
+    invocations: list[GitInvocation] = []
+    for argv in _extract_git_argvs(command):
+        if not argv:
+            continue
+        subcommand, args = _git_subcommand(argv)
+        if not subcommand:
+            continue
+        invocations.append(GitInvocation(tuple(argv), subcommand, tuple(args)))
+    return tuple(invocations)
 
-    Returns one of: "routine_local", "high_risk", "admin_recovery",
-    "unclassified".
 
-    This is the sole classifier for the migrated Check 3 path. Tokenization is
-    shell-aware: quoted prompt text such as ``node tool "how to git push"``
-    must NOT classify as a git operation, while nested shell invocations such
-    as ``bash -lc "git push"`` still must classify correctly.
-
-    Classification precedence (first match wins):
-      admin_recovery: merge --abort, reset --merge (governed recovery, not landing)
-      high_risk:      push, rebase, reset, merge --no-ff, worktree remove/prune,
-                      branch -d/-D, tag (state-mutating operations requiring Guardian)
-      routine_local:  commit, merge (without --no-ff)
-      unclassified:   everything else
-
-    @decision DEC-LEASE-002
-    Title: admin_recovery op class exempts merge --abort / reset --merge from
-           evaluation-readiness gate
-    Status: accepted
-    Rationale: merge --abort and reset --merge are governed administrative recovery
-      operations — they undo an in-progress merge, not land new code. Requiring
-      evaluation_state=ready_for_guardian for these operations is wrong because
-      there is no "feature" to evaluate; the purpose is to return the repo to a
-      clean state. They still require a lease and an approval token (same model as
-      high_risk), but bypass Check 10's eval-readiness gate. The admin_recovery
-      class is checked BEFORE the generic reset/merge patterns so the specific
-      variants win over the broader classification.
-
-    @decision DEC-LEASE-EGAP-002
-    Title: worktree remove/prune, branch -d/-D, and tag are classified as high_risk
-    Status: accepted
-    Rationale: These operations were previously unclassified, meaning they fell
-      through to "unclassified" which is not in any lease's allowed_ops — so they
-      were implicitly denied. However, "unclassified" produces a confusing error
-      message and does not integrate with Guardian's approval-token flow. Classifying
-      them as high_risk means: (a) they are explicitly denied for implementers, (b)
-      Guardian leases that include high_risk can permit them, and (c) they require
-      an approval token via the standard high_risk approval flow. This aligns the
-      lifecycle-management operations with the same security model as push/rebase/reset.
-
-    @decision DEC-LEASE-EGAP-003
-    Title: RCA-1 ops classified as high_risk — cherry-pick, revert, worktree move,
-           stash drop/clear, remote add/remove/set-url, update-ref, filter-branch
-    Status: accepted
-    Rationale: E2E testing (RCA-1, issue #21) proved these 9 operations were matched
-      by the expanded _GIT_OP_RE in bash_git_who.py but then fell through to
-      "unclassified" in classify_git_op(). "unclassified" is not in any lease's
-      allowed_ops, producing a confusing denial message unrelated to the real
-      enforcement intent. Classifying each as high_risk means: Guardian leases
-      that include high_risk can permit them; implementer leases cannot; and the
-      standard approval-token flow applies. This keeps the security model consistent
-      across all state-mutating git operations. Classification precedence: these
-      checks appear AFTER admin_recovery but BEFORE the catch-all unclassified
-      return so they do not interfere with recovery operations.
-    """
-    invocation = parse_git_invocation(command)
-    if not invocation:
-        return "unclassified"
-
+def classify_git_invocation(invocation: GitInvocation) -> str:
+    """Classify one parsed git invocation into an operation class."""
     subcommand = invocation.subcommand
     args = invocation.args
 
@@ -322,7 +431,6 @@ def classify_git_op(command: str) -> str:
     # High-risk: merge --no-ff (must check before plain merge)
     if subcommand == "merge" and "--no-ff" in args:
         return "high_risk"
-    # ── RCA-1 additions (DEC-LEASE-EGAP-003) ────────────────────────────────
     # High-risk: cherry-pick — replays commits onto HEAD, mutates history
     if subcommand == "cherry-pick":
         return "high_risk"
@@ -338,6 +446,10 @@ def classify_git_op(command: str) -> str:
     # High-risk: remote add / remove / rm / set-url — modifies remote config
     if subcommand == "remote" and args[:1] and args[0] in ("add", "remove", "rm", "set-url"):
         return "high_risk"
+    # High-risk: commit-tree — writes commit objects outside porcelain commit
+    # flow; normal Guardian landing should use git commit/merge/push.
+    if subcommand == "commit-tree":
+        return "high_risk"
     # High-risk: update-ref — directly writes ref objects, bypassing normal
     #   commit flow; used for surgery on the ref namespace
     if subcommand == "update-ref":
@@ -348,7 +460,6 @@ def classify_git_op(command: str) -> str:
     # High-risk: filter-branch / filter-repo — rewrites entire commit history
     if subcommand in ("filter-branch", "filter-repo"):
         return "high_risk"
-    # ── end RCA-1 additions ──────────────────────────────────────────────────
     # Routine local: commit
     if subcommand == "commit":
         return "routine_local"
@@ -356,6 +467,93 @@ def classify_git_op(command: str) -> str:
     if subcommand == "merge":
         return "routine_local"
     return "unclassified"
+
+
+def _dominant_op_class(op_classes: list[str]) -> str:
+    """Return the strictest summary class for a command containing many git ops."""
+    if "high_risk" in op_classes:
+        return "high_risk"
+    if "admin_recovery" in op_classes:
+        return "admin_recovery"
+    if "routine_local" in op_classes:
+        return "routine_local"
+    return "unclassified"
+
+
+def op_class_label(op_class: str) -> str:
+    """User-facing label for the internal lease operation class."""
+    return {
+        "routine_local": "routine git",
+        "high_risk": "governed git",
+        "admin_recovery": "admin recovery",
+        "unclassified": "unclassified",
+    }.get(op_class, op_class)
+
+
+def classify_git_op(command: str) -> str:
+    """Classify a git command string into an operation class.
+
+    Returns one of: "routine_local", "high_risk", "admin_recovery",
+    "unclassified".
+
+    This is the sole classifier for the migrated Check 3 path. Tokenization is
+    shell-aware: quoted prompt text such as ``node tool "how to git push"``
+    must NOT classify as a git operation, while nested shell invocations such
+    as ``bash -lc "git push"`` still must classify correctly.
+
+    Classification precedence (first match wins):
+      admin_recovery: merge --abort, reset --merge (governed recovery, not landing)
+      high_risk:      push, rebase, reset, merge --no-ff, worktree remove/prune,
+                      branch -d/-D, tag (state-mutating operations governed by Guardian)
+      routine_local:  commit, merge (without --no-ff)
+      unclassified:   everything else
+
+    @decision DEC-LEASE-002
+    Title: admin_recovery op class exempts merge --abort / reset --merge from
+           evaluation-readiness gate
+    Status: accepted
+    Rationale: merge --abort and reset --merge are governed administrative recovery
+      operations — they undo an in-progress merge, not land new code. Requiring
+      evaluation_state=ready_for_guardian for these operations is wrong because
+      there is no "feature" to evaluate; the purpose is to return the repo to a
+      clean state. They still require a lease and an approval token (same model as
+      high_risk), but bypass Check 10's eval-readiness gate. The admin_recovery
+      class is checked BEFORE the generic reset/merge patterns so the specific
+      variants win over the broader classification.
+
+    @decision DEC-LEASE-EGAP-002
+    Title: worktree remove/prune, branch -d/-D, and tag are classified as high_risk
+    Status: accepted
+    Rationale: These operations were previously unclassified, meaning they fell
+      through to "unclassified" which is not in any lease's allowed_ops — so they
+      were implicitly denied. However, "unclassified" produces a confusing error
+      message and does not integrate with Guardian's governed-operation flow. Classifying
+      them as high_risk means: (a) they are explicitly denied for implementers and
+      (b) Guardian leases that include high_risk can permit them when the relevant
+      state gates agree. Approval-token requirements are decided by the approval
+      policy, not by the classifier label itself.
+
+    @decision DEC-LEASE-EGAP-003
+    Title: RCA-1 ops classified as high_risk — cherry-pick, revert, worktree move,
+           stash drop/clear, remote add/remove/set-url, update-ref, filter-branch
+    Status: accepted
+    Rationale: E2E testing (RCA-1, issue #21) proved these 9 operations were matched
+      by the expanded _GIT_OP_RE in bash_git_who.py but then fell through to
+      "unclassified" in classify_git_op(). "unclassified" is not in any lease's
+      allowed_ops, producing a confusing denial message unrelated to the real
+      enforcement intent. Classifying each as high_risk means Guardian leases
+      that include high_risk can permit them while implementer leases cannot.
+      Approval-token requirements remain a separate policy decision. This keeps
+      the authority model consistent across state-mutating git operations without
+      making every Guardian git command a user-decision boundary. Classification precedence: these
+      checks appear AFTER admin_recovery but BEFORE the catch-all unclassified
+      return so they do not interfere with recovery operations.
+    """
+    invocations = parse_git_invocations(command)
+    if not invocations:
+        return "unclassified"
+
+    return _dominant_op_class([classify_git_invocation(inv) for inv in invocations])
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +818,10 @@ def validate_op(
     import runtime.core.approvals as approvals_mod
     import runtime.core.evaluation as evaluation_mod
 
-    op_class = classify_git_op(command)
+    invocations = parse_git_invocations(command)
+    op_classes = [classify_git_invocation(invocation) for invocation in invocations]
+    effective_op_classes = [op_class for op_class in op_classes if op_class != "unclassified"]
+    op_class = _dominant_op_class(op_classes)
 
     result = {
         "allowed": False,
@@ -629,6 +830,7 @@ def validate_op(
         "role": None,
         "workflow_id": None,
         "op_class": op_class,
+        "op_label": op_class_label(op_class),
         "requires_eval": False,
         "eval_ok": None,
         "requires_approval": False,
@@ -668,20 +870,34 @@ def validate_op(
         allowed_ops = ["routine_local"]
         blocked_ops = []
 
-    # Check op is permitted by the lease.
-    if op_class in blocked_ops:
-        result["reason"] = f"op_class '{op_class}' is in blocked_ops"
-        return result
-    if op_class not in allowed_ops:
-        result["reason"] = f"op_class '{op_class}' not in allowed_ops {allowed_ops}"
-        return result
+    # Check every governed op is permitted by the lease.
+    classes_to_check = effective_op_classes or [op_class]
+    for candidate_class in classes_to_check:
+        if candidate_class in blocked_ops:
+            result["reason"] = (
+                f"{op_class_label(candidate_class)} operation is blocked "
+                f"(internal op_class '{candidate_class}')"
+            )
+            return result
+        if candidate_class not in allowed_ops:
+            result["reason"] = (
+                f"{op_class_label(candidate_class)} operation is not allowed "
+                f"by this lease: not in allowed_ops "
+                f"(internal op_class '{candidate_class}', "
+                f"allowed_ops {allowed_ops})"
+            )
+            return result
 
     # Eval check (when requires_eval and op is not unclassified or admin_recovery).
     # admin_recovery (merge --abort, reset --merge) skips the eval gate because
     # these are governed recovery operations, not landing operations — there is no
     # feature to evaluate. They still require a lease and approval token (below).
     eval_ok = None
-    if lease["requires_eval"] and op_class not in ("unclassified", "admin_recovery"):
+    eval_required = any(
+        candidate_class not in ("unclassified", "admin_recovery")
+        for candidate_class in classes_to_check
+    )
+    if lease["requires_eval"] and eval_required:
         wf_id = lease["workflow_id"]
         if wf_id:
             eval_state = evaluation_mod.get(conn, wf_id)
@@ -703,14 +919,17 @@ def validate_op(
         result["reason"] = "evaluation_state is not ready_for_guardian (or SHA mismatch)"
         return result
 
-    # Approval check: admin_recovery and approval-gated high_risk ops require
+    # Approval check: admin_recovery and approval-gated governed ops require
     # an unconsumed token. Straightforward push stays classified as high_risk
     # for lease/capability purposes but is no longer user-gated once Guardian
     # has reviewer/test/lease clearance.
-    invocation = parse_git_invocation(command)
-    requires_approval = op_class == "admin_recovery" or (
-        op_class == "high_risk"
-        and (invocation is None or invocation.subcommand != "push")
+    requires_approval = any(
+        candidate_class == "admin_recovery"
+        or (
+            candidate_class == "high_risk"
+            and invocation.subcommand != "push"
+        )
+        for invocation, candidate_class in zip(invocations, op_classes)
     )
     result["requires_approval"] = requires_approval
     approval_ok = None
@@ -719,7 +938,7 @@ def validate_op(
         wf_id = lease["workflow_id"]
         pending = approvals_mod.list_pending(conn, workflow_id=wf_id)
         # Map op_class to the approval op_type we'd look for.
-        # Approval-gated high_risk and admin_recovery ops may have different
+        # Approval-gated governed and admin_recovery ops may have different
         # sub-types; for now we accept any pending token for the workflow.
         approval_ok = len(pending) > 0
 
@@ -728,7 +947,7 @@ def validate_op(
     if requires_approval and not approval_ok:
         result["reason"] = (
             "op requires an unconsumed approval token "
-            "(approval-gated high_risk or admin_recovery)"
+            "(approval-gated governed operation or admin_recovery)"
         )
         return result
 

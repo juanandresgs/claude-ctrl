@@ -452,3 +452,36 @@ def test_suppressed_roles_ignored_when_lease_actually_attached():
     decision = check(req)
     # Valid lease + guardian:land has CAN_LAND_GIT → allow.
     assert decision is None
+
+
+def test_multiline_update_ref_is_seen_and_requires_lease():
+    ctx = make_context(actor_role="orchestrator", lease=None)
+    req = make_request(
+        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
+        'git update-ref refs/heads/main "$COMMIT"',
+        context=ctx,
+    )
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "lease" in decision.reason.lower()
+
+
+def test_git_plumbing_requires_guardian_land_capability():
+    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
+    lease["role"] = "guardian"
+    ctx = make_context(actor_role="guardian:provision", lease=lease)
+    req = make_request("git update-ref refs/heads/main HEAD", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "can_land_git" in decision.reason
+
+
+def test_git_plumbing_allowed_by_who_for_guardian_land_then_approval_gate_handles_it():
+    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
+    lease["role"] = "guardian"
+    ctx = make_context(actor_role="guardian:land", lease=lease)
+    req = make_request("git update-ref refs/heads/main HEAD", context=ctx)
+    decision = check(req)
+    assert decision is None

@@ -90,12 +90,19 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None or invocation.subcommand not in ("commit", "merge"):
+    landing_invocations = [
+        op.invocation
+        for op in intent.git_operations
+        if op.invocation.subcommand in ("commit", "merge")
+    ]
+    if not landing_invocations:
         return None
 
     # Admin recovery exemption.
-    if invocation.subcommand == "merge" and "--abort" in invocation.args:
+    if all(
+        invocation.subcommand == "merge" and "--abort" in invocation.args
+        for invocation in landing_invocations
+    ):
         return None
 
     # Meta-repo bypass.
@@ -112,6 +119,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # semantics and project_root/cwd for the directory.
     target_dir = request.context.project_root or intent.target_cwd or request.cwd or ""
 
+    for invocation in landing_invocations:
+        decision = _check_invocation_readiness(request, invocation, target_dir)
+        if decision is not None:
+            return decision
+    return None
+
+
+def _check_invocation_readiness(
+    request: PolicyRequest, invocation: GitInvocation, target_dir: str
+) -> Optional[PolicyDecision]:
     workflow_id = _resolve_workflow_id(request, invocation, target_dir)
 
     # Check evaluation state — use context (already loaded for resolved workflow_id).
@@ -153,7 +170,6 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 ),
                 policy_name="bash_eval_readiness",
             )
-
     return None
 
 

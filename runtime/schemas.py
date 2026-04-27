@@ -847,6 +847,10 @@ APPROVAL_OP_TYPES: frozenset[str] = frozenset(
         "force_push",
         "destructive_cleanup",
         "non_ff_merge",
+        # Direct ref/object plumbing: commit-tree, update-ref, symbolic-ref,
+        # filter-branch, and filter-repo. Normal Guardian landing uses
+        # porcelain git commit/plain merge/straightforward push instead.
+        "plumbing",
         # Admin recovery: merge --abort and reset --merge.
         # These require an approval token but NOT evaluation readiness.
         "admin_recovery",

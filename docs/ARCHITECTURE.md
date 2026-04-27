@@ -55,7 +55,7 @@ Bash/Agent PreToolUse path (event_types=["Bash","PreToolUse"]):
 | 275 | bash_write_who | Capability-gated WHO enforcement for shell writes |
 | 300 | bash_git_who | Lease-based WHO enforcement for git ops |
 | 350 | bash_worktree_creation | Guardian-only worktree creation |
-| 400 | bash_main_sacred | Deny commits on main/master |
+| 400 | bash_main_sacred | Deny non-landing commits on main/master; allow `guardian:land` final commits to proceed to test/evaluation gates |
 | 500 | bash_force_push | Deny unsafe force push |
 | 600 | bash_destructive_git | Deny reset --hard, clean -f, branch -D |
 | 625 | bash_stash_ban | Deny stash-based cross-branch shortcuts |
@@ -66,7 +66,7 @@ Bash/Agent PreToolUse path (event_types=["Bash","PreToolUse"]):
 | 850 | bash_test_gate_commit | Test-pass gate for git commit |
 | 900 | bash_eval_readiness | evaluation_state readiness + SHA match |
 | 1000 | bash_workflow_scope | Workflow binding + scope compliance |
-| 1100 | bash_approval_gate | One-shot approval for high-risk git ops |
+| 1100 | bash_approval_gate | One-shot approval for rebase/reset/non-ff merge/admin recovery/direct plumbing |
 
 **CLI entry points:**
 

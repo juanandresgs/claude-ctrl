@@ -92,6 +92,32 @@ def test_classify_nested_shell_git_push_is_high_risk():
     assert leases.classify_git_op('bash -lc "git push origin main"') == "high_risk"
 
 
+def test_parse_git_invocations_collects_nested_shell_commands():
+    invocations = leases.parse_git_invocations('bash -lc "git status; git push origin main"')
+    assert [inv.subcommand for inv in invocations] == ["status", "push"]
+    assert leases.classify_git_op('bash -lc "git status; git push origin main"') == "high_risk"
+
+
+def test_parse_git_invocations_preserves_newline_separators_for_plumbing():
+    command = (
+        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
+        'git update-ref refs/heads/main "$COMMIT"'
+    )
+    invocations = leases.parse_git_invocations(command)
+    assert [inv.subcommand for inv in invocations] == ["commit-tree", "update-ref"]
+    assert leases.classify_git_op(command) == "high_risk"
+
+
+def test_parse_git_invocations_finds_quoted_command_substitution():
+    invocations = leases.parse_git_invocations('echo "$(git update-ref refs/heads/main HEAD)"')
+    assert [inv.subcommand for inv in invocations] == ["update-ref"]
+    assert leases.classify_git_op('echo "$(git update-ref refs/heads/main HEAD)"') == "high_risk"
+
+
+def test_classify_commit_tree_is_governed_plumbing():
+    assert leases.classify_git_op("git commit-tree HEAD^{tree} -p HEAD") == "high_risk"
+
+
 # ---------------------------------------------------------------------------
 # issue()
 # ---------------------------------------------------------------------------
@@ -686,6 +712,26 @@ def test_validate_op_rebase_still_requires_eval_and_approval(conn):
     result = leases.validate_op(conn, "git rebase main", worktree_path="/wt6")
     assert result["op_class"] == "high_risk"
     assert result["eval_ok"] is False
+    assert result["allowed"] is False
+
+
+def test_validate_op_multiline_plumbing_requires_approval(conn):
+    leases.issue(
+        conn,
+        "guardian",
+        worktree_path="/wt7-plumbing",
+        allowed_ops=["routine_local", "high_risk"],
+        requires_eval=False,
+        workflow_id="wf-7-plumbing",
+    )
+    command = (
+        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
+        'git update-ref refs/heads/main "$COMMIT"'
+    )
+    result = leases.validate_op(conn, command, worktree_path="/wt7-plumbing")
+    assert result["op_class"] == "high_risk"
+    assert result["requires_approval"] is True
+    assert result["approval_ok"] is False
     assert result["allowed"] is False
 
 

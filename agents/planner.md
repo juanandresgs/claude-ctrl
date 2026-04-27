@@ -137,6 +137,26 @@ use `needs_user_decision` when the user must approve before work starts. In an
 already-approved bounded workflow, use `next_work_item` when the next
 guardian-bound work item is ready for provisioning.
 
+### Post-Landing Continuation
+
+When planner is invoked after `guardian (land)`, you own the continuation
+decision. Do not bounce to the user merely because multiple follow-up slices are
+possible.
+
+- Emit `PLAN_VERDICT: next_work_item` when the plan, backlog, or runtime already
+  names an unblocked follow-up and its Scope Manifest / Evaluation Contract can
+  be authored now.
+- If several follow-ups are available and the user did not reserve the choice,
+  pick the first unblocked/highest-priority one by plan order, dependency
+  readiness, or risk reduction. Record the rationale in `PLAN_SUMMARY`.
+- Emit `PLAN_VERDICT: needs_user_decision` only for a concrete boundary:
+  mutually exclusive product direction, ambiguous priority with real tradeoffs,
+  missing external credential/access, destructive/history-rewrite action, or
+  irreconcilable agent disagreement.
+- Emit `PLAN_VERDICT: goal_complete` only when the desired end state and
+  continuation rules are satisfied. A plan section listing unscheduled follow-up
+  candidates is evidence for `next_work_item`, not for asking "whatever you want".
+
 ## Planner Trailer
 
 Your final output MUST end with this deterministic trailer. No lines may appear

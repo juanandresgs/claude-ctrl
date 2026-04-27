@@ -48,12 +48,14 @@ def check_merge(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None or invocation.subcommand != "merge":
+    merge_invocations = [
+        op.invocation for op in intent.git_operations if op.invocation.subcommand == "merge"
+    ]
+    if not merge_invocations:
         return None
 
     # Admin recovery exemption.
-    if "--abort" in invocation.args:
+    if all("--abort" in invocation.args for invocation in merge_invocations):
         return None
 
     # Meta-repo bypass.
@@ -92,8 +94,10 @@ def check_commit(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None or invocation.subcommand != "commit":
+    commit_invocations = [
+        op.invocation for op in intent.git_operations if op.invocation.subcommand == "commit"
+    ]
+    if not commit_invocations:
         return None
 
     # Meta-repo bypass.

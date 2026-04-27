@@ -60,7 +60,7 @@ PreToolUse/Bash-path policies in priority order:
 | 275 | `bash_write_who` | Capability-gated WHO enforcement for shell writes. |
 | 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |
 | 350 | `bash_worktree_creation` | Guardian-only worktree creation. |
-| 400 | `bash_main_sacred` | Cannot commit on main/master. |
+| 400 | `bash_main_sacred` | Deny non-landing commits on main/master; `guardian:land` final commits pass through to test/evaluation gates. |
 | 500 | `bash_force_push` | Deny unsafe force push (require --force-with-lease). |
 | 600 | `bash_destructive_git` | Deny reset --hard, clean -f, branch -D. |
 | 625 | `bash_stash_ban` | Deny stash-based cross-branch shortcuts. |
@@ -71,7 +71,7 @@ PreToolUse/Bash-path policies in priority order:
 | 850 | `bash_test_gate_commit` | Test-pass gate for git commit. |
 | 900 | `bash_eval_readiness` | Requires evaluation_state=ready_for_guardian + SHA match. |
 | 1000 | `bash_workflow_scope` | Workflow binding + scope compliance. |
-| 1100 | `bash_approval_gate` | One-shot approval for high-risk git ops. |
+| 1100 | `bash_approval_gate` | One-shot approval for rebase/reset/non-ff merge/admin recovery/direct plumbing; routine Guardian landing needs reviewer/test/lease clearance, not an extra approval token. |
 
 ### SubagentStart (fires on every agent spawn)
 

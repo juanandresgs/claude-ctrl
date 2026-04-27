@@ -45,3 +45,23 @@ def test_dispatch_docs_use_current_completion_vocabulary():
     assert "EVAL_VERDICT" not in text
     assert "guardian(land)" in text
     assert "guardian(merge)" not in text
+
+
+def test_claude_md_requires_autonomous_continuation_after_clean_landing():
+    text = _read("CLAUDE.md")
+
+    assert "### Autonomous Continuation" in text
+    assert "dispatch planner continuation" in text
+    assert "PLAN_VERDICT: next_work_item" in text
+    assert "What's next is whatever you want" in text
+    assert "not an acceptable terminal state" in text
+
+
+def test_planner_prompt_treats_documented_followups_as_next_work_item():
+    text = _read("agents/planner.md")
+
+    assert "### Post-Landing Continuation" in text
+    assert "PLAN_VERDICT: next_work_item" in text
+    assert "unblocked follow-up" in text
+    assert "needs_user_decision" in text
+    assert "asking \"whatever you want\"" in text

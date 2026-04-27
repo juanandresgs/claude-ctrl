@@ -53,6 +53,11 @@ def test_op_type_non_ff_merge():
     assert _resolve_op_type("git merge --no-ff feature/bar") == "non_ff_merge"
 
 
+def test_op_type_plumbing():
+    assert _resolve_op_type("git update-ref refs/heads/main HEAD") == "plumbing"
+    assert _resolve_op_type("git commit-tree HEAD^{tree} -p HEAD") == "plumbing"
+
+
 def test_op_type_unknown_returns_none():
     assert _resolve_op_type("git status") is None
     assert _resolve_op_type("git commit -m 'fix'") is None
@@ -99,6 +104,30 @@ def test_non_ff_merge_requires_approval():
     assert decision.action == "deny"
     payload = decision.effects.get("check_and_consume_approval", {})
     assert payload.get("op_type") == "non_ff_merge"
+
+
+def test_plumbing_requires_approval():
+    ctx = make_context(actor_role="guardian:land")
+    req = make_request("git update-ref refs/heads/main HEAD", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    payload = decision.effects.get("check_and_consume_approval", {})
+    assert payload.get("op_type") == "plumbing"
+
+
+def test_multiline_commit_tree_update_ref_requires_plumbing_approval():
+    ctx = make_context(actor_role="guardian:land")
+    req = make_request(
+        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
+        'git update-ref refs/heads/main "$COMMIT"',
+        context=ctx,
+    )
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    payload = decision.effects.get("check_and_consume_approval", {})
+    assert payload.get("op_type") == "plumbing"
 
 
 # ---------------------------------------------------------------------------

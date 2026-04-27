@@ -37,41 +37,41 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None:
+    if not intent.git_invocations:
         return None
 
-    canonical = " ".join(invocation.argv)
+    for invocation in intent.git_invocations:
+        canonical = " ".join(invocation.argv)
 
-    if _RESET_HARD.search(canonical):
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                "git reset --hard is destructive and discards uncommitted work. "
-                "Use git stash or create a backup branch first."
-            ),
-            policy_name="bash_destructive_git",
-        )
+        if _RESET_HARD.search(canonical):
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    "git reset --hard is destructive and discards uncommitted work. "
+                    "Use git stash or create a backup branch first."
+                ),
+                policy_name="bash_destructive_git",
+            )
 
-    if _CLEAN_F.search(canonical):
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                "git clean -f permanently deletes untracked files. "
-                "Use git clean -n (dry run) first to see what would be deleted."
-            ),
-            policy_name="bash_destructive_git",
-        )
+        if _CLEAN_F.search(canonical):
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    "git clean -f permanently deletes untracked files. "
+                    "Use git clean -n (dry run) first to see what would be deleted."
+                ),
+                policy_name="bash_destructive_git",
+            )
 
-    if _BRANCH_D.search(canonical):
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                "git branch -D force-deletes a branch even if unmerged. "
-                "Use git branch -d (lowercase) for safe deletion."
-            ),
-            policy_name="bash_destructive_git",
-        )
+        if _BRANCH_D.search(canonical):
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    "git branch -D force-deletes a branch even if unmerged. "
+                    "Use git branch -d (lowercase) for safe deletion."
+                ),
+                policy_name="bash_destructive_git",
+            )
 
     return None
 

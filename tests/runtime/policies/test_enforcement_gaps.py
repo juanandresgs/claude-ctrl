@@ -619,8 +619,8 @@ class TestRCA1NewOps:
                 "and implementer leases correctly deny it."
             )
 
-    def test_new_ops_allowed_with_guardian_lease(self):
-        """Guardian lease (high_risk in allowed_ops) must pass WHO for all RCA-1 ops."""
+    def test_new_non_plumbing_ops_allowed_with_guardian_lease(self):
+        """Guardian lease (high_risk in allowed_ops) passes WHO for governed porcelain ops."""
         from runtime.core.policies.bash_git_who import check
 
         lease = _make_guardian_lease()
@@ -634,8 +634,6 @@ class TestRCA1NewOps:
             "git stash clear",
             "git remote add upstream https://github.com/org/repo.git",
             "git remote remove upstream",
-            "git update-ref refs/heads/main abc1234",
-            "git filter-branch --tree-filter 'rm secrets.txt' HEAD",
         ]
         for cmd in cmds:
             req = make_request(cmd, context=ctx)
@@ -644,6 +642,28 @@ class TestRCA1NewOps:
                 f"Guardian with high_risk lease must be allowed to run '{cmd}', "
                 f"but got deny: {d.reason if d else 'none'}"
             )
+
+    def test_plumbing_ops_require_guardian_land_capability(self):
+        """Direct plumbing is not canonical Guardian maintenance; it needs land authority."""
+        from runtime.core.policies.bash_git_who import check
+
+        lease = _make_guardian_lease()
+        bare_ctx = make_context(lease=lease, actor_role_override="guardian")
+        land_ctx = make_context(lease=lease, actor_role_override="guardian:land")
+
+        cmds = [
+            "git update-ref refs/heads/main abc1234",
+            "git filter-branch --tree-filter 'rm secrets.txt' HEAD",
+        ]
+        for cmd in cmds:
+            bare_req = make_request(cmd, context=bare_ctx)
+            bare_decision = check(bare_req)
+            assert bare_decision is not None
+            assert "can_land_git" in bare_decision.reason
+
+            land_req = make_request(cmd, context=land_ctx)
+            land_decision = check(land_req)
+            assert land_decision is None
 
 
 # ---------------------------------------------------------------------------

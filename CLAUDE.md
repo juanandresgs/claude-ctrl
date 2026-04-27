@@ -106,7 +106,10 @@ Before using AskUserQuestion, agents must pass this filter:
 4. **Can you resolve it with 2 minutes of research?** Check plan, code, and prior traces before escalating
 5. **Is the slice already approved and still within canonical routing?** Do not require a second user-only confirmation before dispatching planner/implementer/reviewer/guardian inside the active bounded slice. A direct operator request or live supervisor steering instruction is sufficient authority to continue canonical routing; only bounce for destructive/history-rewrite actions, ambiguous publish targets, irreconcilable agent disagreement, or explicit product signoff.
 
-- **Suggest next steps.** End every response with forward motion: a question, suggestion, or offer to continue.
+- **Continue unless blocked.** End every response with forward motion. If a
+  canonical workflow has a known next work item, dispatch or name that next
+  action; do not punt with "whatever you want". Ask only for a real user
+  decision boundary or when the goal is genuinely complete.
 - **Verify and demonstrate.** Run tests, show output, prove it works. Never just say "done."
 
 ## Output Intelligence
@@ -286,7 +289,7 @@ Note: Implementer SubagentStop uses a dedicated Codex critic path that persists 
 
 ### Guardian Landing Preflight (Required)
 
-Before any Guardian-local landing attempt (`git commit`, `git merge`, straightforward `git push`) — including checkpoint-stewardship commits — the orchestrator MUST run a preflight and only attempt landing when all gates are green.
+Before any Guardian-local landing attempt (`git commit`, `git merge`, straightforward `git push`) — including checkpoint-stewardship commits — the orchestrator MUST run a preflight and only attempt landing when all gates are green. This is normal Guardian git, not an exceptional escalation path: once the actor is `guardian:land` with an active Guardian lease, reviewer readiness, and passing tests, `git commit`, plain `git merge`, and straightforward `git push` are expected to proceed without an extra approval token. Direct plumbing (`git commit-tree`, `git update-ref`, symbolic-ref/filter history surgery) is not the canonical landing path; use it only behind an explicit approval boundary.
 
 1. Resolve current workflow identity from runtime (do not infer from branch names):
    - `cc-policy context role`
@@ -309,6 +312,33 @@ If any preflight gate fails, do **not** attempt `git commit`/`git merge`/`git pu
 When a landing denial still occurs (for example `bash_eval_readiness`, `bash_force_push`, or remote-placement failure), treat it as a **state signal**, not a retry prompt. Record the blocker once, and only retry landing after at least one governing state changes (evaluation_state, head_sha, test_state, lease state, remote/publish-target clarity, or staged scope).
 
 **After the chain completes** (guardian terminal state or error), report what each role did so the user sees the outcome.
+
+### Autonomous Continuation
+
+A clean landing is not automatically the end of the objective. After `guardian (land)` succeeds, inspect runtime state and the plan before answering:
+- If the active goal has documented follow-up work items, backlog candidates, or continuation rules and no explicit user-decision boundary is blocking them, dispatch planner continuation and drive toward `PLAN_VERDICT: next_work_item`.
+- If the next work item is already seeded, use `cc-policy workflow stage-packet [<workflow_id>] --stage-id guardian:provision` and continue the canonical chain.
+- If several documented follow-ups are available and none requires user product judgment, choose the first unblocked/highest-priority item by plan order, dependency readiness, or risk reduction. Report the choice briefly and proceed.
+- Use `needs_user_decision` only when the plan or runtime names a concrete user-decision boundary: mutually exclusive product direction, ambiguous priority with real tradeoffs, external credential/access requirement, destructive/history-rewrite action, or irreconcilable agent disagreement.
+- Use `goal_complete` only when the desired end state and all planned continuation rules are satisfied. A list of unscheduled follow-up candidates means the goal is not fully done unless the plan explicitly marks them out of scope.
+
+Status answers such as "Where are we?" must include one of: the next canonical dispatch, a concrete blocker, or a proof that the goal is terminal. "What's next is whatever you want" is not an acceptable terminal state when the plan already names follow-up candidates.
+
+### Branch and Worktree Cleanup
+
+Pushing is not cleanup by itself. When a branch or worktree was created for a task, terminal handling must include local cleanup unless a live blocker prevents it.
+
+Before switching branches, deleting a branch, or removing a worktree:
+- verify the worktree is clean, or explicitly preserve dirty work by committing/stashing according to the current user instruction.
+- check visible local sessions (`tmux` panes, active shells/processes, and `git worktree list`) for agents or humans still using that exact worktree path.
+- if another thread is active in the same worktree, or if uncommitted changes appear that are not yours, stop cleanup and report the blocker. Do not stash, discard, switch, or delete under another thread.
+
+After a successful push/landing and an idle, clean worktree:
+- switch the checkout back to the long-lived base branch when needed so the task branch is no longer checked out.
+- delete the local task branch when it has been pushed or merged and no local-only commits remain.
+- remove the task worktree with `git worktree remove <path>` when the branch used a separate worktree.
+
+If the user says "push and clean up", interpret that as push plus safe local branch/worktree cleanup, not just upstream tracking and a clean status check.
 
 ### Simple Task Fast Path
 Skip planner only when ALL hold:

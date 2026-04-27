@@ -21,9 +21,9 @@ Rationale: approvals.check_and_consume() mutates the DB (consumes a token).
 
   Straightforward `git push` is no longer approval-token gated. Guardian owns
   push after reviewer/test/lease clearance; this policy now gates only the
-  remaining approval-token operations (rebase, reset, non-ff merge, and
-  admin recovery). Force push and destructive git remain hard-denied earlier in
-  the stack.
+  remaining approval-token operations (rebase, reset, non-ff merge, direct
+  plumbing, and admin recovery). Force push and destructive git remain
+  hard-denied earlier in the stack.
 
   Guard.sh Checks 5-6 (hard denies for reset --hard, push --force, clean -f,
   branch -D) fire at priority 500-600, BEFORE this check at priority 1100.
@@ -34,12 +34,35 @@ from __future__ import annotations
 
 from typing import Optional
 
+from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
     extract_merge_ref,
     sanitize_token,
 )
+
+
+def _resolve_op_type_from_invocation(invocation: GitInvocation) -> Optional[str]:
+    if invocation.subcommand == "rebase":
+        return "rebase"
+    if invocation.subcommand == "merge" and "--abort" in invocation.args:
+        return "admin_recovery"
+    if invocation.subcommand == "reset" and "--merge" in invocation.args:
+        return "admin_recovery"
+    if invocation.subcommand == "reset":
+        return "reset"
+    if invocation.subcommand == "merge" and "--no-ff" in invocation.args:
+        return "non_ff_merge"
+    if invocation.subcommand in {
+        "commit-tree",
+        "update-ref",
+        "symbolic-ref",
+        "filter-branch",
+        "filter-repo",
+    }:
+        return "plumbing"
+    return None
 
 
 def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
@@ -54,20 +77,15 @@ def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
         intent = build_bash_command_intent(request)
     else:
         intent = request.command_intent
-    invocation = intent.git_invocation if intent is not None else None
-    if invocation is None:
+    if intent is None:
         return None
-
-    if invocation.subcommand == "rebase":
-        return "rebase"
-    if invocation.subcommand == "merge" and "--abort" in invocation.args:
-        return "admin_recovery"
-    if invocation.subcommand == "reset" and "--merge" in invocation.args:
-        return "admin_recovery"
-    if invocation.subcommand == "reset":
-        return "reset"
-    if invocation.subcommand == "merge" and "--no-ff" in invocation.args:
-        return "non_ff_merge"
+    for operation in intent.git_operations:
+        result = _resolve_op_type_from_invocation(operation.invocation)
+        if result is not None:
+            return result
+    invocation = intent.git_invocation
+    if invocation is not None:
+        return _resolve_op_type_from_invocation(invocation)
     return None
 
 
@@ -90,7 +108,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Require a one-shot approval token for approval-gated git ops.
 
     Classification (via classify_git_op from leases.py):
-      high_risk      → rebase, reset (any), merge --no-ff
+      high_risk      → rebase, reset (any), merge --no-ff, direct plumbing
       admin_recovery → merge --abort, reset --merge
 
     Routine Guardian landing ops (commit, plain merge, straightforward push)
@@ -107,17 +125,20 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None:
+    git_operations = tuple(op for op in intent.git_operations if op.op_class in ("high_risk", "admin_recovery"))
+    if not git_operations:
         return None
 
-    op_class = intent.git_op_class
-    if op_class not in ("high_risk", "admin_recovery"):
+    gated: tuple[str, str] | None = None
+    for operation in git_operations:
+        op_type = _resolve_op_type_from_invocation(operation.invocation)
+        if op_type:
+            gated = (op_type, operation.op_class)
+            break
+    if gated is None:
         return None
 
-    op_type = _resolve_op_type(request)
-    if not op_type:
-        return None
+    op_type, op_class = gated
 
     workflow_id = _resolve_workflow_id(request)
 
