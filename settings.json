@@ -258,7 +258,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/implementer-critic.sh",
+            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -283,7 +283,12 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "$HOME/.claude/hooks/implementer-critic.sh",
+            "timeout": 900
+          },
+          {
+            "type": "command",
+            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -308,7 +313,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -333,7 +338,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           },
           {
@@ -375,7 +380,7 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           }
         ]

@@ -22,6 +22,9 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
+const REPO_ROOT = path.resolve(ROOT_DIR, "../..");
+const RUNTIME_CLI_PATH =
+  process.env.CLAUDE_RUNTIME_CLI || path.resolve(REPO_ROOT, "runtime/cli.py");
 const CRITIC_SCHEMA = path.join(ROOT_DIR, "schemas", "critic-output.schema.json");
 const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$/;
 const SKIPPABLE_PATH = /(\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.|node_modules|vendor|dist|build|\.next|__pycache__|\.git)/;
@@ -73,7 +76,7 @@ function currentWorkflowId(cwd) {
 }
 
 function localCliPath() {
-  return path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
+  return RUNTIME_CLI_PATH;
 }
 
 function readPolicyJson(cwd, args) {

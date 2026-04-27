@@ -106,14 +106,15 @@ class TestExtractRepoOwnedEntries:
         assert hm.extract_repo_owned_entries("oops") == frozenset()  # type: ignore[arg-type]
         assert hm.extract_repo_owned_entries(None) == frozenset()  # type: ignore[arg-type]
 
-    def test_real_settings_parses_to_31_entries(self):
+    def test_real_settings_parses_to_32_entries(self):
         # Phase 8 Slice 3: 33 → 32 after removing PreToolUse:EnterWorktree.
         # Phase 8 Slice 10: 32 → 30 after removing SubagentStop:tester
         # (check-tester.sh + post-task.sh).
         # Invariant #15 (DEC-EVAL-006): +1 PostToolUse Bash → post-bash.sh.
+        # Implementer critic: +1 SubagentStop:implementer → implementer-critic.sh.
         settings = _load_real_settings()
         entries = hm.extract_repo_owned_entries(settings)
-        assert len(entries) == 31
+        assert len(entries) == 32
 
     def test_bash_passthrough_is_skipped(self):
         settings = {
@@ -142,7 +143,7 @@ class TestExtractRepoOwnedEntries:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/stop-review-gate-hook.mjs",
+                                "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
                             }
                         ],
                     }
@@ -400,15 +401,16 @@ class TestValidateSettings:
         # Phase 8 Slice 3: 33 → 32 after removing PreToolUse:EnterWorktree.
         # Phase 8 Slice 10: 32 → 30 after removing SubagentStop:tester wiring.
         # Invariant #15 (DEC-EVAL-006): 30 → 31 adding PostToolUse Bash.
+        # Implementer critic: 31 → 32 adding SubagentStop:implementer critic.
         report = hm.validate_settings(_load_real_settings())
-        assert report["settings_repo_entry_count"] == 31
-        assert report["manifest_wired_entry_count"] == 31
+        assert report["settings_repo_entry_count"] == 32
+        assert report["manifest_wired_entry_count"] == 32
 
     def test_empty_settings_is_drift_due_to_missing_in_settings(self):
         report = hm.validate_settings({"hooks": {}})
         assert report["status"] == hm.VALIDATION_STATUS_DRIFT
         assert report["healthy"] is False
-        assert len(report["missing_in_settings"]) == 31
+        assert len(report["missing_in_settings"]) == 32
 
     def test_removing_post_bash_entry_from_settings_is_drift_unhealthy(self):
         # Invariant #15 (DEC-EVAL-006): removing PostToolUse/Bash/post-bash.sh

@@ -11,15 +11,15 @@ state.db-wal
 tmp/
 .claude/
 
-# Plugin system — track forked codex plugin source, ignore runtime state
+# Plugin system — marketplace clones are mutable runtime cache.
+# First-party Codex review code lives under sidecars/codex-review.
 plugins/cache/
 plugins/data/
 plugins/blocklist.json
 plugins/install-counts-cache.json
 plugins/installed_plugins.json
 plugins/known_marketplaces.json
-plugins/marketplaces/**/.claude/
-plugins/marketplaces/openai-codex/
+plugins/marketplaces/
 
 # Runtime artifacts
 backups/
@@ -47,9 +47,6 @@ ClauDEX/braid-v2/state/
 
 # Ephemeral state reviews
 CURRENT_STATE_REVIEW.md
-
-# Marketplace clones (not our source)
-plugins/marketplaces/claude-plugins-official/
 
 # Secrets
 .env

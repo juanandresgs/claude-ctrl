@@ -40,7 +40,6 @@ import runtime.core.hook_doc_validation as hook_doc_validation_mod
 import runtime.core.hook_manifest as hook_manifest_mod
 import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
 import runtime.core.eval_report as eval_report_mod
-import runtime.core.eval_runner as eval_runner_mod
 import runtime.core.eval_scorer as eval_scorer_mod
 import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
@@ -3842,6 +3841,8 @@ def _handle_eval(args) -> int:
       - ``report`` and ``list`` are read-only.
     """
     if args.action == "run":
+        import runtime.core.eval_runner as eval_runner_mod
+
         scenarios_dir_raw = getattr(args, "scenarios_dir", None)
         fixtures_dir_raw = getattr(args, "fixtures_dir", None)
 
@@ -3914,6 +3915,8 @@ def _handle_eval(args) -> int:
             eval_conn.close()
 
     elif args.action == "list":
+        import runtime.core.eval_runner as eval_runner_mod
+
         scenarios_dir_raw = getattr(args, "scenarios_dir", None)
         fixtures_dir_raw = getattr(args, "fixtures_dir", None)
 

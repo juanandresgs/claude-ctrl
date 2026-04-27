@@ -25,10 +25,10 @@ Rationale: CUTOVER_PLAN §Phase 2 "Hook Adapter Reduction" requires the
     * The manifest catalogs every repo-owned hook adapter that is
       currently wired in ``settings.json`` and backed by a tracked
       file under ``hooks/``.
-    * Non-repo-owned entries are deliberately excluded: bare bash
+    * Non-hook-adapter entries are deliberately excluded: bare bash
       passthroughs such as ``{ cat; echo; } >> dispatch-debug.jsonl``
-      and plugin-owned scripts such as
-      ``node $HOME/.claude/plugins/marketplaces/claudex-codex/.../
+      and sidecar-owned scripts such as
+      ``node $HOME/.claude/sidecars/codex-review/.../
       stop-review-gate-hook.mjs`` are not part of the repo's hook
       adapter surface and are not this module's concern.
     * Phase 8 Slice 3 resolved the previously-deprecated block-worktree

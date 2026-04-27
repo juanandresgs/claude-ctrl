@@ -18,7 +18,7 @@ PROJECT_ROOT=$(detect_project_root 2>/dev/null || printf '%s\n' "${CLAUDE_PROJEC
 
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
-_LOCAL_CRITIC_HOOK="$_HOOK_DIR/../plugins/marketplaces/claudex-codex/plugins/codex/scripts/implementer-critic-hook.mjs"
+_LOCAL_CRITIC_HOOK="$_HOOK_DIR/../sidecars/codex-review/scripts/implementer-critic-hook.mjs"
 
 _local_cc_policy() {
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then

@@ -16,6 +16,9 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
+const REPO_ROOT = path.resolve(ROOT_DIR, "../..");
+const RUNTIME_CLI_PATH =
+  process.env.CLAUDE_RUNTIME_CLI || path.resolve(REPO_ROOT, "runtime/cli.py");
 const POLICY_DIR = path.resolve(ROOT_DIR, "policies");
 const STOP_GATE_TITLE = "Codex Stop Gate Review";
 
@@ -582,11 +585,10 @@ function readEnforcementConfig(cwd, key) {
   if (!env.CLAUDE_POLICY_DB) {
     env.CLAUDE_POLICY_DB = path.join(env.CLAUDE_PROJECT_DIR, ".claude", "state.db");
   }
-  const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
   try {
     const out = execFileSync(
       "python3",
-      [cliPath, "config", "get", key],
+      [RUNTIME_CLI_PATH, "config", "get", key],
       { env, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }
     );
     const parsed = JSON.parse(out);
@@ -599,9 +601,8 @@ function readEnforcementConfig(cwd, key) {
 }
 
 function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
-  const cliPath = path.resolve(SCRIPT_DIR, "..", "..", "..", "..", "..", "..", "runtime", "cli.py");
   const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
-  const args = [cliPath, "event", "emit", "codex_stop_review"];
+  const args = [RUNTIME_CLI_PATH, "event", "emit", "codex_stop_review"];
   if (workflowId) {
     // ENFORCE-RCA-16: source key scopes events per-workflow for review
     // observability, statusline, and supervisory consumers — the dispatch

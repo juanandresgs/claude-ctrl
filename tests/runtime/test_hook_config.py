@@ -11,25 +11,19 @@ _SETTINGS = _ROOT / "settings.json"
 _GITIGNORE = _ROOT / ".gitignore"
 _PLUGIN_HOOKS = (
     _ROOT
-    / "plugins"
-    / "marketplaces"
-    / "claudex-codex"
-    / "plugins"
-    / "codex"
+    / "sidecars"
+    / "codex-review"
     / "hooks"
     / "hooks.json"
 )
 _STOP_REVIEW = (
-    "node $HOME/.claude/plugins/marketplaces/claudex-codex/plugins/codex/scripts/"
+    "node $HOME/.claude/sidecars/codex-review/scripts/"
     "stop-review-gate-hook.mjs"
 )
 _PLUGIN_MANIFEST = (
     _ROOT
-    / "plugins"
-    / "marketplaces"
-    / "claudex-codex"
-    / "plugins"
-    / "codex"
+    / "sidecars"
+    / "codex-review"
     / ".claude-plugin"
     / "plugin.json"
 )
@@ -65,9 +59,9 @@ def test_settings_excludes_upstream_openai_codex_identity() -> None:
     assert "openai-codex" not in settings.get("extraKnownMarketplaces", {})
 
 
-def test_gitignore_ignores_upstream_openai_codex_install_tree() -> None:
+def test_gitignore_ignores_mutable_marketplace_cache() -> None:
     gitignore = _GITIGNORE.read_text(encoding="utf-8")
-    assert "plugins/marketplaces/openai-codex/" in gitignore
+    assert "plugins/marketplaces/" in gitignore
 
 
 def test_first_party_claudex_codex_plugin_manifest_exists() -> None:

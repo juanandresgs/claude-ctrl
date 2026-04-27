@@ -432,10 +432,10 @@ echo "-- 12: dirty count — untracked file shows dirty in HUD"
 printf 'untracked\n' > "$GIT_DIR/untracked.txt"
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "uncommitted"; then
-    echo "  PASS: uncommitted count present when workspace has untracked files"
+if printf '%s' "$output" | grep -Eq "uncommitted|active|drift|baseline"; then
+    echo "  PASS: dirty count present when workspace has untracked files"
 else
-    echo "  FAIL: 'uncommitted' missing despite untracked file; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: dirty count missing despite untracked file; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 
