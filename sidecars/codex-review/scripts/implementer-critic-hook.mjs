@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -17,6 +17,7 @@ import {
   readOutputSchema,
   runAppServerTurn
 } from "./lib/codex.mjs";
+import { binaryAvailable } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -26,8 +27,11 @@ const REPO_ROOT = path.resolve(ROOT_DIR, "../..");
 const RUNTIME_CLI_PATH =
   process.env.CLAUDE_RUNTIME_CLI || path.resolve(REPO_ROOT, "runtime/cli.py");
 const CRITIC_SCHEMA = path.join(ROOT_DIR, "schemas", "critic-output.schema.json");
+const POLICY_DIR = path.resolve(ROOT_DIR, "policies");
+const REVIEW_PROVIDER_KEY = "review_gate_provider";
 const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$/;
 const SKIPPABLE_PATH = /(\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.|node_modules|vendor|dist|build|\.next|__pycache__|\.git)/;
+const VALID_REVIEW_PROVIDERS = new Set(["auto", "codex", "gemini", "reviewer-subagent"]);
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -99,6 +103,55 @@ function readPolicyJson(cwd, args) {
     }
   );
   return JSON.parse(raw);
+}
+
+function normalizeReviewProvider(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "codex";
+  }
+  const dashed = normalized.replace(/_/g, "-");
+  if (dashed === "reviewer" || dashed === "reviewer-subagent-fallback") {
+    return "reviewer-subagent";
+  }
+  return VALID_REVIEW_PROVIDERS.has(dashed) ? dashed : "codex";
+}
+
+function providerOrder(provider) {
+  switch (normalizeReviewProvider(provider)) {
+    case "auto":
+    case "codex":
+      return ["codex", "gemini"];
+    case "gemini":
+      return ["gemini", "codex"];
+    case "reviewer-subagent":
+      return [];
+    default:
+      return ["codex", "gemini"];
+  }
+}
+
+function readConfiguredReviewProvider(cwd, workflowId = "") {
+  const envOverride =
+    process.env.CLAUDEX_IMPLEMENTER_CRITIC_PROVIDER ||
+    process.env.CLAUDEX_REVIEW_PROVIDER ||
+    "";
+  if (envOverride) {
+    return normalizeReviewProvider(envOverride);
+  }
+  try {
+    const args = [
+      "config", "get", REVIEW_PROVIDER_KEY,
+      "--project-root", cwd
+    ];
+    if (workflowId) {
+      args.push("--workflow-id", workflowId);
+    }
+    const config = readPolicyJson(cwd, args);
+    return normalizeReviewProvider(config?.value || "codex");
+  } catch {
+    return "codex";
+  }
 }
 
 function resolveCriticContext(cwd) {
@@ -309,6 +362,8 @@ function resolveTestReview() {
       progressLines: Array.isArray(parsed.progress)
         ? parsed.progress.map((item) => String(item))
         : ["Using implementer critic test override."],
+      providerStatuses: [],
+      configuredProvider: "test",
       provider: "codex"
     };
   } catch {
@@ -316,7 +371,155 @@ function resolveTestReview() {
   }
 }
 
-async function runCritic(cwd, input = {}) {
+function getGeminiLoginStatus(cwd) {
+  const versionStatus = binaryAvailable("gemini", ["--version"], { cwd });
+  if (!versionStatus.available) {
+    return {
+      available: false,
+      loggedIn: false,
+      detail: versionStatus.detail
+    };
+  }
+
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
+    return {
+      available: true,
+      loggedIn: true,
+      detail: `${versionStatus.detail}; API key present`
+    };
+  }
+
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const credsPath = home ? path.join(home, ".gemini", "oauth_creds.json") : "";
+  if (credsPath && fs.existsSync(credsPath)) {
+    return {
+      available: true,
+      loggedIn: true,
+      detail: `${versionStatus.detail}; oauth credentials present`
+    };
+  }
+
+  return {
+    available: true,
+    loggedIn: false,
+    detail: `${versionStatus.detail}; not authenticated`
+  };
+}
+
+function extractGeminiResponse(stdout) {
+  const text = String(stdout || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    const payload = JSON.parse(text);
+    if (payload && typeof payload === "object") {
+      if (typeof payload.response === "string") {
+        return payload.response;
+      }
+      if (typeof payload.text === "string") {
+        return payload.text;
+      }
+      if (typeof payload.output === "string") {
+        return payload.output;
+      }
+      if (typeof payload.message === "string") {
+        return payload.message;
+      }
+      if (typeof payload.verdict === "string") {
+        return JSON.stringify(payload);
+      }
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
+
+function runGeminiCritic(cwd, prompt) {
+  const policyPath = path.join(POLICY_DIR, "stop-gate-readonly.toml");
+  const args = [
+    "-p", prompt,
+    "--approval-mode", "plan",
+    "--output-format", "json"
+  ];
+  if (fs.existsSync(policyPath)) {
+    args.push("--policy", policyPath);
+  }
+
+  const result = spawnSync("gemini", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 15 * 60 * 1000,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || `exit ${result.status}`).trim();
+    throw new Error(detail || "Gemini critic process failed.");
+  }
+
+  const rawOutput = extractGeminiResponse(result.stdout);
+  const parsed = parseStructuredOutput(rawOutput, {
+    status: result.status,
+    failureMessage: result.stderr
+  });
+  if (parsed.parseError || !parsed.parsed) {
+    return {
+      verdict: "CRITIC_UNAVAILABLE",
+      summary: "Gemini critic returned invalid structured output.",
+      detail: parsed.parseError || "Gemini did not return a structured verdict.",
+      nextSteps: ["Dispatch reviewer subagent fallback."],
+      rawOutput: parsed.rawOutput || rawOutput || "",
+      progressLines: [],
+      provider: "gemini"
+    };
+  }
+
+  return {
+    verdict: String(parsed.parsed.verdict || ""),
+    summary: String(parsed.parsed.summary || ""),
+    detail: String(parsed.parsed.detail || ""),
+    nextSteps: Array.isArray(parsed.parsed.next_steps)
+      ? parsed.parsed.next_steps.map((item) => String(item))
+      : [],
+    rawOutput: parsed.rawOutput || rawOutput || "",
+    progressLines: [],
+    provider: "gemini"
+  };
+}
+
+function unavailableReviewerSubagentFallback(providerStatuses, configuredProvider) {
+  const statusDetail = providerStatuses
+    .map((item) => `${item.provider}: ${item.ready ? "ready" : "unavailable"} (${item.detail || "no detail"})`)
+    .join("; ");
+  return {
+    verdict: "CRITIC_UNAVAILABLE",
+    summary: "External critic unavailable; reviewer subagent fallback required.",
+    detail: statusDetail || "No external review provider was available.",
+    nextSteps: [
+      "Dispatch the canonical reviewer subagent in read-only mode with the implementer response, diff context, and test evidence.",
+      "Do not grant guardian readiness until the reviewer subagent returns a normal reviewer verdict."
+    ],
+    rawOutput: "",
+    progressLines: [
+      `Review provider preference: ${configuredProvider}.`,
+      ...providerStatuses.map((item) => (
+        `Provider status: ${item.provider} ${item.ready ? "ready" : "unavailable"} (${item.detail || "no detail"}).`
+      )),
+      "Fallback: reviewer subagent required."
+    ],
+    providerStatuses,
+    configuredProvider,
+    fallback: "reviewer-subagent",
+    provider: "reviewer-subagent"
+  };
+}
+
+async function runCritic(cwd, input = {}, options = {}) {
   const testReview = resolveTestReview();
   if (testReview) {
     for (const line of testReview.progressLines) {
@@ -325,26 +528,12 @@ async function runCritic(cwd, input = {}) {
     return testReview;
   }
 
-  const status = getCodexLoginStatus(cwd);
-  if (!status.available || !status.loggedIn) {
-    return {
-      verdict: "CRITIC_UNAVAILABLE",
-      summary: "Codex critic unavailable.",
-      detail: status.detail || "Codex is unavailable or not authenticated.",
-      nextSteps: ["Route to reviewer adjudication."],
-      rawOutput: "",
-      progressLines: [
-        "Starting Codex tactical critic (read-only).",
-        `Provider status: codex unavailable (${status.detail || "unknown"}).`
-      ],
-      provider: "codex"
-    };
-  }
-
+  const configuredProvider = readConfiguredReviewProvider(cwd, options.workflowId || "");
+  const providerStatuses = [];
   const prompt = buildCriticPrompt(cwd, input);
   const progressLines = [
-    "Starting Codex tactical critic (read-only).",
-    "Provider status: codex ready."
+    "Starting tactical review critic (read-only).",
+    `Review provider preference: ${configuredProvider}.`
   ];
   const onProgress = (update) => {
     const message = typeof update === "string" ? update : update?.message;
@@ -357,56 +546,179 @@ async function runCritic(cwd, input = {}) {
     }
   };
 
-  try {
-    const result = await runAppServerTurn(cwd, {
-      prompt,
-      sandbox: "read-only",
-      outputSchema: readOutputSchema(CRITIC_SCHEMA),
-      onProgress
-    });
-    const parsed = parseStructuredOutput(result.finalMessage, {
-      status: result.status,
-      failureMessage: result.error?.message ?? result.stderr
-    });
-    if (parsed.parseError || !parsed.parsed) {
-      return {
-        verdict: "CRITIC_UNAVAILABLE",
-        summary: "Codex critic returned invalid structured output.",
-        detail: parsed.parseError || "Codex did not return a structured verdict.",
-        nextSteps: ["Route to reviewer adjudication."],
-        rawOutput: parsed.rawOutput || result.finalMessage || "",
-        progressLines,
-        provider: "codex"
-      };
+  for (const provider of providerOrder(configuredProvider)) {
+    if (provider === "codex") {
+      const status = getCodexLoginStatus(cwd);
+      providerStatuses.push({
+        provider: "codex",
+        ready: Boolean(status.available && status.loggedIn),
+        detail: status.detail || "unknown"
+      });
+      if (!status.available || !status.loggedIn) {
+        const line = `Provider status: codex unavailable (${status.detail || "unknown"}).`;
+        progressLines.push(line);
+        logNote(`[implementer-critic] ${line}`);
+        continue;
+      }
+      progressLines.push("Provider status: codex ready.");
+      try {
+        const result = await runAppServerTurn(cwd, {
+          prompt,
+          sandbox: "read-only",
+          outputSchema: readOutputSchema(CRITIC_SCHEMA),
+          onProgress
+        });
+        const parsed = parseStructuredOutput(result.finalMessage, {
+          status: result.status,
+          failureMessage: result.error?.message ?? result.stderr
+        });
+        if (parsed.parseError || !parsed.parsed) {
+          const detail = parsed.parseError || "Codex did not return a structured verdict.";
+          providerStatuses.push({ provider: "codex", ready: true, failed: true, detail });
+          progressLines.push(`Provider failure: codex invalid output (${detail}).`);
+          continue;
+        }
+
+        return {
+          verdict: String(parsed.parsed.verdict || ""),
+          summary: String(parsed.parsed.summary || ""),
+          detail: String(parsed.parsed.detail || ""),
+          nextSteps: Array.isArray(parsed.parsed.next_steps)
+            ? parsed.parsed.next_steps.map((item) => String(item))
+            : [],
+          rawOutput: parsed.rawOutput || result.finalMessage || "",
+          progressLines,
+          providerStatuses,
+          configuredProvider,
+          provider: "codex"
+        };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        providerStatuses.push({ provider: "codex", ready: true, failed: true, detail });
+        progressLines.push(`Provider failure: codex failed (${detail}).`);
+        continue;
+      }
     }
 
-    return {
-      verdict: String(parsed.parsed.verdict || ""),
-      summary: String(parsed.parsed.summary || ""),
-      detail: String(parsed.parsed.detail || ""),
-      nextSteps: Array.isArray(parsed.parsed.next_steps)
-        ? parsed.parsed.next_steps.map((item) => String(item))
-        : [],
-      rawOutput: parsed.rawOutput || result.finalMessage || "",
-      progressLines,
-      provider: "codex"
-    };
+    if (provider === "gemini") {
+      const status = getGeminiLoginStatus(cwd);
+      providerStatuses.push({
+        provider: "gemini",
+        ready: Boolean(status.available && status.loggedIn),
+        detail: status.detail || "unknown"
+      });
+      if (!status.available || !status.loggedIn) {
+        const line = `Provider status: gemini unavailable (${status.detail || "unknown"}).`;
+        progressLines.push(line);
+        logNote(`[implementer-critic] ${line}`);
+        continue;
+      }
+      progressLines.push("Provider status: gemini ready.");
+      try {
+        const review = runGeminiCritic(cwd, prompt);
+        if (review.verdict === "CRITIC_UNAVAILABLE") {
+          providerStatuses.push({
+            provider: "gemini",
+            ready: true,
+            failed: true,
+            detail: review.detail || "invalid output"
+          });
+          progressLines.push(`Provider failure: gemini invalid output (${review.detail || "unknown"}).`);
+          continue;
+        }
+        return {
+          ...review,
+          progressLines: [...progressLines, ...(review.progressLines || [])],
+          providerStatuses,
+          configuredProvider,
+          provider: "gemini"
+        };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        providerStatuses.push({ provider: "gemini", ready: true, failed: true, detail });
+        progressLines.push(`Provider failure: gemini failed (${detail}).`);
+        continue;
+      }
+    }
+  }
+
+  return unavailableReviewerSubagentFallback(providerStatuses, configuredProvider);
+}
+
+function artifactRoot(cwd) {
+  if (process.env.CLAUDEX_REVIEW_ARTIFACT_DIR) {
+    return path.resolve(process.env.CLAUDEX_REVIEW_ARTIFACT_DIR);
+  }
+  if (process.env.CLAUDE_PLUGIN_DATA) {
+    return path.join(process.env.CLAUDE_PLUGIN_DATA, "review-artifacts");
+  }
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const workspaceHash = crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 12);
+  return path.join(home || "/tmp", ".claude", "review-artifacts", workspaceHash);
+}
+
+function buildArtifactPath(cwd, workflowId, provider) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(
+    artifactRoot(cwd),
+    "implementer-critic",
+    `${stamp}-${sanitizeToken(workflowId)}-${sanitizeToken(provider)}.md`
+  );
+}
+
+function writeCriticArtifact(filePath, payload) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const nextSteps = (payload.review.nextSteps || [])
+      .map((item) => `- ${item}`)
+      .join("\n") || "- none";
+    const providerStatuses = (payload.review.providerStatuses || [])
+      .map((item) => `- ${item.provider}: ${item.ready ? "ready" : "unavailable"}${item.failed ? " (failed)" : ""} - ${item.detail || "no detail"}`)
+      .join("\n") || "- none recorded";
+    const progress = (payload.review.progressLines || [])
+      .map((item) => `- ${item}`)
+      .join("\n") || "- none recorded";
+    const content = [
+      "# Implementer Critic Review",
+      "",
+      `- workflow_id: ${payload.workflowId || "unknown"}`,
+      `- lease_id: ${payload.leaseId || ""}`,
+      `- provider: ${payload.review.provider || "unknown"}`,
+      `- configured_provider: ${payload.review.configuredProvider || ""}`,
+      `- verdict: ${payload.submitResult?.verdict || payload.review.verdict || ""}`,
+      `- next_role: ${payload.submitResult?.resolution?.next_role || ""}`,
+      `- fingerprint: ${payload.fingerprint || ""}`,
+      "",
+      "## Provider Status",
+      providerStatuses,
+      "",
+      "## Progress",
+      progress,
+      "",
+      "## Summary",
+      payload.review.summary || "",
+      "",
+      "## Detail",
+      payload.review.detail || "",
+      "",
+      "## Next Steps",
+      nextSteps,
+      "",
+      "## Raw Output",
+      "```text",
+      payload.review.rawOutput || "",
+      "```",
+      ""
+    ].join("\n");
+    fs.writeFileSync(filePath, content);
   } catch (error) {
-    return {
-      verdict: "CRITIC_UNAVAILABLE",
-      summary: "Codex critic failed before producing a verdict.",
-      detail: error instanceof Error ? error.message : String(error),
-      nextSteps: ["Route to reviewer adjudication."],
-      rawOutput: "",
-      progressLines,
-      provider: "codex"
-    };
+    logNote(`[implementer-critic] Failed to write artifact: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 function buildHookOutput(review, submitResult, workflowId) {
   const resolution = submitResult?.resolution || {};
-  const lines = ["Implementer critic progress: Starting Codex tactical critic (read-only)."];
+  const lines = ["Implementer critic progress: Starting tactical review critic (read-only)."];
   for (const line of review.progressLines || []) {
     lines.push(`Implementer critic progress: ${line}`);
   }
@@ -440,6 +752,24 @@ function buildHookOutput(review, submitResult, workflowId) {
   if (review.detail) {
     lines.push(`Implementer critic detail: ${review.detail}`);
   }
+  if (Array.isArray(review.nextSteps) && review.nextSteps.length > 0) {
+    lines.push("Implementer critic next steps:");
+    for (const step of review.nextSteps) {
+      lines.push(`- ${step}`);
+    }
+  }
+  const artifactPath = submitResult?.metadata?.artifact_path || "";
+  if (artifactPath) {
+    lines.push(`Implementer critic artifact: ${artifactPath}`);
+  }
+  const verdict = resolution.verdict || review.verdict;
+  if (verdict === "TRY_AGAIN") {
+    lines.push("Implementer critic action: re-dispatch implementer with the critic detail and next steps verbatim.");
+  } else if (verdict === "BLOCKED_BY_PLAN") {
+    lines.push("Implementer critic action: re-dispatch planner with the critic detail and next steps verbatim.");
+  } else if (verdict === "CRITIC_UNAVAILABLE") {
+    lines.push("Implementer critic action: dispatch reviewer subagent fallback for read-only adjudication.");
+  }
   return { additionalContext: lines.join("\n") };
 }
 
@@ -454,10 +784,15 @@ async function main() {
     input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd()
   );
   const criticContext = resolveCriticContext(cwd);
-  const review = await runCritic(cwd, input);
+  const review = await runCritic(cwd, input, { workflowId: criticContext.workflowId });
   const fingerprint = computeSourceFingerprint(cwd);
+  const artifactPath = buildArtifactPath(cwd, criticContext.workflowId, review.provider || "reviewer");
   const metadata = {
     hook: "implementer-critic-hook.mjs",
+    artifact_path: artifactPath,
+    configured_provider: review.configuredProvider || "",
+    provider_statuses: review.providerStatuses || [],
+    fallback: review.fallback || "",
     raw_output: review.rawOutput || "",
     next_steps: review.nextSteps || [],
     progress_lines: review.progressLines || []
@@ -471,6 +806,13 @@ async function main() {
     detail: review.detail,
     fingerprint,
     metadata
+  });
+  writeCriticArtifact(artifactPath, {
+    workflowId: criticContext.workflowId,
+    leaseId: criticContext.leaseId,
+    review,
+    submitResult,
+    fingerprint
   });
 
   emitDecision(buildHookOutput(review, submitResult, criticContext.workflowId));

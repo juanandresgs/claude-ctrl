@@ -343,6 +343,10 @@ def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_r
         summary="Need another implementation pass.",
         detail="The happy path still lacks tests.",
         fingerprint="fp-try-1",
+        metadata={
+            "next_steps": ["Add regression coverage for the happy path."],
+            "artifact_path": "/tmp/critic-review.md",
+        },
     )
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["critic_found"] is True
@@ -351,6 +355,10 @@ def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_r
     assert result["auto_dispatch"] is True
     assert result["suggestion"].startswith("AUTO_DISPATCH: implementer")
     assert "CRITIC_RETRY" in result["suggestion"]
+    assert "CRITIC_NEXT_STEPS" in result["suggestion"]
+    assert "Add regression coverage for the happy path." in result["suggestion"]
+    assert "CRITIC_ARTIFACT: /tmp/critic-review.md" in result["suggestion"]
+    assert "CRITIC_ACTION: Re-dispatch implementer" in result["suggestion"]
 
 
 def test_implementer_critic_blocked_by_plan_routes_to_planner(conn, project_root):
@@ -626,6 +634,7 @@ def _submit_critic_review(
     summary="critic summary",
     detail="critic detail",
     fingerprint="fp-default",
+    metadata=None,
 ):
     return critic_reviews.submit(
         conn,
@@ -636,6 +645,7 @@ def _submit_critic_review(
         summary=summary,
         detail=detail,
         fingerprint=fingerprint,
+        metadata=metadata or {},
     )
 
 

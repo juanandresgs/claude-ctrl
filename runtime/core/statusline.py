@@ -323,6 +323,11 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             detail = row["detail"] or ""
             source = row["source"] or ""
             reviewer: str = "codex" if not source or source.startswith("workflow:") else source
+            if "provider=" in detail:
+                provider_part = detail.split("provider=", 1)[1].split("|", 1)[0].strip()
+                provider = provider_part.split()[0] if provider_part else ""
+                if provider:
+                    reviewer = provider
 
             # Parse verdict from detail string.
             verdict: str | None = None

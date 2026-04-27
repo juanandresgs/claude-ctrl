@@ -21,6 +21,7 @@ const RUNTIME_CLI_PATH =
   process.env.CLAUDE_RUNTIME_CLI || path.resolve(REPO_ROOT, "runtime/cli.py");
 const POLICY_DIR = path.resolve(ROOT_DIR, "policies");
 const STOP_GATE_TITLE = "Codex Stop Gate Review";
+const VALID_REVIEW_PROVIDERS = new Set(["auto", "codex", "gemini", "reviewer-subagent"]);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -214,6 +215,31 @@ function isGeminiReady() {
     return fs.existsSync(credsPath);
   } catch {
     return false;
+  }
+}
+
+function normalizeReviewProvider(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (!normalized) {
+    return "codex";
+  }
+  if (normalized === "reviewer" || normalized === "reviewer-subagent-fallback") {
+    return "reviewer-subagent";
+  }
+  return VALID_REVIEW_PROVIDERS.has(normalized) ? normalized : "codex";
+}
+
+function providerOrder(provider) {
+  switch (normalizeReviewProvider(provider)) {
+    case "auto":
+    case "codex":
+      return ["codex", "gemini"];
+    case "gemini":
+      return ["gemini", "codex"];
+    case "reviewer-subagent":
+      return [];
+    default:
+      return ["codex", "gemini"];
   }
 }
 
@@ -488,66 +514,98 @@ function runGeminiReview(cwd, input = {}) {
   return result;
 }
 
-// ── Review orchestrator (Codex → Gemini → allow) ────────────────────
+// ── Review orchestrator (Codex/Gemini → reviewer subagent fallback) ──
 
-function reportProviderStatus(codexReady, geminiReady) {
+function reportProviderStatus(codexReady, geminiReady, configuredProvider) {
   const status = [];
+  status.push(`preference: ${configuredProvider}`);
   status.push(`codex: ${codexReady ? "ready" : "unavailable"}`);
   status.push(`gemini: ${geminiReady ? "ready" : "unavailable"}`);
   logNote(`[review-gate] Providers: ${status.join(", ")}`);
 }
 
-function runStopReview(cwd, input = {}) {
+function buildReviewerSubagentFallback(reason, configuredProvider, codexReady, geminiReady) {
+  return {
+    ok: false,
+    infraFailure: false,
+    provider: "reviewer-subagent",
+    reason: [
+      "REVIEW_SUBAGENT_REQUIRED: external CLI review could not run.",
+      `Configured provider: ${configuredProvider}.`,
+      `Codex ready: ${codexReady ? "yes" : "no"}. Gemini ready: ${geminiReady ? "yes" : "no"}.`,
+      reason,
+      "",
+      "Dispatch the canonical reviewer subagent in read-only mode with the current task, changed files, test evidence, and this stop-hook output. Do not end the session until that reviewer returns PASS/CONTINUE guidance."
+    ].filter(Boolean).join("\n")
+  };
+}
+
+function readReviewProvider(cwd, workflowId = "") {
+  const envOverride = process.env.CLAUDEX_STOP_REVIEW_PROVIDER || process.env.CLAUDEX_REVIEW_PROVIDER || "";
+  if (envOverride) {
+    return normalizeReviewProvider(envOverride);
+  }
+  return normalizeReviewProvider(readEnforcementConfig(cwd, "review_gate_provider", workflowId) || "codex");
+}
+
+function runStopReview(cwd, input = {}, workflowId = "") {
   const testReview = resolveTestStopReview();
   if (testReview) {
     logNote("[review-gate:test] Using deterministic stop review test response.");
     return testReview;
   }
 
+  const configuredProvider = readReviewProvider(cwd, workflowId);
   const codexReady = isCodexReady(cwd);
   const geminiReady = isGeminiReady();
 
-  reportProviderStatus(codexReady, geminiReady);
+  reportProviderStatus(codexReady, geminiReady, configuredProvider);
 
-  if (!codexReady && !geminiReady) {
-    return {
-      ok: false,
-      infraFailure: true,
-      reason: "No reviewer available (Codex and Gemini both unavailable). Install Codex (npm i -g @openai/codex) or authenticate Gemini (gemini login)."
-    };
+  if (configuredProvider === "reviewer-subagent") {
+    return buildReviewerSubagentFallback(
+      "Provider preference explicitly requested reviewer-subagent fallback.",
+      configuredProvider,
+      codexReady,
+      geminiReady
+    );
   }
 
-  // Primary: Codex
-  if (codexReady) {
-    const result = runCodexReview(cwd, input);
-    if (!result.infraFailure) {
-      return result;
+  for (const provider of providerOrder(configuredProvider)) {
+    if (provider === "codex") {
+      if (!codexReady) {
+        logNote("[review-gate] Codex unavailable; checking next provider.");
+        continue;
+      }
+      const result = runCodexReview(cwd, input);
+      if (!result.infraFailure) {
+        return result;
+      }
+      logNote(`[review-gate] Codex failed: ${result.reason || result.exitDetail || "unknown error"}`);
+      continue;
     }
-    // Log the specific failure before trying fallback
-    logNote(`[review-gate] Codex failed: ${result.reason || result.exitDetail || "unknown error"}`);
-    if (geminiReady) {
-      logNote("[review-gate] Falling back to Gemini...");
-    }
-  }
 
-  // Fallback: Gemini
-  if (geminiReady) {
-    const result = runGeminiReview(cwd, input);
-    if (result.infraFailure) {
-      logNote(`[review-gate] Gemini also failed: ${result.reason || "unknown error"}`);
-      // Check if it's a quota issue
+    if (provider === "gemini") {
+      if (!geminiReady) {
+        logNote("[review-gate] Gemini unavailable; checking next provider.");
+        continue;
+      }
+      const result = runGeminiReview(cwd, input);
+      if (!result.infraFailure) {
+        return result;
+      }
+      logNote(`[review-gate] Gemini failed: ${result.reason || "unknown error"}`);
       if (result.reason && /quota|capacity|rate.limit|429/i.test(result.reason)) {
         logNote("[review-gate] Gemini quota exhausted. Consider upgrading to API key billing or waiting for quota reset.");
       }
     }
-    return result;
   }
 
-  return {
-    ok: false,
-    infraFailure: true,
-    reason: "No reviewer could complete the review."
-  };
+  return buildReviewerSubagentFallback(
+    "No configured CLI review provider completed the review.",
+    configuredProvider,
+    codexReady,
+    geminiReady
+  );
 }
 
 function resolveTestStopReview() {
@@ -623,12 +681,17 @@ function resolveWorkflowId(cwd, input = {}) {
 // from CLAUDE_PROJECT_DIR before shelling out. Without this, node code
 // bypasses project scoping and reads from the default DB path.
 // (DEC-CONFIG-AUTHORITY-001 risk #3)
-function readEnforcementConfig(cwd, key) {
+function readEnforcementConfig(cwd, key, workflowId = "") {
   const env = buildPolicyEnv(cwd);
   try {
+    const args = [RUNTIME_CLI_PATH, "config", "get", key];
+    if (workflowId) {
+      args.push("--workflow-id", workflowId);
+    }
+    args.push("--project-root", cwd);
     const out = execFileSync(
       "python3",
-      [RUNTIME_CLI_PATH, "config", "get", key],
+      args,
       { env, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }
     );
     const parsed = JSON.parse(out);
@@ -640,8 +703,8 @@ function readEnforcementConfig(cwd, key) {
   }
 }
 
-function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
-  const detail = `VERDICT: ${verdict} — workflow=${workflowId} | ${reason || "no detail"}`;
+function emitCodexReviewEventSync(cwd, workflowId, verdict, reason, provider = "codex") {
+  const detail = `VERDICT: ${verdict} — workflow=${workflowId} | provider=${provider || "codex"} | ${reason || "no detail"}`;
   const args = [RUNTIME_CLI_PATH, "event", "emit", "codex_stop_review"];
   if (workflowId) {
     // ENFORCE-RCA-16: source key scopes events per-workflow for review
@@ -694,10 +757,11 @@ function main() {
     return;
   }
 
-  const review = runStopReview(cwd, input);
   const workflowId = resolveWorkflowId(cwd, input);
+  const review = runStopReview(cwd, input, workflowId);
 
-  // Infrastructure failures → allow with warning
+  // Infrastructure failures that cannot be converted into a reviewer-subagent
+  // fallback still allow stop with a warning.
   if (!review.ok && review.infraFailure) {
     const msg = `Review gate unavailable — allowing stop. ${review.reason}`;
     logNote(msg);
@@ -709,7 +773,7 @@ function main() {
   // CONTINUE → block, feed findings to Claude
   if (!review.ok) {
     const provider = review.provider || "reviewer";
-    emitCodexReviewEventSync(cwd, workflowId, "BLOCK", review.reason || "review found issues");
+    emitCodexReviewEventSync(cwd, workflowId, "BLOCK", review.reason || "review found issues", provider);
     emitDecision({
       decision: "block",
       reason: runningTaskNote
@@ -720,7 +784,7 @@ function main() {
   }
 
   // PASS — both models agree
-  emitCodexReviewEventSync(cwd, workflowId, "ALLOW", review.reason || "work looks good");
+  emitCodexReviewEventSync(cwd, workflowId, "ALLOW", review.reason || "work looks good", review.provider || "reviewer");
   if (review.reason) {
     logNote(`Review gate (${review.provider || "reviewer"}) PASS:\n${review.reason}`);
   }

@@ -46,13 +46,19 @@ def test_submit_round_trip_returns_resolution(conn):
         summary="Looks tactically complete.",
         detail="Tests and wiring line up for reviewer handoff.",
         fingerprint="fp-001",
-        metadata={"hook": "test"},
+        metadata={
+            "hook": "test",
+            "artifact_path": "/tmp/critic-artifact.md",
+            "next_steps": ["Hand off to reviewer."],
+        },
     )
     assert result["workflow_id"] == "wf-critic-001"
     assert result["verdict"] == "READY_FOR_REVIEWER"
     assert result["metadata"]["hook"] == "test"
     assert result["resolution"]["found"] is True
     assert result["resolution"]["next_role"] == "reviewer"
+    assert result["resolution"]["artifact_path"] == "/tmp/critic-artifact.md"
+    assert result["resolution"]["next_steps"] == ["Hand off to reviewer."]
 
 
 def test_try_again_routes_back_to_implementer(conn):

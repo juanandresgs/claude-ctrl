@@ -47,6 +47,22 @@ run_hook() {
     printf '%s\n' "$code" >"$TMP_DIR/$label.code"
 }
 
+run_hook_without_test_override() {
+    local label="$1"
+    local payload="$2"
+    local provider="$3"
+    set +e
+    printf '%s' "$payload" \
+        | CLAUDE_PROJECT_DIR="$WORKTREE" \
+          CLAUDE_POLICY_DB="$TEST_DB" \
+          CLAUDE_PLUGIN_DATA="$PLUGIN_DATA" \
+          CLAUDEX_REVIEW_PROVIDER="$provider" \
+          node "$HOOK" >"$TMP_DIR/$label.out" 2>"$TMP_DIR/$label.err"
+    local code=$?
+    set -e
+    printf '%s\n' "$code" >"$TMP_DIR/$label.code"
+}
+
 latest_review_detail() {
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" event query --type codex_stop_review --limit 1 \
         | jq -r '.items[0].detail // ""'
@@ -100,6 +116,16 @@ if [[ "$SUBAGENT_OUT" == "" && "$COUNT_BEFORE" == "$COUNT_AFTER" && "$SUBAGENT_E
     pass "SubagentStop broad review is a no-op"
 else
     fail "SubagentStop broad review is a no-op (before=$COUNT_BEFORE after=$COUNT_AFTER out=$SUBAGENT_OUT err=$SUBAGENT_ERR)"
+fi
+
+run_hook_without_test_override "fallback" "$STOP_PAYLOAD" "reviewer-subagent"
+FALLBACK_OUT="$(cat "$TMP_DIR/fallback.out")"
+if printf '%s' "$FALLBACK_OUT" | jq -e '.decision == "block"' >/dev/null 2>&1 \
+    && [[ "$FALLBACK_OUT" == *"REVIEW_SUBAGENT_REQUIRED"* ]] \
+    && [[ "$FALLBACK_OUT" == *"canonical reviewer subagent"* ]]; then
+    pass "reviewer-subagent provider blocks Stop with explicit fallback instructions"
+else
+    fail "reviewer-subagent provider blocks Stop with explicit fallback instructions (got: $FALLBACK_OUT)"
 fi
 
 echo ""

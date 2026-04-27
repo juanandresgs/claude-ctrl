@@ -588,6 +588,26 @@ class TestLastReview:
         assert snap["last_review"]["reviewed"] is True
         assert snap["last_review"]["reviewer"] == "codex"
 
+    def test_last_review_provider_detail_sets_reviewer_name(self, conn):
+        """Provider in review detail surfaces Gemini/reviewer-subagent visibility."""
+        import runtime.core.evaluation as eval_mod
+
+        eval_mod.set_status(conn, "wf-test", "pending")
+        conn.execute(
+            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-test'"
+        )
+        conn.commit()
+
+        events_mod.emit(
+            conn,
+            "codex_stop_review",
+            source="workflow:wf-test",
+            detail="VERDICT: ALLOW - workflow=wf-test | provider=gemini | work looks good",
+        )
+        snap = statusline.snapshot(conn)
+        assert snap["last_review"]["reviewed"] is True
+        assert snap["last_review"]["reviewer"] == "gemini"
+
     def test_last_review_block_verdict(self, conn):
         """BLOCK verdict maps to reviewed=True, verdict='BLOCK'.
 

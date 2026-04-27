@@ -56,6 +56,8 @@ class CriticResolution:
     provider: str
     summary: str
     detail: str
+    next_steps: list[str]
+    artifact_path: str
     fingerprint: str
     next_role: str
     retry_limit: int
@@ -275,6 +277,8 @@ def assess_latest(
             provider="",
             summary="",
             detail="",
+            next_steps=[],
+            artifact_path="",
             fingerprint="",
             next_role=ROUTE_BY_VERDICT["CRITIC_UNAVAILABLE"],
             retry_limit=retry_limit,
@@ -286,6 +290,10 @@ def assess_latest(
 
     latest_row = rows[0]
     verdict = latest_row.get("verdict", "")
+    metadata = latest_row.get("metadata") if isinstance(latest_row.get("metadata"), dict) else {}
+    raw_next_steps = metadata.get("next_steps") if isinstance(metadata, dict) else []
+    next_steps = [str(item) for item in raw_next_steps] if isinstance(raw_next_steps, list) else []
+    artifact_path = str(metadata.get("artifact_path") or "") if isinstance(metadata, dict) else ""
     next_role = ROUTE_BY_VERDICT.get(verdict, ROUTE_BY_VERDICT["CRITIC_UNAVAILABLE"])
     try_again_streak = 0
     repeated_fingerprint_streak = 0
@@ -320,6 +328,8 @@ def assess_latest(
         provider=str(latest_row.get("provider") or ""),
         summary=str(latest_row.get("summary") or ""),
         detail=str(latest_row.get("detail") or ""),
+        next_steps=next_steps,
+        artifact_path=artifact_path,
         fingerprint=str(latest_row.get("fingerprint") or ""),
         next_role=next_role,
         retry_limit=retry_limit,
@@ -383,4 +393,3 @@ def _count_repeated_fingerprint_streak(rows: list[dict]) -> int:
             break
         count += 1
     return count
-

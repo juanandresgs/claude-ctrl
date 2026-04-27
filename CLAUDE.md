@@ -281,6 +281,13 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 
 Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. The broad Codex stop-review gate (`stop-review-gate-hook.mjs`) is only the user-facing regular Stop audit lane and is **not wired into SubagentStop workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
 
+When implementer stop output contains `CRITIC_DETAIL`, `CRITIC_NEXT_STEPS`,
+`CRITIC_ARTIFACT`, or `CRITIC_ACTION`, treat that block as routing payload, not
+as a recap. If the next role is implementer or planner, include the critic
+detail and next steps verbatim in the next Agent prompt. If external CLI review
+is unavailable and the action requests a reviewer-subagent fallback, dispatch
+the canonical read-only reviewer rather than silently continuing.
+
 ### Guardian Landing Preflight (Required)
 
 Before any Guardian-local landing attempt (`git commit`, `git merge`, straightforward `git push`) — including checkpoint-stewardship commits — the orchestrator MUST run a preflight and only attempt landing when all gates are green.

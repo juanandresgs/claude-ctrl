@@ -177,6 +177,8 @@ def process_agent_stop(
         "critic_provider": "",
         "critic_summary": "",
         "critic_detail": "",
+        "critic_next_steps": [],
+        "critic_artifact_path": "",
         "critic_try_again_streak": 0,
         "critic_retry_limit": 0,
         "critic_repeated_fingerprint_streak": 0,
@@ -360,6 +362,8 @@ def process_agent_stop(
             result["critic_provider"] = critic_resolution.provider
             result["critic_summary"] = critic_resolution.summary
             result["critic_detail"] = critic_resolution.detail
+            result["critic_next_steps"] = critic_resolution.next_steps
+            result["critic_artifact_path"] = critic_resolution.artifact_path
             result["critic_try_again_streak"] = critic_resolution.try_again_streak
             result["critic_retry_limit"] = critic_resolution.retry_limit
             result["critic_repeated_fingerprint_streak"] = (
@@ -916,6 +920,8 @@ def _format_critic_context(result: dict) -> str:
     provider = str(result.get("critic_provider") or "")
     summary = str(result.get("critic_summary") or "")
     detail = str(result.get("critic_detail") or "")
+    next_steps = result.get("critic_next_steps") or []
+    artifact_path = str(result.get("critic_artifact_path") or "")
     retry_limit = int(result.get("critic_retry_limit") or 0)
     try_again_streak = int(result.get("critic_try_again_streak") or 0)
     repeated_fp_streak = int(result.get("critic_repeated_fingerprint_streak") or 0)
@@ -942,6 +948,24 @@ def _format_critic_context(result: dict) -> str:
         lines.append(f"CRITIC_SUMMARY: {summary}")
     if detail:
         lines.append(f"CRITIC_DETAIL: {detail}")
+    if next_steps:
+        lines.append("CRITIC_NEXT_STEPS:")
+        for step in next_steps[:8]:
+            lines.append(f"- {step}")
+    if artifact_path:
+        lines.append(f"CRITIC_ARTIFACT: {artifact_path}")
+    if verdict == "TRY_AGAIN":
+        lines.append(
+            "CRITIC_ACTION: Re-dispatch implementer with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."
+        )
+    elif verdict == "BLOCKED_BY_PLAN":
+        lines.append(
+            "CRITIC_ACTION: Re-dispatch planner with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."
+        )
+    elif verdict == "CRITIC_UNAVAILABLE":
+        lines.append(
+            "CRITIC_ACTION: Dispatch reviewer subagent fallback for read-only adjudication."
+        )
     return "\n" + "\n".join(lines) if lines else ""
 
 
