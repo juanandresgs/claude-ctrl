@@ -95,7 +95,7 @@ Generator version: `1.0.0`
 - matcher `(unconditional)` → `hooks/session-summary.sh`
   - _Stop-time summarization (CUTOVER_PLAN H5 Partial)._
 - matcher `(unconditional)` → `hooks/forward-motion.sh`
-  - _Stop-time forward-motion hint (CUTOVER_PLAN H5 Partial)._
+  - _Advisory Stop-time forward-motion hint; never blocks turn completion._
 
 ## SessionEnd
 

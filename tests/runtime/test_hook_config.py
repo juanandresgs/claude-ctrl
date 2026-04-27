@@ -64,6 +64,13 @@ def test_gitignore_ignores_mutable_marketplace_cache() -> None:
     assert "plugins/marketplaces/" in gitignore
 
 
+def test_forward_motion_stop_hook_is_advisory_not_blocking() -> None:
+    hook = (_ROOT / "hooks" / "forward-motion.sh").read_text(encoding="utf-8")
+    assert "exit 2" not in hook
+    assert "Advisory:" in hook
+    assert "Response lacks forward motion" not in hook
+
+
 def test_first_party_claudex_codex_plugin_manifest_exists() -> None:
     manifest = json.loads(_PLUGIN_MANIFEST.read_text(encoding="utf-8"))
     assert manifest["name"] == "codex"
