@@ -44,29 +44,36 @@ Keep it under 1500 tokens.
 ### Implementer Trailer
 Every implementer return message must end with:
 ```
-IMPL_STATUS: complete|blocked
+IMPL_STATUS: complete|partial|blocked
 IMPL_SCOPE_OK: yes|no
 IMPL_HEAD_SHA: <sha|none>
 ```
 
-### Evaluator Trailer
-Every evaluator return message must end with:
+### Reviewer Trailer
+Every reviewer return message must end with:
 ```
-EVAL_VERDICT: needs_changes|ready_for_guardian|blocked_by_plan
-EVAL_TESTS_PASS: true|false
-EVAL_NEXT_ROLE: implementer|guardian|planner
-EVAL_HEAD_SHA: <sha>
+REVIEW_VERDICT: ready_for_guardian|needs_changes|blocked_by_plan
+REVIEW_HEAD_SHA: <current HEAD git sha>
+REVIEW_FINDINGS_JSON: {"findings": []}
 ```
 
 These trailers are the deterministic interface between roles. Hooks parse these
 sections — not narrative language.
 
-No lines may appear after the evaluator trailer. The trailer is the terminal
-output of the evaluator role.
+No lines may appear after the reviewer trailer. The trailer is the terminal
+output of the reviewer role. The runtime projects valid reviewer completions
+into `evaluation_state` for Guardian landing checks.
+
+### Planner Trailer
+Every planner return message must end with:
+```
+PLAN_VERDICT: next_work_item|goal_complete|needs_user_decision|blocked_external
+PLAN_SUMMARY: <one-line summary>
+```
 
 ### Guardian Trailer
 ```
-LANDING_RESULT: committed|merged|denied|skipped
+LANDING_RESULT: provisioned|committed|merged|pushed|denied|skipped
 OPERATION_CLASS: routine_local|high_risk|admin_recovery
 ```
 

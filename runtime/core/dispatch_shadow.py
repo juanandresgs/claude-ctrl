@@ -38,7 +38,7 @@ Rationale: CUTOVER_PLAN §"Replacement by Shadow Then Deletion" requires the
 
   Phase 6 Slice 5 closed all planned divergences:
 
-    * ``guardian:land`` with verdict ``committed`` or ``merged``: live now
+    * ``guardian:land`` with verdict ``committed``, ``merged``, or ``pushed``: live now
       routes to ``planner`` (post-guardian continuation), matching shadow.
       Previously live returned ``None`` (cycle complete).
     * ``guardian:land`` with verdict ``skipped``: live now routes to
@@ -281,7 +281,7 @@ def _diagnose(
     # written before the cutover.
     if (
         live_role == "guardian"
-        and live_verdict in ("committed", "merged")
+        and live_verdict in ("committed", "merged", "pushed")
         and (live_next_role is None or live_next_role == "")
         and shadow_next_stage == sr.PLANNER
     ):

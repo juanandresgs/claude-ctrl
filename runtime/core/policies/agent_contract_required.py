@@ -3,8 +3,8 @@
 Dispatch-significant subagent types (planner, implementer, guardian, reviewer,
 Plan) MUST carry a CLAUDEX_CONTRACT_BLOCK: line at the start of their prompt.
 That block is produced by ``cc-policy dispatch agent-prompt`` and carries the
-six contract fields that pre-agent.sh extracts for the carrier path
-(DEC-CLAUDEX-SA-CARRIER-001).
+six contract fields that ``cc-policy evaluate`` writes to the carrier path after
+this policy allows the launch (DEC-CLAUDEX-SA-CARRIER-001).
 
 Non-canonical subagent types (Explore, general-purpose, statusline-setup, empty,
 and any unknown value) pass through without a contract requirement only when they
@@ -54,11 +54,13 @@ import json
 from typing import Optional
 
 import runtime.core.authority_registry as authority_registry
+from runtime.core.agent_contract_codec import (
+    CONTRACT_BLOCK_PREFIX,
+    first_line_contract_json,
+)
 from runtime.core.dispatch_contract import dispatch_subagent_type_for_stage
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.stage_packet import dispatch_bootstrap_guidance
-
-_CONTRACT_PREFIX = "CLAUDEX_CONTRACT_BLOCK:"
 
 
 def _repair_hint(stage_id: str | None = None) -> str:
@@ -221,13 +223,26 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     tool_input = request.tool_input if isinstance(request.tool_input, dict) else {}
+    if (tool_input.get("isolation") or "").strip() == "worktree":
+        return PolicyDecision(
+            action="deny",
+            reason=(
+                'Agent(isolation:"worktree") creates worktrees in /tmp via the '
+                "harness, bypassing Guardian worktree authority (no lease, no "
+                "workflow binding, no scope manifest). Use the dispatch chain "
+                "instead: planner -> guardian(provision) -> implementer. "
+                "Guardian runs 'cc-policy worktree provision' to create a "
+                "properly-leased worktree under .worktrees/feature-<name>."
+            ),
+            policy_name="agent_contract_required",
+        )
+
     subagent_type = (tool_input.get("subagent_type") or "").strip()
     prompt = tool_input.get("prompt", "") or ""
-    first_line = prompt.split("\n", 1)[0] if prompt else ""
-    has_contract = first_line.startswith(_CONTRACT_PREFIX)
+    contract_raw = first_line_contract_json(prompt)
+    has_contract = contract_raw is not None
 
     if has_contract:
-        contract_raw = first_line[len(_CONTRACT_PREFIX):]
         try:
             contract = json.loads(contract_raw)
         except json.JSONDecodeError:
@@ -305,7 +320,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         reason=(
             f"Dispatch-significant Agent launch (subagent_type={subagent_type!r}) "
             f"requires a runtime-issued contract. The prompt must start with "
-            f"'{_CONTRACT_PREFIX}' on line 1. "
+            f"'{CONTRACT_BLOCK_PREFIX}' on line 1. "
             + _repair_hint(subagent_type)
         ),
         policy_name="agent_contract_required",

@@ -13,17 +13,17 @@ Rationale: When the incoming SubagentStart payload carries the full
 
   1. Contract-present payload → runtime-first path → SubagentStart envelope
      with status=ok and hookEventName=SubagentStart.
-  2. Contract-absent payload → legacy compatibility path (shell-built context,
-     NOT the compiled prompt-pack output).
+  2. Contract-absent non-canonical payload → lightweight context path, NOT the
+     compiled prompt-pack output. Contract-absent canonical seats are blocked.
   3. Contract-present + compile error (non-existent goal_id) does NOT
-     silently fall back to the legacy guidance path — the runtime error is
-     surfaced in additionalContext and legacy content is absent.
-  4. Partial contract (any one of the six fields absent) → legacy path.
-     The shell jq check requires ALL six fields; partial contracts are
-     treated as contract-absent.
+     silently fall back to shell guidance — the runtime error is surfaced in
+     additionalContext and shell role content is absent.
+  4. Partial contract for canonical seats → carrier-required A8 block.
+     The shell jq check requires ALL six fields; partial contracts are treated
+     as contract-absent and canonical seats cannot use lightweight context.
   5. Contract-present + invalid field values → runtime validator returns
-     structured violations; the hook surfaces them without falling back
-     to legacy guidance.
+     structured violations; the hook surfaces them without falling back to
+     shell role guidance.
   6. Carrier path (DEC-CLAUDEX-SA-CARRIER-001): a pending_agent_requests row
      written for (session_id, agent_type) is consumed by the hook before the
      _HAS_CONTRACT check; the merged fields trigger the runtime-first path
@@ -49,6 +49,24 @@ from runtime.schemas import ensure_schema
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _HOOK = str(_REPO_ROOT / "hooks" / "subagent-start.sh")
+
+
+class TestHookSourceInvariants:
+    """Static guard that canonical role guidance stays out of shell fallback."""
+
+    def test_no_canonical_role_guidance_in_subagent_start_shell(self):
+        text = Path(_HOOK).read_text(encoding="utf-8")
+        forbidden = [
+            "Role: Planner",
+            "Role: Implementer",
+            "Role: Guardian",
+            "Role: Reviewer",
+            "REQUIRED OUTPUT TRAILERS",
+            "Workflow binding:",
+            "No scope manifest found",
+        ]
+        for token in forbidden:
+            assert token not in text
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +175,7 @@ def _contract_payload(**overrides) -> dict:
 
 
 def _legacy_payload(**overrides) -> dict:
-    """A payload without contract fields — forces legacy path."""
+    """A payload without contract fields."""
     base: dict = {"agent_type": "planner"}
     base.update(overrides)
     return base
@@ -204,8 +222,8 @@ class TestRuntimeFirstPath:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "# ClauDEX Prompt Pack:" in ctx
 
-    def test_legacy_role_guidance_absent(self, hook_db):
-        # The runtime path must NOT inject the legacy shell-built role guidance.
+    def test_shell_role_guidance_absent(self, hook_db):
+        # The runtime path must NOT inject shell-built role guidance.
         _rc, stdout, _stderr = _run_hook(_contract_payload(), hook_db)
         parsed = json.loads(stdout.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
@@ -222,17 +240,17 @@ class TestRuntimeFirstPath:
 
 
 # ---------------------------------------------------------------------------
-# 2. Contract-absent payload → legacy compatibility path
+# 2. Contract-absent payload → lightweight non-canonical path
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyCompatibilityPath:
-    """Without the request contract, non-canonical agents take the legacy path.
+class TestLightweightNonCanonicalPath:
+    """Without the request contract, non-canonical agents take lightweight context.
 
     A8 update: canonical dispatch seats (planner, implementer, guardian, reviewer)
     now receive a fail-closed deny via additionalContext (canonical_seat_no_carrier_contract)
-    instead of the legacy guidance path.  Tests here use agent_type="Explore" which
-    is non-canonical and must still take the legacy path.
+    instead of shell guidance. Tests here use agent_type="Explore" which is
+    non-canonical and still receives lightweight context.
     (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
     """
 
@@ -256,19 +274,26 @@ class TestLegacyCompatibilityPath:
         assert parsed["hookSpecificOutput"]["hookEventName"] == "SubagentStart"
 
     def test_compiled_prompt_pack_header_absent(self, hook_db):
-        # The legacy path does NOT produce a compiled PromptPack header.
+        # The lightweight path does NOT produce a compiled PromptPack header.
         _rc, stdout, _stderr = _run_hook(_legacy_payload(agent_type="Explore"), hook_db)
         parsed = json.loads(stdout.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "# ClauDEX Prompt Pack:" not in ctx
 
     def test_legacy_context_present_for_non_canonical(self, hook_db):
-        # Non-canonical agent (Explore) takes legacy path and gets the Context: line.
+        # Non-canonical agent (Explore) takes lightweight path and gets Context.
         _rc, stdout, _stderr = _run_hook(_legacy_payload(agent_type="Explore"), hook_db)
         parsed = json.loads(stdout.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         # "Context:" line is always present on the legacy path.
         assert "Context:" in ctx
+
+    def test_non_canonical_legacy_context_has_no_dispatch_lease_warning(self, hook_db):
+        _rc, stdout, _stderr = _run_hook(_legacy_payload(agent_type="Explore"), hook_db)
+        parsed = json.loads(stdout.strip())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "No active lease" not in ctx
+        assert "High-risk git ops will be denied" not in ctx
 
     def test_canonical_seat_without_contract_gets_a8_deny(self, hook_db):
         """A8: planner with no carrier contract gets canonical_seat_no_carrier_contract
@@ -282,12 +307,12 @@ class TestLegacyCompatibilityPath:
 
 
 # ---------------------------------------------------------------------------
-# 3. Invalid contract-present payload → no silent fallback to legacy
+# 3. Invalid contract-present payload → no silent fallback to shell guidance
 # ---------------------------------------------------------------------------
 
 
 class TestInvalidContractNoFallback:
-    """Contract present but compile fails — must surface error, not legacy content."""
+    """Contract present but compile fails — must surface error, not shell guidance."""
 
     def test_exit_zero(self, hook_db):
         # The hook still exits 0: the error is surfaced in additionalContext.
@@ -314,8 +339,8 @@ class TestInvalidContractNoFallback:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "Runtime prompt-pack compile failed" in ctx
 
-    def test_legacy_role_guidance_absent(self, hook_db):
-        # The legacy shell-built guidance must NOT appear when the contract was
+    def test_shell_role_guidance_absent(self, hook_db):
+        # Shell-built role guidance must NOT appear when the contract was
         # present — even if the runtime path failed.  Injecting "Role: Planner"
         # would silently misguide the agent about the compile failure.
         payload = _contract_payload(goal_id="GOAL-ghost-nonexistent")
@@ -334,11 +359,11 @@ class TestInvalidContractNoFallback:
 
 
 # ---------------------------------------------------------------------------
-# 4. Partial contract → legacy path (routing boundary pin)
+# 4. Partial contract → carrier-required canonical block
 # ---------------------------------------------------------------------------
 
 
-class TestPartialContractTakesLegacyPath:
+class TestPartialContractRoutingBoundary:
     """Payload missing any one of the six contract fields is treated as contract-absent.
 
     The shell jq check requires ALL six fields to be present (key existence, not type).
@@ -347,8 +372,8 @@ class TestPartialContractTakesLegacyPath:
 
     A8 update: For canonical dispatch seats (planner, implementer, guardian, reviewer),
     contract-absent means the A8 fail-closed path fires (canonical_seat_no_carrier_contract).
-    For non-canonical seats (Explore, general-purpose, etc.), contract-absent takes the
-    legacy shell-built path.  This class tests both routing boundaries.
+    For non-canonical seats (Explore, general-purpose, etc.), contract-absent
+    takes the lightweight context path. This class tests both routing boundaries.
     (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
     """
 
@@ -382,28 +407,28 @@ class TestPartialContractTakesLegacyPath:
         # Runtime envelope header must NOT be present.
         assert "# ClauDEX Prompt Pack:" not in ctx
 
-    def test_missing_workflow_id_takes_legacy_path(self):
+    def test_missing_workflow_id_takes_a8_deny_path(self):
         # A8: canonical seat (planner) with partial contract → A8 deny, not legacy.
         self._assert_a8_deny("workflow_id")
 
-    def test_missing_stage_id_takes_legacy_path(self):
+    def test_missing_stage_id_takes_a8_deny_path(self):
         self._assert_a8_deny("stage_id")
 
-    def test_missing_goal_id_takes_legacy_path(self):
+    def test_missing_goal_id_takes_a8_deny_path(self):
         self._assert_a8_deny("goal_id")
 
-    def test_missing_work_item_id_takes_legacy_path(self):
+    def test_missing_work_item_id_takes_a8_deny_path(self):
         self._assert_a8_deny("work_item_id")
 
-    def test_missing_decision_scope_takes_legacy_path(self):
+    def test_missing_decision_scope_takes_a8_deny_path(self):
         self._assert_a8_deny("decision_scope")
 
-    def test_missing_generated_at_takes_legacy_path(self):
+    def test_missing_generated_at_takes_a8_deny_path(self):
         self._assert_a8_deny("generated_at")
 
-    def test_non_canonical_partial_contract_takes_legacy_path(self):
-        """Non-canonical agent (Explore) with no contract fields takes legacy path,
-        not A8 deny — preserving backward compatibility for non-dispatch agents.
+    def test_non_canonical_partial_contract_takes_lightweight_path(self):
+        """Non-canonical agent (Explore) with no contract fields gets
+        lightweight context, not A8 deny.
         """
         payload = {"agent_type": "Explore"}
         rc, stdout, _stderr = _run_hook(payload, self._db)
@@ -428,7 +453,7 @@ class TestContractPresentValidationViolations:
     syntactically detectable by the shell jq check, but carry invalid values
     (empty string, wrong type).  The runtime validator returns a structured
     violations report instead of a compile error.  The hook must surface the
-    violations — NOT fall back to legacy guidance.
+    violations — NOT fall back to shell role guidance.
     """
 
     @pytest.fixture(autouse=True)
@@ -445,7 +470,7 @@ class TestContractPresentValidationViolations:
             conn.close()
         self._db = db_path
 
-    def _assert_error_not_legacy(self, payload: dict) -> dict:
+    def _assert_error_not_shell_guidance(self, payload: dict) -> dict:
         rc, stdout, _stderr = _run_hook(payload, self._db)
         assert rc == 0
         parsed = json.loads(stdout.strip())
@@ -454,30 +479,30 @@ class TestContractPresentValidationViolations:
         assert "# ClauDEX Prompt Pack:" not in ctx
         return parsed
 
-    def test_empty_workflow_id_surfaces_error_not_legacy(self):
+    def test_empty_workflow_id_surfaces_error_not_shell_guidance(self):
         payload = _contract_payload(workflow_id="")
-        self._assert_error_not_legacy(payload)
+        self._assert_error_not_shell_guidance(payload)
 
-    def test_whitespace_only_stage_id_surfaces_error_not_legacy(self):
+    def test_whitespace_only_stage_id_surfaces_error_not_shell_guidance(self):
         payload = _contract_payload(stage_id="   ")
-        self._assert_error_not_legacy(payload)
+        self._assert_error_not_shell_guidance(payload)
 
-    def test_null_goal_id_surfaces_error_not_legacy(self):
+    def test_null_goal_id_surfaces_error_not_shell_guidance(self):
         # null is the key being present with a null value — jq has() is true,
         # so the runtime path fires; the runtime validator then rejects it.
         payload = _contract_payload()
         payload["goal_id"] = None
-        self._assert_error_not_legacy(payload)
+        self._assert_error_not_shell_guidance(payload)
 
-    def test_wrong_type_generated_at_surfaces_error_not_legacy(self):
+    def test_wrong_type_generated_at_surfaces_error_not_shell_guidance(self):
         # String generated_at: shell has() is true; runtime rejects the type.
         payload = _contract_payload(generated_at="1700000000")
-        self._assert_error_not_legacy(payload)
+        self._assert_error_not_shell_guidance(payload)
 
-    def test_bool_generated_at_surfaces_error_not_legacy(self):
+    def test_bool_generated_at_surfaces_error_not_shell_guidance(self):
         # True is isinstance(int) in Python but the runtime excludes bools.
         payload = _contract_payload(generated_at=True)
-        self._assert_error_not_legacy(payload)
+        self._assert_error_not_shell_guidance(payload)
 
     def test_violations_present_in_error_context(self):
         # When the runtime returns a structured violations report (not a
@@ -585,7 +610,7 @@ class TestCarrierPath:
         assert rc == 0
         parsed = json.loads(stdout.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
-        # The row for "other-session" is not consumed; this run takes legacy path.
+        # The row for "other-session" is not consumed; canonical no-carrier is blocked.
         assert "# ClauDEX Prompt Pack:" not in ctx
 
     def test_output_json_structure_matches_runtime_first_envelope(self):
@@ -607,15 +632,13 @@ class TestReviewerDispatchEntry:
     """Phase 4: reviewer is recognized as a dispatch role.
 
     A8 update: reviewer is a canonical dispatch seat. When launched without a
-    carrier-backed contract (legacy payload with no contract fields and no carrier
+    carrier-backed contract (payload with no contract fields and no carrier
     row), the hook now returns canonical_seat_no_carrier_contract instead of
-    the legacy role guidance. Tests updated to reflect A8 routing.
+    shell role guidance. Tests updated to reflect A8 routing.
     (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
 
-    The reviewer role guidance in subagent-start.sh remains in the code and is
-    reachable only when a full contract is provided AND the runtime compile fails
-    (TestInvalidContractNoFallback path). The agents/reviewer.md file remains the
-    authoritative source of reviewer guidance for contract-bearing launches.
+    Reviewer role guidance belongs in agents/reviewer.md and runtime prompt
+    packs, not in subagent-start.sh shell fallback.
     """
 
     def test_reviewer_is_dispatch_role_a8_deny(self, hook_db):
@@ -628,12 +651,11 @@ class TestReviewerDispatchEntry:
         # A8: canonical seat without carrier contract gets the fail-closed deny.
         assert "canonical_seat_no_carrier_contract" in ctx
 
-    def test_reviewer_context_includes_review_verdict_trailer(self, hook_db):
-        """reviewer legacy context includes REVIEW_VERDICT trailer instruction.
+    def test_reviewer_context_blocks_without_review_verdict_trailer(self, hook_db):
+        """reviewer no-contract launch blocks instead of injecting REVIEW_VERDICT.
 
         A8 note: this test now verifies the A8 deny message (canonical_seat_no_carrier_contract)
-        and that the legacy REVIEW_VERDICT guidance is NOT injected for no-contract launches.
-        The legacy guidance is only reachable when a full contract compile fails.
+        and that REVIEW_VERDICT guidance is NOT injected for no-contract launches.
         """
         payload = _legacy_payload(agent_type="reviewer")
         _rc, stdout, _stderr = _run_hook(payload, hook_db)
@@ -705,6 +727,30 @@ class TestReviewerAgentPromptExists:
         reviewer_md = _REPO_ROOT / "agents" / "reviewer.md"
         content = reviewer_md.read_text(encoding="utf-8")
         assert "Do NOT modify source code" in content
+
+
+class TestAgentPromptCompletionContracts:
+    """Pin prompt-visible trailers to runtime completion schemas."""
+
+    def test_planner_prompt_has_plan_trailers(self):
+        content = (_REPO_ROOT / "agents" / "planner.md").read_text(encoding="utf-8")
+        assert "PLAN_VERDICT:" in content
+        assert "PLAN_SUMMARY:" in content
+
+    def test_implementer_prompt_includes_partial_status(self):
+        content = (_REPO_ROOT / "agents" / "implementer.md").read_text(encoding="utf-8")
+        assert "IMPL_STATUS: complete|partial|blocked" in content
+
+    def test_shared_protocols_use_reviewer_not_legacy_eval(self):
+        content = (_REPO_ROOT / "agents" / "shared-protocols.md").read_text(
+            encoding="utf-8"
+        )
+        assert "REVIEW_VERDICT:" in content
+        assert "EVAL_VERDICT:" not in content
+
+    def test_guardian_prompt_includes_push_and_provision_verdicts(self):
+        content = (_REPO_ROOT / "agents" / "guardian.md").read_text(encoding="utf-8")
+        assert "LANDING_RESULT: provisioned|committed|merged|pushed|denied|skipped" in content
 
 
 # ---------------------------------------------------------------------------
@@ -812,7 +858,7 @@ class TestA8CanonicalSeatNoCarrierContractDeny:
     """A8: canonical dispatch seats (planner, implementer, guardian, reviewer)
     launched without a carrier-backed six-field contract receive a fail-closed
     deny via hookSpecificOutput.additionalContext with reason
-    canonical_seat_no_carrier_contract.  The legacy guidance path must NOT fire
+    canonical_seat_no_carrier_contract. Shell role guidance must NOT fire
     for these seats.
 
     This is the compound-interaction test required by the dispatch spec — it
@@ -848,9 +894,9 @@ class TestA8CanonicalSeatNoCarrierContractDeny:
             f"canonical_seat_no_carrier_contract in additionalContext, got:\n{ctx}"
         )
         assert "workflow stage-packet" in ctx
-        # Must NOT fall through to legacy guidance path.
+        # Must NOT fall through to shell role guidance.
         assert "Context:" not in ctx, (
-            f"Canonical seat {agent_type!r} must NOT take legacy path; got:\n{ctx}"
+            f"Canonical seat {agent_type!r} must NOT take lightweight path; got:\n{ctx}"
         )
         assert "# ClauDEX Prompt Pack:" not in ctx
 
@@ -879,19 +925,19 @@ class TestA8CanonicalSeatNoCarrierContractDeny:
     def test_reviewer_no_carrier_contract_denied(self):
         self._assert_a8_deny("reviewer")
 
-    def test_non_canonical_explore_takes_legacy_not_a8_deny(self):
-        """Non-canonical Explore agent must still take the legacy path (not A8 deny)."""
+    def test_non_canonical_explore_takes_lightweight_not_a8_deny(self):
+        """Non-canonical Explore agent must still take lightweight context."""
         payload = {"agent_type": "Explore", "session_id": "no-carrier-session"}
         rc, stdout, _stderr = _run_hook(payload, self._db)
         assert rc == 0
         parsed = json.loads(stdout.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
-        # Non-canonical → legacy path; must NOT get A8 deny.
+        # Non-canonical -> lightweight path; must NOT get A8 deny.
         assert "canonical_seat_no_carrier_contract" not in ctx
         assert "Context:" in ctx
 
-    def test_non_canonical_general_purpose_takes_legacy_not_a8_deny(self):
-        """general-purpose agent must still take the legacy path (not A8 deny)."""
+    def test_non_canonical_general_purpose_takes_lightweight_not_a8_deny(self):
+        """general-purpose agent must still take lightweight context."""
         payload = {"agent_type": "general-purpose", "session_id": "no-carrier-session"}
         rc, stdout, _stderr = _run_hook(payload, self._db)
         assert rc == 0

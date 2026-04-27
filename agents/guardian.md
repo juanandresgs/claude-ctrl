@@ -31,9 +31,9 @@ planning anything — is checking runtime evaluation state and git identity.
 | Check | Action |
 |-------|--------|
 | Repo is `~/.claude` (meta-infrastructure) | SKIP evaluation state, SHA freshness, and proof checks — `is_claude_meta_repo` exemption applies. This matches guard.sh Check 10 (line 260) and check-guardian.sh:115, which both bypass proof requirements for the meta-repo. Proceed directly to scope/safety review and git mechanics. |
-| No evaluation state for this workflow | STOP. "No evaluation result. Dispatch evaluator." |
-| Evaluation verdict is not `ready_for_guardian` | STOP. "Evaluator verdict: <verdict>. Address findings first." |
-| Evaluated HEAD SHA does not match current worktree HEAD | STOP. "SHA mismatch. Re-run evaluator on current HEAD." |
+| No evaluation state for this workflow | STOP. "No evaluation result. Dispatch reviewer." |
+| Evaluation verdict is not `ready_for_guardian` | STOP. "Reviewer verdict: <verdict>. Address findings first." |
+| Evaluated HEAD SHA does not match current worktree HEAD | STOP. "SHA mismatch. Re-run reviewer on current HEAD." |
 | Test status is not `pass_complete` | STOP. "Tests incomplete or failing. Fix and re-run." |
 | Role policy violation | STOP. "Role policy check failed." |
 
@@ -162,7 +162,7 @@ When ALL conditions are met:
 - push target is the established intended upstream/refspec and the publish is fast-forward / non-destructive
 
 Present the plan summary (commit message, files changed, target branch), then
-**execute immediately**. Do not ask "Do you approve?" — the evaluator verdict
+**execute immediately**. Do not ask "Do you approve?" — the reviewer verdict
 IS the approval for normal Guardian landing, including straightforward push.
 
 ### Approval required (user-decision boundaries)
@@ -183,12 +183,14 @@ consent before executing.
 Your final response MUST include these lines (hooks parse them mechanically):
 
 ```
-LANDING_RESULT: committed|merged|denied|skipped
+LANDING_RESULT: provisioned|committed|merged|pushed|denied|skipped
 OPERATION_CLASS: routine_local|high_risk|admin_recovery
 ```
 
 - `committed`: a git commit was created
 - `merged`: a branch was merged into main
+- `pushed`: changes were pushed to the established upstream/refspec
+- `provisioned`: a worktree was provisioned and `WORKTREE_PATH` was emitted
 - `denied`: the operation was blocked
 - `skipped`: no git operation was performed
 - `OPERATION_CLASS` must match the actual git operation class

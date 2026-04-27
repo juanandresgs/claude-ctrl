@@ -1,8 +1,8 @@
 """Hook-side helpers for dispatch_attempts wiring.
 
-Called by pre-agent.sh (PreToolUse:Agent) and subagent-start.sh (SubagentStart)
-to record canonical delivery state in ``dispatch_attempts`` without duplicating
-logic in shell code.
+Called by the PreToolUse Agent runtime carrier effect and by subagent-start.sh
+(SubagentStart) to record canonical delivery state in ``dispatch_attempts``
+without duplicating logic in shell code.
 
 This module is the thin Python bridge between Claude Code harness events and the
 ``dispatch_attempts`` domain authority.  All state-machine transitions flow
@@ -14,8 +14,7 @@ Authority boundary
   mappings: PreToolUse:Agent → issue, SubagentStart → claim.
 - **``dispatch_attempts``** owns every state transition.
 - **``claude_code_adapter``** is the sole transport adapter for this transport.
-- **Shell hooks** call the two CLI commands that wrap these functions; they never
-  write directly to ``dispatch_attempts``.
+- **Shell hooks** never write directly to ``dispatch_attempts``.
 
 @decision DEC-CLAUDEX-HOOK-WIRING-001
 Title: dispatch_hook.py bridges harness events to dispatch_attempts state machine
@@ -24,9 +23,9 @@ Rationale: Hooks are thin transport adapters; they must not own state transition
   or session bootstrapping logic directly.  dispatch_hook.py provides two
   functions that map PreToolUse:Agent and SubagentStart to canonical
   attempt-issue and attempt-claim operations, keeping session and seat
-  bootstrapping in one place.  The hooks call these functions via CLI commands
-  (``cc-policy dispatch attempt-issue`` / ``cc-policy dispatch attempt-claim``)
-  so no import path is needed from bash.  Both functions are best-effort: they
+  bootstrapping in one place.  PreToolUse Agent calls this module from
+  ``cc-policy evaluate`` after policy allow; SubagentStart still reaches it via
+  ``cc-policy dispatch attempt-claim``.  Both functions are best-effort: they
   return None on a no-op rather than raising, so tracking failures never block
   dispatch.
 """
@@ -119,9 +118,10 @@ def record_agent_dispatch(
 ) -> dict:
     """PreToolUse:Agent → issue a pending dispatch_attempts row.
 
-    Called by ``pre-agent.sh`` when a CLAUDEX_CONTRACT_BLOCK is present in the
-    Agent tool's prompt.  Upserts ``agent_sessions`` and ``seats`` on the fly so
-    callers never need to pre-provision these rows for the delivery tracking path.
+    Called by ``cc-policy evaluate`` when a CLAUDEX_CONTRACT_BLOCK is present
+    in an allowed Agent tool prompt.  Upserts ``agent_sessions`` and ``seats``
+    on the fly so callers never need to pre-provision these rows for the
+    delivery tracking path.
 
     Parameters
     ----------

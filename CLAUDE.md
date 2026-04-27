@@ -140,8 +140,8 @@ When dispatching an implementer or reviewer, the orchestrator MUST include in th
 - **Adjacent components**: Which other files, hooks, or agents read/write those same domains — these are the integration surfaces the implementer must not silently diverge from
 - **Canonical authority**: Where state lives for each domain (SQLite table name, specific function). If flat-file legacy exists, name it explicitly so the implementer can migrate and remove it
 - **Removal targets**: Any known legacy mechanisms this task should replace, not build alongside
-- **Evaluation Contract**: When dispatching any source task that may reach Guardian, include the current work item's Evaluation Contract verbatim so the implementer and evaluator share the same acceptance target.
-- **Scope Manifest**: Include the Scope Manifest (allowed/required/forbidden files, state authorities touched) so the implementer knows its boundaries and the evaluator can verify scope compliance. Before dispatching the implementer, write the Scope Manifest to runtime via `cc-policy workflow scope-set` so hooks can enforce it mechanically.
+- **Evaluation Contract**: When dispatching any source task that may reach Guardian, include the current work item's Evaluation Contract verbatim so the implementer and reviewer share the same acceptance target.
+- **Scope Manifest**: Include the Scope Manifest (allowed/required/forbidden files, state authorities touched) so the implementer knows its boundaries and the reviewer can verify scope compliance. Before dispatching the implementer, write the Scope Manifest to runtime via `cc-policy workflow scope-sync` when a work item exists, or positional `cc-policy workflow scope-set` for legacy/manual scope rows, so hooks can enforce it mechanically.
 
 This context is what prevents parallel mechanisms. Without it, every implementer starts from a partial map and builds based on what they discover — producing agents that each build their own version of what already exists. Transmitting the system model is how the orchestrator serves as the connective tissue between ephemeral agents who cannot see each other's work. This is a sacred responsibility — the orchestrator's system awareness is the only thing that survives across agent lifetimes.
 
@@ -226,7 +226,10 @@ cc-policy test-state get --project-root <repo_root>
 cc-policy lease summary --workflow-id <workflow_id>
 
 # Scope authority for implementation slices
-cc-policy workflow scope-set --workflow-id <workflow_id> --scope-file tmp/<scope>.json
+cc-policy workflow scope-sync <workflow_id> --work-item-id <work_item_id> --scope-file tmp/<scope>.json
+
+# Legacy/manual scope row primitive
+cc-policy workflow scope-set <workflow_id> --allowed '["src/**"]' --required '[]' --forbidden '[]' --authorities '[]'
 ```
 
 Parameter discipline:
@@ -237,13 +240,13 @@ Parameter discipline:
   `guardian:land`. Bare `guardian` is accepted only when runtime can infer the
   compound Guardian mode from the latest valid completion for the workflow.
 - `--project-root`: absolute repo/worktree root for state checks.
-- `--scope-file`: canonical scope manifest for source slices (required before implementer coding work).
+- `--scope-file`: canonical scope manifest JSON for `scope-sync`, which writes both workflow scope and the work-item scope snapshot from one file.
 
 Subagent authority model (enforce this in routing):
 - `planner`: plan/governance/scope/evaluation contract authority; no source implementation.
 - `guardian (provision)`: worktree/lease/bootstrap authority; no source implementation.
 - `implementer`: source implementation within scope; no landing authority.
-- `reviewer`: read-only technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`).
+- `reviewer`: read-only outer-loop technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`). Codex implementer critic reviews are tactical inner-loop filters; they do not replace reviewer readiness.
 - `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push` to the established upstream) once readiness gates are green.
 - `orchestrator`: coordination/dispatch/review only; does not perform source edits, landing operations, or bypass stage authorities.
 
@@ -261,14 +264,14 @@ If you cannot prove where the work landed, what exact head SHA was evaluated, an
 
 When a SubagentStop hook output contains `AUTO_DISPATCH: <role>`, dispatch that agent immediately without asking the user. The dispatch engine has already verified the transition is safe (no errors, no interruption, clear next_role).
 
-**Canonical chain (W-GWT-3, Phase 5):** `planner → guardian (provision) → implementer → reviewer → guardian (merge)`. Guardian appears twice: once to provision the worktree and issue the implementer lease, once to merge after the reviewer approves. The orchestrator must NOT skip the provision step — implementers do not self-provision worktrees. Tester is no longer in the live dispatch chain (neutralized in Phase 5 slice 1).
+**Canonical chain (W-GWT-3, Phase 5):** `planner → guardian (provision) → implementer → reviewer → guardian (land)`. Guardian appears twice: once to provision the worktree and issue the implementer lease, once to commit, merge, or straightforward push after the reviewer approves. The orchestrator must NOT skip the provision step — implementers do not self-provision worktrees.
 
 **Enriched AUTO_DISPATCH format:** The dispatch signal may carry key=value pairs:
 ```
 AUTO_DISPATCH: guardian (mode=provision, workflow_id=feature-foo, branch=feature/foo)
 AUTO_DISPATCH: implementer (worktree_path=/project/.worktrees/feature-foo, workflow_id=feature-foo)
 AUTO_DISPATCH: reviewer (worktree_path=/project/.worktrees/feature-foo)
-AUTO_DISPATCH: guardian (mode=merge, workflow_id=feature-foo)
+AUTO_DISPATCH: guardian (workflow_id=feature-foo)
 ```
 When `worktree_path` is present, the orchestrator MUST set the implementer's (or reviewer's) working directory to that path in the dispatch context. The Agent tool MUST NOT use `isolation: "worktree"` — the worktree is already provisioned.
 
@@ -279,7 +282,7 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 - The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
 - Guardian has hit a real user-decision boundary (history rewrite / destructive recovery, ambiguous publish target, or irreconcilable reviewer-implementer conflict)
 
-Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. The broad Codex stop-review gate (`stop-review-gate-hook.mjs`) is only the user-facing regular Stop audit lane and is **not wired into SubagentStop workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
+Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. This critic is an inner-loop implementer quality filter: it may send work back to implementer or planner before reviewer sees it, but it cannot issue Guardian readiness. The reviewer remains the outer-loop readiness authority and its valid `REVIEW_*` completion is projected into `evaluation_state` for Guardian landing. The broad Codex stop-review gate (`stop-review-gate-hook.mjs`) is only the user-facing regular Stop audit lane and is **not wired into SubagentStop workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
 
 ### Guardian Landing Preflight (Required)
 
@@ -288,7 +291,7 @@ Before any Guardian-local landing attempt (`git commit`, `git merge`, straightfo
 1. Resolve current workflow identity from runtime (do not infer from branch names):
    - `cc-policy context role`
 2. Check evaluation readiness for that workflow:
-   - `cc-policy eval get --workflow-id <workflow_id>`
+   - `cc-policy evaluation get <workflow_id>`
    - Required: `status == ready_for_guardian` and `head_sha` matches the landing head.
 3. Check test-state readiness:
    - `cc-policy test-state get --project-root <repo_root>`
@@ -335,7 +338,7 @@ These are not mere technical rules — they are sacred practices that honor the 
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
 8. **Approval Gates** — Permanent git operations go through Guardian. Evaluated Guardian landing (commit, merge, straightforward push to the established upstream) is automatic when `ready_for_guardian` with SHA match and passing tests. Rebase, reset, force/history-rewrite, destructive cleanup, ambiguous publish targets, and irreconcilable agent disagreement require explicit user adjudication.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues.
-10. **Evaluator Before Commit** — The evaluator runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for destructive/history-rewrite git actions, ambiguous publish targets, irreconcilable agent disagreement, or product signoff, not as fake proof of correctness.
+10. **Reviewer Before Commit** — The reviewer runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for destructive/history-rewrite git actions, ambiguous publish targets, irreconcilable agent disagreement, or product signoff, not as fake proof of correctness.
 11. **Worktrees Mean Concurrency** — Never assume single-session or linear execution. All shared state mutations must be atomic via SQLite backend helpers.
 12. **Single Source of Truth** — Every state domain has exactly one canonical authority. "I'll add the new way but keep the old way as a fallback" creates dual-authority bugs. Unify the implementation natively.
 

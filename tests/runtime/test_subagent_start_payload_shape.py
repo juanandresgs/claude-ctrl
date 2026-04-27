@@ -38,9 +38,9 @@ Carrier path recommendation (single candidate, runtime-owned):
 
     1. The orchestrator embeds the six contract fields as a structured block
        in the Agent tool prompt it controls (producer side).
-    2. hooks/pre-agent.sh (PreToolUse:Agent hook) extracts the block from
-       tool_input.prompt and writes a row keyed by (session_id, agent_type)
-       into the ``pending_agent_requests`` SQLite table.
+    2. hooks/pre-agent.sh (PreToolUse:Agent hook) forwards the payload to
+       cc-policy evaluate; after policy allow, the runtime writes a row keyed
+       by (session_id, agent_type) into the ``pending_agent_requests`` SQLite table.
     3. hooks/subagent-start.sh reads the row by (session_id, agent_type)
        from the same SQLite DB, deletes it atomically, and the existing
        runtime-first branch becomes reachable in production.
@@ -204,10 +204,9 @@ class TestSubagentStartPayloadShape:
             )
 
     def test_no_contract_field_present_in_any_payload(self):
-        # The runtime-first branch in subagent-start.sh is never triggered by
-        # the harness today. This test will fail (as expected) once the carrier
-        # path (pre-agent.sh writes to SQLite pending-request registry;
-        # subagent-start.sh reads and deletes the row atomically) is live.
+        # The raw harness SubagentStart payload still carries no contract
+        # fields. The runtime-first branch becomes reachable through the
+        # pending_agent_requests carrier, not through harness payload changes.
         for p in self._payloads:
             present = _CONTRACT_FIELDS & frozenset(p.keys())
             assert not present, (
@@ -263,9 +262,9 @@ class TestPreToolAgentPayloadShape:
             ), f"PreToolUse:Agent missing or empty tool_input.prompt: {p}"
 
     def test_subagent_type_matches_subsequent_subagent_start_agent_type(self):
-        # Write-key existence invariant: within a session, every non-empty
-        # PreToolUse:Agent.tool_input.subagent_type X has a matching
-        # SubagentStart.agent_type == X in the same session.  This justifies
+        # Write-key existence invariant: within a session, every first-line
+        # contract-bearing PreToolUse:Agent.tool_input.subagent_type X has a
+        # matching SubagentStart.agent_type == X in the same session. This justifies
         # (session_id, agent_type) as the write-key for the SQLite
         # pending-request registry carrier: the carrier writes rows keyed by
         # (session_id, subagent_type) at PreToolUse and reads by
@@ -280,12 +279,12 @@ class TestPreToolAgentPayloadShape:
         # over the (session_id, agent_type) pair is the invariant the
         # carrier actually depends on.
         #
-        # Empty subagent_type is explicitly excluded: the CLAUDE.md dispatch
-        # rule ("ClauDEX Contract Injection") requires subagent_type to be
-        # set, and the carrier write path (hooks/pre-agent.sh) writes no row
-        # when subagent_type is empty (live-verified 2026-04-09).  Those
-        # PreToolUse events therefore correspond to no carrier row and are
-        # not expected to match any SubagentStart under this invariant.
+        # Non-contract and empty-subagent_type launches are explicitly excluded:
+        # the runtime carrier effect only writes a row after
+        # agent_contract_required accepts a prompt that starts with
+        # CLAUDEX_CONTRACT_BLOCK: on line 1. Canonical roles without that block
+        # are denied before spawn, so they must not be required to match any
+        # SubagentStart under this invariant.
         if not _CAPTURE.is_file():
             pytest.skip("No capture file")
 
@@ -310,12 +309,17 @@ class TestPreToolAgentPayloadShape:
 
         mismatches: list[str] = []
         for sess_id, events in by_session.items():
-            pre_tool_subagent_types: list[str] = [
-                e.get("tool_input", {}).get("subagent_type", "")
-                for e in events
-                if e.get("hook_event_name") == "PreToolUse"
-                and e.get("tool_name") == "Agent"
-            ]
+            pre_tool_subagent_types: list[str] = []
+            for e in events:
+                if (
+                    e.get("hook_event_name") != "PreToolUse"
+                    or e.get("tool_name") != "Agent"
+                ):
+                    continue
+                tool_input = e.get("tool_input", {})
+                prompt = str(tool_input.get("prompt") or "")
+                if prompt.startswith("CLAUDEX_CONTRACT_BLOCK:"):
+                    pre_tool_subagent_types.append(tool_input.get("subagent_type", ""))
             sa_agent_types: set[str] = {
                 e.get("agent_type", "")
                 for e in events
@@ -349,15 +353,12 @@ class TestPreToolAgentPayloadShape:
 
 
 class TestContractCarrierGap:
-    """Explicit pinning that the runtime-first branch is unreachable today.
+    """Explicit pinning that raw SubagentStart payloads carry no contract.
 
-    These tests document the CURRENT state: the six contract fields are not
-    injected by any known path into SubagentStart payloads.  Once the
-    SQLite pending-request registry carrier (pre-agent.sh writes, subagent-start.sh
-    reads) is implemented, the test in section 1
-    (test_no_contract_field_present_in_any_payload) will be updated to
-    expect the new source.  File-sidecar approaches are rejected — they
-    reintroduce non-runtime authority for a control-plane fact.
+    The six contract fields are delivered through the SQLite
+    pending_agent_requests carrier, not injected by the harness into
+    SubagentStart payloads. File-sidecar approaches remain rejected because
+    they reintroduce non-runtime authority for a control-plane fact.
     """
 
     def test_dispatch_debug_file_exists_and_has_subagent_start_events(self):

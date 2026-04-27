@@ -6,7 +6,7 @@ The canonical role flow is:
 2. `guardian` (provision)
 3. `implementer`
 4. `reviewer`
-5. `guardian` (merge)
+5. `guardian` (land)
 
 ## Rules
 
@@ -15,7 +15,7 @@ The canonical role flow is:
 - Guardian (provision) issues the implementer lease and provisions the worktree.
 - Implementer builds in the worktree and hands off.
 - Reviewer verifies against the Evaluation Contract and owns findings.
-- Guardian (merge) is the only role allowed to commit, merge, or push.
+- Guardian (land) is the only role allowed to commit, merge, or push.
 - Phase 8 Slice 11: the legacy `tester` role is retired — `reviewer` is the
   sole evaluator of technical readiness.
 
@@ -44,20 +44,28 @@ policies in priority order (first deny wins):
 | 700 | `doc_gate` | Source files need headers; 50+ line files need @decision. |
 | 750 | `mock_gate` | Escalating gate: warn then block on internal mocks. |
 
-### PreToolUse Bash chain (fires on every Bash call)
+### PreToolUse Bash/Agent chain (fires on Bash and Agent/Task calls)
 
-All bash-path enforcement is handled by `hooks/pre-bash.sh`, a thin adapter
-that calls `cc-policy evaluate`. The policy engine runs 12 registered Python
-policies in priority order:
+All bash-path enforcement is handled by `hooks/pre-bash.sh`, and Agent/Task
+launch enforcement is handled by `hooks/pre-agent.sh`. Both are thin adapters
+that call `cc-policy evaluate`. The policy engine currently reports 19
+PreToolUse/Bash-path policies in priority order:
 
 | Priority | Policy | What it enforces |
 |----------|--------|-----------------|
 | 100 | `bash_tmp_safety` | Deny /tmp writes (Sacred Practice #3). |
+| 150 | `agent_contract_required` | Deny Agent worktree isolation and enforce canonical stage↔subagent contracts. |
 | 200 | `bash_worktree_cwd` | Deny bare cd into .worktrees/. |
+| 250 | `bash_worktree_nesting` | Prevent nested worktree creation. |
+| 275 | `bash_write_who` | Capability-gated WHO enforcement for shell writes. |
 | 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |
+| 350 | `bash_worktree_creation` | Guardian-only worktree creation. |
 | 400 | `bash_main_sacred` | Cannot commit on main/master. |
 | 500 | `bash_force_push` | Deny unsafe force push (require --force-with-lease). |
 | 600 | `bash_destructive_git` | Deny reset --hard, clean -f, branch -D. |
+| 625 | `bash_stash_ban` | Deny stash-based cross-branch shortcuts. |
+| 630 | `bash_cross_branch_restore_ban` | Deny cross-branch restore/checkout of forbidden scope paths. |
+| 635 | `bash_shell_copy_ban` | Deny shell copy/move of forbidden scope paths from foreign refs/trees. |
 | 700 | `bash_worktree_removal` | Safe worktree removal enforcement. |
 | 800 | `bash_test_gate_merge` | Test-pass gate for git merge. |
 | 850 | `bash_test_gate_commit` | Test-pass gate for git commit. |
@@ -69,7 +77,7 @@ policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/subagent-start.sh` | Registers agent via `cc-policy dispatch agent-start`. Injects role-specific context. Does not deny — context injection only. |
+| `hooks/subagent-start.sh` | Consumes the PreToolUse Agent carrier row, claims dispatch delivery, seats markers/leases, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context and are not seated. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
 
 ### SessionStart (fires on session start, /clear, /compact, resume)
 
@@ -81,7 +89,7 @@ policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/prompt-submit.sh` | Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. Note: prompt-driven proof verification ("verified" reply) was removed in TKT-024 — readiness is now set exclusively by the active SubagentStop evaluator adapter (`check-reviewer.sh` in the current live chain) via `evaluation_state`. Phase 8 Slice 10 retired the legacy tester evaluator producer. |
+| `hooks/prompt-submit.sh` | Injects contextual HUD (git state, plan status, agent findings, compaction suggestions). Auto-claims referenced issues. Does not deny — context injection and state recording only. Note: prompt-driven proof verification ("verified" reply) was removed in TKT-024 — reviewer readiness now flows through `check-reviewer.sh` → `completion_records` / reviewer findings → `dispatch_engine.py` → `evaluation_state`. Phase 8 Slice 10 retired the legacy tester evaluator producer. |
 
 ## Auto-Dispatch (Live)
 
@@ -92,16 +100,17 @@ through to the SubagentStop hook output. The orchestrator reads `AUTO_DISPATCH:`
 directives and chains the next role immediately without asking the user.
 
 The canonical planner → guardian(provision) → implementer → reviewer →
-guardian(merge) flow chains automatically when:
+guardian(land) flow chains automatically when:
 
-- The stopping agent emits valid structured trailers (e.g. `EVAL_VERDICT`,
-  `IMPL_STATUS`).
+- The stopping agent emits valid structured trailers (e.g. `PLAN_VERDICT`,
+  `IMPL_STATUS`, `REVIEW_VERDICT`).
 - No `BLOCKED` or `ERROR` signal is present in hook output.
 - The `AUTO_DISPATCH:` directive names a valid next role.
 
 The orchestrator stops the chain only when hook output contains `BLOCKED`,
 `ERROR`, or `PROCESS ERROR`, or when Guardian needs user approval for high-risk
-ops (push, rebase, force) — gated by `bash_approval_gate` policy.
+ops (history rewrite, destructive recovery, ambiguous publish target, or
+non-straightforward push) gated by `bash_approval_gate` policy.
 
 The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in
 `settings.json` for regular `Stop` only. Repo settings are the sole wiring

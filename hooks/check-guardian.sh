@@ -140,11 +140,11 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     # @rationale guard.sh:355 reset evaluation_state to idle before the merge
     #   command executed. If the merge was subsequently denied (scope violation,
     #   approval missing, etc.) the eval readiness was consumed with no landing.
-    #   The evaluator (reviewer) would need to re-run to re-issue ready_for_guardian. Fix:
+    #   The reviewer would need to re-run to re-issue ready_for_guardian. Fix:
     #   remove the pre-merge reset from guard.sh; add a post-landing reset here
-    #   gated on LANDING_RESULT=committed|merged so only real landings consume
+    #   gated on LANDING_RESULT=committed|merged|pushed so only real landings consume
     #   the clearance.
-    if [[ "$_GD_LANDING_RESULT" == "committed" || "$_GD_LANDING_RESULT" == "merged" ]]; then
+    if [[ "$_GD_LANDING_RESULT" == "committed" || "$_GD_LANDING_RESULT" == "merged" || "$_GD_LANDING_RESULT" == "pushed" ]]; then
         rt_eval_set "$_GD_WF_ID" "idle" 2>/dev/null || true
         rt_event_emit "eval_consumed" "Landing confirmed: $_GD_LANDING_RESULT for $_GD_WF_ID" || true
     fi
@@ -246,13 +246,13 @@ fi
 
 # Check 6: Evaluation state for git operations (TKT-024)
 # Guardian should only operate when evaluation_state == "ready_for_guardian"
-# (set by the active SubagentStop evaluator adapter; the legacy tester
+# (projected from the active SubagentStop reviewer adapter; the legacy tester
 # producer was retired in Phase 8 Slice 10, and the legacy proof_state
 # storage was retired under DEC-CATEGORY-C-PROOF-RETIRE-001).
 EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_GD_WF_ID")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit|git\s+(\S+\s+)*push' || echo "")
 if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after the evaluator issues a ready_for_guardian verdict")
+    ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after the reviewer issues a ready_for_guardian verdict")
 fi
 
 # Build context message

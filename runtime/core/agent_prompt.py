@@ -7,7 +7,8 @@ Runtime-owned producer for Agent tool prompt bodies.
 @rationale The orchestrator (Claude LLM) constructs Agent tool call prompts.
   For the carrier path (DEC-CLAUDEX-SA-CARRIER-001) to fire in production, those
   prompts must contain a CLAUDEX_CONTRACT_BLOCK: line carrying the six contract
-  fields that pre-agent.sh extracts and writes to pending_agent_requests.
+  fields that cc-policy evaluate writes to pending_agent_requests after policy
+  allow.
   This module is the repo-owned producer for that block, sourcing the six fields
   from runtime state (active goal/work_item for the workflow) so the orchestrator
   does not need to discover or copy them individually.
@@ -38,12 +39,11 @@ from runtime.core import workflows as _workflows
 from runtime.core.dispatch_contract import (
     dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
 )
+from runtime.core.agent_contract_codec import CONTRACT_BLOCK_MARKER
 
 __all__ = [
     "build_agent_dispatch_prompt",
 ]
-
-_CONTRACT_BLOCK_MARKER = "CLAUDEX_CONTRACT_BLOCK"
 
 # Classification tag embedded in every guard failure so operators (and any
 # log-scanner) can tell this class of error apart from planner-stage stalls.
@@ -123,8 +123,8 @@ def build_agent_dispatch_prompt(
 
     ``contract_block_line``
         The literal ``CLAUDEX_CONTRACT_BLOCK:{...}`` string — a single line with no
-        trailing newline.  This is what pre-agent.sh greps for with
-        ``grep '^CLAUDEX_CONTRACT_BLOCK:'``.
+        trailing newline.  This is what pre-agent.sh forwards to the runtime
+        policy/carrier path.
 
     ``prompt_prefix``
         A ready-to-prepend string consisting of the block line followed by a
@@ -321,12 +321,12 @@ def build_agent_dispatch_prompt(
         "generated_at": generated_at,
     }
 
-    # Build the block line — must start at column 0 so pre-agent.sh's
-    # `grep '^CLAUDEX_CONTRACT_BLOCK:'` finds it.
-    contract_block_line = f"{_CONTRACT_BLOCK_MARKER}:{json.dumps(contract, separators=(',', ':'))}"
+    # Build the block line — must start at column 0 so the runtime contract
+    # parser accepts it as prompt line 1.
+    contract_block_line = f"{CONTRACT_BLOCK_MARKER}:{json.dumps(contract, separators=(',', ':'))}"
 
-    # Build the prompt prefix: the block line on line 1 so it is always
-    # the first grep hit, followed by a minimal dispatch banner.
+    # Build the prompt prefix: the block line on line 1, followed by a minimal
+    # dispatch banner.
     prompt_prefix = (
         f"{contract_block_line}\n"
         f"\n"

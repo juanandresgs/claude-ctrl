@@ -1,4 +1,4 @@
-"""Evaluator-state lifecycle authority.
+"""Review-readiness state lifecycle authority.
 
 Owns the evaluation_state table. All mutations are in explicit transactions.
 Status values: idle | pending | needs_changes | ready_for_guardian | blocked_by_plan
@@ -8,22 +8,20 @@ This module is the sole readiness authority for Guardian commit/merge after
 TKT-024 cutover. The legacy proof_state table was retired post-Phase-8 under
 Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001); evaluation_state is
 now the only readiness store. evaluation_state is written exclusively by:
-  - post-task.sh       (implementer completion → pending)
-  - check-reviewer.sh  (reviewer REVIEW_* trailer → verdict status; this is
-                        the Phase 8 Slice 11 replacement for the retired
-                        tester evaluator adapter)
+  - dispatch_engine.py (valid reviewer REVIEW_* completion → verdict status)
   - track.sh           (source write after clearance → pending via invalidate_if_ready)
+  - quick_eval.py      (simple-task fast path → ready_for_guardian)
 
 @decision DEC-EVAL-001
 Title: evaluation_state is the sole Guardian readiness authority (TKT-024)
 Status: accepted
 Rationale: the legacy proof_state flow was gated on the user typing "verified"
   — ceremony, not technical proof. It has since been retired under
-  DEC-CATEGORY-C-PROOF-RETIRE-001. The evaluator workflow (INIT-004) produces
-  structured EVAL_VERDICT/EVAL_TESTS_PASS/EVAL_NEXT_ROLE/EVAL_HEAD_SHA trailers. This
-  module backs that trailer with a persistent SQLite table and enforces that
+  DEC-CATEGORY-C-PROOF-RETIRE-001. The reviewer workflow produces
+  structured REVIEW_VERDICT/REVIEW_HEAD_SHA/REVIEW_FINDINGS_JSON trailers. This
+  module backs those trailers with a persistent SQLite table and enforces that
   only a matching head_sha + ready_for_guardian status passes guard.sh Check 10.
-  head_sha is stored so a source write after evaluator clearance is detected by
+  head_sha is stored so a source write after reviewer clearance is detected by
   track.sh (SHA mismatch or invalidate_if_ready resets to pending). Status
   validation happens here in Python so callers get a typed ValueError rather
   than a SQLite constraint traceback.
@@ -110,12 +108,12 @@ def list_all(conn: sqlite3.Connection) -> list[dict]:
 def invalidate_if_ready(conn: sqlite3.Connection, workflow_id: str) -> bool:
     """Reset status from ready_for_guardian to pending if currently ready.
 
-    Called by track.sh when a source file changes after the evaluator has
+    Called by track.sh when a source file changes after the reviewer has
     cleared the workflow. Returns True when the row was invalidated, False
     when the row was not ready_for_guardian (no-op).
 
-    This is the mechanism that enforces: source changes after evaluator
-    clearance invalidate readiness, requiring a new evaluator pass.
+    This is the mechanism that enforces: source changes after reviewer
+    clearance invalidate readiness, requiring a new reviewer pass.
     """
     now = int(time.time())
     with conn:

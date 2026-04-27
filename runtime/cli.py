@@ -87,6 +87,115 @@ def _get_conn():
     return conn
 
 
+def _agent_contract_carrier_effect(conn, payload: dict, decision):
+    """Write the Agent contract carrier after policy allow.
+
+    ``agent_contract_required`` owns launch validation. This helper runs only
+    after that policy gate has allowed the Agent/Task invocation, then performs
+    the stateful carrier write that lets ``SubagentStart`` receive the same
+    six-field contract. Shell hooks must not duplicate contract shape, stage, or
+    subagent validation.
+    """
+    import os as _os
+    import time as _time
+
+    from runtime.core.agent_contract_codec import (
+        CONTRACT_BLOCK_PREFIX as _CONTRACT_BLOCK_PREFIX,
+        first_line_contract_json as _first_line_contract_json,
+    )
+    from runtime.core.dispatch_contract import (
+        dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
+    )
+    from runtime.core.dispatch_hook import record_agent_dispatch as _record_agent_dispatch
+    from runtime.core.pending_agent_requests import write_pending_request as _write_pending_request
+
+    if decision.action != "allow":
+        return None
+    if payload.get("event_type") != "PreToolUse":
+        return None
+    if payload.get("tool_name") not in ("Agent", "Task"):
+        return None
+
+    tool_input = payload.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return None
+    prompt = tool_input.get("prompt", "") or ""
+    contract_raw = _first_line_contract_json(prompt)
+    if contract_raw is None:
+        return None
+
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        # Preserve the historical hook behavior: a malformed/missing session id
+        # means there is no transport correlation key, so no carrier row is
+        # written. Real Claude Code PreToolUse payloads include session_id.
+        return None
+
+    if payload.get("carrier_db_resolved") is False:
+        return policy_engine_mod.PolicyDecision(
+            action="deny",
+            reason=(
+                "carrier_write_failed: no project policy DB path could be resolved "
+                "for canonical Agent dispatch. Set CLAUDE_POLICY_DB or run from "
+                "inside a git repo with .claude/state.db."
+            ),
+            policy_name="agent_contract_carrier",
+        )
+
+    try:
+        contract = json.loads(contract_raw)
+        stage_id = str(contract.get("stage_id") or "")
+        expected_subagent_type = _dispatch_subagent_type_for_stage(stage_id)
+        if not expected_subagent_type:
+            raise ValueError(f"unknown active stage: {stage_id!r}")
+
+        _write_pending_request(
+            conn,
+            session_id=session_id,
+            agent_type=expected_subagent_type,
+            workflow_id=str(contract["workflow_id"]),
+            stage_id=stage_id,
+            goal_id=str(contract["goal_id"]),
+            work_item_id=str(contract["work_item_id"]),
+            decision_scope=str(contract["decision_scope"]),
+            generated_at=int(contract["generated_at"]),
+        )
+    except Exception as exc:
+        return policy_engine_mod.PolicyDecision(
+            action="deny",
+            reason=(
+                "carrier_write_failed: pending_agent_requests row could not be "
+                f"written for canonical Agent dispatch. Detail: {exc}"
+            ),
+            policy_name="agent_contract_carrier",
+        )
+
+    timeout_at = None
+    timeout_seconds = _os.environ.get("CLAUDEX_DISPATCH_ATTEMPT_TIMEOUT_SECONDS", "2700")
+    if timeout_seconds.isdigit() and int(timeout_seconds) > 0:
+        timeout_at = int(_time.time()) + int(timeout_seconds)
+
+    try:
+        workflow_id = str(contract.get("workflow_id") or "")
+        instruction = prompt.split("\n", 1)[0]
+        if not instruction.startswith(_CONTRACT_BLOCK_PREFIX):
+            instruction = f"{_CONTRACT_BLOCK_PREFIX}{contract_raw}"
+        _record_agent_dispatch(
+            conn,
+            session_id,
+            expected_subagent_type,
+            instruction,
+            workflow_id=workflow_id or None,
+            timeout_at=timeout_at,
+        )
+    except Exception:
+        # Delivery tracking is diagnostic. The carrier row is the required
+        # SubagentStart handoff, so tracking failures do not block dispatch.
+        pass
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Domain handlers
 # ---------------------------------------------------------------------------
@@ -3474,6 +3583,10 @@ def _handle_evaluate(args) -> int:
                         )
                 except Exception:
                     pass  # Non-fatal: denial stands if consumption fails
+
+        carrier_deny = _agent_contract_carrier_effect(conn, payload, decision)
+        if carrier_deny is not None:
+            decision = carrier_deny
     finally:
         conn.close()
 

@@ -123,7 +123,15 @@ import sqlite3
 import time
 from typing import Optional
 
-from runtime.core import completions, critic_reviews, dispatch_shadow, events, leases
+from runtime.core import (
+    completions,
+    critic_reviews,
+    dispatch_shadow,
+    evaluation,
+    events,
+    leases,
+    reviewer_convergence,
+)
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -182,6 +190,11 @@ def process_agent_stop(
         "critic_repeated_fingerprint_streak": 0,
         "critic_escalated": False,
         "critic_escalation_reason": "",
+        # Reviewer → evaluation_state convergence bridge. Reviewer completions
+        # own readiness; evaluation_state remains the Guardian landing gate.
+        "evaluation_status": "",
+        "evaluation_head_sha": "",
+        "reviewer_convergence_reason": "",
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -385,6 +398,22 @@ def process_agent_stop(
         )
         result["next_role"] = next_role
         result["error"] = error
+        if workflow_id and active_lease_id and not error:
+            sync = _sync_reviewer_evaluation_state(
+                conn,
+                workflow_id=workflow_id,
+                active_lease_id=active_lease_id,
+            )
+            if sync:
+                result["evaluation_status"] = sync.get("status", "")
+                result["evaluation_head_sha"] = sync.get("head_sha", "")
+                result["reviewer_convergence_reason"] = sync.get("reason", "")
+                if next_role == "guardian" and sync.get("status") != "ready_for_guardian":
+                    result["next_role"] = None
+                    result["error"] = (
+                        "PROCESS ERROR: Reviewer emitted ready_for_guardian but "
+                        f"readiness did not converge ({sync.get('reason', 'unknown')})."
+                    )
         # Rework path: when reviewer routes to implementer (needs_changes),
         # the worktree already exists. Read worktree_path from workflow
         # bindings so the orchestrator can pass it in the implementer
@@ -697,6 +726,74 @@ def _resolve_lease_context(
         pass
 
     return "", ""
+
+
+def _sync_reviewer_evaluation_state(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    active_lease_id: str,
+) -> dict:
+    """Project reviewer completion into the Guardian landing readiness store.
+
+    Reviewer completions and findings are the review authority. Guardian landing
+    policies intentionally read ``evaluation_state`` as their fast gate, so the
+    dispatch stop path is the single bridge between those domains.
+    """
+    try:
+        comp = completions.latest(conn, lease_id=active_lease_id)
+    except Exception:
+        return {}
+
+    if not comp or comp.get("role") != "reviewer":
+        return {}
+    if not (comp.get("valid") == 1 or comp.get("valid") is True):
+        return {}
+
+    verdict = comp.get("verdict") or ""
+    payload = comp.get("payload_json") or {}
+    head_sha = payload.get("REVIEW_HEAD_SHA") if isinstance(payload, dict) else ""
+    head_sha = str(head_sha or "").strip()
+
+    status = ""
+    reason = verdict
+    blockers = 0
+
+    if verdict == "ready_for_guardian":
+        try:
+            readiness = reviewer_convergence.assess(
+                conn,
+                workflow_id=workflow_id,
+                current_head_sha=head_sha,
+            )
+            reason = readiness.reason
+            blockers = readiness.open_blocking_count
+            status = "ready_for_guardian" if readiness.ready_for_guardian else "needs_changes"
+        except Exception as exc:
+            reason = f"reviewer_convergence_error:{exc}"
+            status = "needs_changes"
+    elif verdict in {"needs_changes", "blocked_by_plan"}:
+        status = verdict
+    else:
+        return {}
+
+    try:
+        evaluation.set_status(
+            conn,
+            workflow_id,
+            status,
+            head_sha=head_sha or None,
+            blockers=blockers,
+        )
+        events.emit(
+            conn,
+            type="reviewer_evaluation_state",
+            detail=f"Reviewer verdict {verdict} projected to evaluation_state={status} for {workflow_id}",
+        )
+    except Exception:
+        return {}
+
+    return {"status": status, "head_sha": head_sha, "reason": reason}
 
 
 def _route_from_completion(

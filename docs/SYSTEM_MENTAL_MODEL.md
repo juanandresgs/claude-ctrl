@@ -96,7 +96,7 @@ These are no longer authoritative:
                                                       post-task.sh
                                                                  |
                                                                  +--> completion_records
-                                                                 +--> evaluation_state
+                                                                 +--> reviewer convergence -> evaluation_state
                                                                  +--> determine_next_role()
                                                                  +--> next-role suggestion
 
@@ -170,11 +170,11 @@ Reviewer
     |   REVIEW_HEAD_SHA
     |   REVIEW_FINDINGS_JSON
     v
-check-reviewer.sh (SubagentStop evaluator adapter)
+check-reviewer.sh (SubagentStop reviewer adapter)
     |
     +--> validates trailers fail-closed
-    +--> writes completion_record
-    +--> writes evaluation_state
+    +--> writes completion_record and reviewer findings
+    +--> dispatch_engine projects convergence into evaluation_state
     v
 post-task
     |
@@ -217,7 +217,7 @@ This matters because multi-worktree and detached-head flows no longer depend on 
 
 ### 2. Reviewer output now materially governs landing
 
-Evaluator output is not just advisory anymore. The SubagentStop evaluator adapter (`check-reviewer.sh` in the current live chain; Phase 8 Slice 10 retired the legacy tester evaluator adapter, and Slice 11 removed the `tester` role from the runtime entirely) parses structured trailers and writes `evaluation_state`.
+Reviewer output is not just advisory anymore. The SubagentStop reviewer adapter (`check-reviewer.sh` in the current live chain; Phase 8 Slice 10 retired the legacy tester evaluator adapter, and Slice 11 removed the `tester` role from the runtime entirely) parses structured trailers into completion records. `dispatch_engine.py` projects valid reviewer convergence into `evaluation_state`.
 
 Guardian cannot land unless:
 

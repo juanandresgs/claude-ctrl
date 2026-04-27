@@ -74,12 +74,15 @@ def _make_agent_request(
     tool_name: str = "Agent",
     subagent_type: str = "",
     prompt: str = "",
+    isolation: str | None = None,
     context: PolicyContext | None = None,
 ) -> PolicyRequest:
     """Build a PolicyRequest for an Agent/Task tool invocation."""
     tool_input: dict = {"prompt": prompt}
     if subagent_type is not None:
         tool_input["subagent_type"] = subagent_type
+    if isolation is not None:
+        tool_input["isolation"] = isolation
     if context is None:
         context = _make_context()
     return PolicyRequest(
@@ -94,6 +97,20 @@ def _make_agent_request(
 # ---------------------------------------------------------------------------
 # Deny: dispatch-significant without contract
 # ---------------------------------------------------------------------------
+
+
+def test_deny_agent_worktree_isolation():
+    req = _make_agent_request(
+        subagent_type="general-purpose",
+        prompt="Use a harness worktree",
+        isolation="worktree",
+    )
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "agent_contract_required"
+    assert "isolation" in decision.reason
+    assert "Guardian worktree authority" in decision.reason
 
 
 def test_deny_implementer_no_contract():

@@ -38,7 +38,7 @@ Rationale: CUTOVER_PLAN Phase 1 ("Constitutional Kernel") requires an explicit,
     3. Reviewer is read-only and has exactly three verdicts:
        ``ready_for_guardian``, ``needs_changes``, ``blocked_by_plan``.
     4. Post-guardian planner continuation is explicit: ``guardian:land`` with
-       ``committed`` or ``merged`` routes back to planner, and planner owns
+       ``committed``, ``merged``, or ``pushed`` routes back to planner, and planner owns
        the next-move decision (``goal_complete``, ``next_work_item``,
        ``needs_user_decision``, ``blocked_external``). The reviewer never
        decides what comes next after landing.
@@ -155,6 +155,7 @@ GUARDIAN_LAND_VERDICTS: FrozenSet[str] = frozenset(
     {
         "committed",
         "merged",
+        "pushed",
         "denied",
         "skipped",
     }
@@ -206,6 +207,7 @@ TRANSITIONS: Tuple[Transition, ...] = (
     # --- Guardian (land mode): sole git-landing authority -------------------
     Transition(GUARDIAN_LAND, "committed", PLANNER),
     Transition(GUARDIAN_LAND, "merged", PLANNER),
+    Transition(GUARDIAN_LAND, "pushed", PLANNER),
     Transition(GUARDIAN_LAND, "denied", IMPLEMENTER),
     Transition(GUARDIAN_LAND, "skipped", PLANNER),
 )
