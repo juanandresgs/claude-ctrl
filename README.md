@@ -272,7 +272,7 @@ ClauDEX is intended to live at `~/.claude`.
 Back up any existing Claude Code config first.
 
 ```bash
-git clone https://github.com/juanandresgs/claude-ctrl-hardFork.git ~/.claude
+git clone https://github.com/juanandresgs/claude-ctrl.git ~/.claude
 cd ~/.claude
 bash bin/install.sh
 ```
@@ -280,7 +280,7 @@ bash bin/install.sh
 If `~/.claude` already exists, use a staging checkout and the guarded installer:
 
 ```bash
-git clone https://github.com/juanandresgs/claude-ctrl-hardFork.git /tmp/claudex
+git clone https://github.com/juanandresgs/claude-ctrl.git /tmp/claudex
 cd /tmp/claudex
 TARGET="$HOME/.claude" bash install-claude-ctrl.sh
 ```
