@@ -861,7 +861,20 @@ class TestA8CanonicalSeatNoCarrierContractDeny:
         self._assert_a8_deny("implementer")
 
     def test_guardian_no_carrier_contract_denied(self):
-        self._assert_a8_deny("guardian")
+        payload = {"agent_type": "guardian", "session_id": "no-carrier-session"}
+        rc, stdout, _stderr = _run_hook(payload, self._db)
+        assert rc == 0, f"Hook must exit 0 (deny via additionalContext), got rc={rc}"
+        parsed = json.loads(stdout.strip())
+        hso = parsed["hookSpecificOutput"]
+        assert hso["hookEventName"] == "SubagentStart"
+        ctx = hso["additionalContext"]
+        assert "canonical_seat_no_carrier_contract" in ctx
+        assert "workflow stage-packet" in ctx
+        assert "guardian:land" in ctx
+        assert "guardian:provision" in ctx
+        assert "unknown active stage" not in ctx
+        assert "Context:" not in ctx
+        assert "# ClauDEX Prompt Pack:" not in ctx
 
     def test_reviewer_no_carrier_contract_denied(self):
         self._assert_a8_deny("reviewer")

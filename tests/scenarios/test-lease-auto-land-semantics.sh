@@ -56,9 +56,9 @@ run_sub_case_a() {
     (cd "$dir" && git checkout -b "$branch" -q)
     head_sha=$(git -C "$dir" rev-parse HEAD)
 
-    # Schema + marker
+    # Schema + guardian:land marker
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$dir" >/dev/null 2>&1
 
     # test-status = pass (Check 9)
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
@@ -113,7 +113,7 @@ run_sub_case_b() {
     head_sha=$(git -C "$dir" rev-parse HEAD)
 
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$dir" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \

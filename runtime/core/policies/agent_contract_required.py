@@ -306,7 +306,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             f"Dispatch-significant Agent launch (subagent_type={subagent_type!r}) "
             f"requires a runtime-issued contract. The prompt must start with "
             f"'{_CONTRACT_PREFIX}' on line 1. "
-            + _repair_hint()
+            + _repair_hint(subagent_type)
         ),
         policy_name="agent_contract_required",
     )

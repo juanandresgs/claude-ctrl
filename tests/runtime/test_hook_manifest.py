@@ -260,7 +260,7 @@ class TestSettingsJsonAlignment:
             f"does not contain: {sorted(extra)}"
         )
 
-    def test_manifest_is_exactly_32_entries_against_todays_settings(self):
+    def test_manifest_is_exactly_31_entries_against_todays_settings(self):
         # Pin the overall count so any drift in settings.json forces
         # a deliberate manifest update. Phase 8 Slice 3 reduced this
         # from 33 to 32 by removing PreToolUse:EnterWorktree. Phase 8
@@ -268,14 +268,16 @@ class TestSettingsJsonAlignment:
         # SubagentStop entries (check-tester.sh + post-task.sh).
         # Invariant #15 (DEC-EVAL-006) added PostToolUse:Bash →
         # hooks/post-bash.sh, bringing the count to 31. The dedicated
-        # implementer critic hook adds one active SubagentStop adapter.
-        assert len(hm.HOOK_MANIFEST) == 32
+        # implementer critic hook adds one active SubagentStop adapter,
+        # then forward-motion Stop style enforcement was removed.
+        assert len(hm.HOOK_MANIFEST) == 31
 
     def test_active_plus_deprecated_counts_match(self):
         # Phase 8 Slice 3: WorktreeCreate un-deprecated (→ active),
         # PreToolUse:EnterWorktree removed. Phase 8 Slice 10: tester
         # SubagentStop entries removed. Invariant #15: +1 PostToolUse Bash.
-        assert len(hm.active_entries()) == 32
+        # Forward-motion Stop hook was removed as non-outcome style friction.
+        assert len(hm.active_entries()) == 31
         assert len(hm.deprecated_entries()) == 0
         assert len(hm.planned_entries()) == 0
 

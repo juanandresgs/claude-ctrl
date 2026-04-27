@@ -9,9 +9,9 @@
 #   planner       |    DENY      |      ALLOW      |  DENY   |   pass
 #   implementer   |    ALLOW     |      DENY       |  DENY   |   pass
 #   reviewer      |    DENY      |      DENY       |  DENY   |   pass
-#   guardian      |    DENY      |      DENY       |  ALLOW* |   pass
+#   guardian:land |    DENY      |      DENY       |  ALLOW* |   pass
 #
-#   *Guardian git allow requires proof=verified + test-status=pass.
+#   *Guardian git allow requires evaluation_state=ready_for_guardian + test-status=pass.
 #
 #   Phase 8 Slice 11 retired the legacy ``tester`` role; the read-only
 #   evaluator row is now owned by ``reviewer`` (DEC-PHASE8-SLICE11-001).
@@ -66,7 +66,7 @@ set_role() {
     if [[ -n "$role" ]]; then
         local db="$project_dir/.claude/state.db"
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
-        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "$role" >/dev/null 2>&1
+        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "$role" --project-root "$project_dir" >/dev/null 2>&1
     fi
 }
 
@@ -128,7 +128,7 @@ run_governance_write() {
         | CLAUDE_PROJECT_DIR="$project_dir" "$PRE_WRITE" 2>/dev/null || true
 }
 
-# Guardian git allow: pre-set proof + test gates, then run policy engine via pre-bash.sh.
+# Guardian git allow: pre-set evaluation + test gates, then run policy engine via pre-bash.sh.
 # All other roles: gates absent so policy engine denies at WHO check.
 run_git_op() {
     local project_dir="$1" role="$2"
@@ -138,8 +138,6 @@ run_git_op() {
     if [[ "$role" == "guardian" ]]; then
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
             test-state set pass --total 1 --passed 1 --project-root "$project_dir" >/dev/null 2>&1
-        # Proof via runtime (flat file removed; eval_readiness policy gates on evaluation_state)
-        CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" proof set "$workflow_id" "verified" >/dev/null 2>&1
         # Workflow binding + scope required by Check 12
         CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" \
             workflow bind "$workflow_id" "$project_dir" "feature/enforce-test" >/dev/null 2>&1
@@ -219,11 +217,11 @@ assert_deny  "reviewer: governance write denied" "$(run_governance_write "$proj"
 assert_deny  "reviewer: git op denied"           "$(run_git_op           "$proj" "reviewer")"
 
 # ---------------------------------------------------------------------------
-# Row 5: guardian
+# Row 5: guardian:land
 # ---------------------------------------------------------------------------
-printf '\n=== Row 5: guardian ===\n'
+printf '\n=== Row 5: guardian:land ===\n'
 proj=$(make_project "guardian")
-set_role "$proj" "guardian"
+set_role "$proj" "guardian:land"
 
 assert_deny  "guardian: source write denied"              "$(run_source_write     "$proj")"
 assert_deny  "guardian: governance write denied"          "$(run_governance_write "$proj")"

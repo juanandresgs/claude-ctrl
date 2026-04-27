@@ -111,9 +111,9 @@ run_sub_case() {
     # Return to main for merge sub-cases
     git -C "$TMP_DIR" checkout main -q 2>/dev/null || git -C "$TMP_DIR" checkout -b main -q
 
-    # Schema + guardian marker (Check 3)
+    # Schema + guardian:land marker (Check 3)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # test-state = pass via runtime (policy engine reads SQLite)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -135,9 +135,9 @@ run_sub_case() {
     # Sub-case A: Merge with correct SHA — must be allowed
     # Stored SHA = feature branch tip. Merge ref resolves to same SHA.
     #
-    # Check 10 uses WF_ID (feature branch), Check 12 uses "main" (current
-    # branch of _CHECK12_DIR when the merge command runs from main).
-    # Both workflow bindings are required to satisfy all checks.
+    # Check 10 uses WF_ID (feature branch). Check 12 now follows the active
+    # workflow binding for the worktree; binding a second "main" workflow to
+    # the same worktree would deliberately replace the feature binding.
     # -----------------------------------------------------------------------
     A)
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -159,13 +159,6 @@ run_sub_case() {
             workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-
-        # Check 12 binding: "main" workflow (Check 12 reads current branch of
-        # detect_project_root, which is "main" when the merge runs from main)
-        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-            workflow bind "main" "$TMP_DIR" "main" >/dev/null 2>&1
-        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-            workflow scope-set "main" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 
         # Plain merge (no --no-ff) is routine_local — does not trigger Check 13
         CMD="git -C \"$TMP_DIR\" merge $BRANCH"
@@ -208,12 +201,6 @@ run_sub_case() {
             workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
         CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
             workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-
-        # Main binding (Check 12)
-        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-            workflow bind "main" "$TMP_DIR" "main" >/dev/null 2>&1
-        CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-            workflow scope-set "main" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
 
         # Plain merge (no --no-ff) is routine_local — Check 13 does not fire
         CMD="git -C \"$TMP_DIR\" merge $BRANCH"

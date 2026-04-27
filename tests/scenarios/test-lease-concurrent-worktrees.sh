@@ -52,7 +52,7 @@ _make_repo() {
     head_sha=$(git -C "$dir" rev-parse HEAD)
 
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$dir" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \

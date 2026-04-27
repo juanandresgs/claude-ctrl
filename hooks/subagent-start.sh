@@ -161,7 +161,7 @@ elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
     # with reason canonical_seat_no_carrier_contract.  Do NOT fall through to the
     # legacy guidance path — that would silently misguide a forged/stripped launch.
     # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
-    _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "" 2>/dev/null || echo "")
+    _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "$AGENT_TYPE" 2>/dev/null || echo "")
     _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. ${_BOOTSTRAP_GUIDANCE}"
 fi
 

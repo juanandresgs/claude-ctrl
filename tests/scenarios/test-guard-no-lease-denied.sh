@@ -79,7 +79,7 @@ _setup_repo_no_lease() {
     # Schema + role marker — no lease issued
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        marker set "agent-test" "$role" >/dev/null 2>&1
+        marker set "agent-test" "$role" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     # Test status = pass (ensures Check 10 won't be the first gate)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -192,23 +192,23 @@ run_sub_case_c() {
 #
 # Compound-interaction test: covers the real production sequence end-to-end.
 # 1. Orchestrator issues lease via cc-policy lease issue-for-dispatch.
-# 2. Implementer runs git commit.
+# 2. Guardian landing actor runs git commit.
 # 3. Check 3 finds lease → validate_op() returns allowed=true.
 # 4. Check 10 finds ready_for_guardian + matching SHA → allowed.
 # 5. Commit proceeds.
 # ---------------------------------------------------------------------------
 run_sub_case_d() {
     local branch="feature/with-lease-commit-allowed"
-    _setup_repo_no_lease "$branch" "implementer"
+    _setup_repo_no_lease "$branch" "guardian:land"
     trap 'rm -rf "$TMP_DIR"' RETURN
 
     # Set evaluation_state=ready_for_guardian with matching HEAD SHA
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
 
-    # Issue an implementer lease with routine_local ops allowed
+    # Issue a guardian lease with routine_local ops allowed
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "implementer" \
+        lease issue-for-dispatch "guardian" \
         --workflow-id "$WF_ID" \
         --worktree-path "$TMP_DIR" \
         --branch "$branch" \

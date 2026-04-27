@@ -114,10 +114,10 @@ def test_set_regular_stop_as_orchestrator_is_allowed(conn):
     assert ec.get(conn, "review_gate_regular_stop") == "false"
 
 
-def test_set_subagent_stop_as_orchestrator_raises_permission_error(conn):
-    """The orchestrator/user path must not mutate dispatch-safety toggles."""
+def test_set_non_user_facing_key_as_orchestrator_raises_permission_error(conn):
+    """The orchestrator/user path must not mutate control-plane toggles."""
     with pytest.raises(ECPermissionError):
-        ec.set_(conn, "review_gate_subagent_stop", "false", actor_role="")
+        ec.set_(conn, "critic_enabled_implementer_stop", "false", actor_role="")
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-09 (ClauDEX Addendum: DEC-CLAUDEX-ARCH-001 — agent-agnostic recursive supervision becomes a runtime-owned domain; tmux is demoted to a transport adapter and MCP/provider-native control becomes an interchangeable adapter rather than a second authority; INIT-ENFORCE Addendum: W-ENFORCE-RCA-15 — `enforcement_config` table added, regular Stop review flipped to on-by-default, policy engine becomes canonical config authority; W-ENFORCE-RCA-14 — SubagentStop review path made unconditional in `stop-review-gate-hook.mjs`; W-ENFORCE-RCA-11 — `hookEventName` restored in `_handle_evaluate` JSON output; W-ENFORCE-RCA-6 — `.mjs/.cjs/.mts/.cts` added to SOURCE_EXTENSIONS)
+Last updated: 2026-04-27 (Stop-hook friction cleanup: `forward-motion.sh` removed from the live Stop chain; broad `stop-review-gate-hook.mjs` narrowed to regular Stop only; SubagentStop Codex review is now the deterministic implementer critic path persisted in `critic_reviews`)
 
 ## Identity
 
@@ -362,6 +362,13 @@ into the new mainline.
   auto-dispatch proceeds without quality review. When the gate is unavailable
   (not set up, errors), dispatch_engine treats it as ALLOW (fail-open for
   quality, fail-closed for safety).
+- `2026-04-27 — DEC-AD-005` The broad Codex stop-review gate is regular-Stop
+  only. SubagentStop workflow influence now belongs to dedicated runtime-owned
+  critics, currently `implementer-critic.sh` writing `critic_reviews` before
+  `post-task.sh` routes. This removes duplicate 15-minute advisory reviews from
+  planner/reviewer/guardian/implementer stops and keeps the Codex lane
+  deterministic: either a verdict is persisted and consumed by dispatch, or the
+  review remains an ordinary Stop audit.
 - `2026-04-05 — DEC-AD-004` Auto-dispatch fires for tester needs_changes and
   blocked_by_plan routes (back to implementer and planner respectively). The
   user does not need to approve rework — only new work, terminal states, and
@@ -474,6 +481,12 @@ into the new mainline.
   `review_duration_s`, and `review_infra_failure` metrics. This isolates
   metric emission from plugin internals and keeps all emission in the
   existing hook chain.
+- `2026-04-27 — DEC-OBS-011` `post-task.sh` no longer reads
+  `codex_stop_review` for review metrics. Once broad SubagentStop reviews were
+  retired, that read could only observe stale regular-Stop audit events during
+  later SubagentStop routing. Review visibility now lives in Stop-hook
+  `codex_stop_review` events and the statusline; metric emission needs a future
+  Stop-owned emitter if organization-level reporting requires it.
 
 ### Behavioral evaluation decisions
 
@@ -726,13 +739,11 @@ into the new mainline.
   code path in `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
   (the user-facing turn-end gate, lines ~656-end) never runs unless the
   user explicitly opted in via `codex setup --enable-review-gate`. The
-  `stop-review-gate-hook.mjs` main function at line 577 is retargeted to
-  read `review_gate_subagent_stop` and `review_gate_regular_stop` from
-  `cc-policy config get` (both seeded to `true`) instead of from
+  `stop-review-gate-hook.mjs` main function is retargeted to read
+  `review_gate_regular_stop` from `cc-policy config get` instead of from
   `getConfig(workspaceRoot).stopReviewGate`. This flips the default on
   immediately, with no advisory week, because an advisory week adds zero
-  signal beyond what the SubagentStop path (already unconditional per
-  DEC-ENFORCE-REVIEW-GATE-002) already provides, and because the
+  signal and because the
   regular-Stop review is the enforcement surface that covers the very
   turn type the orchestrator operates on — every user-initiated session
   stop. Codex concurred that this is a "flip and ship" default. If the
@@ -4684,10 +4695,10 @@ Hooks (emission)          Runtime (storage)         Observatory (analysis)
 
 Note: `subagent-start.sh` is not an emission source (it produces context,
 not metrics). `auto-review.sh` is not an emission source (its classification
-data is consumed by `pre-bash.sh`). `post-task.sh` emits stop-gate review
-metrics (review_verdict, review_duration_s, review_infra_failure) by reading
-`codex_stop_review` events from the events table after the stop-review-gate
-plugin fires.
+data is consumed by `pre-bash.sh`). DEC-OBS-011 retired the `post-task.sh`
+review-metric reader because broad SubagentStop reviews are no longer emitted;
+regular Stop review visibility is carried by `codex_stop_review` events and
+the statusline.
 
 **What hooks emit (additive, not new hooks):**
 
@@ -4701,9 +4712,9 @@ plugin fires.
 | `files_changed` | `track.sh` | count | Every file write |
 | `hook_failure` | `log.sh` (error handler) | hook name, exit code | Every hook failure |
 | `session_summary` | `session-end.sh` | prompts, duration, agents spawned | Every session end |
-| `review_verdict` | `post-task.sh` | provider, agent_role, verdict (pass/continue/infra_failure) | Every SubagentStop with review |
-| `review_duration_s` | `post-task.sh` | provider, agent_role, duration seconds | Every SubagentStop with review |
-| `review_infra_failure` | `post-task.sh` | provider, error_type (timeout/parse/unavailable) | Every review infra failure |
+| `review_verdict` | Retired from `post-task.sh` | Stop-hook `codex_stop_review` events remain visible; future Stop-owned metric emitter if needed | DEC-OBS-011 |
+| `review_duration_s` | Retired from `post-task.sh` | Stop-hook `codex_stop_review` events remain visible; future Stop-owned metric emitter if needed | DEC-OBS-011 |
+| `review_infra_failure` | Retired from `post-task.sh` | Stop-hook `codex_stop_review` events remain visible; future Stop-owned metric emitter if needed | DEC-OBS-011 |
 
 **Metric schema (obs_metrics):**
 
@@ -5184,19 +5195,11 @@ logic is changed; emission is appended after existing processing.
   emit `hook_failure` with value 1 and labels `{"hook":"...","exit_code":N}`.
   This is best-effort; if the runtime is unavailable, the failure itself should
   not cascade.
-- `hooks/post-task.sh` -- after the stop-review-gate plugin fires (detected
-  by checking for a `codex_stop_review` event in the events table for the
-  current session), emit:
-  - `review_verdict` with value 1 (pass) or 0 (continue), role = agent role
-    from event, labels `{"provider":"codex|gemini","verdict":"pass|continue|
-    infra_failure"}`
-  - `review_duration_s` with value = review duration seconds, role = agent
-    role, labels `{"provider":"..."}`
-  - `review_infra_failure` (only if infraFailure=true in event) with value 1,
-    labels `{"provider":"...","error_type":"timeout|parse|unavailable"}`
-  All three use `|| true` suppression. Event fields are read from the events
-  table, NOT from the plugin script directly -- this isolates emission from
-  plugin internals.
+- Review metrics from `hooks/post-task.sh` are retired by DEC-OBS-011. The
+  regular Stop hook still emits `codex_stop_review` events for visibility, but
+  SubagentStop routing must not read stale Stop audit events to synthesize
+  metrics. Future review metrics, if needed, should be emitted from a Stop-owned
+  path.
 
 **Tester scope:**
 
@@ -5205,7 +5208,7 @@ logic is changed; emission is appended after existing processing.
   counts match actual counts)
 - Labels JSON is valid and contains the expected keys
 - The `role` column is populated for role-bearing metrics (agent_duration_s,
-  eval_verdict, commit_outcome, review_verdict, review_duration_s)
+  eval_verdict, commit_outcome)
 - Hot-path hooks (track.sh, pre-write.sh, pre-bash.sh) use batch pattern or
   `& disown` -- no synchronous subprocess wait on the critical path
 - Non-hot-path hooks use `|| true` suppression
@@ -5214,9 +5217,8 @@ logic is changed; emission is appended after existing processing.
 - All existing tests pass
 - At least one new metric row appears in `obs_metrics` for each emission point
   after a representative hook execution
-- After a SubagentStop with a `codex_stop_review` event, obs_metrics contains
-  `review_verdict` and `review_duration_s` rows with correct provider and
-  verdict labels
+- Regular Stop `codex_stop_review` events remain visible via the events table
+  and statusline; no SubagentStop review metrics are emitted from `post-task.sh`.
 
 ###### Evaluation Contract for W-OBS-2
 
@@ -5242,12 +5244,11 @@ logic is changed; emission is appended after existing processing.
    batch flush pattern -- verified by inspecting the hook source for the
    pattern, NOT by `|| true` alone (which does not make calls async)
 10. No existing test regressions
-11. After a post-task.sh run following a SubagentStop with a
-    `codex_stop_review` event seeded in the events table, `obs_metrics`
-    contains `review_verdict` and `review_duration_s` rows with correct
-    provider and verdict in labels
-12. After a post-task.sh run with an infraFailure codex_stop_review event,
-    `obs_metrics` contains a `review_infra_failure` row
+11. No `post-task.sh` review-metric reader remains; seeded
+    `codex_stop_review` events must not create stale SubagentStop review
+    metrics (DEC-OBS-011)
+12. Regular Stop `codex_stop_review` events remain queryable for visibility
+    and statusline use
 
 **Required real-path checks:**
 
@@ -5310,8 +5311,8 @@ Scope Manifest.
 - `hooks/track.sh` (modify: add files_changed async emission via `& disown`)
 - `hooks/session-end.sh` (modify: add session_summary emission)
 - `hooks/log.sh` (modify: add hook_failure emission in error handler)
-- `hooks/post-task.sh` (modify: add review_verdict, review_duration_s,
-  review_infra_failure emission after stop-review-gate events)
+- `hooks/post-task.sh` (DEC-OBS-011: review metric reader retired; do not
+  reintroduce stale event reads)
 - `tests/scenarios/test-obs-emission.sh` (new: verify metrics appear after
   representative hook sequence, including review metrics)
 
@@ -5629,12 +5630,12 @@ All 6 checks pass. Authority invariants hold. Sidecar is read-only. `git diff
 | Suggestion lifecycle | **NONE** | `obs_suggestions` table (single authority, with signal_id) | W-OBS-1 |
 | Analysis run history | **NONE** | `obs_runs` table (single authority) | W-OBS-1 |
 | Observatory metric emission | **NONE** | Hooks emit via `rt_obs_metric()` / `rt_obs_metric_batch()` | W-OBS-2 |
-| Review gate metrics | **NONE** | `post-task.sh` emits review_verdict, review_duration_s, review_infra_failure | W-OBS-2 |
+| Review gate metrics | Retired from `post-task.sh` | Stop-hook `codex_stop_review` events + statusline visibility; future Stop-owned metric emitter if needed | DEC-OBS-011 |
 | Cross-table analysis | **NONE** (basic sidecar health check only) | `observatory.py` SQL-based analysis (LEFT JOIN) | W-OBS-3 |
 | LLM synthesis | **NONE** | `skills/observatory/SKILL.md` skill | W-OBS-3 |
 | Observatory sidecar | Basic health counts (`observe.py`) | Full analysis report via domain module | W-OBS-4 |
 | Existing traces tables | `traces` + `trace_manifest` (DEC-TRACE-001) | READ-ONLY by analysis (LEFT JOIN) | W-OBS-3 |
-| Existing events table | `events` (DEC-RT-001) | READ-ONLY by W-OBS-2 (post-task.sh reads codex_stop_review) and W-OBS-3 analysis | W-OBS-2, W-OBS-3 |
+| Existing events table | `events` (DEC-RT-001) | Stop-review hook writes `codex_stop_review`; statusline and analysis read it | DEC-OBS-011, W-OBS-3 |
 | Existing completion_records | `completion_records` | READ-ONLY by analysis (LEFT JOIN, may be empty) | W-OBS-3 |
 | Existing evaluation_state | `evaluation_state` | READ-ONLY by analysis (LEFT JOIN, may be empty) | W-OBS-3 |
 | Existing agent_markers | `agent_markers` | READ-ONLY by analysis (LEFT JOIN) | W-OBS-3 |
@@ -9652,8 +9653,9 @@ Truth Sacred Practice. The two MUST ship together.
 1. A new `enforcement_config` SQLite table exists in the canonical
    schema with `(scope, key, value, updated_at)` columns, PK on
    `(scope, key)`, and an index on `(key, scope)`; seeded with
-   `review_gate_subagent_stop=true`, `review_gate_regular_stop=true`,
-   `review_gate_provider=codex` at scope `global`.
+   `review_gate_regular_stop=true`, `review_gate_provider=codex`,
+   `critic_enabled_implementer_stop=true`, and `critic_retry_limit=2` at
+   scope `global`.
 2. `cc-policy config {get,set,list}` CLI domain exists, with `set`
    WHO-gated to guardian-role callers.
 3. `PolicyContext.enforcement_config` field is populated by
@@ -9825,9 +9827,8 @@ the implementer's worktree is fresh from main.
 
 | key | value | scope | rationale |
 |---|---|---|---|
-| `review_gate_subagent_stop` | `true` | `global` | Already enforced unconditionally per DEC-ENFORCE-REVIEW-GATE-002. Captured in the table so policies / hooks can introspect it without re-implementing the "it's always on" fact. |
 | `review_gate_regular_stop` | `true` | `global` | The RCA-15 flip. Was `false` (via plugin `state.json`). This commit makes it `true` by default — every fresh install enforces regular-Stop Codex review out of the box. |
-| `review_gate_provider` | `codex` | `global` | Primary review provider. Gemini is the fallback when Codex is unavailable, handled inside `stop-review-gate-hook.mjs` already — this config is read by the hook to decide which provider to attempt first. |
+| `review_gate_provider` | `codex` | `global` | Primary review provider intent. The current hook still tries Codex first and Gemini fallback directly; provider-config consumption remains a follow-up cleanup. |
 
 **Evaluation Contract (11 checks — executable acceptance).**
 
@@ -9874,9 +9875,10 @@ raw output, and include it in the handoff to Guardian.
    exits non-zero. `hooks/HOOKS.md` documents the sentinel under
    `## Runtime bridge sentinels`.
 7. `plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
-   reads `review_gate_subagent_stop` and `review_gate_regular_stop`
-   from `cc-policy config get` (NOT from
-   `getConfig(workspaceRoot).stopReviewGate`). Sets
+   reads `review_gate_regular_stop` from `cc-policy config get` (NOT from
+   `getConfig(workspaceRoot).stopReviewGate`). SubagentStop review influence
+   is owned by role-specific critics, currently `implementer-critic.sh` via
+   `critic_reviews`. Sets
    `CLAUDE_POLICY_DB = ${workspaceRoot}/.claude/state.db` in the env
    for every shell-out. Plugin `state.json.stopReviewGate` is not
    read in the regular-Stop gate decision. Verified by `grep` on
@@ -9922,7 +9924,7 @@ raw output, and include it in the handoff to Guardian.
     pytest passes, the tester runs:
     - `cc-policy config get review_gate_regular_stop` → returns
       `true`
-    - `cc-policy config get review_gate_subagent_stop` → returns
+    - `cc-policy config get critic_enabled_implementer_stop` → returns
       `true`
     - Trigger a regular Stop event in the session (the tester does
       this by issuing a normal assistant completion in its own
@@ -10937,7 +10939,7 @@ the runtime enforces.
      `plan-validate.sh`, `test-runner.sh`, `notify.sh`, `subagent-start.sh`,
      `check-planner.sh`, `check-implementer.sh`, `check-tester.sh`,
      `check-guardian.sh`, `post-task.sh`, `compact-preserve.sh`, `surface.sh`,
-     `session-summary.sh`, `forward-motion.sh`, `session-end.sh`.
+     `session-summary.sh`, `session-end.sh`.
   4. The new test does NOT raise on the node entrypoint
      `node $HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs`
      or on the inline shell capture writer

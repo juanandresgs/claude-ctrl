@@ -29,22 +29,22 @@ git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 # Bootstrap schema via explicit CLAUDE_POLICY_DB (step 1 — correct for setup)
 CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$CLI" schema ensure >/dev/null 2>&1
 
-# Write proof via direct CLI from project CWD WITHOUT CLAUDE_POLICY_DB or
+# Write evaluation state via direct CLI from project CWD WITHOUT CLAUDE_POLICY_DB or
 # CLAUDE_PROJECT_DIR — must use step 3 (git-root detection) to find project DB.
 (
     cd "$TMP_DIR"
     unset CLAUDE_POLICY_DB 2>/dev/null || true
     unset CLAUDE_PROJECT_DIR 2>/dev/null || true
-    python3 "$CLI" proof set "test-wf" "verified" >/dev/null 2>&1
+    python3 "$CLI" evaluation set "test-wf" "ready_for_guardian" >/dev/null 2>&1
 )
 
 # Read it back via explicit CLAUDE_POLICY_DB to confirm it landed in project DB
-result=$(CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$CLI" proof get "test-wf" 2>&1)
+result=$(CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$CLI" evaluation get "test-wf" 2>&1)
 status=$(printf '%s' "$result" | jq -r '.status // empty' 2>/dev/null || echo "")
 
-if [[ "$status" != "verified" ]]; then
-    echo "FAIL: $TEST_NAME — direct CLI proof write did not land in project DB"
-    echo "  expected status=verified, got: $result"
+if [[ "$status" != "ready_for_guardian" ]]; then
+    echo "FAIL: $TEST_NAME — direct CLI evaluation write did not land in project DB"
+    echo "  expected status=ready_for_guardian, got: $result"
     exit 1
 fi
 
@@ -52,12 +52,12 @@ fi
 # Guard: only run this check if the test repo is not ~/.claude itself.
 home_db_path="$HOME/.claude/state.db"
 if [[ "$PROJECT_DB" != "$home_db_path" ]]; then
-    home_result=$(python3 "$CLI" proof get "test-wf" 2>&1) || true
+    home_result=$(python3 "$CLI" evaluation get "test-wf" 2>&1) || true
     home_found=$(printf '%s' "$home_result" | jq -r '.found // false' 2>/dev/null || echo "false")
     if [[ "$home_found" == "true" ]]; then
         home_status=$(printf '%s' "$home_result" | jq -r '.status // empty' 2>/dev/null || echo "")
-        if [[ "$home_status" == "verified" ]]; then
-            echo "FAIL: $TEST_NAME — proof also landed in home DB (split authority)"
+        if [[ "$home_status" == "ready_for_guardian" ]]; then
+            echo "FAIL: $TEST_NAME — evaluation state also landed in home DB (split authority)"
             exit 1
         fi
     fi

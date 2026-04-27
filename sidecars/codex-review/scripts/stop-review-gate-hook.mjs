@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { getCodexLoginStatus } from "./lib/codex.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
-import { getConfig, listJobs } from "./lib/state.mjs";
+import { listJobs } from "./lib/state.mjs";
 import { sortJobsNewestFirst } from "./lib/job-control.mjs";
 import { SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
@@ -498,6 +498,12 @@ function reportProviderStatus(codexReady, geminiReady) {
 }
 
 function runStopReview(cwd, input = {}) {
+  const testReview = resolveTestStopReview();
+  if (testReview) {
+    logNote("[review-gate:test] Using deterministic stop review test response.");
+    return testReview;
+  }
+
   const codexReady = isCodexReady(cwd);
   const geminiReady = isGeminiReady();
 
@@ -544,39 +550,20 @@ function runStopReview(cwd, input = {}) {
   };
 }
 
-// ── SubagentStop verdict emitter ─────────────────────────────────────
-//
-// Writes a codex_stop_review event to the runtime events table for
-// user-facing review observability. The dispatch engine does NOT read
-// these events — workflow auto_dispatch is determined by runtime workflow
-// facts only (DEC-PHASE5-STOP-REVIEW-SEPARATION-001). This path must NOT
-// emit decision:block to hookSpecificOutput — that is reserved for the
-// Stop event path where Claude itself is the actor being blocked.
-//
-// @decision DEC-AD-002
-// Title: Codex gate communicates verdict via events table, not hookSpecificOutput
-// Status: accepted
-// Rationale: SubagentStop hooks cannot directly mutate dispatch_engine results.
-//   Writing to the events table decouples the Codex gate (quality signal) from
-//   dispatch_engine (routing authority). post-task.sh reads both; the gate writes
-//   only. Errors during emission are suppressed — the gate is advisory.
+function resolveTestStopReview() {
+  const raw = process.env.CLAUDEX_STOP_REVIEW_TEST_RESPONSE;
+  if (!raw) {
+    return null;
+  }
+  const parsed = parseStopReviewOutput(raw);
+  return {
+    ...parsed,
+    provider: "codex",
+    threadId: null
+  };
+}
 
-// readEnforcementConfig — read a toggle from the policy engine DB.
-//
-// @decision DEC-CONFIG-AUTHORITY-001
-// Title: Policy engine is the canonical authority for enforcement toggles
-// Status: accepted
-// Rationale: Plugin state.json's stopReviewGate is no longer the authority
-//   for whether the regular-Stop review gate runs. Both the SubagentStop and
-//   regular-Stop paths now read from enforcement_config via cc-policy, making
-//   the policy engine the single source of truth. The state.json field is
-//   kept as a dual-write target during the deprecation window only.
-//
-// CRITICAL: mirror the bash cc_policy() pattern of setting CLAUDE_POLICY_DB
-// from CLAUDE_PROJECT_DIR before shelling out. Without this, node code
-// bypasses project scoping and reads from the default DB path.
-// (DEC-CONFIG-AUTHORITY-001 risk #3)
-function readEnforcementConfig(cwd, key) {
+function buildPolicyEnv(cwd) {
   const env = { ...process.env };
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   if (!env.CLAUDE_PROJECT_DIR) {
@@ -585,6 +572,59 @@ function readEnforcementConfig(cwd, key) {
   if (!env.CLAUDE_POLICY_DB) {
     env.CLAUDE_POLICY_DB = path.join(env.CLAUDE_PROJECT_DIR, ".claude", "state.db");
   }
+  return env;
+}
+
+function resolveWorkflowId(cwd, input = {}) {
+  const direct = input.workflow_id || input.workflowId;
+  if (direct) {
+    return String(direct);
+  }
+  try {
+    const out = execFileSync(
+      "python3",
+      [RUNTIME_CLI_PATH, "context", "role"],
+      { cwd, env: buildPolicyEnv(cwd), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }
+    );
+    const parsed = JSON.parse(out);
+    return String(parsed.workflow_id || "");
+  } catch {
+    return "";
+  }
+}
+
+// ── Stop verdict emitter ─────────────────────────────────────────────
+//
+// Writes a codex_stop_review event to the runtime events table for user-facing
+// review observability. The dispatch engine does NOT read these events —
+// workflow auto_dispatch is determined by runtime workflow facts only
+// (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
+//
+// @decision DEC-AD-002
+// Title: Codex Stop audit communicates visibility via events table
+// Status: accepted
+// Rationale: Writing to the events table decouples the Codex Stop audit
+//   (quality signal) from dispatch_engine (routing authority). Errors during
+//   emission are suppressed — review visibility must not become a routing
+//   authority.
+
+// readEnforcementConfig — read a toggle from the policy engine DB.
+//
+// @decision DEC-CONFIG-AUTHORITY-001
+// Title: Policy engine is the canonical authority for enforcement toggles
+// Status: accepted
+// Rationale: Plugin state.json's stopReviewGate is no longer the authority
+//   for whether the regular-Stop review gate runs. The regular-Stop path reads
+//   from enforcement_config via cc-policy, making the policy engine the single
+//   source of truth. The state.json field is kept as a dual-write target during
+//   the deprecation window only.
+//
+// CRITICAL: mirror the bash cc_policy() pattern of setting CLAUDE_POLICY_DB
+// from CLAUDE_PROJECT_DIR before shelling out. Without this, node code
+// bypasses project scoping and reads from the default DB path.
+// (DEC-CONFIG-AUTHORITY-001 risk #3)
+function readEnforcementConfig(cwd, key) {
+  const env = buildPolicyEnv(cwd);
   try {
     const out = execFileSync(
       "python3",
@@ -614,7 +654,7 @@ function emitCodexReviewEventSync(cwd, workflowId, verdict, reason) {
     execFileSync(
       "python3",
       args,
-      { cwd, timeout: 5000, encoding: "utf8" }
+      { cwd, env: buildPolicyEnv(cwd), timeout: 5000, encoding: "utf8" }
     );
   } catch {
     // Advisory; never block routing on event emission errors (DEC-AD-003)
@@ -627,9 +667,13 @@ function main() {
   const input = readHookInput();
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getConfig(workspaceRoot);
 
   const isSubagentStop = Boolean(input.agent_type);
+
+  if (isSubagentStop) {
+    logNote("[review-gate] SubagentStop broad review retired; use role-specific Codex critics.");
+    return;
+  }
 
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), input));
   const runningJob = jobs.find((job) => job.status === "queued" || job.status === "running");
@@ -637,80 +681,21 @@ function main() {
     ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
 
-  // ENFORCE-RCA-14 / DEC-ENFORCE-REVIEW-GATE-002: the SubagentStop review path
-  // writes codex_stop_review events for user-facing review observability. The
-  // dispatch engine does NOT read these events — workflow auto_dispatch is
-  // determined by runtime workflow facts only (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
-  // The SubagentStop path still runs unconditionally so the events table stays
-  // populated for supervisory review tooling.
-  //
   // `config.stopReviewGate` continues to gate only the USER-FACING regular
   // Stop path (the interactive block at turn-end that the user opts into
   // via `codex setup --enable-review-gate`).
   // DEC-CONFIG-AUTHORITY-001: read toggles from policy engine, not flat-file state.
   // readEnforcementConfig returns null on error or missing — fail-CLOSED to "true"
   // (enforce by default) per DEC-REGULAR-STOP-REVIEW-001.
-  const subagentReviewEnabled = (readEnforcementConfig(cwd, "review_gate_subagent_stop") || "true") === "true";
   const regularReviewEnabled  = (readEnforcementConfig(cwd, "review_gate_regular_stop")  || "true") === "true";
 
-  if (isSubagentStop && !subagentReviewEnabled) {
-    logNote("Review gate (SubagentStop) disabled by enforcement_config");
-    return;
-  }
-  if (!isSubagentStop && !regularReviewEnabled) {
+  if (!regularReviewEnabled) {
     logNote(runningTaskNote);
     return;
   }
 
-  // For guardian SubagentStop, only review after successful merge/commit.
-  // deny/skip loops back to implementer — reviewing is wasteful there.
-  if (isSubagentStop && String(input.agent_type).toLowerCase() === "guardian") {
-    const responseText = String(input.assistant_response ?? input.response ?? input.last_assistant_message ?? "").toLowerCase();
-    const landingMatch = responseText.match(/landing_result:\s*(committed|merged|denied|skipped)/i);
-    const landingResult = landingMatch?.[1]?.toLowerCase();
-    if (landingResult === "denied" || landingResult === "skipped" || !landingResult) {
-      logNote(`[review-gate] Guardian ${landingResult || "no-landing"} — skipping review.`);
-      return;
-    }
-  }
-
   const review = runStopReview(cwd, input);
-  const workflowId = input.workflow_id || "";
-
-  if (isSubagentStop) {
-    const agentType = String(input.agent_type || "unknown").toLowerCase();
-    const provider = review.provider || "unknown";
-
-    // Write verdict to events table for review observability/statusline/supervisory consumers
-    const verdict = review.ok || review.infraFailure ? "ALLOW" : "BLOCK";
-    const reason = review.infraFailure
-      ? `infra failure: ${review.reason}`
-      : review.reason || (review.ok ? "work looks good" : "review found issues");
-    emitCodexReviewEventSync(cwd, workflowId, verdict, reason);
-
-    // Infra failure → don't block the chain
-    if (review.infraFailure) {
-      emitDecision({ additionalContext: `Review gate (${provider}, SubagentStop/${agentType}): infra failure — allowing dispatch. ${review.reason}` });
-      return;
-    }
-
-    // PASS → let AUTO_DISPATCH proceed
-    if (review.ok) {
-      emitDecision({ additionalContext: `Review gate (${provider}, SubagentStop/${agentType}): PASS` });
-      return;
-    }
-
-    // CONTINUE → inject findings as context, let post-task.sh still run.
-    // decision:"block" was too aggressive (DEC-ENFORCE-REVIEW-GATE-001) — it
-    // killed the entire SubagentStop hook chain, preventing post-task.sh from
-    // emitting AUTO_DISPATCH. Instead, use systemMessage so the orchestrator
-    // sees both the review findings AND the dispatch directive. The orchestrator
-    // should address CONTINUE findings before following AUTO_DISPATCH.
-    emitDecision({
-      systemMessage: `REVIEW_GATE_CONTINUE: [${provider}] Review found issues with ${agentType}'s work. Address these before following AUTO_DISPATCH:\n\n${review.reason}`
-    });
-    return;
-  }
+  const workflowId = resolveWorkflowId(cwd, input);
 
   // Infrastructure failures → allow with warning
   if (!review.ok && review.infraFailure) {
@@ -724,6 +709,7 @@ function main() {
   // CONTINUE → block, feed findings to Claude
   if (!review.ok) {
     const provider = review.provider || "reviewer";
+    emitCodexReviewEventSync(cwd, workflowId, "BLOCK", review.reason || "review found issues");
     emitDecision({
       decision: "block",
       reason: runningTaskNote
@@ -734,6 +720,7 @@ function main() {
   }
 
   // PASS — both models agree
+  emitCodexReviewEventSync(cwd, workflowId, "ALLOW", review.reason || "work looks good");
   if (review.reason) {
     logNote(`Review gate (${review.provider || "reviewer"}) PASS:\n${review.reason}`);
   }

@@ -8,10 +8,11 @@
 # Pre-condition:  evaluation_state = idle (no evaluator clearance)
 # Action:         user submits prompt "verified"
 # Post-condition: evaluation_state = idle (unchanged)
-#                 proof_state = idle (no write from prompt-submit.sh)
+#                 proof CLI remains retired
 #
-# The old behaviour (pre-TKT-024) was: proof_state pending → "verified"
-# prompt → proof_state = "verified". That write is removed.
+# The old behaviour (pre-TKT-024) was: proof_state pending -> "verified"
+# prompt -> proof_state = "verified". The proof store and prompt-side write
+# are both removed.
 #
 # @decision DEC-EVAL-004
 # @title prompt-submit.sh no longer writes any readiness state
@@ -44,13 +45,8 @@ git -C "$TMP_DIR" config user.name "T"
 git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 git -C "$TMP_DIR" checkout -b "$BRANCH" -q
 
-# Provision schema — evaluation_state and proof_state both idle
+# Provision schema — evaluation_state idle
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-
-# Simulate old pre-cutover state: proof_state=pending (as if the evaluator had set it)
-# In the old flow this would be flipped to "verified" by the prompt.
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    proof set "$WF_ID" "pending" >/dev/null 2>&1
 
 # Submit the "verified" prompt
 PAYLOAD=$(jq -n --arg prompt "verified" '{prompt: $prompt}')
@@ -62,13 +58,11 @@ output=$(printf '%s' "$PAYLOAD" \
     exit 1
 }
 
-# proof_state must remain "pending" (not flipped to "verified")
-PROOF_ROW=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    proof get "$WF_ID" 2>/dev/null)
-PROOF_STATUS=$(printf '%s' "$PROOF_ROW" | jq -r '.status // "idle"' 2>/dev/null || echo "idle")
-
-if [[ "$PROOF_STATUS" == "verified" ]]; then
-    echo "FAIL: $TEST_NAME — prompt-submit.sh still flipped proof_state to 'verified' (TKT-024 regression)"
+# proof_state is retired; the old CLI must not be available for the prompt
+# path to mutate.
+if CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+    proof get "$WF_ID" >/dev/null 2>&1; then
+    echo "FAIL: $TEST_NAME — retired proof CLI is still available"
     exit 1
 fi
 

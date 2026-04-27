@@ -339,6 +339,20 @@ class TestPreAgentCarrierWriteNegative:
         assert "workflow stage-packet" in reason
         assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
+    def test_guardian_without_contract_gets_compound_stage_guidance(self, carrier_db):
+        payload = _agent_payload()
+        payload["tool_input"]["subagent_type"] = "guardian"
+        payload["tool_input"]["prompt"] = _PROMPT_WITHOUT_BLOCK
+        rc, out, _err = _run_pre_agent(payload, carrier_db)
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = parsed["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "guardian:land" in reason
+        assert "guardian:provision" in reason
+        assert "unknown active stage" not in reason
+        assert not _row_exists(carrier_db, _SESSION_ID, "guardian")
+
     def test_contract_stage_with_general_purpose_subagent_is_denied(self, carrier_db):
         payload = _agent_payload()
         payload["tool_input"]["subagent_type"] = "general-purpose"

@@ -324,6 +324,8 @@ def test_deny_reason_includes_subagent_type():
     decision = check(req)
     assert decision is not None
     assert "guardian" in decision.reason
+    assert "guardian:land" in decision.reason
+    assert "guardian:provision" in decision.reason
 
 
 # ---------------------------------------------------------------------------

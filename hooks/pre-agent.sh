@@ -105,7 +105,7 @@ if [[ "$ISOLATION" != "worktree" ]]; then
     _SUBAGENT_TYPE=$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || echo "")
     _BLOCK_LINE=$(printf '%s' "$_PROMPT_TEXT" | grep '^CLAUDEX_CONTRACT_BLOCK:' 2>/dev/null | head -1 || echo "")
     _CANONICAL_DISPATCH_TYPE=""
-    _BOOTSTRAP_GUIDANCE=$(_python_authority "dispatch_bootstrap_guidance" "" 2>/dev/null || echo "")
+    _BOOTSTRAP_GUIDANCE=$(_python_authority "dispatch_bootstrap_guidance" "$_SUBAGENT_TYPE" 2>/dev/null || echo "")
     if [[ -n "$_SUBAGENT_TYPE" ]]; then
         _CANONICAL_DISPATCH_TYPE=$(_python_authority "canonical_dispatch_subagent_type" "$_SUBAGENT_TYPE" 2>/dev/null || echo "")
     fi

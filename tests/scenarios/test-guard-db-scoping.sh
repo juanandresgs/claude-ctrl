@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# test-guard-db-scoping.sh: proves guard.sh Check 10 reads proof from the
+# test-guard-db-scoping.sh: proves guard.sh Check 10 reads evaluation state from the
 # project-scoped DB, not ~/.claude/state.db.
 #
-# Sub-test 1 (positive): proof set in project DB → guard allows
-# Sub-test 2 (negative): proof set in home DB only → guard denies
+# Sub-test 1 (positive): evaluation set in project DB → guard allows
+# Sub-test 2 (negative): evaluation set in home DB only → guard denies
 #
 # @decision DEC-GUARD-015
-# @title Guard proof reads are project-scoped
+# @title Guard evaluation reads are project-scoped
 # @status accepted
 # @rationale DEC-SELF-003 requires all proof reads/writes for in-project work
 #   to resolve to the same project-scoped DB. This test proves the positive
-#   and negative paths: proof in the project DB satisfies the guard; proof
+#   and negative paths: evaluation in the project DB satisfies the guard; evaluation
 #   only in the home DB does not.
 set -euo pipefail
 
@@ -40,9 +40,9 @@ setup() {
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
     CLAUDE_POLICY_DB="$HOME_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 
-    # Common gates in project DB: guardian role, test-status, workflow binding + scope
+    # Common gates in project DB: guardian:land role, test-status, workflow binding + scope
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
+        marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$PROJECT_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
@@ -77,7 +77,7 @@ if [[ -n "$output" ]]; then
     decision=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || echo "")
     if [[ "$decision" == "deny" ]]; then
         reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || echo "")
-        echo "FAIL: $TEST_NAME sub-test 1 — expected allow with project DB proof, got deny"
+        echo "FAIL: $TEST_NAME sub-test 1 — expected allow with project DB evaluation, got deny"
         echo "  reason: $reason"
         exit 1
     fi
@@ -93,7 +93,7 @@ CLAUDE_POLICY_DB="$HOME_DB" python3 "$RUNTIME_ROOT/cli.py" evaluation set "$WF_I
 output=$(run_guard)
 decision=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || echo "")
 if [[ "$decision" != "deny" ]]; then
-    echo "FAIL: $TEST_NAME sub-test 2 — expected deny (home DB proof should not satisfy project guard), got '$decision'"
+    echo "FAIL: $TEST_NAME sub-test 2 — expected deny (home DB evaluation should not satisfy project guard), got '$decision'"
     echo "  output: $output"
     exit 1
 fi

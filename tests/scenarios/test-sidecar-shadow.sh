@@ -9,7 +9,7 @@
 #   4. Do NOT add rows to any canonical table
 #
 # Production sequence exercised:
-#   1. Populate db with proof, marker, event, worktree, dispatch, trace data
+#   1. Populate db with evaluation, marker, event, worktree, trace data
 #   2. Run cc-policy sidecar observatory    — verify JSON health report
 #   3. Run cc-policy sidecar search <term> — verify matching results
 #   4. Run cc-policy sidecar list           — verify registry output
@@ -47,15 +47,13 @@ SESSION_ID="sidecar-test-$$"
 # -----------------------------------------------------------------------
 $CC schema ensure >/dev/null 2>&1
 
-$CC proof set   "wf-sidecar-test" pending >/dev/null 2>&1
-$CC marker set  "agent-sidecar-test" "implementer" >/dev/null 2>&1
+$CC evaluation set "wf-sidecar-test" pending >/dev/null 2>&1
+$CC marker set "agent-sidecar-test" "implementer" \
+    --project-root "$TMP_DIR" --workflow-id "wf-sidecar-test" >/dev/null 2>&1
 $CC event emit  "test_event" --source "test-sidecar-shadow.sh" \
                              --detail "setup event for sidecar test" >/dev/null 2>&1
 $CC worktree register "/tmp/wt-sidecar-test" "feature/tkt-015" \
                       --ticket "TKT-015" >/dev/null 2>&1
-# DEC-WS6-001: dispatch_queue enqueue removed (non-authoritative). Sidecar
-# test does not depend on dispatch state; this line was setup noise.
-$CC dispatch cycle-start "TKT-015" >/dev/null 2>&1
 $CC trace start "$SESSION_ID" --role "implementer" --ticket "TKT-015" >/dev/null 2>&1
 $CC trace manifest "$SESSION_ID" file_write \
     --path "sidecars/observatory/observe.py" \
@@ -63,11 +61,11 @@ $CC trace manifest "$SESSION_ID" file_write \
 $CC trace end "$SESSION_ID" --summary "TKT-015 sidecars implemented" >/dev/null 2>&1
 
 # Capture row counts before any sidecar runs
-count_proof=$(python3 -c "
+count_eval=$(python3 -c "
 import sqlite3, os
 db='$TEST_DB'
 conn=sqlite3.connect(db)
-print(conn.execute('SELECT COUNT(*) FROM proof_state').fetchone()[0])
+print(conn.execute('SELECT COUNT(*) FROM evaluation_state').fetchone()[0])
 conn.close()
 ")
 count_markers=$(python3 -c "
@@ -86,12 +84,6 @@ count_worktrees=$(python3 -c "
 import sqlite3
 conn=sqlite3.connect('$TEST_DB')
 print(conn.execute('SELECT COUNT(*) FROM worktrees').fetchone()[0])
-conn.close()
-")
-count_dispatch=$(python3 -c "
-import sqlite3
-conn=sqlite3.connect('$TEST_DB')
-print(conn.execute('SELECT COUNT(*) FROM dispatch_queue').fetchone()[0])
 conn.close()
 ")
 count_traces=$(python3 -c "
@@ -115,7 +107,6 @@ obs_status=$(echo "$obs_result" | jq -r '.status // empty' 2>/dev/null)
 obs_name=$(echo "$obs_result"   | jq -r '.name // empty'   2>/dev/null)
 obs_health=$(echo "$obs_result" | jq -r '.health.ok | tostring' 2>/dev/null)
 obs_at=$(echo "$obs_result"     | jq -r '.observed_at // 0' 2>/dev/null)
-obs_proofs=$(echo "$obs_result" | jq -r '.proof_count // -1' 2>/dev/null)
 obs_agents=$(echo "$obs_result" | jq -r '.active_agents // -1' 2>/dev/null)
 obs_wts=$(echo "$obs_result"    | jq -r '.worktree_count // -1' 2>/dev/null)
 
@@ -136,11 +127,6 @@ fi
 
 if [[ "$obs_at" -le 0 ]]; then
     echo "  FAIL: observatory — observed_at missing or zero: $obs_result"
-    FAILURES=$((FAILURES + 1))
-fi
-
-if [[ "$obs_proofs" -lt 1 ]]; then
-    echo "  FAIL: observatory — proof_count expected >= 1, got: $obs_proofs"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -250,10 +236,10 @@ fi
 # -----------------------------------------------------------------------
 # Test 6: Read-only enforcement — row counts unchanged after sidecar runs
 # -----------------------------------------------------------------------
-new_proof=$(python3 -c "
+new_eval=$(python3 -c "
 import sqlite3
 conn=sqlite3.connect('$TEST_DB')
-print(conn.execute('SELECT COUNT(*) FROM proof_state').fetchone()[0])
+print(conn.execute('SELECT COUNT(*) FROM evaluation_state').fetchone()[0])
 conn.close()
 ")
 new_markers=$(python3 -c "
@@ -274,12 +260,6 @@ conn=sqlite3.connect('$TEST_DB')
 print(conn.execute('SELECT COUNT(*) FROM worktrees').fetchone()[0])
 conn.close()
 ")
-new_dispatch=$(python3 -c "
-import sqlite3
-conn=sqlite3.connect('$TEST_DB')
-print(conn.execute('SELECT COUNT(*) FROM dispatch_queue').fetchone()[0])
-conn.close()
-")
 new_traces=$(python3 -c "
 import sqlite3
 conn=sqlite3.connect('$TEST_DB')
@@ -293,13 +273,13 @@ print(conn.execute('SELECT COUNT(*) FROM trace_manifest').fetchone()[0])
 conn.close()
 ")
 
-# proof_state, agent_markers, events, worktrees, dispatch_queue, trace_manifest
+# evaluation_state, agent_markers, events, worktrees, trace_manifest
 # must be unchanged. traces will have grown because we added 15 sidecar-limit-test
 # traces above — those were written by cc-policy trace start (not sidecars), so
 # we only check the tables that sidecars could potentially write to but shouldn't.
 
-if [[ "$new_proof" -ne "$count_proof" ]]; then
-    echo "  FAIL: read-only — proof_state rows changed: before=$count_proof after=$new_proof"
+if [[ "$new_eval" -ne "$count_eval" ]]; then
+    echo "  FAIL: read-only — evaluation_state rows changed: before=$count_eval after=$new_eval"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -315,11 +295,6 @@ fi
 
 if [[ "$new_worktrees" -ne "$count_worktrees" ]]; then
     echo "  FAIL: read-only — worktrees rows changed: before=$count_worktrees after=$new_worktrees"
-    FAILURES=$((FAILURES + 1))
-fi
-
-if [[ "$new_dispatch" -ne "$count_dispatch" ]]; then
-    echo "  FAIL: read-only — dispatch_queue rows changed: before=$count_dispatch after=$new_dispatch"
     FAILURES=$((FAILURES + 1))
 fi
 

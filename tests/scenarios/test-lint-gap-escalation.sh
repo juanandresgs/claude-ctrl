@@ -31,7 +31,7 @@ git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" \
     python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1 || true
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" \
-    python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "implementer" >/dev/null 2>&1 || true
+    python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "implementer" --project-root "$TMP_DIR" >/dev/null 2>&1 || true
 
 # Add MASTER_PLAN.md so plan-check passes
 echo "# Plan" > "$TMP_DIR/MASTER_PLAN.md"

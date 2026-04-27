@@ -119,7 +119,7 @@ parse:
 **UserPromptSubmit** — hooks/prompt-submit.sh reads:
 - `.prompt` — the user's prompt text string
 
-**Stop** — hooks/surface.sh, session-summary.sh, forward-motion.sh read:
+**Stop** — hooks/surface.sh, session-summary.sh read:
 - No specific fields required from the payload
 
 ## Captured Payload Storage

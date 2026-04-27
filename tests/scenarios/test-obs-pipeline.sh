@@ -219,8 +219,9 @@ else
     (( FAIL++ )) || true
 fi
 
-# Verify legacy keys still present
-for key in name observed_at health proof_count active_agents; do
+# Verify legacy keys still present. proof_count was removed with
+# DEC-CATEGORY-C-PROOF-RETIRE-001.
+for key in name observed_at health active_agents pending_dispatches worktree_count recent_event_count; do
     val=$(printf '%s' "$sidecar_out" | jq --arg k "$key" 'has($k)' 2>/dev/null || echo "false")
     if [[ "$val" == "true" ]]; then
         echo "PASS: $TEST_NAME — scenario 4: sidecar report has legacy key '$key'"

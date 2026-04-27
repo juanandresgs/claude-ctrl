@@ -26,15 +26,13 @@ WHO gate: write authority is resolved via ``authority_registry.capabilities_for(
 Title: Regular Stop review gate toggled via enforcement_config, not state.json
 Status: accepted
 Rationale: The codex plugin's state.json previously held stopReviewGate as
-  the sole authority for whether the regular-Stop review gate ran. This
-  created a split authority: the SubagentStop path was unconditional (RCA-14)
-  but the regular-Stop path read from a plugin-local file. By moving the
-  toggle into enforcement_config, both paths are controlled by the same
-  canonical authority with the same scope precedence semantics. Because the
-  regular Stop gate is a user-facing preference rather than a dispatch-safety
-  control, the orchestrator/user path (empty actor_role) may write this one
-  key directly. The plugin state.json is kept only as a compatibility mirror
-  during the deprecation window.
+  the sole authority for whether the regular-Stop review gate ran. Moving that
+  toggle into enforcement_config makes the runtime the canonical authority with
+  normal scope precedence semantics. Because the regular Stop gate is a
+  user-facing preference rather than a dispatch-safety control, the
+  orchestrator/user path (empty actor_role) may write this one key directly.
+  The plugin state.json is kept only as a compatibility mirror during the
+  deprecation window.
 """
 
 from __future__ import annotations

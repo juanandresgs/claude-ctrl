@@ -7,7 +7,7 @@
 # binds the workflow and planner sets scope → commit allowed (at Check 12 level).
 #
 # Gates exercised:
-#   Check 3: WHO — guardian role (satisfied for both deny and allow paths)
+#   Check 3: WHO — guardian:land role (satisfied for both deny and allow paths)
 #   Check 9: test-status = pass (satisfied)
 #   Check 10: proof verified (satisfied via runtime SQLite)
 #   Check 12A: workflow binding must exist → deny (no binding), allow (after bind)
@@ -46,7 +46,7 @@ git -C "$TMP_DIR" checkout -b "$BRANCH" -q
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 
 # Satisfy Check 3: guardian role
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
 
 # Satisfy test gate: test-status = pass via runtime (policy engine reads SQLite)
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from runtime.core import contracts
+from runtime.core import completions as completions_mod
 from runtime.core import decision_work_registry as dwr
 from runtime.core import evaluation as evaluation_mod
 from runtime.core import goal_contract_codec
@@ -94,6 +95,14 @@ def _seed(conn: sqlite3.Connection) -> None:
     )
 
 
+def _valid_reviewer_payload(verdict: str = "ready_for_guardian") -> dict:
+    return {
+        "REVIEW_VERDICT": verdict,
+        "REVIEW_HEAD_SHA": "abc123def",
+        "REVIEW_FINDINGS_JSON": '{"findings": []}',
+    }
+
+
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
@@ -141,6 +150,41 @@ def test_build_stage_packet_rejects_mismatched_explicit_worktree(conn, tmp_path:
             worktree_path=str(tmp_path / "other"),
             stage_id="implementer",
         )
+
+
+def test_build_stage_packet_bare_guardian_without_completion_fails_actionably(conn):
+    with pytest.raises(ValueError, match="ambiguous guardian stage") as exc:
+        build_stage_packet(
+            conn,
+            workflow_id="wf-stage",
+            stage_id="guardian",
+        )
+
+    message = str(exc.value)
+    assert "guardian:land" in message
+    assert "guardian:provision" in message
+    assert "unknown active stage" not in message
+
+
+def test_build_stage_packet_bare_guardian_after_reviewer_ready_resolves_land(conn):
+    completions_mod.submit(
+        conn,
+        lease_id="lease-reviewer",
+        workflow_id="wf-stage",
+        role="reviewer",
+        payload=_valid_reviewer_payload("ready_for_guardian"),
+    )
+
+    result = build_stage_packet(
+        conn,
+        workflow_id="wf-stage",
+        stage_id="guardian",
+    )
+
+    assert result["stage_id"] == "guardian:land"
+    assert result["agent_tool_spec"]["subagent_type"] == "guardian"
+    assert result["dispatch_contract"]["stage_id"] == "guardian:land"
+    assert "--stage-id guardian:land" in result["commands"]["stage_packet"]
 
 
 def test_build_stage_packet_includes_contracts_scope_and_runtime_state(conn):
@@ -201,6 +245,86 @@ def test_workflow_stage_packet_cli_returns_json(tmp_path: Path):
     assert payload["agent_tool_spec"]["subagent_type"] == "implementer"
     assert payload["commands"]["work_item_get"] == "cc-policy workflow work-item-get WI-STAGE-1"
     assert payload["scope_parity"]["matches_work_item_scope"] is True
+
+
+def test_workflow_stage_packet_cli_bare_guardian_after_reviewer_ready_resolves_land(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _seed(conn)
+    completions_mod.submit(
+        conn,
+        lease_id="lease-reviewer",
+        workflow_id="wf-stage",
+        role="reviewer",
+        payload=_valid_reviewer_payload("ready_for_guardian"),
+    )
+    conn.commit()
+    conn.close()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "stage-packet",
+            "wf-stage",
+            "--stage-id",
+            "guardian",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CLAUDE_POLICY_DB": str(db_path),
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(_REPO_ROOT),
+    )
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["stage_id"] == "guardian:land"
+    assert payload["agent_tool_spec"]["subagent_type"] == "guardian"
+
+
+def test_workflow_stage_packet_cli_bare_guardian_without_completion_fails_actionably(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _seed(conn)
+    conn.commit()
+    conn.close()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "stage-packet",
+            "wf-stage",
+            "--stage-id",
+            "guardian",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CLAUDE_POLICY_DB": str(db_path),
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode != 0
+    payload = json.loads(proc.stderr)
+    assert payload["status"] == "error"
+    assert "ambiguous guardian stage" in payload["message"]
+    assert "guardian:land" in payload["message"]
+    assert "guardian:provision" in payload["message"]
+    assert "unknown active stage" not in payload["message"]
 
 
 def test_workflow_stage_packet_cli_allows_explicit_workflow_id_outside_git(tmp_path: Path):
