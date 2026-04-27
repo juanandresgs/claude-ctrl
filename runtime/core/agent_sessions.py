@@ -1,13 +1,11 @@
 """Runtime-owned agent_session domain authority.
 
-Closes the final §2a model-symmetry gap per
-``ClauDEX/PHASE2B_STATUS_2026-04-17_next_wave_seat_domain.md``: with
-``seats`` promoted at ``e982d50``, ``agent_session`` was the last
-supervision primitive whose writes still lived inside
-``dispatch_hook.py`` as an inline ``INSERT OR IGNORE INTO
-agent_sessions`` statement.  This module gives the runtime a
-first-class state machine for session lifecycle so transitions cannot
-be forgotten or silently duplicated.
+Closes the final §2a model-symmetry gap: with ``seats`` promoted at
+``e982d50``, ``agent_session`` was the last supervision primitive whose
+writes still lived inside ``dispatch_hook.py`` as an inline
+``INSERT OR IGNORE INTO agent_sessions`` statement. This module gives the
+runtime a first-class state machine for session lifecycle so transitions
+cannot be forgotten or silently duplicated.
 
 Authority scope
 ---------------

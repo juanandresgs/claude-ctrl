@@ -27,12 +27,12 @@ governs.
   `.statusline-cache`, `.audit-log`) have been eliminated from hot paths.
   `.agent-findings` remains active (written by check-guardian.sh, read by
   prompt-submit.sh and compact-preserve.sh).
-- The current ClauDEX supervision surfaces in [`.codex/`](.codex/),
-  [ClauDEX/](ClauDEX/), and `scripts/claudex-*` are containment scaffolding to
-  keep Codex in the driver seat during cutover. They are not the target
-  permanent authority. The target model is a runtime-owned supervision fabric
-  with transport adapters (`tmux`, MCP, or provider-native control) behind one
-  canonical state machine.
+- The current Codex review surface lives in `sidecars/codex-review/` and
+  `hooks/implementer-critic.sh`, with `.codex/prompts/` kept as public-safe
+  review guidance. Private bridge/watchdog/stop-loop machinery is not part of
+  the public authority surface. The target model is a runtime-owned supervision
+  fabric with transport adapters (`tmux`, MCP, or provider-native control)
+  behind one canonical state machine.
 - The statusline HUD reads from `cc-policy statusline snapshot` -- a runtime
   projection, not a separate authority.
 - Dispatch emission flows through `post-task.sh` into the `dispatch_queue` and
@@ -8579,7 +8579,7 @@ the SOURCE_EXTENSIONS classifier sets.
 fix to prove the flip).**
 
 ```bash
-cd /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork
+cd /path/to/claude-ctrl
 jq -n --arg path "$PWD/plugins/marketplaces/openai-codex/plugins/codex/scripts/stop-review-gate-hook.mjs" \
   '{"event_type":"Write","tool_name":"Write","tool_input":{"file_path":$path},"cwd":"'"$PWD"'","actor_role":"","actor_id":""}' \
 | python3 runtime/cli.py evaluate | jq '{action, policy_name}'
@@ -10091,7 +10091,7 @@ Expected state authorities touched:
    #33 (tester workflow_id), and #34 (worktree remove) each get
    their own chain. Even if the implementer notices a two-line fix
    to #32 while editing an adjacent file, the fix does not belong
-   in this commit — file a separate task via `/backlog`.
+   in this commit — file a separate task via the backlog skill.
 
 **Wave structure.**
 
@@ -10266,7 +10266,7 @@ commit `c7a3109` against the live installed harness:
   docs, not just patch these three. The delta produced during planning is
   documented inline in P0-H below.
 - **The leaked fixture marker:** The repo-local state DB at
-  `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`
+  `/path/to/claude-ctrl/.claude/state.db`
   contains an active row in `agent_markers`:
   `agent_id='foo', role='tester', is_active=1, status='active',
   project_root='/private/tmp/project', workflow_id=NULL, started_at=1775612185`.
@@ -10499,7 +10499,7 @@ non-root paths.
 ##### DEC-PHASE0-008: Leaked fixture marker is deactivated, root cause is backlog
 
 The active `agent_id='foo'` row in
-`/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`'s
+`/path/to/claude-ctrl/.claude/state.db`'s
 `agent_markers` table is a fixture leak — a unit test created the marker
 against the live project DB instead of an isolated test DB. Implementer for
 P0-G runs:
@@ -10508,7 +10508,7 @@ UPDATE agent_markers
 SET is_active = 0, status = 'expired', stopped_at = strftime('%s','now')
 WHERE agent_id = 'foo' AND project_root = '/private/tmp/project';
 ```
-against `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`.
+against `/path/to/claude-ctrl/.claude/state.db`.
 
 **Decision:** Phase 0 deactivates the marker (one-shot cleanup). The
 underlying defect (test fixtures writing to the live state DB) is filed as a
@@ -10702,7 +10702,7 @@ on top of c7a3109).
 - **Acceptance criteria:**
   - After implementer runs the cleanup, the query
     `SELECT count(*) FROM agent_markers WHERE agent_id='foo' AND is_active=1`
-    against `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`
+    against `/path/to/claude-ctrl/.claude/state.db`
     returns 0.
   - The deactivation uses an UPDATE (not a DELETE) — the historical row is
     preserved as evidence with `is_active=0, status='expired',
@@ -11005,7 +11005,7 @@ the runtime enforces.
 - `--required`: `[]`
 - `--forbidden`: universal Phase 0 forbidden list AND every source file.
   P0-G may invoke `sqlite3` against
-  `/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db`
+  `/path/to/claude-ctrl/.claude/state.db`
   AND may invoke `gh issue create`.
 - `--authorities`: `["agent_markers","github_issues"]`
 - **Required evidence:** the verified row in `agent_markers` (captured
@@ -11013,7 +11013,7 @@ the runtime enforces.
   `stopped_at`).
 - **Evaluation Contract (P0-G):**
   1. Before-state: `sqlite3
-     /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/.claude/state.db
+     /path/to/claude-ctrl/.claude/state.db
      "SELECT count(*) FROM agent_markers WHERE agent_id='foo' AND
      is_active=1"` returns 1.
   2. After cleanup: same query returns 0.
@@ -11247,7 +11247,8 @@ needed due to fail-open adapters, stale tests, and bridge integration bugs.
 
 - Standalone hard-fork repository bootstrapped from the patched `v2.0` kernel.
 - Canonical prompt set drafted in `CLAUDE.md` and `agents/`.
-- Successor implementation spec written in `implementation_plan.md`.
+- Initial implementation spec drafted and later retired into the runtime,
+  README, CLAUDE.md, and active tests as the public authority surfaces.
 - Successor runtime, hook-lib, sidecar, and docs directories scaffolded so work
   can land against stable paths.
 

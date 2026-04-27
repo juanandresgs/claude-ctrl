@@ -5,7 +5,7 @@
 # (DEC-COMPACT-001 as updated in Bundle B):
 #
 #   - Default behaviour (no CLAUDEX_ENABLE_COMPACTION_HINTS set) must NOT
-#     emit the "Consider running /compact" line, even when the prior
+#     emit the context-preservation hint, even when the prior
 #     prompt-count threshold (35 or 60 prompts) would otherwise have
 #     fired.
 #   - Opt-in behaviour (CLAUDEX_ENABLE_COMPACTION_HINTS=1) must emit the
@@ -36,7 +36,7 @@ PROMPT_COUNT_FILE="$CLAUDE_DIR/.prompt-count-${SESSION_ID}"
 mkdir -p "$CLAUDE_DIR"
 
 PAYLOAD='{"prompt":"What is the current plan status?"}'
-COMPACT_MARKER="Consider running /compact"
+COMPACT_MARKER="Preserve context before continuing"
 
 fail() {
   echo "FAIL: $TEST_NAME — $1"

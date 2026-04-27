@@ -66,7 +66,7 @@ if has_user_boundary; then
     exit 0
 fi
 
-if printf '%s' "$NORMALIZED" | grep -Eq '(/backlog|backlog|todo|follow[- ]?up|followup|file .*issue|open .*issue|track .*issue|record .*issue|file those|file all|worth filing)'; then
+if printf '%s' "$NORMALIZED" | grep -Eq '(backlog|todo|follow[- ]?up|followup|file .*issue|open .*issue|track .*issue|record .*issue|file those|file all|worth filing)'; then
     emit_block "Stop advisor: do not ask the user to approve obvious bookkeeping. File or track the backlog/follow-up items now, then stop."
     exit 0
 fi

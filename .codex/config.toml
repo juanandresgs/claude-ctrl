@@ -1,38 +1,7 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 
 [features]
-codex_hooks = true
-
-[mcp_servers.claude_bridge]
-command = "node"
-args = ["/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/bridge/claudex-bridge-mcp-server.mjs"]
-env = { BRAID_ROOT = "/Users/turla/Code/braid", BRIDGE_STATE_DIR = "/Users/turla/Code/braid/runs" }
-required = true
-trust_level = "trusted"
-
-[mcp_servers.claude_bridge.tools.send_instruction]
-approval_mode = "approve"
-
-[mcp_servers.claude_bridge.tools.get_status]
-approval_mode = "approve"
-
-[mcp_servers.claude_bridge.tools.get_response]
-approval_mode = "approve"
-
-[mcp_servers.claude_bridge.tools.wait_for_response]
-approval_mode = "approve"
-
-[mcp_servers.claude_bridge.tools.wait_for_codex_review]
-approval_mode = "approve"
-
-[mcp_servers.claude_bridge.tools.get_conversation]
-approval_mode = "approve"
-
-[mcp_servers.claude_bridge.tools.get_worker_observer]
-approval_mode = "approve"
-
-[projects."/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork"]
-trust_level = "trusted"
+codex_hooks = false
 
 [plugins."github@openai-curated"]
 enabled = true

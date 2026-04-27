@@ -8,9 +8,9 @@ Rationale: The constitution registry is the mechanical answer to the
   validated". These tests pin:
 
     1. Exact set equality of the concrete entries to the files
-       (11 baseline + later promotions) listed by CUTOVER_PLAN
-       §"Constitution-Level Files" — no more, no fewer. Drift in
-       either direction must fail CI.
+       (public baseline + later promotions) in the runtime-owned closed
+       authority surface — no more, no fewer. Drift in either direction
+       must fail CI.
     2. Every concrete entry resolves to a real tracked repo path
        right now. If a constitution-level file is deleted, renamed, or
        typo'd in the registry, this test catches it before a later
@@ -60,17 +60,13 @@ def _imported_module_names(module) -> set[str]:
     return names
 
 
-# The CUTOVER_PLAN §"Constitution-Level Files" list plus promotions.
-# The 11 baseline entries come verbatim from CUTOVER_PLAN;
-# subsequent phases promoted realized modules to concrete entries.
-# Pinning this set equality remains the primary invariant of the
-# concrete-file surface.
-CUTOVER_PLAN_CONCRETE_FILES: frozenset[str] = frozenset(
+# Runtime-owned closed constitution surface plus promotions. Pinning this
+# set equality remains the primary invariant of the concrete-file surface.
+CONCRETE_CONSTITUTION_FILES: frozenset[str] = frozenset(
     {
         "CLAUDE.md",
         "AGENTS.md",
         "settings.json",
-        "implementation_plan.md",
         "MASTER_PLAN.md",
         "hooks/HOOKS.md",
         "runtime/cli.py",
@@ -100,46 +96,42 @@ CUTOVER_PLAN_CONCRETE_FILES: frozenset[str] = frozenset(
         "runtime/core/projection_reflow.py",
         # Phase 7 Slice 17 memory/retrieval projection compiler:
         "runtime/core/memory_retrieval.py",
-        # cc-policy-who-remediation Slice 1 bridge permission surface authority:
-        "runtime/core/bridge_permissions.py",
     }
 )
 
 
 # ---------------------------------------------------------------------------
-# 1. Exact concrete set equality with CUTOVER_PLAN
+# 1. Exact concrete set equality
 # ---------------------------------------------------------------------------
 
 
 class TestConcreteSetEquality:
-    def test_concrete_paths_are_exactly_the_cutover_plan_list(self):
-        assert cr.CONCRETE_PATHS == CUTOVER_PLAN_CONCRETE_FILES
+    def test_concrete_paths_are_exactly_the_closed_authority_list(self):
+        assert cr.CONCRETE_PATHS == CONCRETE_CONSTITUTION_FILES
 
     def test_concrete_entry_names_match_concrete_paths(self):
         # In this slice the canonical entry name for concrete files is
         # the path itself. This assertion pins that convention.
-        assert cr.CONCRETE_ENTRY_NAMES == CUTOVER_PLAN_CONCRETE_FILES
+        assert cr.CONCRETE_ENTRY_NAMES == CONCRETE_CONSTITUTION_FILES
 
-    def test_concrete_count_is_twenty_five(self):
-        # 11 CUTOVER_PLAN baseline + 1 Phase 2 + 2 Phase 7 S3 +
+    def test_concrete_count_is_twenty_three(self):
+        # 9 public baseline + 1 Phase 2 + 2 Phase 7 S3 +
         # 1 Phase 7 S4 + 4 Phase 7 S5 + 1 Phase 7 S8 (hook_manifest)
         # + 1 Phase 7 S10 (prompt_pack_resolver)
         # + 1 Phase 7 S13 (decision_digest_projection)
         # + 1 Phase 7 S16 (projection_reflow)
-        # + 1 Phase 7 S17 (memory_retrieval)
-        # + 1 cc-policy-who-remediation S1 (bridge_permissions).
-        assert len(cr.concrete_entries()) == 25
+        # + 1 Phase 7 S17 (memory_retrieval).
+        assert len(cr.concrete_entries()) == 23
 
     def test_all_concrete_paths_helper_returns_declaration_order(self):
         ordered = cr.all_concrete_paths()
         # The helper is expected to preserve declaration order: the
-        # CUTOVER_PLAN baseline first, followed by Phase 2
+        # Public baseline first, followed by Phase 2
         # promotions in the order they were added.
         assert ordered == (
             "CLAUDE.md",
             "AGENTS.md",
             "settings.json",
-            "implementation_plan.md",
             "MASTER_PLAN.md",
             "hooks/HOOKS.md",
             "runtime/cli.py",
@@ -160,23 +152,22 @@ class TestConcreteSetEquality:
             "runtime/core/decision_digest_projection.py",
             "runtime/core/projection_reflow.py",
             "runtime/core/memory_retrieval.py",
-            "runtime/core/bridge_permissions.py",
         )
 
     def test_registry_is_tuple(self):
         # Frozen, ordered, immutable.
         assert isinstance(cr.CONSTITUTION_REGISTRY, tuple)
         # Concrete entries come first, planned after. Pin the layout.
-        first_twenty_five = cr.CONSTITUTION_REGISTRY[:25]
-        assert all(e.kind == cr.KIND_CONCRETE for e in first_twenty_five)
-        remaining = cr.CONSTITUTION_REGISTRY[25:]
+        first_twenty_three = cr.CONSTITUTION_REGISTRY[:23]
+        assert all(e.kind == cr.KIND_CONCRETE for e in first_twenty_three)
+        remaining = cr.CONSTITUTION_REGISTRY[23:]
         assert all(e.kind == cr.KIND_PLANNED for e in remaining)
 
     def test_planned_area_set_is_empty_after_slice_17(self):
         # Phase 7 Slice 17 promoted the last planned area
         # (memory_retrieval_compiler_modules) to a concrete entry.
         # From this point forward the planned-area tuple must stay
-        # empty unless a new CUTOVER_PLAN area is explicitly added.
+        # empty unless a new planned area is explicitly added.
         assert cr.planned_areas() == ()
         assert cr.PLANNED_AREA_NAMES == frozenset()
 
@@ -303,7 +294,7 @@ class TestNormalizeRepoPath:
 
     def test_absolute_posix_path_is_rejected(self):
         assert cr.normalize_repo_path("/tmp/CLAUDE.md") is None
-        assert cr.normalize_repo_path("/Users/turla/Code/CLAUDE.md") is None
+        assert cr.normalize_repo_path("/home/user/code/CLAUDE.md") is None
 
     def test_windows_drive_letter_path_is_rejected(self):
         assert cr.normalize_repo_path("C:/code/CLAUDE.md") is None
@@ -336,13 +327,13 @@ class TestNormalizeRepoPath:
 
 class TestIsConstitutionLevel:
     def test_exact_match_for_every_concrete_entry(self):
-        for path in CUTOVER_PLAN_CONCRETE_FILES:
+        for path in CONCRETE_CONSTITUTION_FILES:
             assert cr.is_constitution_level(path) is True, (
                 f"{path} must match is_constitution_level"
             )
 
     def test_dot_slash_prefix_match_for_every_concrete_entry(self):
-        for path in CUTOVER_PLAN_CONCRETE_FILES:
+        for path in CONCRETE_CONSTITUTION_FILES:
             assert cr.is_constitution_level(f"./{path}") is True
 
     def test_backslash_spelling_matches_for_nested_entries(self):
@@ -369,7 +360,7 @@ class TestIsConstitutionLevel:
         # Even if the absolute path ends in a constitution-level name.
         assert cr.is_constitution_level("/tmp/CLAUDE.md") is False
         assert (
-            cr.is_constitution_level("/Users/turla/Code/runtime/cli.py")
+            cr.is_constitution_level("/home/user/code/runtime/cli.py")
             is False
         )
 
@@ -407,7 +398,7 @@ class TestLookupHelpers:
 
     def test_lookup_returns_none_for_any_previously_planned_slug(self):
         # As of Phase 7 Slice 17 the planned-area tuple is empty —
-        # every CUTOVER_PLAN planned area has been promoted to a
+        # every previously planned area has been promoted to a
         # concrete entry. Every previously-planned slug (including
         # the most recent ``memory_retrieval_compiler_modules``)
         # must now resolve to ``None`` via lookup.
@@ -649,41 +640,6 @@ class TestLookupHelpers:
                 f"as of Phase 7 Slice 10"
             )
 
-    def test_bridge_permissions_module_is_concrete(self):
-        """cc-policy-who-remediation Slice 1: bridge_permissions is the
-        sole declarative authority for the ClauDEX bridge permission surface.
-        It follows the same shadow-only pattern as hook_manifest.py and
-        must be registered as a concrete constitution entry so write-scope
-        gates can protect it (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001)."""
-        entry = cr.lookup("runtime/core/bridge_permissions.py")
-        assert entry is not None, (
-            "runtime/core/bridge_permissions.py must be registered in the "
-            "constitution registry as a concrete entry"
-        )
-        assert entry.kind == cr.KIND_CONCRETE
-        assert entry.path == "runtime/core/bridge_permissions.py"
-        assert (
-            cr.is_constitution_level("runtime/core/bridge_permissions.py")
-            is True
-        )
-
-    def test_no_broad_bridge_permissions_planned_slug(self):
-        """No planned-area slug should refer to the bridge permission
-        surface — its authority lives in the concrete
-        ``runtime/core/bridge_permissions.py``
-        (cc-policy-who-remediation Slice 1)."""
-        for slug in cr.PLANNED_AREA_NAMES:
-            assert "bridge_permissions" not in slug, (
-                f"planned slug {slug!r} suggests bridge_permissions is "
-                f"still future — but it is concrete as of "
-                f"cc-policy-who-remediation Slice 1"
-            )
-            assert "bridge_permission" not in slug, (
-                f"planned slug {slug!r} suggests bridge permission surface "
-                f"authority is still future — but the authority lives in "
-                f"runtime/core/bridge_permissions.py"
-            )
-
     def test_lookup_unknown_name_returns_none(self):
         assert cr.lookup("nothing_here") is None
         assert cr.lookup("") is None
@@ -761,92 +717,4 @@ class TestShadowOnlyDiscipline:
         assert runtime_core_imports == set(), (
             f"constitution_registry.py unexpectedly depends on "
             f"{runtime_core_imports}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 8. CUTOVER_PLAN § "Constitution-Level Files" doc-registry parity invariant
-# ---------------------------------------------------------------------------
-
-
-def _parse_cutover_plan_constitution_bullets() -> set[str]:
-    """Parse bullet paths from the ## Constitution-Level Files section of
-    CUTOVER_PLAN.md.
-
-    Returns the set of path strings found as backtick-quoted bullets in that
-    section, stripping any trailing parenthetical annotation.  Each bullet has
-    the form::
-
-        - `runtime/core/foo.py` (parenthetical note…)
-
-    We extract the backtick-quoted token only.
-    """
-    import re
-
-    cutover_plan = _REPO_ROOT / "ClauDEX" / "CUTOVER_PLAN.md"
-    text = cutover_plan.read_text(encoding="utf-8")
-
-    # Locate the section by header, stop at the next ## header.
-    section_match = re.search(
-        r"^## Constitution-Level Files\s*\n(.*?)(?=^## )",
-        text,
-        re.MULTILINE | re.DOTALL,
-    )
-    assert section_match is not None, (
-        "CUTOVER_PLAN.md must contain a '## Constitution-Level Files' section"
-    )
-    section_body = section_match.group(1)
-
-    # Extract every backtick-quoted token that appears on a bullet line.
-    paths: set[str] = set()
-    for line in section_body.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("-"):
-            continue
-        token_match = re.search(r"`([^`]+)`", stripped)
-        if token_match:
-            paths.add(token_match.group(1))
-    return paths
-
-
-class TestCutoverPlanDocRegistryParity:
-    """Mechanically pin that every runtime/core/*.py concrete registry entry
-    is also listed as a bullet in CUTOVER_PLAN.md §"Constitution-Level Files".
-
-    This prevents the declared authority surface from silently lagging the
-    registry again — the failure mode that motivated cc-policy-who-remediation
-    Slice 1 authority-doc reconciliation.
-
-    @decision DEC-CLAUDEX-CONSTITUTION-DOC-PARITY-001
-    Title: CUTOVER_PLAN §"Constitution-Level Files" must include every
-           runtime/core/*.py concrete registry entry
-    Status: active (cc-policy-who-remediation Slice 1)
-    Rationale: The bridge_permissions.py authority was registered in the
-      constitution_registry before the CUTOVER_PLAN doc was updated.  This
-      test makes that class of drift mechanically detectable: CI fails the
-      moment a new runtime/core module is promoted to concrete without the
-      corresponding CUTOVER_PLAN bullet.
-    """
-
-    def test_every_runtime_core_concrete_py_appears_in_cutover_plan_bullets(self):
-        """Every concrete registry entry whose path ends in .py and lives
-        under runtime/core/ must appear verbatim as a bullet path in the
-        CUTOVER_PLAN §"Constitution-Level Files" section."""
-        doc_bullets = _parse_cutover_plan_constitution_bullets()
-
-        registry_runtime_core_paths = {
-            entry.path
-            for entry in cr.concrete_entries()
-            if entry.path is not None
-            and entry.path.startswith("runtime/core/")
-            and entry.path.endswith(".py")
-        }
-
-        missing_from_doc = registry_runtime_core_paths - doc_bullets
-        assert missing_from_doc == set(), (
-            f"The following runtime/core/*.py concrete registry entries are "
-            f"missing from CUTOVER_PLAN.md §'Constitution-Level Files': "
-            f"{sorted(missing_from_doc)}.  Add a bullet for each missing "
-            f"path to reconcile the declared authority surface with the "
-            f"registry."
         )

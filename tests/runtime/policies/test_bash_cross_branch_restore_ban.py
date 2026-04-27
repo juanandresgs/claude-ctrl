@@ -71,7 +71,6 @@ def _impl_req(command: str, scope=None):
 # Baseline scope for slice 8 (mirrors tmp/slice8-scope.json intent)
 _SLICE8_SCOPE = _make_scope(
     forbidden=[
-        "ClauDEX/**",
         "CLAUDE.md",
         "hooks/**",
         "scripts/**",
@@ -123,9 +122,9 @@ class TestDeniesCheckoutRefPathWhenForbidden:
         assert decision.policy_name == "bash_cross_branch_restore_ban"
 
     def test_denies_checkout_with_forbidden_glob_wildcard(self):
-        """git checkout HEAD~3 -- ClauDEX/SUPERVISOR_HANDOFF.md → deny (ClauDEX/** forbidden)."""
+        """git checkout HEAD~3 -- docs/ARCHITECTURE.md → deny (docs/** forbidden)."""
         decision = check(
-            _impl_req("git checkout HEAD~3 -- ClauDEX/SUPERVISOR_HANDOFF.md", scope=_SLICE8_SCOPE)
+            _impl_req("git checkout HEAD~3 -- docs/ARCHITECTURE.md", scope=_SLICE8_SCOPE)
         )
         assert decision is not None
         assert decision.action == "deny"
@@ -193,7 +192,7 @@ class TestDeniesRestoreSourceWorktreePath:
         """--source=/path/to/other/worktree → deny (filesystem source)."""
         decision = check(
             _impl_req(
-                "git restore --source=/Users/turla/Code/other-worktree -- CLAUDE.md",
+                "git restore --source=/home/user/code/other-worktree -- CLAUDE.md",
                 scope=_SLICE8_SCOPE,
             )
         )

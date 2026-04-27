@@ -149,9 +149,9 @@ if [[ -x "$TODO_SCRIPT" ]]; then
     fi
 fi
 
-# --- Detect deferred-work language → suggest /todo ---
+# --- Detect deferred-work language → suggest backlog skill ---
 if echo "$PROMPT" | grep -qiE '\blater\b|\bdefer\b|\bbacklog\b|\beventually\b|\bsomeday\b|\bpark (this|that|it)\b|\bremind me\b|\bcome back to\b|\bfuture\b.*\b(todo|task|idea)\b|\bnote.*(for|to) (later|self)\b'; then
-    CONTEXT_PARTS+=("Deferred-work language detected. Suggest using /backlog to capture this idea so it persists across sessions.")
+    CONTEXT_PARTS+=("Deferred-work language detected. Suggest using the backlog skill to capture this idea so it persists across sessions.")
 fi
 
 # --- Check for plan/implement/status keywords ---
@@ -243,7 +243,7 @@ if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" && -f "$PROMPT_COUNT_FILE" 
     fi
 
     if [[ "$SUGGEST_COMPACT" == "true" ]]; then
-        CONTEXT_PARTS+=("Context management: ${COMPACT_REASON}. Consider running /compact to preserve context and free up the context window.")
+        CONTEXT_PARTS+=("Context management: ${COMPACT_REASON}. Preserve context before continuing if the window is getting tight.")
     fi
 fi
 

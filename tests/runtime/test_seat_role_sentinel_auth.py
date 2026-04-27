@@ -18,8 +18,8 @@ T2 — Narrow AST ratchet on seat-write call sites (3 cases):
     - ONLY ast.Call nodes whose callee is seats.create (via ast.Attribute with
       value.id == 'seats' and attr == 'create') or a bare create() imported from
       runtime.core.seats via 'from runtime.core.seats import create'.
-    - Non-seat role= literals (role='planner' at dispatch_engine.py, role='claude'
-      at lane_topology.py, role='reviewer' at reviewer_convergence.py, etc.) are
+    - Non-seat role= literals (role='planner' at dispatch_engine.py, role='reviewer'
+      at reviewer_convergence.py, etc.) are
       stage/live-role or lane-engine authorities — NOT governed by SEAT_ROLES —
       and are explicitly out of scanner scope.
     - SQL INSERT INTO seats string constants are catalogued for awareness but not
@@ -361,7 +361,7 @@ def make():
         """Scanner must NOT flag role='planner' at a non-seats-create call site.
 
         This proves the narrow scope: role= literals at other call sites
-        (dispatch_engine, reviewer_convergence, lane_topology, etc.) are
+        (dispatch_engine, reviewer_convergence, etc.) are
         stage/live-role or lane-engine authorities and are not in scanner scope.
         """
         synthetic_source = """\

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE="${REMOTE:-https://github.com/juanandresgs/claude-ctrl-hardFork.git}"
+REMOTE="${REMOTE:-https://github.com/juanandresgs/claude-ctrl.git}"
 BRANCH="${BRANCH:-main}"
 TARGET="${TARGET:-$HOME/.claude}"
 BACKUP="${BACKUP:-$HOME/.claude.backup.$(date -u +%Y%m%dT%H%M%SZ)}"
