@@ -11,36 +11,18 @@
 
 **Instructions guide. Hooks enforce. Runtime decides.**
 
-`ClauDEX` is the latest refactor to claude-ctrl to date: a deterministic
-control plane for Claude Code. It turns prompt-level operating principles into
-runtime-checked workflow, policy, dispatch, and landing behavior.
+`ClauDEX` is version 5.0 of `claude-ctrl`: a deterministic control plane for
+Claude Code. It turns prompt-level operating principles into runtime-checked
+workflow, policy, dispatch, review, and landing behavior.
 
-claude-ctrl exists because probabilistic systems cannot effectively govern
-themselves long term. They need deterministic rails when the work matters.
-Prompts carry intent and judgment. Hooks create the enforcement surface.
-Runtime state keeps facts long after context fails.
-
-The original claude-ctrl thesis was right: an instruction that lives only in
-model context is not a constraint. ClauDEX keeps that thesis and updates the
-mechanism to incorporate our learnings so far. In ClauDEX, hooks are boundary
-adapters, while a typed runtime owns the state and decisions behind them.
-
-The name reflects the new dual-coding harness approach: implementer runs are
-now buttressed by a read-only Codex CLI critique until the implementation
-quality reaches convergence. Only then is the output reviewed and surfaced for
-commit.
+The thesis is unchanged: an instruction that lives only in model context is not
+a constraint. ClauDEX keeps prompts as intent, uses hooks as the enforcement
+surface, and moves operational truth into a typed runtime.
 
 This repository is a Claude Code config, a policy runtime, and a self-hosting
 agent-governance experiment. Its purpose is simple: make the correct path
 automatic, make unsafe paths mechanically difficult, and make ambiguous state
 impossible to ignore.
-
-The broader aim is an experiment in modern cybernetics. The system observes
-events, enforces boundaries, records outcomes, and uses that feedback to make
-the next run harder to derail. The end state is **Self-Evaluating
-Self-Adaptive Programs (SESAPs)**: probabilistic systems constrained and
-instrumented so they converge toward desired outcomes under deterministic
-rails. ClauDEX is the fifth iteration.
 
 ---
 
