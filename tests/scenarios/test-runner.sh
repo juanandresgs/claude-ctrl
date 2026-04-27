@@ -37,10 +37,9 @@ echo "----------------------------------------"
 
 for test_script in "${TESTS[@]}"; do
     test_name="$(basename "$test_script" .sh)"
-    chmod +x "$test_script"
 
     # Run test with a 30s timeout to prevent hangs
-    output=$(timeout 30 "$test_script" 2>&1) && exit_code=0 || exit_code=$?
+    output=$(timeout 30 bash "$test_script" 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ "$exit_code" -eq 124 ]]; then
         echo "FAIL: $test_name — timed out after 30s"

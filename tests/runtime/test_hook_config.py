@@ -20,6 +20,7 @@ _STOP_REVIEW = (
     "node $HOME/.claude/sidecars/codex-review/scripts/"
     "stop-review-gate-hook.mjs"
 )
+_STOP_ADVISOR = "$HOME/.claude/hooks/stop-advisor.sh"
 _PLUGIN_MANIFEST = (
     _ROOT
     / "sidecars"
@@ -39,12 +40,13 @@ def _commands(hook_groups: list[dict]) -> list[str]:
     return commands
 
 
-def test_settings_json_wires_stop_review_for_regular_stop_only() -> None:
+def test_settings_json_wires_deterministic_stop_advisor_not_model_gate() -> None:
     settings = json.loads(_SETTINGS.read_text(encoding="utf-8"))
     plugin_hooks = json.loads(_PLUGIN_HOOKS.read_text(encoding="utf-8"))
 
     stop_commands = _commands(settings["hooks"]["Stop"])
-    assert _STOP_REVIEW in stop_commands
+    assert _STOP_ADVISOR in stop_commands
+    assert _STOP_REVIEW not in stop_commands
 
     for group in settings["hooks"]["SubagentStop"]:
         assert _STOP_REVIEW not in _commands([group])

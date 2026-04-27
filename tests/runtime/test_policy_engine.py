@@ -746,7 +746,7 @@ def test_build_context_loads_enforcement_config(conn, tmp_path):
     """build_context() populates ctx.enforcement_config from the DB.
 
     After ensure_schema() seeds the global defaults, build_context() must
-    surface review_gate_regular_stop == 'true' in the context dict. This is
+    surface review_gate_regular_stop == 'false' in the context dict. This is
     the compound-interaction test crossing enforcement_config storage
     (schemas.py / enforcement_config.py) and context resolution
     (policy_engine.build_context).
@@ -759,7 +759,7 @@ def test_build_context_loads_enforcement_config(conn, tmp_path):
         "build_context() did not load enforcement_config from the DB. "
         "Check the enforcement_config loading block in policy_engine.py."
     )
-    assert ctx.enforcement_config["review_gate_regular_stop"] == "true", (
-        f"Expected seeded default 'true', got "
+    assert ctx.enforcement_config["review_gate_regular_stop"] == "false", (
+        f"Expected seeded default 'false', got "
         f"{ctx.enforcement_config['review_gate_regular_stop']!r}"
     )

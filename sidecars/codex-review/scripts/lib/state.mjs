@@ -67,7 +67,7 @@ function defaultState() {
   return {
     version: STATE_VERSION,
     config: {
-      stopReviewGate: true
+      stopReviewGate: false
     },
     jobs: []
   };

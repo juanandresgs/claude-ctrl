@@ -744,13 +744,15 @@ function main() {
     ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
 
-  // `config.stopReviewGate` continues to gate only the USER-FACING regular
-  // Stop path (the interactive block at turn-end that the user opts into
-  // via `codex setup --enable-review-gate`).
+  // `review_gate_regular_stop` gates only the legacy user-facing regular
+  // Stop model review path. The live repo Stop chain no longer wires this
+  // hook by default; hooks/stop-advisor.sh handles deterministic common-sense
+  // triage instead.
   // DEC-CONFIG-AUTHORITY-001: read toggles from policy engine, not flat-file state.
-  // readEnforcementConfig returns null on error or missing — fail-CLOSED to "true"
-  // (enforce by default) per DEC-REGULAR-STOP-REVIEW-001.
-  const regularReviewEnabled  = (readEnforcementConfig(cwd, "review_gate_regular_stop")  || "true") === "true";
+  // readEnforcementConfig returns null on error or missing. Missing means the
+  // legacy model Stop review is disabled; regular Stop must not fall back to a
+  // 15-minute external review by accident.
+  const regularReviewEnabled  = (readEnforcementConfig(cwd, "review_gate_regular_stop")  || "false") === "true";
 
   if (!regularReviewEnabled) {
     logNote(runningTaskNote);

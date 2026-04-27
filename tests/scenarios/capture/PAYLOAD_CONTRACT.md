@@ -208,12 +208,12 @@ Note: `plan-check.sh` skips all Edit calls (`exit 0` immediately for Edit).
 
 ## Stop
 
-**Hooks:** `hooks/surface.sh`, `hooks/session-summary.sh`
+**Hooks:** `hooks/surface.sh`, `hooks/session-summary.sh`, `hooks/stop-advisor.sh`
 **Trigger:** Claude finishes responding
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| *(none confirmed)* | — | — | Stop hooks derive context from filesystem, not payload |
+| `.last_assistant_message` | string | Optional | Used by `stop-advisor.sh` when present |
 
 **[unconfirmed]**: Whether Stop payload contains session metadata, turn count,
 or other fields.

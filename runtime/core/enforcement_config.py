@@ -17,22 +17,21 @@ WHO gate: write authority is resolved via ``authority_registry.capabilities_for(
   and the ``CAN_SET_CONTROL_CONFIG`` capability. The authority registry
   (DEC-CLAUDEX-AUTHORITY-REGISTRY-001) declares planner as the sole stage
   carrying this capability — guardian stages (provision / land) do not carry it.
-  The sole exception is ``review_gate_regular_stop``: it is a user-facing
-  session-end preference, so the orchestrator/user path (empty actor_role)
-  may write it directly. This keeps the canonical authority in the runtime
-  without forcing plugin setup through a planner dispatch.
+  The sole exception is ``review_gate_regular_stop``: it is the legacy explicit
+  regular-Stop model review preference, so the orchestrator/user path (empty
+  actor_role) may write it directly. The default live Stop chain uses
+  deterministic ``hooks/stop-advisor.sh`` instead.
 
 @decision DEC-REGULAR-STOP-REVIEW-001
-Title: Regular Stop review gate toggled via enforcement_config, not state.json
+Title: Legacy regular Stop model review gate toggled via enforcement_config, not state.json
 Status: accepted
 Rationale: The codex plugin's state.json previously held stopReviewGate as
   the sole authority for whether the regular-Stop review gate ran. Moving that
   toggle into enforcement_config makes the runtime the canonical authority with
-  normal scope precedence semantics. Because the regular Stop gate is a
-  user-facing preference rather than a dispatch-safety control, the
-  orchestrator/user path (empty actor_role) may write this one key directly.
-  The plugin state.json is kept only as a compatibility mirror during the
-  deprecation window.
+  normal scope precedence semantics. DEC-STOP-ADVISOR-001 later removed broad
+  model review from the default regular Stop path, so this key is now only a
+  legacy explicit model-review preference. The plugin state.json is kept only
+  as a compatibility mirror during the deprecation window.
 """
 
 from __future__ import annotations
@@ -99,7 +98,7 @@ def set_(
     Actors with CAN_SET_CONTROL_CONFIG may write enforcement-sensitive keys.
     The sole exception is ``review_gate_regular_stop``, which may also be
     written by the orchestrator/user path (empty actor_role) because it is a
-    user-facing regular-Stop preference.
+    legacy regular-Stop preference.
 
     Uses UPSERT so re-setting an existing key updates updated_at atomically.
     """

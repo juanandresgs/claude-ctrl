@@ -355,8 +355,8 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
+            "command": "$HOME/.claude/hooks/stop-advisor.sh",
+            "timeout": 5
           }
         ]
       }

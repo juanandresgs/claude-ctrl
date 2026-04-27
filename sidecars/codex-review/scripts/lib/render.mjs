@@ -186,7 +186,7 @@ export function renderSetupReport(report) {
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
-    `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    `- legacy model Stop review: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""
   ];
 
@@ -327,7 +327,7 @@ export function renderStatusReport(report) {
     "# Codex Status",
     "",
     `Session runtime: ${report.sessionRuntime.label}`,
-    `Review gate: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
+    `Legacy model Stop review: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
     ""
   ];
 
@@ -367,8 +367,8 @@ export function renderStatusReport(report) {
   }
 
   if (report.needsReview) {
-    lines.push("The stop-time review gate is enabled.");
-    lines.push("Ending the session will trigger a fresh Codex adversarial review and block if it finds issues.");
+    lines.push("Legacy model Stop review preference is enabled.");
+    lines.push("The default repo Stop chain remains deterministic unless the legacy model-review hook is explicitly wired.");
   }
 
   return `${lines.join("\n").trimEnd()}\n`;

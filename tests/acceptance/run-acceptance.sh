@@ -7,7 +7,8 @@
 #   3. CLI shell tests (tests/runtime/test_cc_policy.sh)
 #   4. Acceptance-specific tests in this directory
 #
-# Tracks pass/fail counts across all suites.
+# Streams every suite live, tracks pass/fail counts across all suites, and
+# keeps per-suite logs for diagnostics.
 # Records the final result as a cc-policy event.
 # Emits a machine-readable JSON report to stdout at the end.
 # Exits 0 only when every suite and every test passes.
@@ -29,11 +30,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLI="$REPO_ROOT/runtime/cli.py"
+TMP_BASE="${TMPDIR:-/tmp}"
+TMP_BASE="${TMP_BASE%/}"
+LOG_ROOT="$(mktemp -d "$TMP_BASE/claudex-acceptance.XXXXXX")"
+LOG_SEQ=1
 
 # ---- Counters -----------------------------------------------------------------
 TOTAL_PASS=0
 TOTAL_FAIL=0
 SUITE_RESULTS=()   # JSON objects, one per suite
+NEXT_LOG_PATH=""
+STREAMED_LOG=""
+STREAMED_EXIT=0
 
 # ---- Helpers ------------------------------------------------------------------
 record_suite() {
@@ -51,26 +59,59 @@ record_suite() {
         '{name:$name,passed:$p,failed:$f,skipped:$s,status:$st}')")
 }
 
-# Run a command, capture output, parse PASS/FAIL counts from the summary line.
+next_log_path() {
+    local label="$1"
+    local safe_label="${label//[^[:alnum:]_.-]/_}"
+    printf -v NEXT_LOG_PATH '%s/%02d-%s.log' "$LOG_ROOT" "$LOG_SEQ" "$safe_label"
+    LOG_SEQ=$(( LOG_SEQ + 1 ))
+}
+
+stream_command() {
+    local label="$1"; shift
+    local log_path start_ts end_ts elapsed exit_code
+    next_log_path "$label"
+    log_path="$NEXT_LOG_PATH"
+    start_ts="$(date +%s)"
+
+    printf 'START: %s\n' "$label"
+    printf 'LOG: %s\n' "$log_path"
+    printf 'CMD:'
+    printf ' %q' "$@"
+    printf '\n'
+
+    set +e
+    "$@" 2>&1 | tee "$log_path"
+    exit_code="${PIPESTATUS[0]}"
+    set -e
+
+    end_ts="$(date +%s)"
+    elapsed=$(( end_ts - start_ts ))
+    printf 'END: %s exit=%s elapsed=%ss\n' "$label" "$exit_code" "$elapsed"
+
+    STREAMED_LOG="$log_path"
+    STREAMED_EXIT="$exit_code"
+}
+
+# Run a command, stream output, then parse PASS/FAIL counts from the log.
 # Falls back to exit-code based counting if no summary line is found.
 run_counted() {
     local suite_name="$1"; shift
-    local output exit_code=0
-    output=$("$@" 2>&1) || exit_code=$?
-
-    printf '%s\n' "$output"
+    local log_path exit_code
+    stream_command "$suite_name" "$@"
+    log_path="$STREAMED_LOG"
+    exit_code="$STREAMED_EXIT"
 
     # Try to parse a "N passed, M failed" summary
     local passed=0 failed=0
-    if echo "$output" | grep -qE '[0-9]+ passed'; then
-        passed=$(echo "$output" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+    if grep -qE '[0-9]+ passed' "$log_path"; then
+        passed=$(grep -oE '[0-9]+ passed' "$log_path" | tail -1 | grep -oE '[0-9]+' || echo 0)
     fi
-    if echo "$output" | grep -qE '[0-9]+ failed'; then
-        failed=$(echo "$output" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+    if grep -qE '[0-9]+ failed' "$log_path"; then
+        failed=$(grep -oE '[0-9]+ failed' "$log_path" | tail -1 | grep -oE '[0-9]+' || echo 0)
     fi
     # pytest uses "X passed" and "X failed" — also capture that format
-    if echo "$output" | grep -qE 'passed.*in'; then
-        passed=$(echo "$output" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+' || echo "$passed")
+    if grep -qE 'passed.*in' "$log_path"; then
+        passed=$(grep -oE '[0-9]+ passed' "$log_path" | tail -1 | grep -oE '[0-9]+' || echo "$passed")
     fi
 
     # If we got no counts but exit code is nonzero, count whole suite as 1 fail
@@ -83,12 +124,14 @@ run_counted() {
     fi
 
     record_suite "$suite_name" "$passed" "$failed"
+    printf 'COUNTED: %s passed=%s failed=%s log=%s\n' "$suite_name" "$passed" "$failed" "$log_path"
 }
 
 # ---- Report header ------------------------------------------------------------
 printf '=%.0s' {1..60}; printf '\n'
 printf 'Kernel Acceptance Suite — TKT-014\n'
 printf 'Run at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf 'Logs: %s\n' "$LOG_ROOT"
 printf '=%.0s' {1..60}; printf '\n\n'
 
 # ============================================================
@@ -140,20 +183,16 @@ for test_file in "${ACC_TESTS[@]}"; do
         continue
     fi
 
-    chmod +x "$test_path"
-    out=""
-    ec=0
-    out=$(timeout 60 "$test_path" 2>&1) || ec=$?
+    printf '### %s\n' "$test_name"
+    stream_command "$test_name" timeout 60 bash "$test_path"
+    ec="$STREAMED_EXIT"
 
     if [[ "$ec" -eq 124 ]]; then
         printf 'FAIL: %s — timed out after 60s\n' "$test_name"
         ACC_FAIL=$(( ACC_FAIL + 1 ))
         ACC_FAILED+=("$test_name (timeout)")
-        printf '%s\n' "$out"
         continue
     fi
-
-    printf '%s\n' "$out"
 
     if [[ "$ec" -eq 0 ]]; then
         ACC_PASS=$(( ACC_PASS + 1 ))

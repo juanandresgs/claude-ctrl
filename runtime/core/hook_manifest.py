@@ -472,6 +472,13 @@ HOOK_MANIFEST: Tuple[HookManifestEntry, ...] = (
         STATUS_ACTIVE,
         "Stop-time summarization (CUTOVER_PLAN H5 Partial).",
     ),
+    _e(
+        "Stop",
+        "",
+        "hooks/stop-advisor.sh",
+        STATUS_ACTIVE,
+        "Deterministic Stop advisor for obvious bookkeeping, dispatch, and Guardian-owned git actions.",
+    ),
     # --- SessionEnd -----------------------------------------------------
     _e(
         "SessionEnd",

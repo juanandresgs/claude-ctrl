@@ -14,11 +14,12 @@ Rationale: enforcement_config replaces the scattered toggle authorities
   (workflow > project > global > None).
 
 @decision DEC-REGULAR-STOP-REVIEW-001
-Title: Regular Stop review gate toggled via enforcement_config, not state.json
+Title: Legacy regular Stop model review gate toggled via enforcement_config, not state.json
 Status: accepted
-Rationale: Tests confirm review_gate_regular_stop is seeded true globally,
-  overridable per-project and per-workflow, with a narrow orchestrator/user
-  exception for the user-facing regular Stop toggle.
+Rationale: Tests confirm review_gate_regular_stop is seeded false globally
+  after deterministic stop-advisor.sh replaced the default model Stop review,
+  remains overridable per-project and per-workflow, and keeps the narrow
+  orchestrator/user exception for the legacy explicit Stop review toggle.
 """
 
 from __future__ import annotations
@@ -54,10 +55,10 @@ def conn():
 
 
 def test_get_global_default_returns_seeded_value(conn):
-    """ensure_schema() seeds review_gate_regular_stop=true in the global scope."""
+    """ensure_schema() seeds review_gate_regular_stop=false in the global scope."""
     value = ec.get(conn, "review_gate_regular_stop")
-    assert value == "true", (
-        f"Expected seeded default 'true', got {value!r}. "
+    assert value == "false", (
+        f"Expected seeded default 'false', got {value!r}. "
         "Check ensure_schema() _defaults list in runtime/schemas.py."
     )
 
@@ -85,9 +86,9 @@ def test_get_unknown_key_returns_none(conn):
 
 def test_set_as_planner_writes_value(conn):
     """Planner role (CAN_SET_CONTROL_CONFIG) may write enforcement_config; value is readable back."""
-    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="planner")
+    ec.set_(conn, "review_gate_regular_stop", "true", actor_role="planner")
     value = ec.get(conn, "review_gate_regular_stop")
-    assert value == "false"
+    assert value == "true"
 
 
 def test_set_as_guardian_raises_permission_error(conn):
@@ -98,8 +99,8 @@ def test_set_as_guardian_raises_permission_error(conn):
 
 def test_set_as_planner_alias_writes_value(conn):
     """The live harness alias 'Plan' must resolve to planner and be allowed."""
-    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="Plan")
-    assert ec.get(conn, "review_gate_regular_stop") == "false"
+    ec.set_(conn, "review_gate_regular_stop", "true", actor_role="Plan")
+    assert ec.get(conn, "review_gate_regular_stop") == "true"
 
 
 def test_set_as_implementer_raises_permission_error(conn):
@@ -110,8 +111,8 @@ def test_set_as_implementer_raises_permission_error(conn):
 
 def test_set_regular_stop_as_orchestrator_is_allowed(conn):
     """The user-facing regular Stop toggle may be written by the orchestrator path."""
-    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="")
-    assert ec.get(conn, "review_gate_regular_stop") == "false"
+    ec.set_(conn, "review_gate_regular_stop", "true", actor_role="")
+    assert ec.get(conn, "review_gate_regular_stop") == "true"
 
 
 def test_set_non_user_facing_key_as_orchestrator_raises_permission_error(conn):

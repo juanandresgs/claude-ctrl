@@ -102,11 +102,11 @@ Before using AskUserQuestion, agents must pass this filter:
 
 1. **Is the answer prescribed?** Check MASTER_PLAN.md, auto-dispatch rules, and prior decisions first
 2. **Would any reasonable user say "of course"?** If one option is clearly Recommended/Default, just use it
-3. **Does a gate already handle this?** Commit/merge/straightforward push goes through Guardian — don't pre-ask and don't self-run it from the orchestrator
+3. **Does an authority already handle this?** Commit, merge, straightforward push, and routine landing go through Guardian. Do not pre-ask the user and do not self-run them from the orchestrator. Dispatch or continue Guardian unless Guardian/policy already surfaced a real user boundary.
 4. **Can you resolve it with 2 minutes of research?** Check plan, code, and prior traces before escalating
 5. **Is the slice already approved and still within canonical routing?** Do not require a second user-only confirmation before dispatching planner/implementer/reviewer/guardian inside the active bounded slice. A direct operator request or live supervisor steering instruction is sufficient authority to continue canonical routing; only bounce for destructive/history-rewrite actions, ambiguous publish targets, irreconcilable agent disagreement, or explicit product signoff.
 
-- **Suggest next steps.** End every response with forward motion: a question, suggestion, or offer to continue.
+- **Suggest next steps.** End every response with forward motion: act, dispatch, file/track the item, or state the next concrete step. Do not end with a question unless the Question Merit Test passes.
 - **Verify and demonstrate.** Run tests, show output, prove it works. Never just say "done."
 
 ## Output Intelligence
@@ -279,7 +279,7 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 - The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
 - Guardian has hit a real user-decision boundary (history rewrite / destructive recovery, ambiguous publish target, or irreconcilable reviewer-implementer conflict)
 
-Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. The broad Codex stop-review gate (`stop-review-gate-hook.mjs`) is only the user-facing regular Stop audit lane and is **not wired into SubagentStop workflow dispatch** (DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
+Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. Regular Stop uses deterministic advice only (`stop-advisor.sh`); broad Codex/Gemini review is explicit or dispatch-critic work, not a default Stop-time blocker (DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
 
 When implementer stop output contains `CRITIC_DETAIL`, `CRITIC_NEXT_STEPS`,
 `CRITIC_ARTIFACT`, or `CRITIC_ACTION`, treat that block as routing payload, not

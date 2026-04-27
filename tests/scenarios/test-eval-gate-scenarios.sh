@@ -57,7 +57,7 @@ check() {
 echo "--- Scenario 1: write-who-deny ---"
 
 PAYLOAD=$(jq -n \
-    --arg fp "$FIXTURES_DIR/clean-hello-world/src/hello.py" \
+    --arg fp "/tmp/eval-gate-scenarios/clean-hello-world/src/hello.py" \
     '{
         event_type: "Write",
         tool_name: "Write",
@@ -131,7 +131,7 @@ check "guardian-no-lease-deny: permissionDecision=deny" "$OUT" '"permissionDecis
 echo "--- Scenario 4: eval-invalidation ---"
 
 PAYLOAD=$(jq -n \
-    --arg fp "$FIXTURES_DIR/eval-ready/src/feature.py" \
+    --arg fp "/tmp/eval-gate-scenarios/eval-ready/src/feature.py" \
     '{
         event_type: "Write",
         tool_name: "Write",
@@ -154,7 +154,7 @@ check "eval-invalidation: permissionDecision=deny" "$OUT" '"permissionDecision":
 echo "--- Scenario 5: scope-violation-deny ---"
 
 PAYLOAD=$(jq -n \
-    --arg fp "$FIXTURES_DIR/scoped-project/src/feature.py" \
+    --arg fp "/tmp/eval-gate-scenarios/scoped-project/src/feature.py" \
     '{
         event_type: "Write",
         tool_name: "Write",

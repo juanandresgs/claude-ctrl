@@ -103,14 +103,15 @@ The orchestrator stops the chain only when hook output contains `BLOCKED`,
 `ERROR`, or `PROCESS ERROR`, or when Guardian needs user approval for high-risk
 ops (push, rebase, force) — gated by `bash_approval_gate` policy.
 
-The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in
-`settings.json` for regular `Stop` only. Repo settings are the sole wiring
-authority; the vendored plugin no longer self-registers a separate `Stop` hook.
-The deterministic SubagentStop Codex braid is `hooks/implementer-critic.sh`,
-which persists `critic_reviews` before `post-task.sh` routes the workflow.
-The broad stop-review gate is a **user-facing Stop audit lane only** and does
-not affect workflow `auto_dispatch` or `next_role`
-(DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
+Regular `Stop` is deterministic: `surface.sh`, `session-summary.sh`, and
+`stop-advisor.sh`. The advisor only blocks obvious "do the routine thing" asks
+so Claude acts, files the item, or dispatches the owning authority instead of
+asking the user. The deterministic SubagentStop Codex braid is
+`hooks/implementer-critic.sh`, which persists `critic_reviews` before
+`post-task.sh` routes the workflow. Broad Codex/Gemini review is explicit or
+critic-lane work; it is not a default regular-Stop blocker and does not affect
+workflow `auto_dispatch` or `next_role`
+(DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
 
 ### Properties that remain prompt-level (not mechanically blocked)
 

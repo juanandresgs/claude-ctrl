@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# test-stop-review-gate-hook.sh — regular Stop review visibility and retired
-# SubagentStop broad review behavior.
+# test-stop-review-gate-hook.sh — legacy explicit regular Stop review
+# visibility and retired SubagentStop broad review behavior.
 #
 # Production path exercised:
 #   Stop payload -> stop-review-gate-hook.mjs -> codex_stop_review event
@@ -30,6 +30,7 @@ fail() { echo "  FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 mkdir -p "$WORKTREE" "$PLUGIN_DATA"
 git -C "$WORKTREE" init >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" schema ensure >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" config set review_gate_regular_stop true >/dev/null 2>&1
 
 run_hook() {
     local label="$1"

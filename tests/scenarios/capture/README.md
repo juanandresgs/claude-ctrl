@@ -119,8 +119,8 @@ parse:
 **UserPromptSubmit** — hooks/prompt-submit.sh reads:
 - `.prompt` — the user's prompt text string
 
-**Stop** — hooks/surface.sh, session-summary.sh read:
-- No specific fields required from the payload
+**Stop** — hooks/surface.sh, session-summary.sh, stop-advisor.sh read:
+- `.last_assistant_message` when present; otherwise no specific field is required
 
 ## Captured Payload Storage
 

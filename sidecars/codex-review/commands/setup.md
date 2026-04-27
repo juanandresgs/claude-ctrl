@@ -1,5 +1,5 @@
 ---
-description: Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate
+description: Check whether the local Codex CLI is ready and optionally toggle the legacy model Stop review preference
 argument-hint: '[--enable-review-gate|--disable-review-gate]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---

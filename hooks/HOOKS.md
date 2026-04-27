@@ -94,6 +94,8 @@ Generator version: `1.0.0`
   - _Surface diagnostics at turn end (CUTOVER_PLAN O2 read-only)._
 - matcher `(unconditional)` → `hooks/session-summary.sh`
   - _Stop-time summarization (CUTOVER_PLAN H5 Partial)._
+- matcher `(unconditional)` → `hooks/stop-advisor.sh`
+  - _Deterministic Stop advisor for obvious bookkeeping, dispatch, and Guardian-owned git actions._
 
 ## SessionEnd
 

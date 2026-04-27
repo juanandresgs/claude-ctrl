@@ -192,10 +192,6 @@ function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
-  if (!config.stopReviewGate) {
-    nextSteps.push("Optional: run `/codex:setup --enable-review-gate` to require a fresh review before stop.");
-  }
-
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
     node: nodeStatus,
@@ -225,10 +221,10 @@ function handleSetup(argv) {
 
   if (options["enable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", true);
-    actionsTaken.push(`Enabled the stop-time review gate for ${workspaceRoot}.`);
+    actionsTaken.push(`Enabled the legacy model Stop review preference for ${workspaceRoot}. The default repo Stop chain remains deterministic unless that legacy hook is explicitly wired.`);
   } else if (options["disable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", false);
-    actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+    actionsTaken.push(`Disabled the legacy model Stop review preference for ${workspaceRoot}.`);
   }
 
   const finalReport = buildSetupReport(cwd, actionsTaken);

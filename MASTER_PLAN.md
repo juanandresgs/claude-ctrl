@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-27 (Stop-hook friction cleanup: `forward-motion.sh` removed from the live Stop chain; broad `stop-review-gate-hook.mjs` narrowed to regular Stop only; SubagentStop Codex review is now the deterministic implementer critic path persisted in `critic_reviews`)
+Last updated: 2026-04-27 (Stop-hook friction cleanup: regular Stop is now deterministic `surface.sh` + `session-summary.sh` + `stop-advisor.sh`; broad `stop-review-gate-hook.mjs` is no longer in the live Stop chain; SubagentStop Codex review remains the deterministic implementer critic path persisted in `critic_reviews`)
 
 ## Identity
 
@@ -369,6 +369,12 @@ into the new mainline.
   planner/reviewer/guardian/implementer stops and keeps the Codex lane
   deterministic: either a verdict is persisted and consumed by dispatch, or the
   review remains an ordinary Stop audit.
+- `2026-04-27 — DEC-AD-006` Regular Stop no longer runs broad Codex/Gemini
+  review. The live Stop chain uses deterministic diagnostics plus
+  `stop-advisor.sh`, which only blocks obvious low-risk "should I do this?"
+  questions and redirects routine git landing to Guardian. Model review belongs
+  to explicit review/rescue commands and dispatch critic lanes, not the
+  user-facing Stop boundary.
 - `2026-04-05 — DEC-AD-004` Auto-dispatch fires for tester needs_changes and
   blocked_by_plan routes (back to implementer and planner respectively). The
   user does not need to approve rework — only new work, terminal states, and

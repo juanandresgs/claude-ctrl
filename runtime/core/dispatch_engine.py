@@ -93,16 +93,16 @@ Rationale: Guardian is the sole worktree lifecycle authority (INIT-GUARD-WT). Th
   pass it to the re-dispatched implementer (DEC-GUARD-WT-004).
 
 @decision DEC-PHASE5-STOP-REVIEW-SEPARATION-001
-Title: Codex stop-review gate is non-authoritative for workflow dispatch
+Title: Regular Stop review/advice is non-authoritative for workflow dispatch
 Status: accepted
 Rationale: The Codex stop-review gate (W-AD-3 / DEC-AD-002) was originally wired
   into the auto_dispatch decision path to allow a Codex supervisor to halt the
   workflow chain for human review. Phase 5 separates this: workflow auto_dispatch
   is determined by runtime workflow facts only (next_role present, no PROCESS ERROR,
-  not interrupted). The broad stop-review gate is now regular-Stop-only; the
-  deterministic SubagentStop Codex braid is the runtime-owned implementer critic
-  review consumed below. _check_codex_gate has been deleted — no runtime consumer
-  remains.
+  not interrupted). Regular Stop is deterministic advice only
+  (stop-advisor.sh); the deterministic SubagentStop Codex braid is the
+  runtime-owned implementer critic review consumed below. _check_codex_gate has
+  been deleted — no runtime consumer remains.
 
 @decision DEC-IMPLEMENTER-CRITIC-LOOP-001
 Title: Implementer inner-loop routing is owned by persisted critic reviews
@@ -455,7 +455,7 @@ def process_agent_stop(
     # DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Codex stop-review gate is NOT
     # consulted for workflow auto-dispatch decisions. auto_dispatch is
     # determined by runtime workflow facts only (next_role present, no error,
-    # not interrupted). The broad stop-review gate is regular-Stop-only;
+    # not interrupted). Regular Stop advice/review is not read here;
     # implementer critic reviews are the only Codex verdicts consumed here.
     # ---------------------------------------------------------------------------
 
