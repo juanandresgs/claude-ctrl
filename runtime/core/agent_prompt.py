@@ -31,7 +31,9 @@ from runtime.core.authority_registry import (
     canonical_stage_id,
     dispatch_subagent_type_for_stage,
 )
+from runtime.core import completions as _completions
 import runtime.core.decision_work_registry as _dwr
+from runtime.core import stage_registry as _stage_registry
 from runtime.core import workflows as _workflows
 from runtime.core.dispatch_contract import (
     dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
@@ -47,6 +49,47 @@ _CONTRACT_BLOCK_MARKER = "CLAUDEX_CONTRACT_BLOCK"
 # log-scanner) can tell this class of error apart from planner-stage stalls.
 # The tag text MUST stay stable; callers grep for it.
 _HEAD_SHA_SHAPE_CLASS = "[commit-shape/config mismatch — not a planner stall]"
+
+
+def _resolve_stage_id_for_dispatch(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    stage_id: str,
+) -> str:
+    """Resolve a caller-supplied stage id to a canonical active stage.
+
+    ``guardian`` is the only ambiguous delivery-path name: one repo-owned
+    Guardian agent serves both ``guardian:provision`` and ``guardian:land``.
+    For the high-friction live path, infer the compound stage from the latest
+    valid completion when the workflow has just routed to Guardian. Otherwise
+    fail with an actionable message instead of the generic "unknown active
+    stage 'guardian'" error.
+    """
+    stage_key = stage_id.strip()
+    resolved_stage_id = canonical_stage_id(stage_key)
+    if resolved_stage_id:
+        return resolved_stage_id
+
+    if stage_key != "guardian":
+        raise ValueError(f"unknown active stage {stage_id!r}")
+
+    latest = _completions.latest(conn, workflow_id=workflow_id)
+    if latest and int(latest.get("valid") or 0) == 1:
+        role = str(latest.get("role") or "")
+        verdict = str(latest.get("verdict") or "")
+        if role == "reviewer" and verdict == "ready_for_guardian":
+            return _stage_registry.GUARDIAN_LAND
+        if role == "planner" and verdict == "next_work_item":
+            return _stage_registry.GUARDIAN_PROVISION
+
+    raise ValueError(
+        "ambiguous guardian stage: use --stage-id guardian:land after a valid "
+        "reviewer ready_for_guardian completion, or --stage-id "
+        "guardian:provision after a valid planner next_work_item completion. "
+        "Bare --stage-id guardian can only be resolved when the latest valid "
+        "completion for the workflow proves which Guardian mode is next."
+    )
 
 
 def build_agent_dispatch_prompt(
@@ -101,9 +144,11 @@ def build_agent_dispatch_prompt(
         raise ValueError("workflow_id must be a non-empty string")
     if not stage_id or not stage_id.strip():
         raise ValueError("stage_id must be a non-empty string")
-    resolved_stage_id = canonical_stage_id(stage_id)
-    if not resolved_stage_id:
-        raise ValueError(f"unknown active stage {stage_id!r}")
+    resolved_stage_id = _resolve_stage_id_for_dispatch(
+        conn,
+        workflow_id=workflow_id,
+        stage_id=stage_id,
+    )
     required_subagent_type = dispatch_subagent_type_for_stage(resolved_stage_id)
     if not required_subagent_type:
         raise ValueError(f"no canonical subagent type for stage {resolved_stage_id!r}")

@@ -169,9 +169,9 @@ guardian, reviewer), the orchestrator MUST:
    cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <stage_id>
    ```
    `<workflow_id>` is the active workflow identifier. `<stage_id>` is the role being
-   dispatched (`planner`, `implementer`, `guardian`, `reviewer`). Optionally pass
-   `--goal-id`, `--work-item-id`, `--decision-scope` to override runtime-resolved
-   defaults.
+   dispatched (`planner`, `guardian:provision`, `implementer`, `reviewer`,
+   `guardian:land`). Optionally pass `--goal-id`, `--work-item-id`,
+   `--decision-scope` to override runtime-resolved defaults.
 
 3. Take `agent_tool_spec.prompt_prefix` from `workflow stage-packet`, or the
    top-level `prompt_prefix` from `dispatch agent-prompt`, and prepend it verbatim
@@ -215,10 +215,10 @@ cc-policy context role
 cc-policy workflow bootstrap-planner <workflow_id> --desired-end-state "<text>"
 
 # Build the canonical execution bundle for a stage
-cc-policy workflow stage-packet [<workflow_id>] --stage-id <planner|implementer|reviewer|guardian>
+cc-policy workflow stage-packet [<workflow_id>] --stage-id <planner|guardian:provision|implementer|reviewer|guardian:land>
 
 # Low-level prompt contract primitive (use when only the prompt block is needed)
-cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <planner|implementer|reviewer|guardian>
+cc-policy dispatch agent-prompt --workflow-id <workflow_id> --stage-id <planner|guardian:provision|implementer|reviewer|guardian:land>
 
 # Workflow readiness checks before landing
 cc-policy evaluation get <workflow_id>
@@ -232,7 +232,10 @@ cc-policy workflow scope-set --workflow-id <workflow_id> --scope-file tmp/<scope
 Parameter discipline:
 - `--workflow-id`: runtime workflow identity; prefer to supply it explicitly. It may be omitted only when runtime can resolve a bound workflow from the active worktree/lease context.
 - `bootstrap-planner`: the sanctioned bootstrap for a fresh local canonical planner seat. Do not hand-assemble `workflow bind` + `goal-set` + `work-item-set` for ordinary planner adoption.
-- `--stage-id`: canonical stage target. Use planner/implementer/reviewer/guardian dispatch chain; for guardian actions, include mode intent in task (`provision` vs `merge/land`).
+- `--stage-id`: canonical stage target. Use the stage graph names:
+  `planner`, `guardian:provision`, `implementer`, `reviewer`,
+  `guardian:land`. Bare `guardian` is accepted only when runtime can infer the
+  compound Guardian mode from the latest valid completion for the workflow.
 - `--project-root`: absolute repo/worktree root for state checks.
 - `--scope-file`: canonical scope manifest for source slices (required before implementer coding work).
 

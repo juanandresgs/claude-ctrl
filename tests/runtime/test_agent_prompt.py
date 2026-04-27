@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from runtime.core import contracts
+from runtime.core import completions as completions_mod
 from runtime.core import decision_work_registry as dwr
 from runtime.core import goal_contract_codec
 from runtime.core import workflows as workflows_mod
@@ -93,6 +94,21 @@ def _seed(
     )
 
 
+def _valid_planner_payload(verdict: str = "next_work_item") -> dict:
+    return {
+        "PLAN_VERDICT": verdict,
+        "PLAN_SUMMARY": "Dispatch the next canonical stage.",
+    }
+
+
+def _valid_reviewer_payload(verdict: str = "ready_for_guardian") -> dict:
+    return {
+        "REVIEW_VERDICT": verdict,
+        "REVIEW_HEAD_SHA": "abc123def",
+        "REVIEW_FINDINGS_JSON": '{"findings": []}',
+    }
+
+
 @pytest.fixture
 def db(tmp_path: Path) -> Path:
     db_path = tmp_path / "state.db"
@@ -153,6 +169,43 @@ class TestBuildContractConstruction:
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="Plan")
         assert result["contract"]["stage_id"] == "planner"
         assert result["required_subagent_type"] == "planner"
+
+    def test_bare_guardian_without_routing_completion_is_ambiguous(self, conn):
+        with pytest.raises(ValueError, match="ambiguous guardian stage") as exc:
+            build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="guardian")
+
+        message = str(exc.value)
+        assert "guardian:land" in message
+        assert "guardian:provision" in message
+        assert "unknown active stage" not in message
+
+    def test_bare_guardian_after_reviewer_ready_resolves_to_land(self, conn):
+        completions_mod.submit(
+            conn,
+            lease_id="lease-reviewer",
+            workflow_id="wf-ap",
+            role="reviewer",
+            payload=_valid_reviewer_payload("ready_for_guardian"),
+        )
+
+        result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="guardian")
+
+        assert result["contract"]["stage_id"] == "guardian:land"
+        assert result["required_subagent_type"] == "guardian"
+
+    def test_bare_guardian_after_planner_next_work_item_resolves_to_provision(self, conn):
+        completions_mod.submit(
+            conn,
+            lease_id="lease-planner",
+            workflow_id="wf-ap",
+            role="planner",
+            payload=_valid_planner_payload("next_work_item"),
+        )
+
+        result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="guardian")
+
+        assert result["contract"]["stage_id"] == "guardian:provision"
+        assert result["required_subagent_type"] == "guardian"
 
     def test_default_decision_scope_is_kernel(self, conn):
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")

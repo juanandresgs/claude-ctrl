@@ -62,7 +62,7 @@ def dispatch_bootstrap_guidance(stage_id: str | None = None) -> str:
     returns the full launch spec or explains the exact bootstrap prerequisite
     that is missing.
     """
-    stage_fragment = stage_id or "<stage>"
+    stage_fragment = stage_id.strip() if stage_id and stage_id.strip() else "<stage>"
     if stage_fragment in {"planner", "Plan"}:
         from runtime.core.planner_bootstrap import planner_bootstrap_guidance
 
@@ -71,6 +71,21 @@ def dispatch_bootstrap_guidance(stage_id: str | None = None) -> str:
             + " Once the workflow already has an active goal + in-progress "
             "work item, `cc-policy workflow stage-packet [<workflow_id>] "
             "--stage-id planner` returns the canonical planner launch spec."
+        )
+    if stage_fragment == "guardian":
+        return (
+            "Use `cc-policy workflow stage-packet [<workflow_id>] --stage-id "
+            "guardian:land` for landing after reviewer ready_for_guardian, or "
+            "`cc-policy workflow stage-packet [<workflow_id>] --stage-id "
+            "guardian:provision` for worktree provisioning after planner "
+            "next_work_item. Bare `--stage-id guardian` is accepted only when "
+            "runtime can infer the compound Guardian mode from the latest valid "
+            "completion for the workflow. If <workflow_id> is omitted, runtime "
+            "resolves it from the active worktree/lease; that requires "
+            "`--worktree-path`, `CLAUDE_PROJECT_DIR`, or a git worktree with a "
+            "bound workflow. Then launch the Agent call with "
+            "`agent_tool_spec.prompt_prefix` and "
+            "`agent_tool_spec.subagent_type` verbatim."
         )
     return (
         "Use `cc-policy workflow stage-packet [<workflow_id>] --stage-id "
