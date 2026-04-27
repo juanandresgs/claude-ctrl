@@ -2,35 +2,16 @@
 set -euo pipefail
 
 REMOTE="${REMOTE:-https://github.com/juanandresgs/claude-ctrl-hardFork.git}"
+BRANCH="${BRANCH:-main}"
 TARGET="${TARGET:-$HOME/.claude}"
 BACKUP="${BACKUP:-$HOME/.claude.backup.$(date -u +%Y%m%dT%H%M%SZ)}"
 EXPECTED_HEAD="${EXPECTED_HEAD:-}"
+ALLOW_FLOATING_NON_MAIN="${ALLOW_FLOATING_NON_MAIN:-}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 STAGING_PARENT=""
 INSTALL_ROOT=""
 BACKED_UP=0
 INSTALLED=0
-
-detect_branch() {
-  if [ -n "${BRANCH:-}" ]; then
-    printf '%s\n' "$BRANCH"
-    return
-  fi
-
-  if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    local current_branch
-    current_branch="$(git -C "$SCRIPT_DIR" branch --show-current 2>/dev/null || true)"
-    if [ -n "$current_branch" ]; then
-      printf '%s\n' "$current_branch"
-      return
-    fi
-  fi
-
-  printf '%s\n' "main"
-}
-
-BRANCH="$(detect_branch)"
 
 restore_on_failure() {
   echo "Install failed." >&2
@@ -57,6 +38,12 @@ for required in git python3 node jq; do
     exit 1
   }
 done
+
+if [ "$BRANCH" != "main" ] && [ -z "$EXPECTED_HEAD" ] && [ "$ALLOW_FLOATING_NON_MAIN" != "1" ]; then
+  echo "Refusing to install floating non-main branch '$BRANCH'." >&2
+  echo "Set EXPECTED_HEAD=<sha> for pinned branch testing, or ALLOW_FLOATING_NON_MAIN=1 for local experiments." >&2
+  exit 1
+fi
 
 if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then
   echo "Backup path already exists: $BACKUP" >&2

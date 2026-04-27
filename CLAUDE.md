@@ -288,7 +288,7 @@ Before any Guardian-local landing attempt (`git commit`, `git merge`, straightfo
 1. Resolve current workflow identity from runtime (do not infer from branch names):
    - `cc-policy context role`
 2. Check evaluation readiness for that workflow:
-   - `cc-policy eval get --workflow-id <workflow_id>`
+   - `cc-policy evaluation get <workflow_id>`
    - Required: `status == ready_for_guardian` and `head_sha` matches the landing head.
 3. Check test-state readiness:
    - `cc-policy test-state get --project-root <repo_root>`
