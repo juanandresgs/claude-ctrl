@@ -243,7 +243,7 @@ def is_claude_meta_repo(dir_path: str) -> bool:
     Rationale: The prior check trusted the literal string suffix. When a
       non-meta-repo is accessed via a symlink named `.claude` — e.g. the
       dual-checkout setup where `~/.claude` is a symlink to a regular
-      project repo like `~/Code/.../claude-ctrl` — the unresolved
+      project repo like `~/Code/project` — the unresolved
       literal ended with `/.claude`, so is_claude_meta_repo returned True
       and every bash_main_sacred / write policy that consults
       request.context.is_meta_repo bypassed enforcement for that session.

@@ -1,19 +1,7 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 
 [features]
-codex_hooks = true
+codex_hooks = false
 
 [plugins."github@openai-curated"]
 enabled = true
-
-# Optional local bridge wiring:
-# The Claude bridge depends on a local braid runtime. Keep that path in a
-# machine-local Codex config or set BRAID_ROOT / BRIDGE_STATE_DIR before adding
-# this server. Do not commit absolute operator paths here.
-#
-# [mcp_servers.claude_bridge]
-# command = "node"
-# args = ["./ClauDEX/bridge/claudex-bridge-mcp-server.mjs"]
-# env = { BRAID_ROOT = "/path/to/braid", BRIDGE_STATE_DIR = "/path/to/braid/runs" }
-# required = false
-# trust_level = "trusted"

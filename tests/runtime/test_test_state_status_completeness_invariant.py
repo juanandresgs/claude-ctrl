@@ -302,11 +302,11 @@ class TestTestStateStatusCompletenessInvariant:
           test-runner.sh → rt_test_state_set → cc-policy test-state set
           guard.sh Check 8/9 → rt_test_state_get → cc-policy test-state get
 
-        Uses subprocess + isolated tmp dir so no persistent state is written.
+        Uses subprocess + an isolated temporary directory so no persistent
+        state is written.
         Mirrors tests/runtime/test_test_state.py:157-223 patterns exactly.
         """
         with tempfile.TemporaryDirectory(
-            dir=str(_PROJECT_ROOT / "tmp"),
             prefix="slice25_round_trip_",
         ) as tmp_dir:
             tmp_path = Path(tmp_dir)

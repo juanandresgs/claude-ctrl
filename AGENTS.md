@@ -31,19 +31,18 @@ configuration, and plans into one coherent control plane. Note technical debt or
 
 ## Working Rules
 
-1. Treat `implementation_plan.md` as the successor implementation spec.
-2. Treat `MASTER_PLAN.md` as the project memory and active execution record.
-3. Import from `claude-config-pro` only by explicit subsystem replacement.
-4. Keep the kernel simpler than the work it governs.
-5. Do not reintroduce parallel authorities as transitional fallbacks.
-6. For architecture work, use docs as statements of goals and values, but use
+1. Treat `MASTER_PLAN.md` as the project memory and active execution record.
+2. Import from `claude-config-pro` only by explicit subsystem replacement.
+3. Keep the kernel simpler than the work it governs.
+4. Do not reintroduce parallel authorities as transitional fallbacks.
+5. For architecture work, use docs as statements of goals and values, but use
    code, config, and tests as the source of truth for how the system currently
    works.
-8. Default toward a policy-engine-first design: hooks should become adapters,
+6. Default toward a policy-engine-first design: hooks should become adapters,
    policy should become the point of visibility and configuration, dispatch
    should be authoritative, and concurrency/worktree management should be part
    of the control plane.
-9. Keep one authority per operational fact: workflow identity, readiness,
+7. Keep one authority per operational fact: workflow identity, readiness,
    dispatch phase, worktree ownership, approval state, and policy evaluation
    should not be derivable from multiple competing paths.
 

@@ -46,7 +46,6 @@ runtime/prebash-trace.log
 traces/
 stats-cache.json
 watch_*
-ClauDEX/braid-v2/state/
 
 # Ephemeral state reviews
 STATE_REVIEW.md
@@ -61,6 +60,3 @@ review-artifacts/
 .b2r-v2-stable/
 .session-start-epoch
 ide/
-
-# Session forensics archive — preserved out of band, not part of cutover
-ClauDEX/session-forensics/

@@ -10,8 +10,6 @@ First-wave coverage (DEC-DOC-REF-VALIDATION-001):
   - ``AGENTS.md``
 
 Second-wave coverage (DEC-DOC-REF-VALIDATION-002):
-  - ``ClauDEX/CUTOVER_PLAN.md``
-  - ``implementation_plan.md``
   - ``docs/ARCHITECTURE.md``
   - ``docs/DISPATCH.md``
   - ``docs/PLAN_DISCIPLINE.md``
@@ -49,9 +47,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
         # First-wave coverage (DEC-DOC-REF-VALIDATION-001).
         REPO_ROOT / "MASTER_PLAN.md",
         REPO_ROOT / "AGENTS.md",
-        # Second-wave coverage (DEC-DOC-REF-VALIDATION-002).
-        REPO_ROOT / "ClauDEX" / "CUTOVER_PLAN.md",
-        REPO_ROOT / "implementation_plan.md",
         REPO_ROOT / "docs" / "ARCHITECTURE.md",
         REPO_ROOT / "docs" / "DISPATCH.md",
         REPO_ROOT / "docs" / "PLAN_DISCIPLINE.md",

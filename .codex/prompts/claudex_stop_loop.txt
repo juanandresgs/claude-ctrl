@@ -1,8 +1,6 @@
-Re-arm the ClauDEX supervisor.
+Legacy ClauDEX stop-loop prompt.
 
-If there is no active bridge run or the run is complete, stop.
-Otherwise call `get_status()`:
-- `waiting_for_codex` with a new pending review: review the response, steer the next slice via `send_instruction()`.
-- `waiting_for_codex` with no new review: call `wait_for_codex_review(timeout_ms=1200000)` to block until the worker finishes. Do NOT stop and re-arm — that burns a Codex turn for no work.
-- `queued` or `inflight`: call `wait_for_codex_review(timeout_ms=1200000)` and ignore routine `__BRAID_RELAY__` noise.
-- A dirty worktree alone is not a reason to stop. Treat pre-existing modified files as local context and escalate only if the bounded slice overlaps unfamiliar changes and the ambiguity is irreconcilable.
+The Codex Stop hook has been removed. Do not re-arm a supervisor turn from
+this prompt. If this file is loaded manually, use `.codex/prompts/claudex_supervisor.txt`
+as review guidance and continue only when there is a live bounded task with a
+deterministic next stage.

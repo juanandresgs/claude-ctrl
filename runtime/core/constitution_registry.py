@@ -3,27 +3,24 @@
 @decision DEC-CLAUDEX-CONSTITUTION-REGISTRY-001
 Title: runtime/core/constitution_registry.py is the sole declarative registry of constitution-level files and planned areas for the Phase 1 kernel
 Status: proposed (shadow-mode, Phase 1 constitutional kernel)
-Rationale: CUTOVER_PLAN §4 ("Constitution-Level Scope Gates", lines
-  1026-1035) and §"Constitution-Level Files" (lines 1379-1403) require
-  an explicit, mechanically checkable declaration of which files and
-  areas the cutover treats as constitution-level. The Phase 1 exit
-  criterion "constitution-level files are enumerated and validated"
-  can only be satisfied by a closed list that lives in runtime-owned
-  code, not in prose.
+Rationale: The control plane requires an explicit, mechanically checkable
+  declaration of which files and areas are constitution-level. The Phase 1
+  exit criterion "constitution-level files are enumerated and validated"
+  can only be satisfied by a closed list that lives in runtime-owned code,
+  not in prose.
 
   This module is that closed list. It is intentionally pure and
   declarative:
 
     * No SQLite. No filesystem writes. No subprocess. No imports of
       live policy / routing / hooks / settings code.
-    * The concrete-file set is **exactly** the entries declared by
-      CUTOVER_PLAN §"Constitution-Level Files"; set equality is pinned
-      by tests, so any later slice that tries to widen or narrow the
-      list must update both this module and the CUTOVER_PLAN in the
-      same bundle.
+    * The concrete-file set is the closed runtime-owned list pinned by
+      tests, so any later slice that tries to widen or narrow the list
+      must update this module and its invariant coverage in the same
+      bundle.
     * Planned areas are represented as explicitly NON-concrete
       entries with no filesystem path. As of Phase 7 Slice 17 the
-      planned-area set is empty: every CUTOVER_PLAN-named planned
+      planned-area set is empty: every previously named planned
       area has been promoted to a concrete entry. Previously
       planned areas that have been promoted to concrete entries:
         - prompt-pack compiler → ``runtime/core/prompt_pack.py``
@@ -71,7 +68,7 @@ Rationale: CUTOVER_PLAN §4 ("Constitution-Level Scope Gates", lines
       flows through the policy engine evaluation path.
     * It does not read constitution-level file contents. The registry
       only stores repo-relative path identifiers and the planned-area
-      descriptors from CUTOVER_PLAN.
+      descriptors.
     * It does not mutate the filesystem. ``path_exists`` is a pure
       read-only helper intended for test invariants, not enforcement.
 
@@ -141,8 +138,8 @@ class ConstitutionEntry:
     constitution-level.
 
     ``rationale`` is a one-sentence explanation of why the entry is
-    constitution-level, drawn from CUTOVER_PLAN wording where
-    possible. It is informational — tests do not pin the exact string.
+    constitution-level. It is informational — tests do not pin the exact
+    string.
     """
 
     name: str
@@ -188,9 +185,8 @@ def _static_normalise(path: str) -> str:
 # ---------------------------------------------------------------------------
 # Registry contents
 #
-# The concrete list below MUST match CUTOVER_PLAN §"Constitution-Level
-# Files" exactly. Do NOT reorder, add, or remove entries without updating
-# both the CUTOVER_PLAN text and the set-equality test in
+# The concrete list below is a closed authority surface. Do NOT reorder,
+# add, or remove entries without updating the set-equality test in
 # tests/runtime/test_constitution_registry.py.
 # ---------------------------------------------------------------------------
 
@@ -224,15 +220,6 @@ _CONCRETE: Tuple[ConstitutionEntry, ...] = (
         ),
     ),
     ConstitutionEntry(
-        name="implementation_plan.md",
-        kind=KIND_CONCRETE,
-        path="implementation_plan.md",
-        rationale=(
-            "Active implementation plan that gates source work. Donor "
-            "surface during cutover per CUTOVER_PLAN §Donor Surfaces."
-        ),
-    ),
-    ConstitutionEntry(
         name="MASTER_PLAN.md",
         kind=KIND_CONCRETE,
         path="MASTER_PLAN.md",
@@ -248,8 +235,7 @@ _CONCRETE: Tuple[ConstitutionEntry, ...] = (
         path="hooks/HOOKS.md",
         rationale=(
             "Repo-local hook behaviour documentation. Must stay aligned "
-            "with runtime hook manifest and official harness docs "
-            "(CUTOVER_PLAN §7 Official-Docs Verification)."
+            "with runtime hook manifest and official harness docs."
         ),
     ),
     ConstitutionEntry(
@@ -304,8 +290,7 @@ _CONCRETE: Tuple[ConstitutionEntry, ...] = (
         kind=KIND_CONCRETE,
         path="runtime/core/prompt_pack.py",
         rationale=(
-            "Runtime-compiled prompt-pack bootstrap compiler (CUTOVER_PLAN "
-            "§Runtime-Compiled Prompt Packs). Promoted from the "
+            "Runtime-compiled prompt-pack bootstrap compiler. Promoted from the "
             "`prompt_pack_compiler_modules` planned area in the Phase 2 "
             "prompt-pack bootstrap slice once the module landed as a "
             "pure shadow-kernel authority for the six canonical prompt "
@@ -462,41 +447,22 @@ _CONCRETE: Tuple[ConstitutionEntry, ...] = (
             "GraphExport projections from caller-supplied canonical "
             "MemorySource and GraphEdge records. Promoted from the "
             "`memory_retrieval_compiler_modules` planned area in Phase 7 "
-            "Slice 17 as the final CUTOVER_PLAN §Canonical Memory with "
-            "Derived Retrieval authority (no search engine, no vector DB, "
+            "Slice 17 as the canonical memory with derived retrieval "
+            "authority (no search engine, no vector DB, "
             "no CLI — those remain future wrapping layers that will build "
             "on this compiler)."
-        ),
-    ),
-    ConstitutionEntry(
-        name="runtime/core/bridge_permissions.py",
-        kind=KIND_CONCRETE,
-        path="runtime/core/bridge_permissions.py",
-        rationale=(
-            "Sole declarative authority for the ClauDEX bridge permission "
-            "surface (ClauDEX/bridge/claude-settings.json). Declares which "
-            "Bash patterns are runtime-policy-delegated (must NOT appear in "
-            "permissions.deny) and which are safety-deny patterns (must "
-            "remain). Added as concrete in cc-policy-who-remediation Slice 1 "
-            "to close the bridge authority gap: previously the bridge "
-            "short-circuited runtime policy (bash_git_who / CAN_LAND_GIT) "
-            "by hard-denying git landing ops at the permission layer. "
-            "Follows the same shadow-only pattern as hook_manifest.py "
-            "(DEC-CLAUDEX-HOOK-MANIFEST-001). "
-            "Cross-ref: DEC-CLAUDEX-BRIDGE-PERMISSIONS-001, DEC-WHO-LANDING-001."
         ),
     ),
 )
 
 
-# CUTOVER_PLAN §"Constitution-Level Files" also names planned areas
-# that do not yet resolve to concrete files on disk. They are
+# Planned areas that do not yet resolve to concrete files on disk are
 # represented here as explicitly non-concrete entries so helpers never
-# confuse them with existing paths, but also so a future slice can
-# enumerate them when planning new authority modules.
+# confuse them with existing paths, and so a future slice can enumerate
+# them when planning new authority modules.
 _PLANNED: Tuple[ConstitutionEntry, ...] = (
     # Phase 7 Slice 17 reached the empty-planned-set milestone:
-    # every CUTOVER_PLAN-named planned area has been promoted to a
+    # every previously named planned area has been promoted to a
     # concrete entry above. The previous planned slugs and their
     # promotions are recorded here as inline comments so a future
     # slice cannot accidentally re-add one.

@@ -2,7 +2,7 @@
 # todo.sh — Claude Code persistent idea capture backend.
 #
 # Purpose: Wraps the GitHub CLI (gh) to provide durable, visible todo/idea
-# storage as GitHub Issues. Called by /backlog slash command and
+# storage as GitHub Issues. Called by the backlog skill and
 # queried by hooks (session-init, session-summary) for automatic surfacing.
 #
 # @decision GitHub Issues over flat files — provides durability, visibility
@@ -335,7 +335,7 @@ cmd_done() {
     done
 
     gh issue close "$issue_number" \
-        --comment "Closed via Claude Code /backlog done" \
+        --comment "Closed via Claude Code backlog skill" \
         $repo_flag 2>&1
 
     # Decrement cached todo count
@@ -537,9 +537,9 @@ cmd_hud() {
 
     local remaining=$((count - shown))
     if [[ "$remaining" -gt 0 ]]; then
-        echo "  ... and ${remaining} more. Use /backlog to review."
+        echo "  ... and ${remaining} more. Use the backlog skill to review."
     else
-        echo "  Use /backlog to review."
+        echo "  Use the backlog skill to review."
     fi
 }
 

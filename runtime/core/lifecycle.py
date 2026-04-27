@@ -135,7 +135,7 @@ def on_stop_by_role(
     @status accepted
     @rationale Pre-scoping, on_stop_by_role called markers.get_active() unscoped.
       In a multi-project environment — or a dual-checkout symlinked repo like
-      ~/.claude → claude-ctrl — the globally-newest active marker may
+      ~/.claude → project-checkout — the globally-newest active marker may
       belong to a different logical project. Stopping agent X in project A
       could silently deactivate an active marker in project B, or fail to
       deactivate agent X because a newer marker from B holds the "globally

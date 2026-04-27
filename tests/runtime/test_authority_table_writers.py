@@ -29,10 +29,6 @@ Out-of-scope surfaces
 * ``tests/**`` — tests legitimately seed rows via raw SQL to set up
   adversarial states the domain modules would refuse; tests are not
   a production authority surface.
-* ``ClauDEX/braid-v2/**`` — an isolated experimental sub-package with
-  its own tables sharing the same names.  It is not imported from
-  ``runtime/`` or ``hooks/`` (verified: no hits for ``braid2`` in
-  ``runtime/``).
 * Markdown docs — strings quoted in planning artifacts are not
   production writes.
 
@@ -90,11 +86,8 @@ _SCAN_TARGETS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 # Exclusion prefixes — paths whose rel form starts with any of these are
-# skipped.  braid-v2 is an experimental sub-package with its own copy
-# of the table names and is not part of the runtime authority surface.
-_EXCLUDE_PREFIXES = (
-    "ClauDEX/",
-)
+# skipped.
+_EXCLUDE_PREFIXES: tuple[str, ...] = ()
 
 _TABLES_ALT = "|".join(re.escape(t) for t in _PROTECTED_TABLES)
 _FORBIDDEN_WRITE = re.compile(

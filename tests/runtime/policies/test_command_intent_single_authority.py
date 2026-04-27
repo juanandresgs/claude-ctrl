@@ -1,10 +1,10 @@
-"""Mechanical pin for CUTOVER_PLAN Invariant #5.
+"""Mechanical pin for the command-intent single-authority invariant.
 
 @decision DEC-CLAUDEX-COMMAND-INTENT-SOLE-AUTHORITY-001
 Title: runtime.core.command_intent is the sole authority for Bash command-semantics parsing in policies
 Status: proposed
-Rationale: CUTOVER_PLAN.md Invariant #5 requires that "no policy module reparses
-  command semantics already supplied by runtime intent objects." The runtime
+Rationale: No policy module should reparse command semantics already supplied by
+  runtime intent objects. The runtime
   module ``runtime/core/command_intent.py`` owns Bash command-semantics
   classification (subcommand, flags, paths, git_invocation) and is exposed to
   policies via the typed ``PolicyRequest.command_intent`` attribute.  A future
@@ -40,8 +40,7 @@ Adjacent authorities:
   - ``runtime/core/command_intent.py`` — the sole declarative authority; its
     module docstring already calls itself "the single authority for deriving
     structured intent from a raw Bash command string" (verified 2026-04-17).
-  - ``ClauDEX/CUTOVER_PLAN.md`` Invariant #5 — the requirement this pin
-    enforces.
+  - the command-intent single-authority invariant this pin enforces.
   - Invariant #11 mechanical pin at
     ``tests/runtime/test_decision_ref_resolution.py`` — same shape
     (stdlib-only, AST/regex scan, no SQLite / network / subprocess

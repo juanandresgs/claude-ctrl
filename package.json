@@ -1,8 +1,0 @@
-{
-  "name": "claude-ctrl-hardfork",
-  "private": true,
-  "type": "module",
-  "devDependencies": {
-    "eslint": "^10.0.0"
-  }
-}

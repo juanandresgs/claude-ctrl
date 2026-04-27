@@ -54,7 +54,7 @@ assert_passes_empty() {
 
 echo "=== $TEST_NAME ==="
 
-run_hook "backlog" '{"hook_event_name":"Stop","last_assistant_message":"Worth filing in /backlog. Want me to file those four /backlog items now, or stop here?"}'
+run_hook "backlog" '{"hook_event_name":"Stop","last_assistant_message":"Worth filing in the backlog. Want me to file those four backlog items now, or stop here?"}'
 assert_block_contains "backlog" "obvious bookkeeping"
 
 run_hook "guardian-git" '{"hook_event_name":"Stop","last_assistant_message":"Tests are green. Want me to commit and push this?"}'

@@ -27,12 +27,12 @@ governs.
   `.statusline-cache`, `.audit-log`) have been eliminated from hot paths.
   `.agent-findings` remains active (written by check-guardian.sh, read by
   prompt-submit.sh and compact-preserve.sh).
-- The current ClauDEX supervision surfaces in [`.codex/`](.codex/),
-  [ClauDEX/](ClauDEX/), and `scripts/claudex-*` are containment scaffolding to
-  keep Codex in the driver seat during cutover. They are not the target
-  permanent authority. The target model is a runtime-owned supervision fabric
-  with transport adapters (`tmux`, MCP, or provider-native control) behind one
-  canonical state machine.
+- The current Codex review surface lives in `sidecars/codex-review/` and
+  `hooks/implementer-critic.sh`, with `.codex/prompts/` kept as public-safe
+  review guidance. Private bridge/watchdog/stop-loop machinery is not part of
+  the public authority surface. The target model is a runtime-owned supervision
+  fabric with transport adapters (`tmux`, MCP, or provider-native control)
+  behind one canonical state machine.
 - The statusline HUD reads from `cc-policy statusline snapshot` -- a runtime
   projection, not a separate authority.
 - Dispatch emission flows through `post-task.sh` into the `dispatch_queue` and
@@ -10091,7 +10091,7 @@ Expected state authorities touched:
    #33 (tester workflow_id), and #34 (worktree remove) each get
    their own chain. Even if the implementer notices a two-line fix
    to #32 while editing an adjacent file, the fix does not belong
-   in this commit — file a separate task via `/backlog`.
+   in this commit — file a separate task via the backlog skill.
 
 **Wave structure.**
 
@@ -11247,7 +11247,8 @@ needed due to fail-open adapters, stale tests, and bridge integration bugs.
 
 - Standalone hard-fork repository bootstrapped from the patched `v2.0` kernel.
 - Canonical prompt set drafted in `CLAUDE.md` and `agents/`.
-- Successor implementation spec written in `implementation_plan.md`.
+- Initial implementation spec drafted and later retired into the runtime,
+  README, CLAUDE.md, and active tests as the public authority surfaces.
 - Successor runtime, hook-lib, sidecar, and docs directories scaffolded so work
   can land against stable paths.
 
