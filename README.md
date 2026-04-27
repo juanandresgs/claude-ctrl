@@ -83,23 +83,17 @@ I've never been much of a gambler myself.
 
 ## Install
 
-ClauDEX is intended to live at `~/.claude`.
+ClauDEX is intended to live at `~/.claude`:
 
 ```bash
 git clone https://github.com/juanandresgs/claude-ctrl.git ~/.claude
 bash ~/.claude/install.sh
 ```
 
-If `~/.claude` already exists, install from a staging checkout:
-
-```bash
-git clone https://github.com/juanandresgs/claude-ctrl.git ~/claude-ctrl-install
-TARGET="$HOME/.claude" bash ~/claude-ctrl-install/install.sh
-```
-
-`install.sh` validates the payload, backs up any existing `~/.claude`, swaps
-the new config into place, and wires `cc-policy` onto your shell path when
-possible.
+For replacement installs, run `install.sh` from another copy of the repo with
+`TARGET="$HOME/.claude"`. The installer backs up the existing tree, replaces it,
+carries forward only `~/.claude/.env`, and wires `cc-policy` onto your shell path
+when possible.
 
 Dependencies are intentionally ordinary: `git`, `python3`, `node`, `jq`, and,
 of course, Claude Code.

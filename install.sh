@@ -110,6 +110,25 @@ clone_payload() {
   fi
 }
 
+preserve_local_env() {
+  local backup_root="$1"
+  local target_root="$2"
+  local env_source="$backup_root/.env"
+  local env_dest="$target_root/.env"
+
+  if [ ! -f "$env_source" ]; then
+    return
+  fi
+
+  if [ -e "$env_dest" ] || [ -L "$env_dest" ]; then
+    echo "Local .env remains in backup because the new config already has .env: $env_source" >&2
+    return
+  fi
+
+  cp -p "$env_source" "$env_dest"
+  echo "Preserved local .env."
+}
+
 wire_cc_policy() {
   local root="$1"
   local wrapper="$root/bin/cc-policy"
@@ -170,6 +189,10 @@ fi
 
 mv "$INSTALL_ROOT" "$TARGET"
 INSTALLED=1
+
+if [ "$BACKED_UP" -eq 1 ]; then
+  preserve_local_env "$BACKUP" "$TARGET"
+fi
 
 validate_payload "$TARGET"
 wire_cc_policy "$TARGET"
