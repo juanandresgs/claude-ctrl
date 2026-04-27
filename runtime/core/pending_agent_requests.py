@@ -11,7 +11,8 @@ Carrier table helpers for SubagentStart contract delivery.
   observed production events (pinned by DEC-CLAUDEX-SA-PAYLOAD-SHAPE-001).
   The orchestrator embeds those fields in tool_input.prompt as a
   CLAUDEX_CONTRACT_BLOCK JSON marker at Agent-dispatch time.
-  pre-agent.sh (PreToolUse:Agent) extracts the block and writes a row to
+  pre-agent.sh (PreToolUse:Agent) forwards the payload to cc-policy evaluate;
+  after agent_contract_required allows the launch, the runtime writes a row to
   pending_agent_requests, keyed by (session_id, agent_type).
   subagent-start.sh atomically reads and deletes the row at SubagentStart
   time, merging the six contract fields into the hook payload so that the
@@ -157,9 +158,9 @@ def consume_pending_request(
 
 
 # ---------------------------------------------------------------------------
-# CLI — called by hooks/pre-agent.sh (write) and hooks/subagent-start.sh
-# (consume) via `python3 pending_agent_requests.py <cmd> <args...>`.
-# Kept minimal: only the two commands the hooks need.
+# CLI — retained for compatibility with older hook tests/manual debugging.
+# The live PreToolUse write path now runs through `cc-policy evaluate`; the
+# consume path is still called by hooks/subagent-start.sh.
 # ---------------------------------------------------------------------------
 
 

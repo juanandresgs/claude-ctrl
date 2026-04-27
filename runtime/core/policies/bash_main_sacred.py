@@ -1,4 +1,4 @@
-"""Policy: bash_main_sacred — deny commits directly on main/master.
+"""Policy: bash_main_sacred — deny non-landing commits directly on main/master.
 
 Port of guard.sh lines 180-204 (Check 4).
 
@@ -6,7 +6,7 @@ Port of guard.sh lines 180-204 (Check 4).
 Title: bash_main_sacred enforces Sacred Practice #2 at the policy layer
 Status: accepted
 Rationale: Feature work must happen in worktrees, not on main. Direct commits
-  to main/master break the branching model and make review impossible. Three
+  to main/master break the branching model and make review impossible. Four
   exceptions are intentional:
     1. Meta-repo (/.claude): config edits by the orchestrator do not follow
        the implementer workflow path.
@@ -15,7 +15,10 @@ Rationale: Feature work must happen in worktrees, not on main. Direct commits
        block the finalization step.
     3. Only MASTER_PLAN.md is staged: planning document updates per Core Dogma
        may land directly on main.
-  These three exceptions exactly mirror guard.sh Check 4.
+    4. Guardian landing: a resolved guardian:land actor with CAN_LAND_GIT may
+       make the final landing commit on main/master after the earlier lease
+       gate and the later test/evaluation gates agree. Main remains sacred for
+       feature work; Guardian landing is the canonical way changes reach main.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import os
 import subprocess
 from typing import Optional
 
+from runtime.core.authority_registry import CAN_LAND_GIT
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
 
@@ -68,6 +72,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
       - is_meta_repo is True
       - MERGE_HEAD exists in target_dir (merge finalisation commit)
       - Only MASTER_PLAN.md is staged
+      - actor has CAN_LAND_GIT (guardian:land canonical landing)
 
     Source: guard.sh lines 180-204 (Check 4).
     """
@@ -75,8 +80,10 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None or invocation.subcommand != "commit":
+    commit_invocations = [
+        op.invocation for op in intent.git_operations if op.invocation.subcommand == "commit"
+    ]
+    if not commit_invocations:
         return None
 
     # Meta-repo bypass.
@@ -97,6 +104,13 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if branch not in ("main", "master"):
         return None
 
+    # Exception: Guardian landing. bash_git_who already proved lease ownership
+    # and CAN_LAND_GIT before this policy runs; bash_test_gate and
+    # bash_eval_readiness still run after this policy. This exception keeps the
+    # canonical path ergonomic while preserving gates around the final commit.
+    if CAN_LAND_GIT in request.context.capabilities:
+        return None
+
     # Exception: merge finalisation commit.
     if _merge_head_exists(target_dir):
         return None
@@ -110,7 +124,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         action="deny",
         reason=(
             f"Cannot commit directly to {branch}. Sacred Practice #2: Main is sacred. "
-            f"Create a worktree first: git worktree add .worktrees/feature-name {branch}"
+            "Do feature work in a Guardian-provisioned worktree, then route final "
+            "landing through guardian:land after review and passing tests."
         ),
         policy_name="bash_main_sacred",
     )

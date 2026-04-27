@@ -55,6 +55,7 @@ EXPECTED_APPROVAL_OP_TYPES: frozenset = frozenset(
         "force_push",
         "destructive_cleanup",
         "non_ff_merge",
+        "plumbing",
         "admin_recovery",
     }
 )
@@ -69,6 +70,7 @@ POLICY_REACHABLE_OP_TYPES: frozenset = frozenset(
         "rebase",
         "reset",
         "non_ff_merge",
+        "plumbing",
         "admin_recovery",
     }
 )
@@ -94,6 +96,7 @@ CANONICAL_GIT_COMMANDS: dict = {
     "rebase": "git rebase main",
     "reset": "git reset HEAD~1",
     "non_ff_merge": "git merge --no-ff feature/bar",
+    "plumbing": "git update-ref refs/heads/main HEAD",
     "admin_recovery": "git merge --abort",
 }
 

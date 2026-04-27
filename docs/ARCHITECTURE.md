@@ -24,10 +24,10 @@ JSON into a policy request and forward the decision.
 - `runtime/core/policy_utils.py` -- Python ports of shell classification
   helpers (is_source_file, is_governance_markdown, extract_git_target_dir,
   classify_git_op, etc.).
-- `runtime/core/policies/` -- 25 registered policy modules (10 write-path
-  + 14 bash-path + 1 agent-launch contract gate).
+- `runtime/core/policies/` -- 29 registered policy modules (10 write-path
+  + 19 Bash/Agent PreToolUse policies).
 
-**25 registered policies:**
+**29 registered policies:**
 
 Write-path (event_types=["Write","Edit"]):
 
@@ -44,23 +44,29 @@ Write-path (event_types=["Write","Edit"]):
 | 700 | doc_gate | Header + @decision annotation enforcement |
 | 750 | mock_gate | Escalating strike: internal mocks in test files |
 
-Bash-path (event_types=["Bash","PreToolUse"]):
+Bash/Agent PreToolUse path (event_types=["Bash","PreToolUse"]):
 
 | Priority | Name | Purpose |
 |----------|------|---------|
 | 100 | bash_tmp_safety | Deny /tmp writes (Sacred Practice #3) |
 | 150 | agent_contract_required | Enforce canonical stage↔subagent Agent contracts |
 | 200 | bash_worktree_cwd | Deny bare cd into .worktrees/ |
+| 250 | bash_worktree_nesting | Prevent nested worktree creation |
+| 275 | bash_write_who | Capability-gated WHO enforcement for shell writes |
 | 300 | bash_git_who | Lease-based WHO enforcement for git ops |
-| 400 | bash_main_sacred | Deny commits on main/master |
+| 350 | bash_worktree_creation | Guardian-only worktree creation |
+| 400 | bash_main_sacred | Deny non-landing commits on main/master; allow `guardian:land` final commits to proceed to test/evaluation gates |
 | 500 | bash_force_push | Deny unsafe force push |
 | 600 | bash_destructive_git | Deny reset --hard, clean -f, branch -D |
+| 625 | bash_stash_ban | Deny stash-based cross-branch shortcuts |
+| 630 | bash_cross_branch_restore_ban | Deny cross-branch restore of forbidden scope paths |
+| 635 | bash_shell_copy_ban | Deny shell copy/move of forbidden scope paths from foreign refs/trees |
 | 700 | bash_worktree_removal | Safe worktree removal enforcement |
 | 800 | bash_test_gate_merge | Test-pass gate for git merge |
 | 850 | bash_test_gate_commit | Test-pass gate for git commit |
 | 900 | bash_eval_readiness | evaluation_state readiness + SHA match |
 | 1000 | bash_workflow_scope | Workflow binding + scope compliance |
-| 1100 | bash_approval_gate | One-shot approval for high-risk git ops |
+| 1100 | bash_approval_gate | One-shot approval for rebase/reset/non-ff merge/admin recovery/direct plumbing |
 
 **CLI entry points:**
 
@@ -83,14 +89,28 @@ their policies now run via the engine during `pre-write.sh`'s evaluate call.
 
 **PreToolUse Bash** -- `hooks/pre-bash.sh` (thin adapter):
 
-Same pattern. Extracts git target directory from the command for cross-repo
-context resolution. All 12 bash-path policies run in priority order.
+Same pattern. The runtime builds structured command intent from the raw command
+for cross-repo context resolution. All 19 Bash/Agent PreToolUse policies are
+registered in priority order; Bash-only policies no-op for Agent/Task and the
+Agent contract policy no-ops for Bash.
 Fail-closed with wrapped hookSpecificOutput on all paths.
+
+**PreToolUse Agent|Task** -- `hooks/pre-agent.sh` (thin adapter):
+
+Normalizes hook JSON, resolves the project policy DB path for carrier writes,
+and calls `cc-policy evaluate`. Runtime policy owns worktree-isolation denial,
+contract shape validation, and stage↔subagent matching. After policy allow,
+`cc-policy evaluate` writes the `pending_agent_requests` carrier row and issues
+the best-effort `dispatch_attempts` row.
 
 **SubagentStart:**
 
-- `hooks/subagent-start.sh` -- registers agent via `cc-policy dispatch
-  agent-start`. Injects role-specific context.
+- `hooks/subagent-start.sh` -- consumes the `pending_agent_requests` carrier,
+  claims dispatch delivery, seats markers/leases, and injects runtime prompt
+  packs for canonical seats. Canonical seats without a carrier-backed contract
+  receive `BLOCKED` context and are not seated. The remaining shell context
+  path is lightweight and non-authoritative for non-canonical helper agents
+  only; canonical role guidance comes from runtime prompt packs and `agents/`.
 
 **SubagentStop:**
 
@@ -118,9 +138,11 @@ The typed runtime owns all shared workflow state:
   marker, evaluation, lease, completion, workflow, test-state, approval,
   event, worktree, statusline, trace, tokens, todos, bug, sidecar, proof
   command groups.
-- **Schema:** 19 SQLite tables in WAL mode. Key tables: evaluation_state,
+- **Schema:** 29 domain SQLite tables plus SQLite's `sqlite_sequence` table in
+  WAL mode. Key tables: evaluation_state,
   dispatch_leases, completion_records, test_state, workflow_bindings,
-  workflow_scope, agent_markers, approvals, events, bugs.
+  workflow_scope, work_items, pending_agent_requests, dispatch_attempts,
+  agent_markers, approvals, events, bugs.
 - **Bridge:** `hooks/lib/runtime-bridge.sh` provides shell wrappers for
   legacy callers. New hooks use `_local_cc_policy()` or direct
   `python3 "$_LOCAL_CLI"` resolution for new subcommands.
@@ -141,7 +163,7 @@ cache. All statusline data derives from runtime projections.
 
 ### Deleted Shell Files (INIT-PE)
 
-- `hooks/guard.sh` (486 LOC) -- 13 checks migrated to 12 bash policies
+- `hooks/guard.sh` (486 LOC) -- 13 checks migrated into runtime policies
 - `hooks/lib/write-policy.sh` (174 LOC) -- 7 checks migrated to write policies
 - `hooks/lib/plan-policy.sh` (97 LOC) -- immutability/decision-log policies
 - `hooks/lib/bash-policy.sh` (26 LOC) -- delegation to guard.sh
@@ -156,8 +178,8 @@ suite is green for two consecutive passes.
 ## Achieved Architecture
 
 1. Canonical prompts in `CLAUDE.md` and `agents/`
-2. Thin hook adapters (`pre-write.sh`, `pre-bash.sh`) calling `cc-policy evaluate`
-3. Python policy engine with 22 registered policies (PolicyRegistry)
+2. Thin hook adapters (`pre-write.sh`, `pre-bash.sh`, `pre-agent.sh`) calling `cc-policy evaluate`
+3. Python policy engine with 29 registered policies (PolicyRegistry)
 4. Typed runtime (`cc-policy` CLI + SQLite) for shared state
 5. Dispatch engine and lifecycle authority in Python
 6. Runtime-backed read models (statusline snapshot)

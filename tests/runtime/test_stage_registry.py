@@ -68,6 +68,7 @@ TARGET_TRANSITIONS: tuple[tuple[str, str, str], ...] = (
     # guardian(land) outgoing
     (sr.GUARDIAN_LAND, "committed", sr.PLANNER),
     (sr.GUARDIAN_LAND, "merged", sr.PLANNER),
+    (sr.GUARDIAN_LAND, "pushed", sr.PLANNER),
     (sr.GUARDIAN_LAND, "denied", sr.IMPLEMENTER),
     (sr.GUARDIAN_LAND, "skipped", sr.PLANNER),
 )
@@ -121,11 +122,11 @@ class TestVerdictVocabularies:
 
     def test_guardian_modes_have_disjoint_outcomes(self):
         # Provision mode has "provisioned" which land mode does not.
-        # Land mode has "committed"/"merged" which provision mode does not.
+        # Land mode has "committed"/"merged"/"pushed" which provision mode does not.
         provision_only = sr.GUARDIAN_PROVISION_VERDICTS - sr.GUARDIAN_LAND_VERDICTS
         land_only = sr.GUARDIAN_LAND_VERDICTS - sr.GUARDIAN_PROVISION_VERDICTS
         assert "provisioned" in provision_only
-        assert {"committed", "merged"} <= land_only
+        assert {"committed", "merged", "pushed"} <= land_only
 
     def test_planner_verdicts_cover_all_continuation_cases(self):
         assert sr.PLANNER_VERDICTS == frozenset(
@@ -242,6 +243,10 @@ class TestOuterLoop:
 
     def test_outer_loop_merged_also_returns_to_planner(self):
         stage = sr.next_stage(sr.GUARDIAN_LAND, "merged")
+        assert stage == sr.PLANNER
+
+    def test_outer_loop_pushed_also_returns_to_planner(self):
+        stage = sr.next_stage(sr.GUARDIAN_LAND, "pushed")
         assert stage == sr.PLANNER
 
     def test_planner_post_landing_continuation_to_next_work_item(self):

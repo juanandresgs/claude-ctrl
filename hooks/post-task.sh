@@ -10,7 +10,7 @@
 # @title Dispatch queue emission on agent stop
 # @status accepted
 # @rationale The canonical flow (planner→guardian(provision)→implementer→
-#   reviewer→guardian(merge)) was previously prompt-driven with no persistent
+#   reviewer→guardian(land)) was previously prompt-driven with no persistent
 #   queue. This hook records
 #   completions in SQLite via cc-policy and suggests next steps, making
 #   the flow visible and auditable without forcing automatic dispatch.

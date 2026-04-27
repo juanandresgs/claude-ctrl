@@ -470,8 +470,15 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None or invocation.subcommand not in ("commit", "merge"):
+    invocation = next(
+        (
+            op.invocation
+            for op in intent.git_operations
+            if op.invocation.subcommand in ("commit", "merge")
+        ),
+        None,
+    )
+    if invocation is None:
         return None
 
     # Meta-repo bypass.

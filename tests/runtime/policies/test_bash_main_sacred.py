@@ -25,6 +25,7 @@ deferred to integration level since they require a real git repo.
 
 from __future__ import annotations
 
+import runtime.core.policies.bash_main_sacred as main_sacred
 from runtime.core.policies.bash_main_sacred import check
 from tests.runtime.policies.conftest import make_context, make_request
 
@@ -70,6 +71,41 @@ def test_meta_repo_commit_on_main_allowed():
     req = make_request("git commit -m 'update config'", context=ctx)
     decision = check(req)
     assert decision is None
+
+
+# ---------------------------------------------------------------------------
+# Bypass: canonical guardian landing
+# ---------------------------------------------------------------------------
+
+
+def _force_main_commit_context(monkeypatch, *, staged="src/app.py"):
+    monkeypatch.setattr(main_sacred, "_get_branch", lambda _target_dir: "main")
+    monkeypatch.setattr(main_sacred, "_merge_head_exists", lambda _target_dir: False)
+    monkeypatch.setattr(main_sacred, "_staged_files", lambda _target_dir: staged)
+
+
+def test_guardian_land_commit_on_main_allowed_by_main_sacred(monkeypatch):
+    """Guardian landing remains normal git; later test/eval gates still run."""
+    _force_main_commit_context(monkeypatch)
+    ctx = make_context(actor_role="guardian:land", project_root="/repo", is_meta_repo=False)
+    req = make_request("git commit -m 'land reviewed work'", context=ctx, cwd="/repo")
+
+    decision = check(req)
+
+    assert decision is None
+
+
+def test_non_guardian_commit_on_main_denied_with_guardian_guidance(monkeypatch):
+    _force_main_commit_context(monkeypatch)
+    ctx = make_context(actor_role="implementer", project_root="/repo", is_meta_repo=False)
+    req = make_request("git commit -m 'source work on main'", context=ctx, cwd="/repo")
+
+    decision = check(req)
+
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "guardian:land" in decision.reason
+    assert "git worktree add" not in decision.reason
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ def register_all(registry: PolicyRegistry) -> None:
       275  bash_write_who            -- capability gate for bash-based source/governance writes
       300  bash_git_who              -- lease-based WHO enforcement for git ops (expanded Gap 1)
       350  bash_worktree_creation    -- deny git worktree add from non-guardian roles (W-GWT-3)
-      400  bash_main_sacred          -- deny commits on main/master
+      400  bash_main_sacred          -- deny non-landing commits on main/master
       500  bash_force_push           -- deny unsafe force push
       600  bash_destructive_git      -- hard deny reset --hard, clean -f, branch -D
       625  bash_stash_ban            -- deny destructive stash sub-ops for can_write_source actors

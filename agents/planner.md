@@ -20,8 +20,8 @@ User's vision to every agent and every commit that follows. Build it to last.
   Principles, Decision Log rows)
 - Do NOT skip the Create-or-Amend detection
 - Do NOT silently skip research — state why you have sufficient knowledge
-- Do NOT end with just "Does this plan look good?" — get explicit approval
-  and establish forward motion
+- Do NOT end with just "Does this plan look good?" — either establish the
+  needed user decision or emit the structured planner trailer for auto-dispatch
 - Do NOT allow implementation to start for any guardian-bound source task
   without an Evaluation Contract and Scope Manifest in the plan
 
@@ -107,7 +107,7 @@ Each guardian-bound work item must include an Evaluation Contract containing:
 - **Required integration points**: adjacent components that must still work
 - **Forbidden shortcuts**: explicitly banned implementation approaches
 - **Ready-for-guardian definition**: the exact conditions under which the
-  evaluator may declare readiness
+  reviewer may declare readiness
 
 ### Scope Manifest
 
@@ -132,4 +132,37 @@ Before presenting the plan, run your internal Quality Gate:
 - No work item relies on narrative completion language instead of measurable
   checks
 
-End your flow seeking explicit user approval.
+End your flow with the planner completion trailer. In a fresh user-gated plan,
+use `needs_user_decision` when the user must approve before work starts. In an
+already-approved bounded workflow, use `next_work_item` when the next
+guardian-bound work item is ready for provisioning.
+
+### Post-Landing Continuation
+
+When planner is invoked after `guardian (land)`, you own the continuation
+decision. Do not bounce to the user merely because multiple follow-up slices are
+possible.
+
+- Emit `PLAN_VERDICT: next_work_item` when the plan, backlog, or runtime already
+  names an unblocked follow-up and its Scope Manifest / Evaluation Contract can
+  be authored now.
+- If several follow-ups are available and the user did not reserve the choice,
+  pick the first unblocked/highest-priority one by plan order, dependency
+  readiness, or risk reduction. Record the rationale in `PLAN_SUMMARY`.
+- Emit `PLAN_VERDICT: needs_user_decision` only for a concrete boundary:
+  mutually exclusive product direction, ambiguous priority with real tradeoffs,
+  missing external credential/access, destructive/history-rewrite action, or
+  irreconcilable agent disagreement.
+- Emit `PLAN_VERDICT: goal_complete` only when the desired end state and
+  continuation rules are satisfied. A plan section listing unscheduled follow-up
+  candidates is evidence for `next_work_item`, not for asking "whatever you want".
+
+## Planner Trailer
+
+Your final output MUST end with this deterministic trailer. No lines may appear
+after it.
+
+```
+PLAN_VERDICT: next_work_item|goal_complete|needs_user_decision|blocked_external
+PLAN_SUMMARY: <one-line summary of the planning result and next action>
+```

@@ -16,8 +16,9 @@ from typing import Optional
 from runtime.core.leases import (
     GitInvocation,
     _shell_tokens,
+    classify_git_invocation,
     classify_git_op,
-    parse_git_invocation,
+    parse_git_invocations,
 )
 from runtime.core.policy_utils import (
     extract_cd_target,
@@ -57,12 +58,22 @@ _WORKTREE_REMOVE_BOOLEAN_FLAGS = frozenset(["-f", "--force"])
 
 
 @dataclass(frozen=True)
+class GitOperationIntent:
+    """One parsed git invocation plus its policy operation class."""
+
+    invocation: GitInvocation
+    op_class: str
+
+
+@dataclass(frozen=True)
 class BashCommandIntent:
     """Structured intent derived from a raw bash command string."""
 
     command: str
     shell_parse_error: bool
     git_invocation: Optional[GitInvocation]
+    git_invocations: tuple[GitInvocation, ...]
+    git_operations: tuple[GitOperationIntent, ...]
     git_op_class: str
     target_cwd: str
     command_cwd: str
@@ -106,6 +117,13 @@ def _extract_git_c_arg(invocation: Optional[GitInvocation]) -> str:
             continue
         break
     return ""
+
+
+def _first_worktree_invocation(invocations: tuple[GitInvocation, ...]) -> Optional[GitInvocation]:
+    for invocation in invocations:
+        if invocation.subcommand == "worktree" and invocation.args:
+            return invocation
+    return None
 
 
 def _extract_worktree_add_target(args: list[str]) -> str:
@@ -219,7 +237,7 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
     """Build a structured command-intent object from raw bash text.
 
     The intent carries the single runtime-owned interpretation of the command:
-      - git_invocation / git_op_class: canonical git classification
+      - git_invocations / git_operations: canonical git classification
       - target_cwd / command_cwd: repo-target and effective execution cwd
       - cd_target*: bare-cd targeting for worktree safety policies
       - worktree_*: explicit add/remove semantics and resolved targets
@@ -235,8 +253,13 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
     except ValueError:
         shell_parse_error = True
 
-    git_invocation = parse_git_invocation(command)
-    git_op_class = classify_git_op(command) if git_invocation is not None else "unclassified"
+    git_invocations = parse_git_invocations(command)
+    git_invocation = git_invocations[0] if git_invocations else None
+    git_operations = tuple(
+        GitOperationIntent(invocation=invocation, op_class=classify_git_invocation(invocation))
+        for invocation in git_invocations
+    )
+    git_op_class = classify_git_op(command) if git_invocations else "unclassified"
     base_cwd = normalize_path(cwd) if cwd else ""
     cd_target = extract_cd_target(command) or ""
     cd_target_resolved = _resolve_from_base(base_cwd or cwd, cd_target) if cd_target else ""
@@ -246,12 +269,13 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
     worktree_action = None
     worktree_target_raw = ""
     worktree_target_resolved = ""
-    if git_invocation is not None and git_invocation.subcommand == "worktree" and git_invocation.args:
-        worktree_action = git_invocation.args[0]
+    worktree_invocation = _first_worktree_invocation(git_invocations)
+    if worktree_invocation is not None:
+        worktree_action = worktree_invocation.args[0]
         if worktree_action == "add":
-            worktree_target_raw = _extract_worktree_add_target(list(git_invocation.args))
+            worktree_target_raw = _extract_worktree_add_target(list(worktree_invocation.args))
         elif worktree_action == "remove":
-            worktree_target_raw = _extract_worktree_remove_target(list(git_invocation.args))
+            worktree_target_raw = _extract_worktree_remove_target(list(worktree_invocation.args))
         if worktree_target_raw:
             anchor = command_cwd or base_cwd or cwd
             worktree_target_resolved = _resolve_from_base(anchor, worktree_target_raw)
@@ -260,6 +284,8 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
         command=command,
         shell_parse_error=shell_parse_error,
         git_invocation=git_invocation,
+        git_invocations=git_invocations,
+        git_operations=git_operations,
         git_op_class=git_op_class,
         target_cwd=target_cwd,
         command_cwd=command_cwd,

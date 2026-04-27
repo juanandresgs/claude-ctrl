@@ -217,7 +217,7 @@ class TestLiveToShadowMapper:
         assert verdict == "provisioned"
 
     def test_guardian_without_mode_defaults_to_land_for_landing_verdicts(self):
-        for verdict in ("committed", "merged", "denied", "skipped"):
+        for verdict in ("committed", "merged", "pushed", "denied", "skipped"):
             stage, shadow_verdict = dispatch_shadow.map_live_to_shadow_stage(
                 "guardian", verdict, ""
             )
@@ -476,6 +476,18 @@ class TestComputeShadowDecision:
         d = dispatch_shadow.compute_shadow_decision(
             live_role="guardian",
             live_verdict="merged",
+            live_next_role="planner",
+            guardian_mode="",
+        )
+        assert d["shadow_next_stage"] == sr.PLANNER
+        assert d["agreed"] is True
+        assert d["reason"] == dispatch_shadow.REASON_PARITY
+
+    def test_guardian_pushed_is_parity(self):
+        """Guardian pushed routes to planner, matching shadow."""
+        d = dispatch_shadow.compute_shadow_decision(
+            live_role="guardian",
+            live_verdict="pushed",
             live_next_role="planner",
             guardian_mode="",
         )

@@ -513,6 +513,16 @@ def test_guardian_merged_routes_to_planner(conn, project_root):
     assert result["error"] is None
 
 
+def test_guardian_pushed_routes_to_planner(conn, project_root):
+    """Guardian pushed → planner (post-guardian continuation)."""
+    wf_id = "wf-guardian-push-001"
+    lease = _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
+    _submit_valid_guardian_completion(conn, lease["lease_id"], wf_id, verdict="pushed")
+    result = process_agent_stop(conn, "guardian", project_root)
+    assert result["next_role"] == "planner"
+    assert result["error"] is None
+
+
 def test_guardian_no_completion_record_returns_error(conn, project_root):
     wf_id = "wf-guardian-004"
     _issue_lease_at(conn, "guardian", project_root, workflow_id=wf_id)
@@ -1321,8 +1331,20 @@ def test_full_planner_guardian_implementer_chain(conn, project_root):
 # ---------------------------------------------------------------------------
 
 
-def _submit_valid_reviewer_completion(conn, lease_id, workflow_id, verdict="ready_for_guardian"):
+def _submit_valid_reviewer_completion(
+    conn,
+    lease_id,
+    workflow_id,
+    verdict="ready_for_guardian",
+    *,
+    head_sha="sha-reviewer-001",
+    findings=None,
+):
     """Submit a valid reviewer completion with the three required fields."""
+    if findings is None:
+        findings = [
+            {"severity": "note", "title": "Minor style", "detail": "Nit pick"},
+        ]
     return completions.submit(
         conn,
         lease_id=lease_id,
@@ -1330,12 +1352,8 @@ def _submit_valid_reviewer_completion(conn, lease_id, workflow_id, verdict="read
         role="reviewer",
         payload={
             "REVIEW_VERDICT": verdict,
-            "REVIEW_HEAD_SHA": "sha-reviewer-001",
-            "REVIEW_FINDINGS_JSON": json.dumps({
-                "findings": [
-                    {"severity": "note", "title": "Minor style", "detail": "Nit pick"},
-                ],
-            }),
+            "REVIEW_HEAD_SHA": head_sha,
+            "REVIEW_FINDINGS_JSON": json.dumps({"findings": findings}),
         },
     )
 
@@ -1344,12 +1362,51 @@ def test_reviewer_ready_for_guardian_routes_to_guardian(conn, project_root):
     """Reviewer (ready_for_guardian) → guardian via _route_from_completion."""
     wf_id = "wf-reviewer-001"
     lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
-    _submit_valid_reviewer_completion(conn, lease["lease_id"], wf_id, verdict="ready_for_guardian")
+    _submit_valid_reviewer_completion(
+        conn,
+        lease["lease_id"],
+        wf_id,
+        verdict="ready_for_guardian",
+        head_sha="sha-ready-001",
+    )
     result = process_agent_stop(conn, "reviewer", project_root)
     assert result["next_role"] == "guardian"
     assert result["error"] is None
     assert result["auto_dispatch"] is True
     assert result["suggestion"].startswith("AUTO_DISPATCH: guardian")
+    state = evaluation.get(conn, wf_id)
+    assert state is not None
+    assert state["status"] == "ready_for_guardian"
+    assert state["head_sha"] == "sha-ready-001"
+
+
+def test_reviewer_ready_with_blocking_findings_fails_closed(conn, project_root):
+    """Reviewer cannot route Guardian when ready verdict has open blocking findings."""
+    wf_id = "wf-reviewer-ready-blocking-001"
+    lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(
+        conn,
+        lease["lease_id"],
+        wf_id,
+        verdict="ready_for_guardian",
+        head_sha="sha-ready-blocking-001",
+        findings=[
+            {
+                "severity": "blocking",
+                "title": "Blocking issue",
+                "detail": "This must prevent Guardian landing.",
+            },
+        ],
+    )
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["next_role"] is None
+    assert result["auto_dispatch"] is False
+    assert "readiness did not converge" in result["error"]
+    state = evaluation.get(conn, wf_id)
+    assert state is not None
+    assert state["status"] == "needs_changes"
+    assert state["head_sha"] == "sha-ready-blocking-001"
+    assert state["blockers"] == 1
 
 
 def test_reviewer_needs_changes_routes_to_implementer_with_worktree(conn, project_root):
@@ -1372,6 +1429,9 @@ def test_reviewer_needs_changes_routes_to_implementer_with_worktree(conn, projec
     assert result["auto_dispatch"] is True
     assert result.get("worktree_path") == worktree
     assert worktree in result["suggestion"]
+    state = evaluation.get(conn, wf_id)
+    assert state is not None
+    assert state["status"] == "needs_changes"
 
 
 def test_reviewer_needs_changes_no_binding_still_routes(conn, project_root):
@@ -1394,6 +1454,9 @@ def test_reviewer_blocked_by_plan_routes_to_planner(conn, project_root):
     assert result["next_role"] == "planner"
     assert result["error"] is None
     assert result["auto_dispatch"] is True
+    state = evaluation.get(conn, wf_id)
+    assert state is not None
+    assert state["status"] == "blocked_by_plan"
 
 
 def test_reviewer_no_completion_record_returns_error(conn, project_root):

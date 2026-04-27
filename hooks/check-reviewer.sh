@@ -13,10 +13,10 @@ set -euo pipefail
 # REVIEW_HEAD_SHA       : <non-empty sha-ish token>
 # REVIEW_FINDINGS_JSON  : <single-line JSON object with "findings" key>
 #
-# This hook does NOT write evaluation_state. Reviewer readiness is owned by
-# the reviewer completion/findings/convergence path (completion_records + the
-# reviewer findings table), not by the legacy tester eval state pipeline that
-# Phase 8 Slice 10 retired.
+# This hook does NOT write evaluation_state. It submits the reviewer completion
+# record; dispatch_engine then projects valid reviewer readiness into
+# evaluation_state after reviewer_convergence checks completion_records and the
+# reviewer findings table. The retired tester eval state pipeline remains gone.
 #
 # @decision DEC-CHECK-REVIEWER-001
 # @title check-reviewer.sh is a thin deterministic SubagentStop adapter for reviewer output

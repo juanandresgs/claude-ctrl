@@ -14,6 +14,8 @@
 #   D: Push by guardian:land role, lease, and ready_for_guardian → allowed (no approval token needed)
 #   E: Merge by guardian:land + guardian lease + ready_for_guardian → allowed
 #   F: Merge --no-ff by implementer role, no lease → denied by Check 3 (high_risk)
+#   G: Commit on main by guardian:land + guardian lease + ready_for_guardian → allowed
+#   H: Multi-line commit-tree + update-ref plumbing → denied by approval gate
 #
 # @decision DEC-GUARD-003
 # @title WHO enforcement uses lease validate_op — no unleased git ops in enforced projects
@@ -366,6 +368,99 @@ run_sub_case_f() {
 }
 
 # ---------------------------------------------------------------------------
+# Sub-case G: Commit on main by guardian:land + active guardian lease +
+# ready_for_guardian → allowed
+#
+# This pins the canonical landing path: main remains sacred for feature work,
+# but Guardian landing on main is normal git once lease, tests, scope, and
+# reviewer readiness are green. No commit-tree/update-ref plumbing is needed.
+# ---------------------------------------------------------------------------
+run_sub_case_g() {
+    WF_ID="check3-main-guardian-land"
+    TMP_DIR="$REPO_ROOT/tmp/${TEST_NAME}-${WF_ID}-$$"
+    TEST_DB="$TMP_DIR/.claude/state.db"
+
+    mkdir -p "$TMP_DIR/.claude"
+    git -C "$TMP_DIR" init -q
+    git -C "$TMP_DIR" config user.email "t@t.com"
+    git -C "$TMP_DIR" config user.name "T"
+    git -C "$TMP_DIR" commit --allow-empty -m "init" -q
+    git -C "$TMP_DIR" branch -M main
+    CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
+
+    trap 'rm -rf "$TMP_DIR"' RETURN
+
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        test-state set "pass" --project-root "$TMP_DIR" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        workflow bind "$WF_ID" "$TMP_DIR" "main" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    _seed_guardian_land_phase "$TEST_DB" "$WF_ID"
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "main" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+
+    local cmd output decision
+    cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'guardian main landing'"
+    output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
+    decision=$(_decision "$output")
+
+    if [[ -z "$output" || "$decision" != "deny" ]]; then
+        pass "G" "main commit by guardian:land with lease + ready_for_guardian allowed"
+    else
+        fail "G" "unexpected deny: $(_reason "$output")"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Sub-case H: Multi-line commit-tree + update-ref plumbing is seen as governed
+# plumbing and denied without an explicit approval token.
+#
+# This is the regression for the historical parser bypass: the hook must not
+# stop after the first git-looking token or lose the newline before update-ref.
+# ---------------------------------------------------------------------------
+run_sub_case_h() {
+    local branch="feature/check3-plumbing-bypass"
+    _setup_repo "$branch" "guardian"
+    trap 'rm -rf "$TMP_DIR"' RETURN
+    _seed_guardian_land_phase "$TEST_DB" "$WF_ID"
+
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" \
+        --worktree-path "$TMP_DIR" \
+        --branch "$branch" \
+        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+
+    local cmd output decision reason
+    cmd=$'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\ngit update-ref refs/heads/main "$COMMIT"'
+    output=$(_run_guard "$cmd" "$TMP_DIR" "$TEST_DB")
+    decision=$(_decision "$output")
+    reason=$(_reason "$output")
+
+    if [[ "$decision" != "deny" ]]; then
+        fail "H" "expected plumbing approval deny, got decision='$decision'"
+        return
+    fi
+    if ! printf '%s' "$reason" | grep -qi "plumbing"; then
+        fail "H" "deny reason should mention plumbing, got: $reason"
+        return
+    fi
+    pass "H" "multi-line commit-tree + update-ref denied as approval-gated plumbing"
+}
+
+# ---------------------------------------------------------------------------
 # Run all sub-cases
 # ---------------------------------------------------------------------------
 echo "=== $TEST_NAME: starting ==="
@@ -376,6 +471,8 @@ run_sub_case_c
 run_sub_case_d
 run_sub_case_e
 run_sub_case_f
+run_sub_case_g
+run_sub_case_h
 
 echo ""
 echo "=== $TEST_NAME: $PASS_COUNT passed, $FAIL_COUNT failed ==="

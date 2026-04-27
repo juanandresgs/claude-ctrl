@@ -2,15 +2,16 @@
 
 Covers the three missing invariants identified in the carrier slice review:
 
-1. pre-agent.sh writes the expected pending_agent_requests row when the payload
-   carries session_id, tool_input.subagent_type, and a CLAUDEX_CONTRACT_BLOCK:
-   line in tool_input.prompt.
+1. The pre-agent.sh -> cc-policy evaluate path writes the expected
+   pending_agent_requests row when the payload carries session_id,
+   tool_input.subagent_type, and a first-line CLAUDEX_CONTRACT_BLOCK: in
+   tool_input.prompt.
 
 2. Negative cases: missing marker line, missing session_id, missing subagent_type,
    and non-Agent tool.  None of these must produce a carrier row.
 
-3. End-to-end: pre-agent.sh writes the carrier row → subagent-start.sh consumes
-   it → runtime-first prompt-pack path fires.  No direct seeding of
+3. End-to-end: pre-agent.sh delegates, cc-policy evaluate writes the carrier
+   row, and subagent-start.sh consumes it → runtime-first prompt-pack path fires. No direct seeding of
    pending_agent_requests is used in this class; the row comes exclusively from
    the hook.
 
@@ -59,11 +60,10 @@ _CONTRACT = {
 
 _CONTRACT_BLOCK_LINE = "CLAUDEX_CONTRACT_BLOCK:" + json.dumps(_CONTRACT)
 
-# Prompt text that embeds the block as a standalone line (grep '^...' match).
+# Prompt text that embeds the block as the first line of the Agent prompt.
 _PROMPT_WITH_BLOCK = (
-    "You are a planner agent. Execute the following slice.\n"
-    + _CONTRACT_BLOCK_LINE
-    + "\nEnd of system context.\n"
+    _CONTRACT_BLOCK_LINE
+    + "\n\nYou are a planner agent. Execute the following slice.\n"
 )
 
 _PROMPT_WITHOUT_BLOCK = "You are a planner agent. No contract block here.\n"
@@ -229,7 +229,7 @@ def _latest_attempt_timeout(db_path: Path) -> int | None:
 
 
 class TestPreAgentCarrierWrite:
-    """pre-agent.sh writes the carrier row when all three ingredients are present."""
+    """pre-agent/evaluate writes the carrier row when all ingredients are present."""
 
     def test_hook_exits_zero(self, carrier_db):
         rc, _out, _err = _run_pre_agent(_agent_payload(), carrier_db)
@@ -250,13 +250,21 @@ class TestPreAgentCarrierWrite:
         assert row["decision_scope"] == _CONTRACT["decision_scope"]
         assert row["generated_at"] == _CONTRACT["generated_at"]
 
-    def test_block_line_at_start_of_line_is_found(self, carrier_db):
-        # Embed the block after several lines of preamble — grep '^' must still find it.
-        prompt = "Line one.\nLine two.\n" + _CONTRACT_BLOCK_LINE + "\nLine three.\n"
+    def test_contract_block_on_first_line_is_found(self, carrier_db):
+        prompt = _CONTRACT_BLOCK_LINE + "\nLine two.\n"
         payload = _agent_payload()
         payload["tool_input"]["prompt"] = prompt
         _run_pre_agent(payload, carrier_db)
         assert _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
+
+    def test_contract_block_after_preamble_no_row_written(self, carrier_db):
+        # The runtime policy requires the contract block on line 1; later
+        # standalone markers are ignored by the carrier writer.
+        prompt = "Line one.\nLine two.\n" + _CONTRACT_BLOCK_LINE + "\nLine three.\n"
+        payload = _agent_payload()
+        payload["tool_input"]["prompt"] = prompt
+        _run_pre_agent(payload, carrier_db)
+        assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
     def test_repeat_write_overwrites_stale_row(self, carrier_db):
         # Two pre-agent calls for the same (session_id, agent_type) must not
@@ -335,7 +343,7 @@ class TestPreAgentCarrierWriteNegative:
         parsed = json.loads(out.strip())
         assert parsed["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = parsed["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "without CLAUDEX_CONTRACT_BLOCK" in reason
+        assert "requires a runtime-issued contract" in reason
         assert "workflow stage-packet" in reason
         assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
@@ -381,7 +389,8 @@ class TestPreAgentCarrierWriteNegative:
         }
         rc, out, _err = _run_pre_agent(payload, carrier_db)
         assert rc == 0
-        assert out.strip() == ""
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "allow"
         assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
     def test_non_agent_tool_no_row_written(self, carrier_db):
@@ -408,7 +417,7 @@ class TestPreAgentCarrierWriteNegative:
 
 
 # ---------------------------------------------------------------------------
-# 3. End-to-end: pre-agent.sh writes → subagent-start.sh consumes → runtime-first
+# 3. End-to-end: pre-agent/evaluate writes → subagent-start consumes → runtime-first
 # ---------------------------------------------------------------------------
 
 
@@ -418,7 +427,7 @@ class TestCarrierEndToEnd:
     """
 
     def test_e2e_runtime_first_path_fires_from_pre_agent_write(self, carrier_db):
-        # Step 1: run pre-agent.sh — this writes the carrier row.
+        # Step 1: run pre-agent.sh — cc-policy evaluate writes the carrier row.
         pre_rc, _pre_out, _pre_err = _run_pre_agent(_agent_payload(), carrier_db)
         assert pre_rc == 0, "pre-agent.sh must succeed before subagent-start can consume"
 
@@ -618,7 +627,8 @@ class TestPreAgentA8ContractShapeDeny:
         """Positive control: fully valid six-field contract passes and writes carrier row."""
         rc, out, _ = _run_pre_agent(_agent_payload(), carrier_db)
         assert rc == 0
-        assert out.strip() == "" or "permissionDecision" not in out  # no deny output
+        parsed = json.loads(out.strip())
+        assert parsed["hookSpecificOutput"]["permissionDecision"] == "allow"
         assert _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
 
@@ -660,9 +670,14 @@ class TestPreAgentA8CarrierWriteFailDeny:
                 parsed = json.loads(out.strip())
                 hso = parsed.get("hookSpecificOutput", {})
                 if hso.get("permissionDecision") == "deny":
-                    assert "carrier_write_failed" in hso["permissionDecisionReason"]
-            # Note: if the DB is bypassed entirely (no session_id path taken),
-            # the test is inconclusive; the primary positive case is above.
+                    reason = hso["permissionDecisionReason"]
+                    assert (
+                        "carrier_write_failed" in reason
+                        or "Policy engine unavailable" in reason
+                    )
+            # A read-only SQLite file can fail before policy evaluation reaches
+            # the carrier effect because connection bootstrap must set WAL mode.
+            # That boundary should still fail closed.
         finally:
             # Restore permissions so tmp_path cleanup can remove the file.
             ro_db.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
@@ -770,7 +785,7 @@ class TestPreAgentCarrierDBRoutingNoEnv:
     """
 
     def test_pre_agent_writes_carrier_when_no_env_but_git_cwd(self, tmp_path):
-        """pre-agent.sh writes carrier row when neither env var is set but cwd is
+        """pre-agent/evaluate writes carrier row when neither env var is set but cwd is
         inside a git tree.  Pre-fix: _CARRIER_DB empty → write silently skipped.
         Post-fix: _resolve_policy_db tier 3 resolves via git rev-parse.
 
@@ -862,13 +877,13 @@ class TestPreAgentCarrierDBRoutingNoEnv:
 class TestPreAgentToSubagentStartRoundTrip:
     """GS1-F-3: end-to-end carrier round-trip with no env vars — git-based resolution.
 
-    pre-agent.sh writes carrier → subagent-start.sh consumes carrier.
+    pre-agent/evaluate writes carrier → subagent-start.sh consumes carrier.
     Both invocations use a tmp git repo and neither CLAUDE_POLICY_DB nor
     CLAUDE_PROJECT_DIR is set.  This is the production-sequence proof.
     """
 
     def test_carrier_round_trip_no_env(self, tmp_path):
-        """pre-agent.sh writes carrier row via git-based DB resolution.
+        """pre-agent/evaluate writes carrier row via git-based DB resolution.
         subagent-start.sh consumes it via the same git-based resolution.
         Both use no CLAUDE_POLICY_DB and no CLAUDE_PROJECT_DIR.
 
@@ -894,7 +909,7 @@ class TestPreAgentToSubagentStartRoundTrip:
 
         env = _env_no_db_vars(repo_root)
 
-        # Step 1: run pre-agent.sh — writes carrier row via git-based resolution.
+        # Step 1: run pre-agent.sh — evaluate writes carrier row via git-based resolution.
         pre_result = subprocess.run(
             ["bash", _PRE_AGENT],
             input=json.dumps(_agent_payload()),

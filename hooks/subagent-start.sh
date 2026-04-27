@@ -159,7 +159,7 @@ elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
     # contract is NOT present (carrier row was missing, or the row had missing/empty
     # required fields so _HAS_CONTRACT is "no"), deny fail-closed via additionalContext
     # with reason canonical_seat_no_carrier_contract.  Do NOT fall through to the
-    # legacy guidance path — that would silently misguide a forged/stripped launch.
+    # shell guidance path — that would silently misguide a forged/stripped launch.
     # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
     _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "$AGENT_TYPE" 2>/dev/null || echo "")
     _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. ${_BOOTSTRAP_GUIDANCE}"
@@ -255,19 +255,24 @@ fi
 # DEC-CLAUDEX-SA-IDENTITY-001: use payload agent_id (not PID) for correlation.
 # When agent_id is absent (no_payload_agent_id guard fired), skip lease claim
 # so dispatch_leases.agent_id is never set to an empty or PID-shaped string.
-if [[ -n "$_PAYLOAD_AGENT_ID" ]]; then
-    _CLAIM=$(rt_lease_claim "$_PAYLOAD_AGENT_ID" "$PROJECT_ROOT" "$_EFFECTIVE_LEASE_ROLE")
+if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
+    if [[ -n "$_PAYLOAD_AGENT_ID" ]]; then
+        _CLAIM=$(rt_lease_claim "$_PAYLOAD_AGENT_ID" "$PROJECT_ROOT" "$_EFFECTIVE_LEASE_ROLE")
+    else
+        _CLAIM='{"found":false}'
+    fi
+    _LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
+    if [[ -n "$_LEASE_ID" ]]; then
+        _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
+        _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
+        _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
+        CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
+    else
+        CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
+    fi
 else
     _CLAIM='{"found":false}'
-fi
-_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
-if [[ -n "$_LEASE_ID" ]]; then
-    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
-    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
-    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
-    CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
-else
-    CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
+    _LEASE_ID=""
 fi
 
 # ---------------------------------------------------------------------------
@@ -280,9 +285,9 @@ fi
 # runtime.core.prompt_pack (build_subagent_start_prompt_pack_response).
 #
 # If the runtime returns an invalid report, surface it clearly as an error
-# additionalContext. Do NOT fall back to the shell-built guidance path:
+# additionalContext. Do NOT fall back to shell-built role guidance:
 # the contract was present, so the caller expected runtime-produced output
-# and the legacy path would silently inject unrelated guidance.
+# and shell role guidance would silently inject unrelated instructions.
 # ---------------------------------------------------------------------------
 if [[ "$_HAS_CONTRACT" == "yes" ]]; then
     _PP_PAYLOAD=$(echo "$HOOK_INPUT" | jq -c \
@@ -299,7 +304,7 @@ if [[ "$_HAS_CONTRACT" == "yes" ]]; then
         echo "$_RT_STDOUT" | jq '.envelope'
         exit 0
     else
-        # Invalid or error: do NOT fall back to legacy guidance path.
+        # Invalid or error: do NOT fall back to shell role guidance.
         # Emit a clear error in additionalContext so the agent can see what failed.
         _ERR_VIOLATIONS=$(echo "$_RT_STDOUT" | jq -r '
           if (.violations | length) > 0 then
@@ -324,17 +329,16 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# Legacy compatibility path (transitional, non-authoritative).
-# This path runs only when the incoming payload does NOT carry the full
-# six-field request contract. It assembles context from shell helpers and
-# git state.
+# Lightweight non-canonical context path.
 #
-# This is NOT a fallback for failed runtime compiles. It is reached only
-# when the contract was never present — typically pre-Phase 3 dispatch
-# paths that have not yet been updated to inject the request contract.
+# Canonical dispatch seats never reach this path:
+#   - contract-bearing seats exit through the runtime prompt-pack path above
+#   - canonical seats without a carrier-backed contract are blocked before
+#     marker/lease seating
 #
-# TODO(Phase 3): Remove this path once all dispatch paths inject the full
-# request contract at invocation time.
+# This remaining path is deliberately sparse and non-authoritative. It exists
+# only for helper/non-canonical agents that do not participate in the governed
+# planner -> guardian -> implementer -> reviewer -> guardian chain.
 # ---------------------------------------------------------------------------
 
 CTX_LINE="Context:"
@@ -348,101 +352,9 @@ else
 fi
 CONTEXT_PARTS+=("$CTX_LINE")
 
-# --- Agent-type-specific context ---
 case "$AGENT_TYPE" in
-    planner|Plan)
-        CONTEXT_PARTS+=("Role: Planner — create MASTER_PLAN.md before any code. Include rationale, architecture, git issues, worktree strategy.")
-        get_research_status "$PROJECT_ROOT"
-        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
-            CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries ($RESEARCH_RECENT_TOPICS). Read .claude/research-log.md before researching — avoid duplicates.")
-        else
-            CONTEXT_PARTS+=("No prior research. /deep-research for tech comparisons, /last30days for community sentiment.")
-        fi
-        ;;
-    implementer)
-        # Inject worktree path from lease context (DEC-GUARD-WT-003, W-GWT-3).
-        # Guardian provisions the worktree and issues an implementer lease that
-        # carries worktree_path. We surface it here so the agent knows its
-        # working directory without re-inferring from environment.
-        # If no lease was found (no worktree provisioned yet), warn — Guard.sh
-        # will deny high-risk git ops and the orchestrator should dispatch
-        # Guardian in provision mode before this implementer proceeds.
-        if [[ -n "$_LEASE_ID" ]]; then
-            _WT_PATH=$(printf '%s' "$_CLAIM" | jq -r '.lease.worktree_path // empty' 2>/dev/null || true)
-            if [[ -n "$_WT_PATH" ]]; then
-                CONTEXT_PARTS+=("Worktree: $_WT_PATH (provisioned by Guardian)")
-            else
-                CONTEXT_PARTS+=("WARNING: No worktree detected. Guardian should have provisioned one. Check dispatch context for worktree_path.")
-            fi
-        else
-            CONTEXT_PARTS+=("WARNING: No worktree detected. Guardian should have provisioned one. Check dispatch context for worktree_path.")
-        fi
-        CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to 50+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
-
-        # Bind workflow to runtime so guard.sh Check 12 and later roles can
-        # discover the worktree path without inferring from CWD or git state.
-        # WS1: if a lease was claimed, use the lease's workflow_id for the binding
-        # so that all subsequent hooks (check-reviewer, check-guardian, guard.sh)
-        # see the same workflow_id. Branch-derived id is the fallback only when
-        # no lease was claimed.
-        _WF_ID=""
-        if [[ -n "$_LEASE_ID" ]]; then
-            _WF_ID=$(printf '%s' "$_CLAIM" | jq -r '.lease.workflow_id // .workflow_id // empty' 2>/dev/null || true)
-        fi
-        [[ -z "$_WF_ID" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
-        _WF_WORKTREE="$PROJECT_ROOT"
-        _WF_BRANCH="${GIT_BRANCH:-unknown}"
-        rt_workflow_bind "$_WF_ID" "$_WF_WORKTREE" "$_WF_BRANCH" || true
-        CONTEXT_PARTS+=("Workflow binding: id=$_WF_ID worktree=$_WF_WORKTREE branch=$_WF_BRANCH")
-
-        # Check for workflow_id mismatch: scope loaded for different workflow_id
-        _SCOPE_CHECK=$(cc_policy workflow scope-get "$_WF_ID" 2>/dev/null) || _SCOPE_CHECK=""
-        _SCOPE_FOUND=$(printf '%s' "${_SCOPE_CHECK:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
-        if [[ "$_SCOPE_FOUND" != "yes" ]]; then
-            CONTEXT_PARTS+=("WARNING: No scope manifest found for workflow_id '$_WF_ID'. Planner should set scope via 'cc-policy workflow scope-set' before commit. Guard.sh will deny commit without scope.")
-        fi
-
-        # Inject test status (WS3: via rt_test_state_get from SQLite authority)
-        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
-        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
-        _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
-        if [[ "$_TS_STATUS" == "fail" ]]; then
-            CONTEXT_PARTS+=("WARNING: Tests currently FAILING ($_TS_FAILS failures). Fix before proceeding.")
-        fi
-        get_research_status "$PROJECT_ROOT"
-        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
-            CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
-        fi
-        CONTEXT_PARTS+=("HANDOFF: Implementers do not own proof-of-work anymore. Gather test output, capture how to run the feature, and hand off to Reviewer for independent verification before Guardian commits.")
-        ;;
-    guardian)
-        CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, and escalate to the user only for destructive/history-rewrite ops, ambiguous publish targets, or irreconcilable reviewer/implementer conflict.")
-        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. Before doing so, require passing tests and evaluation_state = ready_for_guardian (set by Reviewer via REVIEW_VERDICT trailer). Straightforward push to the established upstream is part of normal Guardian landing, not a separate approval gate.")
-        # Inject test status (WS3: via rt_test_state_get from SQLite authority)
-        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
-        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
-        _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
-        if [[ "$_TS_STATUS" == "fail" ]]; then
-            CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($_TS_FAILS failures). Do NOT commit/merge until tests pass.")
-        fi
-        ;;
-    reviewer)
-        # Inject current evaluation state so the reviewer knows the context.
-        if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-            _EVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
-            _EVAL_STATUS=$(rt_eval_get "$_EVAL_WF" 2>/dev/null || echo "idle")
-            CONTEXT_PARTS+=("Evaluation state: workflow=$_EVAL_WF status=$_EVAL_STATUS")
-        fi
-        CONTEXT_PARTS+=("Role: Reviewer — you are the read-only technical readiness authority. Inspect the diff, run and verify required tests where possible, and produce structured findings. Do NOT modify source code or land git operations.")
-        CONTEXT_PARTS+=("Scope: Read the implementer's changes, run tests, assess code quality, security, and architectural conformance. Produce per-finding structured assessments.")
-        CONTEXT_PARTS+=("REQUIRED OUTPUT TRAILERS: Your final response MUST include these lines verbatim (replace values):")
-        CONTEXT_PARTS+=("  REVIEW_VERDICT: ready_for_guardian|needs_changes|blocked_by_plan")
-        CONTEXT_PARTS+=("  REVIEW_HEAD_SHA: <current HEAD git sha>")
-        CONTEXT_PARTS+=("  REVIEW_FINDINGS_JSON: {\"findings\": [{\"severity\": \"<blocking|concern|note>\", \"title\": \"<short title>\", \"detail\": \"<explanation>\"}]}")
-        CONTEXT_PARTS+=("These trailers are machine-parsed by check-reviewer.sh. Invalid or missing REVIEW_* trailers produce an invalid completion and post-task will not auto-dispatch.")
-        ;;
-    Bash|Explore)
-        # Lightweight agents — minimal context
+    ""|Bash|Explore|general-purpose|statusline-setup)
+        # Lightweight agents — Context line only.
         ;;
     *)
         CONTEXT_PARTS+=("Agent type: ${AGENT_TYPE:-unknown}")

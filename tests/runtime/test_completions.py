@@ -155,6 +155,15 @@ def test_validate_guardian_all_required_valid_verdict():
     assert result["missing_fields"] == []
 
 
+def test_validate_guardian_pushed_valid_verdict():
+    payload = _valid_guardian_payload()
+    payload["LANDING_RESULT"] = "pushed"
+    result = completions.validate_payload("guardian", payload)
+    assert result["valid"] is True
+    assert result["verdict"] == "pushed"
+    assert result["missing_fields"] == []
+
+
 def test_validate_guardian_missing_landing_result():
     payload = _valid_guardian_payload()
     del payload["LANDING_RESULT"]
@@ -344,6 +353,11 @@ def test_determine_next_role_guardian_committed_routes_to_planner():
 def test_determine_next_role_guardian_merged_routes_to_planner():
     """Phase 6 Slice 5: guardian merged → planner (post-guardian continuation)."""
     assert completions.determine_next_role("guardian", "merged") == "planner"
+
+
+def test_determine_next_role_guardian_pushed_routes_to_planner():
+    """Guardian pushed → planner (post-guardian continuation)."""
+    assert completions.determine_next_role("guardian", "pushed") == "planner"
 
 
 def test_determine_next_role_guardian_denied():

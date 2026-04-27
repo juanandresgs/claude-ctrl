@@ -254,7 +254,7 @@ def _pre_agent_payload(
         "generated_at": 1_700_000_000,
     }
     block_line = "CLAUDEX_CONTRACT_BLOCK:" + json.dumps(contract)
-    prompt = f"You are a {stage_id} agent.\n{block_line}\nBegin.\n"
+    prompt = f"{block_line}\nYou are a {stage_id} agent.\nBegin.\n"
     return {
         "session_id": session_id,
         "tool_name": "Agent",

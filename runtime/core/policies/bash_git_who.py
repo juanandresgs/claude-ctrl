@@ -71,6 +71,7 @@ from runtime.core.authority_registry import (
     READ_ONLY_REVIEW,
     actor_matches_lease_role,
 )
+from runtime.core.leases import op_class_label
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
 # @decision DEC-WHO-LANDING-001
@@ -81,6 +82,9 @@ from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 # admin_recovery ops (e.g. merge --abort) are exempt — they undo state,
 # not land code.
 _LANDING_SUBCOMMANDS = frozenset({"commit", "merge", "push"})
+_PLUMBING_SUBCOMMANDS = frozenset(
+    {"commit-tree", "update-ref", "symbolic-ref", "filter-branch", "filter-repo"}
+)
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Deny git operations requiring a Guardian lease when no valid active lease covers the op.
@@ -101,8 +105,10 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    op_class = intent.git_op_class
-    if op_class == "unclassified":
+    git_operations = tuple(
+        op for op in intent.git_operations if op.op_class != "unclassified"
+    )
+    if not git_operations:
         return None
 
     # Meta-repo bypass.
@@ -211,25 +217,6 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             effects={"expire_stale_leases": True},
         )
 
-    # CAN_LAND_GIT capability gate (DEC-WHO-LANDING-001): landing subcommands
-    # require CAN_LAND_GIT. admin_recovery ops (merge --abort) are exempt.
-    if (
-        intent.git_invocation
-        and intent.git_invocation.subcommand in _LANDING_SUBCOMMANDS
-        and op_class != "admin_recovery"
-    ):
-        if CAN_LAND_GIT not in request.context.capabilities:
-            return PolicyDecision(
-                action="deny",
-                reason=(
-                    f"Landing authority required: git {intent.git_invocation.subcommand} "
-                    f"requires the {CAN_LAND_GIT} capability. Only guardian:land "
-                    f"carries this capability. Current actor "
-                    f"'{request.context.actor_role}' does not have it."
-                ),
-                policy_name="bash_git_who",
-            )
-
     try:
         allowed_ops = json.loads(lease.get("allowed_ops_json") or "[]")
         blocked_ops = json.loads(lease.get("blocked_ops_json") or "[]")
@@ -237,26 +224,63 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         allowed_ops = ["routine_local"]
         blocked_ops = []
 
-    if op_class in blocked_ops:
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                f"Execution contract denied: op_class '{op_class}' is in blocked_ops. "
-                "Check lease allowed_ops or evaluation_state."
-            ),
-            policy_name="bash_git_who",
-        )
+    # CAN_LAND_GIT capability gate (DEC-WHO-LANDING-001): landing subcommands
+    # require CAN_LAND_GIT. admin_recovery ops (merge --abort) are exempt.
+    for operation in git_operations:
+        invocation = operation.invocation
+        op_class = operation.op_class
+        if (
+            invocation.subcommand in _LANDING_SUBCOMMANDS
+            and op_class != "admin_recovery"
+        ):
+            if CAN_LAND_GIT not in request.context.capabilities:
+                return PolicyDecision(
+                    action="deny",
+                    reason=(
+                        f"Landing authority required: git {invocation.subcommand} "
+                        f"requires the {CAN_LAND_GIT} capability. Only guardian:land "
+                        f"carries this capability. Current actor "
+                        f"'{request.context.actor_role}' does not have it."
+                    ),
+                    policy_name="bash_git_who",
+                )
+        if invocation.subcommand in _PLUMBING_SUBCOMMANDS:
+            if CAN_LAND_GIT not in request.context.capabilities:
+                return PolicyDecision(
+                    action="deny",
+                    reason=(
+                        f"Direct git plumbing (`git {invocation.subcommand}`) requires "
+                        f"the {CAN_LAND_GIT} capability. Use the canonical Guardian "
+                        "landing path (`git commit`, plain `git merge`, or straightforward "
+                        "`git push`) under guardian:land instead."
+                    ),
+                    policy_name="bash_git_who",
+                )
 
-    if op_class not in allowed_ops:
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                f"Execution contract denied: op_class '{op_class}' not in "
-                f"allowed_ops {allowed_ops}. "
-                "Check lease allowed_ops or evaluation_state."
-            ),
-            policy_name="bash_git_who",
-        )
+    for operation in git_operations:
+        op_class = operation.op_class
+        if op_class in blocked_ops:
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    f"Execution contract denied: {op_class_label(op_class)} operation "
+                    f"is blocked by this lease: in blocked_ops "
+                    f"(internal op_class '{op_class}'). "
+                    "Check lease allowed_ops or evaluation_state."
+                ),
+                policy_name="bash_git_who",
+            )
+        if op_class not in allowed_ops:
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    f"Execution contract denied: {op_class_label(op_class)} operation "
+                    f"is not in allowed_ops {allowed_ops} "
+                    f"(internal op_class '{op_class}'). "
+                    "Check lease allowed_ops or evaluation_state."
+                ),
+                policy_name="bash_git_who",
+            )
 
     return None
 

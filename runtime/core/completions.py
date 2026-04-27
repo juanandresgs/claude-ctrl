@@ -38,8 +38,8 @@ Rationale: Subagents currently signal completion via freeform prose trailers
   share a single authoritative mapping instead of duplicating role-transition
   logic in bash and Python separately. Planner, implementer, and reviewer
   routing are all derived from stage_registry.next_stage() via _STAGE_TO_ROLE
-  so the transition table is not duplicated. Guardian routes remain as a
-  literal table. Unknown roles (including the retired ``tester``) return None.
+  so the transition table is not duplicated. Unknown roles (including the
+  retired ``tester``) return None.
 """
 
 from __future__ import annotations
@@ -49,7 +49,12 @@ import sqlite3
 import time
 from typing import Optional
 
-from runtime.core.stage_registry import PLANNER_VERDICTS, REVIEWER_VERDICTS
+from runtime.core.stage_registry import (
+    GUARDIAN_LAND_VERDICTS,
+    GUARDIAN_PROVISION_VERDICTS,
+    PLANNER_VERDICTS,
+    REVIEWER_VERDICTS,
+)
 from runtime.schemas import FINDING_SEVERITIES
 
 # ---------------------------------------------------------------------------
@@ -75,10 +80,9 @@ ROLE_SCHEMAS: dict = {
     # sole evaluator-side schema.
     "guardian": {
         "required": ["LANDING_RESULT", "OPERATION_CLASS"],
-        # "provisioned" is the W-GWT-1 verdict for worktree provisioning mode.
-        # It routes guardian -> implementer so the planner -> guardian ->
-        # implementer chain is complete (DEC-GUARD-WT-001).
-        "valid_verdicts": frozenset({"committed", "merged", "denied", "skipped", "provisioned"}),
+        # Guardian is one live role backed by two compound stages. The schema
+        # accepts the union; routing still delegates to stage_registry.
+        "valid_verdicts": GUARDIAN_PROVISION_VERDICTS | GUARDIAN_LAND_VERDICTS,
         "verdict_field": "LANDING_RESULT",
     },
     "implementer": {

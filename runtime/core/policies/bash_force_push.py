@@ -36,12 +36,21 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    invocation = intent.git_invocation
-    if invocation is None or invocation.subcommand != "push":
+    push_invocations = [
+        op.invocation for op in intent.git_operations if op.invocation.subcommand == "push"
+    ]
+    if not push_invocations:
         return None
 
-    canonical = " ".join(invocation.argv)
+    for invocation in push_invocations:
+        decision = _check_push_invocation(invocation)
+        if decision is not None:
+            return decision
+    return None
 
+
+def _check_push_invocation(invocation) -> Optional[PolicyDecision]:
+    canonical = " ".join(invocation.argv)
     if not re.search(r"(^| )git\b.*\bpush\b.*(-f\b|--force\b)", canonical):
         return None
 

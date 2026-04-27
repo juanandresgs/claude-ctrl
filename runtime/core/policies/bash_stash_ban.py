@@ -75,13 +75,14 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     # Gate 2: require pre-parsed git invocation (Rule B compliant — no raw split).
     intent = request.command_intent
-    if intent is None or intent.git_invocation is None:
+    if intent is None or not intent.git_invocations:
         return None
 
-    invocation = intent.git_invocation
-
-    # Gate 3: must be a stash command.
-    if invocation.subcommand != "stash":
+    invocation = next(
+        (candidate for candidate in intent.git_invocations if candidate.subcommand == "stash"),
+        None,
+    )
+    if invocation is None:
         return None
 
     # Gate 4: extract sub-op from pre-parsed args.

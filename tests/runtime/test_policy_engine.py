@@ -131,6 +131,39 @@ def test_policy_request_auto_builds_bash_command_intent():
     assert req.command_intent.git_op_class == "unclassified"
 
 
+def test_policy_request_command_intent_collects_all_git_invocations():
+    req = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={
+            "command": 'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
+            'git update-ref refs/heads/main "$COMMIT"'
+        },
+        context=PolicyContext(
+            actor_role="guardian:land",
+            actor_id="agent-test",
+            workflow_id="test-workflow",
+            worktree_path="/tmp/test",
+            branch="main",
+            project_root="/tmp/test",
+            is_meta_repo=False,
+            lease=None,
+            scope=None,
+            eval_state=None,
+            test_state=None,
+            binding=None,
+            dispatch_phase=None,
+        ),
+        cwd="/tmp/test",
+    )
+    assert req.command_intent is not None
+    assert [op.invocation.subcommand for op in req.command_intent.git_operations] == [
+        "commit-tree",
+        "update-ref",
+    ]
+    assert req.command_intent.git_op_class == "high_risk"
+
+
 # ---------------------------------------------------------------------------
 # evaluate: single deny policy
 # ---------------------------------------------------------------------------

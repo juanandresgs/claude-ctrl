@@ -585,7 +585,7 @@ class TestContractBlockLineFormat:
         assert result["contract_block_line"].startswith("CLAUDEX_CONTRACT_BLOCK:")
 
     def test_no_leading_whitespace(self, conn):
-        # grep '^CLAUDEX_CONTRACT_BLOCK:' requires the marker at column 0.
+        # The runtime first-line parser requires the marker at column 0.
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
         assert not result["contract_block_line"][0].isspace()
 
@@ -611,11 +611,10 @@ class TestContractBlockLineFormat:
         assert result["prompt_prefix"].startswith(result["contract_block_line"])
 
     def test_prompt_prefix_block_line_at_line_start(self, conn):
-        # Simulate what pre-agent.sh does: split into lines, grep '^CLAUDEX_CONTRACT_BLOCK:'.
+        # Simulate what the pre-agent/runtime contract path accepts.
         result = build_agent_dispatch_prompt(conn, workflow_id="wf-ap", stage_id="planner")
         lines = result["prompt_prefix"].splitlines()
-        matching = [l for l in lines if l.startswith("CLAUDEX_CONTRACT_BLOCK:")]
-        assert len(matching) >= 1, "pre-agent.sh grep must find the block line"
+        assert lines[0].startswith("CLAUDEX_CONTRACT_BLOCK:")
 
     def test_contract_dict_matches_block_line_json(self, conn):
         result = build_agent_dispatch_prompt(
@@ -766,20 +765,16 @@ class TestCLIErrorCases:
 
 class TestCLIOutputCompatibleWithPreAgent:
     """The contract_block_line returned by the CLI must be embeddable in a
-    prompt string and detectable by pre-agent.sh's grep '^CLAUDEX_CONTRACT_BLOCK:'."""
+    prompt string as the first line consumed by pre-agent.sh."""
 
     def test_block_line_grep_detectable(self, db):
-        """Simulate what pre-agent.sh does: embed the block line in a prompt,
-        then check that the grep pattern would find it."""
+        """Simulate what pre-agent.sh accepts: the block line starts the prompt."""
         _rc, out, _err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")
         parsed = json.loads(out.strip())
         block_line = parsed["contract_block_line"]
 
-        # Simulate the prompt text the orchestrator would build.
-        prompt_text = f"You are the planner agent.\n{block_line}\nBegin your task.\n"
-        # grep '^CLAUDEX_CONTRACT_BLOCK:' on each line:
-        matching = [l for l in prompt_text.splitlines() if l.startswith("CLAUDEX_CONTRACT_BLOCK:")]
-        assert len(matching) == 1
+        prompt_text = f"{block_line}\n\nBegin your task.\n"
+        assert prompt_text.splitlines()[0] == block_line
 
     def test_block_line_json_parseable_as_contract(self, db):
         _rc, out, _err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")
