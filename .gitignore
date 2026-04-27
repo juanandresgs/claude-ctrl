@@ -10,6 +10,7 @@ state.db-shm
 state.db-wal
 tmp/*
 .claude/
+.codex/hooks/
 .codex/config.local.toml
 telemetry/
 
