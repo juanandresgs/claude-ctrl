@@ -451,4 +451,5 @@ def test_launchers_delegate_auto_submit_lifecycle_to_watchdog() -> None:
     assert 'nohup "$AUTO_SUBMIT_SCRIPT"' not in bridge_up
     assert 'bash ./scripts/claudex-auto-submit.sh' not in overnight_start
     assert 'nohup "${ROOT}/scripts/claudex-watchdog.sh"' in bridge_up
-    assert 'exec bash ./scripts/claudex-watchdog.sh' in overnight_start
+    assert 'bash ./scripts/claudex-watchdog.sh --tmux-target' in overnight_start
+    assert 'watchdog.pid' in overnight_start

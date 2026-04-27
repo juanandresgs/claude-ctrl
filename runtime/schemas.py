@@ -1115,12 +1115,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         # Seed enforcement_config global defaults if not yet present.
         # INSERT OR IGNORE means this is idempotent — re-running ensure_schema()
         # will not overwrite values that have been deliberately changed.
-        # Fail-safe defaults: all review gates on, provider=codex.
+        # Fail-safe defaults: regular Stop review on, implementer critic on,
+        # provider=codex.
         # (DEC-CONFIG-AUTHORITY-001)
         _defaults = [
             ("global", "critic_enabled_implementer_stop", "true"),
             ("global", "critic_retry_limit", "2"),
-            ("global", "review_gate_subagent_stop", "true"),
             ("global", "review_gate_regular_stop", "true"),
             ("global", "review_gate_provider", "codex"),
         ]

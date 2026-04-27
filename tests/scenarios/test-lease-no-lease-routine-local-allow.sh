@@ -56,7 +56,7 @@ _setup() {
     CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -136,18 +136,9 @@ run_sub_case_c() {
     _setup "$branch"
     trap '_teardown' RETURN
 
-    # Create a second branch to merge from, with eval set up for its workflow_id
+    # Create a second branch to merge from. Check 3 denies before merge-source
+    # workflow/evaluation state is consulted.
     (cd "$TMP_DIR" && git checkout -b "feature/merge-source" -q && git commit --allow-empty -m "src" -q)
-    local merge_wf
-    merge_wf=$(printf '%s' "feature/merge-source" | tr '/: ' '---' | tr -cd '[:alnum:]._-')
-    local merge_head
-    merge_head=$(git -C "$TMP_DIR" rev-parse HEAD)
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        evaluation set "$merge_wf" "ready_for_guardian" --head-sha "$merge_head" >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow bind "$merge_wf" "$TMP_DIR" "feature/merge-source" >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow scope-set "$merge_wf" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
     (cd "$TMP_DIR" && git checkout "$branch" -q)
 
     local cmd output decision reason

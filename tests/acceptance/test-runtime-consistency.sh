@@ -3,13 +3,13 @@
 # consistent: what is written through one path is readable through another.
 #
 # Four round-trip sequences tested:
-#   1. Write proof via context-lib.sh write_proof_status
-#      -> read via cc-policy proof get -> same value
+#   1. Write evaluation state via runtime-bridge.sh rt_eval_set
+#      -> read via cc-policy evaluation get -> same value
 #   2. Write marker via cc-policy marker set
 #      -> read via cc-policy marker get-active -> same role
 #   3. Emit event via cc-policy event emit
 #      -> query via cc-policy event query -> event present
-#   4. Populate runtime state (proof + marker + worktree + dispatch + events)
+#   4. Populate runtime state (evaluation + marker + worktree + dispatch + events)
 #      -> cc-policy statusline snapshot reflects all of the above
 #
 # Each test uses an isolated DB (CLAUDE_POLICY_DB) so the real state.db is
@@ -47,7 +47,7 @@ mkdir -p "$TMP_DIR"
 
 # cc-policy helper scoped to the test DB
 policy() {
-    CLAUDE_POLICY_DB="$DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
+    CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
 }
 
 assert_eq() {
@@ -73,28 +73,26 @@ assert_jq_true() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: proof round-trip through runtime-bridge.sh
-#   write_proof_status (context-lib.sh) -> rt_proof_set (bridge) -> cc-policy
-#   proof get -> same status string
+# Test 1: evaluation round-trip through runtime-bridge.sh
+#   rt_eval_set (bridge) -> cc-policy evaluation get -> same status string
 # ---------------------------------------------------------------------------
-printf '\n-- 1: proof round-trip (bridge write -> CLI read)\n'
+printf '\n-- 1: evaluation round-trip (bridge write -> CLI read)\n'
 
-# Source the bridge and write proof through it
 WORKFLOW="wf-consistency-test"
 (
     CLAUDE_POLICY_DB="$DB"
     export CLAUDE_POLICY_DB
     # shellcheck source=/dev/null
     source "$BRIDGE"
-    rt_proof_set "$WORKFLOW" "verified"
+    rt_eval_set "$WORKFLOW" "ready_for_guardian" "abc123"
 )
 
-result=$(policy proof get "$WORKFLOW")
+result=$(policy evaluation get "$WORKFLOW")
 status=$(printf '%s' "$result" | jq -r '.status // empty')
-assert_eq "proof round-trip: status is verified" "verified" "$status"
+assert_eq "evaluation round-trip: status is ready_for_guardian" "ready_for_guardian" "$status"
 
 found=$(printf '%s' "$result" | jq -r '.found // false')
-assert_eq "proof round-trip: found is true" "true" "$found"
+assert_eq "evaluation round-trip: found is true" "true" "$found"
 
 # ---------------------------------------------------------------------------
 # Test 2: marker round-trip
@@ -104,8 +102,8 @@ printf '\n-- 2: marker round-trip (CLI write -> CLI read)\n'
 
 # Phase 8 Slice 11 retired the legacy ``tester`` role; the marker round-trip
 # is exercised against ``reviewer`` (the live read-only evaluator).
-policy marker set "agent-rt-001" "reviewer" >/dev/null
-result=$(policy marker get-active)
+policy marker set "agent-rt-001" "reviewer" --project-root "$TMP_DIR" >/dev/null
+result=$(policy marker get-active --project-root "$TMP_DIR")
 
 role=$(printf '%s' "$result" | jq -r '.role // empty')
 agent_id=$(printf '%s' "$result" | jq -r '.agent_id // empty')
@@ -137,9 +135,8 @@ assert_eq "event round-trip: type preserved" "acceptance.probe" "$ev_type"
 # ---------------------------------------------------------------------------
 printf '\n-- 4: statusline snapshot reflects populated runtime state\n'
 
-# Add a worktree and a dispatch cycle so snapshot has non-default values
+# Add a worktree and reviewer completion so snapshot has non-default values
 policy worktree register "/tmp/rt-wt-a" "feature/rt-a" --ticket "TKT-014" >/dev/null
-cycle_json=$(policy dispatch cycle-start "INIT-RT-TEST")
 
 # DEC-WS6-001: dispatch_status is derived from the latest completion record via
 # determine_next_role(role, verdict), not from dispatch_queue. Issue a reviewer
@@ -176,8 +173,6 @@ assert_eq "snapshot: active_agent reviewer" "reviewer" "$(printf '%s' "$snap" | 
 assert_jq_true "snapshot: worktree_count >= 1" "$snap" "(.worktree_count >= 1)"
 assert_eq "snapshot: dispatch_status guardian" "guardian" \
     "$(printf '%s' "$snap" | jq -r '.dispatch_status')"
-assert_eq "snapshot: dispatch_initiative" "INIT-RT-TEST" \
-    "$(printf '%s' "$snap" | jq -r '.dispatch_initiative')"
 assert_jq_true "snapshot: recent_event_count >= 1" "$snap" "(.recent_event_count >= 1)"
 assert_jq_true "snapshot: snapshot_at is positive epoch" "$snap" "(.snapshot_at > 0)"
 

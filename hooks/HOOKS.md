@@ -94,8 +94,6 @@ Generator version: `1.0.0`
   - _Surface diagnostics at turn end (CUTOVER_PLAN O2 read-only)._
 - matcher `(unconditional)` → `hooks/session-summary.sh`
   - _Stop-time summarization (CUTOVER_PLAN H5 Partial)._
-- matcher `(unconditional)` → `hooks/forward-motion.sh`
-  - _Advisory Stop-time forward-motion hint; never blocks turn completion._
 
 ## SessionEnd
 

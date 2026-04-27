@@ -472,13 +472,6 @@ HOOK_MANIFEST: Tuple[HookManifestEntry, ...] = (
         STATUS_ACTIVE,
         "Stop-time summarization (CUTOVER_PLAN H5 Partial).",
     ),
-    _e(
-        "Stop",
-        "",
-        "hooks/forward-motion.sh",
-        STATUS_ACTIVE,
-        "Advisory Stop-time forward-motion hint; never blocks turn completion.",
-    ),
     # --- SessionEnd -----------------------------------------------------
     _e(
         "SessionEnd",

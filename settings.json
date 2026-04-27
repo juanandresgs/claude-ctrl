@@ -258,11 +258,6 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
-          },
-          {
-            "type": "command",
             "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
@@ -288,11 +283,6 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
-          },
-          {
-            "type": "command",
             "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
@@ -313,11 +303,6 @@
           },
           {
             "type": "command",
-            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
-          },
-          {
-            "type": "command",
             "command": "$HOME/.claude/hooks/post-task.sh",
             "timeout": 5
           }
@@ -335,11 +320,6 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/check-reviewer.sh",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node $HOME/.claude/sidecars/codex-review/scripts/stop-review-gate-hook.mjs",
-            "timeout": 900
           },
           {
             "type": "command",
@@ -372,11 +352,6 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/session-summary.sh",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/forward-motion.sh",
-            "timeout": 5
           },
           {
             "type": "command",

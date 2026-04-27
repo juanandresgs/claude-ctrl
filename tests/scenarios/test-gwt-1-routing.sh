@@ -81,6 +81,46 @@ submit_completion() {
         --payload "$payload" >/dev/null 2>&1 || true
 }
 
+# Helper: seed the current planner contract path. Planner routing requires an
+# active planner lease, a valid completion record, and an active goal contract.
+seed_planner_next_work_item() {
+    local wf_id="$1"
+    local wt_path="$2"
+    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$wt_path" "$wf_id" <<'PYEOF'
+import sqlite3, sys
+from runtime.core import completions, decision_work_registry as dwr, leases
+from runtime.schemas import ensure_schema
+
+db_path, worktree_path, workflow_id = sys.argv[1], sys.argv[2], sys.argv[3]
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+ensure_schema(conn)
+dwr.insert_goal(
+    conn,
+    dwr.GoalRecord(
+        goal_id=workflow_id,
+        desired_end_state="GWT routing scenario goal",
+        status="active",
+        autonomy_budget=5,
+    ),
+)
+lease = leases.issue(
+    conn,
+    role="planner",
+    workflow_id=workflow_id,
+    worktree_path=worktree_path,
+)
+completions.submit(
+    conn,
+    lease_id=lease["lease_id"],
+    workflow_id=workflow_id,
+    role="planner",
+    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "scenario"},
+)
+conn.close()
+PYEOF
+}
+
 # Helper: build a reviewer completion payload with valid REVIEW_FINDINGS_JSON.
 make_reviewer_payload() {
     local verdict="$1"
@@ -111,6 +151,7 @@ bind_workflow() {
 # ==========================================================================
 WD1="$TMP_DIR/wt-planner"
 mkdir -p "$WD1"
+seed_planner_next_work_item "wf-gwt-planner-e2e-001" "$WD1"
 OUT=$(call_process_stop "planner" "$WD1")
 NEXT=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role',''))" 2>/dev/null || echo "")
 CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
@@ -280,6 +321,7 @@ WF5="wf-gwt-chain-e2e-001"
 WORKTREE5="$TMP_DIR/.worktrees/feature-gwt-chain"
 
 # Step 1: planner stop
+seed_planner_next_work_item "$WF5" "$WD5_PLANNER"
 OUT5P=$(call_process_stop "planner" "$WD5_PLANNER")
 NEXT5P=$(printf '%s' "$OUT5P" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role',''))" 2>/dev/null || echo "")
 AUTO5P=$(printf '%s' "$OUT5P" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch',''))" 2>/dev/null || echo "")

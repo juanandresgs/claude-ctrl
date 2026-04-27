@@ -39,7 +39,7 @@ def _commands(hook_groups: list[dict]) -> list[str]:
     return commands
 
 
-def test_settings_json_is_the_single_stop_review_wiring_authority() -> None:
+def test_settings_json_wires_stop_review_for_regular_stop_only() -> None:
     settings = json.loads(_SETTINGS.read_text(encoding="utf-8"))
     plugin_hooks = json.loads(_PLUGIN_HOOKS.read_text(encoding="utf-8"))
 
@@ -47,7 +47,7 @@ def test_settings_json_is_the_single_stop_review_wiring_authority() -> None:
     assert _STOP_REVIEW in stop_commands
 
     for group in settings["hooks"]["SubagentStop"]:
-        assert _STOP_REVIEW in _commands([group])
+        assert _STOP_REVIEW not in _commands([group])
 
     assert "Stop" not in plugin_hooks["hooks"]
 
@@ -64,11 +64,11 @@ def test_gitignore_ignores_mutable_marketplace_cache() -> None:
     assert "plugins/marketplaces/" in gitignore
 
 
-def test_forward_motion_stop_hook_is_advisory_not_blocking() -> None:
-    hook = (_ROOT / "hooks" / "forward-motion.sh").read_text(encoding="utf-8")
-    assert "exit 2" not in hook
-    assert "Advisory:" in hook
-    assert "Response lacks forward motion" not in hook
+def test_forward_motion_stop_hook_is_not_wired() -> None:
+    settings = json.loads(_SETTINGS.read_text(encoding="utf-8"))
+    stop_commands = _commands(settings["hooks"]["Stop"])
+    assert all("forward-motion.sh" not in command for command in stop_commands)
+    assert not (_ROOT / "hooks" / "forward-motion.sh").exists()
 
 
 def test_first_party_claudex_codex_plugin_manifest_exists() -> None:
@@ -115,14 +115,14 @@ def test_reviewer_subagent_stop_group_has_check_reviewer() -> None:
     raise AssertionError("reviewer SubagentStop group not found")
 
 
-def test_reviewer_subagent_stop_group_has_stop_review_gate() -> None:
-    """Phase 4: stop-review gate present in reviewer SubagentStop group (same as all others)."""
+def test_reviewer_subagent_stop_group_excludes_stop_review_gate() -> None:
+    """Reviewer SubagentStop stays deterministic: check + post-task only."""
     settings = json.loads(_SETTINGS.read_text(encoding="utf-8"))
     for group in settings["hooks"]["SubagentStop"]:
         if group.get("matcher") == "reviewer":
             cmds = _commands([group])
-            assert _STOP_REVIEW in cmds, (
-                "reviewer SubagentStop group must include stop-review gate"
+            assert _STOP_REVIEW not in cmds, (
+                "reviewer SubagentStop group must not run the ordinary Stop review gate"
             )
             return
     raise AssertionError("reviewer SubagentStop group not found")

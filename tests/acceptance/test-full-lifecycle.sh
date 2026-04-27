@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# test-full-lifecycle.sh — Simulates a complete planner->implementer->reviewer
-# ->guardian dispatch cycle and verifies every enforcement point along the way.
+# test-full-lifecycle.sh — Simulates a complete planner->guardian(provision)
+# ->implementer->reviewer->guardian dispatch cycle and verifies every
+# enforcement point along the way.
 #
 # Production sequence exercised:
 #   1. Setup: temp project with git repo and MASTER_PLAN.md
@@ -8,7 +9,7 @@
 #       - Set marker role=planner
 #       - Source write: DENIED (planner cannot write source)
 #       - Governance write (MASTER_PLAN.md): ALLOWED
-#       - post-task.sh fired with agent_type=planner -> implementer enqueued
+#       - post-task.sh fired with agent_type=planner -> guardian suggested
 #   3. Implementer phase:
 #       - Set marker role=implementer
 #       - Source write: ALLOWED
@@ -18,12 +19,12 @@
 #       - Set marker role=reviewer
 #       - Source write: DENIED (read-only stage)
 #       - post-task.sh fired with agent_type=reviewer -> guardian enqueued
-#   5. Guardian phase:
+#   5. Guardian landing phase:
 #       - Set marker role=guardian
-#       - Set proof=verified, test-status=pass
+#       - Set evaluation_state=ready_for_guardian, test-status=pass
 #       - Git op: ALLOWED
 #       - post-task.sh fired with agent_type=guardian -> cycle complete
-#   6. Verify dispatch queue progressed: planner->implementer->reviewer->guardian
+#   6. Verify completion records and events reflect the current routing authority
 #   7. Verify events recorded for each agent_complete
 #   8. Cleanup
 #
@@ -31,7 +32,7 @@
 # @title Full lifecycle test exercises the complete dispatch cycle end-to-end
 # @status accepted
 # @rationale The production system is a state machine: planner->implementer->
-#   reviewer->guardian. Phase 8 Slice 11 retired the legacy ``tester`` role;
+#   guardian(provision)->implementer->reviewer->guardian. Phase 8 Slice 11 retired the legacy ``tester`` role;
 #   the reviewer is the live read-only evaluator after Slice 11. Unit tests
 #   and matrix tests verify individual cells. The lifecycle test verifies the
 #   transitions: that each phase correctly denies what it should, produces the
@@ -76,7 +77,7 @@ WORKFLOW_ID="feature-lifecycle-test"
 
 # cc-policy helper scoped to test DB
 policy() {
-    CLAUDE_POLICY_DB="$TEST_DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
+    CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
 }
 
 # Run hook with CLAUDE_PROJECT_DIR and CLAUDE_POLICY_DB scoped to temp project
@@ -108,10 +109,46 @@ set_role() {
     # role is empty (simulates the no-role / orchestrator state).
     local role="$1"
     if [[ -n "$role" ]]; then
-        policy marker set "agent-test" "$role" >/dev/null 2>&1
+        policy marker set "agent-test" "$role" --project-root "$TMP_DIR" >/dev/null 2>&1
     else
         policy marker deactivate "agent-test" >/dev/null 2>&1 || true
     fi
+}
+
+seed_planner_completion() {
+    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$TMP_DIR" "$WORKFLOW_ID" <<'PYEOF'
+import sqlite3, sys
+from runtime.core import completions, decision_work_registry as dwr, leases
+from runtime.schemas import ensure_schema
+
+db_path, project_root, workflow_id = sys.argv[1], sys.argv[2], sys.argv[3]
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+ensure_schema(conn)
+dwr.insert_goal(
+    conn,
+    dwr.GoalRecord(
+        goal_id=workflow_id,
+        desired_end_state="Lifecycle acceptance goal",
+        status="active",
+        autonomy_budget=5,
+    ),
+)
+lease = leases.issue(
+    conn,
+    role="planner",
+    workflow_id=workflow_id,
+    worktree_path=project_root,
+)
+completions.submit(
+    conn,
+    lease_id=lease["lease_id"],
+    workflow_id=workflow_id,
+    role="planner",
+    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "lifecycle acceptance"},
+)
+conn.close()
+PYEOF
 }
 
 assert_deny() {
@@ -191,8 +228,9 @@ assert_allow "planner: governance write allowed" "$out"
 out=$(run_guard "$GIT_PAYLOAD")
 assert_deny  "planner: git op denied"            "$out"
 
+seed_planner_completion
 post=$(run_post_task "planner")
-assert_contains "planner post-task: suggests implementer" "$post" "implementer"
+assert_contains "planner post-task: suggests guardian" "$post" "guardian"
 
 # ---------------------------------------------------------------------------
 # Phase 3: implementer
@@ -259,8 +297,6 @@ assert_contains "reviewer post-task: suggests guardian" "$post" "guardian"
 printf '\n-- Phase: guardian\n'
 set_role "guardian"
 policy test-state set pass --total 1 --passed 1 --project-root "$TMP_DIR" >/dev/null 2>&1
-# Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
-policy proof set "$WORKFLOW_ID" "verified" >/dev/null 2>&1
 # Workflow binding + scope required by Check 12
 policy workflow bind "$WORKFLOW_ID" "$TMP_DIR" "feature/lifecycle-test" >/dev/null 2>&1
 policy workflow scope-set "$WORKFLOW_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1

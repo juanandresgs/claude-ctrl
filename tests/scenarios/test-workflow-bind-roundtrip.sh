@@ -32,6 +32,7 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/n
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     workflow bind "test-wf" "/tmp/test-wt" "feature/test" \
     --ticket TKT-TEST --initiative INIT-TEST >/dev/null 2>&1
+expected_wt_path=$(python3 -c 'import os; print(os.path.realpath("/tmp/test-wt"))')
 
 # Get the binding and verify all fields
 result=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow get "test-wf" 2>&1)
@@ -48,7 +49,7 @@ fail=0
 
 [[ "$found" == "True" ]] || { echo "FAIL: $TEST_NAME — found=$found expected True"; fail=1; }
 [[ "$wf_id" == "test-wf" ]] || { echo "FAIL: $TEST_NAME — workflow_id='$wf_id' expected 'test-wf'"; fail=1; }
-[[ "$wt_path" == "/tmp/test-wt" ]] || { echo "FAIL: $TEST_NAME — worktree_path='$wt_path' expected '/tmp/test-wt'"; fail=1; }
+[[ "$wt_path" == "$expected_wt_path" ]] || { echo "FAIL: $TEST_NAME — worktree_path='$wt_path' expected '$expected_wt_path'"; fail=1; }
 [[ "$branch" == "feature/test" ]] || { echo "FAIL: $TEST_NAME — branch='$branch' expected 'feature/test'"; fail=1; }
 [[ "$ticket" == "TKT-TEST" ]] || { echo "FAIL: $TEST_NAME — ticket='$ticket' expected 'TKT-TEST'"; fail=1; }
 [[ "$initiative" == "INIT-TEST" ]] || { echo "FAIL: $TEST_NAME — initiative='$initiative' expected 'INIT-TEST'"; fail=1; }

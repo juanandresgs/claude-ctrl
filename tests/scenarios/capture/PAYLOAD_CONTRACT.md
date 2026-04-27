@@ -208,8 +208,7 @@ Note: `plan-check.sh` skips all Edit calls (`exit 0` immediately for Edit).
 
 ## Stop
 
-**Hooks:** `hooks/surface.sh`, `hooks/session-summary.sh`,
-`hooks/forward-motion.sh`
+**Hooks:** `hooks/surface.sh`, `hooks/session-summary.sh`
 **Trigger:** Claude finishes responding
 
 | Field | Type | Required | Notes |

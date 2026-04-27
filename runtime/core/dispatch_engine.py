@@ -99,10 +99,9 @@ Rationale: The Codex stop-review gate (W-AD-3 / DEC-AD-002) was originally wired
   into the auto_dispatch decision path to allow a Codex supervisor to halt the
   workflow chain for human review. Phase 5 separates this: workflow auto_dispatch
   is determined by runtime workflow facts only (next_role present, no PROCESS ERROR,
-  not interrupted). The stop-review gate remains wired in settings.json for
-  user-facing review (the hook still runs, the systemMessage still surfaces) but
-  its VERDICT: BLOCK no longer overrides auto_dispatch or injects CODEX BLOCK into
-  the workflow suggestion. _check_codex_gate has been deleted — no runtime consumer
+  not interrupted). The broad stop-review gate is now regular-Stop-only; the
+  deterministic SubagentStop Codex braid is the runtime-owned implementer critic
+  review consumed below. _check_codex_gate has been deleted — no runtime consumer
   remains.
 
 @decision DEC-IMPLEMENTER-CRITIC-LOOP-001
@@ -452,8 +451,8 @@ def process_agent_stop(
     # DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Codex stop-review gate is NOT
     # consulted for workflow auto-dispatch decisions. auto_dispatch is
     # determined by runtime workflow facts only (next_role present, no error,
-    # not interrupted). The stop-review gate remains wired in settings.json
-    # for user-facing review but is non-authoritative for workflow routing.
+    # not interrupted). The broad stop-review gate is regular-Stop-only;
+    # implementer critic reviews are the only Codex verdicts consumed here.
     # ---------------------------------------------------------------------------
 
     # ---------------------------------------------------------------------------

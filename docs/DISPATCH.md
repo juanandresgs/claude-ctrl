@@ -104,14 +104,13 @@ The orchestrator stops the chain only when hook output contains `BLOCKED`,
 ops (push, rebase, force) — gated by `bash_approval_gate` policy.
 
 The Codex stop-review gate (`stop-review-gate-hook.mjs`) is wired in
-`settings.json` for both `SubagentStop` and regular `Stop`. Repo settings are
-the sole wiring authority; the vendored plugin no longer self-registers a
-separate `Stop` hook. The gate is a **user-facing review lane only** — its
-`VERDICT: BLOCK` does not affect workflow `auto_dispatch` or `next_role`
-(DEC-PHASE5-STOP-REVIEW-SEPARATION-001). On `SubagentStop` the gate emits a
-`systemMessage` for orchestrator context but workflow dispatch decisions are
-determined by runtime workflow facts (completion records, lease state, routing
-table) exclusively.
+`settings.json` for regular `Stop` only. Repo settings are the sole wiring
+authority; the vendored plugin no longer self-registers a separate `Stop` hook.
+The deterministic SubagentStop Codex braid is `hooks/implementer-critic.sh`,
+which persists `critic_reviews` before `post-task.sh` routes the workflow.
+The broad stop-review gate is a **user-facing Stop audit lane only** and does
+not affect workflow `auto_dispatch` or `next_role`
+(DEC-PHASE5-STOP-REVIEW-SEPARATION-001).
 
 ### Properties that remain prompt-level (not mechanically blocked)
 

@@ -20,8 +20,8 @@
 #   "orchestrator should auto-dispatch" from "prompt user for permission".
 #   The signal must flow through the full CLI path so post-task.sh (and any
 #   orchestrator reading hookSpecificOutput) can act on it. This test
-#   exercises each transition class: fixed-route (planner), interrupted
-#   implementer, reviewer completion variants, guardian terminal and retry,
+#   exercises each transition class: structured planner completion, interrupted
+#   implementer, reviewer completion variants, guardian continuation and retry,
 #   and the Phase 8 Slice 11 unknown-role silent-exit semantics for the
 #   retired ``tester`` role.
 
@@ -84,6 +84,47 @@ submit_completion() {
         --payload "$payload" >/dev/null 2>&1 || true
 }
 
+# Helper: seed the current planner contract path. Planner dispatch is no longer
+# a fixed route; it requires a planner lease, a valid completion record, and an
+# active goal contract for continuation-budget authority.
+seed_planner_next_work_item() {
+    local wf_id="$1"
+    local wt_path="$2"
+    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$wt_path" "$wf_id" <<'PYEOF'
+import sqlite3, sys
+from runtime.core import completions, decision_work_registry as dwr, leases
+from runtime.schemas import ensure_schema
+
+db_path, worktree_path, workflow_id = sys.argv[1], sys.argv[2], sys.argv[3]
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+ensure_schema(conn)
+dwr.insert_goal(
+    conn,
+    dwr.GoalRecord(
+        goal_id=workflow_id,
+        desired_end_state="Auto-dispatch scenario goal",
+        status="active",
+        autonomy_budget=5,
+    ),
+)
+lease = leases.issue(
+    conn,
+    role="planner",
+    workflow_id=workflow_id,
+    worktree_path=worktree_path,
+)
+completions.submit(
+    conn,
+    lease_id=lease["lease_id"],
+    workflow_id=workflow_id,
+    role="planner",
+    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "scenario"},
+)
+conn.close()
+PYEOF
+}
+
 # Helper: build a reviewer completion payload with valid REVIEW_FINDINGS_JSON.
 # Uses jq to avoid quote-escape hell when embedding JSON-in-JSON.
 # Usage: make_reviewer_payload <verdict> <severity> <title>
@@ -104,10 +145,10 @@ make_reviewer_payload() {
 
 # ==========================================================================
 # Test 1: planner stop → auto_dispatch=true, suggestion starts AUTO_DISPATCH:
-# (planner has no lease requirement — uses a scratch worktree path)
 # ==========================================================================
 WD1="$TMP_DIR/wt-planner"
 mkdir -p "$WD1"
+seed_planner_next_work_item "wf-ad-planner-e2e" "$WD1"
 OUT=$(call_process_stop "planner" "$WD1")
 AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
 CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
@@ -281,7 +322,7 @@ else
 fi
 
 # ==========================================================================
-# Test 7: guardian stop (committed) → auto_dispatch=false, suggestion empty
+# Test 7: guardian stop (committed) → auto_dispatch=true, next_role=planner
 # ==========================================================================
 WD7="$TMP_DIR/wt-guardian-com"
 mkdir -p "$WD7"
@@ -294,16 +335,16 @@ if [[ -n "$LEASE7" ]]; then
     AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
     CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
 
-    if [[ "$AUTO" == "False" ]]; then
-        pass "guardian (committed): auto_dispatch=false"
+    if [[ "$AUTO" == "True" ]]; then
+        pass "guardian (committed): auto_dispatch=true"
     else
-        fail "guardian (committed): auto_dispatch=false (got: $AUTO)"
+        fail "guardian (committed): auto_dispatch=true (got: $AUTO)"
     fi
 
-    if [[ -z "$CTX" ]]; then
-        pass "guardian (committed): suggestion empty (terminal state)"
+    if [[ "$CTX" == AUTO_DISPATCH:*planner* ]]; then
+        pass "guardian (committed): suggestion prefixed AUTO_DISPATCH: planner"
     else
-        fail "guardian (committed): suggestion empty — got: $CTX"
+        fail "guardian (committed): suggestion prefixed AUTO_DISPATCH: planner (got: $CTX)"
     fi
 else
     fail "guardian (committed): could not issue lease — skipping check"

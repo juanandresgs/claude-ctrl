@@ -41,9 +41,9 @@ git -C "$TMP_DIR" checkout -b "$BRANCH" -q
 # Get the actual HEAD sha for this repo
 CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 
-# Gate 1: schema + guardian role
+# Gate 1: schema + guardian:land role
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
 
 # Gate 2: test status = pass via runtime (policy engine reads SQLite)
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \

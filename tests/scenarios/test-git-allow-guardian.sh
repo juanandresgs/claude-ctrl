@@ -36,10 +36,10 @@ git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 # Use a feature branch so Check 4 (no commit on main) doesn't fire
 git -C "$TMP_DIR" checkout -b feature/ready-to-merge -q
 
-# Gate 1: Guardian role active via cc-policy (TKT-018: .subagent-tracker removed)
+# Gate 1: guardian:land role active via cc-policy (TKT-018: .subagent-tracker removed)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
-    marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
+    marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
 
 # Gate 2: test status = pass via runtime (policy engine reads SQLite, not flat file)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
