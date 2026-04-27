@@ -1,9 +1,9 @@
 # ClauDEX
 
-Status: seeded on 2026-04-07
+Status: public release workspace
 
-This folder is the canonical cutover workspace for restarting this repository
-around the ClauDEX architecture model.
+This folder holds the ClauDEX cutover architecture and the experimental
+bridge/supervision work that sits beside the main Claude Code policy runtime.
 
 Purpose:
 - give the restart one grounding document instead of another drifting addendum
@@ -11,14 +11,13 @@ Purpose:
 - keep cutover planning separate from the historical donor docs in the repo root
 
 Authority rules:
-- [CUTOVER_PLAN.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/CUTOVER_PLAN.md) is the authoritative restart and cutover plan
-- [CURRENT_STATE.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/CURRENT_STATE.md) is the authoritative execution handoff and clean-start record
-- [OVERNIGHT_RUNBOOK.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/OVERNIGHT_RUNBOOK.md) is the operator runbook for the supervised migration profile
-- [CONTROL_PLANE_TEST_CHECKLIST.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/CONTROL_PLANE_TEST_CHECKLIST.md) is the active test debt / reliability checklist for the main ClauDEX control path
-- root-level plans and docs remain useful donor material, but they are not the
-  cutover authority unless explicitly ported into the ClauDEX plan
-- implementation work that claims to be part of the restart must map to a phase
-  or decision in the cutover plan
+- [CUTOVER_PLAN.md](CUTOVER_PLAN.md) records the architecture target and
+  migration logic that produced ClauDEX.
+- [braid-v2](braid-v2/README.md) is the clean-room workspace for the next
+  supervision kernel.
+- [bridge](bridge/) contains the current bridge adapter helpers.
+- Runtime truth still lives in the repo-level `runtime/` package; ClauDEX docs
+  describe that model, they do not replace it.
 
 Operating intent:
 - preserve architecture by constraint, not by convention
@@ -26,9 +25,9 @@ Operating intent:
 - treat hook wiring, docs, and config surfaces as derived outputs that must not
   silently drift from the runtime authority
 
-Current git reality:
-- the ClauDEX buildout is currently local working-tree state on top of
-  `fix/enforce-rca-13-git-shell-classifier`
-- the braid-side portable bridge work was pushed separately upstream
-- the next clean git move for ClauDEX is to checkpoint this work onto a
-  dedicated hardFork branch such as `feat/claudex-cutover`
+Public-release note:
+- Private operator handoff files, lane-state snapshots, and one-off runbooks
+  are intentionally not part of this public tree.
+- Use `README.md`, `docs/ARCHITECTURE.md`, `docs/DISPATCH.md`,
+  `CLAUDE.md`, `agents/`, and the runtime tests for the current product
+  surface.

@@ -22,8 +22,8 @@ must run from an isolated workspace with an isolated braid runtime root.
 Preparation path:
 
 ```bash
-cd /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork
-./ClauDEX/braid-v2/prepare_isolated_workspace.sh
+cd /path/to/claude-ctrl
+SOURCE_BRAID_ROOT=/path/to/braid ./ClauDEX/braid-v2/prepare_isolated_workspace.sh
 cd /tmp/claudex-braid-v2-workspace
 ./ClauDEX/braid-v2/start_isolated_overnight.sh --session overnight-braid-v2 --no-attach
 ```
@@ -66,7 +66,7 @@ braid2 bundle adopt \
   --transport tmux \
   --endpoint overnight-prod5:1.2 \
   --role worker \
-  --cwd /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork
+  --cwd /path/to/claude-ctrl
 ```
 
 ### `bundle spawn`

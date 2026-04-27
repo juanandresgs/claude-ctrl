@@ -49,12 +49,12 @@ policy stack.
 
 That means the future steady-state split is:
 
-- [policy_engine.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/policy_engine.py)
+- [policy_engine.py](../../runtime/core/policy_engine.py)
   evaluates repo-law decisions
-- [authority_registry.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/authority_registry.py)
+- [authority_registry.py](../../runtime/core/authority_registry.py)
   declares capability and authority ownership
-- [prompt_pack.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/prompt_pack.py)
-  and [prompt_pack_resolver.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/prompt_pack_resolver.py)
+- [prompt_pack.py](../../runtime/core/prompt_pack.py)
+  and [prompt_pack_resolver.py](../../runtime/core/prompt_pack_resolver.py)
   compile runtime-owned guidance for seats and sessions
 - `braid-v2` consumes those decisions and projections while owning runtime
   topology, dispatch, gates, findings, and repair actions
@@ -89,21 +89,21 @@ That gives a recursive tree of monitored work instead of one blind relay.
 
 ## Folder Contents
 
-- [ARCHITECTURE.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/ARCHITECTURE.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
   Core model, authority boundaries, recursion model, keepalive strategy.
-- [SCHEMA.sql](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/SCHEMA.sql)
+- [SCHEMA.sql](SCHEMA.sql)
   Concrete SQLite schema for the supervision kernel.
-- [COMMANDS.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/COMMANDS.md)
+- [COMMANDS.md](COMMANDS.md)
   Proposed CLI/API surface.
-- [FLOWS.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/FLOWS.md)
+- [FLOWS.md](FLOWS.md)
   Canonical operational flows, including recursive spawn and soak repair.
-- [OBSERVABILITY.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/OBSERVABILITY.md)
+- [OBSERVABILITY.md](OBSERVABILITY.md)
   Run-forensics model for trajectories, conversation pairing, retained
   snapshots, exports, and archive bundles.
-- [ROADMAP.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/ROADMAP.md)
+- [ROADMAP.md](ROADMAP.md)
   Ordered build plan for implementing the kernel without disturbing the live
   setup.
-- [EXTERNALIZATION_CHECKLIST.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/EXTERNALIZATION_CHECKLIST.md)
+- [EXTERNALIZATION_CHECKLIST.md](EXTERNALIZATION_CHECKLIST.md)
   Release/readiness gates before `braid-v2` is treated as a shareable package.
 
 ## Intended First Implementation Order
@@ -120,9 +120,9 @@ That gives a recursive tree of monitored work instead of one blind relay.
 
 The current repo implementation is intentionally narrow:
 
-- standalone Python CLI at [cli.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/cli.py)
-- SQLite bootstrap from [SCHEMA.sql](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/SCHEMA.sql)
-- runtime package in [braid2](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/braid2)
+- standalone Python CLI at [cli.py](cli.py)
+- SQLite bootstrap from [SCHEMA.sql](SCHEMA.sql)
+- runtime package in [braid2](braid2)
 - tmux adapter with:
   - pane adopt
   - worker window spawn
@@ -155,8 +155,8 @@ active.
 Use the isolation helpers in this folder instead:
 
 ```bash
-cd /Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork
-./ClauDEX/braid-v2/prepare_isolated_workspace.sh
+cd /path/to/claude-ctrl
+SOURCE_BRAID_ROOT=/path/to/braid ./ClauDEX/braid-v2/prepare_isolated_workspace.sh
 cd /tmp/claudex-braid-v2-workspace
 ./ClauDEX/braid-v2/start_isolated_overnight.sh --session overnight-braid-v2 --no-attach
 ```

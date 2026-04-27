@@ -8,7 +8,7 @@ Rationale: Canonical seats (planner / implementer / reviewer / guardian)
   moment when that workflow state may not exist yet, which forced operators into
   low-level rituals (`workflow bind`, `goal-set`, `work-item-set`, `marker set`,
   and manual completion/lease surgery) just to get planner started. That shape
-  violated the hardFork trust model by making the workaround feel necessary.
+  violated the ClauDEX trust model by making the workaround feel necessary.
 
   This module closes the gap with one runtime-owned bootstrap path:
 

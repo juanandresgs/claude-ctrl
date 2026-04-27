@@ -303,7 +303,7 @@ class TestNormalizeRepoPath:
 
     def test_absolute_posix_path_is_rejected(self):
         assert cr.normalize_repo_path("/tmp/CLAUDE.md") is None
-        assert cr.normalize_repo_path("/Users/turla/Code/CLAUDE.md") is None
+        assert cr.normalize_repo_path("/path/to/CLAUDE.md") is None
 
     def test_windows_drive_letter_path_is_rejected(self):
         assert cr.normalize_repo_path("C:/code/CLAUDE.md") is None
@@ -369,7 +369,7 @@ class TestIsConstitutionLevel:
         # Even if the absolute path ends in a constitution-level name.
         assert cr.is_constitution_level("/tmp/CLAUDE.md") is False
         assert (
-            cr.is_constitution_level("/Users/turla/Code/runtime/cli.py")
+            cr.is_constitution_level("/path/to/runtime/cli.py")
             is False
         )
 

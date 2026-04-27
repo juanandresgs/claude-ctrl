@@ -7,7 +7,7 @@ current live bridge.
 
 Deliver:
 
-- SQLite schema from [SCHEMA.sql](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/SCHEMA.sql)
+- SQLite schema from [SCHEMA.sql](SCHEMA.sql)
 - ID generation and CRUD helpers
 - one controller process that can run a single sweep
 
@@ -121,7 +121,7 @@ Purpose:
 
 Reference:
 
-- [OBSERVABILITY.md](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/ClauDEX/braid-v2/OBSERVABILITY.md)
+- [OBSERVABILITY.md](OBSERVABILITY.md)
 
 ### O1: Trajectory Ledger and Retained Snapshots
 

@@ -1172,9 +1172,8 @@ historical framing for how the system was sequenced; it does NOT imply that
 the reviewer stage or post-guardian continuation are still pending. Where a
 specific sentence below says "until X is live" or "only becomes live after
 Y", treat it as a historical description of the cutover sequencing — all
-those conditions have been met. See `ClauDEX/CURRENT_STATE.md` Historical
-Phase State Snapshot and each `Status:` annotation under `## Phase Plan`
-for the authoritative closure dates.
+those conditions have been met. See each `Status:` annotation under
+`## Phase Plan` for the closure dates preserved in this public tree.
 
 Until the reviewer stage is live, implementation work still uses the current
 chain. The cutover does not pretend the new graph exists before it is proven.
@@ -1201,7 +1200,7 @@ Execution during the cutover:
 
 ## Phase Plan
 
-**Status summary (2026-04-17, projected from `ClauDEX/CURRENT_STATE.md` Historical Phase State Snapshot):** every phase below carries an explicit `Status:` annotation naming its closure date. All phases are `CLOSED`. This annotation is mechanically pinned by `tests/runtime/test_cutover_plan_phase_closure_invariants.py` (DEC-CLAUDEX-CUTOVER-PHASE-CLOSURE-INVARIANT-001). Follow-on architectural work beyond the Phase Plan is captured as bounded maintenance slices under the cc-policy-who-remediation lane, not as new phase entries; if a future Phase 9 is ever declared, this summary and the scanner test must be updated together.
+**Status summary (2026-04-17):** every phase below carries an explicit `Status:` annotation naming its closure date. All phases are `CLOSED`. This annotation is mechanically pinned by `tests/runtime/test_cutover_plan_phase_closure_invariants.py` (DEC-CLAUDEX-CUTOVER-PHASE-CLOSURE-INVARIANT-001). Follow-on architectural work beyond the Phase Plan is captured as bounded maintenance slices, not as new phase entries; if a future Phase 9 is ever declared, this summary and the scanner test must be updated together.
 
 ### Phase 0 — Hook Authority Reset
 

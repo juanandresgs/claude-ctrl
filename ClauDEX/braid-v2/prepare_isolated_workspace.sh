@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOURCE_BRAID_ROOT="${SOURCE_BRAID_ROOT:-/Users/turla/Code/braid}"
+SOURCE_BRAID_ROOT="${SOURCE_BRAID_ROOT:-}"
 WORKSPACE="${CLAUDEX_V2_WORKSPACE:-/tmp/claudex-braid-v2-workspace}"
 BRAID_WORKSPACE="${CLAUDEX_V2_BRAID_ROOT:-/tmp/claudex-braid-v2-braid}"
 
@@ -54,6 +54,11 @@ for cmd in rsync git; do
     exit 1
   fi
 done
+
+if [[ -z "$SOURCE_BRAID_ROOT" ]]; then
+  echo "Set SOURCE_BRAID_ROOT to the local braid checkout before preparing an isolated workspace." >&2
+  exit 1
+fi
 
 if [[ ! -d "$SOURCE_BRAID_ROOT" ]]; then
   echo "Missing braid source root: $SOURCE_BRAID_ROOT" >&2

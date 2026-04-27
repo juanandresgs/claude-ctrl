@@ -40,7 +40,7 @@ Generate structured context summaries when compaction is imminent or requested, 
 
 ### Section 2: Active Context
 - Files touched via Read/Write/Edit operations, prioritized by recency
-- **ALWAYS use absolute paths** (e.g., `/Users/turla/Code/project/src/auth.ts`)
+- **ALWAYS use absolute paths** (e.g., `/path/to/project/src/auth.ts`)
 - Summarize function additions, modifications, deletions with specific names and line refs
 - Key variables, data structures, environment variables in focus
 
@@ -71,7 +71,7 @@ Generate structured context summaries when compaction is imminent or requested, 
 - `./src/auth.ts`
 
 **RIGHT**:
-- `/Users/turla/Code/myproject/src/auth/oauth-handler.ts`
+- `/path/to/myproject/src/auth/oauth-handler.ts`
 
 ### Recent Changes
 
@@ -80,7 +80,7 @@ Generate structured context summaries when compaction is imminent or requested, 
 - "Fixed some issues"
 
 **RIGHT**:
-- "Added `validateTokenExpiry()` function to `/Users/turla/Code/myproject/src/auth/token-storage.ts` (lines 42-67) that checks JWT expiration. Modified `refreshToken()` to call this before attempting refresh."
+- "Added `validateTokenExpiry()` function to `/path/to/myproject/src/auth/token-storage.ts` (lines 42-67) that checks JWT expiration. Modified `refreshToken()` to call this before attempting refresh."
 
 ### Immediate Next Step
 

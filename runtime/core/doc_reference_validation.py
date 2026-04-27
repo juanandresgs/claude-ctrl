@@ -89,7 +89,7 @@ from runtime.core.hook_manifest import (
 # Each entry is a ``hooks/<name>.sh`` path (or ``<Event>:<matcher>`` pair)
 # that once existed but was deliberately retired in a phase slice. These
 # references remain legitimate in historical narrative (MASTER_PLAN.md,
-# retirement-closeout sections of CURRENT_STATE.md, etc.) and must not
+# retirement-closeout sections of historical planning docs, etc.) and must not
 # trigger drift alarms.
 #
 # Adding a new retirement: when retiring a hook, append its path to this

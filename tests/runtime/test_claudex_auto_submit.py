@@ -40,7 +40,7 @@ def auto_submit_env(tmp_path):
             {
                 "run_id": "run-1",
                 "project_root": str(_REPO_ROOT),
-                "project_slug": "claude-ctrl-hardFork",
+                "project_slug": "claude-ctrl",
                 "tmux_target": "fake:1.2",
                 "created_at": "2026-04-10T00:00:00Z",
                 "completed_at": None,

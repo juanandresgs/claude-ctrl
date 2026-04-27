@@ -4,8 +4,24 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const BRAID_ROOT = process.env.BRAID_ROOT ?? '/Users/turla/Code/braid';
 const INTERACTION_GATE_FILENAME = 'interaction-gate.json';
+
+function resolveBraidRoot() {
+  if (process.env.BRAID_ROOT) {
+    return process.env.BRAID_ROOT;
+  }
+  const hintPath = join(process.cwd(), '.claude', 'claudex', 'braid-root');
+  if (!existsSync(hintPath)) {
+    throw new Error(
+      'BRAID_ROOT is required, or write the braid root path to .claude/claudex/braid-root.',
+    );
+  }
+  const hinted = readFileSync(hintPath, 'utf8').trim();
+  if (!hinted) {
+    throw new Error(`${hintPath} is empty; set BRAID_ROOT or write a braid root path.`);
+  }
+  return hinted;
+}
 
 function gateArtifactPath(runDir) {
   return join(runDir, INTERACTION_GATE_FILENAME);
@@ -278,7 +294,7 @@ function capturePaneText(tmuxTarget) {
 }
 
 async function loadObserverHelpers() {
-  const moduleUrl = pathToFileURL(join(BRAID_ROOT, 'lib/observer.mjs')).href;
+  const moduleUrl = pathToFileURL(join(resolveBraidRoot(), 'lib/observer.mjs')).href;
   return import(moduleUrl);
 }
 

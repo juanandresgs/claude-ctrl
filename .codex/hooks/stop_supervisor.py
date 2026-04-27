@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 
-LEGACY_RUNS_DIR = Path("/Users/turla/Code/braid/runs")
 SUPERVISOR_ENV_VAR = "CLAUDEX_SUPERVISOR"
 TERMINAL_STOP_TOKEN = "CLAUDEX_SUPERVISOR_STOP"
 
@@ -55,7 +54,7 @@ def resolve_runs_dir(root: Path, state_dir: Path) -> Path:
         if marker_value:
             candidates.append(Path(marker_value) / "runs")
 
-    candidates.append(LEGACY_RUNS_DIR)
+    candidates.append(state_dir / "runs")
 
     for candidate in candidates:
         if candidate.exists():

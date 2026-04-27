@@ -21,7 +21,12 @@ function resolveBraidRoot() {
       return hinted;
     }
   }
-  return process.env.BRAID_ROOT ?? '/Users/turla/Code/braid';
+  if (process.env.BRAID_ROOT) {
+    return process.env.BRAID_ROOT;
+  }
+  throw new Error(
+    'BRAID_ROOT is required, or write the braid root path to .claude/claudex/braid-root.',
+  );
 }
 
 const BRAID_ROOT = resolveBraidRoot();

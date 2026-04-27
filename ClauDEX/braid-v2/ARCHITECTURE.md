@@ -186,12 +186,10 @@ This keeps repair behavior explicit instead of hidden in watchdog scripts.
 - approval policy
 
 The intended implementation is the existing ClauDEX runtime policy engine in
-[policy_engine.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/policy_engine.py),
-backed by
-[authority_registry.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/authority_registry.py),
-[prompt_pack.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/prompt_pack.py),
-and
-[prompt_pack_resolver.py](/Users/turla/Code/ConfigRefactor/claude-ctrl-hardFork/runtime/core/prompt_pack_resolver.py).
+[policy_engine.py](../../runtime/core/policy_engine.py), backed by
+[authority_registry.py](../../runtime/core/authority_registry.py),
+[prompt_pack.py](../../runtime/core/prompt_pack.py), and
+[prompt_pack_resolver.py](../../runtime/core/prompt_pack_resolver.py).
 `braid-v2` should integrate with that policy surface, not fork it.
 
 ### tmux Owns

@@ -5,9 +5,9 @@ Title: Every phase entry under ClauDEX/CUTOVER_PLAN.md § Phase Plan must carry 
 Status: proposed
 Rationale: CUTOVER_PLAN.md is the architecture source of truth and its
   Phase Plan section was originally written as a pre-cutover roadmap (each
-  phase in future tense). `ClauDEX/CURRENT_STATE.md` Historical Phase State
-  Snapshot records that Phases 0–8 (including 2b) are all CLOSED. Prior
-  session turns surfaced a drift hazard where future-tense prose in
+  phase in future tense). The public tree preserves closure state directly
+  in the Phase Plan annotations. Prior session turns surfaced a drift hazard
+  where future-tense prose in
   CUTOVER_PLAN silently contradicted the closed phase state (e.g.,
   "Until the reviewer stage is live..." at line 1164, "post-guardian
   planner continuation only becomes live after..." at line 1184–1185).
@@ -40,15 +40,11 @@ Rationale: CUTOVER_PLAN.md is the architecture source of truth and its
 Adjacent authorities:
   - ``ClauDEX/CUTOVER_PLAN.md`` § Phase Plan — the architecture
     authority this test validates.
-  - ``ClauDEX/CURRENT_STATE.md`` Historical Phase State Snapshot —
-    the lane-state record providing the authoritative closure dates.
   - Sister pins with the same shadow-only / stdlib-only scan pattern:
     ``tests/runtime/test_decision_ref_resolution.py``,
-    ``tests/runtime/test_current_lane_state_invariants.py``,
     ``tests/runtime/test_retrieval_layer_downstream_invariant.py``,
     ``tests/runtime/test_cutover_invariant_coverage_matrix.py``,
-    ``tests/runtime/policies/test_command_intent_single_authority.py``,
-    ``tests/runtime/test_handoff_artifact_path_invariants.py``.
+    ``tests/runtime/policies/test_command_intent_single_authority.py``.
 
 Shadow-only discipline: stdlib-only (``re``, ``pathlib``, ``textwrap``).
 No SQLite, no git subprocess, no network, no runtime imports.
@@ -347,8 +343,7 @@ class TestEveryPhaseStatusIsClosedWithDate:
         assert not offenders, (
             "Phase Plan Status: lines MUST carry an explicit date anchor "
             "(ISO ``YYYY-MM-DD`` or ``pre-YYYY-MM-DD``) so the closure "
-            "is time-scoped and auditable against "
-            "`ClauDEX/CURRENT_STATE.md` Historical Phase State Snapshot.\n"
+            "is time-scoped and auditable.\n"
             + "\n".join(offenders)
         )
 
@@ -619,11 +614,6 @@ _EXECUTION_MODEL_REQUIRED_TOKENS: Tuple[str, ...] = (
     # Explicit "does NOT imply" clause for future-tense sentences further
     # down in the section.
     "does NOT imply",
-    # Cross-reference to the authoritative closure-date record (token
-    # uniquely identifies the Historical Phase State Snapshot pointer in
-    # CURRENT_STATE.md without brittle-matching the full phrase over a
-    # hyphenated line wrap).
-    "Phase State Snapshot",
     # Cross-reference to the per-phase Status annotations.
     "`Status:` annotation",
 )
@@ -779,8 +769,7 @@ and the agent-
 agnostic supervision fabric is live. The narrative below is preserved
 as historical framing for how the system was sequenced; it does NOT
 imply that the reviewer stage or post-guardian continuation are still
-pending. See `ClauDEX/CURRENT_STATE.md` Historical Phase State Snapshot
-and each `Status:` annotation under `## Phase Plan` for the
+pending. See each `Status:` annotation under `## Phase Plan` for the
 authoritative closure dates.
 
 Until the reviewer stage is live, implementation work still uses the

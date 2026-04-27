@@ -32,7 +32,7 @@ This plan is the authoritative implementation spec for the new fork.
 ## Target Repository Shape
 
 ```text
-claude-ctrl-hardFork/
+claude-ctrl/
   CLAUDE.md
   AGENTS.md
   settings.json
@@ -761,4 +761,4 @@ Do not import into core:
 - Trace files may remain as evidence artifacts, but the successor state machine
   does not use flat files or breadcrumbs for workflow coordination.
 - This file is the authoritative successor bootstrap plan for
-  `claude-ctrl-hardFork`.
+  `claude-ctrl`.

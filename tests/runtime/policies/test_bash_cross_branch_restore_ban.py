@@ -123,9 +123,9 @@ class TestDeniesCheckoutRefPathWhenForbidden:
         assert decision.policy_name == "bash_cross_branch_restore_ban"
 
     def test_denies_checkout_with_forbidden_glob_wildcard(self):
-        """git checkout HEAD~3 -- ClauDEX/SUPERVISOR_HANDOFF.md → deny (ClauDEX/** forbidden)."""
+        """git checkout HEAD~3 -- ClauDEX/CUTOVER_PLAN.md → deny (ClauDEX/** forbidden)."""
         decision = check(
-            _impl_req("git checkout HEAD~3 -- ClauDEX/SUPERVISOR_HANDOFF.md", scope=_SLICE8_SCOPE)
+            _impl_req("git checkout HEAD~3 -- ClauDEX/CUTOVER_PLAN.md", scope=_SLICE8_SCOPE)
         )
         assert decision is not None
         assert decision.action == "deny"
@@ -193,7 +193,7 @@ class TestDeniesRestoreSourceWorktreePath:
         """--source=/path/to/other/worktree → deny (filesystem source)."""
         decision = check(
             _impl_req(
-                "git restore --source=/Users/turla/Code/other-worktree -- CLAUDE.md",
+                "git restore --source=/path/to/other-worktree -- CLAUDE.md",
                 scope=_SLICE8_SCOPE,
             )
         )
