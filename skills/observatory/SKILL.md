@@ -40,7 +40,7 @@ Parse `$ARGUMENTS` to determine the mode:
 
 **CLI invocation:** Prefer `cc-policy` if it is on PATH. If not, fall back to
 `python3 ~/.claude/runtime/cli.py`. The wrapper at `~/.claude/bin/cc-policy`
-is committed to the repo; on first machine setup, run `bash ~/.claude/bin/install.sh`
+is committed to the repo; on first machine setup, run `bash ~/.claude/install.sh`
 to register it on PATH.
 
 Detection one-liner you can use:

@@ -81,6 +81,34 @@ I've never been much of a gambler myself.
 
 ---
 
+## Install
+
+ClauDEX is intended to live at `~/.claude`.
+
+```bash
+git clone https://github.com/juanandresgs/claude-ctrl.git ~/.claude
+bash ~/.claude/install.sh
+```
+
+If `~/.claude` already exists, install from a staging checkout:
+
+```bash
+git clone https://github.com/juanandresgs/claude-ctrl.git ~/claude-ctrl-install
+TARGET="$HOME/.claude" bash ~/claude-ctrl-install/install.sh
+```
+
+`install.sh` validates the payload, backs up any existing `~/.claude`, swaps
+the new config into place, and wires `cc-policy` onto your shell path when
+possible.
+
+Dependencies are intentionally ordinary: `git`, `python3`, `node`, `jq`, and,
+of course, Claude Code.
+
+Optional provider keys for Codex review and deep research live in
+`~/.claude/.env`; start from `.env.example`.
+
+---
+
 ## What Changed From `claude-ctrl` v4.0 Metanoia --> v5.0 ClauDEX?
 
 v5.0 `ClauDEX` moves those policies into a typed Python runtime backed by
@@ -230,49 +258,3 @@ Today, that includes:
 - stage transitions and role capability contracts
 - prompt-pack layers delivered to canonical subagents
 - hook wiring validation against the runtime manifest
-
----
-
-## Install
-
-claude-ctrl `ClauDEX` is intended to live at `~/.claude`.
-
-For a fresh install:
-
-```bash
-git clone https://github.com/juanandresgs/claude-ctrl.git ~/.claude
-bash ~/.claude/bin/install.sh
-```
-
-If `~/.claude` already exists, use the guarded installer from a staging
-checkout:
-
-```bash
-git clone https://github.com/juanandresgs/claude-ctrl.git ~/claude-ctrl-install
-cd ~/claude-ctrl-install
-TARGET="$HOME/.claude" bash install-claude-ctrl.sh
-```
-
-There are two install scripts because they operate at different phases:
-
-- `install-claude-ctrl.sh` is the guarded remote installer. It clones a
-  requested branch into a staging directory, validates the payload, backs up any
-  existing `~/.claude`, and swaps the new config into place.
-- `bin/install.sh` runs after the repo is already installed at `~/.claude`. It
-  only wires the local `cc-policy` command onto your shell path.
-
-Dependencies are intentionally ordinary: `git`, `python3`, `node`, `jq`, and,
-of course, Claude Code.
-
----
-
-## Verify
-
-Run these from `~/.claude`:
-
-```bash
-bin/cc-policy hook validate-settings
-bin/cc-policy hook doc-check
-bin/cc-policy policy list
-bin/cc-policy constitution validate
-```

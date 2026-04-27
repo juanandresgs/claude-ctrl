@@ -76,7 +76,7 @@ references.
 
 **Scope:** `README.md`, `CLAUDE.md`, `AGENTS.md`, `MASTER_PLAN.md`,
 `settings.json`, `hooks/`, `runtime/`, `scripts/`, `sidecars/`, `skills/`,
-`evals/`, `.codex/prompts/`, installers, and ignore rules.
+`evals/`, `.codex/prompts/`, the installer, and ignore rules.
 
 **Exit:** Runtime validation commands pass, public docs point only at live
 surfaces, stale root documentation, private harness trees, root temporary
