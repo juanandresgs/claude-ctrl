@@ -62,14 +62,14 @@ _emit_unavailable() {
         --workflow-id "$workflow_id" \
         --lease-id "${lease_id:-}" \
         --role implementer \
-        --provider codex \
+        --provider reviewer-subagent \
         --verdict CRITIC_UNAVAILABLE \
         --summary "Implementer critic unavailable." \
         --detail "$detail" \
         --fingerprint "" \
         --project-root "$PROJECT_ROOT" \
         --metadata "$metadata_json" >/dev/null 2>&1 || true
-    escaped=$(printf 'Implementer critic progress: Starting Codex tactical critic (read-only).\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: verdict=CRITIC_UNAVAILABLE, next_role=reviewer.\nImplementer critic detail: %s' "$workflow_id" "$detail" | jq -Rs .)
+    escaped=$(printf 'Implementer critic progress: Starting external tactical critic (read-only).\nImplementer critic: provider=reviewer-subagent, workflow=%s.\nImplementer critic: verdict=CRITIC_UNAVAILABLE, next_role=reviewer.\nImplementer critic detail: %s' "$workflow_id" "$detail" | jq -Rs .)
     cat <<EOF
 {
   "additionalContext": $escaped
@@ -80,7 +80,7 @@ EOF
 _emit_disabled() {
     local workflow_id="$1"
     local escaped
-    escaped=$(printf 'Implementer critic disabled for this scope.\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: disabled, routing directly to reviewer.' "$workflow_id" | jq -Rs .)
+    escaped=$(printf 'Implementer critic disabled for this scope.\nImplementer critic: provider=reviewer-subagent, workflow=%s.\nImplementer critic: disabled, routing directly to reviewer.' "$workflow_id" | jq -Rs .)
     cat <<EOF
 {
   "additionalContext": $escaped

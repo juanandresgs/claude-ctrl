@@ -20,10 +20,11 @@ adapt, and the runtime decides.
 - `hooks/` normalizes event payloads and calls the runtime instead of owning
   policy decisions directly.
 - `runtime/` owns policy evaluation, SQLite state, dispatch, leases, reviewer
-  readiness, work items, prompt packs, and validation commands through
+  readiness/evidence state, work items, prompt packs, and validation commands through
   `bin/cc-policy`.
-- `sidecars/codex-review/` owns the public Codex CLI critic path for
-  implementer convergence review.
+- `sidecars/codex-review/` owns the public Codex/Gemini critic path for
+  implementer convergence review, with reviewer fallback when no external
+  critic is available.
 - `scripts/` contains live support entrypoints only: statusline rendering,
   backlog/todo plumbing, plan discipline checks, and shared keychain helpers.
 - `evals/` is retained because `cc-policy eval` uses the scenarios and
@@ -38,7 +39,8 @@ commands documented in `README.md`.
 Preserve the original claude-ctrl thesis that model-context instructions are
 not constraints, then update the mechanism for ClauDEX: shell hooks become
 boundary adapters, a typed runtime owns operational truth, and stage work moves
-through deterministic dispatch, critique, review, and landing gates.
+through deterministic dispatch, critique, readiness adjudication, and landing
+gates.
 
 ## Principles
 
@@ -63,6 +65,10 @@ through deterministic dispatch, critique, review, and landing gates.
   uses its scenarios and fixtures directly.
 - `2026-04-27 -- DEC-PUB-004` Keep `scripts/` only for live runtime support
   files used by `settings.json`, hooks, policies, skills, or sidecars.
+- `2026-04-27 -- DEC-PUB-005` Keep Reviewer in the canonical chain as the
+  readiness adjudicator. External Codex/Gemini critics provide read-only
+  implementer evidence and may route obvious rework before review; if no critic
+  is available, Reviewer performs the full fallback review itself.
 
 ## Active Initiatives
 
@@ -99,9 +105,10 @@ paths, and validation commands.
 
 **Status:** completed
 
-**Summary:** Documented the implementer Codex CLI critic as the inner-loop
-quality filter and kept the public implementation under
-`sidecars/codex-review/` plus `hooks/implementer-critic.sh`.
+**Summary:** Documented the implementer external CLI critic as the inner-loop
+quality filter, added Codex/Gemini provider fallback semantics, and kept the
+public implementation under `sidecars/codex-review/` plus
+`hooks/implementer-critic.sh`.
 
 ## Parked Issues
 

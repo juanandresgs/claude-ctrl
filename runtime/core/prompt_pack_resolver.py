@@ -238,9 +238,10 @@ class RuntimeStateSummary:
     """Caller-supplied runtime-state summary for the ``runtime_state_pack`` layer.
 
     ``current_branch`` and ``worktree_path`` are required. The
-    remaining lists (leases, approvals, findings) are optional
-    tuples of non-empty strings — the layer reports "none" for
-    empty tuples so the rendered text is always meaningful.
+    remaining lists (leases, approvals, findings) are optional tuples of
+    non-empty strings. ``latest_critic_review`` is a non-empty rendered state
+    block. Empty tuple sections report "none" so the rendered text is always
+    meaningful.
     """
 
     current_branch: str
@@ -248,10 +249,12 @@ class RuntimeStateSummary:
     active_leases: Tuple[str, ...] = ()
     open_approvals: Tuple[str, ...] = ()
     unresolved_findings: Tuple[str, ...] = ()
+    latest_critic_review: str = "Critic: none recorded"
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self, "current_branch")
         _require_non_empty_str(self, "worktree_path")
+        _require_non_empty_str(self, "latest_critic_review")
         _require_tuple_of_non_empty_strings(self, "active_leases")
         _require_tuple_of_non_empty_strings(self, "open_approvals")
         _require_tuple_of_non_empty_strings(self, "unresolved_findings")
@@ -279,6 +282,9 @@ class RuntimeStateSummary:
                 lines.append(f"- {finding}")
         else:
             lines.append("Unresolved findings: (none)")
+        lines.append("")
+        lines.append("Latest implementer critic:")
+        lines.append(self.latest_critic_review)
         return "\n".join(lines)
 
 
@@ -1194,6 +1200,8 @@ class RuntimeStateSnapshot:
       * ``open_approvals`` — tuple of unresolved approval tokens.
       * ``unresolved_findings`` — tuple of outstanding reviewer /
         policy findings.
+      * ``latest_critic_review`` — rendered latest implementer critic
+        resolution, or ``"Critic: none recorded"``.
 
     Validation mirrors the other snapshot dataclasses in this
     module: non-empty strings are required where marked, every
@@ -1205,10 +1213,12 @@ class RuntimeStateSnapshot:
     active_leases: Tuple[str, ...] = ()
     open_approvals: Tuple[str, ...] = ()
     unresolved_findings: Tuple[str, ...] = ()
+    latest_critic_review: str = "Critic: none recorded"
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self, "current_branch")
         _require_non_empty_str(self, "worktree_path")
+        _require_non_empty_str(self, "latest_critic_review")
         _require_tuple_of_non_empty_strings(self, "active_leases")
         _require_tuple_of_non_empty_strings(self, "open_approvals")
         _require_tuple_of_non_empty_strings(self, "unresolved_findings")
@@ -1265,6 +1275,7 @@ def runtime_state_summary_from_snapshot(
         active_leases=sorted_leases,
         open_approvals=sorted_approvals,
         unresolved_findings=sorted_findings,
+        latest_critic_review=snapshot.latest_critic_review,
     )
 
 

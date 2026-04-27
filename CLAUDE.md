@@ -250,7 +250,7 @@ Subagent authority model (enforce this in routing):
 - `planner`: plan/governance/scope/evaluation contract authority; no source implementation.
 - `guardian (provision)`: worktree/lease/bootstrap authority; no source implementation.
 - `implementer`: source implementation within scope; no landing authority.
-- `reviewer`: read-only outer-loop technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`). Codex implementer critic reviews are tactical inner-loop filters; they do not replace reviewer readiness.
+- `reviewer`: read-only readiness adjudicator and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`). It evaluates implementer evidence, runtime state, and Codex/Gemini critic output when present; when no external critic is available, it performs the full fallback review itself.
 - `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push` to the established upstream) once readiness gates are green.
 - `orchestrator`: coordination/dispatch/review only; does not perform source edits, landing operations, or bypass stage authorities.
 
@@ -286,14 +286,15 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 - The hook output does NOT contain `AUTO_DISPATCH:` (suggestion-only mode)
 - Guardian has hit a real user-decision boundary (history rewrite / destructive recovery, ambiguous publish target, or irreconcilable reviewer-implementer conflict)
 
-Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. This critic is an inner-loop implementer quality filter: it may send work back to implementer or planner before reviewer sees it, but it cannot issue Guardian readiness. The reviewer remains the outer-loop readiness authority and its valid `REVIEW_*` completion is projected into `evaluation_state` for Guardian landing. Regular Stop uses deterministic advice only (`stop-advisor.sh`); broad Codex/Gemini review is explicit or dispatch-critic work, not a default Stop-time blocker (DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
+Note: Implementer SubagentStop uses a dedicated critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. The critic may be Codex CLI, Gemini CLI, or unavailable. `TRY_AGAIN` sends tactical defects back to implementer, `BLOCKED_BY_PLAN` returns to planner, and both `READY_FOR_REVIEWER` and `CRITIC_UNAVAILABLE` route to the canonical reviewer. The critic cannot issue Guardian readiness. Reviewer remains the readiness authority: it adjudicates the implementer record plus critic output when present, or performs full read-only fallback review when no critic result exists. Its valid `REVIEW_*` completion is projected into `evaluation_state` for Guardian landing. Regular Stop uses deterministic advice only (`stop-advisor.sh`); broad Codex/Gemini review is explicit or dispatch-critic work, not a default Stop-time blocker (DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
 
 When implementer stop output contains `CRITIC_DETAIL`, `CRITIC_NEXT_STEPS`,
 `CRITIC_ARTIFACT`, or `CRITIC_ACTION`, treat that block as routing payload, not
-as a recap. If the next role is implementer or planner, include the critic
-detail and next steps verbatim in the next Agent prompt. If external CLI review
-is unavailable and the action requests a reviewer-subagent fallback, dispatch
-the canonical read-only reviewer rather than silently continuing.
+as a recap. Include the critic detail, next steps, and artifact path verbatim in
+the next Agent prompt whether the next role is implementer, planner, or
+reviewer. If external CLI review is unavailable and the action requests a
+reviewer-subagent fallback, dispatch the canonical read-only reviewer rather
+than silently continuing.
 
 ### Guardian Landing Preflight (Required)
 
@@ -376,7 +377,7 @@ These are not mere technical rules — they are sacred practices that honor the 
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
 8. **Approval Gates** — Permanent git operations go through Guardian. Evaluated Guardian landing (commit, merge, straightforward push to the established upstream) is automatic when `ready_for_guardian` with SHA match and passing tests. Rebase, reset, force/history-rewrite, destructive cleanup, ambiguous publish targets, and irreconcilable agent disagreement require explicit user adjudication.
 9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues.
-10. **Reviewer Before Commit** — The reviewer runs the implementation against the planner's Evaluation Contract and owns technical readiness. User approval is for destructive/history-rewrite git actions, ambiguous publish targets, irreconcilable agent disagreement, or product signoff, not as fake proof of correctness.
+10. **Reviewer Before Commit** — The reviewer adjudicates the implementation against the planner's Evaluation Contract, using critic evidence when present and full fallback review when absent. User approval is for destructive/history-rewrite git actions, ambiguous publish targets, irreconcilable agent disagreement, or product signoff, not as fake proof of correctness.
 11. **Worktrees Mean Concurrency** — Never assume single-session or linear execution. All shared state mutations must be atomic via SQLite backend helpers.
 12. **Single Source of Truth** — Every state domain has exactly one canonical authority. "I'll add the new way but keep the old way as a fallback" creates dual-authority bugs. Unify the implementation natively.
 
@@ -395,7 +396,7 @@ Add `@decision` annotations to significant files (50+ lines). Hooks enforce the 
 | `agents/planner.md` | Planning a new project or feature |
 | `agents/implementer.md` | Implementing code in a worktree |
 | `agents/guardian.md` | Committing, merging, branch management |
-| `agents/reviewer.md` | Read-only technical review, structured findings, REVIEW_* trailers |
+| `agents/reviewer.md` | Read-only readiness adjudication, fallback review, structured findings, REVIEW_* trailers |
 
 ## Knowledge Search
 

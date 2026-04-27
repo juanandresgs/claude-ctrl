@@ -93,10 +93,13 @@ The runtime resolves current state, evaluates policy, records transitions, and
 returns the hook-shaped response Claude Code expects.
 
 Deterministic enforcement remains the point, but the system now has a single
-place where operational truth lives. No more outdated flatfiles. Code reviews
-are now enforced to convergence using a separate read-only CLI critic, Codex,
-to avoid model bias. Policies are now abstracted away from the hooks themselves,
-paving the way for support on other coding harnesses in future versions.
+place where operational truth lives. No more outdated flatfiles. Implementer
+work is checked by a separate read-only critic when Codex or Gemini CLI is
+available, then Reviewer adjudicates the complete evidence record before
+Guardian can land. If no external critic is available, Reviewer performs the
+full fallback review itself. Policies are now abstracted away from the hooks
+themselves, paving the way for support on other coding harnesses in future
+versions.
 
 Additional architectural changes:
 
@@ -106,8 +109,9 @@ Additional architectural changes:
   workflow authority
 - role permissions are capability-based instead of repeated role-name folklore
 - Guardian is split into provisioning and landing authority
-- Implementer runs are supplemented by a second read-only CLI critique, Codex
-- Reviewer replaces Tester as the readiness authority
+- Implementer runs are supplemented by a read-only external critique when
+  Codex or Gemini CLI is available
+- Reviewer replaces Tester as the readiness adjudicator and fallback reviewer
 - Agent worktree isolation is denied; Guardian provisions controlled worktrees
 - dispatch is driven by structured completion records and the stage registry
 - routine landing is automatic after reviewer, test, scope, and lease gates
@@ -126,7 +130,7 @@ unsafe shortcuts, fewer unnecessary user bounces.
 ClauDEX runs the current workflow as:
 
 ```text
-planner -> guardian(provision) -> (implementer <-> codex critique) -> reviewer -> guardian(land)
+planner -> guardian(provision) -> (implementer <-> external critique) -> reviewer -> guardian(land)
        ^                            |_< loop to convergence >_|                      |
        |                                                                             v
        +------------------------- post-landing continuation -------------------------+
@@ -138,10 +142,11 @@ flowchart TD
     O --> P["Planner<br/>plan, scope, evaluation contract"]
     P --> GP["Guardian: provision<br/>worktree and lease"]
     GP --> I["Implementer<br/>source changes inside scope"]
-    I --> C["Codex CLI critic<br/>read-only convergence review"]
+    I --> C["Codex/Gemini critic<br/>read-only convergence review"]
     C -->|"TRY_AGAIN"| I
     C -->|"BLOCKED_BY_PLAN"| P
-    C -->|"READY_FOR_REVIEWER"| R["Reviewer<br/>read-only technical evaluation"]
+    C -->|"READY_FOR_REVIEWER"| R["Reviewer<br/>readiness adjudication"]
+    C -->|"CRITIC_UNAVAILABLE"| R
     R -->|"needs_changes"| I
     R -->|"blocked_by_plan"| P
     R -->|"ready_for_guardian"| GL["Guardian: land<br/>commit, merge, push"]
@@ -157,8 +162,10 @@ shared requirements:
 - Guardian provisions worktrees before implementation and lands git changes
   after review.
 - Implementer writes source inside the leased scope.
-- Codex CLI critiques the work and kicks it back for fixes until it converges.
-- Reviewer is the technical readiness authority and is mechanically read-only.
+- Codex or Gemini CLI critiques the work when available and kicks it back for
+  fixes until it converges.
+- Reviewer is the readiness adjudicator, full fallback reviewer, and
+  mechanically read-only.
 - The orchestrator coordinates the chain; it does not bypass role ownership.
 
 ---
@@ -195,8 +202,10 @@ where the decision is made:
 - Agent launches must carry the canonical ClauDEX contract
 - canonical subagent seats are backed by runtime carrier rows, leases, and
   prompt packs
-- Codex critic review is hook-wired through `settings.json`,
+- Codex/Gemini critic review is hook-wired through `settings.json`,
   `hooks/implementer-critic.sh`, and `sidecars/codex-review/`
+- critic output is persisted into runtime state and included in reviewer
+  prompt packs as evidence
 - completion records drive dispatch rather than pane text or local memory
 - routine Guardian landing requires reviewer readiness, test evidence, scope
   compliance, and lease authority

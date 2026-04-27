@@ -1897,6 +1897,8 @@ def _handle_dispatch(args) -> int:
                     "critic_provider": result.get("critic_provider", ""),
                     "critic_summary": result.get("critic_summary", ""),
                     "critic_detail": result.get("critic_detail", ""),
+                    "critic_next_steps": result.get("critic_next_steps", []),
+                    "critic_artifact_path": result.get("critic_artifact_path", ""),
                     "critic_try_again_streak": result.get("critic_try_again_streak", 0),
                     "critic_retry_limit": result.get("critic_retry_limit", 0),
                     "critic_repeated_fingerprint_streak": result.get(

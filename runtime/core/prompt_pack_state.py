@@ -8,19 +8,22 @@ Rationale: The prompt-pack resolver's
   was introduced as a typed carrier the caller had to fill in by
   hand. This slice delivers the first pure helper that produces
   that snapshot from **already-present** runtime authorities
-  (``workflows`` bindings, ``dispatch_leases``, ``approvals``),
-  without touching git, the filesystem, or any live repo-state
-  walker. ``unresolved_findings`` are now captured live from the
-  canonical ``reviewer_findings`` ledger when the caller does not
-  supply an explicit override. A future slice can replace the
-  caller-supplied ``current_branch`` / ``worktree_path`` fallbacks
+  (``workflows`` bindings, ``dispatch_leases``, ``approvals``,
+  ``critic_reviews``), without touching git, the filesystem, or any live
+  repo-state walker. ``unresolved_findings`` are now captured live from the
+  canonical ``reviewer_findings`` ledger when the caller does not supply an
+  explicit override. The latest implementer critic resolution is rendered into
+  the runtime-state prompt layer so Reviewer can adjudicate implementation
+  evidence even if hook ``additionalContext`` is lost. A future slice can
+  replace the caller-supplied ``current_branch`` / ``worktree_path`` fallbacks
   with live git sources.
 
   Scope discipline:
 
     * **Read-only.** The helper issues only SELECT queries via
       the existing authority modules (``workflows.get_binding``,
-      ``leases.list_leases``, ``approvals.list_pending``). No
+      ``leases.list_leases``, ``approvals.list_pending``,
+      ``critic_reviews.assess_latest``). No
       INSERT / UPDATE / DELETE. No transaction is opened. A test
       captures ``conn.total_changes`` before and after the call
       and asserts it is unchanged.
@@ -76,6 +79,7 @@ import sqlite3
 from typing import Any, Mapping, Optional, Tuple
 
 from runtime.core import approvals as approvals_mod
+from runtime.core import critic_reviews as cr_mod
 from runtime.core import leases as leases_mod
 from runtime.core import reviewer_findings as rf_mod
 from runtime.core import workflows as workflows_mod
@@ -159,6 +163,53 @@ def _render_finding(finding) -> str:
             loc = f"{loc}:{finding.line}"
         parts.append(f"({loc})")
     return " ".join(parts)
+
+
+def _render_critic_review(resolution) -> str:
+    """Render the latest implementer critic state for reviewer prompt packs.
+
+    The reviewer prompt only needs a compact adjudication surface: whether a
+    critic result exists, what verdict it produced, what it asked for next, and
+    whether routing escalated to reviewer fallback. The full artifact remains
+    referenced by path when present.
+    """
+    if resolution is None or not getattr(resolution, "found", False):
+        return "Critic: none recorded"
+
+    provider = getattr(resolution, "provider", "") or "(unknown)"
+    verdict = getattr(resolution, "verdict", "") or "(unknown)"
+    next_role = getattr(resolution, "next_role", "") or "(unknown)"
+    lines = [f"Critic: provider={provider} verdict={verdict} next_role={next_role}"]
+
+    summary = getattr(resolution, "summary", "") or "(none)"
+    detail = getattr(resolution, "detail", "") or "(none)"
+    lines.append(f"Critic summary: {summary}")
+    lines.append(f"Critic detail: {detail}")
+
+    next_steps = getattr(resolution, "next_steps", None) or []
+    if next_steps:
+        lines.append("Critic next steps:")
+        for step in next_steps:
+            lines.append(f"- {step}")
+    else:
+        lines.append("Critic next steps: (none)")
+
+    artifact_path = getattr(resolution, "artifact_path", "") or ""
+    if artifact_path:
+        lines.append(f"Critic artifact: {artifact_path}")
+
+    retry_limit = int(getattr(resolution, "retry_limit", 0) or 0)
+    try_again = int(getattr(resolution, "try_again_streak", 0) or 0)
+    repeated = int(getattr(resolution, "repeated_fingerprint_streak", 0) or 0)
+    escalated = bool(getattr(resolution, "escalated", False))
+    escalation_reason = getattr(resolution, "escalation_reason", "") or ""
+    escalation = escalation_reason if escalated else "no"
+    lines.append(
+        "Critic retry: "
+        f"try_again={try_again} retry_limit={retry_limit} "
+        f"repeated_fingerprint={repeated} escalated={escalation}"
+    )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -275,12 +326,22 @@ def capture_runtime_state_snapshot(
         rendered.sort(key=lambda t: (t[0], t[1]))
         resolved_findings = tuple(entry for _, _, entry in rendered)
 
+    try:
+        critic_resolution = cr_mod.assess_latest(conn, workflow_id=workflow_id)
+    except Exception as exc:
+        latest_critic_review = (
+            f"Critic: capture_error={type(exc).__name__}: {exc}"
+        )
+    else:
+        latest_critic_review = _render_critic_review(critic_resolution)
+
     return RuntimeStateSnapshot(
         current_branch=resolved_branch,
         worktree_path=resolved_worktree,
         active_leases=active_leases,
         open_approvals=open_approvals,
         unresolved_findings=resolved_findings,
+        latest_critic_review=latest_critic_review,
     )
 
 
