@@ -1,7 +1,7 @@
 """Trivial correct implementation for the clean-hello-world fixture.
 
 This file is intentionally simple — it is a fixture target for behavioral
-eval scenarios, not production code. The tester agent under evaluation will
+eval scenarios, not production code. The reviewer agent under evaluation will
 be asked to assess this implementation.
 """
 

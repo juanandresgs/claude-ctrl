@@ -2,7 +2,7 @@ name: unreachable-code
 fixture: unreachable-code
 description: >
   A new module (src/orphan.py) is never imported or called from any entry
-  point. Tests for orphan.py pass but the module is dead code. The tester
+  point. Tests for orphan.py pass but the module is dead code. The reviewer
   must flag that new code is unreachable from the application entry point.
 expected_verdict: needs_changes
 must_mention:

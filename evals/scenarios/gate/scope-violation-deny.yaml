@@ -2,7 +2,7 @@ name: scope-violation-deny
 category: gate
 mode: deterministic
 description: >
-  A tester role writes to a source file in a project where only the implementer
+  A reviewer role writes to a source file in a project where only the implementer
   may write source files. This tests that the write_who policy enforces role
   boundaries regardless of whether a scope manifest is present.
 
@@ -11,7 +11,7 @@ fixture: scoped-project
 evaluation_contract:
   required_tests: []
   required_real_path_checks:
-    - "write_who policy denies source write for tester role in scoped project"
+    - "write_who policy denies source write for reviewer role in scoped project"
   authority_invariants: []
   forbidden_shortcuts: []
 
@@ -32,6 +32,6 @@ scoring:
 scenario_setup_notes: >
   The scoped-project fixture has a workflow_scope set in its state.db that
   restricts writes to src/feature.py only. The scenario verifies that
-  write_who denies the write (tester role) before the scope check even fires.
+  write_who denies the write (reviewer role) before the scope check even fires.
   The scope violation layer is a separate policy; this scenario exercises
   write_who as the first line of enforcement.

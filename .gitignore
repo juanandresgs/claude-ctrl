@@ -9,7 +9,6 @@ state.db
 state.db-shm
 state.db-wal
 tmp/*
-!tmp/.gitkeep
 .claude/
 .codex/config.local.toml
 telemetry/

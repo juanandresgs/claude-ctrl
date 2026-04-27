@@ -10,22 +10,24 @@ configuration, and plans into one coherent control plane. Note technical debt or
 - The active bootstrap kernel is the patched `v2.0` hook set copied into
   `hooks/` and `settings.json`.
 - The canonical prompt set lives in `CLAUDE.md` and `agents/`.
-- The target modular architecture is represented by stubs in `hooks/lib/`,
-  `runtime/`, `scripts/`, `docs/`, `sidecars/`, and `tests/`.
+- The public runtime surface lives in `hooks/`, `runtime/`, `scripts/`,
+  `sidecars/`, `skills/`, `agents/`, and `settings.json`.
 
 ## Codex and Claude Code
 
 - Claude Code is the governed system: prompts, hooks, runtime domains, worktree/dispatch behavior, and installed configuration are all in scope.
 - Codex is the repo-level analysis and refactor agent. It should inspect how the installed system actually behaves before trusting architectural prose. Codex reviews the output of the Claude Code (cc) threads, skeptically reviews, then provides guidance/steering towards meeting the intended goal at the highest spec.
-- Documentation is intent first, not mechanism truth. For mechanism truth, inspect the components themselves including `settings.json`, `hooks/`, `runtime/`, and the active test suites.
-- When architectural drift is found, suggest updates and initiatives for Claude Code to address the review doc, implementation spec, master plan, and architecture docs together rather than fixing only one narrative surface.
+- Documentation is intent first, not mechanism truth. For mechanism truth, inspect the components themselves including `settings.json`, `hooks/`, `runtime/`, sidecars, scripts, and runtime validation commands.
+- When architectural drift is found, suggest updates that align the mechanism, prompts, runtime policy, and README together rather than fixing only one narrative surface.
 
 ## Session Working Pattern
 
 - Start from installed truth, not from aspiration.
 - Review end to end: hook wiring, shell entrypoints, runtime domains, state
-  authorities, dispatch flow, worktree handling, prompts, and tests.
-- Treat stale docs and stale scenarios as control-plane defects, not cosmetic issues.
+  authorities, dispatch flow, worktree handling, prompts, and validation
+  commands.
+- Treat stale docs, stale prompts, and stale validation assumptions as
+  control-plane defects, not cosmetic issues.
 - Prefer architecture corrections that collapse authorities instead of adding another layer beside the current one.
 - When the intended design changes, rewrite the plans around the new core model rather than patching an addendum onto an obsolete plan.
 
@@ -35,9 +37,9 @@ configuration, and plans into one coherent control plane. Note technical debt or
 2. Import from `claude-config-pro` only by explicit subsystem replacement.
 3. Keep the kernel simpler than the work it governs.
 4. Do not reintroduce parallel authorities as transitional fallbacks.
-5. For architecture work, use docs as statements of goals and values, but use
-   code, config, and tests as the source of truth for how the system currently
-   works.
+5. For architecture work, use prose as statements of goals and values, but use
+   code, config, runtime state, and validation commands as the source of truth
+   for how the system currently works.
 6. Default toward a policy-engine-first design: hooks should become adapters,
    policy should become the point of visibility and configuration, dispatch
    should be authoritative, and concurrency/worktree management should be part

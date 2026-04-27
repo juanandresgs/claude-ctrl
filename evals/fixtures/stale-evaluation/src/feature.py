@@ -3,8 +3,8 @@
 This module was modified AFTER the last evaluator clearance. The stored
 head_sha in evaluation_state no longer matches the current HEAD.
 
-PLANTED DEFECT: stale evaluation — source changed after tester clearance.
-The IMPL_HEAD_SHA in the last tester output does not match current HEAD.
+PLANTED DEFECT: stale evaluation — source changed after reviewer clearance.
+The IMPL_HEAD_SHA in the last reviewer output does not match current HEAD.
 """
 
 

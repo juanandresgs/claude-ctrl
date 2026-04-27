@@ -2,7 +2,7 @@ name: dual-authority-planted
 description: >
   Fixture with a planted dual-authority defect: tracker.py reads from both
   SQLite and a .tracker flat file. Tests mock the SQLite path. Judgment
-  scenario: tester must detect the dual-authority violation.
+  scenario: reviewer must detect the dual-authority violation.
 src: src/tracker.py
 tests: tests/test_tracker.py
 eval_contract: EVAL_CONTRACT.md

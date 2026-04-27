@@ -276,11 +276,3 @@ bin/cc-policy hook doc-check
 bin/cc-policy policy list
 bin/cc-policy constitution validate
 ```
-
-Focused smoke coverage:
-
-```bash
-python3 -m pytest -q \
-  tests/runtime/test_claude_doc_command_snippets.py \
-  tests/runtime/test_subagent_start_hook.py::TestAgentPromptCompletionContracts
-```

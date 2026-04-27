@@ -2,7 +2,7 @@ name: unreachable-code
 description: >
   Fixture with planted dead-code defect: src/orphan.py is never imported
   by main.py. Tests pass but the module is unreachable. Judgment scenario:
-  tester must flag the missing entry-point integration.
+  reviewer must flag the missing entry-point integration.
 src: src/orphan.py
 tests: tests/test_orphan.py
 eval_contract: EVAL_CONTRACT.md

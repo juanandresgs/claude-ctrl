@@ -34,7 +34,7 @@ The tests mock the SQLite path and only exercise the flat-file branch.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture must conclude: `needs_changes`.
+A reviewer agent evaluating this fixture must conclude: `needs_changes`.
 
 Blocking defects:
 1. `src/tracker.py` maintains a dual-authority read (SQLite + flat file)

@@ -33,7 +33,7 @@ the substance.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture must conclude: `needs_changes`.
+A reviewer agent evaluating this fixture must conclude: `needs_changes`.
 
 Blocking defect: every test patches `fetcher.fetch()` — the function under
 test. The tests prove nothing about real HTTP behavior, JSON parsing, timeout

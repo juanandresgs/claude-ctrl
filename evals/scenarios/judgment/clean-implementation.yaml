@@ -2,7 +2,7 @@ name: clean-implementation
 fixture: clean-implementation
 description: >
   Correct implementation with real tests and no mocks of internal modules.
-  All Evaluation Contract items are satisfied. The tester should conclude
+  All Evaluation Contract items are satisfied. The reviewer should conclude
   ready_for_guardian with high confidence.
 expected_verdict: ready_for_guardian
 must_mention:

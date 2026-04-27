@@ -1,7 +1,7 @@
 name: eval-ready
 description: >
   Python project with evaluation_state=ready_for_guardian seeded in state.db.
-  Gate fixture for eval-invalidation: tester write after eval clearance is
+  Gate fixture for eval-invalidation: reviewer write after eval clearance is
   still denied by write_who — role enforcement is unconditional.
 src: src/feature.py
 tests: tests/test_feature.py

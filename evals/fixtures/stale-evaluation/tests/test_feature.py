@@ -1,6 +1,6 @@
 """Tests for stale-evaluation fixture src/feature.py.
 
-Tests pass. But the source was modified after the last tester clearance,
+Tests pass. But the source was modified after the last reviewer clearance,
 so the stored head_sha no longer matches the current HEAD. The prior
 clearance is therefore invalid and must not be accepted.
 """

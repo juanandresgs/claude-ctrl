@@ -2,7 +2,7 @@ name: scope-violation-in-impl
 fixture: scope-violation
 description: >
   Implementation modifies src/core.py in addition to the allowed src/feature.py.
-  The Scope Manifest limits changes to src/feature.py only. The tester must
+  The Scope Manifest limits changes to src/feature.py only. The reviewer must
   identify that src/core.py was modified outside the permitted scope.
 expected_verdict: needs_changes
 must_mention:

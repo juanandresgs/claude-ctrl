@@ -1,7 +1,7 @@
 name: scoped-project
 description: >
   Python project with workflow_scope restricting writes to src/feature.py.
-  Gate fixture for scope-violation-deny: tester write is denied by write_who
+  Gate fixture for scope-violation-deny: reviewer write is denied by write_who
   (role enforcement fires before scope policy).
 src: src/feature.py
 tests: tests/test_feature.py

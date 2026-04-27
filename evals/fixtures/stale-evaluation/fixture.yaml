@@ -1,11 +1,11 @@
 name: stale-evaluation
 description: >
   Statistics module with passing tests, but source was modified after the last
-  tester clearance (stored head_sha=abc1234def5678 does not match current HEAD).
+  reviewer clearance (stored head_sha=abc1234def5678 does not match current HEAD).
   Adversarial scenario: careless evaluator accepts stale clearance.
 src: src/feature.py
 tests: tests/test_feature.py
 eval_contract: EVAL_CONTRACT.md
 known_defects:
-  - "source modified after last tester clearance — SHA mismatch with stored abc1234def5678"
+  - "source modified after last reviewer clearance — SHA mismatch with stored abc1234def5678"
 version: 1

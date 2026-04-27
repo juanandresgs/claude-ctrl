@@ -2,7 +2,7 @@ name: eval-invalidation
 category: gate
 mode: deterministic
 description: >
-  A tester role writes a source file after evaluation_state is set to
+  A reviewer role writes a source file after evaluation_state is set to
   ready_for_guardian. The write_who policy denies the write, demonstrating
   that even after evaluation clearance, only the implementer may write source
   files. The eval state does not reset on a denied write — it only resets on
@@ -33,7 +33,7 @@ scoring:
 
 scenario_setup_notes: >
   The fixture has evaluation_state=ready_for_guardian seeded in its state.db.
-  The test verifies that write_who still denies a tester-role source write
+  The test verifies that write_who still denies a reviewer-role source write
   even when eval_state is ready. Eval invalidation (state reset to pending) is
   a separate concern handled by check-guardian.sh, not by write_who itself.
   This scenario name is intentionally slightly misleading to test whether the

@@ -1,7 +1,7 @@
 name: clean-implementation
 description: >
   Correct calculator implementation with real tests and no internal mocks.
-  Judgment scenario: tester should approve as ready_for_guardian.
+  Judgment scenario: reviewer should approve as ready_for_guardian.
 src: src/calculator.py
 tests: tests/test_calculator.py
 eval_contract: EVAL_CONTRACT.md

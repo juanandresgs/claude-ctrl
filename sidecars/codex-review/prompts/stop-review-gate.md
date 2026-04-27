@@ -72,8 +72,8 @@ should do next.
 - Read the changed files.
 - Check whether the worktree is dirty and avoid blaming unrelated
   changes.
-- Inspect `settings.json`, `hooks/`, `runtime/`, `tests/`, and docs
-  together when the change crosses boundaries.
+- Inspect `settings.json`, `hooks/`, `runtime/`, sidecars, validation
+  commands, and relevant prose together when the change crosses boundaries.
 
 2. Verify real runtime behavior
 - If the issue is about Claude behavior, hook errors, interruptions, or

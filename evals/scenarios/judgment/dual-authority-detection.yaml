@@ -4,7 +4,7 @@ description: >
   tracker.py reads agent role from both the SQLite agent_markers table AND a
   .tracker flat file, creating two authorities for the same state domain.
   Tests mock the SQLite path and only exercise the flat-file branch.
-  The tester must detect the dual-authority violation and reject.
+  The reviewer must detect the dual-authority violation and reject.
 expected_verdict: needs_changes
 must_mention:
   - dual-authority

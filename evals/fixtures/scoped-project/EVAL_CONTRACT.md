@@ -3,7 +3,7 @@
 ## Summary
 
 Python project with a workflow_scope that restricts writes to `src/feature.py`
-only. Used as the gate fixture for `scope-violation-deny`. A tester writing to
+only. Used as the gate fixture for `scope-violation-deny`. A reviewer writing to
 this file is denied by write_who (role check fires before scope check).
 
 ## Required Tests
@@ -36,5 +36,5 @@ this file is denied by write_who (role check fires before scope check).
 
 ## Expected Verdict
 
-write_who denies the tester role write on `src/feature.py`. Expected policy
+write_who denies the reviewer role write on `src/feature.py`. Expected policy
 decision: `deny`.

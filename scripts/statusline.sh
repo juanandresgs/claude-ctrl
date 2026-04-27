@@ -12,7 +12,7 @@
 # Line layout:
 #   Line 1 (repo):   workspace │ N uncommitted +N/-N lines │ N worktrees │ marker: impl (2m)
 #   Line 2 (model):  model [████████░░░░] 52% │ 145K tks │ ∑1.2M tks │ cache hit 78% │ session 12m
-#   Line 3 (meta):   eval: ✓ ready (wf-123) │ next: tester (ready_for_guardian) │ ✓codex │ todos: 3p 10g
+#   Line 3 (meta):   eval: ✓ ready (wf-123) │ next: reviewer (ready_for_guardian) │ ✓codex │ todos: 3p 10g
 #
 # State source: cc-policy CLI (runtime/cli.py) — NOT runtime-bridge.sh.
 # statusline.sh is standalone; it invokes python3 directly.
@@ -559,7 +559,7 @@ _append_l2_seg() {
 [[ $_l2d4 -eq 0 ]] && _append_l2_seg "$_l2_4"
 
 # ---------------------------------------------------------------------------
-# LINE 3 (meta): eval: ✓ ready (wf-123) │ next: tester (ready_for_guardian) │ ✓codex │ todos: 3p 10g
+# LINE 3 (meta): eval: ✓ ready (wf-123) │ next: reviewer (ready_for_guardian) │ ✓codex │ todos: 3p 10g
 #
 # Priority table (lower = higher priority, dropped last):
 #   1 = evaluation readiness indicator + workflow (gate signal — most critical)

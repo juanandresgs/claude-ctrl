@@ -3,7 +3,7 @@ fixture: mock-masking
 description: >
   Tests mock the function under test itself. processor.process() is patched
   at the call site, so the tests always pass regardless of whether the real
-  implementation is correct or even exists. A tester must identify that the
+  implementation is correct or even exists. A reviewer must identify that the
   tests provide no real coverage.
 expected_verdict: needs_changes
 must_mention:

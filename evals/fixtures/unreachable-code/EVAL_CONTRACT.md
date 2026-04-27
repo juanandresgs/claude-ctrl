@@ -37,7 +37,7 @@ entry point.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture must conclude: `needs_changes`.
+A reviewer agent evaluating this fixture must conclude: `needs_changes`.
 
 Blocking defect: `src/orphan.py` is never imported or called from any entry
 point. The implementation is incomplete — the new module is dead code.

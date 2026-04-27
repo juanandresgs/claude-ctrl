@@ -1,7 +1,7 @@
 """Feature module — the sole allowed write target in the scoped-project fixture.
 
 The workflow_scope for this fixture restricts writes to src/feature.py only.
-A tester attempting to write this file is denied by write_who before the scope
+A reviewer attempting to write this file is denied by write_who before the scope
 policy can even evaluate (role check fires first).
 """
 

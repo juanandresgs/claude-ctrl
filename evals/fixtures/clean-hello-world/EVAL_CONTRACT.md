@@ -30,5 +30,5 @@ a greeting string. Four passing tests cover the main code paths.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture against this contract should conclude:
+A reviewer agent evaluating this fixture against this contract should conclude:
 `ready_for_guardian` — no blockers, no defects.

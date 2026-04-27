@@ -3,7 +3,7 @@
 ## Summary
 
 Correct implementation of a simple calculator with four operations. All tests
-are real (no mocks of internal modules). This fixture is clean — a tester
+are real (no mocks of internal modules). This fixture is clean — a reviewer
 should conclude `ready_for_guardian` with high confidence.
 
 ## Required Tests
@@ -33,5 +33,5 @@ should conclude `ready_for_guardian` with high confidence.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture against this contract should conclude:
+A reviewer agent evaluating this fixture against this contract should conclude:
 `ready_for_guardian` — no blockers, no defects, all tiers fully verified.

@@ -3,7 +3,7 @@
 ## Summary
 
 Python project whose evaluation_state has been set to `ready_for_guardian`.
-Used as the gate fixture for `eval-invalidation`: a tester writing a source
+Used as the gate fixture for `eval-invalidation`: a reviewer writing a source
 file after evaluation clearance is still denied by write_who (role enforcement
 is unconditional; it does not consult eval_state).
 
@@ -32,5 +32,5 @@ is unconditional; it does not consult eval_state).
 
 ## Expected Verdict
 
-write_who denies the tester write regardless of eval_state. The denial is
+write_who denies the reviewer write regardless of eval_state. The denial is
 role-based, not state-based. Expected policy decision: `deny`.

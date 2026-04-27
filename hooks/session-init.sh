@@ -129,13 +129,13 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             CONTEXT_PARTS+=("Evaluation: ready_for_guardian — Guardian may proceed to commit/merge.")
             ;;
         needs_changes)
-            CONTEXT_PARTS+=("Evaluation: needs_changes — Tester found issues. Implementer should address them.")
+            CONTEXT_PARTS+=("Evaluation: needs_changes — Reviewer found issues. Implementer should address them.")
             ;;
         blocked_by_plan)
-            CONTEXT_PARTS+=("Evaluation: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner.")
+            CONTEXT_PARTS+=("Evaluation: blocked_by_plan — Reviewer flagged a plan gap. Dispatch Planner.")
             ;;
         pending)
-            CONTEXT_PARTS+=("Evaluation: pending — awaiting Tester evaluation.")
+            CONTEXT_PARTS+=("Evaluation: pending — awaiting Reviewer evaluation.")
             ;;
         # idle: no output (background noise)
     esac

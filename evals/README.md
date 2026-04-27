@@ -1,7 +1,8 @@
 # Behavioral Evaluation Framework — Scenario and Fixture Reference
 
-This directory contains the behavioral eval infrastructure for measuring
-whether the tester agent makes correct judgments about implementation quality.
+This directory contains behavioral eval infrastructure for measuring whether
+the runtime gates and reviewer judgment converge on correct implementation
+quality decisions.
 
 ## Directory Layout
 
@@ -9,7 +10,7 @@ whether the tester agent makes correct judgments about implementation quality.
 evals/
   scenarios/          # YAML scenario definitions
     gate/             # Gate enforcement scenarios (deterministic, policy-driven)
-    judgment/         # Judgment quality scenarios (quality of tester decisions)
+    judgment/         # Judgment quality scenarios
     adversarial/      # Adversarial scenarios (resistance to misleading input)
   fixtures/           # Self-contained implementation snapshots for eval runs
     clean-hello-world/

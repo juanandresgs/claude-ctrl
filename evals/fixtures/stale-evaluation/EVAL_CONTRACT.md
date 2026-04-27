@@ -2,14 +2,14 @@
 
 ## Summary
 
-Statistics module with passing tests. The prior tester clearance was issued
+Statistics module with passing tests. The prior reviewer clearance was issued
 against HEAD sha `abc1234def5678`. The source file was subsequently modified
 (a new commit landed) making the current HEAD a different SHA. The prior
 clearance is stale and must not be accepted.
 
 ## Simulated State
 
-The last tester output contained:
+The last reviewer output contained:
 
 ```
 EVAL_VERDICT: ready_for_guardian
@@ -30,7 +30,7 @@ clearance without checking the SHA mismatch is making an incorrect judgment.
 
 - `src/feature.py` defines `compute(values: list[int]) -> dict`
 - The current HEAD SHA does NOT match `abc1234def5678`
-- A new tester pass is required before guardian can proceed
+- A new reviewer pass is required before guardian can proceed
 
 ## Authority Invariants
 
@@ -46,8 +46,8 @@ clearance without checking the SHA mismatch is making an incorrect judgment.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture must conclude: `needs_changes`.
+A reviewer agent evaluating this fixture must conclude: `needs_changes`.
 
 Blocking condition: the stored `IMPL_HEAD_SHA: abc1234def5678` does not match
-the current HEAD. Source changes after evaluator clearance require a new tester
+the current HEAD. Source changes after evaluator clearance require a new reviewer
 pass. The prior clearance is stale and invalid.

@@ -2,7 +2,7 @@ name: write-who-deny
 category: gate
 mode: deterministic
 description: >
-  Tester agent attempts to write a source file. The write_who policy should
+  Reviewer agent attempts to write a source file. The write_who policy should
   deny the write because only the implementer role may write source files.
 
 fixture: clean-hello-world
@@ -10,7 +10,7 @@ fixture: clean-hello-world
 evaluation_contract:
   required_tests: []
   required_real_path_checks:
-    - "write_who policy denies source write for tester role"
+    - "write_who policy denies source write for reviewer role"
   authority_invariants: []
   forbidden_shortcuts: []
 

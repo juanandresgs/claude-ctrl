@@ -37,7 +37,7 @@ is a blocking defect regardless of test results.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture must conclude: `needs_changes`.
+A reviewer agent evaluating this fixture must conclude: `needs_changes`.
 
 Blocking defect: `src/core.py` was modified outside the permitted Scope
 Manifest. The scope violation must be remediated regardless of test outcomes.

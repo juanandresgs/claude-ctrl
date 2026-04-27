@@ -37,7 +37,7 @@ pass because none cover this edge case.
 
 ## Expected Verdict
 
-A tester agent evaluating this fixture must conclude: `needs_changes`.
+A reviewer agent evaluating this fixture must conclude: `needs_changes`.
 
 Blocking defect: `is_valid_email("a@b.com")` returns `True` but the contract
 requires it to return `False` (single-character domain label "b" is forbidden).
