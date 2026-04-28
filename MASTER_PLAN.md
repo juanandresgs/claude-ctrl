@@ -69,6 +69,9 @@ gates.
   readiness adjudicator. External Codex/Gemini critics provide read-only
   implementer evidence and may route obvious rework before review; if no critic
   is available, Reviewer performs the full fallback review itself.
+- `2026-04-27 -- DEC-PUB-006` Block false continuation claims at regular Stop:
+  a response that says it is continuing/proceeding with a known next action must
+  actually execute or dispatch that action, or surface a concrete blocker.
 
 ## Active Initiatives
 

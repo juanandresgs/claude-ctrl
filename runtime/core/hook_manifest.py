@@ -477,7 +477,7 @@ HOOK_MANIFEST: Tuple[HookManifestEntry, ...] = (
         "",
         "hooks/stop-advisor.sh",
         STATUS_ACTIVE,
-        "Deterministic Stop advisor for obvious bookkeeping, dispatch, and Guardian-owned git actions.",
+        "Deterministic Stop advisor for obvious bookkeeping, dispatch, false continuation claims, and Guardian-owned git actions.",
     ),
     # --- SessionEnd -----------------------------------------------------
     _e(

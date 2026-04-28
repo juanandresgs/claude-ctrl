@@ -330,6 +330,7 @@ A clean landing is not automatically the end of the objective. After `guardian (
 - If several documented follow-ups are available and none requires user product judgment, choose the first unblocked/highest-priority item by plan order, dependency readiness, or risk reduction. Report the choice briefly and proceed.
 - Use `needs_user_decision` only when the plan or runtime names a concrete user-decision boundary: mutually exclusive product direction, ambiguous priority with real tradeoffs, external credential/access requirement, destructive/history-rewrite action, or irreconcilable agent disagreement.
 - Use `goal_complete` only when the desired end state and all planned continuation rules are satisfied. A list of unscheduled follow-up candidates means the goal is not fully done unless the plan explicitly marks them out of scope.
+- Do not end a turn by saying "Continuing with ..." or "Proceeding to ..." while taking no action. If the next action is known, execute it or dispatch the canonical role before Stop; if it cannot proceed, name the concrete blocker.
 
 Status answers such as "Where are we?" must include one of: the next canonical dispatch, a concrete blocker, or a proof that the goal is terminal. "What's next is whatever you want" is not an acceptable terminal state when the plan already names follow-up candidates.
 

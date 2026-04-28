@@ -11,6 +11,16 @@ set -euo pipefail
 #   feedback into the wrong lane. This hook only catches obvious low-risk
 #   questions Claude should not ask: routine bookkeeping, canonical dispatch,
 #   and Guardian-owned git landing. It never calls external model providers.
+#
+# @decision DEC-PUB-006
+# Title: Stop advisor blocks false continuation claims
+# Status: accepted
+# Rationale: A regular Stop response that says "Continuing with ..." but then
+#   terminates is worse than an ordinary status answer: it tells the user the
+#   control plane knows the next action while leaving that action undone. The
+#   Stop advisor now treats narrow continuation/proceeding claims as premature
+#   terminal responses and blocks them, forcing the model either to execute or
+#   dispatch the named next step, or to report a concrete user-decision boundary.
 
 HOOK_INPUT="$(cat || true)"
 
@@ -52,10 +62,19 @@ has_user_boundary() {
     printf '%s' "$NORMALIZED" | grep -Eq 'force[- ]?push|force push|history rewrite|destructive|reset --hard|git reset|rebase|non[- ]?ff|non fast-forward|ambiguous publish|publish target|irreconcilable|product signoff|explicit user|user approval|user adjudicat|requires approval|needs approval|ask the user'
 }
 
+has_false_continuation_claim() {
+    printf '%s' "$NORMALIZED" | grep -Eq "\b(continuing (with|to)|i'?ll continue|i will continue|moving on to|proceeding to|i'?ll proceed|i will proceed|carrying on with|pushing on with)\b"
+}
+
 emit_block() {
     local reason="$1"
     jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
+
+if has_false_continuation_claim; then
+    emit_block "Stop advisor: do not end the turn by claiming continuation. If the next action is known, execute it now or dispatch the canonical agent; if it crosses a real user-decision boundary, state that concrete blocker instead."
+    exit 0
+fi
 
 if ! has_question_shape; then
     exit 0

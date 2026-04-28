@@ -95,7 +95,7 @@ Generator version: `1.0.0`
 - matcher `(unconditional)` → `hooks/session-summary.sh`
   - _Stop-time summarization (CUTOVER_PLAN H5 Partial)._
 - matcher `(unconditional)` → `hooks/stop-advisor.sh`
-  - _Deterministic Stop advisor for obvious bookkeeping, dispatch, and Guardian-owned git actions._
+  - _Deterministic Stop advisor for obvious bookkeeping, dispatch, false continuation claims, and Guardian-owned git actions._
 
 ## SessionEnd
 
