@@ -30,7 +30,9 @@ def _make_git_repo(tmp_path: Path, name: str = "repo") -> Path:
     return repo
 
 
-def _run_cli(args: list[str], *, cwd: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    args: list[str], *, cwd: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "PYTHONPATH": str(_REPO_ROOT),
@@ -499,3 +501,155 @@ def test_bootstrap_local_consumes_token_once(tmp_path: Path) -> None:
     assert second.returncode == 1
     payload = json.loads(second.stderr)
     assert "already been consumed" in payload["message"]
+
+
+# @mock-exempt: race condition simulation — the "lost the race" outcome (SQLite rowcount=0
+# after a concurrent UPDATE) cannot be reproduced deterministically without multi-process
+# coordination. The mock replaces only consume() at the workflow_bootstrap call site to
+# simulate exactly the outcome that a real concurrent loser would see. No other internal
+# code is mocked; DB writes (workflow_bindings, goal_contracts, work_items) are real and
+# inspected directly to verify atomicity.
+def test_bootstrap_local_consume_precedes_writes_under_race(tmp_path: Path) -> None:
+    """When consume() fails (simulated race loss), no DB writes must have landed.
+
+    This test verifies DEC-ADMIT-001: consume() fires BEFORE bind_workflow/upsert_goal/
+    upsert_work_item. If consume() raises BootstrapRequestError before those calls,
+    no workflow_bindings / goal_contracts / work_items rows exist for the workflow.
+
+    The production sequence being exercised:
+      1. resolve_pending() validates the token (read-only)
+      2. consume() atomically claims the token via UPDATE … WHERE consumed = 0
+         → if rowcount=0, raises BootstrapRequestError (race lost)
+      3. bind_workflow / upsert_goal / upsert_work_item (writes, skipped on race loss)
+
+    The mock simulates step 2 failing. Real DB assertions verify step 3 never ran.
+    """
+    from unittest.mock import patch  # @mock-exempt (see module annotation above)
+
+    from runtime.core import workflow_bootstrap as workflow_bootstrap_mod
+    from runtime.core.bootstrap_requests import BootstrapRequestError
+
+    repo = _make_git_repo(tmp_path)
+
+    # Issue a real token so resolve_pending passes pre-consume validation.
+    token = _request_bootstrap_token(
+        "wf-race",
+        cwd=repo,
+        desired_end_state="test consume-before-writes atomicity",
+    )
+
+    # Patch consume on the reference used inside workflow_bootstrap so the winner-check
+    # (UPDATE rowcount) fails, simulating the "lost the race" outcome.
+    with patch.object(
+        workflow_bootstrap_mod.bootstrap_requests_mod,
+        "consume",
+        side_effect=BootstrapRequestError(
+            "bootstrap token could not be consumed atomically; request a new token"
+        ),
+    ):
+        import pytest as _pytest
+
+        with _pytest.raises(Exception):
+            workflow_bootstrap_mod.bootstrap_local_workflow(
+                workflow_id="wf-race",
+                bootstrap_token=token,
+                desired_end_state="test consume-before-writes atomicity",
+                worktree_path=str(repo),
+            )
+
+    # Verify: no writes landed. The DB may not even exist if the schema seeding
+    # itself is skipped — but if it does exist, rows must be absent.
+    db_path = repo / ".claude" / "state.db"
+    if not db_path.exists():
+        # DB was never created — writes definitely did not land.
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        binding = conn.execute(
+            "SELECT workflow_id FROM workflow_bindings WHERE workflow_id = ?",
+            ("wf-race",),
+        ).fetchone()
+        goal = conn.execute(
+            "SELECT goal_id FROM goal_contracts WHERE goal_id = ?",
+            ("g-initial-planning",),
+        ).fetchone()
+        work_item = conn.execute(
+            "SELECT work_item_id FROM work_items WHERE work_item_id = ? AND workflow_id = ?",
+            ("wi-initial-planning", "wf-race"),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert binding is None, (
+        "workflow_bindings row found after consume() race loss — "
+        "DEC-ADMIT-001 atomicity invariant violated: writes landed before consume() succeeded"
+    )
+    assert goal is None, (
+        "goal_contracts row found after consume() race loss — "
+        "DEC-ADMIT-001 atomicity invariant violated: writes landed before consume() succeeded"
+    )
+    assert work_item is None, (
+        "work_items row found after consume() race loss — "
+        "DEC-ADMIT-001 atomicity invariant violated: writes landed before consume() succeeded"
+    )
+
+
+def test_resolve_pending_token_not_found_names_db_path_and_worktree_scoping(
+    tmp_path: Path,
+) -> None:
+    """token-not-found error includes db_path, scoped-to-worktree hint, and --worktree-path.
+
+    Verifies DEC-ADMIT-002: when resolve_pending() is called with a db_path and the token
+    does not exist in that DB, the raised BootstrapRequestError message contains:
+      (i)  the resolved db_path string
+      (ii) the phrase "scoped to the worktree"
+      (iii) the string "--worktree-path"
+
+    This exercises the production sequence for an operator who ran bootstrap-request
+    in repo A, then ran bootstrap-local --worktree-path repo_B, resolving a different DB
+    that has no record of the token.
+    """
+    import sqlite3 as _sqlite3
+
+    from runtime.core.bootstrap_requests import BootstrapRequestError, resolve_pending
+    from runtime.core.db import connect
+    from runtime.schemas import ensure_schema
+
+    # Build a real empty DB — no bootstrap_requests rows in it.
+    db_dir = tmp_path / ".claude"
+    db_dir.mkdir()
+    db_file = db_dir / "state.db"
+    conn = connect(db_file)
+    ensure_schema(conn)
+    conn.row_factory = _sqlite3.Row
+
+    fake_token = "bsr_notpresent_xyzzy"
+    resolved_db_path = str(db_file)
+
+    try:
+        resolve_pending(
+            conn,
+            token=fake_token,
+            workflow_id="wf-wrong-worktree",
+            worktree_path=str(tmp_path),
+            db_path=resolved_db_path,
+        )
+    except BootstrapRequestError as exc:
+        msg = str(exc)
+        assert resolved_db_path in msg, (
+            f"Expected db_path {resolved_db_path!r} in error message, got: {msg!r}"
+        )
+        assert "scoped to the worktree" in msg, (
+            f"Expected 'scoped to the worktree' in error message, got: {msg!r}"
+        )
+        assert "--worktree-path" in msg, (
+            f"Expected '--worktree-path' in error message, got: {msg!r}"
+        )
+    else:
+        raise AssertionError(
+            "Expected BootstrapRequestError for missing token, but no exception was raised"
+        )
+    finally:
+        conn.close()

@@ -118,8 +118,16 @@ def resolve_pending(
     token: str,
     workflow_id: str,
     worktree_path: str,
+    db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Validate a pending bootstrap request without consuming it."""
+    """Validate a pending bootstrap request without consuming it.
+
+    ``db_path`` is optional but strongly recommended when the caller has already
+    resolved the target DB path (e.g. from ``resolve_local_workflow_bootstrap_target``).
+    When provided, token-not-found errors include the DB path and a scoping hint
+    so operators who passed the wrong ``--worktree-path`` get an actionable message.
+    When omitted the error falls back to the terse legacy form.
+    """
     now = int(time.time())
     row = conn.execute(
         """
@@ -142,6 +150,22 @@ def resolve_pending(
                 reason="token_not_found",
             ),
         )
+        # @decision DEC-ADMIT-002
+        # Title: token-not-found error names the resolved DB path and worktree scope
+        # Status: accepted
+        # Rationale: Operators passing the wrong --worktree-path see a DB resolved to
+        #   the wrong location and get a confusing "token not found" message with no
+        #   actionable next step. By surfacing the db_path and a per-worktree scoping
+        #   hint we give operators the information they need to rerun bootstrap-request
+        #   from the correct worktree. Cross-DB lookups are out of scope (TTL is the
+        #   safety net, #70 deferred).
+        if db_path is not None:
+            raise BootstrapRequestError(
+                f"bootstrap token not found in {db_path}. "
+                "Bootstrap tokens are scoped to the worktree where bootstrap-request "
+                "was run — if you passed a different --worktree-path for bootstrap-local, "
+                "rerun `bootstrap-request` from that worktree first, then use the new token."
+            )
         raise BootstrapRequestError("bootstrap token not found")
 
     result = dict(row)
@@ -215,13 +239,20 @@ def consume(
     workflow_id: str,
     worktree_path: str,
     consumed_by: str = "workflow bootstrap-local",
+    db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Mark a valid bootstrap request token as consumed and audit it."""
+    """Mark a valid bootstrap request token as consumed and audit it.
+
+    ``db_path`` is threaded through to ``resolve_pending`` so token-not-found
+    errors produced during the atomic consume step also carry the actionable
+    scoping hint (DEC-ADMIT-002).
+    """
     request = resolve_pending(
         conn,
         token=token,
         workflow_id=workflow_id,
         worktree_path=worktree_path,
+        db_path=db_path,
     )
     now = int(time.time())
     with conn:

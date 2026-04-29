@@ -283,6 +283,7 @@ def bootstrap_local_workflow(
             token=bootstrap_token.strip(),
             workflow_id=workflow_id,
             worktree_path=target["worktree_path"],
+            db_path=str(db_path),
         )
         request_payload = bootstrap_request.get("payload", {})
         desired_end_state = _effective_value(
@@ -359,6 +360,25 @@ def bootstrap_local_workflow(
             worktree_path=target["worktree_path"],
         )
 
+        # @decision DEC-ADMIT-001
+        # Title: consume() fires before binding/goal/work-item writes (atomicity flip)
+        # Status: accepted
+        # Rationale: Moving consume() here ensures the one-shot token is atomically
+        #   claimed BEFORE any persistent state changes. The winner of a concurrent
+        #   bootstrap race claims the token via an UPDATE … WHERE consumed = 0 check;
+        #   the loser sees rowcount=0 and raises BootstrapRequestError, bailing out
+        #   before any workflow_bindings / goal / work_item rows are written.
+        #   Previously consume() ran after all writes, so a race could leave orphaned
+        #   partial state. No outer transaction wraps the subsequent writes; the token
+        #   itself is the admission gate (#68).
+        bootstrap_request = bootstrap_requests_mod.consume(
+            conn,
+            token=bootstrap_token.strip(),
+            workflow_id=workflow_id,
+            worktree_path=target["worktree_path"],
+            db_path=str(db_path),
+        )
+
         workflows_mod.bind_workflow(
             conn,
             workflow_id=workflow_id,
@@ -404,12 +424,6 @@ def bootstrap_local_workflow(
             worktree_path=target["worktree_path"],
             decision_scope=decision_scope,
             generated_at=generated_at,
-        )
-        bootstrap_request = bootstrap_requests_mod.consume(
-            conn,
-            token=bootstrap_token.strip(),
-            workflow_id=workflow_id,
-            worktree_path=target["worktree_path"],
         )
     finally:
         conn.close()
