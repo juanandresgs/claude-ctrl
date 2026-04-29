@@ -25,7 +25,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from runtime.core.config import default_db_path, resolve_project_db
+from runtime.core.config import default_db_path, resolve_db_path, resolve_project_db
 
 
 class TestDefaultDbPath:
@@ -85,6 +85,22 @@ class TestDefaultDbPath:
             # Even if git returns something else, step 2 wins
             result = default_db_path()
             assert result == expected
+
+    def test_explicit_project_root_beats_claude_project_dir(self, tmp_path):
+        """Explicit project_root routes commands to the target repo DB."""
+        explicit_project = tmp_path / "explicit-project"
+        explicit_project.mkdir()
+        env_project = tmp_path / "env-project"
+        env_project.mkdir()
+        expected = explicit_project / ".claude" / "state.db"
+
+        with patch.dict(
+            os.environ,
+            {"CLAUDE_PROJECT_DIR": str(env_project)},
+            clear=False,
+        ):
+            os.environ.pop("CLAUDE_POLICY_DB", None)
+            assert resolve_db_path(project_root=str(explicit_project)) == expected
 
     def test_step3_git_root_with_claude_dir(self, tmp_path):
         """Git root with .claude/ dir resolves to project DB."""

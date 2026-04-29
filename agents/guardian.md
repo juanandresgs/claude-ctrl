@@ -65,6 +65,19 @@ When dispatched with `guardian_mode=provision` (after a planner stop), your job 
 provision the implementer's worktree. The dispatch context includes `workflow_id` and
 `feature_name` (carried via the `AUTO_DISPATCH: guardian (mode=provision, ...)` suggestion).
 
+This mode is **not** the fresh-project bootstrap authority. If there is no
+workflow yet, runtime must materialize it first with:
+
+```bash
+cc-policy workflow bootstrap-request <workflow_id> --desired-end-state "<text>" --requested-by "<actor>" --justification "<why>"
+cc-policy workflow bootstrap-local <workflow_id> --bootstrap-token <token>
+```
+
+That bootstrap creates the workflow binding, the initial active goal, and the
+initial in-progress planner work item, then returns the canonical planner
+launch spec. Guardian provisioning begins only after planner emits
+`next_work_item`.
+
 **Provision sequence — run this single command:**
 
 ```

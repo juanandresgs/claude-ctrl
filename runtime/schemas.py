@@ -190,6 +190,32 @@ CREATE TABLE IF NOT EXISTS approvals (
 )
 """
 
+BOOTSTRAP_REQUESTS_DDL = """
+CREATE TABLE IF NOT EXISTS bootstrap_requests (
+    token             TEXT    PRIMARY KEY,
+    workflow_id       TEXT    NOT NULL,
+    worktree_path     TEXT    NOT NULL,
+    requested_by      TEXT    NOT NULL,
+    justification     TEXT    NOT NULL,
+    payload_json      TEXT    NOT NULL DEFAULT '{}',
+    created_at        INTEGER NOT NULL,
+    expires_at        INTEGER NOT NULL,
+    consumed          INTEGER NOT NULL DEFAULT 0,
+    consumed_at       INTEGER,
+    consumed_by       TEXT
+)
+"""
+
+BOOTSTRAP_REQUESTS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_bootstrap_requests_workflow
+    ON bootstrap_requests (workflow_id, created_at DESC)
+"""
+
+BOOTSTRAP_REQUESTS_INDEX_ACTIVE_DDL = """
+CREATE INDEX IF NOT EXISTS idx_bootstrap_requests_active
+    ON bootstrap_requests (worktree_path, consumed, expires_at)
+"""
+
 DISPATCH_LEASES_DDL = """
 CREATE TABLE IF NOT EXISTS dispatch_leases (
     lease_id           TEXT    PRIMARY KEY,
@@ -686,6 +712,9 @@ ALL_DDL: list[str] = [
     WORKFLOW_BINDINGS_DDL,
     WORKFLOW_SCOPE_DDL,
     APPROVALS_DDL,
+    BOOTSTRAP_REQUESTS_DDL,
+    BOOTSTRAP_REQUESTS_INDEX_WORKFLOW_DDL,
+    BOOTSTRAP_REQUESTS_INDEX_ACTIVE_DDL,
     EVALUATION_STATE_DDL,
     BUGS_DDL,
     DISPATCH_LEASES_DDL,

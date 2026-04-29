@@ -236,9 +236,9 @@ def build_agent_dispatch_prompt(
         if not active_goals:
             planner_bootstrap_note = ""
             if resolved_stage_id == "planner":
-                from runtime.core.planner_bootstrap import planner_bootstrap_guidance
+                from runtime.core.workflow_bootstrap import workflow_bootstrap_guidance
 
-                planner_bootstrap_note = planner_bootstrap_guidance() + " "
+                planner_bootstrap_note = workflow_bootstrap_guidance() + " "
             raise ValueError(
                 f"no active goal found for workflow {workflow_id!r}; "
                 "a goal scoped to this workflow must be in 'active' status "
@@ -269,9 +269,9 @@ def build_agent_dispatch_prompt(
         if not in_progress:
             planner_bootstrap_note = ""
             if resolved_stage_id == "planner":
-                from runtime.core.planner_bootstrap import planner_bootstrap_guidance
+                from runtime.core.workflow_bootstrap import workflow_bootstrap_guidance
 
-                planner_bootstrap_note = planner_bootstrap_guidance() + " "
+                planner_bootstrap_note = workflow_bootstrap_guidance() + " "
             raise ValueError(
                 f"no in_progress work item found for goal {goal_id!r} "
                 f"scoped to workflow {workflow_id!r}; a workflow-scoped "

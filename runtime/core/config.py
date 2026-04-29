@@ -1,17 +1,18 @@
 """Runtime configuration helpers.
 
 @decision DEC-SELF-003
-@title Canonical 4-step DB resolver
+@title Canonical DB resolver
 @status accepted
 @rationale TKT-022: split authority existed between ~/.claude/state.db and
   project .claude/state.db. Hook calls from inside a project were writing proof
   state to the home DB while guard.sh was reading from the project DB (or vice
-  versa), causing proof-not-found denials when the proof was real. The 4-step
-  resolver unifies all DB resolution into a single code path with deterministic
+  versa), causing proof-not-found denials when the proof was real. The resolver
+  family unifies all DB resolution into a single code path with deterministic
   priority. All paths that previously called Path.home() / ".claude" / "state.db"
-  now go through default_db_path(). Adjacent components: runtime/cli.py imports
-  this; guard.sh uses CLAUDE_POLICY_DB env (step 1 override); log.sh sets
-  CLAUDE_PROJECT_DIR (step 2 optimization to avoid git subprocess per call).
+  now go through default_db_path() or resolve_db_path(). Adjacent components:
+  runtime/cli.py imports this; guard.sh uses CLAUDE_POLICY_DB env (step 1
+  override); log.sh sets CLAUDE_PROJECT_DIR (step 3 optimization to avoid git
+  subprocess per call).
 """
 
 from __future__ import annotations
@@ -38,8 +39,9 @@ def resolve_project_db() -> Path | None:
     `.claude/` directory, returns `<git-root>/.claude/state.db`. Returns None
     if not in a git repo, no .claude/ dir exists, or git is unavailable.
 
-    This is the step-3 helper for default_db_path(). Direct callers should
-    prefer default_db_path() for the full 4-step resolution.
+    This is the git-discovery helper for the canonical resolver family. Direct
+    callers should prefer default_db_path() / resolve_db_path() for the full
+    priority order.
     """
     try:
         result = subprocess.run(
@@ -56,8 +58,65 @@ def resolve_project_db() -> Path | None:
     return None
 
 
+def resolve_db_path(project_root: str | None = None) -> Path:
+    """Canonical DB resolver with optional explicit project-root hint.
+
+    Priority (highest to lowest):
+
+    1. CLAUDE_POLICY_DB env var — explicit override, always wins. Used by
+       test harnesses and CI to point at a specific DB file.
+
+    2. Explicit ``project_root`` argument — used by commands that are operating
+       on a repo/worktree other than the caller's cwd. This keeps bootstrap and
+       other explicit-target commands on the same DB authority as the target
+       repo instead of whatever ambient session repo happens to be active.
+
+    3. CLAUDE_PROJECT_DIR env var — set by hooks/log.sh auto-export. Avoids
+       a git subprocess per cc_policy call when the project root is already
+       known. Must point to an existing directory; non-existent paths fall
+       through to step 4.
+
+    4. CWD inside a git repo with .claude/ dir — subprocess git detection.
+       Covers direct `python3 runtime/cli.py` invocations from a project CWD
+       where CLAUDE_PROJECT_DIR was not pre-exported by a hook.
+
+    5. ~/.claude/state.db — global fallback for non-project contexts
+       (global config queries, outside-git CWDs, fresh installs).
+
+    This is the sole resolver family. ``default_db_path()`` is the no-arg
+    wrapper used by callers that have no explicit repo hint.
+    """
+    # Step 1: explicit override
+    override = os.environ.get("CLAUDE_POLICY_DB")
+    if override:
+        override_path = Path(override).expanduser()
+        if not _forbidden_policy_db_override(override_path):
+            return override_path
+
+    # Step 2: explicit project root supplied by the caller.
+    if project_root:
+        project_path = Path(project_root)
+        if project_path.is_dir():
+            return Path(os.path.realpath(project_root)) / ".claude" / "state.db"
+
+    # Step 3: project dir env var (hook-exported, avoids git subprocess)
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project_dir:
+        project_path = Path(project_dir)
+        if project_path.is_dir():
+            return project_path / ".claude" / "state.db"
+
+    # Step 4: git root detection (direct CLI invocation path)
+    project_db = resolve_project_db()
+    if project_db is not None:
+        return project_db
+
+    # Step 5: global fallback
+    return Path.home() / ".claude" / "state.db"
+
+
 def default_db_path() -> Path:
-    """Canonical 4-step DB resolver. All DB path resolution converges here.
+    """Canonical no-arg DB resolver.
 
     Priority (highest to lowest):
 
@@ -78,24 +137,4 @@ def default_db_path() -> Path:
 
     @decision DEC-SELF-003
     """
-    # Step 1: explicit override
-    override = os.environ.get("CLAUDE_POLICY_DB")
-    if override:
-        override_path = Path(override).expanduser()
-        if not _forbidden_policy_db_override(override_path):
-            return override_path
-
-    # Step 2: project dir env var (hook-exported, avoids git subprocess)
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project_dir:
-        project_path = Path(project_dir)
-        if project_path.is_dir():
-            return project_path / ".claude" / "state.db"
-
-    # Step 3: git root detection (direct CLI invocation path)
-    project_db = resolve_project_db()
-    if project_db is not None:
-        return project_db
-
-    # Step 4: global fallback
-    return Path.home() / ".claude" / "state.db"
+    return resolve_db_path()

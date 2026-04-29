@@ -48,7 +48,7 @@ import runtime.core.lifecycle as lifecycle_mod
 import runtime.core.markers as markers_mod
 import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
-import runtime.core.planner_bootstrap as planner_bootstrap_mod
+import runtime.core.workflow_bootstrap as workflow_bootstrap_mod
 import runtime.core.quick_eval as quick_eval_mod
 import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.statusline as statusline_mod
@@ -57,7 +57,7 @@ import runtime.core.tokens as tokens_mod
 import runtime.core.traces as traces_mod
 import runtime.core.workflows as workflows_mod
 import runtime.core.worktrees as worktrees_mod
-from runtime.core.config import default_db_path
+from runtime.core.config import default_db_path, resolve_db_path
 from runtime.core.db import connect
 from runtime.eval_schemas import ensure_eval_schema  # noqa: F401 — imported for eval_metrics
 from runtime.schemas import ensure_schema
@@ -80,8 +80,8 @@ def _err(message: str, code: int = 1) -> int:
     return code
 
 
-def _get_conn():
-    db_path = default_db_path()
+def _get_conn(project_root: str | None = None):
+    db_path = resolve_db_path(project_root=project_root)
     conn = connect(db_path)
     ensure_schema(conn)
     return conn
@@ -1924,7 +1924,10 @@ def _provision_worktree(
 
 
 def _handle_worktree(args) -> int:
-    conn = _get_conn()
+    worktree_db_root = None
+    if args.action == "provision":
+        worktree_db_root = getattr(args, "project_root", None) or None
+    conn = _get_conn(project_root=worktree_db_root)
     try:
         if args.action == "register":
             worktrees_mod.register(
@@ -2509,9 +2512,9 @@ def _handle_trace(args) -> int:
 
 
 def _handle_workflow(args) -> int:
-    if args.action == "bootstrap-planner":
+    if args.action == "bootstrap-request":
         try:
-            result = planner_bootstrap_mod.bootstrap_planner(
+            result = workflow_bootstrap_mod.request_local_workflow_bootstrap(
                 workflow_id=args.workflow_id,
                 desired_end_state=args.desired_end_state,
                 title=args.title,
@@ -2524,12 +2527,47 @@ def _handle_workflow(args) -> int:
                 autonomy_budget=int(getattr(args, "autonomy_budget", 0) or 0),
                 decision_scope=getattr(args, "decision_scope", "kernel"),
                 generated_at=getattr(args, "generated_at", None),
+                requested_by=args.requested_by,
+                justification=args.justification,
+                ttl_seconds=int(
+                    getattr(
+                        args,
+                        "ttl_seconds",
+                        workflow_bootstrap_mod.DEFAULT_BOOTSTRAP_REQUEST_TTL_SECONDS,
+                    )
+                    or workflow_bootstrap_mod.DEFAULT_BOOTSTRAP_REQUEST_TTL_SECONDS
+                ),
             )
         except ValueError as e:
-            return _err(f"bootstrap-planner: {e}")
+            return _err(f"{args.action}: {e}")
         return _ok(result)
 
-    conn = _get_conn()
+    if args.action in {"bootstrap-local", "bootstrap-planner"}:
+        try:
+            result = workflow_bootstrap_mod.bootstrap_local_workflow(
+                workflow_id=args.workflow_id,
+                bootstrap_token=args.bootstrap_token,
+                desired_end_state=args.desired_end_state,
+                title=args.title,
+                goal_id=args.goal_id,
+                work_item_id=args.work_item_id,
+                worktree_path=getattr(args, "worktree_path", None),
+                base_branch=getattr(args, "base_branch", None),
+                ticket=getattr(args, "ticket", None),
+                initiative=getattr(args, "initiative", None),
+                autonomy_budget=getattr(args, "autonomy_budget", None),
+                decision_scope=getattr(args, "decision_scope", None),
+                generated_at=getattr(args, "generated_at", None),
+            )
+        except ValueError as e:
+            return _err(f"{args.action}: {e}")
+        return _ok(result)
+
+    workflow_db_root = None
+    if args.action in {"stage-packet", "get"}:
+        workflow_db_root = getattr(args, "worktree_path", None) or None
+
+    conn = _get_conn(project_root=workflow_db_root)
     try:
         if args.action == "bind":
             workflows_mod.bind_workflow(
@@ -5253,6 +5291,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     wf_get = wf_sub.add_parser("get", help="Get binding for a workflow_id")
     wf_get.add_argument("workflow_id")
+    wf_get.add_argument(
+        "--worktree-path",
+        dest="worktree_path",
+        default=None,
+        help=(
+            "Optional repo/worktree root used for DB routing when the caller is "
+            "querying a workflow outside the current session repo."
+        ),
+    )
 
     wf_scope_set = wf_sub.add_parser("scope-set", help="Set scope manifest for a workflow")
     wf_scope_set.add_argument("workflow_id")
@@ -5335,51 +5382,125 @@ def build_parser() -> argparse.ArgumentParser:
     wf_stage_packet.add_argument("--decision-scope", dest="decision_scope", default="kernel")
     wf_stage_packet.add_argument("--generated-at", dest="generated_at", type=int, default=None)
 
-    wf_bootstrap_planner = wf_sub.add_parser(
-        "bootstrap-planner",
+    def _add_workflow_bootstrap_args(
+        parser,
+        *,
+        require_desired_end_state: bool,
+        defaults_from_request: bool,
+    ):
+        parser.add_argument("workflow_id")
+        parser.add_argument(
+            "--desired-end-state",
+            dest="desired_end_state",
+            required=require_desired_end_state,
+            default=None if defaults_from_request else None,
+            help="Free-text description of what the initial local workflow adoption is trying to achieve",
+        )
+        if defaults_from_request:
+            parser.add_argument(
+                "--bootstrap-token",
+                dest="bootstrap_token",
+                required=True,
+                help="One-shot token minted by `cc-policy workflow bootstrap-request`.",
+            )
+        parser.add_argument(
+            "--title",
+            default=None if defaults_from_request else "Initial planning bootstrap",
+            help="Title for the initial planner work item",
+        )
+        parser.add_argument(
+            "--goal-id",
+            dest="goal_id",
+            default=None if defaults_from_request else "g-initial-planning",
+            help="Goal id to seed when workflow bootstrap creates the first active goal",
+        )
+        parser.add_argument(
+            "--work-item-id",
+            dest="work_item_id",
+            default=None if defaults_from_request else "wi-initial-planning",
+            help="Work item id to seed when workflow bootstrap creates the first in-progress planner work item",
+        )
+        parser.add_argument(
+            "--worktree-path",
+            dest="worktree_path",
+            default=None,
+            help="Optional path to the git worktree to bootstrap; defaults to the current git repo",
+        )
+        parser.add_argument(
+            "--base-branch",
+            dest="base_branch",
+            default=None if defaults_from_request else "main",
+        )
+        parser.add_argument("--ticket", default=None)
+        parser.add_argument("--initiative", default=None)
+        parser.add_argument(
+            "--autonomy-budget",
+            dest="autonomy_budget",
+            type=int,
+            default=None if defaults_from_request else 0,
+        )
+        parser.add_argument(
+            "--decision-scope",
+            dest="decision_scope",
+            default=None if defaults_from_request else "kernel",
+        )
+        parser.add_argument("--generated-at", dest="generated_at", type=int, default=None)
+
+    wf_bootstrap_request = wf_sub.add_parser(
+        "bootstrap-request",
         help=(
-            "Bootstrap a fresh local planner workflow: require git identity, "
-            "create the local .claude/state.db, bind the workflow, seed the "
-            "initial active goal + in-progress work item, and return the "
-            "canonical planner launch spec."
+            "Mint a one-shot bootstrap token for a fresh local workflow adoption. "
+            "This records explicit operator intent and returns the exact "
+            "bootstrap-local command to run next."
         ),
     )
-    wf_bootstrap_planner.add_argument("workflow_id")
-    wf_bootstrap_planner.add_argument(
-        "--desired-end-state",
-        dest="desired_end_state",
+    _add_workflow_bootstrap_args(
+        wf_bootstrap_request,
+        require_desired_end_state=True,
+        defaults_from_request=False,
+    )
+    wf_bootstrap_request.add_argument(
+        "--requested-by",
         required=True,
-        help="Free-text description of what the initial planner adoption is trying to achieve",
+        help="Human or operator identity requesting the local workflow bootstrap",
     )
-    wf_bootstrap_planner.add_argument(
-        "--title",
-        default="Initial planning bootstrap",
-        help="Title for the initial planner work item",
+    wf_bootstrap_request.add_argument(
+        "--justification",
+        required=True,
+        help="Why this fresh workflow bootstrap is being requested",
     )
-    wf_bootstrap_planner.add_argument(
-        "--goal-id",
-        dest="goal_id",
-        default="g-initial-planning",
-        help="Goal id to seed when planner bootstrap creates the first active goal",
+    wf_bootstrap_request.add_argument(
+        "--ttl-seconds",
+        dest="ttl_seconds",
+        type=int,
+        default=workflow_bootstrap_mod.DEFAULT_BOOTSTRAP_REQUEST_TTL_SECONDS,
+        help="Lifetime of the one-shot bootstrap token before it expires",
     )
-    wf_bootstrap_planner.add_argument(
-        "--work-item-id",
-        dest="work_item_id",
-        default="wi-initial-planning",
-        help="Work item id to seed when planner bootstrap creates the first in-progress planner work item",
+
+    wf_bootstrap_local = wf_sub.add_parser(
+        "bootstrap-local",
+        help=(
+            "Consume a runtime-issued bootstrap token to bootstrap a fresh local "
+            "workflow: require git identity, resolve the canonical local "
+            ".claude/state.db, bind the workflow, seed the initial active goal "
+            "+ in-progress planner work item, and return the canonical planner "
+            "launch spec."
+        ),
     )
-    wf_bootstrap_planner.add_argument(
-        "--worktree-path",
-        dest="worktree_path",
-        default=None,
-        help="Optional path to the git worktree to bootstrap; defaults to the current git repo",
+    _add_workflow_bootstrap_args(
+        wf_bootstrap_local,
+        require_desired_end_state=False,
+        defaults_from_request=True,
     )
-    wf_bootstrap_planner.add_argument("--base-branch", dest="base_branch", default="main")
-    wf_bootstrap_planner.add_argument("--ticket", default=None)
-    wf_bootstrap_planner.add_argument("--initiative", default=None)
-    wf_bootstrap_planner.add_argument("--autonomy-budget", dest="autonomy_budget", type=int, default=0)
-    wf_bootstrap_planner.add_argument("--decision-scope", dest="decision_scope", default="kernel")
-    wf_bootstrap_planner.add_argument("--generated-at", dest="generated_at", type=int, default=None)
+
+    # Compatibility alias — same authority, hidden from help. This is not a
+    # separate bootstrap path.
+    wf_bootstrap_planner = wf_sub.add_parser("bootstrap-planner", help=argparse.SUPPRESS)
+    _add_workflow_bootstrap_args(
+        wf_bootstrap_planner,
+        require_desired_end_state=False,
+        defaults_from_request=True,
+    )
 
     wf_sub.add_parser("list", help="List all workflow bindings")
 

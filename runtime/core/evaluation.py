@@ -61,12 +61,16 @@ def set_status(
     blockers: int = 0,
     major: int = 0,
     minor: int = 0,
+    *,
+    clear_head_sha: bool = False,
 ) -> None:
     """Upsert evaluation state for workflow_id.
 
     head_sha, blockers, major, minor are only written when explicitly provided
-    (non-None / non-zero). On a status-only update (e.g. pending) the existing
-    counts are preserved via DO UPDATE SET selective assignment.
+    (non-None / non-zero) unless ``clear_head_sha=True`` asks the authority to
+    write a literal NULL into ``head_sha``. On a status-only update (e.g.
+    pending) the existing counts are preserved via DO UPDATE SET selective
+    assignment.
 
     Raises ValueError for unknown status values.
     """
@@ -75,15 +79,16 @@ def set_status(
             f"unknown evaluation status {status!r}; valid: {sorted(EVALUATION_STATUSES)}"
         )
     now = int(time.time())
+    head_sha_assignment = "excluded.head_sha" if clear_head_sha else "COALESCE(excluded.head_sha, evaluation_state.head_sha)"
     with conn:
         conn.execute(
-            """
+            f"""
             INSERT INTO evaluation_state
                 (workflow_id, status, head_sha, blockers, major, minor, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(workflow_id) DO UPDATE SET
                 status     = excluded.status,
-                head_sha   = COALESCE(excluded.head_sha,   evaluation_state.head_sha),
+                head_sha   = {head_sha_assignment},
                 blockers   = excluded.blockers,
                 major      = excluded.major,
                 minor      = excluded.minor,

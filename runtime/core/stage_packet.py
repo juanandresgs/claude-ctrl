@@ -64,10 +64,10 @@ def dispatch_bootstrap_guidance(stage_id: str | None = None) -> str:
     """
     stage_fragment = stage_id.strip() if stage_id and stage_id.strip() else "<stage>"
     if stage_fragment in {"planner", "Plan"}:
-        from runtime.core.planner_bootstrap import planner_bootstrap_guidance
+        from runtime.core.workflow_bootstrap import workflow_bootstrap_guidance
 
         return (
-            planner_bootstrap_guidance()
+            workflow_bootstrap_guidance()
             + " Once the workflow already has an active goal + in-progress "
             "work item, `cc-policy workflow stage-packet [<workflow_id>] "
             "--stage-id planner` returns the canonical planner launch spec."

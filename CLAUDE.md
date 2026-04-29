@@ -166,7 +166,10 @@ guardian, reviewer), the orchestrator MUST:
    from `--worktree-path`, `CLAUDE_PROJECT_DIR`, or the current git worktree.
    Canonical seats are not generic helper seats: they require a bound workflow,
    an active goal, and an in-progress work item. If that bootstrap state does
-   not exist yet, seed it first or use a non-canonical/general-purpose helper.
+   not exist yet, first run `cc-policy workflow bootstrap-request <workflow_id> --desired-end-state "<text>" --requested-by "<actor>" --justification "<why>"`,
+   then run the emitted `cc-policy workflow bootstrap-local <workflow_id> --bootstrap-token <token>`
+   command. Do not try to bypass the contract system with a free-form planner or
+   guardian launch.
 
 2. If a caller only needs the low-level prompt contract, it may call:
    ```bash
@@ -215,8 +218,9 @@ Common queries and dispatch calls (copy/adapt these forms):
 # Who am I / which workflow is active?
 cc-policy context role
 
-# Fresh local planner adoption (git repo/worktree required)
-cc-policy workflow bootstrap-planner <workflow_id> --desired-end-state "<text>"
+# Fresh local workflow adoption (git repo/worktree required)
+cc-policy workflow bootstrap-request <workflow_id> --desired-end-state "<text>" --requested-by "<actor>" --justification "<why>"
+cc-policy workflow bootstrap-local <workflow_id> --bootstrap-token <token>
 
 # Build the canonical execution bundle for a stage
 cc-policy workflow stage-packet [<workflow_id>] --stage-id <planner|guardian:provision|implementer|reviewer|guardian:land>
@@ -238,7 +242,7 @@ cc-policy workflow scope-set <workflow_id> --allowed '["src/**"]' --required '[]
 
 Parameter discipline:
 - `--workflow-id`: runtime workflow identity; prefer to supply it explicitly. It may be omitted only when runtime can resolve a bound workflow from the active worktree/lease context.
-- `bootstrap-planner`: the sanctioned bootstrap for a fresh local canonical planner seat. Do not hand-assemble `workflow bind` + `goal-set` + `work-item-set` for ordinary planner adoption.
+- `bootstrap-request` + `bootstrap-local`: the sanctioned bootstrap for a fresh local canonical workflow. Request records explicit operator intent and returns the one-shot token that `bootstrap-local` must consume. Do not hand-assemble `workflow bind` + `goal-set` + `work-item-set` for ordinary planner adoption.
 - `--stage-id`: canonical stage target. Use the stage graph names:
   `planner`, `guardian:provision`, `implementer`, `reviewer`,
   `guardian:land`. Bare `guardian` is accepted only when runtime can infer the
@@ -248,7 +252,7 @@ Parameter discipline:
 
 Subagent authority model (enforce this in routing):
 - `planner`: plan/governance/scope/evaluation contract authority; no source implementation.
-- `guardian (provision)`: worktree/lease/bootstrap authority; no source implementation.
+- `guardian (provision)`: worktree/lease authority after planner emits `next_work_item`; fresh-project bootstrap itself is owned by `workflow bootstrap-request` → `workflow bootstrap-local`.
 - `implementer`: source implementation within scope; no landing authority.
 - `reviewer`: read-only outer-loop technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`). Codex implementer critic reviews are tactical inner-loop filters; they do not replace reviewer readiness.
 - `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push` to the established upstream) once readiness gates are green.

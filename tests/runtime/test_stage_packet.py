@@ -431,4 +431,5 @@ def test_workflow_stage_packet_cli_requires_binding_for_inferred_worktree(tmp_pa
     payload = json.loads(proc.stderr)
     assert payload["status"] == "error"
     assert "no workflow binding found" in payload["message"]
-    assert "bootstrap-planner" in payload["message"]
+    assert "bootstrap-request" in payload["message"]
+    assert "bootstrap-local" in payload["message"]

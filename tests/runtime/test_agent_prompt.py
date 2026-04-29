@@ -1131,7 +1131,8 @@ class TestWorkflowScopedResolution:
 
         msg = str(exc_info.value)
         assert "no active goal found for workflow 'wf-missing'" in msg
-        assert "bootstrap-planner" in msg
+        assert "bootstrap-request" in msg
+        assert "bootstrap-local" in msg
         assert "general-purpose/non-canonical seat" in msg
         assert "DEC-CLAUDEX-DW-WORKFLOW-JOIN-001" in msg
 
@@ -1208,7 +1209,8 @@ class TestWorkflowScopedResolution:
 
         msg = str(exc_info.value)
         assert "no in_progress work item found" in msg
-        assert "bootstrap-planner" in msg
+        assert "bootstrap-request" in msg
+        assert "bootstrap-local" in msg
         assert "general-purpose/non-canonical seat" in msg
         assert "workflow 'wf-a'" in msg
         assert "DEC-CLAUDEX-DW-WORKFLOW-JOIN-001" in msg
@@ -1266,5 +1268,6 @@ class TestWorkflowScopedResolution:
 
         msg = str(exc_info.value)
         assert "no active goal found for workflow 'wf-new'" in msg
-        assert "bootstrap-planner" in msg
+        assert "bootstrap-request" in msg
+        assert "bootstrap-local" in msg
         assert "general-purpose/non-canonical seat" in msg
