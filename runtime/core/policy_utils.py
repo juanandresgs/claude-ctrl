@@ -33,12 +33,15 @@ Rationale: On macOS /tmp is a symlink to /private/tmp and /var/folders resolves
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
+
+from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
 
 # ---------------------------------------------------------------------------
 # Scope-list parsing — single canonical authority
@@ -155,6 +158,260 @@ SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         "zsh",
     }
 )
+
+SCRATCHLANE_PARENT_REL: str = "tmp/.claude-scratch"
+
+PATH_KIND_META: str = "meta"
+PATH_KIND_ARTIFACT: str = "artifact"
+PATH_KIND_ARTIFACT_CANDIDATE: str = "artifact_candidate"
+PATH_KIND_TMP_SOURCE_CANDIDATE: str = "tmp_source_candidate"
+PATH_KIND_GOVERNANCE: str = "governance"
+PATH_KIND_CONSTITUTION: str = "constitution"
+PATH_KIND_SOURCE: str = "source"
+PATH_KIND_OTHER: str = "other"
+
+
+@dataclass(frozen=True)
+class PolicyPathInfo:
+    """Canonical classification of a repo-targeted write path."""
+
+    raw_path: str
+    normalized_path: str
+    repo_relative_path: Optional[str]
+    kind: str
+    task_slug: str = ""
+    scratch_root: str = ""
+
+
+def scratchlane_parent(project_root: str) -> str:
+    """Return the canonical absolute project scratchlane parent."""
+    return normalize_path(os.path.join(project_root, SCRATCHLANE_PARENT_REL))
+
+
+def scratchlane_root(project_root: str, task_slug: str) -> str:
+    """Return the canonical absolute root for a task-local scratchlane."""
+    return normalize_path(os.path.join(project_root, SCRATCHLANE_PARENT_REL, sanitize_token(task_slug)))
+
+
+def _strip_worktree_prefix(path: str) -> str:
+    normalized = path.replace("\\", "/").lstrip("/")
+    parts = normalized.split("/")
+    if len(parts) >= 3 and parts[0] == ".worktrees":
+        return "/".join(parts[2:])
+    return normalized
+
+
+def to_repo_relative_path(
+    path: str,
+    project_root: str | None,
+    worktree_path: str | None = None,
+) -> Optional[str]:
+    """Convert a path to a repo-relative POSIX path when possible."""
+    if not path:
+        return None
+    if os.path.isabs(path):
+        normalized_path = normalize_path(path)
+        if worktree_path:
+            canonical_worktree = normalize_path(worktree_path)
+            if normalized_path == canonical_worktree:
+                return "."
+            prefix = canonical_worktree + os.sep
+            if normalized_path.startswith(prefix):
+                rel = normalized_path[len(prefix) :].lstrip(os.sep).lstrip("/")
+                return normalize_repo_path(rel)
+        if project_root:
+            canonical_root = normalize_path(project_root)
+            if normalized_path == canonical_root:
+                return "."
+            prefix = canonical_root + os.sep
+            if normalized_path.startswith(prefix):
+                rel = normalized_path[len(prefix) :].lstrip(os.sep).lstrip("/")
+                return normalize_repo_path(_strip_worktree_prefix(rel))
+        return None
+    return normalize_repo_path(_strip_worktree_prefix(path))
+
+
+def is_governance_repo_path(repo_relative_path: str | None) -> bool:
+    """Return True only for canonical governance paths in the repo namespace."""
+    if not repo_relative_path:
+        return False
+    normalized = normalize_repo_path(repo_relative_path)
+    if not normalized:
+        return False
+    if normalized in {"MASTER_PLAN.md", "CLAUDE.md"}:
+        return True
+    parts = normalized.split("/")
+    return len(parts) == 2 and parts[0] in {"agents", "docs"} and parts[1].endswith(".md")
+
+
+def suggest_scratchlane_task_slug(path: str) -> str:
+    """Choose a stable task slug from a target path."""
+    p = Path(path)
+    if p.suffix:
+        stem = p.stem
+        if stem:
+            return sanitize_token(stem)
+    name = p.name or p.parent.name or "task"
+    return sanitize_token(name)
+
+
+def is_tracked_repo_path(project_root: str, repo_relative_path: str | None) -> bool:
+    """Return True when ``repo_relative_path`` is tracked by git.
+
+    Scratchlane paths are only safe to treat as artifacts when they are not
+    tracked repo files. This helper deliberately lives in policy_utils so the
+    write-path and bash-path gates share one tracked-file probe.
+    """
+    if not project_root or not repo_relative_path:
+        return False
+    normalized = normalize_repo_path(repo_relative_path)
+    if not normalized:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                normalize_path(project_root),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                normalized,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _is_path_under(root: str, path: str) -> bool:
+    if not root or not path:
+        return False
+    canonical_root = normalize_path(root)
+    canonical_path = normalize_path(path)
+    return canonical_path == canonical_root or canonical_path.startswith(canonical_root + os.sep)
+
+
+def classify_policy_path(
+    path: str,
+    *,
+    project_root: str = "",
+    worktree_path: str = "",
+    scratch_roots: tuple[str, ...] | frozenset[str] = (),
+) -> PolicyPathInfo:
+    """Classify a path for write/governance/artifact policy decisions.
+
+    Classification order is authoritative:
+      1. ``meta``               — under ``{project_root}/.claude/``
+      2. ``artifact``           — under an approved scratchlane root
+      3. ``artifact_candidate`` — under ``tmp/.claude-scratch/`` but not approved
+      4. ``governance``         — canonical governance path in repo namespace
+      5. ``constitution``       — canonical constitution-level repo path
+      6. ``tmp_source_candidate`` — source-looking file under ``tmp/`` outside scratchlane
+      7. ``source``             — regular non-skippable source file
+      8. ``other``              — anything else
+    """
+    raw_path = path or ""
+    canonical_project_root = normalize_path(project_root) if project_root else ""
+
+    if os.path.isabs(raw_path):
+        normalized_path = normalize_path(raw_path)
+    elif canonical_project_root:
+        normalized_path = normalize_path(os.path.join(canonical_project_root, raw_path))
+    else:
+        normalized_path = os.path.normpath(raw_path)
+
+    repo_relative_path = to_repo_relative_path(
+        normalized_path if os.path.isabs(normalized_path) else raw_path,
+        canonical_project_root or None,
+        worktree_path or None,
+    )
+
+    if canonical_project_root and _is_path_under(os.path.join(canonical_project_root, ".claude"), normalized_path):
+        return PolicyPathInfo(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+            repo_relative_path=repo_relative_path,
+            kind=PATH_KIND_META,
+        )
+
+    if canonical_project_root:
+        scratch_parent_path = scratchlane_parent(canonical_project_root)
+        if _is_path_under(scratch_parent_path, normalized_path):
+            parts = [part for part in Path(normalized_path).parts if part]
+            task_slug = ""
+            scratch_parts = Path(scratch_parent_path).parts
+            if len(parts) > len(scratch_parts):
+                task_slug = sanitize_token(parts[len(scratch_parts)])
+            matched_root = ""
+            for root in scratch_roots:
+                if _is_path_under(root, normalized_path):
+                    matched_root = normalize_path(root)
+                    break
+            return PolicyPathInfo(
+                raw_path=raw_path,
+                normalized_path=normalized_path,
+                repo_relative_path=repo_relative_path,
+                kind=PATH_KIND_ARTIFACT if matched_root else PATH_KIND_ARTIFACT_CANDIDATE,
+                task_slug=task_slug,
+                scratch_root=matched_root or (
+                    scratchlane_root(canonical_project_root, task_slug)
+                    if task_slug
+                    else ""
+                ),
+            )
+
+    if is_governance_repo_path(repo_relative_path):
+        return PolicyPathInfo(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+            repo_relative_path=repo_relative_path,
+            kind=PATH_KIND_GOVERNANCE,
+        )
+
+    if repo_relative_path and is_constitution_level(repo_relative_path):
+        return PolicyPathInfo(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+            repo_relative_path=repo_relative_path,
+            kind=PATH_KIND_CONSTITUTION,
+        )
+
+    if (
+        repo_relative_path
+        and repo_relative_path.startswith("tmp/")
+        and is_source_file(normalized_path)
+        and not is_skippable_path(normalized_path)
+    ):
+        task_slug = suggest_scratchlane_task_slug(normalized_path)
+        return PolicyPathInfo(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+            repo_relative_path=repo_relative_path,
+            kind=PATH_KIND_TMP_SOURCE_CANDIDATE,
+            task_slug=task_slug,
+            scratch_root=scratchlane_root(canonical_project_root, task_slug)
+            if canonical_project_root
+            else "",
+        )
+
+    if is_source_file(normalized_path) and not is_skippable_path(normalized_path):
+        return PolicyPathInfo(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+            repo_relative_path=repo_relative_path,
+            kind=PATH_KIND_SOURCE,
+        )
+
+    return PolicyPathInfo(
+        raw_path=raw_path,
+        normalized_path=normalized_path,
+        repo_relative_path=repo_relative_path,
+        kind=PATH_KIND_OTHER,
+    )
 
 
 def is_source_file(path: str) -> bool:

@@ -51,6 +51,7 @@ import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.workflow_bootstrap as workflow_bootstrap_mod
 import runtime.core.quick_eval as quick_eval_mod
 import runtime.core.shadow_parity as shadow_parity_mod
+import runtime.core.scratchlanes as scratchlanes_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
 import runtime.core.tokens as tokens_mod
@@ -4020,6 +4021,67 @@ def _resolve_project_root(args) -> str:
     return normalize_path(project_root) if project_root else ""
 
 
+def _handle_scratchlane(args) -> int:
+    """Handle task-local scratchlane permit CRUD.
+
+    Scratchlanes are user-approved artifact roots under
+    ``tmp/.claude-scratch/<task_slug>``. This handler is intentionally narrow:
+    it resolves the project root, reads/writes the permit table, and returns
+    JSON describing the active root.
+    """
+    project_root = _resolve_project_root(args)
+    if not project_root:
+        return _err("scratchlane requires --project-root or CLAUDE_PROJECT_DIR")
+
+    conn = _get_conn()
+    try:
+        if args.action == "grant":
+            record = scratchlanes_mod.grant(
+                conn,
+                project_root,
+                args.task_slug,
+                granted_by=getattr(args, "granted_by", None) or "user",
+                note=getattr(args, "note", None) or "",
+            )
+            Path(record["root_path"]).mkdir(parents=True, exist_ok=True)
+            return _ok({"permit": record, "project_root": project_root})
+
+        if args.action == "get":
+            record = scratchlanes_mod.get_active(conn, project_root, args.task_slug)
+            return _ok(
+                {
+                    "project_root": project_root,
+                    "task_slug": args.task_slug,
+                    "found": record is not None,
+                    "permit": record,
+                }
+            )
+
+        if args.action == "revoke":
+            revoked = scratchlanes_mod.revoke(conn, project_root, args.task_slug)
+            return _ok(
+                {
+                    "project_root": project_root,
+                    "task_slug": args.task_slug,
+                    "revoked": revoked,
+                }
+            )
+
+        if args.action == "list":
+            items = scratchlanes_mod.list_active(conn, project_root=project_root)
+            return _ok(
+                {
+                    "project_root": project_root,
+                    "items": items,
+                    "count": len(items),
+                }
+            )
+    finally:
+        conn.close()
+
+    return _err(f"unknown scratchlane action: {args.action}")
+
+
 def _handle_test_state(args) -> int:
     """Read/write test state via the SQLite test_state table.
 
@@ -6060,6 +6122,35 @@ def build_parser() -> argparse.ArgumentParser:
     ts_set.add_argument("--failed", type=int, default=0, help="Number of failing tests")
     ts_set.add_argument("--total", type=int, default=0, help="Total test count")
 
+    # scratchlane — task-local artifact roots under tmp/.claude-scratch/<task>
+    sl_p = subparsers.add_parser(
+        "scratchlane",
+        help="Task-local scratchlane permits under tmp/.claude-scratch/",
+    )
+    sl_sub = sl_p.add_subparsers(dest="action", required=True)
+    _sl_root_kwargs = {
+        "dest": "project_root",
+        "default": None,
+        "help": "Project root (defaults to CLAUDE_PROJECT_DIR or git root)",
+    }
+
+    sl_grant = sl_sub.add_parser("grant", help="Grant or refresh a scratchlane permit")
+    sl_grant.add_argument("--task-slug", dest="task_slug", required=True)
+    sl_grant.add_argument("--granted-by", dest="granted_by", default="user")
+    sl_grant.add_argument("--note", dest="note", default="")
+    sl_grant.add_argument("--project-root", **_sl_root_kwargs)
+
+    sl_get = sl_sub.add_parser("get", help="Get the active scratchlane permit for a task")
+    sl_get.add_argument("--task-slug", dest="task_slug", required=True)
+    sl_get.add_argument("--project-root", **_sl_root_kwargs)
+
+    sl_revoke = sl_sub.add_parser("revoke", help="Revoke the active scratchlane permit")
+    sl_revoke.add_argument("--task-slug", dest="task_slug", required=True)
+    sl_revoke.add_argument("--project-root", **_sl_root_kwargs)
+
+    sl_list = sl_sub.add_parser("list", help="List active scratchlane permits")
+    sl_list.add_argument("--project-root", **_sl_root_kwargs)
+
     # eval — Behavioral Evaluation Framework CLI
     ev_p = subparsers.add_parser("eval", help="Behavioral Evaluation Framework")
     ev_sub = ev_p.add_subparsers(dest="action", required=True)
@@ -6469,6 +6560,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_critic_review(args)
     if args.domain == "test-state":
         return _handle_test_state(args)
+    if args.domain == "scratchlane":
+        return _handle_scratchlane(args)
     if args.domain == "eval":
         return _handle_eval(args)
     if args.domain == "evaluate":

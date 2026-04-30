@@ -56,7 +56,7 @@ from typing import Optional
 
 from runtime.core.authority_registry import CAN_WRITE_SOURCE
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_skippable_path, is_source_file, parse_scope_list
+from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path, parse_scope_list
 
 # Module-level alias — delegates to canonical single-authority parser.
 # @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
@@ -151,12 +151,13 @@ def write_who(request: PolicyRequest) -> Optional[PolicyDecision]:
     if project_root and file_path.startswith(os.path.join(project_root, ".claude") + os.sep):
         return None
 
-    # WHO enforcement applies only to source files
-    if not is_source_file(file_path):
-        return None
-
-    # Skip test/config/vendor/generated paths
-    if is_skippable_path(file_path):
+    info = classify_policy_path(
+        file_path,
+        project_root=project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_SOURCE:
         return None
 
     if CAN_WRITE_SOURCE in request.context.capabilities:
@@ -166,7 +167,7 @@ def write_who(request: PolicyRequest) -> Optional[PolicyDecision]:
         scope = getattr(request.context, "scope", None)
         if scope is not None:
             matched_pattern = _check_scope_forbidden(
-                file_path,
+                info.normalized_path,
                 scope,
                 project_root,
                 request.context.worktree_path,

@@ -31,7 +31,7 @@ import re
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_skippable_path, is_source_file
+from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path
 
 # ---------------------------------------------------------------------------
 # Operational markdown files in project root — always allowed
@@ -163,12 +163,13 @@ def doc_gate(request: PolicyRequest) -> Optional[PolicyDecision]:
                 )
         return None
 
-    # Only enforce on source files
-    if not is_source_file(file_path):
-        return None
-
-    # Skip vendor, node_modules, etc.
-    if is_skippable_path(file_path):
+    info = classify_policy_path(
+        file_path,
+        project_root=project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_SOURCE:
         return None
 
     if tool_name == "Write":

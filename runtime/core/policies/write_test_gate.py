@@ -35,7 +35,7 @@ import time
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_skippable_path, is_source_file
+from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path
 
 # Stale threshold: results older than this many seconds are ignored
 _STALE_THRESHOLD_SECS = 600
@@ -128,12 +128,13 @@ def check_test_gate_pretool(request: PolicyRequest) -> Optional[PolicyDecision]:
     if project_root and file_path.startswith(os.path.join(project_root, ".claude") + os.sep):
         return None
 
-    # Only enforce on source files
-    if not is_source_file(file_path):
-        return None
-
-    # Skip vendor, node_modules, etc.
-    if is_skippable_path(file_path):
+    info = classify_policy_path(
+        file_path,
+        project_root=project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_SOURCE:
         return None
 
     # Test files are always exempt — fixes must proceed

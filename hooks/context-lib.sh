@@ -179,6 +179,11 @@ is_skippable_path() {
     return 1
 }
 
+is_scratchlane_path() {
+    local file="$1"
+    [[ "$file" == tmp/.claude-scratch/* || "$file" == */tmp/.claude-scratch/* ]]
+}
+
 # --- Source mutation fingerprint (DEC-EVAL-006) ---
 # Content-aware hash of all source-file mutations relative to HEAD.
 # Used by pre/post-bash hooks to detect per-command source changes.
@@ -198,7 +203,7 @@ compute_source_fingerprint() {
     )
     while IFS= read -r _csf_f; do
         [[ -z "$_csf_f" ]] && continue
-        if is_source_file "$_csf_f" && ! is_skippable_path "$_csf_f"; then
+        if is_source_file "$_csf_f" && ! is_skippable_path "$_csf_f" && ! is_scratchlane_path "$_csf_f"; then
             local _csf_abs="$root/$_csf_f"
             local _csf_h
             if [[ -f "$_csf_abs" ]]; then
@@ -608,4 +613,4 @@ print(classify_git_op(sys.argv[1]))
 # Export for subshells
 export SOURCE_EXTENSIONS
 export -f cc_policy _rt_ensure_schema rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route rt_obs_metric rt_obs_metric_batch _obs_accum
-export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path compute_source_fingerprint append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path is_scratchlane_path compute_source_fingerprint append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

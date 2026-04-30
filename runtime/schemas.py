@@ -216,6 +216,27 @@ CREATE INDEX IF NOT EXISTS idx_bootstrap_requests_active
     ON bootstrap_requests (worktree_path, consumed, expires_at)
 """
 
+SCRATCHLANE_PERMITS_DDL = """
+CREATE TABLE IF NOT EXISTS scratchlane_permits (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_root TEXT    NOT NULL,
+    task_slug    TEXT    NOT NULL,
+    root_path    TEXT    NOT NULL,
+    granted_by   TEXT    NOT NULL DEFAULT 'user',
+    note         TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    active       INTEGER NOT NULL DEFAULT 1,
+    revoked_at   INTEGER
+)
+"""
+
+SCRATCHLANE_PERMITS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_scratchlane_project_active
+       ON scratchlane_permits (project_root, active, created_at DESC, id DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_scratchlane_root_active
+       ON scratchlane_permits (root_path, active)""",
+]
+
 DISPATCH_LEASES_DDL = """
 CREATE TABLE IF NOT EXISTS dispatch_leases (
     lease_id           TEXT    PRIMARY KEY,
@@ -715,6 +736,7 @@ ALL_DDL: list[str] = [
     BOOTSTRAP_REQUESTS_DDL,
     BOOTSTRAP_REQUESTS_INDEX_WORKFLOW_DDL,
     BOOTSTRAP_REQUESTS_INDEX_ACTIVE_DDL,
+    SCRATCHLANE_PERMITS_DDL,
     EVALUATION_STATE_DDL,
     BUGS_DDL,
     DISPATCH_LEASES_DDL,
@@ -1020,6 +1042,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         for idx_ddl in DISPATCH_LEASES_INDEXES_DDL:
             conn.execute(idx_ddl)
         for idx_ddl in CRITIC_REVIEWS_INDEXES_DDL:
+            conn.execute(idx_ddl)
+        for idx_ddl in SCRATCHLANE_PERMITS_INDEXES_DDL:
             conn.execute(idx_ddl)
         conn.execute(TEST_STATE_INDEX_DDL)
         for idx_ddl in OBS_METRICS_INDEXES_DDL:

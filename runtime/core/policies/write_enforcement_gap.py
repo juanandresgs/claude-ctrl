@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_skippable_path, is_source_file
+from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path
 
 
 def enforcement_gap(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -41,9 +41,13 @@ def enforcement_gap(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not file_path:
         return None
 
-    if not is_source_file(file_path):
-        return None
-    if is_skippable_path(file_path):
+    info = classify_policy_path(
+        file_path,
+        project_root=request.context.project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_SOURCE:
         return None
 
     ext = Path(file_path).suffix.lstrip(".")

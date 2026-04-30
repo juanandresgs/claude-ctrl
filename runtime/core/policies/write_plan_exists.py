@@ -25,9 +25,9 @@ from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
+    PATH_KIND_SOURCE,
     SOURCE_EXTENSIONS,
-    is_skippable_path,
-    is_source_file,
+    classify_policy_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -185,14 +185,18 @@ def plan_exists(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not file_path:
         return None
 
-    if not is_source_file(file_path):
-        return None
-    if is_skippable_path(file_path):
-        return None
-
     # Skip meta-infrastructure
     project_root = request.context.project_root
     if project_root and file_path.startswith(os.path.join(project_root, ".claude") + os.sep):
+        return None
+
+    info = classify_policy_path(
+        file_path,
+        project_root=project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_SOURCE:
         return None
 
     # Edit tool is inherently scoped — skip plan check

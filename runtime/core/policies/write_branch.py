@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_skippable_path, is_source_file
+from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path
 
 
 def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -46,16 +46,13 @@ def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
     if project_root and file_path.startswith(os.path.join(project_root, ".claude") + os.sep):
         return None
 
-    # Skip MASTER_PLAN.md — plans are written on main by design
-    if Path(file_path).name == "MASTER_PLAN.md":
-        return None
-
-    # Skip non-source files
-    if not is_source_file(file_path):
-        return None
-
-    # Skip test/config/vendor/generated paths
-    if is_skippable_path(file_path):
+    info = classify_policy_path(
+        file_path,
+        project_root=project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_SOURCE:
         return None
 
     # Resolve the git repo from the file's directory (fix #468 pattern)

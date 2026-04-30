@@ -67,7 +67,12 @@ from typing import Optional
 from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE
 from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import is_governance_markdown, parse_scope_list
+from runtime.core.policy_utils import (
+    PATH_KIND_CONSTITUTION,
+    PATH_KIND_GOVERNANCE,
+    classify_policy_path,
+    parse_scope_list,
+)
 
 # Module-level alias preserves the legacy import surface for existing tests:
 #   from runtime.core.policies.write_plan_guard import _parse_scope_list
@@ -124,13 +129,15 @@ def plan_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
     if project_root and file_path.startswith(os.path.join(project_root, ".claude") + os.sep):
         return None
 
-    # Classify: governance markdown or constitution-level file?
-    is_gov = is_governance_markdown(file_path)
-    is_const = False
-    if not is_gov:
-        repo_rel = _to_repo_relative(file_path, project_root, request.context.worktree_path)
-        if repo_rel is not None:
-            is_const = is_constitution_level(repo_rel)
+    info = classify_policy_path(
+        file_path,
+        project_root=project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    is_gov = info.kind == PATH_KIND_GOVERNANCE
+    is_const = info.kind == PATH_KIND_CONSTITUTION
+    repo_rel = info.repo_relative_path
 
     if not is_gov and not is_const:
         return None
@@ -151,9 +158,7 @@ def plan_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
             # Prefer repo-relative for fnmatch match; fall back to file_path
             repo_rel_for_match: Optional[str]
             if is_gov:
-                repo_rel_for_match = _to_repo_relative(
-                    file_path, project_root, request.context.worktree_path
-                )
+                repo_rel_for_match = repo_rel
             else:
                 repo_rel_for_match = repo_rel  # set in is_const branch above
             target = repo_rel_for_match or file_path

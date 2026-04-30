@@ -17,12 +17,12 @@ from typing import Optional
 
 from runtime.core.authority_registry import CAN_WRITE_GOVERNANCE, CAN_WRITE_SOURCE
 from runtime.core.command_intent import extract_bash_write_targets
-from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
-    is_governance_markdown,
-    is_skippable_path,
-    is_source_file,
+    PATH_KIND_CONSTITUTION,
+    PATH_KIND_GOVERNANCE,
+    PATH_KIND_SOURCE,
+    classify_policy_path,
     normalize_path,
     resolve_path_from_base,
 )
@@ -62,30 +62,6 @@ def _extract_patch_targets(command: str) -> set[str]:
     return targets
 
 
-def _strip_worktree_prefix(path: str) -> str:
-    normalized = path.replace("\\", "/").lstrip("/")
-    parts = normalized.split("/")
-    if len(parts) >= 3 and parts[0] == ".worktrees":
-        return "/".join(parts[2:])
-    return normalized
-
-
-def _to_repo_relative(path: str, project_root: str, worktree_path: str) -> str | None:
-    if not path:
-        return None
-
-    if os.path.isabs(path):
-        if worktree_path and path.startswith(worktree_path + os.sep):
-            rel = path[len(worktree_path) :].lstrip(os.sep).lstrip("/")
-            return normalize_repo_path(rel)
-        if project_root and path.startswith(project_root + os.sep):
-            rel = path[len(project_root) :].lstrip(os.sep).lstrip("/")
-            return normalize_repo_path(_strip_worktree_prefix(rel))
-        return None
-
-    return normalize_repo_path(_strip_worktree_prefix(path))
-
-
 def _role_label(request: PolicyRequest) -> str:
     role = request.context.actor_role or ""
     return role if role else "orchestrator (no active agent)"
@@ -118,7 +94,14 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         if project_root and target.startswith(os.path.join(project_root, ".claude") + os.sep):
             continue
 
-        if is_governance_markdown(target):
+        info = classify_policy_path(
+            target,
+            project_root=project_root,
+            worktree_path=request.context.worktree_path or "",
+            scratch_roots=request.context.scratchlane_roots,
+        )
+
+        if info.kind == PATH_KIND_GOVERNANCE:
             if CAN_WRITE_GOVERNANCE not in request.context.capabilities:
                 return PolicyDecision(
                     action="deny",
@@ -131,8 +114,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 )
             continue
 
-        repo_rel = _to_repo_relative(target, project_root, request.context.worktree_path or "")
-        if repo_rel and is_constitution_level(_strip_diff_prefix(repo_rel)):
+        if info.kind == PATH_KIND_CONSTITUTION:
             if CAN_WRITE_GOVERNANCE not in request.context.capabilities:
                 return PolicyDecision(
                     action="deny",
@@ -145,7 +127,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 )
             continue
 
-        if is_source_file(target) and not is_skippable_path(target):
+        if info.kind == PATH_KIND_SOURCE:
             if CAN_WRITE_SOURCE not in request.context.capabilities:
                 return PolicyDecision(
                     action="deny",

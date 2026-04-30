@@ -18,10 +18,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policy_utils import PATH_KIND_GOVERNANCE, classify_policy_path
 
 
 def decision_log(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -38,7 +38,13 @@ def decision_log(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not file_path:
         return None
 
-    if Path(file_path).name != "MASTER_PLAN.md":
+    info = classify_policy_path(
+        file_path,
+        project_root=request.context.project_root or "",
+        worktree_path=request.context.worktree_path or "",
+        scratch_roots=request.context.scratchlane_roots,
+    )
+    if info.kind != PATH_KIND_GOVERNANCE or info.repo_relative_path != "MASTER_PLAN.md":
         return None
 
     if os.environ.get("CLAUDE_PLAN_MIGRATION", "") == "1":

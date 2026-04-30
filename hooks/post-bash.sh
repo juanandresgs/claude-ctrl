@@ -75,7 +75,7 @@ if [[ -z "$_BASELINE" ]]; then
     )
     while IFS= read -r _F; do
         [[ -z "$_F" ]] && continue
-        if is_source_file "$_F" && ! is_skippable_path "$_F"; then
+        if is_source_file "$_F" && ! is_skippable_path "$_F" && ! is_scratchlane_path "$_F"; then
             _FOUND_SOURCE_MUTATION=true
             break
         fi

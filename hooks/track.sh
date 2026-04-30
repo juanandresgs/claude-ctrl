@@ -55,7 +55,7 @@ rt_obs_metric files_changed "$_tk_file_count" "" "" "" & disown
 #   This enforces that the evaluated HEAD and the committed HEAD are the same.
 #   invalidate_if_ready() is a targeted atomic update — it only fires when
 #   status is exactly ready_for_guardian, so pending/idle writes are no-ops.
-if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH"; then
+if is_source_file "$FILE_PATH" && ! is_skippable_path "$FILE_PATH" && ! is_scratchlane_path "$FILE_PATH"; then
     # WS1: use lease_context() to derive workflow_id from the active lease.
     # When a lease is active its workflow_id is authoritative over branch-derived id.
     # This ensures invalidation targets the same workflow_id the evaluator (reviewer) cleared,

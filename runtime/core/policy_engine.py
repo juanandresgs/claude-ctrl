@@ -76,6 +76,7 @@ from dataclasses import dataclass, field
 from typing import Callable, FrozenSet, Optional
 
 from runtime.core.command_intent import BashCommandIntent, build_bash_command_intent
+from runtime.core import scratchlanes as scratchlanes_mod
 from runtime.core.policy_utils import (
     current_workflow_id,
     detect_project_root,
@@ -125,6 +126,10 @@ class PolicyContext:
     # "lease exists but the caller cannot attach it" without relaxing the
     # enforcement contract. See DEC-PE-LEASE-DENY-DIAG-001.
     worktree_lease_suppressed_roles: FrozenSet[str] = field(default_factory=frozenset)
+    # Active task-local scratchlane roots approved by the user for this
+    # project. Policies use this to distinguish sanctioned artifact work
+    # from real repo source/governance mutations.
+    scratchlane_roots: FrozenSet[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -665,6 +670,15 @@ def build_context(
     except Exception:
         pass  # fail-safe: empty dict → policies use built-in defaults
 
+    # --- Scratchlane permits (task-local artifact roots) ---
+    scratchlane_roots: FrozenSet[str] = frozenset()
+    try:
+        scratchlane_roots = frozenset(
+            scratchlanes_mod.active_roots(conn, project_root)
+        )
+    except Exception:
+        scratchlane_roots = frozenset()
+
     from runtime.core.authority_registry import (
         canonical_actor_stage as _canonical_actor_stage,
         capabilities_for as _capabilities_for,
@@ -694,6 +708,7 @@ def build_context(
         enforcement_config=enforcement_config,
         capabilities=_capabilities_for(canonical_role),
         worktree_lease_suppressed_roles=suppressed_roles,
+        scratchlane_roots=scratchlane_roots,
     )
 
 
