@@ -48,6 +48,12 @@ has_question_shape() {
     printf '%s' "$NORMALIZED" | grep -Eq '\?|want me to|would you like|should i|shall i|do you want|want me|or stop here|stop here'
 }
 
+asks_about() {
+    local topic_pattern="$1"
+    local ask_pattern='want me to|would you like( me)? to|should i|shall i|do you want( me)? to|or stop here|stop here'
+    printf '%s' "$NORMALIZED" | grep -Eq "(${ask_pattern})[^.?!]{0,160}(${topic_pattern})|(${topic_pattern})[^.?!]{0,160}(${ask_pattern})"
+}
+
 has_user_boundary() {
     printf '%s' "$NORMALIZED" | grep -Eq 'force[- ]?push|force push|history rewrite|destructive|reset --hard|git reset|rebase|non[- ]?ff|non fast-forward|ambiguous publish|publish target|irreconcilable|product signoff|explicit user|user approval|user adjudicat|requires approval|needs approval|ask the user'
 }
@@ -66,22 +72,22 @@ if has_user_boundary; then
     exit 0
 fi
 
-if printf '%s' "$NORMALIZED" | grep -Eq '(/backlog|backlog|todo|follow[- ]?up|followup|file .*issue|open .*issue|track .*issue|record .*issue|file those|file all|worth filing)'; then
+if asks_about '(/backlog|backlog|todo|follow[- ]?up|followup|file .*issue|open .*issue|track .*issue|record .*issue|file those|file all)'; then
     emit_block "Stop advisor: do not ask the user to approve obvious bookkeeping. File or track the backlog/follow-up items now, then stop."
     exit 0
 fi
 
-if printf '%s' "$NORMALIZED" | grep -Eq '\bgit\b|commit|merge|push|land|landing'; then
+if asks_about '\bgit\b|commit|merge|push|land|landing'; then
     emit_block "Stop advisor: do not ask the user to handle routine git landing. Route the operation to Guardian. Only ask the user after Guardian or policy identifies a real boundary such as destructive history rewrite, ambiguous publish target, or irreconcilable reviewer/implementer conflict."
     exit 0
 fi
 
-if printf '%s' "$NORMALIZED" | grep -Eq 'dispatch|auto[- ]?dispatch|send .* to |call .* (planner|implementer|reviewer|guardian)|start .* (planner|implementer|reviewer|guardian)|next role'; then
+if asks_about 'dispatch|auto[- ]?dispatch|send .* to |call .* (planner|implementer|reviewer|guardian)|start .* (planner|implementer|reviewer|guardian)|next role'; then
     emit_block "Stop advisor: do not ask for routine canonical dispatch. Use the runtime-provided dispatch/stage-packet path and continue, unless the runtime or policy has already surfaced a user decision boundary."
     exit 0
 fi
 
-if printf '%s' "$NORMALIZED" | grep -Eq 'obvious|straightforward|low[- ]?risk|simple|routine'; then
+if asks_about 'obvious|straightforward|low[- ]?risk|simple|routine'; then
     emit_block "Stop advisor: the proposed action is framed as routine. If it is within the approved task and no policy/user-boundary was surfaced, take the action instead of asking."
     exit 0
 fi

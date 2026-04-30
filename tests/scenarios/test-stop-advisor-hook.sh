@@ -63,6 +63,9 @@ assert_block_contains "guardian-git" "Route the operation to Guardian"
 run_hook "dispatch" '{"hook_event_name":"Stop","last_assistant_message":"Reviewer is ready. Should I dispatch guardian next?"}'
 assert_block_contains "dispatch" "routine canonical dispatch"
 
+run_hook "mixed-summary-no-bookkeeping-ask" '{"hook_event_name":"Stop","last_assistant_message":"Verdict: ready. Should I tighten the token-consume atomicity now? The two minor items above are worth filing as follow-ups but do not block landing."}'
+assert_passes_empty "mixed-summary-no-bookkeeping-ask"
+
 run_hook "user-boundary" '{"hook_event_name":"Stop","last_assistant_message":"This requires a force push history rewrite. Do you want to approve it?"}'
 assert_passes_empty "user-boundary"
 
