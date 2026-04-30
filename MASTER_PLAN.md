@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-27 (Stop-hook friction cleanup: regular Stop is now deterministic `surface.sh` + `session-summary.sh` + `stop-advisor.sh`; broad `stop-review-gate-hook.mjs` is no longer in the live Stop chain; SubagentStop Codex review remains the deterministic implementer critic path persisted in `critic_reviews`)
+Last updated: 2026-04-29 (INIT-ADMIT planned: bootstrap admission atomicity flip + token-not-found UX; DEC-ADMIT-001 / DEC-ADMIT-002 logged)
 
 ## Identity
 
@@ -765,6 +765,50 @@ into the new mainline.
   default flip combined with the config-source retarget from
   DEC-CONFIG-AUTHORITY-001 — it is not a behavioral rewrite of the
   review path itself; that code (lines 656-end) stays intact.
+
+### Bootstrap admission decisions
+
+- `2026-04-29 — DEC-ADMIT-001` **Bootstrap admission `consume()` precedes
+  state-mutating writes.** In
+  `runtime.core.workflow_bootstrap.bootstrap_local_workflow`, the
+  `bootstrap_requests_mod.consume(...)` call moves from the post-write
+  position (current line ~408, after `bind_workflow`, `upsert_goal`,
+  `upsert_work_item`, `set_status`, and `build_stage_packet`) to the
+  pre-write position immediately after `_validate_existing_state(...)` and
+  before `workflows_mod.bind_workflow(...)`. The atomic `UPDATE ... WHERE
+  token=? AND consumed=0` inside `bootstrap_requests.consume` becomes the
+  admission gate; under a write-time race, the loser raises
+  `BootstrapRequestError` before any side effects land, instead of after.
+  Trade-off accepted: the new failure mode is "admission succeeds, a
+  downstream upsert fails, token is burned, operator must re-mint via
+  `bootstrap-request`." This is rare (the upserts run against a fixed
+  schema with no foreign-key surprises) and recoverable (one CLI re-mint).
+  The reverse failure mode (current ordering: writes succeed, admission
+  denial after) leaves a confusing audit trail and mis-trains operators.
+  This matches the `lease`-style admission idiom used elsewhere in the
+  runtime. Closes GitHub issue #68. Implementer must add an inline
+  `@decision DEC-ADMIT-001` comment at the moved call site so the
+  ordering is discoverable from source.
+- `2026-04-29 — DEC-ADMIT-002` **`resolve_pending` reports the resolved DB
+  path on `token_not_found`.** `runtime.core.bootstrap_requests.resolve_pending`
+  gains an optional `db_path: str | None = None` keyword argument, threaded
+  through from `bootstrap_local_workflow` (which already resolves
+  `db_path`). When the row lookup misses, the raised
+  `BootstrapRequestError` message names the resolved DB path the runtime
+  actually opened, states that bootstrap tokens are scoped to the worktree
+  where `bootstrap-request` was issued, tells the operator to verify
+  `--worktree-path` matches that worktree, and tells the operator to re-run
+  `bootstrap-request` from the correct worktree if it was issued
+  elsewhere. `consume()` already calls `resolve_pending` internally and
+  must thread the same `db_path` keyword through. The audit-event
+  `detail` payload for the `workflow.bootstrap.denied`
+  `reason=token_not_found` branch is intentionally NOT changed; the new
+  context lives in the operator-facing exception message, not in the
+  audit row. The audit row already records `worktree_path` for forensic
+  correlation. Forbidden alternatives: cross-DB scans, a global
+  breadcrumb table, or embedding the DB path in the token string itself —
+  each re-introduces a parallel admission authority. Closes GitHub
+  issue #69.
 
 ## Active Initiatives
 
@@ -11101,6 +11145,473 @@ None. Every decision called out in the planner brief has been resolved with
 explicit rationale (DEC-PHASE0-001 through DEC-PHASE0-008) and inline
 evidence. If the implementer or tester for any P0 work item discovers an
 ambiguity, escalate to the orchestrator before resolving silently.
+
+### INIT-ADMIT: Bootstrap Admission Atomicity and UX Polish
+
+- **Status:** planned (2026-04-29)
+- **Workflow id (runtime):** `bootstrap-admission-polish`
+- **Goal id (runtime):** `g-initial-planning`
+- **Work item id (runtime):** `wi-initial-planning`
+- **Base commit:** `9e8689a` on `main` (the commit that introduced the
+  `bootstrap_requests` admission table, `runtime/core/bootstrap_requests.py`,
+  and `runtime/core/workflow_bootstrap.py`).
+- **Goal (Divine User wording, verbatim from bootstrap brief):**
+  > Polish the bootstrap admission gate: (a) flip `consume()` to fire before
+  > binding/goal/work-item upserts in
+  > `workflow_bootstrap.bootstrap_local_workflow` so write-time races resolve
+  > atomically rather than after side-effects (closes #68); (b) improve
+  > `resolve_pending()` token-not-found error to include the resolved
+  > `db_path` and a hint about per-worktree token scoping so operators with
+  > the wrong `--worktree-path` get an actionable message (closes #69). Out
+  > of scope: any token revocation primitive (#70 deferred — TTL is the
+  > safety net).
+- **Scope summary (mirrors the runtime `workflow_scope` row that the planner
+  must ship to runtime via `cc-policy workflow scope-sync` before implementer
+  dispatch):**
+  - Allowed touch points: `runtime/core/workflow_bootstrap.py`,
+    `runtime/core/bootstrap_requests.py`,
+    `tests/runtime/test_planner_bootstrap.py`.
+  - Required touch points: all three of the above (the source flip needs both
+    modules, and both invariants belong in the bootstrap test file because
+    that is already the admission-gate test home).
+  - Forbidden touch points: any new CLI subcommand, any schema change,
+    `runtime/cli.py` argparse surface, audit-event names
+    (`workflow.bootstrap.requested|consumed|denied`), `runtime/schemas.py`,
+    `runtime/core/dispatch_engine.py`, `runtime/core/completions.py`, any
+    cross-DB scan helper, any new public function in
+    `runtime/core/bootstrap_requests.py` beyond the existing
+    `issue|resolve_pending|consume` triad.
+  - State authorities touched: `bootstrap_requests` table only. Read-side of
+    `workflow_bindings`, `goal_contracts`, `work_items`, and
+    `evaluation_state` is observed by tests but not modified beyond what the
+    existing bootstrap path already does.
+
+#### Empirical baseline (verified against working tree at base commit)
+
+- `runtime/core/workflow_bootstrap.py:281` calls
+  `bootstrap_requests_mod.resolve_pending(...)` (read-only validation).
+- `runtime/core/workflow_bootstrap.py:362-397` performs the four state-mutating
+  upserts in order: `workflows_mod.bind_workflow`,
+  `dwr.upsert_goal`, `dwr.upsert_work_item`, `evaluation_mod.set_status`.
+- `runtime/core/workflow_bootstrap.py:398-407` builds the planner stage packet
+  via `build_stage_packet` (read-side projection).
+- `runtime/core/workflow_bootstrap.py:408-413` finally calls
+  `bootstrap_requests_mod.consume(...)`. The atomic `UPDATE ... WHERE token=?
+  AND consumed=0` lives inside `consume()` at
+  `runtime/core/bootstrap_requests.py:228-239`. This is the *only* race-safe
+  gate in the file; it fires *after* all write-side side effects.
+- `runtime/core/bootstrap_requests.py:134-145` raises
+  `BootstrapRequestError("bootstrap token not found")` when the resolved DB
+  has no row matching the token. The function signature already takes
+  `worktree_path` as the *expected* worktree (used for the `worktree_mismatch`
+  branch at lines 163-178), but it does not surface the *resolved DB path*
+  that operators need in order to diagnose a `--worktree-path` mismatch.
+  `db_path` is currently known only to the caller in
+  `workflow_bootstrap.bootstrap_local_workflow` (`runtime/core/workflow_bootstrap.py:276`).
+- Existing admission-gate tests live at
+  `tests/runtime/test_planner_bootstrap.py`. Specifically:
+  `test_bootstrap_request_records_audit_and_returns_replay_command`
+  (line 409) covers issuance audit; `test_bootstrap_local_consumes_token_once`
+  (line 469) covers replay denial via `resolve_pending`'s
+  `already_consumed` branch. There is currently no test for the
+  `worktree_mismatch` *DB-mismatch* case (only the in-DB worktree string
+  mismatch). There is no race-condition test for atomic admission ordering.
+- Repo is currently dirty with unrelated workflow/runtime work
+  (`runtime/cli.py`, `runtime/core/agent_prompt.py`, etc.). The implementer's
+  Scope Manifest forbids touching any of those paths so the diff stays
+  surgical and reviewable; if those edits collide with this initiative they
+  must be rebased or staged separately by the orchestrator before implementer
+  dispatch.
+
+#### Goals and non-goals
+
+**Goals:**
+1. Move `bootstrap_requests_mod.consume(...)` so it is the *first*
+   state-mutating call in `bootstrap_local_workflow`, preceding
+   `bind_workflow`, `upsert_goal`, `upsert_work_item`, `set_status`, and
+   `build_stage_packet`. The atomic UPDATE inside `consume()` becomes the
+   admission gate for downstream writes.
+2. Improve `bootstrap_requests.resolve_pending` so the `token_not_found`
+   denial includes the resolved DB path and an actionable hint about
+   per-worktree token scoping.
+3. Add invariant tests for both fixes that fail today and pass after the
+   change.
+4. Keep the full runtime test suite green (5644 passed baseline per the
+   bootstrap brief).
+
+**Non-goals (explicit):**
+- Closing #70 (`bootstrap-revoke` / `bootstrap-list-pending` primitives) — TTL
+  remains the safety net per the user's directive.
+- Any cross-DB scan helper that walks `~/.claude/state.db` or sibling state
+  DBs to "find" a token in another worktree's DB. That re-introduces the
+  divergence pattern that #59 was created to eliminate.
+- Restructuring `bind_workflow` / `upsert_goal` / `upsert_work_item` /
+  `set_status` to compose under a single outer transaction. Each helper
+  currently uses its own `with conn:` context manager, and Python's
+  `sqlite3` does not nest those cleanly. Wrapping them is a separate concern
+  with broader implications (every caller of those helpers would need
+  re-validation).
+- Any change to schemas, audit-event names, the CLI surface, or the existing
+  admission protocol semantics (issuance, mismatch denials, expiry, replay).
+- Any reordering of the post-consume read-side `build_stage_packet` call's
+  semantics. Stage-packet construction may stay where it is or move; what
+  matters is that `consume()` precedes the four write-side upserts.
+
+#### Architecture Decisions
+
+##### DEC-ADMIT-001: `consume()` becomes the admission gate, not the audit footer
+
+**Sources of truth checked:**
+1. `runtime/core/bootstrap_requests.py:211-254` — `consume()` already issues an
+   atomic `UPDATE ... WHERE token=? AND consumed=0` and a `rowcount != 1`
+   check. The atomicity is real; the only weakness is *when* the call fires
+   in the bootstrap sequence.
+2. `runtime/core/workflow_bootstrap.py:281-413` — current ordering: validate
+   pending → resolve params → validate existing state → bind/goal/upsert/
+   evaluation/packet → consume. Two callers can both pass `resolve_pending`
+   (read-only) at line 281, then both race through the four write-side
+   helpers (which are individually idempotent with respect to one another's
+   final state for the bootstrap case), and only one succeeds the atomic
+   UPDATE inside `consume()` at line 408. The loser raises
+   `BootstrapRequestError("could not be consumed atomically")` *after* their
+   binding/goal/work-item writes have already landed.
+3. The existing `lease` pattern in this codebase (claim a lease atomically,
+   then perform work under that claim) is the canonical idiom for admission
+   in this runtime. Bootstrap currently inverts that idiom.
+
+**Trade-off considered (the alternative branches):**
+- *Wrap all four write-side helpers in one outer `BEGIN ... COMMIT`.* Cost:
+  every helper composes its own transaction internally; nesting them with
+  Python `sqlite3` requires either rewriting their internals or using a
+  manual savepoint. Both expand scope, change call-site contracts for
+  unrelated callers, and risk regressions in non-bootstrap paths. The user's
+  brief explicitly forbids this.
+- *Add a separate "claim" row before the writes and reconcile after.* Cost:
+  introduces a second admission state machine alongside `consumed`, doubling
+  the surface for the same property. Drift risk.
+- *Leave the order alone and document the wart.* Cost: state still
+  *converges* to the right answer (writes are idempotent for the bootstrap
+  case), but the loser sees a confusing "could not be consumed atomically"
+  error after their writes appear to have succeeded. The audit log records
+  `requested → consumed → consumed` for one token and `requested →
+  (no consume)` for the other while the database carries side effects from
+  both. This is not a security bug, but it is a transactional wart that
+  mis-trains operators.
+
+**Decision:** Adopt the lease idiom. Move the `consume()` call to fire
+*immediately after* `_validate_existing_state(...)` and *before*
+`workflows_mod.bind_workflow(...)`. The atomic UPDATE inside `consume()`
+becomes the admission gate; the loser raises before any writes land.
+
+**Trade-off explicitly accepted (token-burn-on-failure):** With this order,
+if any of `bind_workflow`, `upsert_goal`, `upsert_work_item`, or
+`set_status` raises *after* the admission gate fires, the token is already
+consumed and the operator must re-run `bootstrap-request` to mint a fresh
+one. Given the schema is fixed, the table set is small, and these helpers
+are well-trodden idempotent upserts (covered by their own tests), the
+write-time failure mode is rare and recoverable (re-mint is one CLI call).
+The reverse failure mode (the current order: write-time success but
+admission denial after the fact) leaves a confusing audit trail and is
+worse for operators. This trade-off matches every other lease/admission
+gate in the runtime.
+
+**Implementer note (one-line annotation requirement):** add an inline
+`@decision DEC-ADMIT-001` comment above the moved `consume()` call so the
+ordering choice is discoverable from the source, not just from this plan.
+
+##### DEC-ADMIT-002: `resolve_pending` reports the resolved DB path on `token_not_found`
+
+**Sources of truth checked:**
+1. `runtime/core/bootstrap_requests.py:115-145` — `resolve_pending` already
+   accepts `workflow_id` and `worktree_path` as the *expected* values it
+   checks against, and uses them in the `workflow_mismatch` and
+   `worktree_mismatch` denial messages. It does *not* know the path of the
+   `sqlite3.Connection` it was handed.
+2. `runtime/core/workflow_bootstrap.py:276-286` — the caller resolves
+   `db_path = Path(target["db_path"])` and opens the connection itself, so
+   it has the canonical resolved DB path on hand. Threading it down is a
+   one-argument addition.
+3. The `--worktree-path` operator path is the actual failure mode that
+   surfaces this UX gap. When the operator passes `--worktree-path <wrong>`,
+   the runtime opens a different state DB than the one that holds the token;
+   the `worktree_mismatch` branch never fires because the row is simply
+   absent. The operator only sees `bootstrap token not found` with no
+   indication that DB scoping is the issue.
+
+**Trade-off considered (the alternative branches):**
+- *Walk all sibling `~/.claude/state.db` files looking for the token.* Cost:
+  re-introduces cross-DB lookups, which is exactly the divergence pattern
+  #59 was created to eliminate. The user's brief forbids this.
+- *Stash a global breadcrumb in `~/.claude/state.db` when a token is issued
+  so we can always resolve "where does this token live?".* Cost: adds a
+  second admission authority outside the per-worktree DB, drifts on its own
+  schedule, requires its own GC. Same Sacred Practice #12 violation.
+- *Embed the source DB path in the token string itself.* Cost: tokens
+  become path-bound surface-readable strings; surface-only changes can
+  desync from runtime; opaque-token property is lost.
+
+**Decision:** Surface the answer in the existing error message. Add an
+optional `db_path: str | None = None` keyword argument to
+`bootstrap_requests.resolve_pending`. When the row lookup misses, the error
+message names the resolved DB path (when supplied) and explains
+per-worktree scoping in operator-actionable terms. The caller in
+`workflow_bootstrap.bootstrap_local_workflow` passes `db_path=str(db_path)`
+when invoking `resolve_pending`; `consume()` already calls `resolve_pending`
+internally and must thread the same `db_path` through (one extra keyword on
+its signature too, defaulted to `None` so external callers stay
+source-compatible).
+
+**Required new error text (operator-actionable, exact wording is at the
+implementer's discretion provided it satisfies all four properties):**
+1. Names the resolved DB path the runtime actually opened.
+2. States that bootstrap tokens are scoped to the worktree where
+   `bootstrap-request` was issued.
+3. Tells the operator to verify `--worktree-path` matches that worktree.
+4. Tells the operator to re-run `bootstrap-request` from the correct
+   worktree if the token was issued elsewhere.
+
+A reference shape (not load-bearing wording — the test asserts the four
+properties above via substring checks, not equality):
+
+> `bootstrap token not found in <db_path>. Bootstrap tokens are scoped to
+> the worktree where bootstrap-request was issued — verify --worktree-path
+> matches that worktree. If you issued the token from a different worktree,
+> re-run bootstrap-request from the correct one.`
+
+##### DEC-ADMIT-003: Both invariants live in `tests/runtime/test_planner_bootstrap.py`
+
+`tests/runtime/test_planner_bootstrap.py` is already the admission-gate test
+home: it covers issuance audit, replay denial, runtime-issued-token
+requirement, non-git rejection, explicit-worktree DB resolution, and stale
+work-item normalization. The two new invariants belong in the same file so
+the admission-gate test surface stays coherent.
+
+**Decision:** Add two new test functions to that file:
+
+1. `test_bootstrap_local_consume_precedes_writes_under_race`
+   (covers DEC-ADMIT-001). The test uses an in-process call into
+   `runtime.core.workflow_bootstrap.bootstrap_local_workflow` (not the CLI)
+   so it can deterministically interleave two callers via either:
+   (a) monkeypatching `bootstrap_requests_mod.consume` to call through to
+   the real `consume()` *and* trigger a second concurrent
+   `bootstrap_local_workflow` call before the first's `consume()` returns,
+   or (b) the simpler equivalent: after the first caller's `consume()`
+   succeeds (token row now `consumed=1`), invoke
+   `bootstrap_local_workflow` a second time with the same token and assert
+   that (i) the second call raises `BootstrapRequestError`, (ii) the
+   second-call branch's `bind_workflow`/`upsert_goal`/`upsert_work_item`
+   writes did *not* run a second time — verified by reading the
+   `workflow_bindings` / `goal_contracts` / `work_items` rows back and
+   asserting their values match what the *first* caller produced
+   byte-for-byte (no second-call mutation observable). The implementer may
+   choose either approach; (b) is the minimum viable race surrogate since
+   the moved `consume()` still owns the only atomic gate.
+
+   The implementer must add this test in a way that *fails* against the
+   pre-DEC-ADMIT-001 ordering (current `main`) and *passes* after the
+   reorder. A test that passes against both orderings is not a valid
+   invariant test for this fix.
+
+2. `test_resolve_pending_token_not_found_names_db_path_and_worktree_scoping`
+   (covers DEC-ADMIT-002). The test issues a bootstrap token in repo A's
+   state DB (via the CLI exactly as
+   `test_bootstrap_local_uses_explicit_worktree_path_for_db_resolution`
+   does today), then runs `bootstrap-local --worktree-path <repo_B>`
+   against the same token. Asserts: (i) returncode is 1; (ii) the JSON
+   error message contains the path of repo B's state DB
+   (the DB the runtime actually opened — not repo A's); (iii) the
+   message contains a substring identifying per-worktree scoping (e.g.
+   the literal phrase `scoped to the worktree` or
+   `different worktree`); (iv) the message tells the operator to verify
+   `--worktree-path`.
+
+   The cleanest fixture here uses two `_make_git_repo(tmp_path, name=...)`
+   instances and the existing `extra_env={"CLAUDE_PROJECT_DIR": ...}`
+   pattern to avoid CWD ambiguity.
+
+#### Wave decomposition
+
+This initiative is a single wave; the two changes are independent at the
+source level but share one Scope Manifest, one Evaluation Contract, and one
+PR-shaped landing.
+
+##### W-ADMIT-1: Atomicity flip + UX message + invariant tests
+
+- **Weight:** S (~10 lines of source plus two test functions; estimate
+  20-40 lines of test code each).
+- **Gate:** review (reviewer must verify the test for DEC-ADMIT-001 actually
+  fails against pre-flip ordering — the read-only diff alone cannot prove
+  the invariant catches the race).
+- **Deps:** none (base commit `9e8689a` is already on `main`).
+- **Integration:** `runtime/core/bootstrap_requests.py`,
+  `runtime/core/workflow_bootstrap.py`, and
+  `tests/runtime/test_planner_bootstrap.py`. No CLI surface change, no
+  schema change, no audit-event change, no settings.json change, no
+  HOOKS.md change, no MASTER_PLAN principle change.
+
+###### Scope Manifest (write to runtime via `cc-policy workflow scope-sync` before implementer dispatch)
+
+- **Allowed paths:**
+  - `runtime/core/workflow_bootstrap.py`
+  - `runtime/core/bootstrap_requests.py`
+  - `tests/runtime/test_planner_bootstrap.py`
+- **Required paths (must be modified):**
+  - `runtime/core/workflow_bootstrap.py` (consume reorder + `db_path`
+    threading on `resolve_pending` call site at line ~281; preserve all
+    other call-site context).
+  - `runtime/core/bootstrap_requests.py` (signature addition for
+    `resolve_pending(..., db_path=None)`, signature addition for
+    `consume(..., db_path=None)` so the upstream caller can thread it
+    through, expanded `token_not_found` message satisfying DEC-ADMIT-002's
+    four properties).
+  - `tests/runtime/test_planner_bootstrap.py` (two new test functions per
+    DEC-ADMIT-003).
+- **Forbidden paths:**
+  - `runtime/cli.py` (no CLI surface change — argparse stays as-is).
+  - `runtime/schemas.py` (no schema change).
+  - `runtime/core/dispatch_engine.py`,
+    `runtime/core/completions.py`,
+    `runtime/core/policy_engine.py`,
+    `runtime/core/stage_registry.py`,
+    `runtime/core/authority_registry.py` (constitution-level files; out
+    of scope).
+  - `agents/*.md`, `CLAUDE.md`, `MASTER_PLAN.md`, `hooks/HOOKS.md`,
+    `settings.json` (governance/derived surfaces; this initiative does
+    not change them).
+  - Any introduction of `bootstrap-revoke`, `bootstrap-list-pending`, or
+    a cross-DB scan helper anywhere in `runtime/`.
+- **State authorities touched:** `bootstrap_requests` table only
+  (`runtime.schemas.bootstrap_requests`). The bootstrap path also reads
+  and writes `workflow_bindings`, `goal_contracts`, `work_items`, and
+  `evaluation_state` as it does today; this initiative does not change
+  the schema, fields, or write logic of those tables — it only changes
+  the *order* relative to the admission gate.
+
+###### Evaluation Contract (Guardian readiness target — reviewer checks all of this before emitting `REVIEW_VERDICT=ready_for_guardian`)
+
+- **Required tests pass:**
+  - `tests/runtime/test_planner_bootstrap.py::test_bootstrap_local_consume_precedes_writes_under_race`
+    (new, per DEC-ADMIT-003 (1)).
+  - `tests/runtime/test_planner_bootstrap.py::test_resolve_pending_token_not_found_names_db_path_and_worktree_scoping`
+    (new, per DEC-ADMIT-003 (2)).
+  - All existing tests in
+    `tests/runtime/test_planner_bootstrap.py` continue to pass
+    unmodified (the existing suite already covers issuance audit,
+    consume-once replay denial, runtime-issued-token requirement,
+    non-git rejection, and explicit-worktree DB resolution; none of
+    those properties are intentionally changed).
+  - `python3 -m pytest tests/runtime/ -q` reports the same passed
+    count as the baseline (5644) plus exactly the two new tests
+    (so 5646 passed), with zero new failures, zero new errors, and
+    zero new xpassed/xfailed shifts.
+- **Required real-path checks (CLI smoke against a fresh tmp git repo,
+  reviewer must paste the actual stderr/stdout snippets in the review
+  trailer — not a prose summary):**
+  1. `cc-policy workflow bootstrap-local <wf>` *without* `--bootstrap-token`
+     still rejects at the argparse layer with the original message
+     containing `--bootstrap-token` (existing
+     `test_bootstrap_local_requires_runtime_issued_token` confirms this;
+     the smoke is a live cross-check).
+  2. A valid `bootstrap-request` -> `bootstrap-local` round trip still
+     seeds binding/goal/work-item correctly and surfaces
+     `requested_by`/`justification` on the returned packet's
+     `bootstrap` block.
+  3. Replaying the consumed token still raises with `already been
+     consumed` in the JSON error message.
+  4. Issuing a token bound to repo A and then running
+     `bootstrap-local --worktree-path <repo_B>` against the same
+     token now returns the new informative error containing
+     (a) repo B's resolved DB path, (b) a `scoped to the worktree`
+     hint, and (c) a `--worktree-path` reference. The reviewer must
+     paste the actual returned JSON `message` field from this case.
+  5. Cross-binding mismatch (token issued for `wf-A`, used to call
+     `bootstrap-local wf-B`) still raises the existing
+     `authorizes workflow ... not ...` error verbatim.
+- **Required authority invariants:**
+  - `runtime/core/bootstrap_requests.py` remains the sole owner of the
+    admission token state machine. No other module gains the ability
+    to mutate `bootstrap_requests` rows.
+  - `runtime/core/workflow_bootstrap.py` remains the sole fresh-project
+    bootstrap authority (per `DEC-CLAUDEX-WORKFLOW-BOOTSTRAP-001`).
+    No new bootstrap entrypoint is introduced.
+  - The audit event names
+    (`workflow.bootstrap.requested|consumed|denied`) are unchanged.
+    Their `detail` payload shape is unchanged for every existing
+    branch. (The `token_not_found` denial event detail does *not* gain
+    a new field — the new operator-facing context lives in the
+    raised error message, not in the event detail. This is
+    intentional: the audit row already records `worktree_path`, which
+    a forensics reader can correlate with the bound DB out-of-band;
+    operator UX is the missing surface and that's where the fix
+    belongs.)
+- **Required integration points:**
+  - The CLI command `cc-policy workflow bootstrap-local` continues to
+    map to `runtime.core.workflow_bootstrap.bootstrap_local_workflow`
+    with no new flags.
+  - `cc-policy workflow stage-packet ... --stage-id planner` still
+    returns a valid planner launch spec after a successful
+    bootstrap (existing
+    `test_bootstrap_local_followed_by_agent_prompt_succeeds` covers
+    this; reviewer cross-checks against current HEAD).
+  - The runtime `bootstrap_requests` table schema is unchanged.
+- **Forbidden shortcuts (any of these voids readiness):**
+  - Wrapping `bind_workflow|upsert_goal|upsert_work_item|set_status`
+    in a single outer transaction. The DEC-ADMIT-001 atomicity
+    property must come from the relocated `consume()` call alone.
+  - Adding cross-DB lookups in `resolve_pending` to "find" the token
+    in a sibling state DB. The fix is error-message-only.
+  - Adding `bootstrap-revoke` or `bootstrap-list-pending` CLI
+    subcommands. #70 is explicitly deferred.
+  - Renaming, dropping, or otherwise changing the existing
+    `bootstrap_requests` audit event names.
+  - Skipping the `@decision DEC-ADMIT-001` inline annotation on the
+    moved `consume()` call. The annotation is the discoverability
+    contract for future implementers per Sacred Practice 7.
+  - Asserting the new `token_not_found` message via byte-for-byte
+    string equality. The test must check the four DEC-ADMIT-002
+    properties via substring assertions so cosmetic wording tweaks
+    do not require test edits.
+- **Ready-for-guardian when:**
+  - Both new tests are present, pass on the candidate HEAD, and (for
+    the race test) the reviewer has *manually* checked out the
+    pre-flip ordering and confirmed the test fails there. This
+    bidirectional check is the only real proof the test catches the
+    bug it claims to catch.
+  - Full `python3 -m pytest tests/runtime/ -q` reports the expected
+    baseline-plus-two pass count (5646) with no new failures.
+  - All five real-path smokes above are pasted verbatim in the review
+    trailer, not summarized.
+  - Diff stays within the Scope Manifest (verified mechanically by
+    `git diff --name-only` against `9e8689a`).
+  - The `@decision DEC-ADMIT-001` inline annotation is present at the
+    moved `consume()` call site.
+
+#### Rollback story
+
+Both changes are surgically revertible:
+
+- DEC-ADMIT-001 is a pure call-site reorder inside
+  `bootstrap_local_workflow`. Reverting is a single `git revert` of the
+  W-ADMIT-1 commit, or a manual move of the `consume()` block back to its
+  pre-change position (a roughly five-line motion). No schema migration is
+  involved; `bootstrap_requests.consumed` rows remain valid in either
+  ordering.
+- DEC-ADMIT-002 changes a single error message string and adds an optional
+  defaulted-`None` keyword argument to two `bootstrap_requests.py`
+  functions. External callers that do not pass `db_path=` see no behavior
+  change. Reverting is a one-block edit.
+
+If a regression surfaces post-landing, the safe stop-gap is a `git revert`
+of W-ADMIT-1; the bootstrap path returns to the c7a3109+9e8689a baseline.
+
+#### Open questions
+
+None. The brief specifies exact files, exact functions, exact closing
+issue numbers (#68, #69), the exact deferred issue (#70), and exact
+trade-off boundaries (no outer transaction, no cross-DB scan). All planner
+decisions are resolved with explicit DEC-IDs above. If the implementer
+discovers ambiguity in flight, escalate to the orchestrator before
+resolving silently.
 
 ## Completed Initiatives
 
