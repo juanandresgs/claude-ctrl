@@ -56,15 +56,25 @@ _hook_main() {
         exit 0
     fi
 
-    # Resolve actor context for the policy engine.
-    ACTOR_ROLE=$(current_active_agent_role "$(detect_project_root)" 2>/dev/null || echo "")
+    # Resolve actor context for the policy engine. The marker is scoped to the
+    # live session root; command intent below still owns the target worktree.
+    SESSION_ROOT="$(detect_project_root)"
+    ACTOR_MARKER=$(rt_marker_get_active "$SESSION_ROOT" "" 2>/dev/null || printf '{"found":false}')
+    ACTOR_ROLE=$(printf '%s' "$ACTOR_MARKER" | jq -r 'if .found then (.role // "") else "" end' 2>/dev/null || echo "")
+    ACTOR_ID=$(printf '%s' "$ACTOR_MARKER" | jq -r 'if .found then (.agent_id // "") else "" end' 2>/dev/null || echo "")
+    ACTOR_WORKFLOW_ID=$(printf '%s' "$ACTOR_MARKER" | jq -r 'if .found then (.workflow_id // "") else "" end' 2>/dev/null || echo "")
+    if [[ -z "$ACTOR_ROLE" ]]; then
+        ACTOR_ROLE=$(current_active_agent_role "$SESSION_ROOT" 2>/dev/null || echo "")
+    fi
 
     # Build evaluate payload — merge actor_role and hook fields. The runtime
     # constructs BashCommandIntent from .tool_input.command, including any
     # target_cwd derivation, so the hook no longer carries that authority.
     EVAL_INPUT=$(printf '%s' "$HOOK_INPUT" | jq \
         --arg role "$ACTOR_ROLE" \
-        '. + {event_type: "PreToolUse", tool_name: "Bash", actor_role: $role, actor_id: ""}')
+        --arg actor_id "$ACTOR_ID" \
+        --arg actor_workflow_id "$ACTOR_WORKFLOW_ID" \
+        '. + {event_type: "PreToolUse", tool_name: "Bash", actor_role: $role, actor_id: $actor_id, actor_workflow_id: $actor_workflow_id}')
 
     # Call policy engine — single authority for all Bash decisions.
     # Fail-closed: if the engine errors or returns empty output, emit a deny

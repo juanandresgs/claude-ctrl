@@ -235,9 +235,9 @@ rt_eval_invalidate() {
 # Agent marker wrappers
 # ---------------------------------------------------------------------------
 
-# rt_marker_get_active_role [project_root] [workflow_id]
-# Prints the role string of the currently active marker, or nothing when
-# no active marker exists.
+# rt_marker_get_active [project_root] [workflow_id]
+# Prints the active marker JSON, or {"found":false,...} when no active marker
+# exists.
 #
 # ENFORCE-RCA-6-ext / #26: Accepts optional project_root and workflow_id
 # so the caller can scope the lookup to its own project. Without scoping,
@@ -245,15 +245,22 @@ rt_eval_invalidate() {
 # detection — e.g. the orchestrator inherits an implementer role from a
 # marker left behind by a different project and is silently authorised
 # for source writes.
-rt_marker_get_active_role() {
+rt_marker_get_active() {
     _rt_ensure_schema
     local root="${1:-}"
     local wf="${2:-}"
-    local result
     local args=()
     [[ -n "$root" ]] && args+=(--project-root "$root")
     [[ -n "$wf"   ]] && args+=(--workflow-id "$wf")
-    result=$(cc_policy marker get-active "${args[@]}" 2>/dev/null) || return 1
+    cc_policy marker get-active "${args[@]}" 2>/dev/null
+}
+
+# rt_marker_get_active_role [project_root] [workflow_id]
+# Prints the role string of the currently active marker, or nothing when
+# no active marker exists.
+rt_marker_get_active_role() {
+    local result
+    result=$(rt_marker_get_active "${1:-}" "${2:-}" 2>/dev/null) || return 1
     printf '%s\n' "$result" | jq -r 'if .found then .role else empty end'
 }
 

@@ -3597,7 +3597,8 @@ def _handle_evaluate(args) -> int:
     Input JSON (from stdin):
       {"event_type": "PreToolUse", "tool_name": "Write",
        "tool_input": {...}, "cwd": "/project",
-       "actor_role": "implementer", "actor_id": "agent-123"}
+       "actor_role": "implementer", "actor_id": "agent-123",
+       "actor_workflow_id": "workflow-123"}
 
     Output JSON:
       {"status": "ok", "action": "allow"|"deny"|"feedback",
@@ -3632,6 +3633,7 @@ def _handle_evaluate(args) -> int:
     cwd = payload.get("cwd", "")
     actor_role = payload.get("actor_role", "")
     actor_id = payload.get("actor_id", "")
+    actor_workflow_id = payload.get("actor_workflow_id", "")
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     command_intent = (
         _build_bash_command_intent(command, cwd=cwd)
@@ -3700,6 +3702,7 @@ def _handle_evaluate(args) -> int:
             cwd=effective_cwd,
             actor_role=actor_role,
             actor_id=actor_id,
+            actor_workflow_id=actor_workflow_id,
             project_root=resolved_project_root,
         )
 
@@ -3947,6 +3950,7 @@ def _handle_context(args) -> int:
         cwd = _os.environ.get("CLAUDE_PROJECT_DIR", "") or _os.getcwd()
         actor_role = _os.environ.get("CLAUDE_ACTOR_ROLE", "")
         actor_id = _os.environ.get("CLAUDE_ACTOR_ID", "")
+        actor_workflow_id = _os.environ.get("CLAUDE_ACTOR_WORKFLOW_ID", "")
 
         conn = _get_conn()
         try:
@@ -3955,6 +3959,7 @@ def _handle_context(args) -> int:
                 cwd=cwd,
                 actor_role=actor_role,
                 actor_id=actor_id,
+                actor_workflow_id=actor_workflow_id,
             )
         finally:
             conn.close()
@@ -4019,11 +4024,16 @@ def _handle_policy(args) -> int:
         cwd = payload.get("cwd", "")
         actor_role = payload.get("actor_role", "")
         actor_id = payload.get("actor_id", "")
+        actor_workflow_id = payload.get("actor_workflow_id", "")
 
         conn = _get_conn()
         try:
             ctx = policy_engine_mod.build_context(
-                conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
+                conn,
+                cwd=cwd,
+                actor_role=actor_role,
+                actor_id=actor_id,
+                actor_workflow_id=actor_workflow_id,
             )
         finally:
             conn.close()

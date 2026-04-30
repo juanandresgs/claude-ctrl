@@ -394,6 +394,7 @@ def build_context(
     cwd: str,
     actor_role: str = "",
     actor_id: str = "",
+    actor_workflow_id: str = "",
     project_root: str = "",
 ) -> PolicyContext:
     """Resolve all SQLite state into a PolicyContext in one shot.
@@ -407,8 +408,9 @@ def build_context(
       - test_state: last test run status
       - completions: derive dispatch_phase from latest completion
 
-    actor_role and actor_id are overrides — the caller (cli.py) passes them
-    from the JSON payload. If not provided, they're inferred from the DB.
+    actor_role, actor_id, and actor_workflow_id are overrides — the caller
+    (cli.py) passes them from the JSON payload. If not provided, they're
+    inferred from the DB.
 
     project_root — when provided, skips detect_project_root() entirely and
       uses this value directly. Used by _handle_evaluate when the caller
@@ -447,48 +449,70 @@ def build_context(
     # (e.g. from CLAUDE_PROJECT_DIR or a symlinked worktree path in the hook
     # payload). DEC-CONV-001: always apply normalize_path at every boundary.
     project_root = normalize_path(project_root)
+    # Normalize the target cwd too. Linked worktree leases and workflow
+    # bindings are persisted as canonical realpaths; querying with the raw hook
+    # cwd made hook evaluation diverge from direct CLI evaluation.
+    cwd = normalize_path(cwd or project_root)
+    actor_workflow_id = (actor_workflow_id or "").strip()
     is_meta = is_claude_meta_repo(project_root)
 
     # --- Resolve active lease ---
+    target_paths = tuple(dict.fromkeys(path for path in (cwd, project_root) if path))
+
+    def _fetch_active_lease(*, role: str = "", agent_id: str = "") -> Optional[dict]:
+        clauses = ["status = 'active'"]
+        params: list[object] = []
+        if agent_id:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        if role:
+            clauses.append("role = ?")
+            params.append(role)
+        if actor_workflow_id:
+            clauses.append("workflow_id = ?")
+            params.append(actor_workflow_id)
+        if target_paths:
+            placeholders = ",".join("?" for _ in target_paths)
+            clauses.append(f"worktree_path IN ({placeholders})")
+            params.extend(target_paths)
+        row = conn.execute(
+            f"SELECT * FROM dispatch_leases WHERE {' AND '.join(clauses)} LIMIT 1",
+            params,
+        ).fetchone()
+        return dict(row) if row else None
+
     lease: Optional[dict] = None
     if actor_id:
-        row = conn.execute(
-            "SELECT * FROM dispatch_leases WHERE agent_id = ? AND status = 'active' LIMIT 1",
-            (actor_id,),
-        ).fetchone()
-        if row:
-            lease = dict(row)
+        lease = _fetch_active_lease(agent_id=actor_id)
+        if lease is None and not actor_workflow_id:
+            # Backward-compatible path for older callers that only supply an
+            # agent_id. Workflow-aware hook payloads intentionally do not take
+            # this broad fallback because the command target must match the
+            # lease authority.
+            row = conn.execute(
+                "SELECT * FROM dispatch_leases "
+                "WHERE agent_id = ? AND status = 'active' LIMIT 1",
+                (actor_id,),
+            ).fetchone()
+            if row:
+                lease = dict(row)
 
     if lease is None and actor_role:
         # Role-aware fallback (DEC-PE-EGAP-BUILD-CTX-001): only pick up a
         # worktree-matched lease when it belongs to the actor's own role.
         # This prevents an orchestrator (actor_role="") or a non-guardian role from
         # inheriting a guardian lease that happens to share the same worktree_path.
-        row = conn.execute(
-            "SELECT * FROM dispatch_leases WHERE status = 'active' "
-            "AND (worktree_path = ? OR worktree_path = ?) "
-            "AND role = ? LIMIT 1",
-            (cwd, project_root, actor_role),
-        ).fetchone()
-        if row:
-            lease = dict(row)
+        lease = _fetch_active_lease(role=actor_role)
 
         # Stage variant match (DEC-WHO-STAGE-LEASE-MATCH-001): compound stage
         # IDs like "guardian:land" won't match a lease with role="guardian" via
         # the literal query above. Bridge through lease_role_for_stage to find
         # the base role and retry.
-        if row is None:
+        if lease is None:
             from runtime.core.authority_registry import lease_role_for_stage as _lrfs
             _base_role = _lrfs(actor_role)
             if _base_role and _base_role != actor_role:
-                row = conn.execute(
-                    "SELECT * FROM dispatch_leases WHERE status = 'active' "
-                    "AND (worktree_path = ? OR worktree_path = ?) "
-                    "AND role = ? LIMIT 1",
-                    (cwd, project_root, _base_role),
-                ).fetchone()
-                if row:
-                    lease = dict(row)
+                lease = _fetch_active_lease(role=_base_role)
     elif lease is None and not actor_role:
         # No actor_role (orchestrator path): do NOT inherit a role-specific
         # lease via the worktree_path fallback. Doing so would give the
@@ -508,10 +532,12 @@ def build_context(
     # See DEC-PE-LEASE-DENY-DIAG-001.
     suppressed_roles: FrozenSet[str] = frozenset()
     if lease is None:
+        placeholders = ",".join("?" for _ in target_paths)
+        path_clause = f"AND worktree_path IN ({placeholders})" if target_paths else ""
         rows = conn.execute(
             "SELECT role FROM dispatch_leases WHERE status = 'active' "
-            "AND (worktree_path = ? OR worktree_path = ?)",
-            (cwd, project_root),
+            f"{path_clause}",
+            target_paths,
         ).fetchall()
         _roles = {(r["role"] if isinstance(r, sqlite3.Row) else r[0]) or "" for r in rows}
         _roles.discard("")
@@ -544,11 +570,15 @@ def build_context(
                 resolved_role = _marker.get("role") or ""
             if not resolved_id:
                 resolved_id = _marker.get("agent_id") or ""
+            if not actor_workflow_id:
+                actor_workflow_id = _marker.get("workflow_id") or ""
 
     # --- Workflow ID ---
     workflow_id = ""
     if lease:
         workflow_id = lease.get("workflow_id", "")
+    if not workflow_id and actor_workflow_id:
+        workflow_id = actor_workflow_id
     if not workflow_id:
         workflow_id = current_workflow_id(project_root)
 

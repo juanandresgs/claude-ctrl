@@ -374,6 +374,53 @@ def _configure_guardian_git_allow_in_shared_db(repo: Path, worktree: Path) -> No
         _conn.close()
 
 
+def _configure_parent_marker_feature_lease_in_shared_db(repo: Path, worktree: Path) -> None:
+    """Seat Guardian on the parent session root and lease the linked worktree."""
+    db = _db_path(repo)
+    workflow_id = "feature-parent-marker-ready"
+    branch = "feature/parent-marker-ready"
+    head_sha = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+
+    _policy_with_db(
+        db,
+        "marker",
+        "set",
+        "guardian-land-agent",
+        "guardian:land",
+        "--project-root",
+        str(repo),
+        "--workflow-id",
+        workflow_id,
+    )
+    _policy_with_db(
+        db,
+        "test-state",
+        "set",
+        "pass",
+        "--project-root",
+        str(worktree),
+        "--passed",
+        "1",
+        "--total",
+        "1",
+    )
+    _policy_with_db(db, "evaluation", "set", workflow_id, "ready_for_guardian", "--head-sha", head_sha)
+    _policy_with_db(db, "workflow", "bind", workflow_id, str(worktree), branch)
+    _policy_with_db(db, "workflow", "scope-set", workflow_id, "--allowed", '["*"]', "--forbidden", "[]")
+    _policy_with_db(
+        db,
+        "lease",
+        "issue-for-dispatch",
+        "guardian",
+        "--worktree-path",
+        str(worktree),
+        "--workflow-id",
+        workflow_id,
+        "--allowed-ops",
+        '["routine_local","high_risk"]',
+    )
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -618,6 +665,63 @@ def test_pre_bash_hook_matches_cli_evaluate_from_linked_worktree_without_policy_
         "event_type": "PreToolUse",
         "actor_role": "guardian",
         "actor_id": "",
+    }
+    direct = _run(
+        [sys.executable, str(_CLI), "evaluate"],
+        cwd=worktree,
+        env=env,
+        input_text=json.dumps(direct_payload),
+        check=False,
+    )
+    direct_out = _parse_stdout(direct.stdout)
+    assert direct.returncode == 0, direct.stderr
+    assert _decision(direct_out) == "allow"
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=worktree,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "allow"
+    assert _decision(hook_out) == _decision(direct_out)
+    assert not private_db.exists(), (
+        "pre-bash hook must not create/read a private linked-worktree DB"
+    )
+
+
+def test_pre_bash_hook_joins_parent_marker_to_target_worktree_lease_without_policy_db(tmp_path):
+    """Guardian identity is session-scoped; lease authority is target-scoped.
+
+    Regression: the live hook only passed actor_role and looked up leases by
+    raw cwd/project_root coincidence. A Guardian seated on the parent repo
+    could be denied when committing in a linked implementer worktree even
+    though the shared DB had a matching Guardian lease for that target.
+    """
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-parent-marker")
+    worktree = repo / ".worktrees" / "feature-parent-marker-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/parent-marker-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    command = f'git -C "{worktree}" commit --allow-empty -m done'
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(worktree),
+    }
+    env = _hook_env_without_policy_db(repo)
+    private_db = worktree / ".claude" / "state.db"
+
+    direct_payload = {
+        **payload,
+        "event_type": "PreToolUse",
+        "actor_role": "guardian:land",
+        "actor_id": "guardian-land-agent",
+        "actor_workflow_id": "feature-parent-marker-ready",
     }
     direct = _run(
         [sys.executable, str(_CLI), "evaluate"],

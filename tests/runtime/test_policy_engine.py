@@ -431,7 +431,15 @@ def test_build_context_has_project_root(conn, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _seed_active_lease(conn, *, worktree_path, role, lease_id="lease-diag-1"):
+def _seed_active_lease(
+    conn,
+    *,
+    worktree_path,
+    role,
+    lease_id="lease-diag-1",
+    workflow_id=None,
+    agent_id=None,
+):
     """Seed a minimal active lease row for the suppressed-roles probe tests."""
     import time as _t
     now = int(_t.time())
@@ -440,9 +448,9 @@ def _seed_active_lease(conn, *, worktree_path, role, lease_id="lease-diag-1"):
         "worktree_path, branch, allowed_ops_json, blocked_ops_json, "
         "requires_eval, head_sha, approval_scope_json, next_step, status, "
         "issued_at, expires_at, released_at, metadata_json) VALUES "
-        "(?, NULL, ?, NULL, ?, 'feature/x', '[\"routine_local\"]', '[]', 0, "
+        "(?, ?, ?, ?, ?, 'feature/x', '[\"routine_local\"]', '[]', 0, "
         "NULL, NULL, 'probe test', 'active', ?, ?, NULL, NULL)",
-        (lease_id, role, worktree_path, now, now + 3600),
+        (lease_id, agent_id, role, workflow_id, worktree_path, now, now + 3600),
     )
     conn.commit()
 
@@ -491,6 +499,69 @@ def test_build_context_matching_role_attaches_lease_and_skips_probe(conn, tmp_pa
     assert ctx.lease.get("role") == "guardian"
     # No probe run when lease attached — field stays empty.
     assert ctx.worktree_lease_suppressed_roles == frozenset()
+
+
+def test_build_context_normalizes_cwd_before_role_lease_lookup(conn, tmp_path):
+    """Raw hook cwd variants must still match canonical stored lease paths."""
+    from runtime.core.policy_utils import normalize_path as _np
+
+    wt = _np(str(tmp_path))
+    _seed_active_lease(conn, worktree_path=wt, role="guardian")
+    ctx = build_context(conn, cwd=str(tmp_path / "."), actor_role="guardian")
+
+    assert ctx.lease is not None
+    assert ctx.lease.get("worktree_path") == wt
+
+
+def test_build_context_actor_workflow_id_filters_target_lease(conn, tmp_path):
+    """Workflow-aware hook payloads may only attach leases from their workflow."""
+    from runtime.core.policy_utils import normalize_path as _np
+
+    wt = _np(str(tmp_path))
+    _seed_active_lease(
+        conn,
+        worktree_path=wt,
+        role="guardian",
+        workflow_id="wf-allowed",
+    )
+
+    denied = build_context(
+        conn,
+        cwd=str(tmp_path),
+        actor_role="guardian:land",
+        actor_workflow_id="wf-other",
+    )
+    assert denied.lease is None
+    assert "guardian" in denied.worktree_lease_suppressed_roles
+
+    allowed = build_context(
+        conn,
+        cwd=str(tmp_path),
+        actor_role="guardian:land",
+        actor_workflow_id="wf-allowed",
+    )
+    assert allowed.lease is not None
+    assert allowed.workflow_id == "wf-allowed"
+
+
+def test_build_context_uses_marker_workflow_id_before_branch_fallback(conn, tmp_path):
+    """Context role should report marker workflow, not branch-derived workflow."""
+    from runtime.core import markers as _markers
+    from runtime.core.policy_utils import normalize_path as _np
+
+    root = _np(str(tmp_path))
+    _markers.set_active(
+        conn,
+        "guardian-land-agent",
+        "guardian:land",
+        project_root=root,
+        workflow_id="wf-from-marker",
+    )
+
+    ctx = build_context(conn, cwd=str(tmp_path), project_root=str(tmp_path))
+    assert ctx.actor_role == "guardian:land"
+    assert ctx.actor_id == "guardian-land-agent"
+    assert ctx.workflow_id == "wf-from-marker"
 
 
 def test_build_context_multiple_suppressed_roles_collected(conn, tmp_path):
@@ -542,6 +613,7 @@ def test_default_registry_has_all_policies():
     w2_expected = {
         "branch_guard",
         "write_who",
+        "write_scratchlane_gate",
         "enforcement_gap",
         "plan_guard",
         "plan_exists",
@@ -553,6 +625,7 @@ def test_default_registry_has_all_policies():
         "bash_tmp_safety",
         "agent_contract_required",  # Agent/Task canonical contract enforcement
         "bash_worktree_cwd",
+        "bash_scratchlane_gate",
         "bash_worktree_nesting",  # Gap 5: prevent nested worktree creation
         "bash_worktree_creation",  # W-GWT-3: guardian-only worktree creation
         "bash_git_who",
