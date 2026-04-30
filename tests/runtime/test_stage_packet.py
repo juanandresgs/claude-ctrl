@@ -103,6 +103,101 @@ def _valid_reviewer_payload(verdict: str = "ready_for_guardian") -> dict:
     }
 
 
+def _make_repo_with_bound_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create a real repo/worktree pair whose shared DB contains a workflow binding."""
+    repo = tmp_path / "packet-repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+    (repo / ".claude").mkdir()
+    (repo / "README.md").write_text("stage packet worktree binding\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    worktree = repo / ".worktrees" / "feature-stage-packet"
+    worktree.parent.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "feature/stage-packet"],
+        check=True,
+        capture_output=True,
+    )
+
+    db_path = repo / ".claude" / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    goal = contracts.GoalContract(
+        goal_id="GOAL-WORKTREE-1",
+        desired_end_state="prove worktree db routing",
+        status="active",
+        autonomy_budget=3,
+        continuation_rules=("rule-a",),
+        stop_conditions=("cond-a",),
+        escalation_boundaries=("boundary-a",),
+        user_decision_boundaries=("udb-a",),
+    )
+    goal_record = dataclasses.replace(
+        goal_contract_codec.encode_goal_contract(goal),
+        workflow_id="wf-worktree",
+    )
+    dwr.insert_goal(conn, goal_record)
+    dwr.insert_work_item(
+        conn,
+        dwr.WorkItemRecord(
+            work_item_id="WI-WORKTREE-1",
+            goal_id="GOAL-WORKTREE-1",
+            workflow_id="wf-worktree",
+            title="worktree packet slice",
+            status="in_progress",
+            version=1,
+            author="planner",
+            scope_json='{"allowed_paths":["**"],"required_paths":[],"forbidden_paths":[],"state_domains":["runtime"]}',
+            evaluation_json='{"required_tests":["pytest tests/runtime/test_stage_packet.py"]}',
+            head_sha=None,
+            reviewer_round=1,
+        ),
+    )
+    workflows_mod.bind_workflow(
+        conn,
+        workflow_id="wf-worktree",
+        worktree_path=str(worktree),
+        branch="feature/stage-packet",
+    )
+    workflows_mod.set_scope(
+        conn,
+        "wf-worktree",
+        allowed_paths=["**"],
+        required_paths=[],
+        forbidden_paths=[],
+        authority_domains=["runtime"],
+    )
+    evaluation_mod.set_status(conn, "wf-worktree", "pending", head_sha="abc123")
+    test_state_mod.set_status(
+        conn,
+        str(worktree),
+        "pass",
+        head_sha="abc123",
+        pass_count=1,
+        fail_count=0,
+        total_count=1,
+    )
+    conn.commit()
+    conn.close()
+    return repo, worktree, db_path
+
+
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
@@ -433,3 +528,63 @@ def test_workflow_stage_packet_cli_requires_binding_for_inferred_worktree(tmp_pa
     assert "no workflow binding found" in payload["message"]
     assert "bootstrap-request" in payload["message"]
     assert "bootstrap-local" in payload["message"]
+
+
+def test_workflow_stage_packet_cli_resolves_shared_db_from_feature_worktree_path(tmp_path: Path):
+    """Explicit feature worktree paths must route to the shared repo state DB."""
+    _repo, worktree, _db_path = _make_repo_with_bound_worktree(tmp_path)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "stage-packet",
+            "--stage-id",
+            "implementer",
+            "--worktree-path",
+            str(worktree),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **{k: v for k, v in os.environ.items() if k not in {"CLAUDE_POLICY_DB", "CLAUDE_PROJECT_DIR"}},
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(tmp_path),
+    )
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["workflow_id"] == "wf-worktree"
+    assert payload["workflow_binding"]["worktree_path"] == str(worktree)
+    assert payload["agent_tool_spec"]["subagent_type"] == "implementer"
+
+
+def test_workflow_get_cli_resolves_shared_db_from_feature_worktree_path(tmp_path: Path):
+    """workflow get must not look for bindings in <feature-worktree>/.claude/state.db."""
+    _repo, worktree, _db_path = _make_repo_with_bound_worktree(tmp_path)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "runtime" / "cli.py"),
+            "workflow",
+            "get",
+            "wf-worktree",
+            "--worktree-path",
+            str(worktree),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **{k: v for k, v in os.environ.items() if k not in {"CLAUDE_POLICY_DB", "CLAUDE_PROJECT_DIR"}},
+            "PYTHONPATH": str(_REPO_ROOT),
+        },
+        cwd=str(tmp_path),
+    )
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["workflow_id"] == "wf-worktree"
+    assert payload["worktree_path"] == str(worktree)

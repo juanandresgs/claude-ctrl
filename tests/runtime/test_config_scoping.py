@@ -28,6 +28,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from runtime.core.config import default_db_path, resolve_db_path, resolve_project_db
 
 
+def _make_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a real git repo plus a linked feature worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+    (repo / ".claude").mkdir()
+    (repo / "README.md").write_text("resolver integration\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    worktrees = repo / ".worktrees"
+    worktrees.mkdir()
+    worktree = worktrees / "feature-resolver"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "feature/resolver"],
+        check=True,
+        capture_output=True,
+    )
+    return repo, worktree
+
+
 class TestDefaultDbPath:
     """Tests for the 4-step canonical DB resolver."""
 
@@ -102,6 +136,16 @@ class TestDefaultDbPath:
             os.environ.pop("CLAUDE_POLICY_DB", None)
             assert resolve_db_path(project_root=str(explicit_project)) == expected
 
+    def test_explicit_worktree_path_resolves_shared_repo_db(self, tmp_path):
+        """A linked worktree path must route to the shared repo-level DB."""
+        repo, worktree = _make_repo_with_worktree(tmp_path)
+        expected = repo / ".claude" / "state.db"
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_POLICY_DB", None)
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            assert resolve_db_path(project_root=str(worktree)) == expected
+
     def test_step3_git_root_with_claude_dir(self, tmp_path):
         """Git root with .claude/ dir resolves to project DB."""
         git_root = tmp_path / "repo"
@@ -110,14 +154,10 @@ class TestDefaultDbPath:
         claude_dir.mkdir()
         expected = claude_dir / "state.db"
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = str(git_root) + "\n"
-
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CLAUDE_POLICY_DB", None)
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
-            with patch("runtime.core.config.subprocess.run", return_value=mock_result):
+            with patch("runtime.core.config._resolve_shared_git_root", return_value=git_root):
                 assert default_db_path() == expected
 
     def test_step3_git_root_without_claude_dir_falls_through(self, tmp_path):
@@ -171,6 +211,15 @@ class TestDefaultDbPath:
                 # Falls all the way to step 4
                 assert result == Path.home() / ".claude" / "state.db"
 
+    def test_step2_worktree_env_collapses_to_shared_repo_db(self, tmp_path):
+        """CLAUDE_PROJECT_DIR may point at a feature worktree but the shared DB wins."""
+        repo, worktree = _make_repo_with_worktree(tmp_path)
+        expected = repo / ".claude" / "state.db"
+
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(worktree)}, clear=False):
+            os.environ.pop("CLAUDE_POLICY_DB", None)
+            assert default_db_path() == expected
+
 
 class TestResolveProjectDb:
     """Tests for resolve_project_db helper."""
@@ -180,13 +229,15 @@ class TestResolveProjectDb:
         git_root.mkdir()
         (git_root / ".claude").mkdir()
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = str(git_root) + "\n"
-
-        with patch("runtime.core.config.subprocess.run", return_value=mock_result):
+        with patch("runtime.core.config._resolve_shared_git_root", return_value=git_root):
             result = resolve_project_db()
             assert result == git_root / ".claude" / "state.db"
+
+    def test_returns_shared_repo_db_when_cwd_is_linked_worktree(self, tmp_path, monkeypatch):
+        """git-common-dir keeps a worktree cwd on the shared repo DB authority."""
+        repo, worktree = _make_repo_with_worktree(tmp_path)
+        monkeypatch.chdir(worktree)
+        assert resolve_project_db() == repo / ".claude" / "state.db"
 
     def test_returns_none_when_no_claude_dir(self, tmp_path):
         git_root = tmp_path / "repo"
