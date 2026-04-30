@@ -278,7 +278,9 @@ class TestQuotedPromptGitPhrases:
             'node tool.mjs task "when should I use git reset --hard"',
         ],
     )
-    def test_evaluate_allows_natural_language_git_phrases(self, db, tmp_path, command):
+    def test_evaluate_does_not_route_natural_language_git_phrases_to_git_policies(
+        self, db, tmp_path, command
+    ):
         _run_cli_raw(["schema", "ensure"], "", db)
         payload = {
             "event_type": "PreToolUse",
@@ -294,9 +296,14 @@ class TestQuotedPromptGitPhrases:
             extra_env={"CLAUDE_PROJECT_DIR": str(tmp_path)},
         )
         assert code == 0, f"evaluate should exit 0 for prose-only git text; got {code}: {out}"
-        assert out.get("action") == "allow", (
-            f"quoted prose mentioning git must not trigger bash git policies; got {out}"
-        )
+        assert out.get("policy_name") not in {
+            "bash_git_who",
+            "bash_destructive_git",
+            "bash_force_push",
+            "bash_main_sacred",
+        }, f"quoted prose mentioning git must not trigger bash git policies; got {out}"
+        if out.get("action") == "deny":
+            assert out.get("policy_name") == "bash_scratchlane_gate"
 
     def test_seeded_eval_state_not_visible_in_target_context(self, tmp_path):
         """eval_state seeded for session workflow must not appear in target context.

@@ -34,7 +34,7 @@ import time
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path
+from runtime.core.policy_utils import PATH_KIND_OTHER, PATH_KIND_SOURCE, classify_policy_path
 
 # ---------------------------------------------------------------------------
 # Test file detection
@@ -217,7 +217,7 @@ def mock_gate(request: PolicyRequest) -> Optional[PolicyDecision]:
         worktree_path=request.context.worktree_path or "",
         scratch_roots=request.context.scratchlane_roots,
     )
-    if info.kind != PATH_KIND_SOURCE:
+    if info.kind not in {PATH_KIND_SOURCE, PATH_KIND_OTHER}:
         return None
 
     # Only inspect test files

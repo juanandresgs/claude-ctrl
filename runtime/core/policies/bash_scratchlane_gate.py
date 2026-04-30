@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from typing import Optional
 
 from runtime.core.command_intent import extract_bash_write_targets
@@ -55,12 +54,19 @@ def _resolve_target_path(raw_path: str, *, base_dir: str) -> str:
     return normalize_path(resolved) if resolved else ""
 
 
+def _shell_quote(value: str) -> str:
+    """Quote a display command argument without importing shell tokenizers."""
+    if re.fullmatch(r"[A-Za-z0-9_./:=@%+-]+", value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
 def _wrapper_command(task_slug: str) -> str:
     return " ".join(
         [
             "./scripts/scratchlane-exec.sh",
             "--task-slug",
-            shlex.quote(task_slug),
+            _shell_quote(task_slug),
             "--",
             "<command>",
         ]
