@@ -40,6 +40,7 @@ HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOKS_DIR/log.sh"
 # shellcheck source=hooks/context-lib.sh
 source "$HOOKS_DIR/context-lib.sh"
+source "$HOOKS_DIR/lib/notify-bridge.sh"
 # shellcheck source=hooks/lib/hook-safety.sh
 # Gap 4: fail-closed safety wrapper — installs EXIT trap, manages rt_obs_metric_batch.
 # Must be sourced AFTER context-lib.sh (which defines _obs_accum, rt_obs_metric_batch).
@@ -109,6 +110,8 @@ _hook_main() {
     # Extracting and re-printing the inner .hookSpecificOutput would strip the wrapper
     # and violate the hook contract.  Pass the full JSON — Claude Code reads the
     # top-level "hookSpecificOutput" key directly from the hook's stdout.
+    emit_runtime_notification "$RESULT" "$HOOKS_DIR"
+    RESULT=$(strip_runtime_notification "$RESULT")
     printf '%s\n' "$RESULT"
 
     # Capture source-mutation fingerprint baseline for post-bash.sh (DEC-EVAL-006).

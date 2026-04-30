@@ -3691,6 +3691,7 @@ def _handle_evaluate(args) -> int:
     # extract_git_target_dir() — those policies now use request.context.project_root
     # or request.cwd and get the right directory without re-parsing.
     effective_cwd = target_cwd if resolved_project_root else cwd
+    runtime_notification: dict | None = None
 
     conn = _get_conn()
     try:
@@ -3756,7 +3757,7 @@ def _handle_evaluate(args) -> int:
             root_path = str(scratchlane_request_effect.get("root_path") or "")
             if session_id and task_slug and ctx.project_root:
                 try:
-                    scratchlanes_mod.request_approval(
+                    request_record = scratchlanes_mod.request_approval(
                         conn,
                         session_id=session_id,
                         project_root=ctx.project_root,
@@ -3772,6 +3773,10 @@ def _handle_evaluate(args) -> int:
                             scratchlane_request_effect.get("requested_by") or "runtime"
                         ),
                     )
+                    if str(request_record.get("request_state") or "") != "existing":
+                        runtime_notification = scratchlanes_mod.build_pending_notification(
+                            request_record
+                        )
                 except Exception as exc:
                     fallback_cmd = (
                         f"python3 runtime/cli.py scratchlane grant --task-slug {task_slug}"
@@ -3835,14 +3840,15 @@ def _handle_evaluate(args) -> int:
             "permissionDecision": "allow",
         }
 
-    return _ok(
-        {
-            "action": decision.action,
-            "reason": decision.reason,
-            "policy_name": decision.policy_name,
-            "hookSpecificOutput": hook_output,
-        }
-    )
+    response = {
+        "action": decision.action,
+        "reason": decision.reason,
+        "policy_name": decision.policy_name,
+        "hookSpecificOutput": hook_output,
+    }
+    if runtime_notification is not None:
+        response["runtimeNotification"] = runtime_notification
+    return _ok(response)
 
 
 def _handle_evaluate_quick(args) -> int:

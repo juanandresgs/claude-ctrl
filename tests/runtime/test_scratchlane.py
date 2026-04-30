@@ -21,6 +21,7 @@ from runtime.schemas import ensure_schema
 _WORKTREE = Path(__file__).resolve().parents[2]
 _CLI = _WORKTREE / "runtime" / "cli.py"
 _PROMPT_SUBMIT_HOOK = _WORKTREE / "hooks" / "prompt-submit.sh"
+_PRE_WRITE_HOOK = _WORKTREE / "hooks" / "pre-write.sh"
 
 
 def _make_context(
@@ -98,6 +99,26 @@ def _run_evaluate(
     )
     parsed = json.loads((stdout or stderr).strip() or "{}")
     return code, parsed
+
+
+def _init_git_repo(project_root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=project_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Scratchlane Test",
+            "-c",
+            "user.email=scratchlane@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+            "-q",
+        ],
+        cwd=project_root,
+        check=True,
+    )
 
 
 def test_scratchlane_cli_grant_get_list_roundtrip(tmp_path, monkeypatch):
@@ -268,6 +289,7 @@ def test_scratchlane_request_roundtrip_approve(tmp_path):
     )
 
     assert request["status"] == "pending"
+    assert request["request_state"] == "created"
 
     result = scratchlanes.resolve_pending_from_prompt(
         conn,
@@ -348,6 +370,44 @@ def test_scratchlane_request_roundtrip_ambiguous_reply_stays_pending(tmp_path):
     ) is not None
 
 
+def test_identical_pending_request_is_reused_without_duplication(tmp_path):
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    project_root = str(tmp_path / "project")
+    first = scratchlanes.request_approval(
+        conn,
+        session_id="sess-reuse",
+        project_root=project_root,
+        task_slug="dedup",
+        requested_path=str(Path(project_root) / "tmp" / "dedup.py"),
+        tool_name="Write",
+        request_reason="tmp_source_candidate",
+        requested_by="write_scratchlane_gate",
+    )
+    second = scratchlanes.request_approval(
+        conn,
+        session_id="sess-reuse",
+        project_root=project_root,
+        task_slug="dedup",
+        requested_path=str(Path(project_root) / "tmp" / "dedup.py"),
+        tool_name="Write",
+        request_reason="tmp_source_candidate",
+        requested_by="write_scratchlane_gate",
+    )
+
+    assert first["request_state"] == "created"
+    assert second["request_state"] == "existing"
+    assert second["id"] == first["id"]
+    assert len(
+        scratchlanes.list_pending(
+            conn,
+            project_root=project_root,
+            session_id="sess-reuse",
+        )
+    ) == 1
+
+
 def test_evaluate_registers_pending_scratchlane_request(tmp_path):
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -375,6 +435,8 @@ def test_evaluate_registers_pending_scratchlane_request(tmp_path):
     assert code == 0
     assert out["action"] == "deny"
     assert "scratchlane" in out["reason"]
+    assert out["runtimeNotification"]["notification_type"] == "scratchlane_approval_needed"
+    assert "tmp/.claude-scratch/dedup" in out["runtimeNotification"]["message"]
 
     conn = connect(db_path)
     try:
@@ -392,29 +454,122 @@ def test_evaluate_registers_pending_scratchlane_request(tmp_path):
     assert pending["requested_path"] == str(project_root / "tmp" / "dedup.py")
 
 
+def test_evaluate_reuses_identical_pending_request_without_repeat_notification(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = tmp_path / "state.db"
+
+    payload = {
+        "event_type": "Write",
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(project_root / "tmp" / "dedup.py"),
+            "content": "print('hi')\n",
+        },
+        "cwd": str(project_root),
+        "session_id": "sess-repeat",
+        "actor_role": "",
+        "actor_id": "",
+    }
+
+    first_code, first_out = _run_evaluate(
+        payload,
+        db_path=db_path,
+        extra_env={"CLAUDE_PROJECT_DIR": str(project_root)},
+    )
+    second_code, second_out = _run_evaluate(
+        payload,
+        db_path=db_path,
+        extra_env={"CLAUDE_PROJECT_DIR": str(project_root)},
+    )
+
+    assert first_code == 0
+    assert second_code == 0
+    assert "runtimeNotification" in first_out
+    assert "runtimeNotification" not in second_out
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        pending = scratchlanes.list_pending(
+            conn,
+            project_root=str(project_root),
+            session_id="sess-repeat",
+        )
+    finally:
+        conn.close()
+
+    assert len(pending) == 1
+
+
+def test_pre_write_emits_local_notification_for_new_pending_request(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _init_git_repo(project_root)
+    db_path = tmp_path / "state.db"
+    capture_path = tmp_path / "terminal-notifier-args.bin"
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+
+    (fakebin / "uname").write_text("#!/usr/bin/env bash\necho Darwin\n", encoding="utf-8")
+    (fakebin / "terminal-notifier").write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\0' \"$@\" > \"$CLAUDE_NOTIFY_CAPTURE\"\n",
+        encoding="utf-8",
+    )
+    (fakebin / "uname").chmod(0o755)
+    (fakebin / "terminal-notifier").chmod(0o755)
+
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": str(db_path),
+        "CLAUDE_PROJECT_DIR": str(project_root),
+        "CLAUDE_RUNTIME_ROOT": str(_WORKTREE / "runtime"),
+        "PYTHONPATH": str(_WORKTREE),
+        "PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}",
+        "CLAUDE_NOTIFY_CAPTURE": str(capture_path),
+    }
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(project_root / "tmp" / "dedup.py"),
+            "content": "print('hi')\n",
+        },
+        "session_id": "sess-pre-write",
+        "cwd": str(project_root),
+    }
+
+    result = subprocess.run(
+        ["bash", str(_PRE_WRITE_HOOK)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=_WORKTREE,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "runtimeNotification" not in output
+
+    capture = capture_path.read_bytes().split(b"\0")
+    args = [item.decode("utf-8") for item in capture if item]
+    assert "-title" in args
+    assert "Scratchlane Approval Needed" in args
+    assert "-message" in args
+    message = args[args.index("-message") + 1]
+    assert "tmp/.claude-scratch/dedup" in message
+    assert "Reply yes or no" in message
+
+
 def test_prompt_submit_consumes_plain_yes_into_scratchlane_approval(tmp_path):
     project_root = tmp_path / "project"
     project_root.mkdir()
     db_path = tmp_path / "state.db"
     session_id = "sess-prompt-submit"
 
-    subprocess.run(["git", "init", "-q"], cwd=project_root, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Scratchlane Test",
-            "-c",
-            "user.email=scratchlane@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "init",
-            "-q",
-        ],
-        cwd=project_root,
-        check=True,
-    )
+    _init_git_repo(project_root)
 
     conn = connect(db_path)
     try:

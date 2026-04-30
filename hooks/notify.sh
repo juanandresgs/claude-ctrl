@@ -15,6 +15,8 @@ set -euo pipefail
 # Triggers for:
 #   - Claude requests permission (permission_prompt)
 #   - Claude is idle waiting for input (idle_prompt)
+#   - Runtime raises a first-class local attention notice (for example a
+#     pending scratchlane approval request)
 
 source "$(dirname "$0")/log.sh"
 
@@ -40,6 +42,7 @@ detect_terminal_bundle() {
 get_sound_for_type() {
     case "$1" in
         permission_prompt) echo "Ping" ;;      # High urgency
+        scratchlane_approval_needed) echo "Ping" ;;
         idle_prompt) echo "Glass" ;;           # Medium urgency
         *) echo "" ;;                          # No sound
     esac
@@ -47,7 +50,7 @@ get_sound_for_type() {
 
 # Only notify for attention-needed events
 case "$NOTIFICATION_TYPE" in
-    permission_prompt|idle_prompt)
+    permission_prompt|idle_prompt|scratchlane_approval_needed)
         SOUND=$(get_sound_for_type "$NOTIFICATION_TYPE")
 
         if command -v terminal-notifier &>/dev/null; then

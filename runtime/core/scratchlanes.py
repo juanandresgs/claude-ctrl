@@ -206,6 +206,32 @@ def active_roots(conn: sqlite3.Connection, project_root: str) -> tuple[str, ...]
     return tuple(str(item["root_path"]) for item in items)
 
 
+def _same_pending_request(
+    existing: dict | None,
+    *,
+    task_slug: str,
+    root_path: str,
+    requested_path: str,
+    tool_name: str,
+    request_reason: str,
+    requested_by: str,
+) -> bool:
+    if existing is None:
+        return False
+    return (
+        str(existing.get("task_slug") or "") == task_slug
+        and str(existing.get("root_path") or "") == root_path
+        and str(existing.get("requested_path") or "") == requested_path
+        and str(existing.get("tool_name") or "") == tool_name
+        and str(existing.get("request_reason") or "") == request_reason
+        and str(existing.get("requested_by") or "") == requested_by
+    )
+
+
+def _request_with_state(record: dict, request_state: str) -> dict:
+    return {**record, "request_state": request_state}
+
+
 def request_approval(
     conn: sqlite3.Connection,
     *,
@@ -220,7 +246,9 @@ def request_approval(
     """Record a pending scratchlane approval request for this session/project.
 
     At most one pending request remains active per ``(session_id, project_root)``
-    pair. A newer request supersedes the older pending one.
+    pair. A newer distinct request supersedes the older pending one. An
+    identical pending request is reused so repeated retries do not create
+    duplicate state or repeated notifications.
     """
     if not session_id:
         raise ValueError("session_id is required for scratchlane approval requests")
@@ -229,28 +257,44 @@ def request_approval(
     slug = sanitize_token(task_slug)
     root_path = scratchlane_root(canonical_project_root, slug)
     requested_path = requested_path or ""
+    tool_name = tool_name or ""
+    request_reason = request_reason or ""
+    requested_by = requested_by or "runtime"
+    existing = get_pending(conn, session_id=session_id, project_root=canonical_project_root)
+    if _same_pending_request(
+        existing,
+        task_slug=slug,
+        root_path=root_path,
+        requested_path=requested_path,
+        tool_name=tool_name,
+        request_reason=request_reason,
+        requested_by=requested_by,
+    ):
+        return _request_with_state(existing, "existing")
+
     now = int(time.time())
 
     with conn:
-        conn.execute(
-            """
-            UPDATE scratchlane_requests
-            SET    status = ?,
-                   resolved_at = ?,
-                   resolution_note = ?
-            WHERE  session_id = ?
-              AND  project_root = ?
-              AND  status = ?
-            """,
-            (
-                REQUEST_STATUS_SUPERSEDED,
-                now,
-                "superseded by newer scratchlane request",
-                session_id,
-                canonical_project_root,
-                REQUEST_STATUS_PENDING,
-            ),
-        )
+        if existing is not None:
+            conn.execute(
+                """
+                UPDATE scratchlane_requests
+                SET    status = ?,
+                       resolved_at = ?,
+                       resolution_note = ?
+                WHERE  session_id = ?
+                  AND  project_root = ?
+                  AND  status = ?
+                """,
+                (
+                    REQUEST_STATUS_SUPERSEDED,
+                    now,
+                    "superseded by newer scratchlane request",
+                    session_id,
+                    canonical_project_root,
+                    REQUEST_STATUS_PENDING,
+                ),
+            )
         conn.execute(
             """
             INSERT INTO scratchlane_requests
@@ -276,7 +320,8 @@ def request_approval(
     record = get_pending(conn, session_id=session_id, project_root=canonical_project_root)
     if record is None:
         raise RuntimeError("scratchlane request was written but could not be read back")
-    return record
+    request_state = "replaced" if existing is not None else "created"
+    return _request_with_state(record, request_state)
 
 
 def get_pending(
@@ -332,6 +377,26 @@ def list_pending(
         params,
     ).fetchall()
     return [_request_row_to_dict(row) for row in rows if row is not None]
+
+
+def build_pending_notification(request: dict) -> dict:
+    """Return the user-attention notification payload for a pending request."""
+    task_slug = str(request.get("task_slug") or "task")
+    root_path = str(request.get("root_path") or "")
+    requested_path = str(request.get("requested_path") or "")
+    message = (
+        f"Reply yes or no to approve scratchlane {root_path} for task '{task_slug}'."
+    )
+    if requested_path:
+        message += f" Blocked path: {requested_path}."
+    return {
+        "notification_type": "scratchlane_approval_needed",
+        "title": "Scratchlane Approval Needed",
+        "message": message,
+        "task_slug": task_slug,
+        "root_path": root_path,
+        "requested_path": requested_path,
+    }
 
 
 def _normalized_prompt(prompt: str) -> str:
