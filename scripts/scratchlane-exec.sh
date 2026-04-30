@@ -48,7 +48,7 @@ RUNTIME_CLI="$REPO_ROOT/runtime/cli.py"
 PERMIT_JSON="$(python3 "$RUNTIME_CLI" scratchlane get --project-root "$REPO_ROOT" --task-slug "$TASK_SLUG")"
 FOUND="$(printf '%s' "$PERMIT_JSON" | jq -r '.found // false' 2>/dev/null || echo false)"
 if [[ "$FOUND" != "true" ]]; then
-    echo "scratchlane-exec: scratchlane '$TASK_SLUG' is not active. Run: python3 runtime/cli.py scratchlane grant --task-slug $TASK_SLUG" >&2
+    echo "scratchlane-exec: scratchlane '$TASK_SLUG' is not active. Ask the user to approve task scratchlane tmp/.claude-scratch/$TASK_SLUG/ in chat, or grant it manually with: python3 runtime/cli.py scratchlane grant --task-slug $TASK_SLUG" >&2
     exit 1
 fi
 

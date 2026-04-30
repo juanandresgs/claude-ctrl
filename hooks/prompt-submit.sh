@@ -14,13 +14,39 @@ source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
+HOOK_SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
 # Exit silently if no prompt
 [[ -z "$PROMPT" ]] && exit 0
 
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
-SESSION_ID=$(canonical_session_id)
+SESSION_ID="${HOOK_SESSION_ID:-$(canonical_session_id)}"
+
+# --- Pending scratchlane approval resolution ---
+# If the previous turn asked "Allow task scratchlane ... for this task?",
+# consume a plain-English yes/no reply here and activate/deny the lane
+# automatically. The runtime owns both the pending request row and the permit.
+# The hook only forwards the user's prompt and injects the runtime's outcome.
+#
+# @decision DEC-SCRATCHLANE-003
+# @title UserPromptSubmit auto-resolves pending scratchlane approval replies
+# @status accepted
+# @rationale PreToolUse hooks can block a write and tell Claude to ask the user
+#   for scratchlane approval, but they cannot directly present a first-class
+#   approval dialog of their own. The next user prompt is the natural reply
+#   surface, so UserPromptSubmit must resolve that reply against the runtime's
+#   pending scratchlane request table. This keeps the UX to one yes/no answer
+#   from the user and avoids asking the user to run any runtime command.
+SCRATCH_RESOLVE_JSON=$(printf '%s' "$PROMPT" | cc_policy scratchlane resolve-prompt \
+    --project-root "$PROJECT_ROOT" \
+    --session-id "$SESSION_ID" \
+    2>/dev/null || echo '{"resolution":"none","additional_context":""}')
+SCRATCH_RESOLUTION=$(printf '%s' "$SCRATCH_RESOLVE_JSON" | jq -r '.resolution // "none"' 2>/dev/null || echo "none")
+SCRATCH_CONTEXT=$(printf '%s' "$SCRATCH_RESOLVE_JSON" | jq -r '.additional_context // empty' 2>/dev/null || echo "")
+if [[ "$SCRATCH_RESOLUTION" == "approved" || "$SCRATCH_RESOLUTION" == "denied" ]]; then
+    [[ -n "$SCRATCH_CONTEXT" ]] && CONTEXT_PARTS+=("$SCRATCH_CONTEXT")
+fi
 
 # --- Proof verification removed (TKT-024) ---
 # User prompt "verified" no longer flips readiness state.

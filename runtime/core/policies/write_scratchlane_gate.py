@@ -14,7 +14,6 @@ arbitrary scattering of ``tmp/*.py`` files.
 
 from __future__ import annotations
 
-import shlex
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
@@ -28,17 +27,28 @@ from runtime.core.policy_utils import (
 )
 
 
-def _grant_command(task_slug: str) -> str:
-    return " ".join(
-        [
-            "python3",
-            "runtime/cli.py",
-            "scratchlane",
-            "grant",
-            "--task-slug",
-            shlex.quote(task_slug),
-        ]
-    )
+def _approval_prompt(task_slug: str) -> str:
+    return f"Allow task scratchlane `tmp/.claude-scratch/{task_slug}/` for this task?"
+
+
+def _approval_effect(
+    *,
+    task_slug: str,
+    scratch_root: str,
+    requested_path: str,
+    tool_name: str,
+    request_reason: str,
+) -> dict:
+    return {
+        "request_scratchlane_approval": {
+            "task_slug": task_slug,
+            "root_path": scratch_root,
+            "requested_path": requested_path,
+            "tool_name": tool_name,
+            "request_reason": request_reason,
+            "requested_by": "write_scratchlane_gate",
+        }
+    }
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -74,27 +84,39 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     task_slug = info.task_slug or suggest_scratchlane_task_slug(file_path)
-    scratch_root = info.scratch_root or f"tmp/.claude-scratch/{task_slug}"
-    grant_cmd = _grant_command(task_slug)
+    scratch_root = info.scratch_root or ""
+    scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
+    approval_effect = _approval_effect(
+        task_slug=task_slug,
+        scratch_root=scratch_root,
+        requested_path=info.normalized_path or file_path,
+        tool_name=request.tool_name,
+        request_reason=info.kind,
+    )
 
     if info.kind == PATH_KIND_ARTIFACT_CANDIDATE:
         return PolicyDecision(
             action="deny",
             reason=(
                 f"BLOCKED: scratchlane '{task_slug}' is not active for this task yet. "
-                f"Ask the user for permission to work under {scratch_root}, then run "
-                f"`{grant_cmd}` and retry the write."
+                f'Ask the user: "{_approval_prompt(task_slug)}" If they approve, '
+                "the runtime will activate it automatically and you can retry the "
+                f"write under `{scratch_root_display}`. Do not tell the user to run "
+                "any command."
             ),
             policy_name="write_scratchlane_gate",
+            effects=approval_effect,
         )
 
     return PolicyDecision(
         action="deny",
         reason=(
             f"BLOCKED: {file_path} looks like temporary automation, not repo source. "
-            f"Ask the user for permission to open scratchlane '{task_slug}', then run "
-            f"`{grant_cmd}` and write this file under `{scratch_root}/` instead."
+            f'Ask the user: "{_approval_prompt(task_slug)}" If they approve, '
+            "the runtime will activate it automatically and you can retry the write "
+            f"under `{scratch_root_display}` instead. Do not tell the user to run "
+            "any command."
         ),
         policy_name="write_scratchlane_gate",
+        effects=approval_effect,
     )
-

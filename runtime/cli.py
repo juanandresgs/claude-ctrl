@@ -3749,6 +3749,62 @@ def _handle_evaluate(args) -> int:
                 except Exception:
                     pass  # Non-fatal: denial stands if consumption fails
 
+        scratchlane_request_effect = effects.get("request_scratchlane_approval")
+        if scratchlane_request_effect and decision.action == "deny":
+            session_id = str(payload.get("session_id") or "")
+            task_slug = str(scratchlane_request_effect.get("task_slug") or "")
+            root_path = str(scratchlane_request_effect.get("root_path") or "")
+            if session_id and task_slug and ctx.project_root:
+                try:
+                    scratchlanes_mod.request_approval(
+                        conn,
+                        session_id=session_id,
+                        project_root=ctx.project_root,
+                        task_slug=task_slug,
+                        requested_path=str(
+                            scratchlane_request_effect.get("requested_path") or ""
+                        ),
+                        tool_name=str(scratchlane_request_effect.get("tool_name") or tool_name or ""),
+                        request_reason=str(
+                            scratchlane_request_effect.get("request_reason") or ""
+                        ),
+                        requested_by=str(
+                            scratchlane_request_effect.get("requested_by") or "runtime"
+                        ),
+                    )
+                except Exception as exc:
+                    fallback_cmd = (
+                        f"python3 runtime/cli.py scratchlane grant --task-slug {task_slug}"
+                    )
+                    decision = policy_engine_mod.PolicyDecision(
+                        action=decision.action,
+                        reason=(
+                            f"{decision.reason}\n\n"
+                            "Automatic scratchlane approval setup failed, so the "
+                            "runtime cannot consume a yes/no reply for this request. "
+                            f"Fallback grant command: {fallback_cmd}. Detail: {exc}"
+                        ),
+                        policy_name=decision.policy_name,
+                        effects=decision.effects,
+                        metadata=decision.metadata,
+                    )
+            elif task_slug and root_path:
+                fallback_cmd = (
+                    f"python3 runtime/cli.py scratchlane grant --task-slug {task_slug}"
+                )
+                decision = policy_engine_mod.PolicyDecision(
+                    action=decision.action,
+                    reason=(
+                        f"{decision.reason}\n\n"
+                        "Automatic scratchlane approval could not be registered because "
+                        "the session id was missing from the hook payload. "
+                        f"Fallback grant command: {fallback_cmd}"
+                    ),
+                    policy_name=decision.policy_name,
+                    effects=decision.effects,
+                    metadata=decision.metadata,
+                )
+
         carrier_deny = _agent_contract_carrier_effect(conn, payload, decision)
         if carrier_deny is not None:
             decision = carrier_deny
@@ -4076,6 +4132,37 @@ def _handle_scratchlane(args) -> int:
                     "count": len(items),
                 }
             )
+
+        if args.action == "pending":
+            request = scratchlanes_mod.get_pending(
+                conn,
+                session_id=args.session_id,
+                project_root=project_root,
+            )
+            return _ok(
+                {
+                    "project_root": project_root,
+                    "session_id": args.session_id,
+                    "found": request is not None,
+                    "request": request,
+                }
+            )
+
+        if args.action == "resolve-prompt":
+            prompt = sys.stdin.read()
+            result = scratchlanes_mod.resolve_pending_from_prompt(
+                conn,
+                session_id=args.session_id,
+                project_root=project_root,
+                prompt=prompt,
+                granted_by=getattr(args, "granted_by", None) or "user_prompt",
+            )
+            permit = result.get("permit")
+            if isinstance(permit, dict) and permit.get("root_path"):
+                Path(str(permit["root_path"])).mkdir(parents=True, exist_ok=True)
+            result["project_root"] = project_root
+            result["session_id"] = args.session_id
+            return _ok(result)
     finally:
         conn.close()
 
@@ -6150,6 +6237,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sl_list = sl_sub.add_parser("list", help="List active scratchlane permits")
     sl_list.add_argument("--project-root", **_sl_root_kwargs)
+
+    sl_pending = sl_sub.add_parser(
+        "pending",
+        help="Get the pending scratchlane approval request for a session",
+    )
+    sl_pending.add_argument("--session-id", dest="session_id", required=True)
+    sl_pending.add_argument("--project-root", **_sl_root_kwargs)
+
+    sl_resolve = sl_sub.add_parser(
+        "resolve-prompt",
+        help="Resolve a pending scratchlane request from a user prompt read on stdin",
+    )
+    sl_resolve.add_argument("--session-id", dest="session_id", required=True)
+    sl_resolve.add_argument("--granted-by", dest="granted_by", default="user_prompt")
+    sl_resolve.add_argument("--project-root", **_sl_root_kwargs)
 
     # eval — Behavioral Evaluation Framework CLI
     ev_p = subparsers.add_parser("eval", help="Behavioral Evaluation Framework")

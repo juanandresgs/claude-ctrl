@@ -9,11 +9,18 @@ from io import StringIO
 from pathlib import Path
 
 from runtime import cli
+from runtime.core import scratchlanes
 from runtime.core.command_intent import build_bash_command_intent
+from runtime.core.db import connect, connect_memory
 from runtime.core.policy_engine import PolicyContext, PolicyRequest
 from runtime.core.policies import bash_scratchlane_gate
 from runtime.core.policies.bash_write_who import check as bash_write_who
 from runtime.core.policies.write_scratchlane_gate import check as write_scratchlane_gate
+from runtime.schemas import ensure_schema
+
+_WORKTREE = Path(__file__).resolve().parents[2]
+_CLI = _WORKTREE / "runtime" / "cli.py"
+_PROMPT_SUBMIT_HOOK = _WORKTREE / "hooks" / "prompt-submit.sh"
 
 
 def _make_context(
@@ -50,6 +57,47 @@ def _run_cli(argv: list[str], monkeypatch, *, db_path: Path) -> dict:
         rc = cli.main(argv)
     assert rc == 0
     return json.loads(buf.getvalue())
+
+
+def _run_cli_raw(
+    argv: list[str],
+    *,
+    db_path: Path,
+    stdin_text: str = "",
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": str(db_path),
+        "PYTHONPATH": str(_WORKTREE),
+    }
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(
+        [sys.executable, str(_CLI)] + argv,
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        cwd=_WORKTREE,
+        env=env,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def _run_evaluate(
+    payload: dict,
+    *,
+    db_path: Path,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, dict]:
+    code, stdout, stderr = _run_cli_raw(
+        ["evaluate"],
+        db_path=db_path,
+        stdin_text=json.dumps(payload),
+        extra_env=extra_env,
+    )
+    parsed = json.loads((stdout or stderr).strip() or "{}")
+    return code, parsed
 
 
 def test_scratchlane_cli_grant_get_list_roundtrip(tmp_path, monkeypatch):
@@ -117,7 +165,14 @@ def test_write_scratchlane_gate_redirects_tmp_source_candidate(tmp_path):
     assert decision is not None
     assert decision.action == "deny"
     assert "scratchlane" in decision.reason
-    assert "runtime/cli.py scratchlane grant --task-slug dedup" in decision.reason
+    assert "runtime will activate it automatically" in decision.reason
+    assert "Do not tell the user to run any command." in decision.reason
+    assert decision.effects is not None
+    assert decision.effects["request_scratchlane_approval"]["task_slug"] == "dedup"
+    assert (
+        decision.effects["request_scratchlane_approval"]["request_reason"]
+        == "tmp_source_candidate"
+    )
 
 
 def test_write_scratchlane_gate_allows_approved_scratchlane(tmp_path):
@@ -154,6 +209,13 @@ def test_bash_scratchlane_gate_denies_raw_interpreter(tmp_path):
     assert decision is not None
     assert decision.action == "deny"
     assert "scripts/scratchlane-exec.sh" in decision.reason
+    assert "runtime will activate it automatically" in decision.reason
+    assert decision.effects is not None
+    assert decision.effects["request_scratchlane_approval"]["task_slug"] == "ad-hoc"
+    assert (
+        decision.effects["request_scratchlane_approval"]["request_reason"]
+        == "opaque_interpreter"
+    )
 
 
 def test_bash_scratchlane_gate_allows_wrapper_command(tmp_path):
@@ -189,8 +251,238 @@ def test_bash_write_who_ignores_approved_scratchlane_visible_write(tmp_path):
     assert bash_write_who(request) is None
 
 
+def test_scratchlane_request_roundtrip_approve(tmp_path):
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    project_root = str(tmp_path / "project")
+    request = scratchlanes.request_approval(
+        conn,
+        session_id="sess-approve",
+        project_root=project_root,
+        task_slug="dedup",
+        requested_path=str(Path(project_root) / "tmp" / "dedup.py"),
+        tool_name="Write",
+        request_reason="tmp_source_candidate",
+        requested_by="write_scratchlane_gate",
+    )
+
+    assert request["status"] == "pending"
+
+    result = scratchlanes.resolve_pending_from_prompt(
+        conn,
+        session_id="sess-approve",
+        project_root=project_root,
+        prompt="yes",
+    )
+
+    assert result["resolution"] == "approved"
+    assert result["permit"] is not None
+    assert result["permit"]["task_slug"] == "dedup"
+    assert scratchlanes.get_pending(
+        conn,
+        session_id="sess-approve",
+        project_root=project_root,
+    ) is None
+    assert "Do not ask the user to run any command." in result["additional_context"]
+
+
+def test_scratchlane_request_roundtrip_deny(tmp_path):
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    project_root = str(tmp_path / "project")
+    scratchlanes.request_approval(
+        conn,
+        session_id="sess-deny",
+        project_root=project_root,
+        task_slug="dedup",
+        requested_path=str(Path(project_root) / "tmp" / "dedup.py"),
+        tool_name="Write",
+        request_reason="tmp_source_candidate",
+        requested_by="write_scratchlane_gate",
+    )
+
+    result = scratchlanes.resolve_pending_from_prompt(
+        conn,
+        session_id="sess-deny",
+        project_root=project_root,
+        prompt="no",
+    )
+
+    assert result["resolution"] == "denied"
+    assert result["permit"] is None
+    assert scratchlanes.get_active(conn, project_root, "dedup") is None
+    assert "Scratchlane denied" in result["additional_context"]
+
+
+def test_scratchlane_request_roundtrip_ambiguous_reply_stays_pending(tmp_path):
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    project_root = str(tmp_path / "project")
+    scratchlanes.request_approval(
+        conn,
+        session_id="sess-pending",
+        project_root=project_root,
+        task_slug="dedup",
+        requested_path=str(Path(project_root) / "tmp" / "dedup.py"),
+        tool_name="Write",
+        request_reason="tmp_source_candidate",
+        requested_by="write_scratchlane_gate",
+    )
+
+    result = scratchlanes.resolve_pending_from_prompt(
+        conn,
+        session_id="sess-pending",
+        project_root=project_root,
+        prompt="what else needs to change?",
+    )
+
+    assert result["resolution"] == "pending"
+    assert result["permit"] is None
+    assert scratchlanes.get_pending(
+        conn,
+        session_id="sess-pending",
+        project_root=project_root,
+    ) is not None
+
+
+def test_evaluate_registers_pending_scratchlane_request(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = tmp_path / "state.db"
+
+    payload = {
+        "event_type": "Write",
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(project_root / "tmp" / "dedup.py"),
+            "content": "print('hi')\n",
+        },
+        "cwd": str(project_root),
+        "session_id": "sess-evaluate",
+        "actor_role": "",
+        "actor_id": "",
+    }
+
+    code, out = _run_evaluate(
+        payload,
+        db_path=db_path,
+        extra_env={"CLAUDE_PROJECT_DIR": str(project_root)},
+    )
+
+    assert code == 0
+    assert out["action"] == "deny"
+    assert "scratchlane" in out["reason"]
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        pending = scratchlanes.get_pending(
+            conn,
+            session_id="sess-evaluate",
+            project_root=str(project_root),
+        )
+    finally:
+        conn.close()
+
+    assert pending is not None
+    assert pending["task_slug"] == "dedup"
+    assert pending["requested_path"] == str(project_root / "tmp" / "dedup.py")
+
+
+def test_prompt_submit_consumes_plain_yes_into_scratchlane_approval(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-prompt-submit"
+
+    subprocess.run(["git", "init", "-q"], cwd=project_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Scratchlane Test",
+            "-c",
+            "user.email=scratchlane@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+            "-q",
+        ],
+        cwd=project_root,
+        check=True,
+    )
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        scratchlanes.request_approval(
+            conn,
+            session_id=session_id,
+            project_root=str(project_root),
+            task_slug="dedup",
+            requested_path=str(project_root / "tmp" / "dedup.py"),
+            tool_name="Write",
+            request_reason="tmp_source_candidate",
+            requested_by="write_scratchlane_gate",
+        )
+    finally:
+        conn.close()
+
+    prompt_count = project_root / ".claude" / f".prompt-count-{session_id}"
+    prompt_count.parent.mkdir(parents=True, exist_ok=True)
+    prompt_count.write_text("1\n", encoding="utf-8")
+
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": str(db_path),
+        "CLAUDE_PROJECT_DIR": str(project_root),
+        "CLAUDE_RUNTIME_ROOT": str(_WORKTREE / "runtime"),
+        "PYTHONPATH": str(_WORKTREE),
+    }
+    payload = {
+        "prompt": "yes",
+        "session_id": session_id,
+        "cwd": str(project_root),
+    }
+
+    result = subprocess.run(
+        ["bash", str(_PROMPT_SUBMIT_HOOK)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=_WORKTREE,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    additional_context = output["hookSpecificOutput"]["additionalContext"]
+    assert "Scratchlane approved" in additional_context
+    assert "Do not ask the user to run any command." in additional_context
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        permit = scratchlanes.get_active(conn, str(project_root), "dedup")
+        pending = scratchlanes.get_pending(
+            conn,
+            session_id=session_id,
+            project_root=str(project_root),
+        )
+    finally:
+        conn.close()
+
+    assert permit is not None
+    assert Path(permit["root_path"]).is_dir()
+    assert pending is None
+
+
 def test_scratchlane_exec_wrapper_uses_active_permit(tmp_path, monkeypatch):
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = _WORKTREE
     db_path = tmp_path / "state.db"
     task_slug = "pytest-scratchlane"
 

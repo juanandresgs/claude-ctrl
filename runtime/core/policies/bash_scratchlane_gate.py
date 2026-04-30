@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from pathlib import Path
 from typing import Optional
 
 from runtime.core.command_intent import extract_bash_write_targets
@@ -56,19 +55,6 @@ def _resolve_target_path(raw_path: str, *, base_dir: str) -> str:
     return normalize_path(resolved) if resolved else ""
 
 
-def _grant_command(task_slug: str) -> str:
-    return " ".join(
-        [
-            "python3",
-            "runtime/cli.py",
-            "scratchlane",
-            "grant",
-            "--task-slug",
-            shlex.quote(task_slug),
-        ]
-    )
-
-
 def _wrapper_command(task_slug: str) -> str:
     return " ".join(
         [
@@ -81,14 +67,34 @@ def _wrapper_command(task_slug: str) -> str:
     )
 
 
-def _scratchlane_message(*, task_slug: str, scratch_root: str, needs_grant: bool) -> str:
-    grant_clause = ""
-    if needs_grant:
-        grant_clause = f" Ask the user for permission, then run `{_grant_command(task_slug)}`."
+def _approval_prompt(task_slug: str) -> str:
+    return f"Allow task scratchlane `tmp/.claude-scratch/{task_slug}/` for this task?"
+
+
+def _approval_effect(
+    *,
+    task_slug: str,
+    scratch_root: str,
+    requested_path: str,
+    tool_name: str,
+    request_reason: str,
+) -> dict:
+    return {
+        "request_scratchlane_approval": {
+            "task_slug": task_slug,
+            "root_path": scratch_root,
+            "requested_path": requested_path,
+            "tool_name": tool_name,
+            "request_reason": request_reason,
+            "requested_by": "bash_scratchlane_gate",
+        }
+    }
+
+
+def _approval_clause(task_slug: str) -> str:
     return (
-        f"Use the task-local scratchlane `{scratch_root}` for this temporary automation."
-        f"{grant_clause} Re-run the command through `{_wrapper_command(task_slug)}` so the "
-        "interpreter is confined to the scratchlane."
+        f'Ask the user: "{_approval_prompt(task_slug)}" If they approve, the runtime '
+        "will activate it automatically. Do not tell the user to run any command."
     )
 
 
@@ -135,21 +141,31 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             continue
 
         task_slug = info.task_slug or suggest_scratchlane_task_slug(target)
-        scratch_root = info.scratch_root or f"tmp/.claude-scratch/{task_slug}"
+        scratch_root = info.scratch_root or ""
+        scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
+        approval_effect = _approval_effect(
+            task_slug=task_slug,
+            scratch_root=scratch_root,
+            requested_path=target,
+            tool_name=request.tool_name,
+            request_reason=info.kind,
+        )
         if info.kind == PATH_KIND_ARTIFACT_CANDIDATE:
             reason = (
                 f"BLOCKED: scratchlane '{task_slug}' is not active for this task yet. "
-                f"{_scratchlane_message(task_slug=task_slug, scratch_root=scratch_root, needs_grant=True)}"
+                f"{_approval_clause(task_slug)} Retry the command after approval."
             )
         else:
             reason = (
                 f"BLOCKED: {target} looks like temporary automation, not repo source. "
-                f"{_scratchlane_message(task_slug=task_slug, scratch_root=scratch_root, needs_grant=True)}"
+                f"{_approval_clause(task_slug)} Retry it with the write target moved "
+                f"under `{scratch_root_display}`."
             )
         return PolicyDecision(
             action="deny",
             reason=reason,
             policy_name="bash_scratchlane_gate",
+            effects=approval_effect,
         )
 
     if _WRAPPER_RE.search(command):
@@ -161,14 +177,15 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     task_slug = "ad-hoc"
-    scratch_root = f"tmp/.claude-scratch/{task_slug}"
+    scratch_root = ""
     needs_grant = True
+    requested_path = ""
     if script_match:
         script_path = script_match.group("script") or ""
         task_slug = suggest_scratchlane_task_slug(script_path)
-        scratch_root = f"tmp/.claude-scratch/{task_slug}"
         resolved_script = _resolve_target_path(script_path, base_dir=base_dir)
         if resolved_script:
+            requested_path = resolved_script
             info = classify_policy_path(
                 resolved_script,
                 project_root=project_root,
@@ -180,18 +197,37 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             if info.scratch_root:
                 scratch_root = info.scratch_root
             needs_grant = info.kind != PATH_KIND_ARTIFACT
+    scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
+    reason = (
+        "BLOCKED: raw interpreter execution via Bash is opaque to the pre-tool write gate. "
+    )
+    if needs_grant:
+        reason += (
+            f"{_approval_clause(task_slug)} Then re-run the command through "
+            f"`{_wrapper_command(task_slug)}` so the interpreter is confined to "
+            f"`{scratch_root_display}`."
+        )
+    else:
+        reason += (
+            f"Re-run the command through `{_wrapper_command(task_slug)}` so the "
+            f"interpreter is confined to `{scratch_root_display}`."
+        )
 
     return PolicyDecision(
         action="deny",
-        reason=(
-            "BLOCKED: raw interpreter execution via Bash is opaque to the pre-tool write gate. "
-            + _scratchlane_message(
+        reason=reason,
+        policy_name="bash_scratchlane_gate",
+        effects=(
+            _approval_effect(
                 task_slug=task_slug,
                 scratch_root=scratch_root,
-                needs_grant=needs_grant,
+                requested_path=requested_path,
+                tool_name=request.tool_name,
+                request_reason="opaque_interpreter",
             )
+            if needs_grant
+            else None
         ),
-        policy_name="bash_scratchlane_gate",
     )
 
 
