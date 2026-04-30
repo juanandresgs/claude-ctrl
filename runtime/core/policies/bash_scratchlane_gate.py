@@ -13,9 +13,13 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
-from runtime.core.command_intent import extract_bash_write_targets
+from runtime.core.command_intent import (
+    extract_bash_write_targets,
+    extract_single_simple_command_argv,
+)
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     PATH_KIND_ARTIFACT,
@@ -28,8 +32,11 @@ from runtime.core.policy_utils import (
     suggest_scratchlane_task_slug,
 )
 
-_WRAPPER_RE = re.compile(
-    r"(^|[;&|()]\s*)(?:bash|zsh)?\s*(?:\./)?scripts/scratchlane-exec\.sh(?:\s|$)"
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_SHELL_SCRIPT_WRAPPERS = frozenset({"bash", "sh", "zsh"})
+_RUNTIME_ROOT = Path(__file__).resolve().parents[3]
+_SCRATCHLANE_EXEC = normalize_path(
+    str(_RUNTIME_ROOT / "scripts" / "scratchlane-exec.sh")
 )
 _INLINE_INTERPRETER_RE = re.compile(
     r"(^|[;&|()]\s*)(?:/usr/bin/env\s+)?"
@@ -61,16 +68,109 @@ def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def _wrapper_command(task_slug: str) -> str:
-    return " ".join(
-        [
-            "./scripts/scratchlane-exec.sh",
-            "--task-slug",
-            _shell_quote(task_slug),
-            "--",
-            "<command>",
-        ]
-    )
+def _resolve_executable_path(raw_path: str, *, base_dir: str) -> str:
+    candidate = raw_path.strip()
+    if not candidate:
+        return ""
+    if candidate.startswith("~/"):
+        candidate = os.path.expanduser(candidate)
+    if os.path.isabs(candidate):
+        return normalize_path(candidate)
+    resolved = resolve_path_from_base(base_dir, candidate)
+    return normalize_path(resolved) if resolved else ""
+
+
+def _simple_command_argv(command: str) -> tuple[str, ...]:
+    argv = extract_single_simple_command_argv(command)
+    if not argv:
+        return ()
+    return argv
+
+
+def _simple_command_executable(argv: tuple[str, ...]) -> str:
+    if not argv:
+        return ""
+
+    index = 0
+    while index < len(argv) and _ENV_ASSIGN_RE.match(argv[index]):
+        index += 1
+    if index >= len(argv):
+        return ""
+
+    command_name = os.path.basename(argv[index])
+    if command_name == "env":
+        index += 1
+        while index < len(argv) and (
+            _ENV_ASSIGN_RE.match(argv[index]) or argv[index].startswith("-")
+        ):
+            index += 1
+        if index >= len(argv):
+            return ""
+        command_name = os.path.basename(argv[index])
+
+    if command_name in _SHELL_SCRIPT_WRAPPERS:
+        index += 1
+        if index < len(argv) and argv[index] == "--":
+            index += 1
+        if index >= len(argv) or argv[index].startswith("-"):
+            return ""
+        return argv[index]
+
+    return argv[index]
+
+
+def _is_scratchlane_exec_path(path: str, *, base_dir: str) -> bool:
+    resolved = _resolve_executable_path(path, base_dir=base_dir)
+    return bool(resolved and resolved == _SCRATCHLANE_EXEC)
+
+
+def _looks_like_scratchlane_exec(path: str) -> bool:
+    return os.path.basename(path.strip()) == "scratchlane-exec.sh"
+
+
+def _wrapper_option(argv: tuple[str, ...], option: str) -> str:
+    seen_wrapper = False
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if _looks_like_scratchlane_exec(token):
+            seen_wrapper = True
+            index += 1
+            continue
+        if not seen_wrapper:
+            index += 1
+            continue
+        if token == "--":
+            return ""
+        if token == option:
+            return argv[index + 1] if index + 1 < len(argv) else ""
+        index += 1
+    return ""
+
+
+def _wrapper_project_root_matches(
+    argv: tuple[str, ...],
+    *,
+    base_dir: str,
+    project_root: str,
+) -> bool:
+    declared = _wrapper_option(argv, "--project-root")
+    if not declared:
+        return False
+    resolved = _resolve_executable_path(declared, base_dir=base_dir)
+    return bool(resolved and resolved == normalize_path(project_root))
+
+
+def _wrapper_command(task_slug: str, *, project_root: str = "") -> str:
+    parts = [
+        _shell_quote(_SCRATCHLANE_EXEC),
+        "--task-slug",
+        _shell_quote(task_slug),
+    ]
+    if project_root:
+        parts.extend(["--project-root", _shell_quote(project_root)])
+    parts.extend(["--", "<command>"])
+    return " ".join(parts)
 
 
 def _approval_prompt(task_slug: str) -> str:
@@ -174,8 +274,40 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             effects=approval_effect,
         )
 
-    if _WRAPPER_RE.search(command):
-        return None
+    simple_argv = _simple_command_argv(command)
+    wrapper_executable = _simple_command_executable(simple_argv)
+    if wrapper_executable:
+        if _is_scratchlane_exec_path(wrapper_executable, base_dir=base_dir):
+            if project_root and not _wrapper_project_root_matches(
+                simple_argv,
+                base_dir=base_dir,
+                project_root=project_root,
+            ):
+                task_slug = _wrapper_option(simple_argv, "--task-slug") or "ad-hoc"
+                return PolicyDecision(
+                    action="deny",
+                    reason=(
+                        "BLOCKED: scratchlane execution must declare the governed "
+                        f"project root. Re-run through "
+                        f"`{_wrapper_command(task_slug, project_root=project_root)}` "
+                        "with the same task slug and command so permit lookup and "
+                        "sandbox confinement use the target repo, not ambient shell "
+                        "state."
+                    ),
+                    policy_name="bash_scratchlane_gate",
+                )
+            return None
+        if _looks_like_scratchlane_exec(wrapper_executable):
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    "BLOCKED: scratchlane execution must use the runtime-owned "
+                    f"wrapper `{_shell_quote(_SCRATCHLANE_EXEC)}`. The requested "
+                    f"wrapper `{wrapper_executable}` does not resolve to the "
+                    "installed control-plane executor."
+                ),
+                policy_name="bash_scratchlane_gate",
+            )
 
     script_match = _SCRIPT_INTERPRETER_RE.search(command)
     inline_match = _INLINE_INTERPRETER_RE.search(command)
@@ -210,12 +342,13 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if needs_grant:
         reason += (
             f"{_approval_clause(task_slug)} Then re-run the command through "
-            f"`{_wrapper_command(task_slug)}` so the interpreter is confined to "
-            f"`{scratch_root_display}`."
+            f"`{_wrapper_command(task_slug, project_root=project_root)}` so the "
+            f"interpreter is confined to `{scratch_root_display}`."
         )
     else:
         reason += (
-            f"Re-run the command through `{_wrapper_command(task_slug)}` so the "
+            f"Re-run the command through "
+            f"`{_wrapper_command(task_slug, project_root=project_root)}` so the "
             f"interpreter is confined to `{scratch_root_display}`."
         )
 

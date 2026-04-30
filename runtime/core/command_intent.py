@@ -15,6 +15,7 @@ from typing import Optional
 
 from runtime.core.leases import (
     GitInvocation,
+    _split_shell_segments,
     _shell_tokens,
     classify_git_invocation,
     classify_git_op,
@@ -165,6 +166,24 @@ def _extract_worktree_remove_target(args: list[str]) -> str:
             continue
         return token
     return ""
+
+
+def extract_single_simple_command_argv(command: str) -> Optional[tuple[str, ...]]:
+    """Return argv when ``command`` is exactly one top-level shell segment.
+
+    This keeps top-level shell tokenization in the command-intent authority.
+    Policies that need to identify a wrapper executable can consume this
+    pre-tokenized shape instead of reparsing raw Bash text themselves.
+    """
+    if not command:
+        return None
+    try:
+        segments = _split_shell_segments(_shell_tokens(command))
+    except ValueError:
+        return None
+    if len(segments) != 1:
+        return None
+    return tuple(segments[0])
 
 
 def extract_bash_write_targets(command: str) -> set[str]:

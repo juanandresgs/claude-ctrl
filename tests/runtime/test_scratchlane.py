@@ -233,13 +233,72 @@ def test_bash_scratchlane_gate_denies_raw_interpreter(tmp_path):
     assert "runtime will activate it automatically" in decision.reason
     assert decision.effects is not None
     assert decision.effects["request_scratchlane_approval"]["task_slug"] == "ad-hoc"
+    assert "--project-root" in decision.reason
+    assert str(project_root) in decision.reason
     assert (
         decision.effects["request_scratchlane_approval"]["request_reason"]
         == "opaque_interpreter"
     )
 
 
-def test_bash_scratchlane_gate_allows_wrapper_command(tmp_path):
+def test_bash_scratchlane_gate_allows_absolute_runtime_wrapper_command(tmp_path):
+    project_root = tmp_path
+    wrapper = _WORKTREE / "scripts" / "scratchlane-exec.sh"
+    command = (
+        f"{wrapper} --task-slug dedup --project-root {project_root} -- bash -c "
+        "'cd /tmp && cc-policy evaluation get wf | python3 -c \"print(1)\"'"
+    )
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(project_root),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    assert bash_scratchlane_gate.check(request) is None
+
+
+def test_bash_scratchlane_gate_allows_relative_wrapper_only_from_runtime_root():
+    project_root = _WORKTREE
+    command = (
+        "./scripts/scratchlane-exec.sh --task-slug dedup "
+        f"--project-root {project_root} -- python3 -c 'print(1)'"
+    )
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(project_root),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    assert bash_scratchlane_gate.check(request) is None
+
+
+def test_bash_scratchlane_gate_requires_project_root_on_runtime_wrapper(tmp_path):
+    project_root = tmp_path
+    wrapper = _WORKTREE / "scripts" / "scratchlane-exec.sh"
+    command = f"{wrapper} --task-slug dedup -- python3 -c 'print(1)'"
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(project_root),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "declare the governed project root" in decision.reason
+    assert f"--project-root {project_root}" in decision.reason
+
+
+def test_bash_scratchlane_gate_denies_relative_wrapper_from_other_repo(tmp_path):
     project_root = tmp_path
     command = "./scripts/scratchlane-exec.sh --task-slug dedup -- python3 -c 'print(1)'"
     request = PolicyRequest(
@@ -251,7 +310,11 @@ def test_bash_scratchlane_gate_allows_wrapper_command(tmp_path):
         command_intent=build_bash_command_intent(command, cwd=str(project_root)),
     )
 
-    assert bash_scratchlane_gate.check(request) is None
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "runtime-owned wrapper" in decision.reason
+    assert str(_WORKTREE / "scripts" / "scratchlane-exec.sh") in decision.reason
 
 
 def test_bash_write_who_ignores_approved_scratchlane_visible_write(tmp_path):
@@ -685,6 +748,8 @@ def test_scratchlane_exec_wrapper_uses_active_permit(tmp_path, monkeypatch):
             str(repo_root / "scripts" / "scratchlane-exec.sh"),
             "--task-slug",
             task_slug,
+            "--project-root",
+            str(repo_root),
             "--",
             "/bin/sh",
             "-c",
@@ -694,6 +759,72 @@ def test_scratchlane_exec_wrapper_uses_active_permit(tmp_path, monkeypatch):
         ],
         check=True,
         cwd=repo_root,
+        env=env,
+    )
+
+    assert marker.read_text(encoding="utf-8").strip() == str(scratch_root)
+
+
+def test_scratchlane_exec_wrapper_defaults_to_invocation_project_root(tmp_path, monkeypatch):
+    repo_root = _WORKTREE
+    target_root = tmp_path / "target-project"
+    target_root.mkdir()
+    _init_git_repo(target_root)
+    db_path = tmp_path / "state.db"
+    task_slug = "target-scratchlane"
+
+    monkeypatch.setenv("CLAUDE_POLICY_DB", str(db_path))
+    grant = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "runtime" / "cli.py"),
+            "scratchlane",
+            "grant",
+            "--project-root",
+            str(target_root),
+            "--task-slug",
+            task_slug,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+    scratch_root = Path(json.loads(grant.stdout)["permit"]["root_path"])
+
+    fakebin = tmp_path / "fakebin-target"
+    fakebin.mkdir()
+    fake_sandbox = fakebin / "sandbox-exec"
+    fake_sandbox.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "[[ \"$1\" == \"-f\" ]]\n"
+        "shift 2\n"
+        "exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    fake_sandbox.chmod(0o755)
+
+    marker = tmp_path / "target-marker.txt"
+    env = os.environ.copy()
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    env["CLAUDE_POLICY_DB"] = str(db_path)
+    env["PATH"] = f"{fakebin}{os.pathsep}{env['PATH']}"
+
+    subprocess.run(
+        [
+            str(repo_root / "scripts" / "scratchlane-exec.sh"),
+            "--task-slug",
+            task_slug,
+            "--",
+            "/bin/sh",
+            "-c",
+            'test -d "$CC_SCRATCH_ROOT" && pwd > "$1"',
+            "_",
+            str(marker),
+        ],
+        check=True,
+        cwd=target_root,
         env=env,
     )
 

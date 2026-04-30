@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  ./scripts/scratchlane-exec.sh --task-slug <task> -- <command> [args...]
+  scratchlane-exec.sh --task-slug <task> [--project-root <path>] -- <command> [args...]
 EOF
 }
 
@@ -16,18 +16,24 @@ escape_sb() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$REPO_ROOT" ]]; then
-    echo "scratchlane-exec: failed to resolve repo root" >&2
+CONTROL_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$CONTROL_ROOT" ]]; then
+    echo "scratchlane-exec: failed to resolve control-plane root" >&2
     exit 1
 fi
 
 TASK_SLUG=""
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --task-slug)
             [[ $# -ge 2 ]] || { usage; exit 2; }
             TASK_SLUG="$2"
+            shift 2
+            ;;
+        --project-root)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            PROJECT_ROOT="$2"
             shift 2
             ;;
         --)
@@ -44,11 +50,22 @@ done
 [[ -n "$TASK_SLUG" ]] || { usage; exit 2; }
 [[ $# -gt 0 ]] || { usage; exit 2; }
 
-RUNTIME_CLI="$REPO_ROOT/runtime/cli.py"
-PERMIT_JSON="$(python3 "$RUNTIME_CLI" scratchlane get --project-root "$REPO_ROOT" --task-slug "$TASK_SLUG")"
+if [[ -z "$PROJECT_ROOT" ]]; then
+    PROJECT_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -z "$PROJECT_ROOT" ]]; then
+    PROJECT_ROOT="$CONTROL_ROOT"
+fi
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P)" || {
+    echo "scratchlane-exec: failed to resolve project root: $PROJECT_ROOT" >&2
+    exit 1
+}
+
+RUNTIME_CLI="$CONTROL_ROOT/runtime/cli.py"
+PERMIT_JSON="$(python3 "$RUNTIME_CLI" scratchlane get --project-root "$PROJECT_ROOT" --task-slug "$TASK_SLUG")"
 FOUND="$(printf '%s' "$PERMIT_JSON" | jq -r '.found // false' 2>/dev/null || echo false)"
 if [[ "$FOUND" != "true" ]]; then
-    echo "scratchlane-exec: scratchlane '$TASK_SLUG' is not active. Ask the user to approve task scratchlane tmp/.claude-scratch/$TASK_SLUG/ in chat, or grant it manually with: python3 runtime/cli.py scratchlane grant --task-slug $TASK_SLUG" >&2
+    echo "scratchlane-exec: scratchlane '$TASK_SLUG' is not active for $PROJECT_ROOT. Ask the user to approve task scratchlane tmp/.claude-scratch/$TASK_SLUG/ in chat, or grant it manually with: python3 $RUNTIME_CLI scratchlane grant --project-root $PROJECT_ROOT --task-slug $TASK_SLUG" >&2
     exit 1
 fi
 
