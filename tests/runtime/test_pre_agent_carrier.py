@@ -74,7 +74,7 @@ _PROMPT_WITHOUT_BLOCK = "You are a planner agent. No contract block here.\n"
 # ---------------------------------------------------------------------------
 
 
-def _seed_db(conn: sqlite3.Connection) -> None:
+def _seed_db(conn: sqlite3.Connection, worktree_path: str | Path = _REPO_ROOT) -> None:
     """Seed the DB with the goal, work_item, and workflow that the runtime
     compiler needs when it processes the carrier fields."""
     goal = contracts.GoalContract(
@@ -112,7 +112,7 @@ def _seed_db(conn: sqlite3.Connection) -> None:
     workflows_mod.bind_workflow(
         conn,
         workflow_id="wf-hook",
-        worktree_path=str(_REPO_ROOT),
+        worktree_path=str(worktree_path),
         branch="feature/carrier-test",
     )
 
@@ -130,6 +130,50 @@ def carrier_db(tmp_path: Path) -> Path:
     finally:
         conn.close()
     return db_path
+
+
+def _make_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create a real git repo/worktree pair with state only in the shared DB."""
+    repo = tmp_path / "carrier-repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+    (repo / ".claude").mkdir()
+    (repo / "README.md").write_text("carrier worktree routing\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
+    worktree = repo / ".worktrees" / "feature-carrier"
+    worktree.parent.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "feature/carrier"],
+        check=True,
+        capture_output=True,
+    )
+
+    db_path = repo / ".claude" / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _seed_db(conn, worktree)
+        conn.commit()
+    finally:
+        conn.close()
+    return repo, worktree, db_path
 
 
 def _shared_env(db_path: Path) -> dict:
@@ -150,6 +194,41 @@ def _run_pre_agent(payload: dict, db_path: Path) -> tuple[int, str, str]:
         text=True,
         env=_shared_env(db_path),
         cwd=str(_REPO_ROOT),
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def _worktree_env(worktree: Path) -> dict:
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(_REPO_ROOT),
+        "CLAUDE_PROJECT_DIR": str(worktree),
+        "CLAUDE_RUNTIME_ROOT": str(_REPO_ROOT / "runtime"),
+    }
+    env.pop("CLAUDE_POLICY_DB", None)
+    return env
+
+
+def _run_pre_agent_from_worktree(payload: dict, worktree: Path) -> tuple[int, str, str]:
+    result = subprocess.run(
+        ["bash", _PRE_AGENT],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=_worktree_env(worktree),
+        cwd=str(worktree),
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def _run_subagent_start_from_worktree(payload: dict, worktree: Path) -> tuple[int, str, str]:
+    result = subprocess.run(
+        ["bash", _SUBAGENT_START],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=_worktree_env(worktree),
+        cwd=str(worktree),
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -500,6 +579,35 @@ class TestCarrierEndToEnd:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "canonical_seat_no_carrier_contract" in ctx
         assert "# ClauDEX Prompt Pack:" not in ctx
+
+    def test_e2e_from_linked_worktree_uses_shared_repo_db(self, tmp_path):
+        # Regression: shell hooks previously resolved linked worktrees via
+        # --show-toplevel, creating/reading <worktree>/.claude/state.db while the
+        # runtime CLI used the parent repo DB via --git-common-dir.
+        _repo, worktree, shared_db = _make_repo_with_worktree(tmp_path)
+        private_db = worktree / ".claude" / "state.db"
+
+        pre_rc, _pre_out, pre_err = _run_pre_agent_from_worktree(
+            _agent_payload(), worktree
+        )
+        assert pre_rc == 0, pre_err
+        assert _row_exists(shared_db, _SESSION_ID, _AGENT_TYPE)
+        assert not private_db.exists(), (
+            "hook resolver must not create or read a private worktree DB"
+        )
+
+        subagent_payload = {"agent_type": _AGENT_TYPE, "session_id": _SESSION_ID}
+        sa_rc, sa_out, sa_err = _run_subagent_start_from_worktree(
+            subagent_payload, worktree
+        )
+        assert sa_rc == 0, sa_err
+
+        parsed = json.loads(sa_out.strip())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "# ClauDEX Prompt Pack:" in ctx
+        assert "capture_workflow_contracts: no goal row" not in ctx
+        assert _row_exists(shared_db, _SESSION_ID, _AGENT_TYPE) is False
+        assert not private_db.exists()
 
 
 # ---------------------------------------------------------------------------

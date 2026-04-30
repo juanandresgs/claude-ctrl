@@ -21,8 +21,8 @@ _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 _LOCAL_CRITIC_HOOK="$_HOOK_DIR/../sidecars/codex-review/scripts/implementer-critic-hook.mjs"
 
 _local_cc_policy() {
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        _resolve_policy_db >/dev/null
     fi
     python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }

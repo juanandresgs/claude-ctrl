@@ -46,6 +46,39 @@ def _clean_env() -> dict:
     return env
 
 
+def _make_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a real git repo plus a linked feature worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+    (repo / ".claude").mkdir()
+    (repo / "README.md").write_text("resolver integration\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    worktree = repo / ".worktrees" / "feature-resolver"
+    worktree.parent.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "feature/resolver"],
+        check=True,
+        capture_output=True,
+    )
+    return repo, worktree
+
+
 # ---------------------------------------------------------------------------
 # (a) Only CLAUDE_POLICY_DB set → returns it verbatim
 # ---------------------------------------------------------------------------
@@ -82,6 +115,7 @@ class TestResolvePolicyDbClaudePolicyDbWins:
 class TestResolvePolicyDbClaudeProjectDir:
     def test_returns_project_dir_state_db(self, tmp_path):
         project_dir = str(tmp_path / "myproject")
+        Path(project_dir).mkdir()
         expected = project_dir + "/.claude/state.db"
         env = _clean_env()
         env["CLAUDE_PROJECT_DIR"] = project_dir
@@ -94,6 +128,7 @@ class TestResolvePolicyDbClaudeProjectDir:
     def test_exports_claude_policy_db_when_project_dir_used(self, tmp_path):
         """_resolve_policy_db must export CLAUDE_POLICY_DB when resolving via tier 2."""
         project_dir = str(tmp_path / "export-check")
+        Path(project_dir).mkdir()
         expected = project_dir + "/.claude/state.db"
         env = _clean_env()
         env["CLAUDE_PROJECT_DIR"] = project_dir
@@ -180,32 +215,85 @@ class TestResolvePolicyDbGitFallback:
 
 
 # ---------------------------------------------------------------------------
+# (c2) Linked worktree paths collapse to the shared repo DB
+# ---------------------------------------------------------------------------
+
+
+class TestResolvePolicyDbLinkedWorktree:
+    def test_worktree_cwd_returns_shared_repo_state_db(self, tmp_path):
+        repo, worktree = _make_repo_with_worktree(tmp_path)
+        expected = str(repo / ".claude" / "state.db")
+        wrong_private_db = str(worktree / ".claude" / "state.db")
+
+        env = _clean_env()
+        rc, out, _ = _run_resolver(env, cwd=str(worktree))
+
+        assert rc == 0
+        assert out == expected
+        assert out != wrong_private_db
+
+    def test_worktree_project_dir_returns_shared_repo_state_db(self, tmp_path):
+        repo, worktree = _make_repo_with_worktree(tmp_path)
+        expected = str(repo / ".claude" / "state.db")
+        wrong_private_db = str(worktree / ".claude" / "state.db")
+
+        env = _clean_env()
+        env["CLAUDE_PROJECT_DIR"] = str(worktree)
+        rc, out, _ = _run_resolver(env, cwd=str(repo))
+
+        assert rc == 0
+        assert out == expected
+        assert out != wrong_private_db
+
+    def test_worktree_resolution_exports_shared_repo_state_db(self, tmp_path):
+        repo, worktree = _make_repo_with_worktree(tmp_path)
+        expected = str(repo / ".claude" / "state.db")
+        env = _clean_env()
+        env["CLAUDE_PROJECT_DIR"] = str(worktree)
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {_BRIDGE}; _resolve_policy_db >/dev/null; echo \"$CLAUDE_POLICY_DB\"",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(repo),
+        )
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == expected
+
+
+# ---------------------------------------------------------------------------
 # (d) Neither env var set, cwd outside any git tree → returns empty string
 # ---------------------------------------------------------------------------
 
 
 class TestResolvePolicyDbNoGit:
     def test_returns_empty_when_no_git_tree(self, tmp_path):
-        """Resolution must fail gracefully (empty output) when all three tiers fail."""
+        """Hooks fail closed rather than route project state to the home DB."""
         # tmp_path is not a git repo (and has no git parent).
         # We use a fresh directory that is definitely not under any git tree.
         no_git_dir = tmp_path / "not-a-repo"
         no_git_dir.mkdir()
         env = _clean_env()
         # Override HOME to prevent ~/.git or home-dir git config interference.
-        env["HOME"] = str(tmp_path / "fakehome")
+        fake_home = tmp_path / "fakehome"
+        env["HOME"] = str(fake_home)
         rc, out, _ = _run_resolver(env, cwd=str(no_git_dir))
         assert rc == 0
-        assert out == "", (
-            f"Expected empty output when no git tree and no env vars, got {out!r}"
-        )
+        assert out == ""
 
     def test_does_not_export_claude_policy_db_on_empty_resolution(self, tmp_path):
         """When resolution fails, CLAUDE_POLICY_DB must NOT be exported."""
         no_git_dir = tmp_path / "not-a-repo2"
         no_git_dir.mkdir()
         env = _clean_env()
-        env["HOME"] = str(tmp_path / "fakehome")
+        fake_home = tmp_path / "fakehome"
+        env["HOME"] = str(fake_home)
         # Use a separate args list to avoid f-string/shell-variable collision.
         # The bash script checks if CLAUDE_POLICY_DB was exported by the function.
         check_script = (

@@ -63,6 +63,15 @@ def _policy(project_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return _run([sys.executable, str(_CLI), *args], env=env)
 
 
+def _policy_with_db(db_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "CLAUDE_POLICY_DB": str(db_path),
+        "PYTHONPATH": str(_WORKTREE),
+    }
+    return _run([sys.executable, str(_CLI), *args], env=env)
+
+
 def _init_project(tmp_path: Path, *, name: str = "project") -> Path:
     project_root = tmp_path / name
     project_root.mkdir()
@@ -117,6 +126,12 @@ def _hook_env(project_root: Path, extra_env: dict[str, str] | None = None) -> di
     }
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def _hook_env_without_policy_db(project_root: Path) -> dict[str, str]:
+    env = _hook_env(project_root)
+    env.pop("CLAUDE_POLICY_DB", None)
     return env
 
 
@@ -288,6 +303,65 @@ def _configure_guardian_git_allow(repo: Path) -> None:
 
     _db = _db_path(repo)
     _conn = _sqlite3.connect(str(_db))
+    try:
+        _conn.execute(
+            "INSERT INTO completion_records "
+            "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
+            ("seed-lease", workflow_id, "reviewer", "ready_for_guardian", 1, "{}", "[]"),
+        )
+        _conn.commit()
+    finally:
+        _conn.close()
+
+
+def _configure_guardian_git_allow_in_shared_db(repo: Path, worktree: Path) -> None:
+    """Seed a ready guardian landing context in repo DB for a linked worktree."""
+    db = _db_path(repo)
+    workflow_id = "feature-worktree-ready"
+    branch = "feature/worktree-ready"
+    head_sha = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+
+    _policy_with_db(
+        db,
+        "marker",
+        "set",
+        "agent-test",
+        "guardian",
+        "--project-root",
+        str(worktree),
+    )
+    _policy_with_db(
+        db,
+        "test-state",
+        "set",
+        "pass",
+        "--project-root",
+        str(worktree),
+        "--passed",
+        "1",
+        "--total",
+        "1",
+    )
+    _policy_with_db(db, "evaluation", "set", workflow_id, "ready_for_guardian", "--head-sha", head_sha)
+    _policy_with_db(db, "workflow", "bind", workflow_id, str(worktree), branch)
+    _policy_with_db(db, "workflow", "scope-set", workflow_id, "--allowed", '["*"]', "--forbidden", "[]")
+    _policy_with_db(
+        db,
+        "lease",
+        "issue-for-dispatch",
+        "guardian",
+        "--worktree-path",
+        str(worktree),
+        "--workflow-id",
+        workflow_id,
+        "--allowed-ops",
+        '["routine_local","high_risk"]',
+    )
+
+    import sqlite3 as _sqlite3
+
+    _conn = _sqlite3.connect(str(db))
     try:
         _conn.execute(
             "INSERT INTO completion_records "
@@ -514,3 +588,59 @@ def test_pre_bash_hook_cases(tmp_path, case):
     result = _run_bash_hook(project_root=project_root, cwd=cwd, command=command)
 
     _assert_hook_result(result, expected_decision=case["expected_decision"])
+
+
+def test_pre_bash_hook_matches_cli_evaluate_from_linked_worktree_without_policy_db(tmp_path):
+    """CLI and hook must resolve the same shared DB from a linked worktree.
+
+    Regression: runtime/core/config.py collapsed linked worktrees via
+    --git-common-dir, but the shell hook bridge used --show-toplevel and opened
+    <worktree>/.claude/state.db. That made direct `cc-policy evaluate` allow a
+    Guardian landing while the live pre-bash hook denied the same command.
+    """
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-worktree-parity")
+    worktree = repo / ".worktrees" / "feature-worktree-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/worktree-ready")
+    _configure_guardian_git_allow_in_shared_db(repo, worktree)
+
+    command = f'git -C "{worktree}" commit --allow-empty -m done'
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(worktree),
+    }
+    env = _hook_env_without_policy_db(worktree)
+    private_db = worktree / ".claude" / "state.db"
+
+    direct_payload = {
+        **payload,
+        "event_type": "PreToolUse",
+        "actor_role": "guardian",
+        "actor_id": "",
+    }
+    direct = _run(
+        [sys.executable, str(_CLI), "evaluate"],
+        cwd=worktree,
+        env=env,
+        input_text=json.dumps(direct_payload),
+        check=False,
+    )
+    direct_out = _parse_stdout(direct.stdout)
+    assert direct.returncode == 0, direct.stderr
+    assert _decision(direct_out) == "allow"
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=worktree,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "allow"
+    assert _decision(hook_out) == _decision(direct_out)
+    assert not private_db.exists(), (
+        "pre-bash hook must not create/read a private linked-worktree DB"
+    )

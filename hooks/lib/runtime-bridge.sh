@@ -21,7 +21,7 @@
 # ---------------------------------------------------------------------------
 
 # @decision DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001
-# @title _resolve_policy_db is the single authoritative resolver for carrier/marker/lease DB routing
+# @title _resolve_policy_db delegates hook DB routing to the runtime resolver
 # @status accepted
 # @rationale pre-agent.sh L201-209 and subagent-start.sh L117-120 each had a
 #   2-tier resolver (CLAUDE_POLICY_DB → CLAUDE_PROJECT_DIR) that silently skipped
@@ -30,21 +30,22 @@
 #   The result: _CARRIER_DB was empty, the guard evaluated false, and carrier
 #   operations were silently skipped — causing _HAS_CONTRACT=no, A8 deny at
 #   canonical_seat_no_carrier_contract, and no marker seating.  This function
-#   adds a 3rd tier (git rev-parse --show-toplevel) to cover the production path
-#   and is called from BOTH hooks at BOTH writer and reader sites.
-#   Inline git rev-parse is used intentionally — hooks/context-lib.sh must not
-#   be sourced from pre-agent.sh (forbidden file per scope manifest).
-#   Extends DEC-CLAUDEX-SA-MARKER-RELIABILITY-001 by making the resolver
-#   reachable from both hooks at both writer and reader sites.
+#   Later linked-worktree dispatch exposed the remaining split: shell used
+#   git rev-parse --show-toplevel while runtime/core/config.py used
+#   --git-common-dir to collapse feature worktrees onto the shared repo DB.
+#   This helper now delegates non-explicit resolution to runtime.core.config so
+#   hooks, CLI, prompt-pack, marker, lease, and completion paths share the same
+#   DB authority.
 # @chain pre-agent.sh carrier-write → pending_agent_requests → subagent-start.sh
 #   carrier-consume → _HAS_CONTRACT=yes → marker seating → lease claim → context role
 _resolve_policy_db() {
-    # Priority order (single source of truth):
+    # Priority order mirrors runtime.core.config.resolve_db_path() for concrete
+    # project contexts:
     #   1. $CLAUDE_POLICY_DB if already set and non-empty  (caller wins)
-    #   2. $CLAUDE_PROJECT_DIR/.claude/state.db if CLAUDE_PROJECT_DIR is set
-    #   3. <git_toplevel>/.claude/state.db via git rev-parse --show-toplevel
-    # Returns the resolved path on stdout. Empty string if all three fail
-    # (e.g., cwd is outside a git tree and no env vars set).
+    #   2. Explicit project root hint from $CLAUDE_PROJECT_DIR, if valid
+    #   3. CWD git repo/worktree discovery, passed as an explicit project root
+    # Returns empty outside project/git contexts; hooks must not silently route
+    # dispatch-significant state to the global home DB.
     # Also exports CLAUDE_POLICY_DB when resolution succeeded via tier 2 or 3.
     # Side-effect-free if CLAUDE_POLICY_DB is already set.
     local resolved=""
@@ -57,15 +58,44 @@ _resolve_policy_db() {
         fi
         unset CLAUDE_POLICY_DB
     fi
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        resolved="$CLAUDE_PROJECT_DIR/.claude/state.db"
-    else
-        local toplevel
-        toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-        if [[ -n "$toplevel" ]]; then
-            resolved="$toplevel/.claude/state.db"
-        fi
-    fi
+
+    local bridge_dir repo_root python_bin project_root
+    bridge_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    repo_root="$(cd "$bridge_dir/../.." && pwd)"
+    python_bin="$(command -v python3 2>/dev/null || printf '%s' python3)"
+    project_root="${CLAUDE_PROJECT_DIR:-}"
+
+    resolved="$("$python_bin" - "$repo_root" "$project_root" <<'PY' 2>/dev/null || true
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+repo_root = sys.argv[1]
+project_root = sys.argv[2] or None
+sys.path.insert(0, repo_root)
+
+from runtime.core.config import resolve_db_path
+
+if project_root and Path(project_root).is_dir():
+    print(resolve_db_path(project_root=project_root))
+    raise SystemExit(0)
+
+try:
+    result = subprocess.run(
+        ["git", "-C", os.getcwd(), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    result = None
+
+if result is not None and result.returncode == 0 and result.stdout.strip() == "true":
+    print(resolve_db_path(project_root=os.getcwd()))
+PY
+)"
+
     if [[ -n "$resolved" ]]; then
         export CLAUDE_POLICY_DB="$resolved"
         printf '%s\n' "$resolved"
