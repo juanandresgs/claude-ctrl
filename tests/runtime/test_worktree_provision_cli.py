@@ -98,6 +98,25 @@ def make_git_repo(path: Path) -> Path:
     return path
 
 
+def make_unborn_git_repo(path: Path) -> Path:
+    """Create a git repo with no commits yet. Returns the repo root."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+        cwd=str(path),
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+        cwd=str(path),
+    )
+    return path
+
+
 @pytest.fixture
 def db(tmp_path):
     """Return a path to a fresh temporary database file."""
@@ -108,6 +127,12 @@ def db(tmp_path):
 def git_repo(tmp_path):
     """Create a minimal git repo and return its path as a string."""
     return str(make_git_repo(tmp_path / "project"))
+
+
+@pytest.fixture
+def unborn_git_repo(tmp_path):
+    """Create a git repo with no commits yet and return its path as a string."""
+    return str(make_unborn_git_repo(tmp_path / "unborn-project"))
 
 
 def open_db(db_path: str):
@@ -153,6 +178,7 @@ def test_worktree_provision_cli(tmp_path, git_repo):
     assert out["worktree_path"] == expected_path, f"worktree_path mismatch: {out}"
     assert out["branch"] == f"feature/{feature_name}", f"branch mismatch: {out}"
     assert out["already_exists"] is False, f"Expected already_exists=false: {out}"
+    assert out["repo_initialized"] is False, f"Expected repo_initialized=false: {out}"
     assert out["guardian_lease_id"], "Expected guardian_lease_id populated"
     assert out["implementer_lease_id"], "Expected implementer_lease_id populated"
     assert out["workflow_id"] == workflow_id
@@ -230,6 +256,111 @@ def test_worktree_provision_returns_leases(tmp_path, git_repo):
         assert i_lease["status"] == "active"
     finally:
         conn.close()
+
+
+def test_worktree_provision_initializes_unborn_repo_before_branching(tmp_path, unborn_git_repo):
+    """Provision auto-creates the one-time bootstrap commit for an unborn repo.
+
+    This closes the fresh-repo hole where `git worktree add` cannot branch from
+    a repo with no HEAD. The runtime must initialize the base repo, exclude
+    runtime state from the commit, and then continue the normal provision flow.
+    """
+    db_path = str(tmp_path / "state.db")
+    project_root = Path(unborn_git_repo)
+    workflow_id = "wf-gwt2-unborn-001"
+    feature_name = "bootstrap-feature"
+
+    (project_root / "README.md").write_text("bootstrap repo\n")
+    docs_dir = project_root / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "ARCHITECTURE.md").write_text("# Architecture\n")
+    runtime_state_dir = project_root / ".claude"
+    runtime_state_dir.mkdir()
+    (runtime_state_dir / "state.db").write_text("do not commit runtime state\n")
+
+    code, out = run_cli(
+        [
+            "worktree",
+            "provision",
+            "--workflow-id",
+            workflow_id,
+            "--feature-name",
+            feature_name,
+            "--project-root",
+            str(project_root),
+        ],
+        db_path,
+    )
+
+    assert code == 0, f"Provision failed for unborn repo: {out}"
+    assert out["repo_initialized"] is True, f"Expected repo_initialized=true: {out}"
+    assert out["bootstrap_commit_sha"], f"Expected bootstrap commit sha: {out}"
+    assert out["bootstrap_commit_message"] == (
+        f"chore: initialize repository for workflow {workflow_id}"
+    )
+    assert out["bootstrap_commit_path_count"] == 2
+
+    head_sha = subprocess.run(
+        ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head_sha == out["bootstrap_commit_sha"]
+
+    tracked = subprocess.run(
+        ["git", "-C", str(project_root), "ls-files"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert "README.md" in tracked
+    assert "docs/ARCHITECTURE.md" in tracked
+    assert ".claude/state.db" not in tracked
+
+    conn = open_db(db_path)
+    try:
+        init_events = conn.execute(
+            """
+            SELECT type, source, detail
+            FROM events
+            WHERE type = 'workflow.bootstrap.repo_initialized'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert init_events is not None
+    assert init_events["source"] == f"workflow:{workflow_id}"
+    assert workflow_id in init_events["detail"]
+
+
+def test_worktree_provision_initializes_empty_unborn_repo_with_allow_empty_commit(
+    tmp_path, unborn_git_repo
+):
+    """If nothing committable exists, provision still creates an empty bootstrap commit."""
+    db_path = str(tmp_path / "state.db")
+    project_root = Path(unborn_git_repo)
+
+    code, out = run_cli(
+        [
+            "worktree",
+            "provision",
+            "--workflow-id",
+            "wf-gwt2-unborn-empty-001",
+            "--feature-name",
+            "empty-bootstrap",
+            "--project-root",
+            str(project_root),
+        ],
+        db_path,
+    )
+
+    assert code == 0, f"Provision failed for empty unborn repo: {out}"
+    assert out["repo_initialized"] is True
+    assert out["bootstrap_commit_sha"]
+    assert out["bootstrap_commit_path_count"] == 0
 
 
 # ---------------------------------------------------------------------------

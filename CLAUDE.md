@@ -253,6 +253,10 @@ Parameter discipline:
 Subagent authority model (enforce this in routing):
 - `planner`: plan/governance/scope/evaluation contract authority; no source implementation.
 - `guardian (provision)`: worktree/lease authority after planner emits `next_work_item`; fresh-project bootstrap itself is owned by `workflow bootstrap-request` → `workflow bootstrap-local`.
+  When the bound repo is still unborn (no `HEAD` yet), `cc-policy worktree provision`
+  performs the one-time runtime-owned bootstrap commit before creating the
+  implementer worktree. This is repo initialization, not general landing
+  authority; do not ask `guardian:provision` to run `git commit` directly.
 - `implementer`: source implementation within scope; no landing authority.
 - `reviewer`: read-only outer-loop technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`). Codex implementer critic reviews are tactical inner-loop filters; they do not replace reviewer readiness.
 - `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push` to the established upstream) once readiness gates are green.

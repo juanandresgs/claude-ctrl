@@ -78,6 +78,11 @@ initial in-progress planner work item, then returns the canonical planner
 launch spec. Guardian provisioning begins only after planner emits
 `next_work_item`.
 
+If the bound repo is still unborn (no `HEAD` yet), `cc-policy worktree provision`
+now performs the one-time runtime-owned bootstrap commit before branching the
+implementer worktree. Do not try to run `git commit` manually from the
+`guardian:provision` seat; the CLI owns that narrow bootstrap-only exception.
+
 **Provision sequence — run this single command:**
 
 ```

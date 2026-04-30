@@ -1767,6 +1767,8 @@ def _provision_worktree(
     """Core provision logic: filesystem-first, then DB writes, with partial-failure cleanup.
 
     Provision sequence (DEC-GUARD-WT-008 R3, DEC-GUARD-WT-002):
+      0. If the base repo is unborn (no HEAD yet), create a one-time bootstrap
+         commit in the project root so git worktree add has a valid base commit.
       1. Compute worktree_path and branch from project_root + feature_name.
       2. Filesystem check: does the path already exist? → already_exists path.
       3. git worktree add (subprocess) — filesystem is created BEFORE any DB write.
@@ -1809,15 +1811,138 @@ def _provision_worktree(
       lease for completion record submission. The Guardian lease must be at PROJECT_ROOT,
       not at the worktree path. This function issues it here so check-guardian.sh can
       find it after the guardian agent runs `cc-policy worktree provision`.
+
+    @decision DEC-GUARD-WT-009
+    Title: worktree provision may initialize an unborn base repo before branching
+    Status: accepted
+    Rationale: A fresh repo's first commit is not a reviewed landing and cannot
+      belong to `guardian:land`; yet `git worktree add` refuses to branch from an
+      unborn repo with no HEAD. The runtime provision authority owns the narrow,
+      one-time repair: when project_root has no HEAD, it materializes a bootstrap
+      commit directly via subprocess before any worktree branch is created. This
+      does NOT widen the shell-level `can_land_git` capability and only applies
+      while the repo is unborn.
     """
     import os as _os
     import subprocess as _subprocess
 
     from runtime.core.policy_utils import normalize_path
 
+    def _run_git_checked(*git_args: str) -> str:
+        result = _subprocess.run(
+            ["git", "-C", project_root, *git_args],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip() or "git command failed"
+            raise RuntimeError(f"`git {' '.join(git_args)}` failed: {stderr}")
+        return result.stdout.strip()
+
+    def _repo_has_head() -> bool:
+        result = _subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "--verify", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+
+    def _bootstrap_commit_candidates() -> list[str]:
+        result = _subprocess.run(
+            [
+                "git",
+                "-C",
+                project_root,
+                "ls-files",
+                "--cached",
+                "--modified",
+                "--deleted",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return []
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for raw in result.stdout.decode("utf-8", errors="replace").split("\x00"):
+            path = raw.strip()
+            if not path:
+                continue
+            if path == ".claude" or path.startswith(".claude/"):
+                continue
+            if path == ".worktrees" or path.startswith(".worktrees/"):
+                continue
+            if path == "tmp" or path.startswith("tmp/"):
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            candidates.append(path)
+        return candidates
+
+    def _initialize_unborn_repo() -> dict:
+        branch_name = _run_git_checked("symbolic-ref", "--short", "HEAD")
+        commit_message = f"chore: initialize repository for workflow {workflow_id}"
+        candidates = _bootstrap_commit_candidates()
+        if candidates:
+            add_cmd = ["git", "-C", project_root, "add", "--all", "--", *candidates]
+            add_result = _subprocess.run(add_cmd, capture_output=True, text=True)
+            if add_result.returncode != 0:
+                stderr = (
+                    add_result.stderr.strip()
+                    or add_result.stdout.strip()
+                    or "git add failed"
+                )
+                raise RuntimeError(f"bootstrap initialization add failed: {stderr}")
+        commit_args = ["git", "-C", project_root, "commit", "--allow-empty", "-m", commit_message]
+        commit_result = _subprocess.run(commit_args, capture_output=True, text=True)
+        if commit_result.returncode != 0:
+            stderr = (
+                commit_result.stderr.strip()
+                or commit_result.stdout.strip()
+                or "git commit failed"
+            )
+            raise RuntimeError(f"bootstrap initialization commit failed: {stderr}")
+        commit_sha = _run_git_checked("rev-parse", "HEAD")
+        events_mod.emit(
+            conn,
+            "workflow.bootstrap.repo_initialized",
+            source=f"workflow:{workflow_id}",
+            detail=json.dumps(
+                {
+                    "workflow_id": workflow_id,
+                    "project_root": project_root,
+                    "branch": branch_name,
+                    "commit_sha": commit_sha,
+                    "commit_message": commit_message,
+                    "path_count": len(candidates),
+                },
+                sort_keys=True,
+            ),
+        )
+        return {
+            "repo_initialized": True,
+            "bootstrap_commit_sha": commit_sha,
+            "bootstrap_commit_message": commit_message,
+            "bootstrap_commit_path_count": len(candidates),
+        }
+
     project_root = normalize_path(project_root)
     branch = f"feature/{feature_name}"
     worktree_path = _os.path.join(project_root, ".worktrees", f"feature-{feature_name}")
+    repo_init = {
+        "repo_initialized": False,
+        "bootstrap_commit_sha": None,
+        "bootstrap_commit_message": None,
+        "bootstrap_commit_path_count": 0,
+    }
+
+    if not _repo_has_head():
+        repo_init = _initialize_unborn_repo()
 
     # --- Step 1: Filesystem check (DEC-GUARD-WT-008 R3) ---
     already_exists = _os.path.exists(worktree_path)
@@ -1920,6 +2045,7 @@ def _provision_worktree(
         "implementer_lease_id": i_lease["lease_id"],
         "workflow_id": workflow_id,
         "already_exists": already_exists,
+        **repo_init,
     }
 
 
