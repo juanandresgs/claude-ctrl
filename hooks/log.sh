@@ -66,6 +66,19 @@ detect_project_root() {
     echo "${HOME:-/}"
 }
 
+seed_project_dir_from_hook_payload_cwd() {
+    # Hook subprocess PWD can be the parent session directory while the event
+    # payload carries the actual project cwd. Bind runtime resolution to the
+    # event cwd before any cc-policy call resolves state.db.
+    local payload="${1:-}"
+    local payload_cwd=""
+    [[ -n "$payload" ]] || return 0
+    payload_cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || echo "")
+    if [[ -n "$payload_cwd" && -d "$payload_cwd" ]]; then
+        export CLAUDE_PROJECT_DIR="$payload_cwd"
+    fi
+}
+
 # obs_hook_failure <hook_name> <exit_code>
 # Observatory helper: emit a hook_failure metric (W-OBS-2).
 # Called explicitly by hooks that detect a non-zero exit in their own error traps.
@@ -86,7 +99,7 @@ obs_hook_failure() {
 }
 
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root obs_hook_failure
+export -f log_json log_info read_input get_field detect_project_root seed_project_dir_from_hook_payload_cwd obs_hook_failure
 
 # Auto-export CLAUDE_PROJECT_DIR so downstream cc_policy calls scope to
 # project DB. HOME guard prevents non-project contexts from scoping incorrectly.

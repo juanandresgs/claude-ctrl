@@ -18,6 +18,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 # DEC-CLAUDEX-SA-IDENTITY-001: payload agent_id is the sole authority for marker+lease seating.
@@ -74,6 +75,8 @@ elif mode == "canonical_dispatch_subagent_type":
     result = ar.canonical_dispatch_subagent_type(value)
 elif mode == "canonical_stage_id":
     result = ar.canonical_stage_id(value)
+elif mode == "lease_role_for_stage":
+    result = ar.lease_role_for_stage(value)
 elif mode == "dispatch_bootstrap_guidance":
     result = sp.dispatch_bootstrap_guidance(value or None)
 else:
@@ -98,6 +101,21 @@ EOF
     exit 0
 }
 
+_quarantine_start() {
+    local reason="$1"
+    local attempt_id="${2:-}"
+    if [[ -n "${SESSION_ID:-}" && -n "${AGENT_TYPE:-}" ]]; then
+        _local_cc_policy dispatch attempt-quarantine \
+            --session-id "$SESSION_ID" \
+            --agent-type "$AGENT_TYPE" \
+            --reason "$reason" \
+            ${_PAYLOAD_AGENT_ID:+--agent-id "$_PAYLOAD_AGENT_ID"} \
+            ${PROJECT_ROOT:+--project-root "$PROJECT_ROOT"} \
+            ${attempt_id:+--attempt-id "$attempt_id"} \
+            >/dev/null 2>&1 || true
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Carrier consume: augment HOOK_INPUT with contract fields written by
 # pre-agent.sh (PreToolUse:Agent) into pending_agent_requests
@@ -120,6 +138,7 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
         _CARRIER_JSON=$("$(_resolve_runtime_python)" "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$_CARRIER_AGENT_TYPE" 2>/dev/null || echo "")
         if [[ -n "$_CARRIER_JSON" ]]; then
             HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
+            _CARRIER_ATTEMPT_ID=$(printf '%s' "$_CARRIER_JSON" | jq -r '.attempt_id // empty' 2>/dev/null || echo "")
             # Claim delivery only when the carrier-backed correlation path matched
             # (DEC-CLAUDEX-HOOK-WIRING-001). A bare SubagentStart with no carrier
             # row must NOT claim a pending attempt — there is no PreToolUse proof.
@@ -127,6 +146,8 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
             _local_cc_policy dispatch attempt-claim \
                 --session-id "$SESSION_ID" \
                 --agent-type "$_CARRIER_AGENT_TYPE" \
+                ${_CARRIER_ATTEMPT_ID:+--attempt-id "$_CARRIER_ATTEMPT_ID"} \
+                ${_PAYLOAD_AGENT_ID:+--agent-id "$_PAYLOAD_AGENT_ID"} \
                 >/dev/null 2>&1 || true
         fi
     fi
@@ -142,15 +163,18 @@ _CANONICAL_SUBAGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" 
 _EFFECTIVE_STAGE_ID=""
 _EFFECTIVE_LEASE_ROLE="$AGENT_TYPE"
 _MARKER_ROLE="$AGENT_TYPE"
+_EXPECTED_SUBAGENT_TYPE=""
 
 if [[ "$_HAS_CONTRACT" == "yes" ]]; then
     _EFFECTIVE_STAGE_ID=$(echo "$HOOK_INPUT" | jq -r '.stage_id // empty' 2>/dev/null || echo "")
     _EXPECTED_SUBAGENT_TYPE=$(_authority_python "dispatch_subagent_type_for_stage" "$_EFFECTIVE_STAGE_ID" 2>/dev/null || echo "")
     if [[ -n "$_EXPECTED_SUBAGENT_TYPE" && "$AGENT_TYPE" != "$_EXPECTED_SUBAGENT_TYPE" ]]; then
+        _quarantine_start "stage_subagent_type_mismatch" "${_CARRIER_ATTEMPT_ID:-}"
         _emit_context_only "Runtime dispatch contract rejected: stage '${_EFFECTIVE_STAGE_ID}' requires subagent_type '${_EXPECTED_SUBAGENT_TYPE}', but the harness started '${AGENT_TYPE}'. This launch bypasses the repo-owned stage prompt and is not trusted."
     fi
     if [[ -n "$_EXPECTED_SUBAGENT_TYPE" ]]; then
-        _EFFECTIVE_LEASE_ROLE="$_EXPECTED_SUBAGENT_TYPE"
+        _LEASE_ROLE_FOR_STAGE=$(_authority_python "lease_role_for_stage" "$_EFFECTIVE_STAGE_ID" 2>/dev/null || echo "")
+        _EFFECTIVE_LEASE_ROLE="${_LEASE_ROLE_FOR_STAGE:-$_EXPECTED_SUBAGENT_TYPE}"
         _MARKER_ROLE="$_EFFECTIVE_STAGE_ID"
     fi
 elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
@@ -162,6 +186,7 @@ elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
     # shell guidance path — that would silently misguide a forged/stripped launch.
     # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
     _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "$AGENT_TYPE" 2>/dev/null || echo "")
+    _quarantine_start "canonical_seat_no_carrier_contract"
     _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. ${_BOOTSTRAP_GUIDANCE}"
 fi
 
@@ -224,9 +249,10 @@ if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
         fi
 
         # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
-        # workflow_id is derived from the current branch via current_workflow_id()
-        # so the marker is queryable via get_active(project_root=X, workflow_id=W).
-        _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
+        # Contract-bearing dispatches already carry the workflow identity; use
+        # that authority before falling back to branch-derived legacy identity.
+        _WF_ID_FOR_MARKER=$(echo "$HOOK_INPUT" | jq -r '.workflow_id // empty' 2>/dev/null || echo "")
+        [[ -n "$_WF_ID_FOR_MARKER" ]] || _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
         # Capture stderr to detect CLI failures; on nonzero exit emit a single-line
         # diagnostic breadcrumb into CONTEXT_PARTS (DEC-CLAUDEX-SA-MARKER-RELIABILITY-001).
         # The hook always exits 0 — seating failure is observable but never blocking.
@@ -256,10 +282,30 @@ fi
 # When agent_id is absent (no_payload_agent_id guard fired), skip lease claim
 # so dispatch_leases.agent_id is never set to an empty or PID-shaped string.
 if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
+    rt_lease_expire_stale
     if [[ -n "$_PAYLOAD_AGENT_ID" ]]; then
-        _CLAIM=$(rt_lease_claim "$_PAYLOAD_AGENT_ID" "$PROJECT_ROOT" "$_EFFECTIVE_LEASE_ROLE")
+        _LEASE_WORKTREE_PATH="$PROJECT_ROOT"
+        _LEASE_WORKFLOW_ID=""
+        _LEASE_BRANCH="${GIT_BRANCH:-}"
+        if [[ "$_HAS_CONTRACT" == "yes" ]]; then
+            _LEASE_WORKFLOW_ID=$(echo "$HOOK_INPUT" | jq -r '.workflow_id // empty' 2>/dev/null || echo "")
+            if [[ -n "$_LEASE_WORKFLOW_ID" ]]; then
+                _WF_BINDING_JSON=$(_local_cc_policy workflow get "$_LEASE_WORKFLOW_ID" 2>/dev/null || echo "")
+                _WF_BINDING_FOUND=$(printf '%s' "${_WF_BINDING_JSON:-}" | jq -r '.found // false' 2>/dev/null || echo "false")
+                if [[ "$_WF_BINDING_FOUND" == "true" ]]; then
+                    _WF_BINDING_WORKTREE=$(printf '%s' "$_WF_BINDING_JSON" | jq -r '.worktree_path // empty' 2>/dev/null || echo "")
+                    _WF_BINDING_BRANCH=$(printf '%s' "$_WF_BINDING_JSON" | jq -r '.branch // empty' 2>/dev/null || echo "")
+                    [[ -n "$_WF_BINDING_WORKTREE" ]] && _LEASE_WORKTREE_PATH="$_WF_BINDING_WORKTREE"
+                    [[ -n "$_WF_BINDING_BRANCH" ]] && _LEASE_BRANCH="$_WF_BINDING_BRANCH"
+                fi
+            fi
+        fi
+
+        _CLAIM=$(rt_lease_claim "$_PAYLOAD_AGENT_ID" "$_LEASE_WORKTREE_PATH" "$_EFFECTIVE_LEASE_ROLE")
     else
         _CLAIM='{"found":false}'
+        _LEASE_WORKTREE_PATH="$PROJECT_ROOT"
+        _LEASE_WORKFLOW_ID=""
     fi
     _LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
     if [[ -n "$_LEASE_ID" ]]; then
@@ -268,7 +314,7 @@ if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
         _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
         CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
     else
-        CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
+        CONTEXT_PARTS+=("WARNING: No runtime-issued lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
     fi
 else
     _CLAIM='{"found":false}'
@@ -315,6 +361,7 @@ if [[ "$_HAS_CONTRACT" == "yes" ]]; then
         _ERR_PARTS=("Runtime prompt-pack compile failed for this SubagentStart.")
         [[ -n "$_ERR_VIOLATIONS" ]] && _ERR_PARTS+=("$_ERR_VIOLATIONS")
         [[ -n "$_ERR_BACKEND" ]] && _ERR_PARTS+=("Backend error: $_ERR_BACKEND")
+        _quarantine_start "prompt_pack_compile_failed" "${_CARRIER_ATTEMPT_ID:-}"
         _ERR_CTX=$(printf '%s\n' "${_ERR_PARTS[@]}" | jq -Rs .)
         cat <<EOF
 {

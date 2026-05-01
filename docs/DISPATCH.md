@@ -25,15 +25,54 @@ The following dispatch rules are mechanically enforced by the hook chain
 registered in `settings.json`. These are hard blocks (deny with corrective
 message), not advisory warnings.
 
+## Runtime Dispatch Authority
+
+Dispatch identity is owned by the runtime, not by shell glue or prompt text.
+`dispatch_attempts` is the canonical attempt ledger. A PreToolUse Agent/Task
+request creates an attempt before the carrier row is written, and the carrier is
+keyed by `attempt_id`. SubagentStart may only consume that carrier and claim the
+already-issued attempt; it no longer creates fallback leases or invents
+identity when the PreToolUse side failed.
+
+The attempt record owns:
+
+- parent session and agent identity
+- requested role and prompt-pack id
+- target project/worktree metadata
+- tool-use and hook invocation ids
+- child session/agent identity after SubagentStart claim
+- runtime-issued lease id
+- terminal status: `completed`, `failed`, `expired`, `orphaned`, `cancelled`, or
+  `quarantined`
+
+If SubagentStart sees a missing carrier, mismatched role, missing runtime lease,
+or prompt-pack compile failure, it records a quarantined attempt when identity is
+available. `quarantine_gate` is the first policy in the runtime policy registry;
+it blocks Bash/Write/Edit/PreToolUse activity for quarantined sessions so a bad
+spawn cannot continue as an ordinary agent.
+
+Scratchlane permission is also runtime-scoped. `scratchlane_permits` and
+`scratchlane_requests` carry optional session, workflow, work-item, and attempt
+scope. Runtime approval keeps that scope, and policy evaluation only activates
+permits that match the current context. Unscoped manual permits remain possible
+for explicit operator use, but prompt-requested scratchlane work is no longer a
+global permission.
+
+Auto-dispatch decisions are recorded in `dispatch_next_actions`. Hook output may
+still emit `AUTO_DISPATCH:` for the Claude harness, but the structured next
+action row is the runtime state that downstream tooling should inspect.
+
 ### PreToolUse Write|Edit chain (fires on every Write or Edit call)
 
 All write-path enforcement is handled by `hooks/pre-write.sh`, a thin adapter
-that calls `cc-policy evaluate`. The policy engine runs 10 registered Python
+that calls `cc-policy evaluate`. The policy engine runs registered Python
 policies in priority order (first deny wins):
 
 | Priority | Policy | What it enforces |
 |----------|--------|-----------------|
+| 25 | `quarantine_gate` | Quarantined dispatch attempts cannot continue tool activity. |
 | 100 | `branch_guard` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
+| 150 | `write_scratchlane_gate` | Writes outside the governed tree require an active scratchlane permit scoped to the current runtime context. |
 | 200 | `write_who` | Only the `implementer` role may write source files. |
 | 250 | `enforcement_gap` | Deny writes to extensions with unresolved linter gaps (count > 1). |
 | 300 | `plan_guard` | Only actors with `CAN_WRITE_GOVERNANCE` may write governance markdown or constitution-level files. `CLAUDE_PLAN_MIGRATION=1` overrides. |
@@ -48,15 +87,17 @@ policies in priority order (first deny wins):
 
 All bash-path enforcement is handled by `hooks/pre-bash.sh`, and Agent/Task
 launch enforcement is handled by `hooks/pre-agent.sh`. Both are thin adapters
-that call `cc-policy evaluate`. The policy engine currently reports 19
+that call `cc-policy evaluate`. The policy engine runs registered
 PreToolUse/Bash-path policies in priority order:
 
 | Priority | Policy | What it enforces |
 |----------|--------|-----------------|
+| 25 | `quarantine_gate` | Quarantined dispatch attempts cannot continue tool activity. |
 | 100 | `bash_tmp_safety` | Deny /tmp writes (Sacred Practice #3). |
-| 150 | `agent_contract_required` | Deny Agent worktree isolation and enforce canonical stage↔subagent contracts. |
+| 150 | `agent_contract_required` | Deny Agent worktree isolation, enforce canonical stage↔subagent contracts, create the runtime dispatch attempt, issue the dispatch lease, and write the attempt-keyed carrier. |
 | 200 | `bash_worktree_cwd` | Deny bare cd into .worktrees/. |
 | 250 | `bash_worktree_nesting` | Prevent nested worktree creation. |
+| 260 | `bash_scratchlane_gate` | Shell writes outside governed roots require an active scratchlane permit scoped to the current runtime context. |
 | 275 | `bash_write_who` | Capability-gated WHO enforcement for shell writes. |
 | 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |
 | 350 | `bash_worktree_creation` | Guardian-only worktree creation. |
@@ -77,7 +118,7 @@ PreToolUse/Bash-path policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/subagent-start.sh` | Consumes the PreToolUse Agent carrier row, claims dispatch delivery, seats markers/leases, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context and are not seated. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
+| `hooks/subagent-start.sh` | Consumes the attempt-keyed PreToolUse Agent carrier row, claims dispatch delivery against that exact attempt, seats runtime-issued leases, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context, are not seated, and are quarantined when identity is available. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
 
 ### SessionStart (fires on session start, /clear, /compact, resume)
 
@@ -94,10 +135,11 @@ PreToolUse/Bash-path policies in priority order:
 ## Auto-Dispatch (Live)
 
 Automatic role sequencing is live. After each agent stop, `dispatch_engine.py`
-determines the next role from completion records and emits `AUTO_DISPATCH: <role>`
-on stdout when a clean transition is ready. `post-task.sh` passes this signal
-through to the SubagentStop hook output. The orchestrator reads `AUTO_DISPATCH:`
-directives and chains the next role immediately without asking the user.
+determines the next role from completion records, persists a
+`dispatch_next_actions` row, and emits `AUTO_DISPATCH: <role>` on stdout when a
+clean transition is ready. `post-task.sh` passes this signal through to the
+SubagentStop hook output. The orchestrator reads `AUTO_DISPATCH:` directives and
+chains the next role immediately without asking the user.
 
 The canonical planner → guardian(provision) → implementer → reviewer →
 guardian(land) flow chains automatically when:
@@ -122,15 +164,16 @@ critic-lane work; it is not a default regular-Stop blocker and does not affect
 workflow `auto_dispatch` or `next_role`
 (DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
 
-### Properties that remain prompt-level (not mechanically blocked)
+### Remaining Harness Boundary
 
-- **Orchestrator direct dispatch denial.** The orchestrator can still dispatch
-  any agent type at any time. No hook prevents skipping the planner or reviewer.
-  Role sequencing is driven by `AUTO_DISPATCH:` signal compliance, not a hard
-  block on out-of-order dispatch.
-- **Typed runtime dispatch queue.** `dispatch_queue` exists (INIT-002/TKT-009)
-  but is non-authoritative (DEC-WS6-001). Routing uses completion records via
-  `determine_next_role()`. The queue is retained for manual orchestration only.
-- **Orchestrator source-write prevention at dispatch level.** The orchestrator
-  cannot write source files (enforced by `write_who` policy), but this is
-  role-based write denial, not dispatch-level prevention.
+- **Harness spawn cannot be denied at SubagentStart.** Claude's SubagentStart
+  hook can only inject context. The runtime now quarantines bad spawns and the
+  first policy blocks subsequent tool activity, but the literal process spawn is
+  still a harness boundary.
+- **Runtime next-action state is authoritative.** `AUTO_DISPATCH:` remains the
+  harness transport signal; `dispatch_next_actions` is the inspectable runtime
+  state for queued next-role decisions.
+- **Orchestrator source-write prevention remains policy-level.** The
+  orchestrator cannot write source files because write policies deny it. The
+  dispatch ledger records identity and phase; write authority is still enforced
+  by policy capabilities and leases.

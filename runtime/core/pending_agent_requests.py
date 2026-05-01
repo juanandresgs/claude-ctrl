@@ -13,8 +13,8 @@ Carrier table helpers for SubagentStart contract delivery.
   CLAUDEX_CONTRACT_BLOCK JSON marker at Agent-dispatch time.
   pre-agent.sh (PreToolUse:Agent) forwards the payload to cc-policy evaluate;
   after agent_contract_required allows the launch, the runtime writes a row to
-  pending_agent_requests, keyed by (session_id, agent_type).
-  subagent-start.sh atomically reads and deletes the row at SubagentStart
+  pending_agent_requests, keyed by the runtime dispatch attempt id.
+  subagent-start.sh atomically reads and consumes the next pending row at SubagentStart
   time, merging the six contract fields into the hook payload so that the
   runtime-first path (cc-policy prompt-pack subagent-start) fires in
   production — not just in synthetic tests.
@@ -27,6 +27,7 @@ import json
 import sqlite3
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +65,7 @@ def _connect_cli_db(db_path: str) -> sqlite3.Connection:
 def write_pending_request(
     conn: sqlite3.Connection,
     *,
+    attempt_id: str | None = None,
     session_id: str,
     agent_type: str,
     workflow_id: str,
@@ -72,25 +74,50 @@ def write_pending_request(
     work_item_id: str,
     decision_scope: str,
     generated_at: int,
+    parent_agent_id: str = "",
+    tool_use_id: str = "",
+    target_project_root: str = "",
+    worktree_path: str = "",
+    contract_json: str | dict | None = None,
     written_at: Optional[int] = None,
-) -> None:
-    """Insert or replace a pending request row keyed by (session_id, agent_type).
+) -> dict:
+    """Insert a pending request row keyed by dispatch ``attempt_id``.
 
-    Uses INSERT OR REPLACE so a repeat orchestrator dispatch for the same
-    (session_id, agent_type) pair silently overwrites the stale row rather
-    than accumulating orphan rows.
+    Multiple same-role dispatches in one parent session are preserved as
+    independent rows. SubagentStart consumes the oldest pending row for the
+    ``(session_id, agent_type)`` pair, carrying its attempt id forward to the
+    delivery claim.
     """
     if written_at is None:
         written_at = int(time.time())
+    if not attempt_id:
+        attempt_id = uuid.uuid4().hex
+    if isinstance(contract_json, dict):
+        contract_json = json.dumps(contract_json, sort_keys=True)
+    elif contract_json is None:
+        contract_json = json.dumps(
+            {
+                "workflow_id": workflow_id,
+                "stage_id": stage_id,
+                "goal_id": goal_id,
+                "work_item_id": work_item_id,
+                "decision_scope": decision_scope,
+                "generated_at": generated_at,
+            },
+            sort_keys=True,
+        )
     conn.execute(
         """
-        INSERT OR REPLACE INTO pending_agent_requests (
-            session_id, agent_type,
+        INSERT INTO pending_agent_requests (
+            attempt_id, session_id, agent_type,
             workflow_id, stage_id, goal_id, work_item_id,
-            decision_scope, generated_at, written_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            decision_scope, generated_at, written_at, status,
+            consumed_at, parent_agent_id, tool_use_id, target_project_root,
+            worktree_path, contract_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?)
         """,
         (
+            attempt_id,
             session_id,
             agent_type,
             workflow_id,
@@ -100,9 +127,19 @@ def write_pending_request(
             decision_scope,
             generated_at,
             written_at,
+            parent_agent_id,
+            tool_use_id,
+            target_project_root,
+            worktree_path,
+            contract_json,
         ),
     )
     conn.commit()
+    row = conn.execute(
+        "SELECT * FROM pending_agent_requests WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+    return dict(row) if row is not None else {"attempt_id": attempt_id}
 
 
 def consume_pending_request(
@@ -111,21 +148,25 @@ def consume_pending_request(
     session_id: str,
     agent_type: str,
 ) -> Optional[dict]:
-    """Atomically read and delete the row for (session_id, agent_type).
+    """Atomically read and delete the oldest pending row for a seat.
 
-    Returns a dict of the six contract fields if the row exists, or None if
-    no row was found.  The SELECT + DELETE is wrapped in a BEGIN EXCLUSIVE
-    transaction to prevent double-consume when concurrent hook invocations
-    race on the same (session_id, agent_type) pair.
+    Returns a dict of the contract fields plus attempt identity if a pending
+    row exists, or None if no row was found. The SELECT + DELETE is wrapped in
+    a BEGIN EXCLUSIVE transaction to prevent double-consume when concurrent
+    hook invocations race on the same ``(session_id, agent_type)`` pair.
     """
     conn.execute("BEGIN EXCLUSIVE")
     try:
         row = conn.execute(
             """
-            SELECT workflow_id, stage_id, goal_id, work_item_id,
-                   decision_scope, generated_at
+            SELECT attempt_id, workflow_id, stage_id, goal_id, work_item_id,
+                   decision_scope, generated_at, parent_agent_id, tool_use_id,
+                   target_project_root, worktree_path, contract_json
             FROM pending_agent_requests
             WHERE session_id = ? AND agent_type = ?
+              AND status = 'pending'
+            ORDER BY written_at ASC, rowid ASC
+            LIMIT 1
             """,
             (session_id, agent_type),
         ).fetchone()
@@ -133,8 +174,11 @@ def consume_pending_request(
             conn.execute("ROLLBACK")
             return None
         conn.execute(
-            "DELETE FROM pending_agent_requests WHERE session_id = ? AND agent_type = ?",
-            (session_id, agent_type),
+            """
+            DELETE FROM pending_agent_requests
+            WHERE attempt_id = ?
+            """,
+            (row["attempt_id"] if hasattr(row, "keys") else row[0],),
         )
         conn.execute("COMMIT")
     except Exception:
@@ -144,16 +188,21 @@ def consume_pending_request(
             pass
         raise
 
-    # sqlite3.Row supports both index and key access; normalise to plain dict.
     if hasattr(row, "keys"):
         return dict(row)
     return {
-        "workflow_id": row[0],
-        "stage_id": row[1],
-        "goal_id": row[2],
-        "work_item_id": row[3],
-        "decision_scope": row[4],
-        "generated_at": row[5],
+        "attempt_id": row[0],
+        "workflow_id": row[1],
+        "stage_id": row[2],
+        "goal_id": row[3],
+        "work_item_id": row[4],
+        "decision_scope": row[5],
+        "generated_at": row[6],
+        "parent_agent_id": row[7],
+        "tool_use_id": row[8],
+        "target_project_root": row[9],
+        "worktree_path": row[10],
+        "contract_json": row[11],
     }
 
 

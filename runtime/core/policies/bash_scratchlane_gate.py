@@ -29,6 +29,7 @@ from runtime.core.policy_utils import (
     is_tracked_repo_path,
     normalize_path,
     resolve_path_from_base,
+    scratchlane_root,
     suggest_scratchlane_task_slug,
 )
 
@@ -204,6 +205,21 @@ def _approval_clause(task_slug: str) -> str:
     )
 
 
+def _active_scratch_root_for_task(
+    *,
+    project_root: str,
+    task_slug: str,
+    scratch_roots: frozenset[str],
+) -> str:
+    if not project_root or not task_slug:
+        return ""
+    expected_root = normalize_path(scratchlane_root(project_root, task_slug))
+    for root in scratch_roots:
+        if normalize_path(str(root)) == expected_root:
+            return expected_root
+    return ""
+
+
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     intent = request.command_intent
     if intent is None:
@@ -335,6 +351,14 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             if info.scratch_root:
                 scratch_root = info.scratch_root
             needs_grant = info.kind != PATH_KIND_ARTIFACT
+    if not scratch_root:
+        scratch_root = _active_scratch_root_for_task(
+            project_root=project_root,
+            task_slug=task_slug,
+            scratch_roots=request.context.scratchlane_roots,
+        )
+    if scratch_root:
+        needs_grant = False
     scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
     reason = (
         "BLOCKED: raw interpreter execution via Bash is opaque to the pre-tool write gate. "

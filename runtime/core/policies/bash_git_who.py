@@ -173,6 +173,18 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 reason=reason,
                 policy_name="bash_git_who",
                 effects={"expire_stale_leases": True},
+                metadata={
+                    "reason_code": "lease_not_attachable",
+                    "observed": {
+                        "actor_role": actor,
+                        "target_worktree": request.context.project_root or request.cwd,
+                        "active_lease_roles": sorted(suppressed),
+                    },
+                    "repair": (
+                        "dispatch the matching canonical stage so the existing "
+                        "lease is consumed by the lease-holder actor"
+                    ),
+                },
             )
         return PolicyDecision(
             action="deny",
@@ -184,6 +196,18 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             ),
             policy_name="bash_git_who",
             effects={"expire_stale_leases": True},
+            metadata={
+                "reason_code": "missing_dispatch_lease",
+                "observed": {
+                    "target_worktree": request.context.project_root or request.cwd,
+                    "actor_role": request.context.actor_role,
+                    "workflow_id": request.context.workflow_id,
+                },
+                "repair": (
+                    "issue or dispatch a lease for the command target worktree "
+                    "before running mutating git operations"
+                ),
+            },
         )
 
     # Belt-and-suspenders role check (DEC-PE-EGAP-GIT-WHO-002):
@@ -204,6 +228,15 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                 "--role <role> --worktree-path <path>"
             ),
             policy_name="bash_git_who",
+            metadata={
+                "reason_code": "lease_role_mismatch",
+                "observed": {
+                    "lease_role": lease_role_str,
+                    "actor_role": request.context.actor_role,
+                    "workflow_id": request.context.workflow_id,
+                },
+                "repair": "run the command from the actor that claimed the lease",
+            },
         )
 
     # Check lease is not expired (defensive — build_context only loads active
@@ -243,6 +276,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                         f"'{request.context.actor_role}' does not have it."
                     ),
                     policy_name="bash_git_who",
+                    metadata={
+                        "reason_code": "missing_landing_capability",
+                        "observed": {
+                            "subcommand": invocation.subcommand,
+                            "actor_role": request.context.actor_role,
+                            "capabilities": sorted(request.context.capabilities),
+                            "workflow_id": request.context.workflow_id,
+                        },
+                        "repair": "dispatch guardian:land after reviewer readiness",
+                    },
                 )
         if invocation.subcommand in _PLUMBING_SUBCOMMANDS:
             if CAN_LAND_GIT not in request.context.capabilities:

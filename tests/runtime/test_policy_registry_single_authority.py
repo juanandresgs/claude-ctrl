@@ -40,9 +40,7 @@ import ast
 import importlib
 import inspect
 import pkgutil
-from typing import Optional
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -226,7 +224,7 @@ class TestPolicyRegistrySingleAuthority:
                 )
 
         assert orphans == [], (
-            f"Orphan bash-path modules (have register() but not in registry):\n"
+            "Orphan bash-path modules (have register() but not in registry):\n"
             + "\n".join(f"  - {o}" for o in orphans)
         )
 
@@ -263,6 +261,9 @@ class TestPolicyRegistrySingleAuthority:
             for p in reg.list_policies()
             if "Write" in p.event_types or "Edit" in p.event_types
         }
+        # quarantine_gate is a cross-tool runtime dispatch guard registered via
+        # its module-level register() helper, not a write-path policy module.
+        write_event_policies.discard("quarantine_gate")
         unaccounted = write_event_policies - init_registered
         assert unaccounted == set(), (
             f"Write/Edit policies in live registry are NOT in __init__.py "
@@ -325,7 +326,7 @@ class TestPolicyRegistrySingleAuthority:
                 )
 
         assert violations == [], (
-            f"Priority ordering violated:\n"
+            "Priority ordering violated:\n"
             + "\n".join(f"  - {v}" for v in violations)
         )
 
@@ -397,7 +398,7 @@ class TestPolicyRegistrySingleAuthority:
             f"  reg_b: {names_b}"
         )
         assert prios_a == prios_b, (
-            f"Priority lists differ between two fresh registrations"
+            "Priority lists differ between two fresh registrations"
         )
 
     def test_register_all_double_call_count_constraint(self):
@@ -451,7 +452,7 @@ class TestPolicyRegistrySingleAuthority:
                 bad.append(f"{entry.name} (fn={entry.fn!r})")
 
         assert bad == [], (
-            f"Non-callable fn in registered policy entries:\n"
+            "Non-callable fn in registered policy entries:\n"
             + "\n".join(f"  - {b}" for b in bad)
         )
 
@@ -474,8 +475,8 @@ class TestPolicyRegistrySingleAuthority:
             if not p.enabled
         ]
         assert disabled == [], (
-            f"Policies are disabled in the default registry — "
-            f"they should not be registered if disabled:\n"
+            "Policies are disabled in the default registry — "
+            "they should not be registered if disabled:\n"
             + "\n".join(f"  - {d}" for d in disabled)
         )
 

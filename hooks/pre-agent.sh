@@ -43,6 +43,7 @@ HOOK_INPUT=$(cat 2>/dev/null || echo "")
 if [[ -z "$HOOK_INPUT" ]] || ! printf '%s' "$HOOK_INPUT" | jq -e . >/dev/null 2>&1; then
     _deny "Policy engine unavailable or received malformed Agent hook input. Denying as fail-safe."
 fi
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 
 TOOL_NAME=$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
 if [[ "$TOOL_NAME" != "Agent" && "$TOOL_NAME" != "Task" ]]; then

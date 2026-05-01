@@ -343,6 +343,18 @@ def _configure_guardian_git_allow_in_shared_db(repo: Path, worktree: Path) -> No
         "--total",
         "1",
     )
+    _policy_with_db(
+        db,
+        "test-state",
+        "set",
+        "pass",
+        "--project-root",
+        str(repo),
+        "--passed",
+        "1",
+        "--total",
+        "1",
+    )
     _policy_with_db(db, "evaluation", "set", workflow_id, "ready_for_guardian", "--head-sha", head_sha)
     _policy_with_db(db, "workflow", "bind", workflow_id, str(worktree), branch)
     _policy_with_db(db, "workflow", "scope-set", workflow_id, "--allowed", '["*"]', "--forbidden", "[]")
@@ -404,6 +416,18 @@ def _configure_parent_marker_feature_lease_in_shared_db(repo: Path, worktree: Pa
         "--total",
         "1",
     )
+    _policy_with_db(
+        db,
+        "test-state",
+        "set",
+        "pass",
+        "--project-root",
+        str(repo),
+        "--passed",
+        "1",
+        "--total",
+        "1",
+    )
     _policy_with_db(db, "evaluation", "set", workflow_id, "ready_for_guardian", "--head-sha", head_sha)
     _policy_with_db(db, "workflow", "bind", workflow_id, str(worktree), branch)
     _policy_with_db(db, "workflow", "scope-set", workflow_id, "--allowed", '["*"]', "--forbidden", "[]")
@@ -418,6 +442,16 @@ def _configure_parent_marker_feature_lease_in_shared_db(repo: Path, worktree: Pa
         workflow_id,
         "--allowed-ops",
         '["routine_local","high_risk"]',
+    )
+    _policy_with_db(
+        db,
+        "lease",
+        "claim",
+        "guardian-land-agent",
+        "--worktree-path",
+        str(worktree),
+        "--expected-role",
+        "guardian",
     )
 
 
@@ -494,6 +528,47 @@ def test_pre_write_hook_cases(tmp_path, case):
         result,
         expected_decision=case["expected_decision"],
         reason_substring=case.get("reason_substring"),
+    )
+
+
+def test_pre_write_hook_seeds_project_dir_from_payload_cwd_before_db_resolution(tmp_path):
+    """Write/Edit must use payload cwd when hook subprocess cwd is elsewhere.
+
+    This mirrors the pre-bash target-resolution fix. Claude Code can invoke
+    PreToolUse from an orchestrator parent cwd while the Write payload carries
+    the real project cwd. pre-write.sh must bind policy DB and marker lookup to
+    that payload/root context before asking cc-policy for actor identity.
+    """
+    repo = _init_repo(tmp_path, branch="feature/write-payload-cwd", name="pre-write-payload-cwd")
+    _seed_master_plan(repo)
+    _set_role(repo, "implementer")
+    (repo / "src").mkdir()
+
+    payload = json.dumps(
+        {
+            "tool_name": "Write",
+            "cwd": str(repo),
+            "tool_input": {
+                "file_path": "src/app.ts",
+                "content": _typescript_exports(),
+            },
+        }
+    )
+    env = _hook_env_without_policy_db(repo)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    parent_side_db = repo.parent / ".claude" / "state.db"
+
+    result = _run(
+        ["bash", str(_PRE_WRITE_HOOK)],
+        cwd=repo.parent,
+        env=env,
+        input_text=payload,
+        check=False,
+    )
+
+    _assert_hook_result(result, expected_decision="allow")
+    assert not parent_side_db.exists(), (
+        "pre-write hook must not create/read a side DB from the hook subprocess cwd"
     )
 
 
@@ -748,3 +823,284 @@ def test_pre_bash_hook_joins_parent_marker_to_target_worktree_lease_without_poli
     assert not private_db.exists(), (
         "pre-bash hook must not create/read a private linked-worktree DB"
     )
+
+
+def test_pre_bash_hook_uses_git_dash_c_after_global_option_from_parent_cwd(tmp_path):
+    """pre-bash must resolve lease worktree from parsed git -C, not shell cwd.
+
+    Regression: commands such as ``git -c core.editor=true -C <worktree>
+    commit`` have a valid git target and matching guardian lease, but the
+    legacy regex-only target resolver missed ``-C`` unless it was the first git
+    option. The hook then built context from the parent session cwd and denied
+    with "No active dispatch lease for this worktree".
+    """
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-global-option-cwd")
+    worktree = repo / ".worktrees" / "feature-global-option-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/parent-marker-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    command = f'git -c core.editor=true -C "{worktree}" commit --allow-empty -m done'
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(repo),
+    }
+    env = _hook_env_without_policy_db(repo)
+    private_db = worktree / ".claude" / "state.db"
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=repo,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "allow", hook_out
+    assert not private_db.exists(), (
+        "pre-bash hook must not create/read a private linked-worktree DB"
+    )
+
+
+def test_pre_bash_hook_seeds_project_dir_from_payload_cwd_before_db_resolution(tmp_path):
+    """Payload cwd must bind DB resolution when hook PWD is the parent dir.
+
+    Regression: pre-bash.sh sourced log.sh before reading hook JSON, so
+    auto-project detection ran from the hook subprocess PWD. When the harness
+    launched the hook from the workspace parent while the payload cwd pointed at
+    the actual repo, cc-policy evaluated against the wrong/default DB and
+    denied despite a live lease in the repo DB.
+    """
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-payload-cwd-db")
+    worktree = repo / ".worktrees" / "feature-payload-cwd-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/parent-marker-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    command = (
+        f'git -C {worktree} commit -m '
+        '"feat(slice-2): codex adapter surface — .codex/, hooks/, tests/"'
+    )
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(repo),
+    }
+    env = _hook_env_without_policy_db(repo)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    private_db = worktree / ".claude" / "state.db"
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=repo.parent,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "allow", hook_out
+    assert not private_db.exists(), (
+        "pre-bash hook must resolve the shared repo DB from payload cwd"
+    )
+
+
+def test_pre_bash_hook_replaces_wrong_existing_project_dir_when_db_differs(tmp_path):
+    """Existing CLAUDE_PROJECT_DIR is not authoritative if it resolves elsewhere."""
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-wrong-existing-cpd")
+    worktree = repo / ".worktrees" / "feature-wrong-cpd-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/parent-marker-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    wrong_root = tmp_path / "orchestrator-parent"
+    wrong_root.mkdir()
+
+    command = (
+        f'git -C {worktree} commit -m '
+        '"feat(slice-2): codex adapter surface — .codex/, hooks/, tests/"'
+    )
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(repo),
+    }
+    env = _hook_env_without_policy_db(repo)
+    env["CLAUDE_PROJECT_DIR"] = str(wrong_root)
+    private_db = wrong_root / ".claude" / "state.db"
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=wrong_root,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "allow", hook_out
+    assert not private_db.exists(), (
+        "wrong existing CLAUDE_PROJECT_DIR must not create or read a side DB"
+    )
+
+
+def test_pre_bash_hook_allows_guardian_land_base_worktree_commit_from_feature_lease(tmp_path):
+    """guardian:land may land same-workflow planner amendments on the base worktree.
+
+    The lease itself remains scoped to the reviewed feature worktree. During
+    landing, build_context may attach that claimed lease to the shared git root
+    for the same agent/workflow, allowing the base-worktree commit without
+    issuing a second lease that would violate the one-lease-per-agent invariant.
+    The governance-only base commit remains outside the feature source scope:
+    scope and eval SHA checks must not confuse it with the feature payload.
+    """
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-base-worktree-land")
+    worktree = repo / ".worktrees" / "feature-base-land-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/parent-marker-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    (worktree / "src").mkdir()
+    (worktree / "src" / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(worktree, "add", "src/feature.py")
+    _git(worktree, "commit", "-m", "feature commit", "-q")
+    feature_sha = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    db = _db_path(repo)
+    _policy_with_db(
+        db,
+        "evaluation",
+        "set",
+        "feature-parent-marker-ready",
+        "ready_for_guardian",
+        "--head-sha",
+        feature_sha,
+    )
+    _policy_with_db(
+        db,
+        "workflow",
+        "scope-set",
+        "feature-parent-marker-ready",
+        "--allowed",
+        '["src/**"]',
+        "--forbidden",
+        '["MASTER_PLAN.md","docs/**"]',
+    )
+
+    (repo / "docs").mkdir()
+    (repo / "MASTER_PLAN.md").write_text("# Plan\n\nSlice 2 planner amendment.\n", encoding="utf-8")
+    (repo / "docs" / "RESEARCH.md").write_text("# Research\n\nPinned review record.\n", encoding="utf-8")
+    _git(repo, "add", "MASTER_PLAN.md", "docs/RESEARCH.md")
+
+    command = (
+        f'git -C {repo} commit -m '
+        '"plan(slice-2): DEC-CDX-008/009/010 + RESEARCH.md pin record"'
+    )
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(repo),
+    }
+    env = _hook_env_without_policy_db(repo)
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=repo,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "allow", hook_out
+
+
+def test_pre_bash_hook_does_not_extend_guardian_land_lease_to_sibling_worktree(tmp_path):
+    """The guardian:land shared-root bridge is not a sibling-worktree wildcard."""
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-sibling-worktree-deny")
+    worktree = repo / ".worktrees" / "feature-leased-ready"
+    sibling = repo / ".worktrees" / "feature-unleased-ready"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/leased-ready")
+    _git(repo, "worktree", "add", str(sibling), "-b", "feature/unleased-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    command = f'git -C {sibling} commit --allow-empty -m done'
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(sibling),
+    }
+    env = _hook_env_without_policy_db(repo)
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=sibling,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "deny", hook_out
+    assert "No active dispatch lease for this worktree" in _reason(hook_out)
+
+
+def test_pre_bash_hook_denies_base_worktree_non_governance_sidecar(tmp_path):
+    """The base-worktree landing sidecar is governance-only."""
+    repo = _init_repo(tmp_path, branch="main", name="pre-bash-base-sidecar-deny")
+    worktree = repo / ".worktrees" / "feature-base-sidecar-deny"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", str(worktree), "-b", "feature/parent-marker-ready")
+    _configure_parent_marker_feature_lease_in_shared_db(repo, worktree)
+
+    (worktree / "src").mkdir()
+    (worktree / "src" / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(worktree, "add", "src/feature.py")
+    _git(worktree, "commit", "-m", "feature commit", "-q")
+    parent_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    db = _db_path(repo)
+    _policy_with_db(
+        db,
+        "evaluation",
+        "set",
+        "feature-parent-marker-ready",
+        "ready_for_guardian",
+        "--head-sha",
+        parent_sha,
+    )
+    _policy_with_db(
+        db,
+        "workflow",
+        "scope-set",
+        "feature-parent-marker-ready",
+        "--allowed",
+        '["src/**"]',
+        "--forbidden",
+        '["scripts/**"]',
+    )
+
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "sidecar.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    _git(repo, "add", "scripts/sidecar.sh")
+
+    command = f'git -C {repo} commit -m "sidecar: should deny"'
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(repo),
+    }
+    env = _hook_env_without_policy_db(repo)
+
+    hook = _run(
+        ["bash", str(_PRE_BASH_HOOK)],
+        cwd=repo,
+        env=env,
+        input_text=json.dumps(payload),
+        check=False,
+    )
+    hook_out = _parse_stdout(hook.stdout)
+    assert hook.returncode == 0, hook.stderr
+    assert _decision(hook_out) == "deny", hook_out
+    assert "Scope violation" in _reason(hook_out)

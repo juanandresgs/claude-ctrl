@@ -222,6 +222,12 @@ CREATE TABLE IF NOT EXISTS scratchlane_permits (
     project_root TEXT    NOT NULL,
     task_slug    TEXT    NOT NULL,
     root_path    TEXT    NOT NULL,
+    session_id   TEXT,
+    workflow_id  TEXT,
+    work_item_id TEXT,
+    attempt_id   TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '["write_scratch","run_interpreter_wrapped"]',
+    expires_at   INTEGER,
     granted_by   TEXT    NOT NULL DEFAULT 'user',
     note         TEXT    NOT NULL DEFAULT '',
     created_at   INTEGER NOT NULL,
@@ -244,6 +250,11 @@ CREATE TABLE IF NOT EXISTS scratchlane_requests (
     project_root    TEXT    NOT NULL,
     task_slug       TEXT    NOT NULL,
     root_path       TEXT    NOT NULL,
+    workflow_id     TEXT,
+    work_item_id    TEXT,
+    attempt_id      TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '["write_scratch","run_interpreter_wrapped"]',
+    expires_at      INTEGER,
     requested_path  TEXT    NOT NULL DEFAULT '',
     tool_name       TEXT    NOT NULL DEFAULT '',
     request_reason  TEXT    NOT NULL DEFAULT '',
@@ -307,6 +318,26 @@ CREATE TABLE IF NOT EXISTS completion_records (
     missing_fields  TEXT,
     created_at      INTEGER NOT NULL
 )
+"""
+
+DISPATCH_NEXT_ACTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS dispatch_next_actions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id     TEXT    NOT NULL,
+    source_role     TEXT    NOT NULL,
+    next_role       TEXT    NOT NULL,
+    worktree_path   TEXT    NOT NULL DEFAULT '',
+    guardian_mode   TEXT    NOT NULL DEFAULT '',
+    reason          TEXT    NOT NULL DEFAULT '',
+    payload_json    TEXT    NOT NULL DEFAULT '{}',
+    status          TEXT    NOT NULL DEFAULT 'pending',
+    created_at      INTEGER NOT NULL
+)
+"""
+
+DISPATCH_NEXT_ACTIONS_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_dispatch_next_actions_pending
+    ON dispatch_next_actions (workflow_id, status, created_at DESC)
 """
 
 CRITIC_REVIEWS_DDL = """
@@ -603,6 +634,7 @@ CREATE INDEX IF NOT EXISTS idx_goal_contracts_workflow
 
 PENDING_AGENT_REQUESTS_DDL = """
 CREATE TABLE IF NOT EXISTS pending_agent_requests (
+    attempt_id     TEXT    PRIMARY KEY,
     session_id     TEXT    NOT NULL,
     agent_type     TEXT    NOT NULL,
     workflow_id    TEXT    NOT NULL,
@@ -612,9 +644,22 @@ CREATE TABLE IF NOT EXISTS pending_agent_requests (
     decision_scope TEXT    NOT NULL,
     generated_at   INTEGER NOT NULL,
     written_at     INTEGER NOT NULL,
-    PRIMARY KEY (session_id, agent_type)
+    status         TEXT    NOT NULL DEFAULT 'pending',
+    consumed_at    INTEGER,
+    parent_agent_id TEXT,
+    tool_use_id    TEXT,
+    target_project_root TEXT,
+    worktree_path  TEXT,
+    contract_json  TEXT    NOT NULL DEFAULT '{}'
 )
 """
+
+PENDING_AGENT_REQUESTS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_pending_agent_requests_session_type
+       ON pending_agent_requests (session_id, agent_type, status, written_at ASC)""",
+    """CREATE INDEX IF NOT EXISTS idx_pending_agent_requests_workflow
+       ON pending_agent_requests (workflow_id, status, written_at ASC)""",
+]
 
 # ---------------------------------------------------------------------------
 # ClauDEX Phase 2b — Agent-Agnostic Supervision Domain
@@ -725,12 +770,31 @@ CREATE TABLE IF NOT EXISTS dispatch_attempts (
     attempt_id          TEXT    PRIMARY KEY,
     seat_id             TEXT    NOT NULL REFERENCES seats(seat_id),
     workflow_id         TEXT,
+    work_item_id        TEXT,
+    goal_id             TEXT,
+    stage_id            TEXT,
+    decision_scope      TEXT,
+    parent_session_id   TEXT,
+    parent_agent_id     TEXT,
+    requested_role      TEXT,
+    target_project_root TEXT,
+    worktree_path       TEXT,
+    prompt_pack_id      TEXT,
+    contract_json       TEXT    NOT NULL DEFAULT '{}',
+    tool_use_id         TEXT,
+    hook_invocation_id  TEXT,
+    child_session_id    TEXT,
+    child_agent_id      TEXT,
+    lease_id            TEXT,
     instruction         TEXT    NOT NULL,
     status              TEXT    NOT NULL DEFAULT 'pending',
     delivery_claimed_at INTEGER,
+    claimed_at          INTEGER,
     acknowledged_at     INTEGER,
     retry_count         INTEGER NOT NULL DEFAULT 0,
     timeout_at          INTEGER,
+    closed_at           INTEGER,
+    failure_reason      TEXT,
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL
 )
@@ -744,6 +808,18 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_seat_status
 DISPATCH_ATTEMPTS_INDEX_WORKFLOW_DDL = """
 CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_workflow
     ON dispatch_attempts (workflow_id) WHERE workflow_id IS NOT NULL
+"""
+
+DISPATCH_ATTEMPTS_INDEX_SESSION_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_child_session_status
+    ON dispatch_attempts (child_session_id, status)
+    WHERE child_session_id IS NOT NULL
+"""
+
+DISPATCH_ATTEMPTS_INDEX_AGENT_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_child_agent_status
+    ON dispatch_attempts (child_agent_id, status)
+    WHERE child_agent_id IS NOT NULL
 """
 
 # Ordered list of all DDL statements — used by ensure_schema()
@@ -767,6 +843,8 @@ ALL_DDL: list[str] = [
     BUGS_DDL,
     DISPATCH_LEASES_DDL,
     COMPLETION_RECORDS_DDL,
+    DISPATCH_NEXT_ACTIONS_DDL,
+    DISPATCH_NEXT_ACTIONS_INDEX_DDL,
     CRITIC_REVIEWS_DDL,
     TEST_STATE_DDL,
     OBS_METRICS_DDL,
@@ -792,6 +870,7 @@ ALL_DDL: list[str] = [
     # ClauDEX Phase 2 SubagentStart contract carrier
     # (DEC-CLAUDEX-SA-CARRIER-001).
     PENDING_AGENT_REQUESTS_DDL,
+    *PENDING_AGENT_REQUESTS_INDEXES_DDL,
     # ClauDEX Phase 2b supervision fabric schema authority
     # (DEC-CLAUDEX-SUPERVISION-DOMAIN-001).
     AGENT_SESSIONS_DDL,
@@ -1002,8 +1081,18 @@ SUPERVISION_THREAD_TYPES: frozenset[str] = frozenset(
 #                      timed_out — timeout_at exceeded without ack
 #                      failed — non-retryable delivery failure
 #                      cancelled — revoked before delivery
+#                      quarantined — harness start failed contract validation;
+#                                    future tool use by that child is blocked
 DISPATCH_ATTEMPT_STATUSES: frozenset[str] = frozenset(
-    {"pending", "delivered", "acknowledged", "timed_out", "failed", "cancelled"}
+    {
+        "pending",
+        "delivered",
+        "acknowledged",
+        "timed_out",
+        "failed",
+        "cancelled",
+        "quarantined",
+    }
 )
 
 # Default lease time-to-live: 2 hours.
@@ -1062,6 +1151,35 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 conn.execute("DROP INDEX IF EXISTS idx_test_state_project")
         except sqlite3.OperationalError:
             pass  # table does not exist yet — CREATE TABLE IF NOT EXISTS handles it
+
+        # Migrate pending_agent_requests from the original carrier key
+        # (session_id, agent_type) to attempt_id as the primary key. The legacy
+        # key overwrote concurrent same-role dispatches in one session; the
+        # attempt id is now the carrier identity authority.
+        try:
+            par_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(pending_agent_requests)").fetchall()
+            }
+            if par_columns and "attempt_id" not in par_columns:
+                conn.execute("ALTER TABLE pending_agent_requests RENAME TO pending_agent_requests_legacy")
+                conn.execute(PENDING_AGENT_REQUESTS_DDL)
+                conn.execute(
+                    """
+                    INSERT INTO pending_agent_requests (
+                        attempt_id, session_id, agent_type, workflow_id, stage_id,
+                        goal_id, work_item_id, decision_scope, generated_at,
+                        written_at, status, consumed_at, contract_json
+                    )
+                    SELECT lower(hex(randomblob(16))), session_id, agent_type,
+                           workflow_id, stage_id, goal_id, work_item_id,
+                           decision_scope, generated_at, written_at,
+                           'pending', NULL, '{}'
+                    FROM pending_agent_requests_legacy
+                    """
+                )
+                conn.execute("DROP TABLE pending_agent_requests_legacy")
+        except sqlite3.OperationalError:
+            pass
 
         for ddl in ALL_DDL:
             conn.execute(ddl)
@@ -1163,6 +1281,60 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         # existing databases without workflow_id columns are upgraded first.
         conn.execute(WORK_ITEMS_INDEX_WORKFLOW_DDL)
         conn.execute(GOAL_CONTRACTS_INDEX_WORKFLOW_DDL)
+
+        # Migrate dispatch_attempts widened ledger columns. Existing databases
+        # keep old rows; NULL/default values mean "unknown legacy fact".
+        for _ddl in [
+            "ALTER TABLE dispatch_attempts ADD COLUMN work_item_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN goal_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN stage_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN decision_scope TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN parent_session_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN parent_agent_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN requested_role TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN target_project_root TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN worktree_path TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN prompt_pack_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN contract_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE dispatch_attempts ADD COLUMN tool_use_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN hook_invocation_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN child_session_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN child_agent_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN lease_id TEXT",
+            "ALTER TABLE dispatch_attempts ADD COLUMN claimed_at INTEGER",
+            "ALTER TABLE dispatch_attempts ADD COLUMN closed_at INTEGER",
+            "ALTER TABLE dispatch_attempts ADD COLUMN failure_reason TEXT",
+        ]:
+            try:
+                conn.execute(_ddl)
+            except sqlite3.OperationalError:
+                pass
+        conn.execute(DISPATCH_ATTEMPTS_INDEX_SESSION_STATUS_DDL)
+        conn.execute(DISPATCH_ATTEMPTS_INDEX_AGENT_STATUS_DDL)
+
+        for _ddl in [
+            "ALTER TABLE scratchlane_permits ADD COLUMN session_id TEXT",
+            "ALTER TABLE scratchlane_permits ADD COLUMN workflow_id TEXT",
+            "ALTER TABLE scratchlane_permits ADD COLUMN work_item_id TEXT",
+            "ALTER TABLE scratchlane_permits ADD COLUMN attempt_id TEXT",
+            (
+                "ALTER TABLE scratchlane_permits ADD COLUMN capabilities_json "
+                "TEXT NOT NULL DEFAULT '[\"write_scratch\",\"run_interpreter_wrapped\"]'"
+            ),
+            "ALTER TABLE scratchlane_permits ADD COLUMN expires_at INTEGER",
+            "ALTER TABLE scratchlane_requests ADD COLUMN workflow_id TEXT",
+            "ALTER TABLE scratchlane_requests ADD COLUMN work_item_id TEXT",
+            "ALTER TABLE scratchlane_requests ADD COLUMN attempt_id TEXT",
+            (
+                "ALTER TABLE scratchlane_requests ADD COLUMN capabilities_json "
+                "TEXT NOT NULL DEFAULT '[\"write_scratch\",\"run_interpreter_wrapped\"]'"
+            ),
+            "ALTER TABLE scratchlane_requests ADD COLUMN expires_at INTEGER",
+        ]:
+            try:
+                conn.execute(_ddl)
+            except sqlite3.OperationalError:
+                pass
 
         # Cleanup migration (W-CONV-2): deactivate any active markers whose role
         # is NOT a dispatch-significant role. Explore, Bash, and general-purpose

@@ -38,6 +38,10 @@ from runtime.core.policy_utils import (
     extract_merge_ref,
     sanitize_token,
 )
+from runtime.core.landing_authority import (
+    is_guardian_land_shared_base_target,
+    paths_are_governance_only,
+)
 
 
 def _git_rev_parse(target_dir: str, ref: str) -> str:
@@ -60,6 +64,21 @@ def _sha_prefix_match(sha_a: str, sha_b: str) -> bool:
     if not sha_a or not sha_b:
         return False
     return sha_b.startswith(sha_a) or sha_a.startswith(sha_b)
+
+
+def _git_staged_files(target_dir: str) -> list[str]:
+    try:
+        r = subprocess.run(
+            ["git", "-C", target_dir, "diff", "--cached", "--name-only"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0:
+            return [f for f in r.stdout.strip().splitlines() if f]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
 
 
 def _resolve_workflow_id(
@@ -145,6 +164,16 @@ def _check_invocation_readiness(
             ),
             policy_name="bash_eval_readiness",
         )
+
+    if (
+        invocation.subcommand == "commit"
+        and is_guardian_land_shared_base_target(request.context, target_dir)
+        and paths_are_governance_only(_git_staged_files(target_dir))
+    ):
+        # The reviewer head_sha belongs to the feature branch. A governance-only
+        # base-worktree sidecar commit is planner-authored landing record, so it
+        # must require ready status but must not compare against feature head.
+        return None
 
     # SHA comparison: stored head_sha vs. relevant HEAD.
     stored_sha = eval_state.get("head_sha", "") if eval_state else ""

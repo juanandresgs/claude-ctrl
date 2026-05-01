@@ -56,6 +56,28 @@ _WORKTREE_BOOLEAN_FLAGS = frozenset(
     ]
 )
 _WORKTREE_REMOVE_BOOLEAN_FLAGS = frozenset(["-f", "--force"])
+_PATH_TARGET_SUBCOMMANDS = frozenset(
+    {
+        "add",
+        "checkout",
+        "diff",
+        "mv",
+        "restore",
+        "rm",
+        "status",
+    }
+)
+_PATH_TARGET_FLAGS_WITH_VALUE = frozenset(
+    {
+        "--pathspec-from-file",
+        "--chmod",
+        "--ignore-missing",
+        "--ignore-removal",
+        "--rename-threshold",
+        "-M",
+        "-C",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -117,6 +139,85 @@ def _extract_git_c_arg(invocation: Optional[GitInvocation]) -> str:
             index += 1
             continue
         break
+    return ""
+
+
+def _looks_like_path_token(token: str, base: str) -> bool:
+    if not token:
+        return False
+    if token == "--":
+        return False
+    if os.path.isabs(token) or token.startswith(("./", "../", "~/", "~")):
+        return True
+    if os.sep in token or (os.altsep and os.altsep in token):
+        return True
+    resolved = resolve_path_from_base(base, token)
+    return bool(resolved and os.path.exists(resolved))
+
+
+def _target_dir_for_path_token(token: str, base: str) -> str:
+    if not _looks_like_path_token(token, base):
+        return ""
+    resolved = resolve_path_from_base(base, token)
+    if not resolved:
+        return ""
+    if os.path.isdir(resolved):
+        return normalize_path(resolved)
+    if os.path.exists(resolved):
+        return normalize_path(os.path.dirname(resolved))
+    parent = os.path.dirname(resolved)
+    if parent and os.path.isdir(parent):
+        return normalize_path(parent)
+    return ""
+
+
+def _extract_git_path_target_dir(invocation: Optional[GitInvocation], base: str) -> str:
+    """Return a target directory from unambiguous git pathspec arguments.
+
+    This is deliberately conservative. It only considers path-oriented git
+    subcommands and only returns a directory when all recognized path tokens
+    resolve under the same directory. Ambiguous branch-ish arguments such as
+    ``git checkout feature`` are ignored.
+    """
+    if invocation is None or invocation.subcommand not in _PATH_TARGET_SUBCOMMANDS:
+        return ""
+
+    args = list(invocation.args)
+    if not args:
+        return ""
+
+    if "--" in args:
+        args = args[args.index("--") + 1 :]
+    elif invocation.subcommand == "checkout":
+        # Without "--", checkout arguments are branch-ish as often as paths.
+        return ""
+
+    targets: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            targets.extend(args[index + 1 :])
+            break
+        if token in _PATH_TARGET_FLAGS_WITH_VALUE:
+            index += 2
+            continue
+        if any(token.startswith(flag + "=") for flag in _PATH_TARGET_FLAGS_WITH_VALUE):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        targets.append(token)
+        index += 1
+
+    resolved_dirs = {
+        directory
+        for token in targets
+        if (directory := _target_dir_for_path_token(token, base))
+    }
+    if len(resolved_dirs) == 1:
+        return next(iter(resolved_dirs))
     return ""
 
 
@@ -283,8 +384,15 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
     cd_target = extract_cd_target(command) or ""
     cd_target_resolved = _resolve_from_base(base_cwd or cwd, cd_target) if cd_target else ""
     git_c_arg = _extract_git_c_arg(git_invocation)
-    command_cwd = cd_target_resolved or _resolve_from_base(base_cwd or cwd, git_c_arg) or base_cwd
-    target_cwd = extract_git_target_dir(command, cwd=cwd)
+    git_c_target_resolved = _resolve_from_base(base_cwd or cwd, git_c_arg) if git_c_arg else ""
+    command_cwd = cd_target_resolved or git_c_target_resolved or base_cwd
+    path_target_dir = _extract_git_path_target_dir(git_invocation, command_cwd or base_cwd or cwd)
+    target_cwd = (
+        cd_target_resolved
+        or git_c_target_resolved
+        or path_target_dir
+        or extract_git_target_dir(command, cwd=cwd)
+    )
     worktree_action = None
     worktree_target_raw = ""
     worktree_target_resolved = ""

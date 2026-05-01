@@ -38,64 +38,13 @@ set -euo pipefail
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
-read_input > /dev/null
+HOOK_INPUT=$(read_input)
 
-# Detect project root (prefers CLAUDE_PROJECT_DIR)
-PROJECT_ROOT=$(detect_project_root)
-
-# Per-command fingerprint comparison (DEC-EVAL-006):
-# pre-bash.sh captures a content-aware fingerprint of source mutations before
-# the command runs. We compare against the post-command fingerprint to detect
-# whether THIS command introduced new source changes. Pre-existing staged
-# changes that are unchanged across the command do NOT trigger invalidation.
-# Use the same baseline-key resolution as pre-bash.sh so pre/post hooks for
-# the same Bash tool call always read/write the same baseline file.
-_BASELINE_KEY=$(get_field '.tool_use_id')
-[[ -z "$_BASELINE_KEY" ]] && _BASELINE_KEY=$(get_field '.session_id')
-[[ -z "$_BASELINE_KEY" ]] && _BASELINE_KEY=$(canonical_session_id)
-_BASELINE_KEY=$(sanitize_token "$_BASELINE_KEY")
-_BASELINE_FILE="$PROJECT_ROOT/tmp/.bash-source-baseline-${_BASELINE_KEY}"
-_BASELINE=""
-if [[ -f "$_BASELINE_FILE" ]]; then
-    _BASELINE=$(cat "$_BASELINE_FILE" 2>/dev/null || echo "")
+PROJECT_ROOT=$(bash_payload_project_root "$HOOK_INPUT" 2>/dev/null || echo "")
+if [[ -n "$PROJECT_ROOT" && -d "$PROJECT_ROOT" ]]; then
+    export CLAUDE_PROJECT_DIR="$PROJECT_ROOT"
 fi
 
-_POST_FP=$(compute_source_fingerprint "$PROJECT_ROOT" 2>/dev/null || echo "ERROR")
-
-_FOUND_SOURCE_MUTATION=false
-if [[ -z "$_BASELINE" ]]; then
-    # Legacy fallback: no baseline captured, use path-presence detection.
-    # This preserves safety for commands that ran before the fingerprint
-    # mechanism was deployed or when pre-bash.sh fails to capture.
-    _CHANGED_FILES=$(
-        {
-            git -C "$PROJECT_ROOT" diff --name-only HEAD 2>/dev/null || true
-            git -C "$PROJECT_ROOT" ls-files --others --exclude-standard "$PROJECT_ROOT" 2>/dev/null || true
-        } | sort -u
-    )
-    while IFS= read -r _F; do
-        [[ -z "$_F" ]] && continue
-        if is_source_file "$_F" && ! is_skippable_path "$_F" && ! is_scratchlane_path "$_F"; then
-            _FOUND_SOURCE_MUTATION=true
-            break
-        fi
-    done <<< "$_CHANGED_FILES"
-elif [[ "$_BASELINE" != "$_POST_FP" ]]; then
-    _FOUND_SOURCE_MUTATION=true
-fi
-
-if [[ "$_FOUND_SOURCE_MUTATION" == "true" ]]; then
-    # Lease-first identity — mirror track.sh:74-79
-    _PB_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
-    _PB_LEASE_FOUND=$(printf '%s' "$_PB_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
-    if [[ "$_PB_LEASE_FOUND" == "true" ]]; then
-        _WF_ID=$(printf '%s' "$_PB_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
-    fi
-    [[ -z "${_WF_ID:-}" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
-    _INVALIDATED=$(rt_eval_invalidate "$_WF_ID" 2>/dev/null || echo "false")
-    if [[ "$_INVALIDATED" == "true" ]]; then
-        append_audit "$PROJECT_ROOT" "eval_reset" "post-bash:source-mutation"
-    fi
-fi
+printf '%s' "$HOOK_INPUT" | cc_policy hook bash-post >/dev/null 2>&1 || true
 
 exit 0

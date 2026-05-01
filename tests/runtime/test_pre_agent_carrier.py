@@ -25,18 +25,15 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from runtime.core import contracts
+from runtime.core import contracts, goal_contract_codec
 from runtime.core import decision_work_registry as dwr
-from runtime.core import goal_contract_codec
 from runtime.core import workflows as workflows_mod
-from runtime.core.pending_agent_requests import consume_pending_request
 from runtime.schemas import ensure_schema
-
-import subprocess
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _PRE_AGENT = str(_REPO_ROOT / "hooks" / "pre-agent.sh")
@@ -288,6 +285,20 @@ def _read_row(db_path: Path, session_id: str, agent_type: str) -> dict | None:
     return dict(row)
 
 
+def _read_marker(db_path: Path, agent_id: str) -> dict | None:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT agent_id, role, project_root, workflow_id, is_active "
+            "FROM agent_markers WHERE agent_id=?",
+            (agent_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row is not None else None
+
+
 def _latest_attempt_timeout(db_path: Path) -> int | None:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -345,9 +356,9 @@ class TestPreAgentCarrierWrite:
         _run_pre_agent(payload, carrier_db)
         assert not _row_exists(carrier_db, _SESSION_ID, _AGENT_TYPE)
 
-    def test_repeat_write_overwrites_stale_row(self, carrier_db):
-        # Two pre-agent calls for the same (session_id, agent_type) must not
-        # accumulate rows — INSERT OR REPLACE semantics in the helper.
+    def test_repeat_write_preserves_attempt_rows(self, carrier_db):
+        # Two pre-agent calls for the same (session_id, agent_type) are distinct
+        # dispatch attempts; the carrier no longer overwrites the first row.
         first_contract = json.dumps({**_CONTRACT, "workflow_id": "wf-old"})
         second_contract = json.dumps({**_CONTRACT, "workflow_id": "wf-new"})
         first_payload = _agent_payload()
@@ -360,15 +371,22 @@ class TestPreAgentCarrierWrite:
         )
         _run_pre_agent(first_payload, carrier_db)
         _run_pre_agent(second_payload, carrier_db)
-        row = _read_row(carrier_db, _SESSION_ID, _AGENT_TYPE)
-        assert row is not None
-        assert row["workflow_id"] == "wf-new"
         conn = sqlite3.connect(str(carrier_db))
+        conn.row_factory = sqlite3.Row
         try:
+            rows = conn.execute(
+                """
+                SELECT workflow_id FROM pending_agent_requests
+                WHERE session_id=? AND agent_type=?
+                ORDER BY written_at ASC, rowid ASC
+                """,
+                (_SESSION_ID, _AGENT_TYPE),
+            ).fetchall()
             count = conn.execute("SELECT COUNT(*) FROM pending_agent_requests").fetchone()[0]
         finally:
             conn.close()
-        assert count == 1
+        assert [row["workflow_id"] for row in rows] == ["wf-old", "wf-new"]
+        assert count == 2
 
     def test_attempt_issue_sets_default_timeout(self, carrier_db):
         _run_pre_agent(_agent_payload(), carrier_db)
@@ -869,6 +887,22 @@ def _make_git_repo_with_schema(tmp_path: Path, subdir_name: str = "repo") -> Pat
     return root
 
 
+def _make_parent_and_payload_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create a non-git launch cwd plus a child git repo with seeded state."""
+    launch_root = tmp_path / "launch-root"
+    launch_root.mkdir()
+    repo_root = _make_git_repo_with_schema(launch_root, subdir_name="payload-repo")
+    db_path = repo_root / ".claude" / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        _seed_db(conn, repo_root)
+        conn.commit()
+    finally:
+        conn.close()
+    return launch_root, repo_root, db_path
+
+
 def _env_no_db_vars(repo_root: Path) -> dict:
     """Env with no CLAUDE_POLICY_DB or CLAUDE_PROJECT_DIR; cwd expected inside repo_root."""
     env = {
@@ -1060,3 +1094,69 @@ class TestPreAgentToSubagentStartRoundTrip:
         assert not _row_exists(db_path, _SESSION_ID, _AGENT_TYPE), (
             "Carrier row must be atomically deleted after subagent-start.sh consumes it"
         )
+
+
+class TestPayloadCwdDbRouting:
+    """Hook event cwd must route DB resolution when process cwd is elsewhere."""
+
+    def test_pre_agent_uses_payload_cwd_when_process_cwd_is_parent(self, tmp_path):
+        launch_root, repo_root, db_path = _make_parent_and_payload_repo(tmp_path)
+        env = _env_no_db_vars(repo_root)
+
+        payload = _agent_payload(cwd=str(repo_root))
+        result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(launch_root),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _row_exists(db_path, _SESSION_ID, _AGENT_TYPE), (
+            "pre-agent.sh must resolve state.db from hook payload cwd, not the "
+            "hook subprocess cwd"
+        )
+
+    def test_subagent_start_consumes_payload_cwd_carrier_from_parent_cwd(self, tmp_path):
+        launch_root, repo_root, db_path = _make_parent_and_payload_repo(tmp_path)
+        env = _env_no_db_vars(repo_root)
+
+        pre_payload = _agent_payload(cwd=str(repo_root))
+        pre_result = subprocess.run(
+            ["bash", _PRE_AGENT],
+            input=json.dumps(pre_payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(launch_root),
+        )
+        assert pre_result.returncode == 0, pre_result.stderr
+        assert _row_exists(db_path, _SESSION_ID, _AGENT_TYPE)
+
+        subagent_payload = {
+            "agent_type": _AGENT_TYPE,
+            "session_id": _SESSION_ID,
+            "agent_id": "payload-cwd-agent",
+            "cwd": str(repo_root),
+        }
+        sa_result = subprocess.run(
+            ["bash", _SUBAGENT_START],
+            input=json.dumps(subagent_payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(launch_root),
+        )
+
+        assert sa_result.returncode == 0, sa_result.stderr
+        parsed = json.loads(sa_result.stdout.strip())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "# ClauDEX Prompt Pack:" in ctx
+        assert "capture_workflow_contracts: no goal row" not in ctx
+        assert not _row_exists(db_path, _SESSION_ID, _AGENT_TYPE)
+        marker = _read_marker(db_path, "payload-cwd-agent")
+        assert marker is not None
+        assert marker["project_root"] == str(repo_root)
+        assert marker["workflow_id"] == _CONTRACT["workflow_id"]

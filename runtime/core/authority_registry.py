@@ -106,7 +106,10 @@ Rationale: CUTOVER_PLAN §Target Architecture §5 ("Capability Model") and
       * ``shadow_decision_mapping``  → ``runtime.core.dispatch_shadow``
       * ``shadow_parity_reporting``  → ``runtime.core.shadow_parity``
       * ``hook_wiring``              → ``runtime.core.hook_manifest``
+      * ``hook_event_envelope``      → ``runtime.core.hook_envelope``
       * ``prompt_pack_layers``       → ``runtime.core.prompt_pack``
+      * ``guardian_landing_scope``   → ``runtime.core.landing_authority``
+      * ``bash_hook_lifecycle``      → ``runtime.core.bash_lifecycle``
 
     The ``hook_wiring`` fact realises CUTOVER_PLAN §Authority Map
     row ``Hook wiring | runtime-declared hook manifest or validated
@@ -476,6 +479,15 @@ AUTHORITY_TABLE: Tuple[OperationalFact, ...] = (
         owner_module="runtime.core.hook_manifest",
     ),
     OperationalFact(
+        name="hook_event_envelope",
+        description=(
+            "Canonical normalization of raw hook payloads into event/tool "
+            "identity, Bash command intent, effective cwd, command target, "
+            "and project root."
+        ),
+        owner_module="runtime.core.hook_envelope",
+    ),
+    OperationalFact(
         name="prompt_pack_layers",
         description=(
             "Runtime-compiled prompt-pack layer authority — the sole "
@@ -492,6 +504,24 @@ AUTHORITY_TABLE: Tuple[OperationalFact, ...] = (
             "§Phase 2 exit criterion: compiled runtime context)."
         ),
         owner_module="runtime.core.prompt_pack",
+    ),
+    OperationalFact(
+        name="guardian_landing_scope",
+        description=(
+            "Runtime-owned classification of Guardian landing operations, "
+            "including feature commits, governance-only base sidecars, and "
+            "reviewed-feature merges."
+        ),
+        owner_module="runtime.core.landing_authority",
+    ),
+    OperationalFact(
+        name="bash_hook_lifecycle",
+        description=(
+            "Runtime-owned Bash pre/post lifecycle bookkeeping for source "
+            "fingerprint baselines, evaluation invalidation, Guardian commit "
+            "head promotion, and landing phase events."
+        ),
+        owner_module="runtime.core.bash_lifecycle",
     ),
 )
 

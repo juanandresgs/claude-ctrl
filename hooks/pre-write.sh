@@ -47,6 +47,7 @@ source "$HOOKS_DIR/lib/hook-safety.sh"
 # shellcheck disable=SC2329  # _hook_main is invoked indirectly via run_fail_closed
 _hook_main() {
     HOOK_INPUT=$(read_input)
+    seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
     FILE_PATH=$(get_field '.tool_input.file_path')
     if [[ -z "$FILE_PATH" ]]; then
         _mark_hook_responded
@@ -56,9 +57,18 @@ _hook_main() {
     # Resolve actor context for the policy engine.
     # File-path-rooted project root (fix #468): avoid CWD-based detect_project_root()
     # for the same reason branch-guard.sh and write-guard.sh resolved from file path.
-    _FILE_DIR=$(dirname "$FILE_PATH")
+    _PAYLOAD_CWD=$(get_field '.cwd')
+    _RESOLVED_FILE_PATH="$FILE_PATH"
+    if [[ "$_RESOLVED_FILE_PATH" != /* && -n "$_PAYLOAD_CWD" ]]; then
+        _RESOLVED_FILE_PATH="${_PAYLOAD_CWD%/}/$_RESOLVED_FILE_PATH"
+    fi
+    _PROJECT_ROOT=$(hook_payload_project_root "$HOOK_INPUT" 2>/dev/null || echo "")
+    _FILE_DIR=$(dirname "$_RESOLVED_FILE_PATH")
     [[ ! -d "$_FILE_DIR" ]] && _FILE_DIR=$(dirname "$_FILE_DIR")
-    _PROJECT_ROOT=$(git -C "$_FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
+    [[ -z "$_PROJECT_ROOT" ]] && _PROJECT_ROOT=$(git -C "$_FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
+    if [[ -n "$_PROJECT_ROOT" && -d "$_PROJECT_ROOT" ]]; then
+        export CLAUDE_PROJECT_DIR="$_PROJECT_ROOT"
+    fi
 
     ACTOR_ROLE=$(current_active_agent_role "$_PROJECT_ROOT" 2>/dev/null || echo "")
 

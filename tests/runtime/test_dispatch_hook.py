@@ -44,7 +44,9 @@ from runtime.core.dispatch_hook import (
     ensure_session_and_seat,
     record_agent_dispatch,
     record_subagent_delivery,
+    record_subagent_quarantine,
 )
+from runtime.core.policy_engine import PolicyRequest, build_context, default_registry
 from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
@@ -243,20 +245,36 @@ def test_full_pretooluseagent_to_subagentstart_flow(conn):
     assert delivered["workflow_id"] == "wf-hook"
 
 
-def test_record_subagent_delivery_claims_most_recent_pending(conn):
-    """When multiple pending attempts exist, the newest is claimed."""
+def test_record_subagent_delivery_legacy_fallback_claims_oldest_pending(conn):
+    """Legacy claim fallback is FIFO; carrier-backed claims pass attempt_id."""
     r1 = record_agent_dispatch(conn, SID, ATYPE, "first dispatch")
     r2 = record_agent_dispatch(conn, SID, ATYPE, "second dispatch")
 
     delivered = record_subagent_delivery(conn, SID, ATYPE)
     assert delivered is not None
-    # Most recent pending (r2) is claimed.
+    # Oldest pending (r1) is claimed when no attempt_id is supplied.
+    assert delivered["attempt_id"] == r1["attempt_id"]
+    assert delivered["status"] == "delivered"
+
+    # r2 remains pending.
+    conn2 = conn
+    r2_state = conn2.execute(
+        "SELECT status FROM dispatch_attempts WHERE attempt_id = ?",
+        (r2["attempt_id"],),
+    ).fetchone()
+    assert r2_state["status"] == "pending"
+
+
+def test_record_subagent_delivery_claims_explicit_attempt_id(conn):
+    r1 = record_agent_dispatch(conn, SID, ATYPE, "first dispatch")
+    r2 = record_agent_dispatch(conn, SID, ATYPE, "second dispatch")
+
+    delivered = record_subagent_delivery(conn, SID, ATYPE, attempt_id=r2["attempt_id"])
+    assert delivered is not None
     assert delivered["attempt_id"] == r2["attempt_id"]
     assert delivered["status"] == "delivered"
 
-    # r1 remains pending.
-    conn2 = conn
-    r1_state = conn2.execute(
+    r1_state = conn.execute(
         "SELECT status FROM dispatch_attempts WHERE attempt_id = ?",
         (r1["attempt_id"],),
     ).fetchone()
@@ -265,7 +283,7 @@ def test_record_subagent_delivery_claims_most_recent_pending(conn):
 
 def test_record_subagent_delivery_ignores_already_delivered(conn):
     """If the only attempt is already delivered, None is returned."""
-    attempt = record_agent_dispatch(conn, SID, ATYPE, INSTR)
+    record_agent_dispatch(conn, SID, ATYPE, INSTR)
     # Manually deliver it via a first SubagentStart.
     record_subagent_delivery(conn, SID, ATYPE)
 
@@ -388,6 +406,37 @@ def test_cli_attempt_claim_returns_not_found_when_no_pending(db_path):
     assert out.get("status") == "ok"
     assert out["found"] is False
     assert out["attempt"] is None
+
+
+def test_quarantined_subagent_is_denied_at_policy_boundary(conn):
+    record_subagent_quarantine(
+        conn,
+        "sess-quarantine",
+        "implementer",
+        reason="canonical_seat_no_carrier_contract",
+        agent_id="agent-quarantine",
+        project_root="/tmp/project",
+    )
+    ctx = build_context(
+        conn,
+        cwd="/tmp/project",
+        actor_id="agent-quarantine",
+        session_id="sess-quarantine",
+        project_root="/tmp/project",
+    )
+    decision = default_registry().evaluate(
+        PolicyRequest(
+            event_type="PreToolUse",
+            tool_name="Bash",
+            tool_input={"command": "pwd"},
+            context=ctx,
+            cwd="/tmp/project",
+        )
+    )
+
+    assert decision.action == "deny"
+    assert decision.policy_name == "quarantine_gate"
+    assert "quarantined" in decision.reason
 
 
 # ---------------------------------------------------------------------------

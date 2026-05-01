@@ -157,7 +157,11 @@ cc_policy() {
     # Delegate DB resolution to the single authoritative resolver so cc_policy
     # callers inherit the same 3-tier fallback without duplicating the logic.
     # (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001)
-    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
+    local _skip_db_resolution=false
+    if [[ "${1:-}" == "hook" && ( "${2:-}" == "envelope" || "${2:-}" == "bash-pre-baseline" ) ]]; then
+        _skip_db_resolution=true
+    fi
+    if [[ "$_skip_db_resolution" != "true" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
         _resolve_policy_db >/dev/null
     fi
     "$(_resolve_runtime_python)" "$runtime_root/cli.py" "$@"
@@ -461,6 +465,24 @@ rt_lease_claim() {
     cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
 }
 
+# rt_lease_issue_for_dispatch <role> [worktree_path] [workflow_id] [branch] [requires_eval]
+# Issues a dispatch lease. Returns full issue JSON or '{"issued":false}'.
+# requires_eval defaults to true; pass "false", "0", or "no" to append --no-eval.
+rt_lease_issue_for_dispatch() {
+    _rt_ensure_schema
+    local role="${1:-}" worktree_path="${2:-}" workflow_id="${3:-}" branch="${4:-}" requires_eval="${5:-true}"
+    local args=("lease" "issue-for-dispatch" "$role")
+    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
+    [[ -n "$workflow_id" ]] && args+=("--workflow-id" "$workflow_id")
+    [[ -n "$branch" ]] && args+=("--branch" "$branch")
+    case "$requires_eval" in
+        false|False|FALSE|0|no|No|NO)
+            args+=("--no-eval")
+            ;;
+    esac
+    cc_policy "${args[@]}" 2>/dev/null || echo '{"issued":false}'
+}
+
 # rt_lease_release <lease_id>
 # Transitions active → released. Fire-and-forget; never blocks hook execution.
 # stdout suppressed: cc_policy outputs {"released":true} which would corrupt
@@ -475,7 +497,7 @@ rt_lease_release() {
 # Expires all active leases past their TTL. Fire-and-forget.
 rt_lease_expire_stale() {
     _rt_ensure_schema
-    cc_policy lease expire-stale 2>/dev/null || true
+    cc_policy lease expire-stale >/dev/null 2>&1 || true
 }
 
 # rt_completion_submit <lease_id> <workflow_id> <role> <payload_json>

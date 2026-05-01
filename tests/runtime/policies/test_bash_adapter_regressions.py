@@ -49,6 +49,7 @@ if str(_WORKTREE) not in sys.path:
 
 # noqa: E402 — path manipulation must precede these imports
 from runtime.core.db import connect_memory  # noqa: E402
+from runtime.core.command_intent import build_bash_command_intent  # noqa: E402
 from runtime.core.policy_engine import build_context  # noqa: E402
 from runtime.schemas import ensure_schema  # noqa: E402
 
@@ -407,6 +408,37 @@ class TestQuotedPromptGitPhrases:
         code, out = _run_evaluate(payload, db, extra_env={"CLAUDE_PROJECT_DIR": ""})
         assert code == 0, f"runtime-derived target_cwd should exit 0; got {code}: {out}"
         assert "action" in out
+
+    def test_command_intent_derives_target_cwd_when_dash_c_follows_global_option(
+        self, tmp_path
+    ):
+        """Parsed GitInvocation, not regex option order, owns git -C targeting."""
+        session = tmp_path / "session"
+        target = tmp_path / "target"
+        session.mkdir()
+        target.mkdir()
+
+        command = f'git -c core.editor=true -C "{target}" status'
+        intent = build_bash_command_intent(command, cwd=str(session))
+
+        assert intent is not None
+        assert intent.command_cwd == os.path.realpath(str(target))
+        assert intent.target_cwd == os.path.realpath(str(target))
+
+    def test_command_intent_derives_target_cwd_from_path_target(self, tmp_path):
+        """Path-oriented git commands can target a worktree without -C."""
+        session = tmp_path / "session"
+        worktree = tmp_path / "worktree"
+        file_path = worktree / "src" / "app.py"
+        session.mkdir()
+        file_path.parent.mkdir(parents=True)
+        file_path.write_text("print('ok')\n", encoding="utf-8")
+
+        command = f'git add "{file_path}"'
+        intent = build_bash_command_intent(command, cwd=str(session))
+
+        assert intent is not None
+        assert intent.target_cwd == os.path.realpath(str(file_path.parent))
 
     def test_cli_derives_target_cwd_from_cd_prefix_when_field_absent(self, db, tmp_path):
         """Runtime command-intent derives target_cwd from raw `cd ... && git ...` text."""

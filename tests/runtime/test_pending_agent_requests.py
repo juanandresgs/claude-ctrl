@@ -115,20 +115,24 @@ class TestWritePendingRequest:
             conn.close()
         assert isinstance(row["written_at"], int) and row["written_at"] > 0
 
-    def test_insert_or_replace_overwrites_stale_row(self, db):
+    def test_same_session_role_writes_preserve_distinct_attempt_rows(self, db):
         conn = _open(db)
         try:
             write_pending_request(conn, **_sample(workflow_id="wf-old"))
             write_pending_request(conn, **_sample(workflow_id="wf-new"))
-            row = conn.execute(
-                "SELECT workflow_id FROM pending_agent_requests WHERE session_id=? AND agent_type=?",
+            rows = conn.execute(
+                """
+                SELECT workflow_id FROM pending_agent_requests
+                WHERE session_id=? AND agent_type=?
+                ORDER BY written_at ASC, rowid ASC
+                """,
                 ("session-abc", "planner"),
-            ).fetchone()
+            ).fetchall()
             count = conn.execute("SELECT COUNT(*) FROM pending_agent_requests").fetchone()[0]
         finally:
             conn.close()
-        assert row["workflow_id"] == "wf-new"
-        assert count == 1
+        assert [row["workflow_id"] for row in rows] == ["wf-old", "wf-new"]
+        assert count == 2
 
     def test_different_agent_types_are_independent_rows(self, db):
         conn = _open(db)

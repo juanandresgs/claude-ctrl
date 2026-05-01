@@ -73,6 +73,7 @@ def _run_hook(
     session_id: str = "test-session-001",
     tool_use_id: str = "",
     set_env_session_id: bool = True,
+    payload_cwd: str = "",
 ) -> tuple[int, str]:
     """Run post-bash.sh with a synthetic PostToolUse Bash payload.
 
@@ -83,6 +84,7 @@ def _run_hook(
         "tool_name": "Bash",
         "tool_input": {"command": command},
         "tool_response": {"output": ""},
+        "cwd": payload_cwd or project_root,
     }
     if tool_use_id:
         payload_obj["tool_use_id"] = tool_use_id
@@ -183,6 +185,17 @@ def _get_eval_status(db_path: str, workflow_id: str, project_root: str = "") -> 
     )
     assert code == 0, f"eval get failed: {out}"
     return out.get("status", "")
+
+
+def _get_eval_record(db_path: str, workflow_id: str, project_root: str = "") -> dict:
+    """Return the current evaluation row."""
+    code, out = _run_cli(
+        ["evaluation", "get", workflow_id],
+        db_path,
+        project_root,
+    )
+    assert code == 0, f"eval get failed: {out}"
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +562,99 @@ class TestFullProductionSequenceE2E:
         code, _ = _run_hook(db, str(project), command="git status")
         assert code == 0
         assert _get_eval_status(db, wf_id, str(project)) == "ready_for_guardian"
+
+
+# ---------------------------------------------------------------------------
+# 6b. Guardian commit materialization keeps readiness on the new commit
+# ---------------------------------------------------------------------------
+
+
+class TestGuardianCommitHeadPromotion:
+    def test_git_dash_c_commit_from_parent_payload_promotes_eval_head(self, tmp_path, db):
+        """Post-bash must follow the git -C target and promote reviewer head.
+
+        Live regression: Guardian committed reviewed staged work in a linked
+        feature worktree via ``git -C <worktree> commit`` from a parent-session
+        cwd. The feature commit succeeded, but post-bash resolved the parent
+        cwd and left evaluation_state.head_sha pinned to the pre-commit parent,
+        so the subsequent merge was denied as stale.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init(repo)
+
+        worktree = repo / ".worktrees" / "feature-head-promotion"
+        worktree.parent.mkdir()
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "feature/head-promotion"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        wf_id = "wf-head-promotion"
+        old_head = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        code, out = _run_cli(
+            ["evaluation", "set", wf_id, "ready_for_guardian", "--head-sha", old_head],
+            db,
+            str(worktree),
+        )
+        assert code == 0, out
+        code, out = _run_cli(
+            [
+                "lease",
+                "issue-for-dispatch",
+                "guardian",
+                "--workflow-id",
+                wf_id,
+                "--worktree-path",
+                str(worktree),
+                "--allowed-ops",
+                '["routine_local","high_risk"]',
+            ],
+            db,
+            str(worktree),
+        )
+        assert code == 0, out
+
+        (worktree / "src").mkdir()
+        (worktree / "src" / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(worktree), "add", "src/feature.py"], check=True)
+        _capture_baseline(str(worktree), baseline_key="tool-commit")
+
+        command = f'git -C "{worktree}" commit -m "feature commit"'
+        subprocess.run(
+            ["git", "-C", str(worktree), "commit", "-m", "feature commit"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        new_head = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert new_head != old_head
+
+        code, stderr = _run_hook(
+            db,
+            str(repo),
+            command=command,
+            tool_use_id="tool-commit",
+            payload_cwd=str(repo),
+        )
+        assert code == 0, stderr
+
+        eval_row = _get_eval_record(db, wf_id, str(worktree))
+        assert eval_row.get("status") == "ready_for_guardian"
+        assert eval_row.get("head_sha") == new_head
 
 
 # ---------------------------------------------------------------------------

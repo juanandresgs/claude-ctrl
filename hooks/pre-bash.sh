@@ -47,9 +47,73 @@ source "$HOOKS_DIR/lib/notify-bridge.sh"
 # The wrapper replaces the standalone `trap 'rt_obs_metric_batch' EXIT` previously here.
 source "$HOOKS_DIR/lib/hook-safety.sh"
 
+_policy_db_for_project_dir() {
+    local project_dir="${1:-}"
+    [[ -n "$project_dir" && -d "$project_dir" ]] || return 0
+    "$(_resolve_runtime_python)" - "$HOOKS_DIR/.." "$project_dir" <<'PY' 2>/dev/null || true
+import sys
+
+repo_root, project_dir = sys.argv[1:3]
+sys.path.insert(0, repo_root)
+
+from runtime.core.config import resolve_db_path
+
+print(resolve_db_path(project_root=project_dir))
+PY
+}
+
+_seed_project_dir_for_pre_bash() {
+    local payload="${1:-}"
+    local payload_cwd=""
+    [[ -n "$payload" ]] || return 0
+    [[ -z "${CLAUDE_POLICY_DB:-}" ]] || return 0
+
+    payload_cwd=$(bash_payload_project_root "$payload" 2>/dev/null || echo "")
+    [[ -z "$payload_cwd" ]] && payload_cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || echo "")
+    [[ -n "$payload_cwd" && -d "$payload_cwd" ]] || return 0
+
+    if [[ -z "${CLAUDE_PROJECT_DIR:-}" ]]; then
+        export CLAUDE_PROJECT_DIR="$payload_cwd"
+        return 0
+    fi
+
+    local current_db payload_db
+    current_db=$(_policy_db_for_project_dir "$CLAUDE_PROJECT_DIR")
+    payload_db=$(_policy_db_for_project_dir "$payload_cwd")
+    if [[ -n "$payload_db" && "$payload_db" != "$current_db" ]]; then
+        export CLAUDE_PROJECT_DIR="$payload_cwd"
+    fi
+}
+
+_session_root_from_payload_cwd() {
+    local payload="${1:-}"
+    local payload_cwd="" session_root="" common_dir="" common_abs=""
+    payload_cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || echo "")
+    if [[ -n "$payload_cwd" && -d "$payload_cwd" ]]; then
+        common_dir=$(git -C "$payload_cwd" rev-parse --git-common-dir 2>/dev/null || echo "")
+        if [[ -n "$common_dir" ]]; then
+            if [[ "$common_dir" = /* ]]; then
+                common_abs="$common_dir"
+            else
+                common_abs="$payload_cwd/$common_dir"
+            fi
+            session_root=$(cd "$(dirname "$common_abs")" 2>/dev/null && pwd -P || echo "")
+        fi
+        [[ -z "$session_root" ]] && session_root=$(git -C "$payload_cwd" rev-parse --show-toplevel 2>/dev/null || echo "")
+        if [[ -n "$session_root" && -d "$session_root" ]]; then
+            printf '%s\n' "$session_root"
+            return 0
+        fi
+        printf '%s\n' "$payload_cwd"
+        return 0
+    fi
+    detect_project_root 2>/dev/null || true
+}
+
 # shellcheck disable=SC2329  # _hook_main is invoked indirectly via run_fail_closed
 _hook_main() {
     HOOK_INPUT=$(read_input)
+    _seed_project_dir_for_pre_bash "$HOOK_INPUT"
     COMMAND=$(get_field '.tool_input.command')
     if [[ -z "$COMMAND" ]]; then
         _mark_hook_responded
@@ -57,9 +121,16 @@ _hook_main() {
     fi
 
     # Resolve actor context for the policy engine. The marker is scoped to the
-    # live session root; command intent below still owns the target worktree.
-    SESSION_ROOT="$(detect_project_root)"
+    # live session root from the hook payload; command intent below still owns
+    # the target worktree/DB context for policy checks.
+    SESSION_ROOT="$(_session_root_from_payload_cwd "$HOOK_INPUT")"
+    TARGET_ROOT="$(bash_payload_project_root "$HOOK_INPUT" 2>/dev/null || echo "")"
     ACTOR_MARKER=$(rt_marker_get_active "$SESSION_ROOT" "" 2>/dev/null || printf '{"found":false}')
+    if [[ "$(printf '%s' "$ACTOR_MARKER" | jq -r '.found // false' 2>/dev/null || echo "false")" != "true" \
+        && -n "$TARGET_ROOT" \
+        && "$TARGET_ROOT" != "$SESSION_ROOT" ]]; then
+        ACTOR_MARKER=$(rt_marker_get_active "$TARGET_ROOT" "" 2>/dev/null || printf '{"found":false}')
+    fi
     ACTOR_ROLE=$(printf '%s' "$ACTOR_MARKER" | jq -r 'if .found then (.role // "") else "" end' 2>/dev/null || echo "")
     ACTOR_ID=$(printf '%s' "$ACTOR_MARKER" | jq -r 'if .found then (.agent_id // "") else "" end' 2>/dev/null || echo "")
     ACTOR_WORKFLOW_ID=$(printf '%s' "$ACTOR_MARKER" | jq -r 'if .found then (.workflow_id // "") else "" end' 2>/dev/null || echo "")
@@ -127,21 +198,7 @@ _hook_main() {
     # Capture source-mutation fingerprint baseline for post-bash.sh (DEC-EVAL-006).
     # Only when allowed — denied commands don't execute so post-bash.sh won't fire.
     if [[ "$_pb_action" != "deny" ]]; then
-        local _pb_proj _pb_baseline_key _pb_fp
-        _pb_proj=$(detect_project_root 2>/dev/null || echo "")
-        if [[ -n "$_pb_proj" ]]; then
-            # Baseline key must be stable across the matching PreToolUse and
-            # PostToolUse hook invocations for the SAME Bash tool call.
-            # Prefer hook payload IDs over process/env fallback so missing
-            # CLAUDE_SESSION_ID does not cause pre/post filename drift.
-            _pb_baseline_key=$(get_field '.tool_use_id')
-            [[ -z "$_pb_baseline_key" ]] && _pb_baseline_key=$(get_field '.session_id')
-            [[ -z "$_pb_baseline_key" ]] && _pb_baseline_key=$(canonical_session_id)
-            _pb_baseline_key=$(sanitize_token "$_pb_baseline_key")
-            _pb_fp=$(compute_source_fingerprint "$_pb_proj" 2>/dev/null || echo "ERROR")
-            mkdir -p "$_pb_proj/tmp" 2>/dev/null || true
-            printf '%s' "$_pb_fp" > "$_pb_proj/tmp/.bash-source-baseline-${_pb_baseline_key}" 2>/dev/null || true
-        fi
+        printf '%s' "$HOOK_INPUT" | cc_policy hook bash-pre-baseline >/dev/null 2>&1 || true
     fi
 }
 

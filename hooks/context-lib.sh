@@ -223,6 +223,48 @@ compute_source_fingerprint() {
         || echo "NOHASH"
 }
 
+# Resolve the command target for Bash hook payloads through the runtime-owned
+# parser. Hooks use this for non-enforcement bookkeeping only; PreToolUse policy
+# decisions still come from cc-policy evaluate.
+bash_payload_intent_context() {
+    local payload="${1:-}"
+    [[ -n "$payload" ]] || payload="${HOOK_INPUT:-}"
+    [[ -n "$payload" ]] || { printf '{}\n'; return 0; }
+
+    printf '%s' "$payload" \
+        | cc_policy hook envelope 2>/dev/null \
+        | jq '{target_cwd: (.envelope.target_cwd // ""),
+               project_root: (.envelope.project_root // ""),
+               git_operations: (.envelope.git_operations // [])}' 2>/dev/null \
+        || printf '{}\n'
+}
+
+bash_payload_project_root() {
+    local payload="${1:-}"
+    local ctx
+    ctx=$(bash_payload_intent_context "$payload" 2>/dev/null || echo '{}')
+    printf '%s' "$ctx" | jq -r '.project_root // empty' 2>/dev/null || true
+}
+
+hook_payload_project_root() {
+    local payload="${1:-}"
+    local ctx
+    [[ -n "$payload" ]] || payload="${HOOK_INPUT:-}"
+    [[ -n "$payload" ]] || return 0
+    ctx=$(printf '%s' "$payload" | cc_policy hook envelope 2>/dev/null || echo '{}')
+    printf '%s' "$ctx" | jq -r '.envelope.project_root // empty' 2>/dev/null || true
+}
+
+bash_payload_has_git_subcommand() {
+    local payload="${1:-}" subcommand="${2:-}"
+    local ctx
+    [[ -n "$subcommand" ]] || return 1
+    ctx=$(bash_payload_intent_context "$payload" 2>/dev/null || echo '{}')
+    printf '%s' "$ctx" \
+        | jq -e --arg subcommand "$subcommand" \
+            '.git_operations[]? | select(.subcommand == $subcommand)' >/dev/null 2>&1
+}
+
 # --- Audit trail ---
 # Runtime-only (TKT-008): .audit-log flat file removed.
 # All audit events go directly to the SQLite event store via rt_event_emit.
@@ -613,4 +655,4 @@ print(classify_git_op(sys.argv[1]))
 # Export for subshells
 export SOURCE_EXTENSIONS
 export -f cc_policy _rt_ensure_schema rt_marker_get_active rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route rt_obs_metric rt_obs_metric_batch _obs_accum
-export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path is_scratchlane_path compute_source_fingerprint append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path is_scratchlane_path compute_source_fingerprint bash_payload_intent_context bash_payload_project_root hook_payload_project_root bash_payload_has_git_subcommand append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

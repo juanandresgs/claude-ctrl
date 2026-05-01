@@ -197,6 +197,7 @@ def process_agent_stop(
         "evaluation_status": "",
         "evaluation_head_sha": "",
         "reviewer_convergence_reason": "",
+        "next_dispatch_id": None,
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -608,12 +609,74 @@ def process_agent_stop(
     except Exception:
         pass  # Shadow emission must never affect live routing (DEC-CLAUDEX-DISPATCH-SHADOW-001).
 
+    if result.get("auto_dispatch") and result.get("next_role") and workflow_id:
+        try:
+            result["next_dispatch_id"] = _persist_next_dispatch_action(
+                conn,
+                workflow_id=workflow_id,
+                source_role=normalised,
+                next_role=str(result["next_role"]),
+                worktree_path=str(result.get("worktree_path") or ""),
+                guardian_mode=str(result.get("guardian_mode") or ""),
+                reason=str(result.get("suggestion") or ""),
+                payload={
+                    "workflow_id": workflow_id,
+                    "source_role": normalised,
+                    "next_role": result.get("next_role"),
+                    "worktree_path": result.get("worktree_path") or "",
+                    "guardian_mode": result.get("guardian_mode") or "",
+                    "auto_dispatch": result.get("auto_dispatch"),
+                    "critic_verdict": result.get("critic_verdict") or "",
+                },
+            )
+        except Exception:
+            pass
+
     return result
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _persist_next_dispatch_action(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    source_role: str,
+    next_role: str,
+    worktree_path: str,
+    guardian_mode: str,
+    reason: str,
+    payload: dict,
+) -> int:
+    """Persist the structured next dispatch action.
+
+    The hook suggestion remains a human view. This table is the runtime-owned
+    carrier for the next dispatch parameters.
+    """
+    now = int(time.time())
+    with conn:
+        cur = conn.execute(
+            """
+            INSERT INTO dispatch_next_actions (
+                workflow_id, source_role, next_role, worktree_path,
+                guardian_mode, reason, payload_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            (
+                workflow_id,
+                source_role,
+                next_role,
+                worktree_path,
+                guardian_mode,
+                reason,
+                json.dumps(payload, sort_keys=True),
+                now,
+            ),
+        )
+    return int(cur.lastrowid)
 
 
 def _resolve_stop_assessment_wf_id(

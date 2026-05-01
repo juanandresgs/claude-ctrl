@@ -32,16 +32,18 @@ Rationale: Hooks are thin transport adapters; they must not own state transition
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Optional
 
-from runtime.core import dispatch_attempts
+from runtime.core import dispatch_attempts, leases
 from runtime.core.claude_code_adapter import ADAPTER
 
 __all__ = [
     "ensure_session_and_seat",
     "record_agent_dispatch",
     "record_subagent_delivery",
+    "record_subagent_quarantine",
     "release_session_seat",
 ]
 
@@ -114,6 +116,14 @@ def record_agent_dispatch(
     instruction: str,
     *,
     workflow_id: Optional[str] = None,
+    work_item_id: str = "",
+    goal_id: str = "",
+    stage_id: str = "",
+    decision_scope: str = "",
+    parent_agent_id: str = "",
+    tool_use_id: str = "",
+    target_project_root: str = "",
+    contract: Optional[dict] = None,
     timeout_at: Optional[int] = None,
 ) -> dict:
     """PreToolUse:Agent → issue a pending dispatch_attempts row.
@@ -147,8 +157,63 @@ def record_agent_dispatch(
         The newly created attempt row, including ``attempt_id``.
     """
     seat_id = ensure_session_and_seat(conn, session_id, agent_type)
+    worktree_path = target_project_root or ""
+    branch = ""
+    if workflow_id:
+        row = conn.execute(
+            "SELECT worktree_path, branch FROM workflow_bindings WHERE workflow_id = ? LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
+        if row is not None:
+            worktree_path = row["worktree_path"] or worktree_path
+            branch = row["branch"] or ""
+
+    lease_id = ""
+    lease_role = ""
+    if stage_id:
+        from runtime.core.authority_registry import lease_role_for_stage
+
+        lease_role = lease_role_for_stage(stage_id) or agent_type
+    elif agent_type:
+        lease_role = agent_type
+
+    if lease_role and worktree_path:
+        requires_eval = stage_id not in {"planner", "reviewer", "guardian:provision"}
+        lease = leases.issue(
+            conn,
+            lease_role,
+            worktree_path=worktree_path,
+            workflow_id=workflow_id,
+            branch=branch,
+            requires_eval=requires_eval,
+            metadata={
+                "dispatch_session_id": session_id,
+                "dispatch_agent_type": agent_type,
+                "dispatch_stage_id": stage_id,
+            },
+        )
+        if lease:
+            lease_id = lease.get("lease_id", "")
+
+    contract_json = json.dumps(contract or {}, sort_keys=True)
     return ADAPTER.dispatch(
-        conn, seat_id, instruction, workflow_id=workflow_id, timeout_at=timeout_at
+        conn,
+        seat_id,
+        instruction,
+        workflow_id=workflow_id,
+        work_item_id=work_item_id,
+        goal_id=goal_id,
+        stage_id=stage_id,
+        decision_scope=decision_scope,
+        parent_session_id=session_id,
+        parent_agent_id=parent_agent_id,
+        requested_role=agent_type,
+        target_project_root=target_project_root,
+        worktree_path=worktree_path,
+        contract_json=contract_json,
+        tool_use_id=tool_use_id,
+        lease_id=lease_id,
+        timeout_at=timeout_at,
     )
 
 
@@ -156,6 +221,9 @@ def record_subagent_delivery(
     conn: sqlite3.Connection,
     session_id: str,
     agent_type: str,
+    *,
+    attempt_id: str = "",
+    child_agent_id: str = "",
 ) -> Optional[dict]:
     """SubagentStart → claim delivery on the most recent pending attempt.
 
@@ -194,13 +262,66 @@ def record_subagent_delivery(
         The updated attempt row at ``'delivered'`` status, or ``None`` if no
         pending attempt was found for this seat.
     """
+    if attempt_id:
+        row = dispatch_attempts.get(conn, attempt_id)
+        if row is None or row.get("status") != "pending":
+            return None
+        return dispatch_attempts.claim(
+            conn,
+            attempt_id,
+            child_session_id=session_id,
+            child_agent_id=child_agent_id,
+        )
+
     seat_id = _seat_id(session_id, agent_type)
     pending = dispatch_attempts.list_for_seat(conn, seat_id, status="pending")
     if not pending:
         return None
-    # list_for_seat returns oldest-first (created_at ASC); take last = newest.
-    attempt_id = pending[-1]["attempt_id"]
-    return ADAPTER.on_delivery_claimed(conn, attempt_id)
+    # Legacy fallback only: consume FIFO instead of newest so repeated same-role
+    # launches cannot steal a newer carrier.
+    attempt_id = pending[0]["attempt_id"]
+    return dispatch_attempts.claim(
+        conn,
+        attempt_id,
+        child_session_id=session_id,
+        child_agent_id=child_agent_id,
+    )
+
+
+def record_subagent_quarantine(
+    conn: sqlite3.Connection,
+    session_id: str,
+    agent_type: str,
+    *,
+    reason: str,
+    agent_id: str = "",
+    project_root: str = "",
+    attempt_id: str = "",
+) -> dict:
+    """Record a terminal quarantine for a SubagentStart contract failure."""
+    canonical_type = agent_type or "unknown"
+    seat_id = ensure_session_and_seat(conn, session_id or "unknown-session", canonical_type)
+    if attempt_id:
+        row = dispatch_attempts.get(conn, attempt_id)
+        if row is not None and row.get("status") in {"pending", "delivered"}:
+            return dispatch_attempts.quarantine(
+                conn,
+                attempt_id,
+                reason=reason,
+                child_session_id=session_id,
+                child_agent_id=agent_id,
+            )
+    return dispatch_attempts.quarantine_new(
+        conn,
+        seat_id,
+        f"quarantine:{reason}",
+        reason=reason,
+        parent_session_id=session_id,
+        requested_role=canonical_type,
+        target_project_root=project_root,
+        child_session_id=session_id,
+        child_agent_id=agent_id,
+    )
 
 
 def release_session_seat(

@@ -73,10 +73,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, FrozenSet, Optional
 
-from runtime.core.command_intent import BashCommandIntent, build_bash_command_intent
 from runtime.core import scratchlanes as scratchlanes_mod
+from runtime.core.command_intent import BashCommandIntent, build_bash_command_intent
 from runtime.core.policy_utils import (
     current_workflow_id,
     detect_project_root,
@@ -130,6 +131,8 @@ class PolicyContext:
     # project. Policies use this to distinguish sanctioned artifact work
     # from real repo source/governance mutations.
     scratchlane_roots: FrozenSet[str] = field(default_factory=frozenset)
+    session_id: str = ""
+    quarantined_attempt: Optional[dict] = None
 
 
 @dataclass
@@ -395,6 +398,7 @@ def build_context(
     actor_role: str = "",
     actor_id: str = "",
     actor_workflow_id: str = "",
+    session_id: str = "",
     project_root: str = "",
 ) -> PolicyContext:
     """Resolve all SQLite state into a PolicyContext in one shot.
@@ -459,6 +463,30 @@ def build_context(
     # --- Resolve active lease ---
     target_paths = tuple(dict.fromkeys(path for path in (cwd, project_root) if path))
 
+    def _dispatch_phase_for_workflow(workflow_id: str) -> Optional[str]:
+        if not workflow_id:
+            return None
+        row = conn.execute(
+            "SELECT role, verdict FROM completion_records "
+            "WHERE workflow_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return f"{row['role']}:{row['verdict']}"
+
+    def _shared_git_root(path: str) -> str:
+        if not path:
+            return ""
+        try:
+            from runtime.core.config import _resolve_shared_git_root
+
+            root = _resolve_shared_git_root(Path(path))
+            return normalize_path(str(root)) if root is not None else ""
+        except Exception:
+            return ""
+
     def _fetch_active_lease(*, role: str = "", agent_id: str = "") -> Optional[dict]:
         clauses = ["status = 'active'"]
         params: list[object] = []
@@ -480,6 +508,51 @@ def build_context(
             params,
         ).fetchone()
         return dict(row) if row else None
+
+    def _fetch_guardian_land_shared_root_lease() -> Optional[dict]:
+        """Attach a claimed guardian:land lease to its shared base worktree.
+
+        A landing may need to commit in both the reviewed feature worktree and
+        the shared/base worktree. The lease remains single-worktree and
+        single-agent; this bridge only lets that same claimed lease authorize
+        the shared git root for the same workflow. It deliberately does not
+        authorize unrelated sibling worktrees.
+        """
+        if not actor_id or not actor_role or not actor_workflow_id:
+            return None
+
+        from runtime.core.authority_registry import (
+            canonical_actor_stage as _canonical_actor_stage,
+        )
+        from runtime.core.authority_registry import (
+            lease_role_for_stage as _lease_role_for_stage,
+        )
+
+        dispatch_phase_hint = _dispatch_phase_for_workflow(actor_workflow_id)
+        canonical_actor = _canonical_actor_stage(actor_role, dispatch_phase_hint)
+        if canonical_actor != "guardian:land":
+            return None
+
+        lease_role = _lease_role_for_stage(canonical_actor)
+        if not lease_role:
+            return None
+
+        rows = conn.execute(
+            "SELECT * FROM dispatch_leases "
+            "WHERE status = 'active' "
+            "AND agent_id = ? "
+            "AND workflow_id = ? "
+            "AND role = ? "
+            "ORDER BY issued_at DESC, lease_id DESC",
+            (actor_id, actor_workflow_id, lease_role),
+        ).fetchall()
+        target_set = set(target_paths)
+        for row in rows:
+            candidate = dict(row)
+            shared_root = _shared_git_root(candidate.get("worktree_path", "") or "")
+            if shared_root and shared_root in target_set:
+                return candidate
+        return None
 
     lease: Optional[dict] = None
     if actor_id:
@@ -513,6 +586,8 @@ def build_context(
             _base_role = _lrfs(actor_role)
             if _base_role and _base_role != actor_role:
                 lease = _fetch_active_lease(role=_base_role)
+        if lease is None:
+            lease = _fetch_guardian_land_shared_root_lease()
     elif lease is None and not actor_role:
         # No actor_role (orchestrator path): do NOT inherit a role-specific
         # lease via the worktree_path fallback. Doing so would give the
@@ -666,16 +741,7 @@ def build_context(
     # verdict flushed in a single tick) can resolve nondeterministically.
     # Guardian-stage canonicalization depends on this row; a wrong row would
     # misgrant landing-vs-provision capability.
-    dispatch_phase: Optional[str] = None
-    if workflow_id:
-        row = conn.execute(
-            "SELECT role, verdict FROM completion_records "
-            "WHERE workflow_id = ? "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (workflow_id,),
-        ).fetchone()
-        if row:
-            dispatch_phase = f"{row['role']}:{row['verdict']}"
+    dispatch_phase = _dispatch_phase_for_workflow(workflow_id) if workflow_id else None
 
     # --- Enforcement config (DEC-CONFIG-AUTHORITY-001) ---
     # Collapse all enforcement_config rows with scope precedence:
@@ -704,13 +770,32 @@ def build_context(
     scratchlane_roots: FrozenSet[str] = frozenset()
     try:
         scratchlane_roots = frozenset(
-            scratchlanes_mod.active_roots(conn, project_root)
+            scratchlanes_mod.active_roots(
+                conn,
+                project_root,
+                session_id=session_id,
+                workflow_id=workflow_id,
+            )
         )
     except Exception:
         scratchlane_roots = frozenset()
 
+    quarantined_attempt: Optional[dict] = None
+    try:
+        from runtime.core import dispatch_attempts as _dispatch_attempts
+
+        quarantined_attempt = _dispatch_attempts.is_quarantined(
+            conn,
+            session_id=session_id,
+            agent_id=resolved_id,
+        )
+    except Exception:
+        quarantined_attempt = None
+
     from runtime.core.authority_registry import (
         canonical_actor_stage as _canonical_actor_stage,
+    )
+    from runtime.core.authority_registry import (
         capabilities_for as _capabilities_for,
     )
 
@@ -739,6 +824,8 @@ def build_context(
         capabilities=_capabilities_for(canonical_role),
         worktree_lease_suppressed_roles=suppressed_roles,
         scratchlane_roots=scratchlane_roots,
+        session_id=session_id,
+        quarantined_attempt=quarantined_attempt,
     )
 
 

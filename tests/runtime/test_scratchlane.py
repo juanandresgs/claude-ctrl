@@ -12,10 +12,10 @@ from runtime import cli
 from runtime.core import scratchlanes
 from runtime.core.command_intent import build_bash_command_intent
 from runtime.core.db import connect, connect_memory
-from runtime.core.policy_engine import PolicyContext, PolicyRequest
 from runtime.core.policies import bash_scratchlane_gate
 from runtime.core.policies.bash_write_who import check as bash_write_who
 from runtime.core.policies.write_scratchlane_gate import check as write_scratchlane_gate
+from runtime.core.policy_engine import PolicyContext, PolicyRequest
 from runtime.schemas import ensure_schema
 
 _WORKTREE = Path(__file__).resolve().parents[2]
@@ -83,6 +83,32 @@ def _run_cli_raw(
         env=env,
     )
     return result.returncode, result.stdout, result.stderr
+
+
+def _run_cli_without_policy_env(
+    argv: list[str],
+    *,
+    cwd: Path,
+    home: Path,
+    stdin_text: str = "",
+) -> tuple[int, dict]:
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PYTHONPATH": str(_WORKTREE),
+    }
+    env.pop("CLAUDE_POLICY_DB", None)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    result = subprocess.run(
+        [sys.executable, str(_CLI)] + argv,
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+    )
+    parsed = json.loads((result.stdout or result.stderr).strip() or "{}")
+    return result.returncode, parsed
 
 
 def _run_evaluate(
@@ -169,6 +195,170 @@ def test_scratchlane_cli_grant_get_list_roundtrip(tmp_path, monkeypatch):
     assert list_payload["items"][0]["root_path"] == str(expected_root)
 
 
+def test_scratchlane_permit_scope_filters_by_session_and_workflow(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    scoped = scratchlanes.grant(
+        conn,
+        str(project_root),
+        "ad-hoc",
+        session_id="session-a",
+        workflow_id="wf-a",
+        granted_by="test",
+    )
+    assert scoped["session_id"] == "session-a"
+    assert scoped["workflow_id"] == "wf-a"
+
+    assert scratchlanes.active_roots(
+        conn,
+        str(project_root),
+        session_id="session-a",
+        workflow_id="wf-a",
+    ) == (str(project_root / "tmp" / ".claude-scratch" / "ad-hoc"),)
+    assert scratchlanes.active_roots(
+        conn,
+        str(project_root),
+        session_id="session-b",
+        workflow_id="wf-a",
+    ) == ()
+    assert scratchlanes.active_roots(
+        conn,
+        str(project_root),
+        session_id="session-a",
+        workflow_id="wf-b",
+    ) == ()
+
+
+def test_scratchlane_prompt_approval_preserves_request_scope(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    request = scratchlanes.request_approval(
+        conn,
+        session_id="session-a",
+        project_root=str(project_root),
+        task_slug="ad-hoc",
+        workflow_id="wf-a",
+        work_item_id="WI-1",
+        attempt_id="attempt-1",
+    )
+    assert request["workflow_id"] == "wf-a"
+
+    result = scratchlanes.resolve_pending_from_prompt(
+        conn,
+        session_id="session-a",
+        project_root=str(project_root),
+        prompt="yes",
+    )
+
+    assert result["resolution"] == "approved"
+    permit = result["permit"]
+    assert permit["session_id"] == "session-a"
+    assert permit["workflow_id"] == "wf-a"
+    assert permit["work_item_id"] == "WI-1"
+    assert permit["attempt_id"] == "attempt-1"
+
+
+def test_scratchlane_cli_uses_project_root_db_outside_project(tmp_path):
+    project_root = tmp_path / "project"
+    outside = tmp_path / "outside"
+    home = tmp_path / "home"
+    project_root.mkdir()
+    outside.mkdir()
+    home.mkdir()
+
+    code, out = _run_cli_without_policy_env(
+        [
+            "scratchlane",
+            "grant",
+            "--project-root",
+            str(project_root),
+            "--task-slug",
+            "ad-hoc",
+        ],
+        cwd=outside,
+        home=home,
+    )
+
+    assert code == 0
+    assert out["status"] == "ok"
+
+    project_db = project_root / ".claude" / "state.db"
+    assert project_db.exists()
+    conn = connect(project_db)
+    try:
+        ensure_schema(conn)
+        permit = scratchlanes.get_active(conn, str(project_root), "ad-hoc")
+    finally:
+        conn.close()
+
+    assert permit is not None
+    assert permit["root_path"] == str(project_root / "tmp" / ".claude-scratch" / "ad-hoc")
+
+
+def test_scratchlane_resolve_prompt_uses_project_root_db_outside_project(tmp_path):
+    project_root = tmp_path / "project"
+    outside = tmp_path / "outside"
+    home = tmp_path / "home"
+    project_root.mkdir()
+    outside.mkdir()
+    home.mkdir()
+
+    project_db = project_root / ".claude" / "state.db"
+    conn = connect(project_db)
+    try:
+        ensure_schema(conn)
+        scratchlanes.request_approval(
+            conn,
+            session_id="sess-cli-resolve",
+            project_root=str(project_root),
+            task_slug="ad-hoc",
+            requested_path="",
+            tool_name="Bash",
+            request_reason="opaque_interpreter",
+            requested_by="bash_scratchlane_gate",
+        )
+    finally:
+        conn.close()
+
+    code, out = _run_cli_without_policy_env(
+        [
+            "scratchlane",
+            "resolve-prompt",
+            "--project-root",
+            str(project_root),
+            "--session-id",
+            "sess-cli-resolve",
+        ],
+        cwd=outside,
+        home=home,
+        stdin_text="yes",
+    )
+
+    assert code == 0
+    assert out["resolution"] == "approved"
+
+    conn = connect(project_db)
+    try:
+        ensure_schema(conn)
+        permit = scratchlanes.get_active(conn, str(project_root), "ad-hoc")
+        pending = scratchlanes.get_pending(
+            conn,
+            session_id="sess-cli-resolve",
+            project_root=str(project_root),
+        )
+    finally:
+        conn.close()
+
+    assert permit is not None
+    assert pending is None
+
+
 def test_write_scratchlane_gate_redirects_tmp_source_candidate(tmp_path):
     project_root = tmp_path
     request = PolicyRequest(
@@ -207,7 +397,10 @@ def test_write_scratchlane_gate_allows_approved_scratchlane(tmp_path):
             "file_path": str(scratch_root / "dedup.py"),
             "content": "print('hi')\n",
         },
-        context=_make_context(project_root, scratchlane_roots=frozenset({str(scratch_root)})),
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(scratch_root)}),
+        ),
         cwd=str(project_root),
     )
 
@@ -239,6 +432,30 @@ def test_bash_scratchlane_gate_denies_raw_interpreter(tmp_path):
         decision.effects["request_scratchlane_approval"]["request_reason"]
         == "opaque_interpreter"
     )
+
+
+def test_bash_scratchlane_gate_does_not_reask_for_active_ad_hoc_lane(tmp_path):
+    project_root = tmp_path
+    scratch_root = project_root / "tmp" / ".claude-scratch" / "ad-hoc"
+    command = "python3 -c 'print(1)'"
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(scratch_root)}),
+        ),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "scripts/scratchlane-exec.sh" in decision.reason
+    assert "Ask the user" not in decision.reason
+    assert decision.effects is None
 
 
 def test_bash_scratchlane_gate_allows_absolute_runtime_wrapper_command(tmp_path):
@@ -469,6 +686,38 @@ def test_identical_pending_request_is_reused_without_duplication(tmp_path):
             session_id="sess-reuse",
         )
     ) == 1
+
+
+def test_direct_scratchlane_grant_resolves_matching_pending_request(tmp_path):
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    project_root = str(tmp_path / "project")
+    scratchlanes.request_approval(
+        conn,
+        session_id="sess-direct-grant",
+        project_root=project_root,
+        task_slug="ad-hoc",
+        requested_path="",
+        tool_name="Bash",
+        request_reason="opaque_interpreter",
+        requested_by="bash_scratchlane_gate",
+    )
+
+    permit = scratchlanes.grant(
+        conn,
+        project_root,
+        "ad-hoc",
+        granted_by="user",
+        note="fallback grant",
+    )
+
+    assert permit["task_slug"] == "ad-hoc"
+    assert scratchlanes.get_pending(
+        conn,
+        session_id="sess-direct-grant",
+        project_root=project_root,
+    ) is None
 
 
 def test_evaluate_registers_pending_scratchlane_request(tmp_path):

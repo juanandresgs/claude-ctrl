@@ -23,7 +23,8 @@ import sqlite3
 
 import pytest
 
-from runtime.core import critic_reviews, completions, decision_work_registry as dwr, evaluation, leases
+from runtime.core import completions, critic_reviews, evaluation, leases
+from runtime.core import decision_work_registry as dwr
 from runtime.core.dispatch_engine import process_agent_stop
 from runtime.core.policy_utils import current_workflow_id
 from runtime.schemas import ensure_schema
@@ -279,8 +280,22 @@ def test_full_planner_completion_production_sequence(conn, project_root):
 
     # Step 5: auto_dispatch
     assert result["auto_dispatch"] is True
+    assert isinstance(result["next_dispatch_id"], int)
     assert result["suggestion"].startswith("AUTO_DISPATCH: guardian")
     assert "mode=provision" in result["suggestion"]
+
+    row = conn.execute(
+        "SELECT workflow_id, source_role, next_role, guardian_mode, status, payload_json "
+        "FROM dispatch_next_actions WHERE id = ?",
+        (result["next_dispatch_id"],),
+    ).fetchone()
+    assert row is not None
+    assert row["workflow_id"] == wf_id
+    assert row["source_role"] == "planner"
+    assert row["next_role"] == "guardian"
+    assert row["guardian_mode"] == "provision"
+    assert row["status"] == "pending"
+    assert json.loads(row["payload_json"])["next_role"] == "guardian"
 
     # Lease released after routing
     refreshed = leases.get(conn, lease["lease_id"])

@@ -43,14 +43,13 @@ Rationale: The smooth UX is "Claude asks once, user says yes/no, runtime
 
 from __future__ import annotations
 
-import os
+import json
 import re
 import sqlite3
 import time
 from typing import Optional
 
 from runtime.core.policy_utils import (
-    SCRATCHLANE_PARENT_REL,
     normalize_path,
     sanitize_token,
     scratchlane_root,
@@ -74,6 +73,12 @@ def _grant_active_permit(
     granted_by: str,
     note: str,
     now: int,
+    session_id: str = "",
+    workflow_id: str = "",
+    work_item_id: str = "",
+    attempt_id: str = "",
+    expires_at: int | None = None,
+    capabilities: tuple[str, ...] = ("write_scratch", "run_interpreter_wrapped"),
 ) -> None:
     """Write the active permit row inside an existing transaction."""
     conn.execute(
@@ -90,11 +95,44 @@ def _grant_active_permit(
     conn.execute(
         """
         INSERT INTO scratchlane_permits
-            (project_root, task_slug, root_path, granted_by, note,
-             created_at, active, revoked_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, NULL)
+            (project_root, task_slug, root_path, session_id, workflow_id,
+             work_item_id, attempt_id, capabilities_json, expires_at,
+             granted_by, note, created_at, active, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL)
         """,
-        (project_root, task_slug, scratchlane_root(project_root, task_slug), granted_by, note, now),
+        (
+            project_root,
+            task_slug,
+            scratchlane_root(project_root, task_slug),
+            session_id or None,
+            workflow_id or None,
+            work_item_id or None,
+            attempt_id or None,
+            json.dumps(list(capabilities)),
+            expires_at,
+            granted_by,
+            note,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE scratchlane_requests
+        SET    status = ?,
+               resolved_at = ?,
+               resolution_note = ?
+        WHERE  project_root = ?
+          AND  task_slug = ?
+          AND  status = ?
+        """,
+        (
+            REQUEST_STATUS_APPROVED,
+            now,
+            "approved by scratchlane grant",
+            project_root,
+            task_slug,
+            REQUEST_STATUS_PENDING,
+        ),
     )
 
 
@@ -105,6 +143,11 @@ def grant(
     *,
     granted_by: str = "user",
     note: str = "",
+    session_id: str = "",
+    workflow_id: str = "",
+    work_item_id: str = "",
+    attempt_id: str = "",
+    expires_at: int | None = None,
 ) -> dict:
     """Create or refresh an active scratchlane permit for ``task_slug``."""
     canonical_project_root = normalize_path(project_root)
@@ -119,6 +162,11 @@ def grant(
             granted_by=granted_by,
             note=note,
             now=now,
+            session_id=session_id,
+            workflow_id=workflow_id,
+            work_item_id=work_item_id,
+            attempt_id=attempt_id,
+            expires_at=expires_at,
         )
 
     record = get_active(conn, canonical_project_root, slug)
@@ -157,15 +205,18 @@ def get_active(
     slug = sanitize_token(task_slug)
     row = conn.execute(
         """
-        SELECT id, project_root, task_slug, root_path, granted_by, note, created_at
+        SELECT id, project_root, task_slug, root_path, session_id, workflow_id,
+               work_item_id, attempt_id, capabilities_json, expires_at,
+               granted_by, note, created_at
         FROM   scratchlane_permits
         WHERE  project_root = ?
           AND  task_slug = ?
           AND  active = 1
+          AND  (expires_at IS NULL OR expires_at > ?)
         ORDER  BY created_at DESC, id DESC
         LIMIT  1
         """,
-        (canonical_project_root, slug),
+        (canonical_project_root, slug, int(time.time())),
     ).fetchone()
     return dict(row) if row else None
 
@@ -180,30 +231,77 @@ def list_active(
         canonical_project_root = normalize_path(project_root)
         rows = conn.execute(
             """
-            SELECT id, project_root, task_slug, root_path, granted_by, note, created_at
+            SELECT id, project_root, task_slug, root_path, session_id, workflow_id,
+                   work_item_id, attempt_id, capabilities_json, expires_at,
+                   granted_by, note, created_at
             FROM   scratchlane_permits
             WHERE  active = 1
               AND  project_root = ?
+              AND  (expires_at IS NULL OR expires_at > ?)
             ORDER  BY created_at DESC, id DESC
             """,
-            (canonical_project_root,),
+            (canonical_project_root, int(time.time())),
         ).fetchall()
     else:
         rows = conn.execute(
             """
-            SELECT id, project_root, task_slug, root_path, granted_by, note, created_at
+            SELECT id, project_root, task_slug, root_path, session_id, workflow_id,
+                   work_item_id, attempt_id, capabilities_json, expires_at,
+                   granted_by, note, created_at
             FROM   scratchlane_permits
             WHERE  active = 1
+              AND  (expires_at IS NULL OR expires_at > ?)
             ORDER  BY created_at DESC, id DESC
-            """
+            """,
+            (int(time.time()),),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def active_roots(conn: sqlite3.Connection, project_root: str) -> tuple[str, ...]:
-    """Return the active scratchlane roots for ``project_root``."""
+def _scope_matches(
+    item: dict,
+    *,
+    session_id: str = "",
+    workflow_id: str = "",
+    work_item_id: str = "",
+    attempt_id: str = "",
+) -> bool:
+    """Return whether an active permit applies to the current actor scope."""
+    scoped_fields = {
+        "session_id": session_id,
+        "workflow_id": workflow_id,
+        "work_item_id": work_item_id,
+        "attempt_id": attempt_id,
+    }
+    for key, current in scoped_fields.items():
+        value = str(item.get(key) or "")
+        if value and value != current:
+            return False
+    return True
+
+
+def active_roots(
+    conn: sqlite3.Connection,
+    project_root: str,
+    *,
+    session_id: str = "",
+    workflow_id: str = "",
+    work_item_id: str = "",
+    attempt_id: str = "",
+) -> tuple[str, ...]:
+    """Return active scratchlane roots applying to this actor scope."""
     items = list_active(conn, project_root=project_root)
-    return tuple(str(item["root_path"]) for item in items)
+    return tuple(
+        str(item["root_path"])
+        for item in items
+        if _scope_matches(
+            item,
+            session_id=session_id,
+            workflow_id=workflow_id,
+            work_item_id=work_item_id,
+            attempt_id=attempt_id,
+        )
+    )
 
 
 def _same_pending_request(
@@ -238,6 +336,10 @@ def request_approval(
     session_id: str,
     project_root: str,
     task_slug: str,
+    workflow_id: str = "",
+    work_item_id: str = "",
+    attempt_id: str = "",
+    expires_at: int | None = None,
     requested_path: str = "",
     tool_name: str = "",
     request_reason: str = "",
@@ -298,16 +400,22 @@ def request_approval(
         conn.execute(
             """
             INSERT INTO scratchlane_requests
-                (session_id, project_root, task_slug, root_path, requested_path,
-                 tool_name, request_reason, requested_by, requested_at,
-                 status, resolved_at, resolution_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
+                (session_id, project_root, task_slug, root_path, workflow_id,
+                 work_item_id, attempt_id, capabilities_json, expires_at,
+                 requested_path, tool_name, request_reason, requested_by,
+                 requested_at, status, resolved_at, resolution_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
             """,
             (
                 session_id,
                 canonical_project_root,
                 slug,
                 root_path,
+                workflow_id or None,
+                work_item_id or None,
+                attempt_id or None,
+                json.dumps(["write_scratch", "run_interpreter_wrapped"]),
+                expires_at,
                 requested_path,
                 tool_name,
                 request_reason,
@@ -333,7 +441,8 @@ def get_pending(
     """Return the active pending request for this session/project, if any."""
     row = conn.execute(
         """
-        SELECT id, session_id, project_root, task_slug, root_path, requested_path,
+        SELECT id, session_id, project_root, task_slug, root_path, workflow_id,
+               work_item_id, attempt_id, capabilities_json, expires_at, requested_path,
                tool_name, request_reason, requested_by, requested_at,
                status, resolved_at, resolution_note
         FROM   scratchlane_requests
@@ -366,7 +475,8 @@ def list_pending(
     where = " AND ".join(clauses)
     rows = conn.execute(
         f"""
-        SELECT id, session_id, project_root, task_slug, root_path, requested_path,
+        SELECT id, session_id, project_root, task_slug, root_path, workflow_id,
+               work_item_id, attempt_id, capabilities_json, expires_at, requested_path,
                tool_name, request_reason, requested_by, requested_at,
                status, resolved_at, resolution_note
         FROM   scratchlane_requests
@@ -516,6 +626,11 @@ def resolve_pending_from_prompt(
                 granted_by=granted_by,
                 note="approved from user prompt reply",
                 now=now,
+                session_id=str(request.get("session_id") or ""),
+                workflow_id=str(request.get("workflow_id") or ""),
+                work_item_id=str(request.get("work_item_id") or ""),
+                attempt_id=str(request.get("attempt_id") or ""),
+                expires_at=request.get("expires_at"),
             )
             conn.execute(
                 """
@@ -543,7 +658,11 @@ def resolve_pending_from_prompt(
                 "resolution_note": "approved from user prompt reply",
             },
             "permit": permit,
-            "additional_context": _resolution_message(request, resolution="approved", permit=permit),
+            "additional_context": _resolution_message(
+                request,
+                resolution="approved",
+                permit=permit,
+            ),
         }
 
     with conn:

@@ -49,18 +49,29 @@ from runtime.core import dispatch_attempts
 # ---------------------------------------------------------------------------
 
 EXPECTED_STATUSES: frozenset = frozenset(
-    {"pending", "delivered", "acknowledged", "timed_out", "failed", "cancelled"}
+    {
+        "pending",
+        "delivered",
+        "acknowledged",
+        "timed_out",
+        "failed",
+        "cancelled",
+        "quarantined",
+    }
 )
 
-EXPECTED_TERMINAL_STATUSES: frozenset = frozenset({"acknowledged", "cancelled"})
+EXPECTED_TERMINAL_STATUSES: frozenset = frozenset(
+    {"acknowledged", "cancelled", "quarantined"}
+)
 
 EXPECTED_TRANSITIONS: dict = {
-    "pending":      frozenset({"delivered", "cancelled", "timed_out"}),
-    "delivered":    frozenset({"acknowledged", "failed", "timed_out"}),
+    "pending":      frozenset({"delivered", "cancelled", "timed_out", "quarantined"}),
+    "delivered":    frozenset({"acknowledged", "failed", "timed_out", "quarantined"}),
     "timed_out":    frozenset({"pending"}),
     "failed":       frozenset({"pending"}),
     "acknowledged": frozenset(),
     "cancelled":    frozenset(),
+    "quarantined":  frozenset(),
 }
 
 EXPECTED_DDL_DEFAULT: str = "pending"
@@ -267,7 +278,7 @@ class TestDispatchAttemptStatusMachineCompletenessInvariant:
         """
         expected_producers = {
             "issue", "claim", "acknowledge", "fail",
-            "cancel", "timeout", "retry", "expire_stale",
+            "cancel", "timeout", "retry", "quarantine", "expire_stale",
         }
         for name in expected_producers:
             fn = getattr(dispatch_attempts, name, None)
@@ -296,9 +307,11 @@ class TestDispatchAttemptStatusMachineCompletenessInvariant:
           pending → delivered         (claim)
           pending → cancelled         (cancel)
           pending → timed_out         (timeout from pending)
+          pending → quarantined       (quarantine from pending)
           delivered → acknowledged    (acknowledge)
           delivered → failed          (fail)
           delivered → timed_out       (timeout from delivered)
+          delivered → quarantined     (quarantine from delivered)
           timed_out → pending         (retry from timed_out)
           failed → pending            (retry from failed)
         """
@@ -329,6 +342,12 @@ class TestDispatchAttemptStatusMachineCompletenessInvariant:
         assert a3["status"] == "timed_out"
         reached.add(("pending", "timed_out"))
 
+        # pending → quarantined
+        aq1 = dispatch_attempts.issue(c, _SEAT, "iq1")
+        aq1 = dispatch_attempts.quarantine(c, aq1["attempt_id"], reason="test")
+        assert aq1["status"] == "quarantined"
+        reached.add(("pending", "quarantined"))
+
         # timed_out → pending (retry from timed_out)
         a3 = dispatch_attempts.retry(c, a3["attempt_id"])
         assert a3["status"] == "pending"
@@ -352,6 +371,13 @@ class TestDispatchAttemptStatusMachineCompletenessInvariant:
         a5 = dispatch_attempts.timeout(c, a5["attempt_id"])
         assert a5["status"] == "timed_out"
         reached.add(("delivered", "timed_out"))
+
+        # delivered → quarantined
+        aq2 = dispatch_attempts.issue(c, _SEAT, "iq2")
+        aq2 = dispatch_attempts.claim(c, aq2["attempt_id"])
+        aq2 = dispatch_attempts.quarantine(c, aq2["attempt_id"], reason="test")
+        assert aq2["status"] == "quarantined"
+        reached.add(("delivered", "quarantined"))
 
         c.close()
 
@@ -432,19 +458,19 @@ class TestDispatchAttemptStatusMachineCompletenessInvariant:
         Teeth — orphan detection.
 
         Using an in-memory fixture, issue a pending attempt and attempt to
-        force _transition(..., "quarantined", ...) — assert that ValueError
-        is raised and that "quarantined" is not in EXPECTED_STATUSES.
+        force _transition(..., "orphaned", ...) — assert that ValueError
+        is raised and that "orphaned" is not in EXPECTED_STATUSES.
 
         Demonstrates that the invariant would fire if orphan statuses entered
         the transition surface.
         """
-        assert "quarantined" not in EXPECTED_STATUSES, (
-            "Teeth precondition: 'quarantined' must not be a declared status"
+        assert "orphaned" not in EXPECTED_STATUSES, (
+            "Teeth precondition: 'orphaned' must not be a declared status"
         )
         c = _make_conn()
         a = dispatch_attempts.issue(c, _SEAT, "teeth-orphan")
         with pytest.raises(ValueError, match=r"invalid transition 'pending'"):
-            dispatch_attempts._transition(c, a["attempt_id"], "quarantined")
+            dispatch_attempts._transition(c, a["attempt_id"], "orphaned")
         c.close()
 
     # --- Test 13: teeth — trap terminal widening detected by graph equality ---

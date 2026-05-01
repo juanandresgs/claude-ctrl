@@ -150,49 +150,58 @@ def _agent_contract_carrier_effect(conn, payload: dict, decision):
         if not expected_subagent_type:
             raise ValueError(f"unknown active stage: {stage_id!r}")
 
-        _write_pending_request(
-            conn,
-            session_id=session_id,
-            agent_type=expected_subagent_type,
-            workflow_id=str(contract["workflow_id"]),
-            stage_id=stage_id,
-            goal_id=str(contract["goal_id"]),
-            work_item_id=str(contract["work_item_id"]),
-            decision_scope=str(contract["decision_scope"]),
-            generated_at=int(contract["generated_at"]),
-        )
-    except Exception as exc:
-        return policy_engine_mod.PolicyDecision(
-            action="deny",
-            reason=(
-                "carrier_write_failed: pending_agent_requests row could not be "
-                f"written for canonical Agent dispatch. Detail: {exc}"
-            ),
-            policy_name="agent_contract_carrier",
-        )
+        timeout_at = None
+        timeout_seconds = _os.environ.get("CLAUDEX_DISPATCH_ATTEMPT_TIMEOUT_SECONDS", "2700")
+        if timeout_seconds.isdigit() and int(timeout_seconds) > 0:
+            timeout_at = int(_time.time()) + int(timeout_seconds)
 
-    timeout_at = None
-    timeout_seconds = _os.environ.get("CLAUDEX_DISPATCH_ATTEMPT_TIMEOUT_SECONDS", "2700")
-    if timeout_seconds.isdigit() and int(timeout_seconds) > 0:
-        timeout_at = int(_time.time()) + int(timeout_seconds)
-
-    try:
         workflow_id = str(contract.get("workflow_id") or "")
         instruction = prompt.split("\n", 1)[0]
         if not instruction.startswith(_CONTRACT_BLOCK_PREFIX):
             instruction = f"{_CONTRACT_BLOCK_PREFIX}{contract_raw}"
-        _record_agent_dispatch(
+        attempt = _record_agent_dispatch(
             conn,
             session_id,
             expected_subagent_type,
             instruction,
             workflow_id=workflow_id or None,
+            work_item_id=str(contract["work_item_id"]),
+            goal_id=str(contract["goal_id"]),
+            stage_id=stage_id,
+            decision_scope=str(contract["decision_scope"]),
+            parent_agent_id=str(payload.get("actor_id") or ""),
+            tool_use_id=str(payload.get("tool_use_id") or ""),
+            target_project_root=str(payload.get("project_root") or payload.get("cwd") or ""),
+            contract=contract,
             timeout_at=timeout_at,
         )
-    except Exception:
-        # Delivery tracking is diagnostic. The carrier row is the required
-        # SubagentStart handoff, so tracking failures do not block dispatch.
-        pass
+        _write_pending_request(
+            conn,
+            attempt_id=str(attempt["attempt_id"]),
+            session_id=session_id,
+            agent_type=expected_subagent_type,
+            workflow_id=workflow_id,
+            stage_id=stage_id,
+            goal_id=str(contract["goal_id"]),
+            work_item_id=str(contract["work_item_id"]),
+            decision_scope=str(contract["decision_scope"]),
+            generated_at=int(contract["generated_at"]),
+            parent_agent_id=str(payload.get("actor_id") or ""),
+            tool_use_id=str(payload.get("tool_use_id") or ""),
+            target_project_root=str(payload.get("project_root") or payload.get("cwd") or ""),
+            worktree_path=str(attempt.get("worktree_path") or ""),
+            contract_json=contract,
+        )
+    except Exception as exc:
+        return policy_engine_mod.PolicyDecision(
+            action="deny",
+            reason=(
+                "carrier_write_failed: dispatch attempt and pending carrier "
+                "could not be written atomically for canonical Agent dispatch. "
+                f"Detail: {exc}"
+            ),
+            policy_name="agent_contract_carrier",
+        )
 
     return None
 
@@ -431,9 +440,11 @@ def _handle_doc(args) -> int:
 
 
 def _handle_hook(args) -> int:
-    """Handle ``cc-policy hook`` subcommands (read-only hook tools).
+    """Handle ``cc-policy hook`` subcommands.
 
-    Two actions are currently supported:
+    Manifest/doc actions are read-only. Bash lifecycle actions are the runtime
+    side of shell hook adapters: hooks pass raw payloads on stdin and receive a
+    small JSON diagnostic result.
 
     * ``validate-settings`` (DEC-CLAUDEX-HOOK-MANIFEST-001) —
       compares repo-owned hook adapter entries in ``settings.json``
@@ -444,12 +455,49 @@ def _handle_hook(args) -> int:
       candidate ``hooks/HOOKS.md`` from disk, pipes it through
       ``runtime.core.hook_doc_validation.validate_hook_doc`` against
       the runtime-compiled hook-doc projection, and reports drift.
-
-    Both commands are strictly read-only — they do not rewrite
-    ``settings.json`` or ``hooks/HOOKS.md``, do not execute any
-    hook adapter, do not write to the runtime DB, and do not emit
-    any event.
+    * ``envelope`` — builds the canonical hook-event envelope from stdin.
+    * ``bash-pre-baseline`` — captures the allowed Bash source baseline.
+    * ``bash-post`` — applies PostToolUse Bash readiness lifecycle updates.
     """
+    if args.action == "envelope":
+        from runtime.core.hook_envelope import build_hook_event_envelope
+
+        raw = sys.stdin.read()
+        try:
+            payload = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            return _err(f"hook envelope: invalid JSON on stdin: {exc}")
+        envelope = build_hook_event_envelope(payload)
+        return _ok({"envelope": envelope.as_dict()})
+
+    if args.action == "bash-pre-baseline":
+        from runtime.core import bash_lifecycle as bash_lifecycle_mod
+
+        raw = sys.stdin.read()
+        try:
+            payload = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            return _err(f"hook bash-pre-baseline: invalid JSON on stdin: {exc}")
+        result = bash_lifecycle_mod.capture_pre_bash_baseline(payload)
+        return _ok({"result": result.as_dict()})
+
+    if args.action == "bash-post":
+        from runtime.core import bash_lifecycle as bash_lifecycle_mod
+        from runtime.core.hook_envelope import build_hook_event_envelope
+
+        raw = sys.stdin.read()
+        try:
+            payload = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            return _err(f"hook bash-post: invalid JSON on stdin: {exc}")
+        envelope = build_hook_event_envelope(payload)
+        conn = _get_conn(project_root=envelope.project_root or None)
+        try:
+            result = bash_lifecycle_mod.handle_post_bash(conn, payload)
+        finally:
+            conn.close()
+        return _ok({"result": result.as_dict()})
+
     if args.action == "validate-settings":
         from pathlib import Path
 
@@ -2147,6 +2195,7 @@ def _handle_dispatch(args) -> int:
                 {
                     "next_role": result["next_role"],
                     "workflow_id": result["workflow_id"],
+                    "next_dispatch_id": result.get("next_dispatch_id"),
                     "auto_dispatch": result.get("auto_dispatch", False),
                     # W-GWT-1 (DEC-GUARD-WT-003, DEC-GUARD-WT-007): pass through
                     # worktree_path and guardian_mode so callers (post-task.sh,
@@ -2256,12 +2305,35 @@ def _handle_dispatch(args) -> int:
             from runtime.core.dispatch_hook import record_subagent_delivery as _ra_delivery
 
             try:
-                result = _ra_delivery(conn, args.session_id, args.agent_type)
+                result = _ra_delivery(
+                    conn,
+                    args.session_id,
+                    args.agent_type,
+                    attempt_id=args.attempt_id or "",
+                    child_agent_id=args.agent_id or "",
+                )
             except (ValueError, Exception) as exc:
                 return _err(f"dispatch attempt-claim: {exc}")
             if result is None:
                 return _ok({"found": False, "attempt": None})
             return _ok({"found": True, "attempt": result})
+
+        elif args.action == "attempt-quarantine":
+            from runtime.core.dispatch_hook import record_subagent_quarantine as _quarantine
+
+            try:
+                result = _quarantine(
+                    conn,
+                    args.session_id,
+                    args.agent_type,
+                    reason=args.reason,
+                    agent_id=args.agent_id or "",
+                    project_root=args.project_root or "",
+                    attempt_id=args.attempt_id or "",
+                )
+            except (ValueError, Exception) as exc:
+                return _err(f"dispatch attempt-quarantine: {exc}")
+            return _ok({"quarantined": True, "attempt": result})
 
         elif args.action == "sweep-dead":
             # @decision DEC-DEAD-RECOVERY-001
@@ -3612,11 +3684,7 @@ def _handle_evaluate(args) -> int:
       feedback → {"additionalContext": "<reason>"}
     """
     import json as _json
-    import os as _os
-    import subprocess as _subprocess
-    from dataclasses import replace as _replace
-
-    from runtime.core.command_intent import build_bash_command_intent as _build_bash_command_intent
+    from runtime.core.hook_envelope import build_hook_event_envelope as _build_hook_event_envelope
 
     raw = sys.stdin.read()
     if not raw or not raw.strip():
@@ -3627,19 +3695,7 @@ def _handle_evaluate(args) -> int:
     except _json.JSONDecodeError as e:
         return _err(f"invalid JSON on stdin: {e}")
 
-    event_type = payload.get("event_type", "")
-    tool_name = payload.get("tool_name", "")
-    tool_input = payload.get("tool_input", {})
-    cwd = payload.get("cwd", "")
-    actor_role = payload.get("actor_role", "")
-    actor_id = payload.get("actor_id", "")
-    actor_workflow_id = payload.get("actor_workflow_id", "")
-    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-    command_intent = (
-        _build_bash_command_intent(command, cwd=cwd)
-        if tool_name == "Bash" and command
-        else None
-    )
+    envelope = _build_hook_event_envelope(payload)
 
     # --- Target-aware context resolution (DEC-PE-W3-CTX-001) ---
     # Runtime-owned command intent is now the primary target resolver. When
@@ -3653,37 +3709,6 @@ def _handle_evaluate(args) -> int:
     #   1. explicit payload.target_cwd if present
     #   2. derived command_intent.target_cwd
     #   3. cwd as before
-    resolved_project_root = ""
-    target_cwd = payload.get("target_cwd", "") or ""
-    if target_cwd and command_intent is not None:
-        command_intent = _replace(command_intent, target_cwd=target_cwd)
-    elif not target_cwd and command_intent is not None:
-        target_cwd = command_intent.target_cwd
-    if target_cwd and _os.path.isdir(target_cwd):
-        try:
-            r = _subprocess.run(
-                ["git", "-C", target_cwd, "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if r.returncode == 0:
-                candidate = r.stdout.strip()
-                if candidate and _os.path.isdir(candidate):
-                    resolved_project_root = candidate
-        except Exception:
-            pass
-        # If git root resolution failed (non-git dir), use target_cwd directly
-        if not resolved_project_root:
-            resolved_project_root = target_cwd
-    # DEC-CONV-001: normalize so all DB lookups use the canonical realpath form.
-    # build_context also normalizes, but applying it here ensures the value
-    # logged or passed to other callsites is already canonical.
-    if resolved_project_root:
-        from runtime.core.policy_utils import normalize_path as _normalize_path
-
-        resolved_project_root = _normalize_path(resolved_project_root)
-
     # Fix #175: effective_cwd is the directory policies should treat as "current
     # working directory". When the command targets a repo other than the session
     # cwd (target_cwd was resolved to a project root), use target_cwd so that
@@ -3692,27 +3717,29 @@ def _handle_evaluate(args) -> int:
     # and bash_workflow_scope that re-parsed the raw command with
     # extract_git_target_dir() — those policies now use request.context.project_root
     # or request.cwd and get the right directory without re-parsing.
-    effective_cwd = target_cwd if resolved_project_root else cwd
+    resolved_project_root = envelope.project_root
+    effective_cwd = envelope.effective_cwd
     runtime_notification: dict | None = None
 
-    conn = _get_conn()
+    conn = _get_conn(project_root=resolved_project_root or None)
     try:
         ctx = policy_engine_mod.build_context(
             conn,
             cwd=effective_cwd,
-            actor_role=actor_role,
-            actor_id=actor_id,
-            actor_workflow_id=actor_workflow_id,
+            actor_role=envelope.actor_role,
+            actor_id=envelope.actor_id,
+            actor_workflow_id=envelope.actor_workflow_id,
+            session_id=envelope.session_id,
             project_root=resolved_project_root,
         )
 
         request = policy_engine_mod.PolicyRequest(
-            event_type=event_type,
-            tool_name=tool_name,
-            tool_input=tool_input,
+            event_type=envelope.event_type,
+            tool_name=envelope.tool_name,
+            tool_input=envelope.tool_input,
             context=ctx,
             cwd=effective_cwd,
-            command_intent=command_intent,
+            command_intent=envelope.command_intent,
         )
 
         decision = policy_engine_mod.default_registry().evaluate(request)
@@ -3765,10 +3792,11 @@ def _handle_evaluate(args) -> int:
                         session_id=session_id,
                         project_root=ctx.project_root,
                         task_slug=task_slug,
+                        workflow_id=ctx.workflow_id,
                         requested_path=str(
                             scratchlane_request_effect.get("requested_path") or ""
                         ),
-                        tool_name=str(scratchlane_request_effect.get("tool_name") or tool_name or ""),
+                        tool_name=str(scratchlane_request_effect.get("tool_name") or envelope.tool_name or ""),
                         request_reason=str(
                             scratchlane_request_effect.get("request_reason") or ""
                         ),
@@ -3849,6 +3877,8 @@ def _handle_evaluate(args) -> int:
         "policy_name": decision.policy_name,
         "hookSpecificOutput": hook_output,
     }
+    if decision.metadata is not None:
+        response["metadata"] = decision.metadata
     if runtime_notification is not None:
         response["runtimeNotification"] = runtime_notification
     return _ok(response)
@@ -4105,7 +4135,7 @@ def _handle_scratchlane(args) -> int:
     if not project_root:
         return _err("scratchlane requires --project-root or CLAUDE_PROJECT_DIR")
 
-    conn = _get_conn()
+    conn = _get_conn(project_root=project_root)
     try:
         if args.action == "grant":
             record = scratchlanes_mod.grant(
@@ -4114,6 +4144,10 @@ def _handle_scratchlane(args) -> int:
                 args.task_slug,
                 granted_by=getattr(args, "granted_by", None) or "user",
                 note=getattr(args, "note", None) or "",
+                session_id=getattr(args, "session_id", None) or "",
+                workflow_id=getattr(args, "workflow_id", None) or "",
+                work_item_id=getattr(args, "work_item_id", None) or "",
+                attempt_id=getattr(args, "attempt_id", None) or "",
             )
             Path(record["root_path"]).mkdir(parents=True, exist_ok=True)
             return _ok({"permit": record, "project_root": project_root})
@@ -4706,13 +4740,25 @@ def build_parser() -> argparse.ArgumentParser:
     eq.add_argument("--since", type=int)
     eq.add_argument("--limit", type=int, default=50)
 
-    # hook — read-only ClauDEX hook manifest tooling
+    # hook — ClauDEX hook manifest tooling + runtime hook adapters
     # (DEC-CLAUDEX-HOOK-MANIFEST-001)
     hook_p = subparsers.add_parser(
         "hook",
-        help="ClauDEX hook manifest tools (read-only)",
+        help="ClauDEX hook manifest tools and runtime hook adapters",
     )
     hook_sub = hook_p.add_subparsers(dest="action", required=True)
+    hook_sub.add_parser(
+        "envelope",
+        help="Build the canonical hook-event envelope from JSON on stdin",
+    )
+    hook_sub.add_parser(
+        "bash-pre-baseline",
+        help="Capture allowed Bash source baseline from hook payload on stdin",
+    )
+    hook_sub.add_parser(
+        "bash-post",
+        help="Apply PostToolUse Bash lifecycle updates from hook payload on stdin",
+    )
     hook_validate = hook_sub.add_parser(
         "validate-settings",
         help=(
@@ -5413,6 +5459,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-type", dest="agent_type", required=True,
         help="agent_type from SubagentStart payload",
     )
+    dacp.add_argument(
+        "--attempt-id", dest="attempt_id", default="",
+        help="Specific dispatch_attempts.attempt_id consumed from the carrier row",
+    )
+    dacp.add_argument(
+        "--agent-id", dest="agent_id", default="",
+        help="child agent_id from the SubagentStart payload",
+    )
+
+    daqp = dp_sub.add_parser(
+        "attempt-quarantine",
+        help="Record a quarantined SubagentStart that failed runtime contract validation.",
+    )
+    daqp.add_argument("--session-id", dest="session_id", required=True)
+    daqp.add_argument("--agent-type", dest="agent_type", required=True)
+    daqp.add_argument("--reason", dest="reason", required=True)
+    daqp.add_argument("--agent-id", dest="agent_id", default="")
+    daqp.add_argument("--project-root", dest="project_root", default="")
+    daqp.add_argument("--attempt-id", dest="attempt_id", default="")
 
     # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
     # Called by scripts/claudex-watchdog.sh on every tick.
@@ -6241,6 +6306,10 @@ def build_parser() -> argparse.ArgumentParser:
     sl_grant.add_argument("--task-slug", dest="task_slug", required=True)
     sl_grant.add_argument("--granted-by", dest="granted_by", default="user")
     sl_grant.add_argument("--note", dest="note", default="")
+    sl_grant.add_argument("--session-id", dest="session_id", default="")
+    sl_grant.add_argument("--workflow-id", dest="workflow_id", default="")
+    sl_grant.add_argument("--work-item-id", dest="work_item_id", default="")
+    sl_grant.add_argument("--attempt-id", dest="attempt_id", default="")
     sl_grant.add_argument("--project-root", **_sl_root_kwargs)
 
     sl_get = sl_sub.add_parser("get", help="Get the active scratchlane permit for a task")

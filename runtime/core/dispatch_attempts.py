@@ -33,11 +33,12 @@ State machine
               │                         └─ timeout()     ─► timed_out
               │
               ├─ cancel()       ─► cancelled             (terminal)
+              ├─ quarantine()   ─► quarantined           (terminal)
               └─ timeout()      ─► timed_out
 
     retry()   [from timed_out | failed]  ─► pending  (+retry_count)
 
-Terminal states: ``acknowledged``, ``cancelled``.
+Terminal states: ``acknowledged``, ``cancelled``, ``quarantined``.
 ``failed`` and ``timed_out`` may be retried indefinitely by callers.
 
 @decision DEC-CLAUDEX-SUPERVISION-DOMAIN-001
@@ -67,6 +68,9 @@ __all__ = [
     "acknowledge",
     "fail",
     "cancel",
+    "quarantine",
+    "quarantine_new",
+    "is_quarantined",
     "timeout",
     "retry",
     "get",
@@ -80,13 +84,14 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
-    "pending":      frozenset({"delivered", "cancelled", "timed_out"}),
-    "delivered":    frozenset({"acknowledged", "failed", "timed_out"}),
+    "pending":      frozenset({"delivered", "cancelled", "timed_out", "quarantined"}),
+    "delivered":    frozenset({"acknowledged", "failed", "timed_out", "quarantined"}),
     "timed_out":    frozenset({"pending"}),
     "failed":       frozenset({"pending"}),
     # Terminal — no transitions out.
     "acknowledged": frozenset(),
     "cancelled":    frozenset(),
+    "quarantined":  frozenset(),
 }
 
 
@@ -160,6 +165,20 @@ def issue(
     instruction: str,
     *,
     workflow_id: Optional[str] = None,
+    work_item_id: str = "",
+    goal_id: str = "",
+    stage_id: str = "",
+    decision_scope: str = "",
+    parent_session_id: str = "",
+    parent_agent_id: str = "",
+    requested_role: str = "",
+    target_project_root: str = "",
+    worktree_path: str = "",
+    prompt_pack_id: str = "",
+    contract_json: str = "{}",
+    tool_use_id: str = "",
+    hook_invocation_id: str = "",
+    lease_id: str = "",
     timeout_at: Optional[int] = None,
 ) -> dict:
     """Issue a new pending dispatch attempt for ``seat_id``.
@@ -189,17 +208,50 @@ def issue(
         conn.execute(
             """
             INSERT INTO dispatch_attempts (
-                attempt_id, seat_id, workflow_id, instruction,
+                attempt_id, seat_id, workflow_id, work_item_id, goal_id,
+                stage_id, decision_scope, parent_session_id, parent_agent_id,
+                requested_role, target_project_root, worktree_path,
+                prompt_pack_id, contract_json, tool_use_id, hook_invocation_id,
+                lease_id, instruction,
                 status, retry_count, timeout_at,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      'pending', 0, ?, ?, ?)
             """,
-            (attempt_id, seat_id, workflow_id, instruction, timeout_at, now, now),
+            (
+                attempt_id,
+                seat_id,
+                workflow_id,
+                work_item_id,
+                goal_id,
+                stage_id,
+                decision_scope,
+                parent_session_id,
+                parent_agent_id,
+                requested_role,
+                target_project_root,
+                worktree_path,
+                prompt_pack_id,
+                contract_json,
+                tool_use_id,
+                hook_invocation_id,
+                lease_id,
+                instruction,
+                timeout_at,
+                now,
+                now,
+            ),
         )
     return get(conn, attempt_id)
 
 
-def claim(conn: sqlite3.Connection, attempt_id: str) -> dict:
+def claim(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    *,
+    child_session_id: str = "",
+    child_agent_id: str = "",
+) -> dict:
     """Record that a transport adapter has delivered the instruction.
 
     Transitions: ``pending`` → ``delivered``.
@@ -207,11 +259,16 @@ def claim(conn: sqlite3.Connection, attempt_id: str) -> dict:
     This is the signal that the physical delivery has been claimed by the
     transport layer.  It does not mean the agent has processed the instruction.
     """
+    extra = {"delivery_claimed_at": _now(), "claimed_at": _now()}
+    if child_session_id:
+        extra["child_session_id"] = child_session_id
+    if child_agent_id:
+        extra["child_agent_id"] = child_agent_id
     return _transition(
         conn,
         attempt_id,
         "delivered",
-        extra_sets={"delivery_claimed_at": _now()},
+        extra_sets=extra,
     )
 
 
@@ -245,6 +302,68 @@ def cancel(conn: sqlite3.Connection, attempt_id: str) -> dict:
     Transitions: ``pending`` → ``cancelled``  (terminal).
     """
     return _transition(conn, attempt_id, "cancelled")
+
+
+def quarantine(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    *,
+    reason: str,
+    child_session_id: str = "",
+    child_agent_id: str = "",
+) -> dict:
+    """Mark an existing attempt quarantined and record why."""
+    extra: dict[str, object] = {"closed_at": _now(), "failure_reason": reason}
+    if child_session_id:
+        extra["child_session_id"] = child_session_id
+    if child_agent_id:
+        extra["child_agent_id"] = child_agent_id
+    return _transition(conn, attempt_id, "quarantined", extra_sets=extra)
+
+
+def quarantine_new(
+    conn: sqlite3.Connection,
+    seat_id: str,
+    instruction: str,
+    *,
+    reason: str,
+    workflow_id: Optional[str] = None,
+    parent_session_id: str = "",
+    requested_role: str = "",
+    target_project_root: str = "",
+    child_session_id: str = "",
+    child_agent_id: str = "",
+) -> dict:
+    """Create a terminal quarantine attempt for an untrusted start event."""
+    attempt_id = uuid.uuid4().hex
+    now = _now()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO dispatch_attempts (
+                attempt_id, seat_id, workflow_id, parent_session_id,
+                requested_role, target_project_root, child_session_id,
+                child_agent_id, instruction, status, retry_count,
+                closed_at, failure_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'quarantined', 0, ?, ?, ?, ?)
+            """,
+            (
+                attempt_id,
+                seat_id,
+                workflow_id,
+                parent_session_id,
+                requested_role,
+                target_project_root,
+                child_session_id,
+                child_agent_id,
+                instruction,
+                now,
+                reason,
+                now,
+                now,
+            ),
+        )
+    return get(conn, attempt_id)
 
 
 def timeout(conn: sqlite3.Connection, attempt_id: str) -> dict:
@@ -286,6 +405,37 @@ def get(conn: sqlite3.Connection, attempt_id: str) -> Optional[dict]:
     row = conn.execute(
         "SELECT * FROM dispatch_attempts WHERE attempt_id = ?",
         (attempt_id,),
+    ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def is_quarantined(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str = "",
+    agent_id: str = "",
+) -> Optional[dict]:
+    """Return the active quarantine row matching a child session or agent id."""
+    clauses = ["status = 'quarantined'"]
+    params: list[object] = []
+    identity_clauses: list[str] = []
+    if session_id:
+        identity_clauses.append("child_session_id = ?")
+        params.append(session_id)
+    if agent_id:
+        identity_clauses.append("child_agent_id = ?")
+        params.append(agent_id)
+    if not identity_clauses:
+        return None
+    clauses.append("(" + " OR ".join(identity_clauses) + ")")
+    row = conn.execute(
+        f"""
+        SELECT * FROM dispatch_attempts
+        WHERE {' AND '.join(clauses)}
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+        """,
+        params,
     ).fetchone()
     return _row_to_dict(row) if row else None
 

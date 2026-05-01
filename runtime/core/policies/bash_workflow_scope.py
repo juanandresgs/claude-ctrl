@@ -34,6 +34,10 @@ from runtime.core.policy_utils import (
     extract_merge_ref,
     sanitize_token,
 )
+from runtime.core.landing_authority import (
+    is_guardian_land_shared_base_target,
+    paths_are_governance_only,
+)
 
 
 def _resolve_workflow_id(
@@ -586,6 +590,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         changed_files = _get_branch_ahead_files(target_dir, base_branch)
 
     if changed_files:
+        # Governance sidecar during Guardian landing: feature workflow scope
+        # continues to forbid governance docs for implementer/source work, but
+        # a base-worktree commit containing only canonical governance files is
+        # the planner-authored landing record, not feature source payload.
+        if (
+            invocation.subcommand == "commit"
+            and is_guardian_land_shared_base_target(request.context, target_dir)
+            and paths_are_governance_only(changed_files)
+        ):
+            return None
         compliant, violations = _check_compliance(request.context.scope, changed_files)
         if not compliant:
             viols_str = ", ".join(violations)

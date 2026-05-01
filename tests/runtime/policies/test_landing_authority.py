@@ -12,10 +12,12 @@ Proves four invariants:
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
 import time
 
-import pytest
 
+from runtime.core.landing_authority import classify_landing_scope
 from runtime.core.authority_registry import (
     CAN_LAND_GIT,
     CAN_PROVISION_WORKTREE,
@@ -25,6 +27,16 @@ from runtime.core.authority_registry import (
 )
 from runtime.core.policies.bash_git_who import check
 from tests.runtime.policies.conftest import make_context, make_request
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 def _future_expiry():
@@ -163,6 +175,74 @@ class TestGuardianLandCanLand:
         req = make_request("git merge --abort", context=ctx)
         d = check(req)
         assert d is None
+
+
+class TestRuntimeLandingScopeClassification:
+    def _repo_with_feature_worktree(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "test@example.com")
+        _git(repo, "config", "user.name", "Test User")
+        (repo / "README.md").write_text("seed\n", encoding="utf-8")
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "seed")
+        feature = tmp_path / "feature"
+        _git(repo, "worktree", "add", "-b", "feature/test", str(feature))
+        return repo, feature
+
+    def _ctx(self, repo, feature):
+        lease = _make_lease()
+        lease["worktree_path"] = str(feature)
+        lease["workflow_id"] = "wf-test"
+        return make_context(
+            actor_role="guardian:land",
+            project_root=str(repo),
+            lease=lease,
+            workflow_id="wf-test",
+        )
+
+    def test_classifies_feature_commit_governance_sidecar_and_merge(self, tmp_path):
+        repo, feature = self._repo_with_feature_worktree(tmp_path)
+        ctx = self._ctx(repo, feature)
+
+        feature_scope = classify_landing_scope(
+            ctx,
+            subcommand="commit",
+            target_dir=str(feature),
+            paths=["src/adapter.py"],
+        )
+        governance_scope = classify_landing_scope(
+            ctx,
+            subcommand="commit",
+            target_dir=str(repo),
+            paths=["MASTER_PLAN.md", "docs/RESEARCH.md"],
+        )
+        merge_scope = classify_landing_scope(
+            ctx,
+            subcommand="merge",
+            target_dir=str(repo),
+            paths=[],
+        )
+
+        assert feature_scope.operation == "feature_commit"
+        assert governance_scope.operation == "governance_record"
+        assert governance_scope.path_class == "governance_only"
+        assert merge_scope.operation == "merge_reviewed_feature"
+
+    def test_base_worktree_non_governance_commit_is_not_landing_sidecar(self, tmp_path):
+        repo, feature = self._repo_with_feature_worktree(tmp_path)
+        ctx = self._ctx(repo, feature)
+
+        scope = classify_landing_scope(
+            ctx,
+            subcommand="commit",
+            target_dir=str(repo),
+            paths=["scripts/landing.sh"],
+        )
+
+        assert scope.operation == "not_landing"
+        assert scope.path_class == "non_governance"
 
 
 # ---------------------------------------------------------------------------

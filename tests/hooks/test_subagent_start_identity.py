@@ -385,6 +385,171 @@ class TestLeaseClaimUsesPayloadAgentId:
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: SubagentStart does not issue dispatch leases
+# ---------------------------------------------------------------------------
+
+
+class TestLeaseIssueForDispatch:
+    """Verify SubagentStart only claims runtime-issued dispatch leases.
+
+    Dispatch-time lease issue is owned by PreToolUse Agent policy handling via
+    dispatch_attempts. SubagentStart is a transport adapter: it may claim an
+    already-issued lease, but it must not create one as a fallback when the
+    attempt/carrier path is incomplete.
+    """
+
+    def test_subagent_start_does_not_issue_guardian_land_lease_when_absent(
+        self, seeded_db
+    ):
+        db_path, project_root = seeded_db
+        payload_agent_id = "test-agent-lease-issue-001"
+
+        conn = _open_db(db_path)
+        try:
+            _write_carrier(conn, session_id="lease-issue-session")
+            conn.commit()
+        finally:
+            conn.close()
+
+        rc, stdout, stderr = _run_hook(
+            _guardian_payload(
+                agent_id=payload_agent_id,
+                session_id="lease-issue-session",
+            ),
+            db_path,
+        )
+        assert rc == 0, f"Hook exited {rc}; stderr={stderr!r}"
+
+        conn = _open_db(db_path)
+        try:
+            rows = conn.execute(
+                """
+                SELECT agent_id, role, status, workflow_id, worktree_path,
+                       branch, allowed_ops_json, requires_eval
+                FROM dispatch_leases
+                WHERE agent_id = ?
+                """,
+                (payload_agent_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows == [], (
+            "SubagentStart must not issue a fallback dispatch lease when the "
+            f"runtime did not pre-issue one; found {[dict(r) for r in rows]}. "
+            f"stdout={stdout!r}"
+        )
+
+    def test_absent_runtime_lease_does_not_fallback_to_hook_project_root(
+        self, seeded_db, tmp_path
+    ):
+        db_path, project_root = seeded_db
+        payload_agent_id = "test-agent-lease-binding-001"
+        bound_worktree = tmp_path / "feature-wt"
+        bound_worktree.mkdir()
+
+        conn = _open_db(db_path)
+        try:
+            workflows_mod.bind_workflow(
+                conn,
+                workflow_id=_WORKFLOW_ID,
+                worktree_path=str(bound_worktree),
+                branch="feature/test-binding-worktree",
+            )
+            _write_carrier(conn, session_id="lease-binding-session")
+            conn.commit()
+        finally:
+            conn.close()
+
+        rc, stdout, stderr = _run_hook(
+            _guardian_payload(
+                agent_id=payload_agent_id,
+                session_id="lease-binding-session",
+            ),
+            db_path,
+        )
+        assert rc == 0, f"Hook exited {rc}; stderr={stderr!r}"
+
+        conn = _open_db(db_path)
+        try:
+            rows = conn.execute(
+                """
+                SELECT agent_id, role, status, workflow_id, worktree_path, branch
+                FROM dispatch_leases
+                WHERE agent_id = ?
+                """,
+                (payload_agent_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows == [], (
+            "SubagentStart must not create a lease from workflow binding or "
+            f"hook project root fallback; found {[dict(r) for r in rows]}. "
+            f"stdout={stdout!r}"
+        )
+
+    def test_expired_active_lease_is_expired_and_not_replaced(self, seeded_db):
+        db_path, project_root = seeded_db
+        payload_agent_id = "test-agent-expired-lease-001"
+
+        conn = _open_db(db_path)
+        try:
+            stale = leases_mod.issue(
+                conn,
+                role="guardian",
+                worktree_path=project_root,
+                workflow_id=_WORKFLOW_ID,
+            )
+            conn.execute(
+                """
+                UPDATE dispatch_leases
+                SET expires_at = ?, released_at = NULL, status = 'active'
+                WHERE lease_id = ?
+                """,
+                (int(time.time()) - 10, stale["lease_id"]),
+            )
+            _write_carrier(conn, session_id="expired-lease-session")
+            conn.commit()
+            stale_lease_id = stale["lease_id"]
+        finally:
+            conn.close()
+
+        rc, stdout, stderr = _run_hook(
+            _guardian_payload(
+                agent_id=payload_agent_id,
+                session_id="expired-lease-session",
+            ),
+            db_path,
+        )
+        assert rc == 0, f"Hook exited {rc}; stderr={stderr!r}"
+
+        conn = _open_db(db_path)
+        try:
+            stale_row = conn.execute(
+                "SELECT status, agent_id FROM dispatch_leases WHERE lease_id = ?",
+                (stale_lease_id,),
+            ).fetchone()
+            active_rows = conn.execute(
+                """
+                SELECT lease_id, agent_id, role, status, workflow_id, worktree_path
+                FROM dispatch_leases
+                WHERE agent_id = ? AND status = 'active'
+                """,
+                (payload_agent_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert stale_row["status"] == "expired"
+        assert stale_row["agent_id"] is None
+        assert active_rows == [], (
+            f"Expected no fresh fallback lease for {payload_agent_id!r}; "
+            f"found {[dict(r) for r in active_rows]}. stdout={stdout!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Test 3: build_context resolves guardian:land actor after identity seating
 # ---------------------------------------------------------------------------
 
@@ -442,8 +607,8 @@ class TestBuildContextResolvesAfterIdentitySeating:
             f"Expected actor_id={payload_agent_id!r}, got {ctx.actor_id!r}"
         )
         assert ctx.lease is not None, (
-            f"Expected lease to be resolved, got None.  "
-            f"This means the lease was not claimed with the payload agent_id."
+            "Expected lease to be resolved, got None.  "
+            "This means the lease was not claimed with the payload agent_id."
         )
         assert ctx.lease["agent_id"] == payload_agent_id, (
             f"Expected lease.agent_id={payload_agent_id!r}, "
@@ -541,8 +706,8 @@ class TestStalePreviousRoleMarkerIsolated:
         assert guardian_row["agent_id"] == guardian_payload_id
         # GS1-F-4 regression gate: is_active must remain 1 after hook seating.
         assert guardian_row["is_active"] == 1, (
-            f"guardian:land marker was deactivated by ensure_schema cleanup. "
-            f"GS1-F-4 regression: check _MARKER_ACTIVE_ROLES in runtime/schemas.py."
+            "guardian:land marker was deactivated by ensure_schema cleanup. "
+            "GS1-F-4 regression: check _MARKER_ACTIVE_ROLES in runtime/schemas.py."
         )
 
         # Stale marker should still exist (observatory-only sweep).
