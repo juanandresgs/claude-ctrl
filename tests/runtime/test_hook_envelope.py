@@ -83,6 +83,30 @@ def test_write_envelope_resolves_relative_file_path_from_payload_cwd(tmp_path):
     envelope = build_hook_event_envelope(payload)
 
     assert envelope.target_path == str(repo / "src" / "app.ts")
+    assert envelope.tool_input["file_path"] == str(repo / "src" / "app.ts")
     assert envelope.target_cwd == str(repo / "src")
     assert envelope.project_root == str(repo)
     assert envelope.effective_cwd == str(repo / "src")
+
+
+def test_write_envelope_resolves_relative_file_path_from_subdir_payload_cwd(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    (repo / "src").mkdir()
+    subdir = repo / "src"
+
+    payload = {
+        "event_type": "PreToolUse",
+        "tool_name": "Write",
+        "cwd": str(subdir),
+        "tool_input": {"file_path": "app.ts", "content": "export {}\n"},
+    }
+
+    envelope = build_hook_event_envelope(payload)
+
+    assert envelope.cwd == str(subdir)
+    assert envelope.target_path == str(repo / "src" / "app.ts")
+    assert envelope.tool_input["file_path"] == str(repo / "src" / "app.ts")
+    assert envelope.target_cwd == str(repo / "src")
+    assert envelope.project_root == str(repo)

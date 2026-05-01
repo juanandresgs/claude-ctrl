@@ -21,6 +21,18 @@ JSON into a policy request and forward the decision.
   evaluation trace for debugging. `build_context()` resolves all SQLite
   state (lease, markers, workflow, scope, evaluation, test_state,
   completions) in one shot.
+- `runtime/core/hook_envelope.py` -- Canonical hook-event envelope builder.
+  It owns session/tool identity normalization, Bash command intent
+  construction, Write/Edit target path normalization, effective cwd, target
+  cwd, and project-root resolution. Hooks and CLI handlers consume this
+  envelope instead of deriving command targets from shell cwd.
+- `runtime/core/landing_authority.py` -- Guardian landing scope and phase
+  classifier. It distinguishes feature commits, governance-only base
+  sidecars, reviewed-feature merges, and non-landing operations from the
+  capability-bearing lease plus command target.
+- `runtime/core/bash_lifecycle.py` -- Runtime owner for Bash pre/post
+  lifecycle bookkeeping: source fingerprint baselines, PostToolUse source
+  invalidation, Guardian commit head promotion, and landing phase events.
 - `runtime/core/policy_utils.py` -- Python ports of shell classification
   helpers (is_source_file, is_governance_markdown, extract_git_target_dir,
   classify_git_op, etc.).
@@ -72,17 +84,27 @@ Bash/Agent PreToolUse path (event_types=["Bash","PreToolUse"]):
 
 - `cc-policy evaluate` -- reads JSON from stdin, builds PolicyContext, runs
   all matching policies, returns decision with hookSpecificOutput wrapper.
+  The handler builds a `HookEventEnvelope` first; explicit target context is
+  passed to DB/context resolution before policies run.
 - `cc-policy policy list` -- returns registered policies as JSON.
 - `cc-policy policy explain` -- returns full evaluation trace.
 - `cc-policy context role` -- returns resolved actor role from PolicyContext.
+- `cc-policy hook envelope` -- projects raw hook JSON into the canonical
+  envelope for shell adapters and diagnostics.
+- `cc-policy hook bash-pre-baseline` / `cc-policy hook bash-post` -- runtime
+  entry points used by Bash hooks for non-enforcement lifecycle state.
 
 ### Enforcement Surface
 
 **PreToolUse Write|Edit** -- `hooks/pre-write.sh` (thin adapter):
 
-Reads hook JSON, resolves actor role, calls `cc-policy evaluate`. All 10
-write-path policies run in priority order. Fail-closed: if the policy engine
-is unavailable, emits deny. Target-repo aware for cross-repo operations.
+Reads hook JSON, seeds `CLAUDE_PROJECT_DIR` from the runtime hook envelope,
+resolves actor role, and calls `cc-policy evaluate`. All 10 write-path
+policies run in priority order. `cc-policy evaluate` rebuilds the same
+envelope and passes its absolute Write/Edit `target_path` to policies, so
+branch/path gates do not reinterpret relative file paths from hook subprocess
+`PWD`. Fail-closed: if the policy engine is unavailable, emits deny.
+Target-repo aware for cross-repo operations.
 
 Shell hooks `doc-gate.sh`, `test-gate.sh`, `mock-gate.sh` are no-ops --
 their policies now run via the engine during `pre-write.sh`'s evaluate call.
@@ -90,10 +112,35 @@ their policies now run via the engine during `pre-write.sh`'s evaluate call.
 **PreToolUse Bash** -- `hooks/pre-bash.sh` (thin adapter):
 
 Same pattern. The runtime builds structured command intent from the raw command
-for cross-repo context resolution. All 19 Bash/Agent PreToolUse policies are
+through `runtime.core.hook_envelope` / `runtime.core.command_intent` for
+cross-repo context resolution. All 19 Bash/Agent PreToolUse policies are
 registered in priority order; Bash-only policies no-op for Agent/Task and the
 Agent contract policy no-ops for Bash.
 Fail-closed with wrapped hookSpecificOutput on all paths.
+For git commands, `runtime.core.command_intent` resolves target context from
+parsed git invocation state before shell cwd: `cd` target, parsed `git -C`
+argument even when it follows other git global options, unambiguous git
+pathspec target, then cwd fallback.
+Lease attachment stays runtime-owned in `policy_engine.build_context()`.
+Normal actors attach only leases whose `worktree_path` matches the command
+target. `guardian:land` has one landing-specific bridge: a claimed
+feature-worktree lease for the same `agent_id` and `workflow_id` may also
+authorize the shared/base git root for the final landing commit. That bridge
+does not authorize other linked worktrees and does not create a second lease.
+For that bridged base-worktree path, a commit containing only canonical
+governance files (`MASTER_PLAN.md`, `CLAUDE.md`, `agents/*.md`, `docs/*.md`)
+is treated as a planner-authored landing sidecar: it still requires
+`evaluation_state=ready_for_guardian`, but it is not compared against the
+feature branch `head_sha` and it is not treated as feature source scope.
+The classification lives in `runtime.core.landing_authority`, not in the
+shell hook or individual policy prose.
+When hook subprocess `PWD` differs from event `cwd`, the adapter compares the
+existing `CLAUDE_PROJECT_DIR` DB target with the command target's DB target.
+It preserves the existing root only when both resolve to the same policy DB;
+otherwise the command target wins before policy state is read. Actor markers
+remain session-scoped: the hook first looks up the shared checkout root from
+payload `cwd`, then falls back to the command target root when the session
+marker is target-scoped.
 
 **PreToolUse Agent|Task** -- `hooks/pre-agent.sh` (thin adapter):
 
@@ -102,6 +149,8 @@ and calls `cc-policy evaluate`. Runtime policy owns worktree-isolation denial,
 contract shape validation, and stage↔subagent matching. After policy allow,
 `cc-policy evaluate` writes the `pending_agent_requests` carrier row and issues
 the best-effort `dispatch_attempts` row.
+When hook subprocess `PWD` and event `cwd` differ, the adapter binds
+`CLAUDE_PROJECT_DIR` from the hook payload `cwd` before resolving `state.db`.
 
 **SubagentStart:**
 
@@ -111,6 +160,12 @@ the best-effort `dispatch_attempts` row.
   receive `BLOCKED` context and are not seated. The remaining shell context
   path is lightweight and non-authoritative for non-canonical helper agents
   only; canonical role guidance comes from runtime prompt packs and `agents/`.
+  Contract-bearing seats use the contract `workflow_id` for marker scoping;
+  branch-derived workflow identity is only a legacy fallback. Lease seating
+  expires stale active leases, then claims an existing active lease for the
+  workflow binding's `worktree_path`; if none exists, `SubagentStart` issues
+  the stage lease from the same contract and immediately claims it with
+  payload `agent_id`.
 
 **SubagentStop:**
 
@@ -120,6 +175,15 @@ the best-effort `dispatch_attempts` row.
   `check-tester.sh`; Slice 11 removed the `tester` role from the runtime.
 - `hooks/post-task.sh` -- Completion routing via `cc-policy dispatch
   process-stop`. Returns next-role suggestion in hookSpecificOutput.
+- `hooks/post-bash.sh` -- PostToolUse Bash adapter. It reads hook JSON, binds
+  `CLAUDE_PROJECT_DIR` to the command target, and calls
+  `cc-policy hook bash-post`. `runtime.core/bash_lifecycle.py` resolves the
+  same envelope as policy evaluation, compares the source fingerprint captured
+  by `cc-policy hook bash-pre-baseline`, promotes `evaluation_state.head_sha`
+  after successful Guardian feature commits, emits `landing_phase_transition`
+  / `eval_head_sync` events, and invalidates ready state for other source
+  mutations. The shell hook no longer decides lease context, eval state, or
+  landing phase.
 
 ### Dispatch Engine
 

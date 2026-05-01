@@ -48,6 +48,11 @@ source "$HOOKS_DIR/lib/notify-bridge.sh"
 source "$HOOKS_DIR/lib/hook-safety.sh"
 
 _policy_db_for_project_dir() {
+    # Bootstrap-only DB comparison: this runs before cc_policy evaluate can
+    # safely open state.db, and exists only to decide whether an inherited
+    # CLAUDE_PROJECT_DIR points at the same DB authority as the envelope target.
+    # Enforcement semantics remain in runtime/core/hook_envelope.py and
+    # runtime/core/policies/.
     local project_dir="${1:-}"
     [[ -n "$project_dir" && -d "$project_dir" ]] || return 0
     "$(_resolve_runtime_python)" - "$HOOKS_DIR/.." "$project_dir" <<'PY' 2>/dev/null || true
@@ -68,6 +73,8 @@ _seed_project_dir_for_pre_bash() {
     [[ -n "$payload" ]] || return 0
     [[ -z "${CLAUDE_POLICY_DB:-}" ]] || return 0
 
+    # Runtime envelope owns Bash target resolution. The shell only exports the
+    # resulting target root so cc_policy evaluate opens the same DB authority.
     payload_cwd=$(bash_payload_project_root "$payload" 2>/dev/null || echo "")
     [[ -z "$payload_cwd" ]] && payload_cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || echo "")
     [[ -n "$payload_cwd" && -d "$payload_cwd" ]] || return 0

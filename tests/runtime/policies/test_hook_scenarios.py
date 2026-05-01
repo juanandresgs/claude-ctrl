@@ -572,6 +572,46 @@ def test_pre_write_hook_seeds_project_dir_from_payload_cwd_before_db_resolution(
     )
 
 
+def test_pre_write_hook_uses_envelope_normalized_relative_path_for_branch_guard(tmp_path):
+    """Relative Write paths are resolved by the runtime envelope before policy.
+
+    The hook subprocess may run outside the repo. Branch guard must still see
+    the absolute target path from payload cwd, not a raw path relative to the
+    hook subprocess directory.
+    """
+    repo = _init_repo(tmp_path, branch="main", name="pre-write-relative-main")
+    _seed_master_plan(repo)
+    _set_role(repo, "implementer")
+    (repo / "src").mkdir()
+
+    payload = json.dumps(
+        {
+            "tool_name": "Write",
+            "cwd": str(repo),
+            "tool_input": {
+                "file_path": "src/app.ts",
+                "content": _typescript_exports(),
+            },
+        }
+    )
+    env = _hook_env_without_policy_db(repo)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    parent_side_db = repo.parent / ".claude" / "state.db"
+
+    result = _run(
+        ["bash", str(_PRE_WRITE_HOOK)],
+        cwd=repo.parent,
+        env=env,
+        input_text=payload,
+        check=False,
+    )
+
+    _assert_hook_result(result, expected_decision="deny", reason_substring="main")
+    assert not parent_side_db.exists(), (
+        "pre-write hook must not create/read a side DB from the hook subprocess cwd"
+    )
+
+
 @pytest.mark.parametrize(
     "case",
     [

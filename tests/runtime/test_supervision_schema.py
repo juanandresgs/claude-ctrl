@@ -440,6 +440,87 @@ def test_ensure_schema_is_idempotent():
     c.close()
 
 
+def test_ensure_schema_migrates_agent_sessions_before_workflow_index():
+    """Legacy agent_sessions DBs must be widened before ALL_DDL creates indexes."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute(
+        """
+        CREATE TABLE agent_sessions (
+            session_id TEXT PRIMARY KEY,
+            transport TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+
+    ensure_schema(c)
+
+    cols = set(_columns(c, "agent_sessions"))
+    assert {"workflow_id", "transport_handle"} <= cols
+    assert "idx_agent_sessions_workflow" in _index_names(c, "agent_sessions")
+    c.close()
+
+
+def test_ensure_schema_migrates_dispatch_attempts_before_child_session_index():
+    """Legacy dispatch_attempts DBs must gain child ids before child indexes."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute(
+        """
+        CREATE TABLE agent_sessions (
+            session_id TEXT PRIMARY KEY,
+            workflow_id TEXT,
+            transport TEXT NOT NULL,
+            transport_handle TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE seats (
+            seat_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES agent_sessions(session_id),
+            role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE dispatch_attempts (
+            attempt_id TEXT PRIMARY KEY,
+            seat_id TEXT NOT NULL REFERENCES seats(seat_id),
+            workflow_id TEXT,
+            instruction TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            delivery_claimed_at INTEGER,
+            acknowledged_at INTEGER,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            timeout_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+
+    ensure_schema(c)
+
+    cols = set(_columns(c, "dispatch_attempts"))
+    assert {"child_session_id", "child_agent_id", "contract_json"} <= cols
+    idx = _index_names(c, "dispatch_attempts")
+    assert "idx_dispatch_attempts_child_session_status" in idx
+    assert "idx_dispatch_attempts_child_agent_status" in idx
+    c.close()
+
+
 # ---------------------------------------------------------------------------
 # 6. Indexes exist
 # ---------------------------------------------------------------------------
@@ -472,6 +553,8 @@ def test_dispatch_attempts_indexes_exist(conn):
     idx = _index_names(conn, "dispatch_attempts")
     assert "idx_dispatch_attempts_seat_status" in idx
     assert "idx_dispatch_attempts_workflow" in idx
+    assert "idx_dispatch_attempts_child_session_status" in idx
+    assert "idx_dispatch_attempts_child_agent_status" in idx
 
 
 # ---------------------------------------------------------------------------

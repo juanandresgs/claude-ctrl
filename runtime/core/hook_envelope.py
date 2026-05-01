@@ -144,6 +144,11 @@ def build_hook_event_envelope(payload: Mapping[str, Any] | None) -> HookEventEnv
     hook_event_name = str(data.get("hook_event_name") or event_type)
     command = str(tool_input.get("command") or "") if tool_name == "Bash" else ""
     target_path = _write_target_path(tool_input, cwd) if tool_name in {"Write", "Edit"} else ""
+    if target_path:
+        # Policies consume envelope.tool_input, so make the runtime-owned target
+        # path the value seen by branch/path gates instead of leaving each policy
+        # to reinterpret a raw relative hook path.
+        tool_input = {**tool_input, "file_path": target_path}
 
     command_intent = (
         build_bash_command_intent(command, cwd=cwd)

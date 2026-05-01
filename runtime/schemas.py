@@ -822,6 +822,44 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_child_agent_status
     WHERE child_agent_id IS NOT NULL
 """
 
+AGENT_SESSIONS_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("workflow_id", "ALTER TABLE agent_sessions ADD COLUMN workflow_id TEXT"),
+    ("transport_handle", "ALTER TABLE agent_sessions ADD COLUMN transport_handle TEXT"),
+)
+
+DISPATCH_ATTEMPTS_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("work_item_id", "ALTER TABLE dispatch_attempts ADD COLUMN work_item_id TEXT"),
+    ("goal_id", "ALTER TABLE dispatch_attempts ADD COLUMN goal_id TEXT"),
+    ("stage_id", "ALTER TABLE dispatch_attempts ADD COLUMN stage_id TEXT"),
+    ("decision_scope", "ALTER TABLE dispatch_attempts ADD COLUMN decision_scope TEXT"),
+    ("parent_session_id", "ALTER TABLE dispatch_attempts ADD COLUMN parent_session_id TEXT"),
+    ("parent_agent_id", "ALTER TABLE dispatch_attempts ADD COLUMN parent_agent_id TEXT"),
+    ("requested_role", "ALTER TABLE dispatch_attempts ADD COLUMN requested_role TEXT"),
+    ("target_project_root", "ALTER TABLE dispatch_attempts ADD COLUMN target_project_root TEXT"),
+    ("worktree_path", "ALTER TABLE dispatch_attempts ADD COLUMN worktree_path TEXT"),
+    ("prompt_pack_id", "ALTER TABLE dispatch_attempts ADD COLUMN prompt_pack_id TEXT"),
+    (
+        "contract_json",
+        "ALTER TABLE dispatch_attempts ADD COLUMN contract_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    ("tool_use_id", "ALTER TABLE dispatch_attempts ADD COLUMN tool_use_id TEXT"),
+    ("hook_invocation_id", "ALTER TABLE dispatch_attempts ADD COLUMN hook_invocation_id TEXT"),
+    ("child_session_id", "ALTER TABLE dispatch_attempts ADD COLUMN child_session_id TEXT"),
+    ("child_agent_id", "ALTER TABLE dispatch_attempts ADD COLUMN child_agent_id TEXT"),
+    ("lease_id", "ALTER TABLE dispatch_attempts ADD COLUMN lease_id TEXT"),
+    ("claimed_at", "ALTER TABLE dispatch_attempts ADD COLUMN claimed_at INTEGER"),
+    ("closed_at", "ALTER TABLE dispatch_attempts ADD COLUMN closed_at INTEGER"),
+    ("failure_reason", "ALTER TABLE dispatch_attempts ADD COLUMN failure_reason TEXT"),
+)
+
+LEGACY_INDEX_COLUMN_MIGRATIONS: tuple[
+    tuple[str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    ("agent_sessions", AGENT_SESSIONS_COLUMN_MIGRATIONS),
+    ("dispatch_attempts", DISPATCH_ATTEMPTS_COLUMN_MIGRATIONS),
+)
+
 # Ordered list of all DDL statements — used by ensure_schema()
 ALL_DDL: list[str] = [
     AGENT_MARKERS_DDL,
@@ -1103,6 +1141,35 @@ DEFAULT_LEASE_TTL: int = 7200
 # This constant was removed in W-CONV-5 (dead code — nothing consumed it).
 
 
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    migrations: tuple[tuple[str, str], ...],
+) -> None:
+    """Apply legacy ADD COLUMN migrations before indexes can reference them."""
+    columns = _column_names(conn, table)
+    if not columns:
+        return
+    for column, ddl in migrations:
+        if column in columns:
+            continue
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        columns = _column_names(conn, table)
+    missing = {column for column, _ddl in migrations if column not in columns}
+    if missing:
+        raise sqlite3.OperationalError(
+            f"{table} schema migration incomplete; missing columns: {sorted(missing)}"
+        )
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes idempotently.
 
@@ -1180,6 +1247,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 conn.execute("DROP TABLE pending_agent_requests_legacy")
         except sqlite3.OperationalError:
             pass
+
+        # Existing DBs must be widened before ALL_DDL creates indexes that
+        # reference newer columns. Fresh DBs still get the full CREATE TABLE DDL.
+        for table, migrations in LEGACY_INDEX_COLUMN_MIGRATIONS:
+            _ensure_columns(conn, table, migrations)
 
         for ddl in ALL_DDL:
             conn.execute(ddl)
@@ -1284,31 +1356,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
         # Migrate dispatch_attempts widened ledger columns. Existing databases
         # keep old rows; NULL/default values mean "unknown legacy fact".
-        for _ddl in [
-            "ALTER TABLE dispatch_attempts ADD COLUMN work_item_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN goal_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN stage_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN decision_scope TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN parent_session_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN parent_agent_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN requested_role TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN target_project_root TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN worktree_path TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN prompt_pack_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN contract_json TEXT NOT NULL DEFAULT '{}'",
-            "ALTER TABLE dispatch_attempts ADD COLUMN tool_use_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN hook_invocation_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN child_session_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN child_agent_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN lease_id TEXT",
-            "ALTER TABLE dispatch_attempts ADD COLUMN claimed_at INTEGER",
-            "ALTER TABLE dispatch_attempts ADD COLUMN closed_at INTEGER",
-            "ALTER TABLE dispatch_attempts ADD COLUMN failure_reason TEXT",
-        ]:
-            try:
-                conn.execute(_ddl)
-            except sqlite3.OperationalError:
-                pass
+        _ensure_columns(conn, "dispatch_attempts", DISPATCH_ATTEMPTS_COLUMN_MIGRATIONS)
         conn.execute(DISPATCH_ATTEMPTS_INDEX_SESSION_STATUS_DDL)
         conn.execute(DISPATCH_ATTEMPTS_INDEX_AGENT_STATUS_DDL)
 
