@@ -76,7 +76,6 @@ def _impl_req(command: str, scope=None):
 # Forbidden paths represent a typical implementation lane scope.
 _SLICE10_SCOPE = _make_scope(
     forbidden=[
-        "ClauDEX/**",
         "CLAUDE.md",
         "AGENTS.md",
         "hooks/**",
@@ -200,10 +199,10 @@ class TestDeniesRsyncToForbiddenPath:
         assert decision.action == "deny"
         assert decision.policy_name == "bash_shell_copy_ban"
 
-    def test_denies_rsync_claudex_dir(self):
-        """rsync -r /other/ClauDEX/ ClauDEX/ → deny (ClauDEX/** forbidden)."""
+    def test_denies_rsync_docs_dir(self):
+        """rsync -r /other/docs/ docs/ → deny (docs/** forbidden)."""
         decision = check(
-            _impl_req("rsync -r /other/ClauDEX/ ClauDEX/", scope=_SLICE10_SCOPE)
+            _impl_req("rsync -r /other/docs/ docs/", scope=_SLICE10_SCOPE)
         )
         assert decision is not None
         assert decision.action == "deny"
@@ -309,10 +308,10 @@ class TestDeniesTarExtractToForbiddenPath:
         assert decision.policy_name == "bash_shell_copy_ban"
 
     def test_denies_tar_extract_long_form(self):
-        """tar --extract -f foo.tar --directory=ClauDEX/ → deny (ClauDEX/** forbidden)."""
+        """tar --extract -f foo.tar --directory=docs/ → deny (docs/** forbidden)."""
         decision = check(
             _impl_req(
-                "tar --extract -f foo.tar --directory=ClauDEX/",
+                "tar --extract -f foo.tar --directory=docs/",
                 scope=_SLICE10_SCOPE,
             )
         )
@@ -659,7 +658,7 @@ class TestSlice8CrossBranchRestoreBanNonRegression:
     """
 
     _SLICE8_SCOPE = _make_scope(
-        forbidden=["CLAUDE.md", "hooks/**", "ClauDEX/**", "scripts/**", "settings.json"],
+        forbidden=["CLAUDE.md", "hooks/**", "docs/**", "scripts/**", "settings.json"],
         allowed=["runtime/core/policies/bash_cross_branch_restore_ban.py", "tmp/**"],
     )
 

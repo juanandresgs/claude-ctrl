@@ -7,9 +7,9 @@ Rationale: The CUTOVER_PLAN.md Invariant #11 states that ``@decision-ref`` links
   must resolve to active or explicitly superseded decisions.  This module provides
   a filesystem-based scanner (no SQLite dependency, no network, no subprocess) that:
 
-  - Walks the canonical scan roots (runtime/, hooks/, tests/, agents/,
-    ClauDEX/*.md top-level only) collecting all @decision declarations and
-    all @decision-ref / Refs cross-references.
+  - Walks the canonical scan roots (runtime/, hooks/, tests/, agents/)
+    collecting all @decision declarations and all @decision-ref / Refs
+    cross-references.
   - Computes the set of referenced IDs that have no matching declaration.
   - Fails with a structured, operator-readable message if any unresolved IDs
     are found.
@@ -23,7 +23,8 @@ Rationale: The CUTOVER_PLAN.md Invariant #11 states that ``@decision-ref`` links
 Adjacent authorities:
   - ``runtime/core/decision_work_registry.py`` — SQLite-backed decision store;
     this scanner is intentionally independent and filesystem-only.
-  - ``ClauDEX/CUTOVER_PLAN.md`` Invariant #11 — the requirement this pin enforces.
+  - ``MASTER_PLAN.md`` decision log — the public release record this pin
+    complements.
 """
 
 from __future__ import annotations
@@ -39,13 +40,11 @@ import pytest
 # ---------------------------------------------------------------------------
 
 # Directories (relative to the project root) that the scanner must walk.
-# ClauDEX/*.md is handled specially — top-level .md files only, NOT recursive.
 _SCAN_ROOTS = [
     "runtime",
     "hooks",
     "tests",
     "agents",
-    # ClauDEX/*.md is injected at scan time as explicit file list, not a dir root.
 ]
 
 # Paths (or path prefixes) the scanner must skip, relative to the project root.
@@ -62,8 +61,6 @@ _SKIP_PATH_SEGMENTS = frozenset(
         ".venv",
         "venv",
         "node_modules",
-        # ClauDEX/braid-v2 subtree: path-inject imports make it a separate codebase.
-        "braid-v2",
     ]
 )
 
@@ -150,7 +147,6 @@ def scan_repo(root: Path) -> Dict[str, object]:
 
     The scan roots are:
       - runtime/, hooks/, tests/, agents/ — walked recursively
-      - ClauDEX/*.md — top-level .md files only (no recursion into subdirs)
 
     All exclusions defined in ``_SKIP_PATH_SEGMENTS`` and ``_SKIP_SUFFIXES``
     are applied uniformly.
@@ -189,13 +185,6 @@ def scan_repo(root: Path) -> Dict[str, object]:
             if _should_skip(path, root):
                 continue
             _scan_file(path)
-
-    # Walk ClauDEX/*.md — top-level only, no subdirectory recursion.
-    claudex_dir = root / "ClauDEX"
-    if claudex_dir.is_dir():
-        for path in sorted(claudex_dir.glob("*.md")):
-            if path.is_file() and not _should_skip(path, root):
-                _scan_file(path)
 
     return {"declared": declared, "referenced": referenced}
 

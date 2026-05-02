@@ -117,7 +117,6 @@ _SLICE8_SCOPE = _make_scope(
         "hooks/**",
         "scripts/**",
         "settings.json",
-        "ClauDEX/**",
         "agents/**",
         "docs/**",
         "plugins/**",

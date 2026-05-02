@@ -112,7 +112,7 @@ from runtime.core import authority_registry as ar
 # adding a new capability to authority_registry itself.
 #
 # Authority: slice 19 plan §5 "Authority Design + Test Structure":
-#   "runtime/core/policies/*.py + enforcement_config.py + bridge_permissions.py".
+#   "runtime/core/policies/*.py + enforcement_config.py".
 # Runtime-owned landing scope classification is also an explicit consumer:
 # landing_authority centralizes Guardian landing capability interpretation so
 # individual policy modules do not each create their own landing-capability
@@ -125,7 +125,6 @@ CAPABILITY_CONSUMER_MODULES: FrozenSet[str] = frozenset(
         # is a valid consumer site (discovered dynamically below).
         # Explicitly named non-policy consumers:
         "runtime.core.enforcement_config",
-        "runtime.core.bridge_permissions",
         "runtime.core.landing_authority",
     }
 )
@@ -195,7 +194,7 @@ def _all_consumer_module_items():
     # Non-policy consumers declared explicitly
     non_policy_consumers = (
         "runtime.core.enforcement_config",
-        "runtime.core.bridge_permissions",
+        "runtime.core.landing_authority",
     )
     for mod_name in non_policy_consumers:
         try:

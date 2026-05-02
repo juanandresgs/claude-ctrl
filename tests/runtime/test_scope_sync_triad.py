@@ -85,7 +85,6 @@ _SLICE36_SCOPE_TRIAD: dict = {
         "agents/**",
         "docs/**",
         "plugins/**",
-        "ClauDEX/**",
         "bridge/**",
         "settings.json",
         "AGENTS.md",

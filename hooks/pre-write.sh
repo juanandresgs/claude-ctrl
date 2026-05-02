@@ -37,7 +37,6 @@ set -euo pipefail
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOKS_DIR/log.sh"
 source "$HOOKS_DIR/context-lib.sh"
-source "$HOOKS_DIR/lib/notify-bridge.sh"
 # shellcheck source=hooks/lib/hook-safety.sh
 # Gap 4: fail-closed safety wrapper — installs EXIT trap, manages rt_obs_metric_batch.
 # Must be sourced AFTER context-lib.sh (which defines _obs_accum, rt_obs_metric_batch).

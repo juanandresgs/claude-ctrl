@@ -40,8 +40,7 @@ Adjacent authorities:
     docstring already declares shadow/derived status.
   - ``runtime/core/decision_digest_projection.py`` — projection builder;
     docstring already declares downstream status.
-  - ``ClauDEX/CUTOVER_PLAN.md`` Invariant #13 — the requirement this pin
-    enforces.
+  - ``MASTER_PLAN.md`` decision log — the release record this pin complements.
   - Sister pins with the same shadow-only / stdlib-only AST-scan pattern:
     * ``tests/runtime/test_decision_ref_resolution.py``
       (DEC-CLAUDEX-DECISION-REF-SCAN-001, Invariant #11)
@@ -90,7 +89,6 @@ _LIVE_ROUTING_MODULES: Tuple[Path, ...] = (
     _RUNTIME_CORE / "workflows.py",
     _RUNTIME_CORE / "goal_continuation.py",
     _RUNTIME_CORE / "hook_manifest.py",
-    _RUNTIME_CORE / "bridge_permissions.py",
     _RUNTIME_CORE / "evaluation.py",
     _RUNTIME_CORE / "command_intent.py",
     _RUNTIME_CORE / "approvals.py",

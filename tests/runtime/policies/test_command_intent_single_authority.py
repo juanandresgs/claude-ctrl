@@ -40,8 +40,7 @@ Adjacent authorities:
   - ``runtime/core/command_intent.py`` — the sole declarative authority; its
     module docstring already calls itself "the single authority for deriving
     structured intent from a raw Bash command string" (verified 2026-04-17).
-  - ``ClauDEX/CUTOVER_PLAN.md`` Invariant #5 — the requirement this pin
-    enforces.
+  - ``MASTER_PLAN.md`` decision log — the release record this pin complements.
   - Invariant #11 mechanical pin at
     ``tests/runtime/test_decision_ref_resolution.py`` — same shape
     (stdlib-only, AST/regex scan, no SQLite / network / subprocess

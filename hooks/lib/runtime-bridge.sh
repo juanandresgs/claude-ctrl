@@ -177,6 +177,32 @@ cc_policy_local_runtime() {
 }
 
 # ---------------------------------------------------------------------------
+# Runtime notification transport
+# ---------------------------------------------------------------------------
+
+emit_runtime_notification() {
+    local result_json="${1:-}"
+    local hooks_dir="${2:-}"
+    local notification_json=""
+    local notify_hook=""
+
+    notification_json=$(printf '%s' "$result_json" | jq -c '.runtimeNotification // empty' 2>/dev/null || echo "")
+    [[ -z "$notification_json" || "$notification_json" == "null" ]] && return 0
+
+    notify_hook="${hooks_dir}/notify.sh"
+    [[ -f "$notify_hook" ]] || return 0
+
+    printf '%s' "$notification_json" | bash "$notify_hook" >/dev/null 2>&1 || true
+}
+
+strip_runtime_notification() {
+    local result_json="${1:-}"
+    printf '%s' "$result_json" | jq -c 'del(.runtimeNotification)' 2>/dev/null || printf '%s\n' "$result_json"
+}
+
+export -f emit_runtime_notification strip_runtime_notification
+
+# ---------------------------------------------------------------------------
 # Schema bootstrap (lazy, idempotent)
 # ---------------------------------------------------------------------------
 

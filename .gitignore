@@ -8,8 +8,11 @@ __pycache__/
 state.db
 state.db-shm
 state.db-wal
-tmp/
+tmp/*
 .claude/
+.codex/hooks/
+.codex/config.local.toml
+telemetry/
 
 # Plugin system — marketplace clones are mutable runtime cache.
 # First-party Codex review code lives under sidecars/codex-review.
@@ -43,10 +46,10 @@ runtime/prebash-trace.log
 traces/
 stats-cache.json
 watch_*
-ClauDEX/braid-v2/state/
 
 # Ephemeral state reviews
-CURRENT_STATE_REVIEW.md
+STATE_REVIEW.md
+review-artifacts/
 
 # Secrets
 .env
@@ -57,6 +60,3 @@ CURRENT_STATE_REVIEW.md
 .b2r-v2-stable/
 .session-start-epoch
 ide/
-
-# Session forensics archive — preserved out of band, not part of cutover
-ClauDEX/session-forensics/

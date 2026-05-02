@@ -40,9 +40,7 @@ Rationale: Phase 8 Slice 5 deleted docs/PHASE0_HOOK_AUTHORITY_RECOMMENDATIONS.md
   L10331, DEC-PHASE0-003 at L10354, P0-H delta table at L10512-10530).
   The donor doc self-declared as non-normative at its own line 6. These
   pins detect any re-add of the donor doc or any inbound reference to its
-  basename from live authority surfaces. Phase 8 tracking docs under
-  ClauDEX/ are intentionally excluded so historical-context citations
-  remain permitted there.
+  basename from live authority surfaces.
 
 @decision DEC-PHASE8-SLICE6-001
 Title: INIT-CONV handoff-doc retirement invariant pins
@@ -56,8 +54,7 @@ Rationale: Phase 8 Slice 6 deleted docs/HANDOFF_2026-04-05_SYSTEM_EVAL.md
   note in the same bundle. These pins detect any re-add of the handoff
   doc or any inbound reference to its basename from live authority
   surfaces — the MASTER_PLAN.md surface in particular guards against the
-  dead link reappearing. ClauDEX/ tracking docs are intentionally
-  excluded so historical-context citations remain permitted there.
+  dead link reappearing.
 
 @decision DEC-PHASE8-SLICE10-001
 Title: Tester Bundle 1 wiring-decommission invariant pins
@@ -122,9 +119,7 @@ SLICE4_DELETED_HANDOFFS = (
 
 # Surfaces that must NOT reference the Slice 4 deleted handoff basenames.
 # Scope is deliberately narrow: live top-level authority docs + runtime
-# config + the runtime/hooks/tests trees. Historical session-forensics
-# archives under ClauDEX/session-forensics/ are intentionally excluded
-# because they are frozen session captures, not live authority.
+# config + the runtime/hooks/tests trees.
 SLICE4_NO_REFERENCE_SURFACES = (
     REPO_ROOT / "settings.json",
     REPO_ROOT / "MASTER_PLAN.md",
@@ -144,8 +139,6 @@ SLICE5_DELETED_DOC = REPO_ROOT / "docs" / "PHASE0_HOOK_AUTHORITY_RECOMMENDATIONS
 SLICE5_DELETED_BASENAME = SLICE5_DELETED_DOC.name
 
 # Live-authority surfaces that must not name the deleted donor doc.
-# Phase 8 tracking docs under ClauDEX/ are intentionally excluded so
-# historical-context citations of the deleted doc remain permitted there.
 SLICE5_NO_REFERENCE_SURFACES = (
     REPO_ROOT / "settings.json",
     REPO_ROOT / "MASTER_PLAN.md",

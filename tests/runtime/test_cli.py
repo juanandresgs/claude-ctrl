@@ -60,39 +60,6 @@ def db(tmp_path):
     return str(tmp_path / "test-state.db")
 
 
-def _seed_bridge_run(
-    tmp_path: Path,
-    *,
-    run_id: str,
-    tmux_target: str | None = None,
-    codex_target: str | None = None,
-) -> tuple[Path, Path]:
-    braid = tmp_path / "braid"
-    state = tmp_path / "state"
-    run_dir = braid / "runs" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    state.mkdir(parents=True, exist_ok=True)
-    (braid / "runs" / "active-run").write_text(f"{run_id}\n")
-
-    run_payload: dict[str, str | None] = {
-        "run_id": run_id,
-        "project_root": str(tmp_path),
-        "project_slug": "fake",
-        "created_at": "2026-04-18T00:00:00Z",
-        "completed_at": None,
-    }
-    if tmux_target:
-        run_payload["tmux_target"] = tmux_target
-    if codex_target:
-        run_payload["codex_target"] = codex_target
-
-    (run_dir / "run.json").write_text(json.dumps(run_payload))
-    (run_dir / "status.json").write_text(
-        json.dumps({"state": "queued", "updated_at": "2026-04-18T00:00:01Z"})
-    )
-    return braid, state
-
-
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -150,64 +117,6 @@ def test_critic_review_submit_and_latest(db):
     assert latest["workflow_id"] == "wf-cli-critic-001"
     assert latest["lease_id"] == "lease-cli-001"
     assert latest["verdict"] == "TRY_AGAIN"
-
-
-# ---------------------------------------------------------------------------
-# Bridge
-# ---------------------------------------------------------------------------
-
-
-def test_bridge_topology_without_active_run_returns_probe_payload(db, tmp_path):
-    braid = tmp_path / "braid"
-    state = tmp_path / "state"
-    (braid / "runs").mkdir(parents=True)
-    state.mkdir(parents=True)
-
-    code, out = run(
-        ["bridge", "topology", "--braid-root", str(braid), "--state-dir", str(state)],
-        db,
-    )
-    assert code == 0
-    assert out["status"] == "ok"
-    assert out["active_run_id"] is None
-    assert out["claude"]["target"] is None
-    assert out["codex"]["target"] is None
-
-
-def test_bridge_topology_prefers_run_json_codex_target(db, tmp_path):
-    braid, state = _seed_bridge_run(
-        tmp_path,
-        run_id="run-topology-cli-primary",
-        tmux_target="soak:1.2",
-        codex_target="soak:1.1",
-    )
-
-    code, out = run(
-        ["bridge", "topology", "--braid-root", str(braid), "--state-dir", str(state)],
-        db,
-    )
-    assert code == 0
-    assert out["active_run_id"] == "run-topology-cli-primary"
-    assert out["codex"]["target"] == "soak:1.1"
-    assert out["codex"]["target_source"] == "run_json.codex_target"
-
-
-def test_bridge_topology_marks_legacy_codex_fallback_non_authoritative(db, tmp_path):
-    braid, state = _seed_bridge_run(
-        tmp_path,
-        run_id="run-topology-cli-legacy",
-        tmux_target="soak:1.2",
-    )
-
-    code, out = run(
-        ["bridge", "topology", "--braid-root", str(braid), "--state-dir", str(state)],
-        db,
-    )
-    assert code == 0
-    assert out["active_run_id"] == "run-topology-cli-legacy"
-    assert out["codex"]["target"] == "soak:1.1"
-    assert out["codex"]["target_source"] == "legacy_derived_from_claude_target"
-    assert out["codex"]["authoritative"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -620,139 +620,6 @@ def _handle_hook(args) -> int:
     return _err(f"unknown hook action: {args.action}")
 
 
-def _handle_bridge(args) -> int:
-    """Handle ``cc-policy bridge`` subcommands (read-only bridge tools).
-
-    Current actions:
-
-    * ``validate-settings`` (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001) —
-      reads ``ClauDEX/bridge/claude-settings.json`` (or the file
-      specified by ``--settings-path``), runs
-      ``runtime.core.bridge_permissions.validate_bridge_settings``,
-      and reports drift. Exit 0 with ``{"status": "ok"}`` on clean;
-      exit non-zero with ``{"status": "drift", "messages": [...]}``
-      on violation.
-    * ``broker-health`` — classify broker pid/socket health.
-    * ``probe-response-drift`` — classify response-surface drift for a run.
-    * ``topology`` — return the runtime-owned live lane topology probe.
-
-    This command is strictly read-only — it does not rewrite the
-    bridge file, does not write to the runtime DB, and does not emit
-    any event.
-    """
-    if args.action == "validate-settings":
-        from pathlib import Path
-
-        import runtime.core.bridge_permissions as bridge_permissions_mod
-
-        settings_path_str = getattr(args, "settings_path", None)
-        if settings_path_str:
-            settings_path = Path(settings_path_str).resolve()
-        else:
-            # Default: ClauDEX/bridge/claude-settings.json at repo root.
-            settings_path = (
-                _PROJECT_ROOT / "ClauDEX" / "bridge" / "claude-settings.json"
-            ).resolve()
-
-        if not settings_path.is_file():
-            return _err(
-                f"bridge validate-settings: settings file not found at {settings_path}"
-            )
-
-        try:
-            with settings_path.open() as f:
-                settings = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            return _err(
-                f"bridge validate-settings: failed to read {settings_path}: {exc}"
-            )
-
-        messages = bridge_permissions_mod.validate_bridge_settings(settings)
-
-        if not messages:
-            return _ok({"settings_path": str(settings_path)})
-
-        # Non-empty: exit non-zero with drift detail.
-        payload = {
-            "status": "drift",
-            "messages": messages,
-            "settings_path": str(settings_path),
-        }
-        print(json.dumps(payload))
-        return 1
-
-    if args.action == "broker-health":
-        import runtime.core.bridge_permissions as bridge_permissions_mod
-
-        try:
-            snapshot = bridge_permissions_mod.probe_broker_health(
-                braid_root=getattr(args, "braid_root", None),
-            )
-        except Exception as exc:  # pragma: no cover — probe is fail-closed
-            print(
-                json.dumps(
-                    {
-                        "status": "error",
-                        "error_detail": (
-                            f"{type(exc).__name__}: {exc}"
-                        ),
-                    }
-                )
-            )
-            return 1
-        print(json.dumps(snapshot.to_json_dict()))
-        return 0
-
-    if args.action == "topology":
-        import runtime.core.lane_topology as lane_topology_mod
-
-        try:
-            snapshot = lane_topology_mod.probe_lane_topology(
-                braid_root=getattr(args, "braid_root", None),
-                state_dir=getattr(args, "state_dir", None),
-            )
-        except Exception as exc:  # pragma: no cover — probe is fail-closed
-            print(
-                json.dumps(
-                    {
-                        "status": "error",
-                        "error_detail": (
-                            f"{type(exc).__name__}: {exc}"
-                        ),
-                    }
-                )
-            )
-            return 1
-        print(json.dumps(snapshot))
-        return 0
-
-    if args.action == "probe-response-drift":
-        import runtime.core.bridge_permissions as bridge_permissions_mod
-
-        try:
-            diagnostic = bridge_permissions_mod.probe_response_surface_drift(
-                run_id=args.run_id,
-                braid_root=getattr(args, "braid_root", None),
-                state_dir=getattr(args, "state_dir", None),
-            )
-        except Exception as exc:  # pragma: no cover — probe is fail-closed
-            print(
-                json.dumps(
-                    {
-                        "status": "error",
-                        "error_detail": (
-                            f"{type(exc).__name__}: {exc}"
-                        ),
-                    }
-                )
-            )
-            return 1
-        print(json.dumps(diagnostic.to_json_dict()))
-        return 0
-
-    return _err(f"unknown bridge action: {args.action}")
-
-
 def _handle_constitution(args) -> int:
     """Handle ``cc-policy constitution`` subcommands (read-only registry inspection).
 
@@ -2362,8 +2229,8 @@ def _handle_dispatch(args) -> int:
 
         elif args.action == "attempt-expire-stale":
             # Sweep pending/delivered attempts whose timeout_at has elapsed.
-            # Called by scripts/claudex-watchdog.sh on every tick so timed-out
-            # attempts are cleaned up without a manual caller.
+            # Intended for periodic runtime maintenance so timed-out attempts
+            # are cleaned up without a manual caller.
             # Returns {"expired": N} — N=0 is normal when nothing is stale.
             from runtime.core.dispatch_attempts import expire_stale as _expire_stale
 
@@ -4793,81 +4660,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # bridge — read-only ClauDEX bridge permission surface tooling
-    # (DEC-CLAUDEX-BRIDGE-PERMISSIONS-001)
-    bridge_p = subparsers.add_parser(
-        "bridge",
-        help="ClauDEX bridge permission surface tools (read-only)",
-    )
-    bridge_sub = bridge_p.add_subparsers(dest="action", required=True)
-    bridge_validate = bridge_sub.add_parser(
-        "validate-settings",
-        help=(
-            "Validate ClauDEX/bridge/claude-settings.json against "
-            "runtime.core.bridge_permissions; non-zero exit on drift "
-            "(DEC-CLAUDEX-BRIDGE-PERMISSIONS-001)"
-        ),
-    )
-    bridge_validate.add_argument(
-        "--settings-path",
-        default=None,
-        help=(
-            "Path to the bridge settings file to validate. Defaults to the "
-            "repo root's ClauDEX/bridge/claude-settings.json."
-        ),
-    )
-    bridge_broker_health = bridge_sub.add_parser(
-        "broker-health",
-        help=(
-            "Probe bridge broker daemon health (pidfile + socket). "
-            "Read-only classification."
-        ),
-    )
-    bridge_broker_health.add_argument(
-        "--braid-root",
-        default=None,
-        help="Override $BRAID_ROOT for the probe (defaults to env).",
-    )
-    bridge_topology = bridge_sub.add_parser(
-        "topology",
-        help=(
-            "Probe the runtime-owned live lane topology (Codex/Claude pane "
-            "targets + authority classification). Read-only."
-        ),
-    )
-    bridge_topology.add_argument(
-        "--braid-root",
-        default=None,
-        help="Override $BRAID_ROOT for the probe (defaults to env).",
-    )
-    bridge_topology.add_argument(
-        "--state-dir",
-        default=None,
-        help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
-    )
-    bridge_probe = bridge_sub.add_parser(
-        "probe-response-drift",
-        help=(
-            "Classify response-surface drift for a run (broker health + "
-            "pending-review + env). Read-only."
-        ),
-    )
-    bridge_probe.add_argument(
-        "--run-id",
-        required=True,
-        help="Target run id under $BRAID_ROOT/runs/.",
-    )
-    bridge_probe.add_argument(
-        "--braid-root",
-        default=None,
-        help="Override $BRAID_ROOT for the probe (defaults to env).",
-    )
-    bridge_probe.add_argument(
-        "--state-dir",
-        default=None,
-        help="Override $CLAUDEX_STATE_DIR for the probe (defaults to env).",
-    )
-
     # constitution — read-only constitution registry inspection/validation
     const_p = subparsers.add_parser(
         "constitution",
@@ -5480,7 +5272,7 @@ def build_parser() -> argparse.ArgumentParser:
     daqp.add_argument("--attempt-id", dest="attempt_id", default="")
 
     # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
-    # Called by scripts/claudex-watchdog.sh on every tick.
+    # Intended for periodic runtime maintenance.
     daes = dp_sub.add_parser(
         "attempt-expire-stale",
         help=(
@@ -5500,10 +5292,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # sweep-dead: runtime-owned dead-loop recovery (DEC-DEAD-RECOVERY-001).
-    # Thin adapter over runtime.core.dead_recovery.sweep_all().  Called by
-    # scripts/claudex-watchdog.sh immediately after attempt-expire-stale so
-    # silent-death cases (no SubagentStop event) are recovered by the
-    # runtime rather than by stop-hook recursion.
+    # Thin adapter over runtime.core.dead_recovery.sweep_all(). Run after
+    # attempt-expire-stale so silent-death cases (no SubagentStop event) are
+    # recovered by the runtime rather than by stop-hook recursion.
     dsw = dp_sub.add_parser(
         "sweep-dead",
         help=(
@@ -6699,8 +6490,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_event(args)
     if args.domain == "hook":
         return _handle_hook(args)
-    if args.domain == "bridge":
-        return _handle_bridge(args)
     if args.domain == "constitution":
         return _handle_constitution(args)
     if args.domain == "decision":
