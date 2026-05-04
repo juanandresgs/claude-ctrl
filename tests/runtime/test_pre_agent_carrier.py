@@ -313,6 +313,14 @@ def _latest_attempt_timeout(db_path: Path) -> int | None:
     return row["timeout_at"]
 
 
+def _table_count(db_path: Path, table: str) -> int:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # 1. pre-agent.sh write leg — positive cases
 # ---------------------------------------------------------------------------
@@ -359,8 +367,8 @@ class TestPreAgentCarrierWrite:
     def test_repeat_write_preserves_attempt_rows(self, carrier_db):
         # Two pre-agent calls for the same (session_id, agent_type) are distinct
         # dispatch attempts; the carrier no longer overwrites the first row.
-        first_contract = json.dumps({**_CONTRACT, "workflow_id": "wf-old"})
-        second_contract = json.dumps({**_CONTRACT, "workflow_id": "wf-new"})
+        first_contract = json.dumps({**_CONTRACT, "generated_at": 1_700_000_001})
+        second_contract = json.dumps({**_CONTRACT, "generated_at": 1_700_000_002})
         first_payload = _agent_payload()
         first_payload["tool_input"]["prompt"] = (
             "CLAUDEX_CONTRACT_BLOCK:" + first_contract + "\n"
@@ -376,7 +384,7 @@ class TestPreAgentCarrierWrite:
         try:
             rows = conn.execute(
                 """
-                SELECT workflow_id FROM pending_agent_requests
+                SELECT generated_at FROM pending_agent_requests
                 WHERE session_id=? AND agent_type=?
                 ORDER BY written_at ASC, rowid ASC
                 """,
@@ -385,7 +393,7 @@ class TestPreAgentCarrierWrite:
             count = conn.execute("SELECT COUNT(*) FROM pending_agent_requests").fetchone()[0]
         finally:
             conn.close()
-        assert [row["workflow_id"] for row in rows] == ["wf-old", "wf-new"]
+        assert [row["generated_at"] for row in rows] == [1_700_000_001, 1_700_000_002]
         assert count == 2
 
     def test_attempt_issue_sets_default_timeout(self, carrier_db):
@@ -393,6 +401,33 @@ class TestPreAgentCarrierWrite:
         timeout_at = _latest_attempt_timeout(carrier_db)
         assert timeout_at is not None
         assert timeout_at > 0
+
+    def test_scope_drift_denies_before_carrier_attempt_or_lease(self, carrier_db):
+        conn = sqlite3.connect(str(carrier_db))
+        conn.row_factory = sqlite3.Row
+        try:
+            workflows_mod.set_scope(
+                conn,
+                "wf-hook",
+                allowed_paths=["different/**"],
+                required_paths=["different/file.py"],
+                forbidden_paths=["blocked/**"],
+                authority_domains=[],
+            )
+        finally:
+            conn.close()
+
+        rc, out, _err = _run_pre_agent(_agent_payload(), carrier_db)
+
+        assert rc == 0
+        parsed = json.loads(out.strip())
+        hso = parsed["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "deny"
+        assert "prompt-pack preflight failed" in hso["permissionDecisionReason"]
+        assert "scope-sync" in hso["permissionDecisionReason"]
+        assert _table_count(carrier_db, "pending_agent_requests") == 0
+        assert _table_count(carrier_db, "dispatch_attempts") == 0
+        assert _table_count(carrier_db, "dispatch_leases") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +853,16 @@ class TestPreAgentA8CarrierWriteFailDeny:
         git repo the write succeeds normally.  Only when ALL three tiers fail (no
         env vars AND no git tree) does the hook deny with carrier_write_failed.
         """
+        repo_root = _make_git_repo_with_schema(tmp_path)
+        db_path = repo_root / ".claude" / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            _seed_db(conn, repo_root)
+            conn.commit()
+        finally:
+            conn.close()
+
         payload = _agent_payload()
         env = {
             **os.environ,
@@ -833,7 +878,7 @@ class TestPreAgentA8CarrierWriteFailDeny:
             capture_output=True,
             text=True,
             env=env,
-            cwd=str(_REPO_ROOT),
+            cwd=str(repo_root),
         )
         # Hook resolves DB via git toplevel, writes successfully, exits 0 without deny.
         assert result.returncode == 0
@@ -935,6 +980,13 @@ class TestPreAgentCarrierDBRoutingNoEnv:
         """
         repo_root = _make_git_repo_with_schema(tmp_path)
         db_path = repo_root / ".claude" / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            _seed_db(conn, repo_root)
+            conn.commit()
+        finally:
+            conn.close()
 
         env = _env_no_db_vars(repo_root)
         result = subprocess.run(
@@ -990,6 +1042,13 @@ class TestPreAgentCarrierDBRoutingNoEnv:
         """runtime/policy.db must not win DB resolution for carrier writes."""
         repo_root = _make_git_repo_with_schema(tmp_path)
         db_path = repo_root / ".claude" / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            _seed_db(conn, repo_root)
+            conn.commit()
+        finally:
+            conn.close()
         poisoned = repo_root / "runtime" / "policy.db"
         poisoned.parent.mkdir(parents=True, exist_ok=True)
 

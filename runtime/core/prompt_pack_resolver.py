@@ -736,8 +736,10 @@ def _validate_work_item_scope_matches_authority(
             "workflow_summary_from_contracts: work_item.scope has drifted "
             "from the enforcement authority (workflow_scope row). The two "
             "must agree on the path triad before a prompt pack can compile. "
-            "Refresh via 'cc-policy workflow scope-set <workflow_id> ...' or "
-            "re-insert the work_item with the corrected ScopeManifest. "
+            "Repair with 'cc-policy workflow scope-sync <workflow_id> "
+            "--work-item-id <work_item_id> --scope-file <scope.json>' so "
+            "workflow_scope and work_items.scope_json are written atomically "
+            "from the same ScopeManifest. "
             "Divergence:\n" + "\n".join(diffs)
         )
 

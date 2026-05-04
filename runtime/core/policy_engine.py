@@ -135,7 +135,6 @@ class PolicyContext:
     # from real repo source/governance mutations.
     scratchlane_roots: FrozenSet[str] = field(default_factory=frozenset)
     session_id: str = ""
-    quarantined_attempt: Optional[dict] = None
 
 
 @dataclass
@@ -833,18 +832,6 @@ def build_context(
     except Exception:
         scratchlane_roots = frozenset()
 
-    quarantined_attempt: Optional[dict] = None
-    try:
-        from runtime.core import dispatch_attempts as _dispatch_attempts
-
-        quarantined_attempt = _dispatch_attempts.is_quarantined(
-            conn,
-            session_id=session_id,
-            agent_id=resolved_id,
-        )
-    except Exception:
-        quarantined_attempt = None
-
     from runtime.core.authority_registry import (
         canonical_actor_stage as _canonical_actor_stage,
     )
@@ -880,7 +867,6 @@ def build_context(
         worktree_lease_suppressed_roles=suppressed_roles,
         scratchlane_roots=scratchlane_roots,
         session_id=session_id,
-        quarantined_attempt=quarantined_attempt,
     )
 
 

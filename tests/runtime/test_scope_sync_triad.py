@@ -1,12 +1,8 @@
 """Regression tests for DEC-CLAUDEX-WORK-ITEM-SCOPE-TRIAD-LIVE-REPAIR-001.
 
-This module pins the behavioral contracts that produced and then fixed the
-scope-triad drift on all 9 extant work_item rows (slices 27-35 implementer)
-at HEAD ``166d960``. The defect was introduced by slice 35's live-data repair
-script calling ``cc-policy workflow work-item-set --evaluation-json <stripped>``
-without ``--scope-json``, which caused ``upsert_work_item`` to overwrite
-``work_items.scope_json`` with the default value ``"{}"`` on 7 rows, plus 2
-rows that had stale scope_json from pre-slice-34 history.
+This module pins the behavioral contracts around scope-triad drift. The live
+Coeditor dispatch failure proved that status/evaluation-only work-item updates
+must not erase existing ``scope_json`` or ``evaluation_json`` contracts.
 
 Decision anchor: DEC-CLAUDEX-WORK-ITEM-SCOPE-TRIAD-LIVE-REPAIR-001
 
@@ -16,13 +12,9 @@ Four test cases:
     identical triad into BOTH ``workflow_scope`` and ``work_items.scope_json``
     in one transaction, leaving the two authorities in byte-level agreement.
 
-  Case 2 — destructive-omission semantic pin: A ``work-item-set`` call that
-    omits ``--scope-json`` (i.e. only passes ``--evaluation-json``) resets
-    ``scope_json`` to the default empty value ``"{}"`` (NOT the previous
-    value). This is the foot-gun that caused the slice 35 regression.
-    The test comment explicitly calls this out as "single-authority correct":
-    callers who need to update evaluation_json without changing scope MUST
-    use ``scope-sync`` afterward.
+  Case 2 — preservation semantic pin: A ``work-item-set`` call that omits
+    ``--scope-json`` or ``--evaluation-json`` preserves the existing value
+    instead of replacing it with ``"{}"``.
 
   Case 3 — post-sync compile success: After Case 1's scope-sync, invoking
     ``prompt_pack.compile_prompt_pack_for_stage`` in-process on the seeded DB
@@ -43,13 +35,10 @@ All scope-sync calls go through the CLI subprocess path or the real
 @decision DEC-CLAUDEX-WORK-ITEM-SCOPE-TRIAD-LIVE-REPAIR-001
 Title: Live repair of work_items.scope_json triad drift via scope-sync (slice 36)
 Status: accepted
-Rationale: Slice 35's live-data repair called work-item-set without --scope-json,
-  blanking scope_json on 7 rows. scope-sync is the sole authority for triad
-  writes (slice 34 DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001).
-  One-pass repair via scope-sync restores SubagentStart compile canon without
-  any producer surface expansion. Regression tests pin both the fix (scope-sync
-  atomicity) and the foot-gun (work-item-set destructive-omission) so the same
-  class of mistake is discoverable going forward.
+Rationale: scope-sync remains the sole authority for changing the path triad,
+  but work-item-set must preserve existing contract columns when the caller is
+  only changing status or evaluation. Regression tests pin scope-sync atomicity
+  and work-item-set omission preservation so this failure class is discoverable.
 """
 
 from __future__ import annotations
@@ -372,40 +361,15 @@ class TestCase1ScopeSyncAtomicity:
 
 
 # ---------------------------------------------------------------------------
-# Case 2 — destructive-omission semantic pin
+# Case 2 — omitted contract fields preserve existing values
 # ---------------------------------------------------------------------------
 
 
-class TestCase2WorkItemSetDestructiveOmission:
-    """Case 2: work-item-set without --scope-json resets scope_json to "{}".
+class TestCase2WorkItemSetOmissionPreservesContracts:
+    """Case 2: work-item-set without contract args preserves contract columns."""
 
-    This is the foot-gun behavior that caused the slice 35 regression.
-
-    The test PINS THE DESTRUCTIVE-OMISSION SEMANTIC AS ARCHITECTURALLY CORRECT.
-    ``work-item-set`` is NOT the scope triad authority — ``scope-sync`` is.
-    Callers who need to update evaluation_json without changing scope MUST
-    use ``scope-sync`` afterward to re-establish the triad invariant.
-
-    Comment to future implementers: do NOT change this test to assert that
-    work-item-set "preserves" scope_json when --scope-json is omitted.
-    That change would require merging two authorities (work-item-set and
-    scope-sync) into one, which violates DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-
-    WRITE-AUTHORITY-001. The single-authority contract is intentional.
-    """
-
-    def test_work_item_set_without_scope_json_blanks_scope(
-        self, db: str, tmp_path: Path
-    ) -> None:
-        """Calling work-item-set with only --evaluation-json resets scope_json to "{}".
-
-        This is the exact pattern that caused slice 35's live-data repair to
-        blank scope_json on 7 rows: the repair script updated evaluation_json
-        without re-supplying --scope-json, causing upsert_work_item to overwrite
-        scope_json with the default empty value "{}".
-
-        Single-authority correct: work-item-set is NOT the triad authority.
-        Callers must use scope-sync for scope updates.
-        """
+    def test_work_item_set_without_scope_json_preserves_scope(self, db: str) -> None:
+        """Calling work-item-set with only --evaluation-json preserves scope_json."""
         # Seed DB with a work_item that has a non-trivial scope_json.
         initial_scope_json = json.dumps({
             "allowed_paths": ["tests/runtime/**", "tmp/**"],
@@ -449,17 +413,11 @@ class TestCase2WorkItemSetDestructiveOmission:
                 "--status", "in_progress",
                 "--evaluation-json", evaluation_payload,
                 # NOTE: --scope-json is intentionally OMITTED.
-                # The CLI default for --scope-json is "{}".
-                # This causes upsert_work_item to write "{}" to scope_json,
-                # overwriting whatever was there before.
             ],
             db,
         )
         assert rc == 0, f"work-item-set expected exit 0; got {rc}: {resp}"
 
-        # Verify scope_json is now the default empty value "{}".
-        # This is the single-authority correct behavior: work-item-set is not
-        # the scope triad authority. Callers must use scope-sync for scope.
         conn_post = sqlite3.connect(db)
         conn_post.row_factory = sqlite3.Row
         try:
@@ -469,14 +427,9 @@ class TestCase2WorkItemSetDestructiveOmission:
             conn_post.close()
 
         assert wi_post is not None
-        # scope_json should be the CLI default "{}" (destructive-omission semantic).
-        # This is the foot-gun: the caller wiped out scope_json by omitting --scope-json.
-        assert wi_post.scope_json == "{}", (
-            f"After work-item-set without --scope-json, scope_json must be '{{}}' (empty). "
-            f"Got: {wi_post.scope_json!r}. "
-            f"This test pins the destructive-omission semantic — do NOT change this assertion "
-            f"to preserve the prior scope_json, as that would violate the single-authority "
-            f"contract (scope-sync owns triad writes, not work-item-set)."
+        assert wi_post.scope_json == initial_scope_json, (
+            f"After work-item-set without --scope-json, scope_json must be preserved. "
+            f"Got: {wi_post.scope_json!r}"
         )
 
         # Verify evaluation_json WAS updated (confirming the upsert ran).
@@ -486,6 +439,51 @@ class TestCase2WorkItemSetDestructiveOmission:
         ), (
             "evaluation_json must have been updated by work-item-set"
         )
+
+    def test_status_only_work_item_set_preserves_scope_and_evaluation(
+        self, db: str
+    ) -> None:
+        """Status-only updates must not erase dispatch-critical contracts."""
+        initial_scope_json = json.dumps({
+            "allowed_paths": ["src/**"],
+            "required_paths": ["src/main.rs"],
+            "forbidden_paths": [".claude/**"],
+            "state_domains": ["workflow_scope"],
+        })
+        initial_evaluation_json = json.dumps({
+            "required_tests": ["cargo test"],
+            "required_evidence": ["test footer"],
+            "rollback_boundary": "revert W1",
+            "acceptance_notes": "preserve eval",
+            "ready_for_guardian_definition": "contracts still present",
+        })
+        _seed_db_for_cli(
+            db,
+            scope_json=initial_scope_json,
+            evaluation_json=initial_evaluation_json,
+        )
+
+        rc, resp = _run_cli(
+            [
+                "workflow", "work-item-set",
+                "wf-triad-repair",
+                "GOAL-TRIAD-1",
+                "WI-TRIAD-1",
+                "--title", "slice 36 scope-triad repair regression pin",
+                "--status", "in_review",
+            ],
+            db,
+        )
+        assert rc == 0, f"work-item-set expected exit 0; got {rc}: {resp}"
+
+        rc2, readback = _run_cli(
+            ["workflow", "work-item-get", "WI-TRIAD-1"],
+            db,
+        )
+        assert rc2 == 0, f"work-item-get expected exit 0; got {rc2}: {readback}"
+        assert readback["status"] == "in_review"
+        assert readback["scope_json"] == initial_scope_json
+        assert readback["evaluation_json"] == initial_evaluation_json
 
 
 # ---------------------------------------------------------------------------

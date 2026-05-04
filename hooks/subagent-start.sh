@@ -101,17 +101,13 @@ EOF
     exit 0
 }
 
-_quarantine_start() {
+_fail_attempt() {
     local reason="$1"
     local attempt_id="${2:-}"
-    if [[ -n "${SESSION_ID:-}" && -n "${AGENT_TYPE:-}" ]]; then
-        _local_cc_policy dispatch attempt-quarantine \
-            --session-id "$SESSION_ID" \
-            --agent-type "$AGENT_TYPE" \
+    if [[ -n "$attempt_id" ]]; then
+        _local_cc_policy dispatch attempt-fail \
+            --attempt-id "$attempt_id" \
             --reason "$reason" \
-            ${_PAYLOAD_AGENT_ID:+--agent-id "$_PAYLOAD_AGENT_ID"} \
-            ${PROJECT_ROOT:+--project-root "$PROJECT_ROOT"} \
-            ${attempt_id:+--attempt-id "$attempt_id"} \
             >/dev/null 2>&1 || true
     fi
 }
@@ -182,7 +178,7 @@ if [[ "$_HAS_CONTRACT" == "yes" ]]; then
     _EFFECTIVE_STAGE_ID=$(echo "$HOOK_INPUT" | jq -r '.stage_id // empty' 2>/dev/null || echo "")
     _EXPECTED_SUBAGENT_TYPE=$(_authority_python "dispatch_subagent_type_for_stage" "$_EFFECTIVE_STAGE_ID" 2>/dev/null || echo "")
     if [[ -n "$_EXPECTED_SUBAGENT_TYPE" && "$AGENT_TYPE" != "$_EXPECTED_SUBAGENT_TYPE" ]]; then
-        _quarantine_start "stage_subagent_type_mismatch" "${_CARRIER_ATTEMPT_ID:-}"
+        _fail_attempt "stage_subagent_type_mismatch" "${_CARRIER_ATTEMPT_ID:-}"
         _emit_context_only "Runtime dispatch contract rejected: stage '${_EFFECTIVE_STAGE_ID}' requires subagent_type '${_EXPECTED_SUBAGENT_TYPE}', but the harness started '${AGENT_TYPE}'. This launch bypasses the repo-owned stage prompt and is not trusted."
     fi
     if [[ -n "$_EXPECTED_SUBAGENT_TYPE" ]]; then
@@ -201,8 +197,54 @@ elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
     # shell guidance path — that would silently misguide a forged/stripped launch.
     # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
     _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "$AGENT_TYPE" 2>/dev/null || echo "")
-    _quarantine_start "canonical_seat_no_carrier_contract"
     _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. ${_BOOTSTRAP_GUIDANCE}"
+fi
+
+# ---------------------------------------------------------------------------
+# Prompt-pack preflight: compile before marker seating or lease claiming.
+#
+# A failed SubagentStart compile is recorded on the carrier attempt as "failed";
+# it never seats a marker, claims a lease, or blocks the parent session.
+# The successful envelope is held until after marker/lease seating so happy-path
+# behavior still includes the current runtime context.
+# ---------------------------------------------------------------------------
+_RUNTIME_FIRST_STDOUT=""
+if [[ "$_HAS_CONTRACT" == "yes" ]]; then
+    _PP_PAYLOAD=$(echo "$HOOK_INPUT" | jq -c \
+        '{workflow_id, stage_id, goal_id, work_item_id, decision_scope, generated_at}')
+    _RT_STDERR_FILE=$(mktemp)
+    _RT_STDOUT=$(_local_cc_policy prompt-pack subagent-start \
+        --payload "$_PP_PAYLOAD" 2>"$_RT_STDERR_FILE") && _RT_RC=0 || _RT_RC=$?
+    _RT_STDERR=$(cat "$_RT_STDERR_FILE"); rm -f "$_RT_STDERR_FILE"
+
+    _RT_HEALTHY=$(echo "$_RT_STDOUT" | jq -r '.healthy // "false"' 2>/dev/null || echo "false")
+
+    if [[ "$_RT_HEALTHY" == "true" ]]; then
+        _RUNTIME_FIRST_STDOUT="$_RT_STDOUT"
+    else
+        # Invalid or error: do NOT fall back to shell role guidance.
+        # Emit a clear error in additionalContext so the agent can see what failed.
+        _ERR_VIOLATIONS=$(echo "$_RT_STDOUT" | jq -r '
+          if (.violations | length) > 0 then
+            "Violations: " + (.violations | join("; "))
+          else "" end
+        ' 2>/dev/null || echo "")
+        _ERR_BACKEND=$(echo "$_RT_STDERR" | jq -r '.message // empty' 2>/dev/null || echo "")
+        _ERR_PARTS=("Runtime prompt-pack compile failed for this SubagentStart.")
+        [[ -n "$_ERR_VIOLATIONS" ]] && _ERR_PARTS+=("$_ERR_VIOLATIONS")
+        [[ -n "$_ERR_BACKEND" ]] && _ERR_PARTS+=("Backend error: $_ERR_BACKEND")
+        _fail_attempt "prompt_pack_compile_failed" "${_CARRIER_ATTEMPT_ID:-}"
+        _ERR_CTX=$(printf '%s\n' "${_ERR_PARTS[@]}" | jq -Rs .)
+        cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStart",
+    "additionalContext": $_ERR_CTX
+  }
+}
+EOF
+        exit 0
+    fi
 fi
 
 # Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
@@ -336,56 +378,9 @@ else
     _LEASE_ID=""
 fi
 
-# ---------------------------------------------------------------------------
-# Runtime-first path: SubagentStart prompt-pack envelope delivery
-# (DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-001)
-#
-# When the incoming payload carries the full six-field request contract,
-# delegate entirely to the runtime compiler. This hook is a thin transport
-# adapter only — all validation and prompt-pack assembly live in
-# runtime.core.prompt_pack (build_subagent_start_prompt_pack_response).
-#
-# If the runtime returns an invalid report, surface it clearly as an error
-# additionalContext. Do NOT fall back to shell-built role guidance:
-# the contract was present, so the caller expected runtime-produced output
-# and shell role guidance would silently inject unrelated instructions.
-# ---------------------------------------------------------------------------
 if [[ "$_HAS_CONTRACT" == "yes" ]]; then
-    _PP_PAYLOAD=$(echo "$HOOK_INPUT" | jq -c \
-        '{workflow_id, stage_id, goal_id, work_item_id, decision_scope, generated_at}')
-    _RT_STDERR_FILE=$(mktemp)
-    _RT_STDOUT=$(_local_cc_policy prompt-pack subagent-start \
-        --payload "$_PP_PAYLOAD" 2>"$_RT_STDERR_FILE") && _RT_RC=0 || _RT_RC=$?
-    _RT_STDERR=$(cat "$_RT_STDERR_FILE"); rm -f "$_RT_STDERR_FILE"
-
-    _RT_HEALTHY=$(echo "$_RT_STDOUT" | jq -r '.healthy // "false"' 2>/dev/null || echo "false")
-
-    if [[ "$_RT_HEALTHY" == "true" ]]; then
-        # Success: print the runtime-produced envelope verbatim and exit.
-        echo "$_RT_STDOUT" | jq '.envelope'
-        exit 0
-    else
-        # Invalid or error: do NOT fall back to shell role guidance.
-        # Emit a clear error in additionalContext so the agent can see what failed.
-        _ERR_VIOLATIONS=$(echo "$_RT_STDOUT" | jq -r '
-          if (.violations | length) > 0 then
-            "Violations: " + (.violations | join("; "))
-          else "" end
-        ' 2>/dev/null || echo "")
-        _ERR_BACKEND=$(echo "$_RT_STDERR" | jq -r '.message // empty' 2>/dev/null || echo "")
-        _ERR_PARTS=("Runtime prompt-pack compile failed for this SubagentStart.")
-        [[ -n "$_ERR_VIOLATIONS" ]] && _ERR_PARTS+=("$_ERR_VIOLATIONS")
-        [[ -n "$_ERR_BACKEND" ]] && _ERR_PARTS+=("Backend error: $_ERR_BACKEND")
-        _quarantine_start "prompt_pack_compile_failed" "${_CARRIER_ATTEMPT_ID:-}"
-        _ERR_CTX=$(printf '%s\n' "${_ERR_PARTS[@]}" | jq -Rs .)
-        cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SubagentStart",
-    "additionalContext": $_ERR_CTX
-  }
-}
-EOF
+    if [[ -n "$_RUNTIME_FIRST_STDOUT" ]]; then
+        echo "$_RUNTIME_FIRST_STDOUT" | jq '.envelope'
         exit 0
     fi
 fi

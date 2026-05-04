@@ -723,7 +723,6 @@ def test_default_registry_has_all_policies():
         "doc_gate",
         "mock_gate",
         "bash_write_who",
-        "quarantine_gate",
     }
 
     expected_names = w2_expected | w3_expected | _extras

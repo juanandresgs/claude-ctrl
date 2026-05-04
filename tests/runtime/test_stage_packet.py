@@ -306,6 +306,29 @@ def test_build_stage_packet_includes_contracts_scope_and_runtime_state(conn):
     }
 
 
+def test_build_stage_packet_fails_before_agent_tool_spec_when_scope_drifts(conn):
+    workflows_mod.set_scope(
+        conn,
+        "wf-stage",
+        allowed_paths=["different/**"],
+        required_paths=["different/file.py"],
+        forbidden_paths=["blocked/**"],
+        authority_domains=["runtime"],
+    )
+
+    with pytest.raises(ValueError) as exc:
+        build_stage_packet(
+            conn,
+            workflow_id="wf-stage",
+            stage_id="implementer",
+        )
+
+    message = str(exc.value)
+    assert "prompt-pack preflight failed" in message
+    assert "work_item.scope has drifted" in message
+    assert "scope-sync" in message
+
+
 def test_workflow_stage_packet_cli_returns_json(tmp_path: Path):
     db_path = tmp_path / "state.db"
     conn = sqlite3.connect(str(db_path))

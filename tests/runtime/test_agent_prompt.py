@@ -757,6 +757,29 @@ class TestCLIErrorCases:
         assert err_parsed.get("status") == "error"
         assert "no active goal" in err_parsed.get("message", "")
 
+    def test_scope_drift_exits_before_prompt_material(self, db):
+        c = sqlite3.connect(str(db))
+        c.row_factory = sqlite3.Row
+        try:
+            workflows_mod.set_scope(
+                c,
+                "wf-ap",
+                allowed_paths=["different/**"],
+                required_paths=["different/file.py"],
+                forbidden_paths=["blocked/**"],
+                authority_domains=[],
+            )
+        finally:
+            c.close()
+
+        rc, out, err = _run_cli(db, "--workflow-id", "wf-ap", "--stage-id", "planner")
+
+        assert rc != 0
+        assert out.strip() == ""
+        err_parsed = json.loads(err.strip())
+        assert "prompt-pack preflight failed" in err_parsed["message"]
+        assert "scope-sync" in err_parsed["message"]
+
 
 # ---------------------------------------------------------------------------
 # 5. End-to-end: CLI output is directly parseable by pre-agent.sh carrier logic
@@ -991,12 +1014,8 @@ class TestHeadShaCommitShapeGuard:
         assert result["contract"]["work_item_id"] == "WI-GUARD"
         assert result["contract"]["workflow_id"] == "wf-guard"
 
-    def test_no_binding_soft_passes(self, tmp_path):
-        """When no workflow binding exists, guard soft-passes even with head_sha set.
-
-        Early-lifecycle dispatches may not yet have a binding; downstream stages
-        (guardian/reviewer) still apply their own checks.  Guard must not hard-fail.
-        """
+    def test_no_binding_fails_prompt_pack_preflight(self, tmp_path):
+        """Prompt material is not emitted when the prompt-pack cannot compile."""
         db_path = tmp_path / "s.db"
         _seed_with_head_sha(
             db_path,
@@ -1007,13 +1026,13 @@ class TestHeadShaCommitShapeGuard:
         c = sqlite3.connect(str(db_path))
         c.row_factory = sqlite3.Row
         try:
-            # No binding for wf-guard → soft-pass.
-            result = build_agent_dispatch_prompt(
-                c, workflow_id="wf-guard", stage_id="planner"
-            )
+            with pytest.raises(ValueError) as excinfo:
+                build_agent_dispatch_prompt(c, workflow_id="wf-guard", stage_id="planner")
         finally:
             c.close()
-        assert result["contract"]["work_item_id"] == "WI-GUARD"
+        msg = str(excinfo.value)
+        assert "prompt-pack preflight failed" in msg
+        assert "workflow_bindings.branch" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1098,7 @@ class TestWorkflowScopedResolution:
             workflows_mod.bind_workflow(
                 conn,
                 workflow_id=wf,
-                worktree_path=str(_REPO_ROOT),
+                worktree_path=str(_REPO_ROOT / f".test-worktree-{wf}"),
                 branch=f"feature/{wf}",
             )
 

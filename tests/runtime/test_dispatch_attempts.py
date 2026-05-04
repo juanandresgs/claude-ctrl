@@ -243,10 +243,11 @@ def test_fail_from_delivered_transitions_to_failed(conn):
     assert updated["status"] == "failed"
 
 
-def test_fail_from_pending_is_invalid(conn):
+def test_fail_from_pending_transitions_to_failed(conn):
     row = _issue(conn)
-    with pytest.raises(ValueError, match="invalid transition"):
-        da.fail(conn, row["attempt_id"])
+    updated = da.fail(conn, row["attempt_id"], reason="prompt_pack_compile_failed")
+    assert updated["status"] == "failed"
+    assert updated["failure_reason"] == "prompt_pack_compile_failed"
 
 
 def test_retry_from_failed_resets_to_pending(conn):

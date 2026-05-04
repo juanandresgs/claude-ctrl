@@ -320,6 +320,13 @@ def build_agent_dispatch_prompt(
         "decision_scope": decision_scope,
         "generated_at": generated_at,
     }
+    from runtime.core.dispatch_preflight import validate_prompt_pack_preflight
+
+    validate_prompt_pack_preflight(
+        conn,
+        contract,
+        label="dispatch agent-prompt",
+    )
 
     # Build the block line — must start at column 0 so the runtime contract
     # parser accepts it as prompt line 1.

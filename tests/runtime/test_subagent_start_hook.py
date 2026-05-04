@@ -44,6 +44,7 @@ from runtime.core import contracts
 from runtime.core import decision_work_registry as dwr
 from runtime.core import goal_contract_codec
 from runtime.core import workflows as workflows_mod
+from runtime.core.dispatch_hook import record_agent_dispatch
 from runtime.core.pending_agent_requests import write_pending_request
 from runtime.schemas import ensure_schema
 
@@ -356,6 +357,82 @@ class TestInvalidContractNoFallback:
         parsed = json.loads(stdout.strip())
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "# ClauDEX Prompt Pack:" not in ctx
+
+    def test_failed_carrier_compile_marks_attempt_failed_without_marker_or_lease_claim(
+        self, hook_db
+    ):
+        session_id = "compile-fail-carrier-session"
+        agent_id = "compile-fail-agent"
+        conn = sqlite3.connect(str(hook_db))
+        conn.row_factory = sqlite3.Row
+        try:
+            attempt = record_agent_dispatch(
+                conn,
+                session_id,
+                "planner",
+                "bad compile carrier",
+                workflow_id="wf-hook",
+                work_item_id="WI-HOOK-1",
+                goal_id="GOAL-ghost-nonexistent",
+                stage_id="planner",
+                decision_scope="kernel",
+                target_project_root=str(_REPO_ROOT),
+                contract={
+                    "workflow_id": "wf-hook",
+                    "stage_id": "planner",
+                    "goal_id": "GOAL-ghost-nonexistent",
+                    "work_item_id": "WI-HOOK-1",
+                    "decision_scope": "kernel",
+                    "generated_at": 1_700_000_000,
+                },
+            )
+            write_pending_request(
+                conn,
+                attempt_id=attempt["attempt_id"],
+                session_id=session_id,
+                agent_type="planner",
+                workflow_id="wf-hook",
+                stage_id="planner",
+                goal_id="GOAL-ghost-nonexistent",
+                work_item_id="WI-HOOK-1",
+                decision_scope="kernel",
+                generated_at=1_700_000_000,
+            )
+            lease_id = attempt["lease_id"]
+        finally:
+            conn.close()
+
+        rc, stdout, _stderr = _run_hook(
+            {"agent_type": "planner", "session_id": session_id, "agent_id": agent_id},
+            hook_db,
+        )
+
+        assert rc == 0
+        ctx = json.loads(stdout.strip())["hookSpecificOutput"]["additionalContext"]
+        assert "Runtime prompt-pack compile failed" in ctx
+        conn = sqlite3.connect(str(hook_db))
+        conn.row_factory = sqlite3.Row
+        try:
+            attempt_row = conn.execute(
+                "SELECT status, failure_reason FROM dispatch_attempts WHERE attempt_id = ?",
+                (attempt["attempt_id"],),
+            ).fetchone()
+            marker_row = conn.execute(
+                "SELECT 1 FROM agent_markers WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+            lease_row = conn.execute(
+                "SELECT status, agent_id FROM dispatch_leases WHERE lease_id = ?",
+                (lease_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert attempt_row["status"] == "failed"
+        assert attempt_row["failure_reason"] == "prompt_pack_compile_failed"
+        assert marker_row is None
+        assert lease_row["status"] == "revoked"
+        assert lease_row["agent_id"] is None
 
 
 # ---------------------------------------------------------------------------

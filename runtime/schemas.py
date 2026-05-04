@@ -1310,8 +1310,8 @@ SUPERVISION_THREAD_TYPES: frozenset[str] = frozenset(
 #                      timed_out — timeout_at exceeded without ack
 #                      failed — non-retryable delivery failure
 #                      cancelled — revoked before delivery
-#                      quarantined — harness start failed contract validation;
-#                                    future tool use by that child is blocked
+# Historical rows may still contain legacy status='quarantined'. It is no
+# longer an active runtime transition or enforcement state.
 DISPATCH_ATTEMPT_STATUSES: frozenset[str] = frozenset(
     {
         "pending",
@@ -1320,7 +1320,6 @@ DISPATCH_ATTEMPT_STATUSES: frozenset[str] = frozenset(
         "timed_out",
         "failed",
         "cancelled",
-        "quarantined",
     }
 )
 

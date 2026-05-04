@@ -276,7 +276,6 @@ def build_stage_packet(
         and work_item_scope["allowed_paths"] == workflow_scope["allowed_paths"]
         and work_item_scope["required_paths"] == workflow_scope["required_paths"]
         and work_item_scope["forbidden_paths"] == workflow_scope["forbidden_paths"]
-        and work_item_scope["state_domains"] == workflow_scope["authority_domains"]
     )
 
     commands = {

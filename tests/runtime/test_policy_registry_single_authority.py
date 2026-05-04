@@ -261,9 +261,6 @@ class TestPolicyRegistrySingleAuthority:
             for p in reg.list_policies()
             if "Write" in p.event_types or "Edit" in p.event_types
         }
-        # quarantine_gate is a cross-tool runtime dispatch guard registered via
-        # its module-level register() helper, not a write-path policy module.
-        write_event_policies.discard("quarantine_gate")
         unaccounted = write_event_policies - init_registered
         assert unaccounted == set(), (
             f"Write/Edit policies in live registry are NOT in __init__.py "

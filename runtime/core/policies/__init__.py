@@ -46,7 +46,6 @@ def register_all(registry: PolicyRegistry) -> None:
       750  mock_gate          -- escalating gate: internal mocks in test files
 
     Bash-path priorities (PE-W3 + enforcement-gaps):
-       25  quarantine_gate           -- deny tool use by SubagentStart-quarantined agents
       100  bash_tmp_safety           -- deny /tmp writes
       150  agent_contract_required   -- canonical stage↔subagent Agent launch contract
       200  bash_worktree_cwd         -- deny bare cd into .worktrees/
@@ -181,10 +180,8 @@ def register_all(registry: PolicyRegistry) -> None:
         bash_worktree_nesting,
         bash_worktree_removal,
         bash_write_who,
-        quarantine_gate,
     )
 
-    quarantine_gate.register(registry)
     bash_tmp_safety.register(registry)
     agent_contract_required.register(registry)
     bash_worktree_cwd.register(registry)

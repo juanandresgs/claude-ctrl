@@ -43,7 +43,6 @@ __all__ = [
     "ensure_session_and_seat",
     "record_agent_dispatch",
     "record_subagent_delivery",
-    "record_subagent_quarantine",
     "release_session_seat",
 ]
 
@@ -285,42 +284,6 @@ def record_subagent_delivery(
         attempt_id,
         child_session_id=session_id,
         child_agent_id=child_agent_id,
-    )
-
-
-def record_subagent_quarantine(
-    conn: sqlite3.Connection,
-    session_id: str,
-    agent_type: str,
-    *,
-    reason: str,
-    agent_id: str = "",
-    project_root: str = "",
-    attempt_id: str = "",
-) -> dict:
-    """Record a terminal quarantine for a SubagentStart contract failure."""
-    canonical_type = agent_type or "unknown"
-    seat_id = ensure_session_and_seat(conn, session_id or "unknown-session", canonical_type)
-    if attempt_id:
-        row = dispatch_attempts.get(conn, attempt_id)
-        if row is not None and row.get("status") in {"pending", "delivered"}:
-            return dispatch_attempts.quarantine(
-                conn,
-                attempt_id,
-                reason=reason,
-                child_session_id=session_id,
-                child_agent_id=agent_id,
-            )
-    return dispatch_attempts.quarantine_new(
-        conn,
-        seat_id,
-        f"quarantine:{reason}",
-        reason=reason,
-        parent_session_id=session_id,
-        requested_role=canonical_type,
-        target_project_root=project_root,
-        child_session_id=session_id,
-        child_agent_id=agent_id,
     )
 
 

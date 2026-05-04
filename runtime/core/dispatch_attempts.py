@@ -33,12 +33,12 @@ State machine
               │                         └─ timeout()     ─► timed_out
               │
               ├─ cancel()       ─► cancelled             (terminal)
-              ├─ quarantine()   ─► quarantined           (terminal)
+              ├─ fail()         ─► failed
               └─ timeout()      ─► timed_out
 
     retry()   [from timed_out | failed]  ─► pending  (+retry_count)
 
-Terminal states: ``acknowledged``, ``cancelled``, ``quarantined``.
+Terminal states: ``acknowledged``, ``cancelled``.
 ``failed`` and ``timed_out`` may be retried indefinitely by callers.
 
 @decision DEC-CLAUDEX-SUPERVISION-DOMAIN-001
@@ -68,9 +68,6 @@ __all__ = [
     "acknowledge",
     "fail",
     "cancel",
-    "quarantine",
-    "quarantine_new",
-    "is_quarantined",
     "timeout",
     "retry",
     "get",
@@ -84,14 +81,13 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
-    "pending":      frozenset({"delivered", "cancelled", "timed_out", "quarantined"}),
-    "delivered":    frozenset({"acknowledged", "failed", "timed_out", "quarantined"}),
+    "pending":      frozenset({"delivered", "cancelled", "failed", "timed_out"}),
+    "delivered":    frozenset({"acknowledged", "failed", "timed_out"}),
     "timed_out":    frozenset({"pending"}),
     "failed":       frozenset({"pending"}),
     # Terminal — no transitions out.
     "acknowledged": frozenset(),
     "cancelled":    frozenset(),
-    "quarantined":  frozenset(),
 }
 
 
@@ -285,15 +281,18 @@ def acknowledge(conn: sqlite3.Connection, attempt_id: str) -> dict:
     )
 
 
-def fail(conn: sqlite3.Connection, attempt_id: str) -> dict:
-    """Mark the attempt as failed due to a non-retryable delivery error.
+def fail(conn: sqlite3.Connection, attempt_id: str, *, reason: str = "") -> dict:
+    """Mark the attempt as failed due to a delivery or compile error.
 
-    Transitions: ``delivered`` → ``failed``.
+    Transitions: ``pending`` or ``delivered`` → ``failed``.
 
     Callers that wish to retry should call ``retry()`` after inspecting the
-    failure reason out-of-band.
+    stored failure reason.
     """
-    return _transition(conn, attempt_id, "failed")
+    extra: dict[str, object] = {"closed_at": _now()}
+    if reason:
+        extra["failure_reason"] = reason
+    return _transition(conn, attempt_id, "failed", extra_sets=extra)
 
 
 def cancel(conn: sqlite3.Connection, attempt_id: str) -> dict:
@@ -302,68 +301,6 @@ def cancel(conn: sqlite3.Connection, attempt_id: str) -> dict:
     Transitions: ``pending`` → ``cancelled``  (terminal).
     """
     return _transition(conn, attempt_id, "cancelled")
-
-
-def quarantine(
-    conn: sqlite3.Connection,
-    attempt_id: str,
-    *,
-    reason: str,
-    child_session_id: str = "",
-    child_agent_id: str = "",
-) -> dict:
-    """Mark an existing attempt quarantined and record why."""
-    extra: dict[str, object] = {"closed_at": _now(), "failure_reason": reason}
-    if child_session_id:
-        extra["child_session_id"] = child_session_id
-    if child_agent_id:
-        extra["child_agent_id"] = child_agent_id
-    return _transition(conn, attempt_id, "quarantined", extra_sets=extra)
-
-
-def quarantine_new(
-    conn: sqlite3.Connection,
-    seat_id: str,
-    instruction: str,
-    *,
-    reason: str,
-    workflow_id: Optional[str] = None,
-    parent_session_id: str = "",
-    requested_role: str = "",
-    target_project_root: str = "",
-    child_session_id: str = "",
-    child_agent_id: str = "",
-) -> dict:
-    """Create a terminal quarantine attempt for an untrusted start event."""
-    attempt_id = uuid.uuid4().hex
-    now = _now()
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO dispatch_attempts (
-                attempt_id, seat_id, workflow_id, parent_session_id,
-                requested_role, target_project_root, child_session_id,
-                child_agent_id, instruction, status, retry_count,
-                closed_at, failure_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'quarantined', 0, ?, ?, ?, ?)
-            """,
-            (
-                attempt_id,
-                seat_id,
-                workflow_id,
-                parent_session_id,
-                requested_role,
-                target_project_root,
-                child_session_id,
-                child_agent_id,
-                instruction,
-                now,
-                reason,
-                now,
-                now,
-            ),
-        )
-    return get(conn, attempt_id)
 
 
 def timeout(conn: sqlite3.Connection, attempt_id: str) -> dict:
@@ -405,37 +342,6 @@ def get(conn: sqlite3.Connection, attempt_id: str) -> Optional[dict]:
     row = conn.execute(
         "SELECT * FROM dispatch_attempts WHERE attempt_id = ?",
         (attempt_id,),
-    ).fetchone()
-    return _row_to_dict(row) if row else None
-
-
-def is_quarantined(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str = "",
-    agent_id: str = "",
-) -> Optional[dict]:
-    """Return the active quarantine row matching a child session or agent id."""
-    clauses = ["status = 'quarantined'"]
-    params: list[object] = []
-    identity_clauses: list[str] = []
-    if session_id:
-        identity_clauses.append("child_session_id = ?")
-        params.append(session_id)
-    if agent_id:
-        identity_clauses.append("child_agent_id = ?")
-        params.append(agent_id)
-    if not identity_clauses:
-        return None
-    clauses.append("(" + " OR ".join(identity_clauses) + ")")
-    row = conn.execute(
-        f"""
-        SELECT * FROM dispatch_attempts
-        WHERE {' AND '.join(clauses)}
-        ORDER BY updated_at DESC, created_at DESC
-        LIMIT 1
-        """,
-        params,
     ).fetchone()
     return _row_to_dict(row) if row else None
 

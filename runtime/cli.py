@@ -114,6 +114,9 @@ def _agent_contract_carrier_effect(conn, payload: dict, decision):
         dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
     )
     from runtime.core.dispatch_hook import record_agent_dispatch as _record_agent_dispatch
+    from runtime.core.dispatch_preflight import (
+        validate_prompt_pack_preflight as _validate_prompt_pack_preflight,
+    )
     from runtime.core.pending_agent_requests import write_pending_request as _write_pending_request
 
     if decision.action != "allow":
@@ -155,6 +158,11 @@ def _agent_contract_carrier_effect(conn, payload: dict, decision):
         expected_subagent_type = _dispatch_subagent_type_for_stage(stage_id)
         if not expected_subagent_type:
             raise ValueError(f"unknown active stage: {stage_id!r}")
+        _validate_prompt_pack_preflight(
+            conn,
+            contract,
+            label="PreToolUse:Agent",
+        )
 
         timeout_at = None
         timeout_seconds = _os.environ.get("CLAUDEX_DISPATCH_ATTEMPT_TIMEOUT_SECONDS", "2700")
@@ -202,8 +210,9 @@ def _agent_contract_carrier_effect(conn, payload: dict, decision):
         return policy_engine_mod.PolicyDecision(
             action="deny",
             reason=(
-                "carrier_write_failed: dispatch attempt and pending carrier "
-                "could not be written atomically for canonical Agent dispatch. "
+                "carrier_write_failed: canonical Agent dispatch failed prompt-pack "
+                "preflight or could not atomically write its dispatch attempt and "
+                "pending carrier. "
                 f"Detail: {exc}"
             ),
             policy_name="agent_contract_carrier",
@@ -2285,22 +2294,45 @@ def _handle_dispatch(args) -> int:
                 return _ok({"found": False, "attempt": None})
             return _ok({"found": True, "attempt": result})
 
-        elif args.action == "attempt-quarantine":
-            from runtime.core.dispatch_hook import record_subagent_quarantine as _quarantine
+        elif args.action == "attempt-fail":
+            # SubagentStart compile failures are delivery failures, not runtime
+            # session blocks. Mark the exact carrier attempt failed and revoke any
+            # dispatch-time lease it carried; do not block the parent session.
+            from runtime.core import dispatch_attempts as _dispatch_attempts
 
             try:
-                result = _quarantine(
+                row = _dispatch_attempts.get(conn, args.attempt_id)
+                if row is None:
+                    return _ok({"action": "attempt-fail", "found": False, "attempt": None})
+                if row.get("status") not in {"pending", "delivered"}:
+                    return _ok(
+                        {
+                            "action": "attempt-fail",
+                            "found": True,
+                            "updated": False,
+                            "attempt": row,
+                        }
+                    )
+                result = _dispatch_attempts.fail(
                     conn,
-                    args.session_id,
-                    args.agent_type,
-                    reason=args.reason,
-                    agent_id=args.agent_id or "",
-                    project_root=args.project_root or "",
-                    attempt_id=args.attempt_id or "",
+                    args.attempt_id,
+                    reason=args.reason or "",
                 )
+                lease_id = str(row.get("lease_id") or "")
+                lease_revoked = False
+                if lease_id:
+                    lease_revoked = leases_mod.revoke(conn, lease_id)
             except (ValueError, Exception) as exc:
-                return _err(f"dispatch attempt-quarantine: {exc}")
-            return _ok({"quarantined": True, "attempt": result})
+                return _err(f"dispatch attempt-fail: {exc}")
+            return _ok(
+                {
+                    "action": "attempt-fail",
+                    "found": True,
+                    "updated": True,
+                    "lease_revoked": lease_revoked,
+                    "attempt": result,
+                }
+            )
 
         elif args.action == "sweep-dead":
             # @decision DEC-DEAD-RECOVERY-001
@@ -3093,6 +3125,19 @@ def _handle_workflow(args) -> int:
                     f"Refusing to attach a work_item across workflow "
                     f"boundaries (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)."
                 )
+            existing = _dwr.get_work_item(conn, args.work_item_id)
+            scope_json_arg = getattr(args, "scope_json", None)
+            evaluation_json_arg = getattr(args, "evaluation_json", None)
+            scope_json = (
+                scope_json_arg
+                if scope_json_arg is not None and str(scope_json_arg).strip()
+                else (existing.scope_json if existing is not None else "{}")
+            )
+            evaluation_json = (
+                evaluation_json_arg
+                if evaluation_json_arg is not None and str(evaluation_json_arg).strip()
+                else (existing.evaluation_json if existing is not None else "{}")
+            )
             record = _dwr.WorkItemRecord(
                 work_item_id=args.work_item_id,
                 goal_id=args.goal_id,
@@ -3100,8 +3145,8 @@ def _handle_workflow(args) -> int:
                 status=args.status,
                 version=int(getattr(args, "version", 1) or 1),
                 author=getattr(args, "author", "planner") or "planner",
-                scope_json=getattr(args, "scope_json", "{}") or "{}",
-                evaluation_json=getattr(args, "evaluation_json", "{}") or "{}",
+                scope_json=scope_json or "{}",
+                evaluation_json=evaluation_json or "{}",
                 head_sha=getattr(args, "head_sha", None) or None,
                 reviewer_round=int(getattr(args, "reviewer_round", 0) or 0),
                 workflow_id=args.workflow_id,
@@ -3152,6 +3197,8 @@ def _handle_workflow(args) -> int:
                     "status": wi.status,
                     "version": wi.version,
                     "author": wi.author,
+                    "scope_json": wi.scope_json,
+                    "evaluation_json": wi.evaluation_json,
                     "head_sha": wi.head_sha,
                     "reviewer_round": wi.reviewer_round,
                     "workflow_id": wi.workflow_id,
@@ -5820,16 +5867,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="child agent_id from the SubagentStart payload",
     )
 
-    daqp = dp_sub.add_parser(
-        "attempt-quarantine",
-        help="Record a quarantined SubagentStart that failed runtime contract validation.",
+    dafp = dp_sub.add_parser(
+        "attempt-fail",
+        help="Mark a carrier-backed dispatch attempt failed after SubagentStart validation fails.",
     )
-    daqp.add_argument("--session-id", dest="session_id", required=True)
-    daqp.add_argument("--agent-type", dest="agent_type", required=True)
-    daqp.add_argument("--reason", dest="reason", required=True)
-    daqp.add_argument("--agent-id", dest="agent_id", default="")
-    daqp.add_argument("--project-root", dest="project_root", default="")
-    daqp.add_argument("--attempt-id", dest="attempt_id", default="")
+    dafp.add_argument("--attempt-id", dest="attempt_id", required=True)
+    dafp.add_argument("--reason", dest="reason", required=True)
 
     # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
     # Intended for periodic runtime maintenance.
@@ -6315,13 +6358,13 @@ def build_parser() -> argparse.ArgumentParser:
     wf_wi_set.add_argument(
         "--scope-json",
         dest="scope_json",
-        default="{}",
+        default=None,
         help="JSON Scope Manifest (allowed/required/forbidden/state_domains)",
     )
     wf_wi_set.add_argument(
         "--evaluation-json",
         dest="evaluation_json",
-        default="{}",
+        default=None,
         help=(
             "JSON Evaluation Contract — 9 legal keys (DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001): "
             "required_tests, required_evidence, "

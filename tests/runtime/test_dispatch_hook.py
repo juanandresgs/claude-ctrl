@@ -44,7 +44,6 @@ from runtime.core.dispatch_hook import (
     ensure_session_and_seat,
     record_agent_dispatch,
     record_subagent_delivery,
-    record_subagent_quarantine,
 )
 from runtime.core.policy_engine import PolicyRequest, build_context, default_registry
 from runtime.schemas import ensure_schema
@@ -408,20 +407,55 @@ def test_cli_attempt_claim_returns_not_found_when_no_pending(db_path):
     assert out["attempt"] is None
 
 
-def test_quarantined_subagent_is_denied_at_policy_boundary(conn):
-    record_subagent_quarantine(
+def test_cli_attempt_fail_marks_delivered_attempt_failed(db_path):
+    issue_out = _run_cli(
+        db_path,
+        "dispatch", "attempt-issue",
+        "--session-id", "cli-sess-fail",
+        "--agent-type", "general-purpose",
+        "--instruction", "test instruction",
+    )
+    claim_out = _run_cli(
+        db_path,
+        "dispatch", "attempt-claim",
+        "--session-id", "cli-sess-fail",
+        "--agent-type", "general-purpose",
+        "--attempt-id", issue_out["attempt_id"],
+    )
+    assert claim_out["attempt"]["status"] == "delivered"
+
+    fail_out = _run_cli(
+        db_path,
+        "dispatch", "attempt-fail",
+        "--attempt-id", issue_out["attempt_id"],
+        "--reason", "prompt_pack_compile_failed",
+    )
+
+    assert fail_out["status"] == "ok"
+    assert fail_out["attempt"]["status"] == "failed"
+    assert fail_out["attempt"]["failure_reason"] == "prompt_pack_compile_failed"
+
+
+def test_failed_child_attempt_does_not_block_parent_policy_boundary(conn):
+    """Failed child delivery state is diagnostic only; it must not block parent tools."""
+    attempt = record_agent_dispatch(
         conn,
-        "sess-quarantine",
+        "sess-failed-child",
         "implementer",
-        reason="canonical_seat_no_carrier_contract",
-        agent_id="agent-quarantine",
-        project_root="/tmp/project",
+        "bad child launch",
+    )
+    from runtime.core import dispatch_attempts
+
+    dispatch_attempts.fail(
+        conn,
+        attempt["attempt_id"],
+        reason="prompt_pack_compile_failed",
     )
     ctx = build_context(
         conn,
         cwd="/tmp/project",
-        actor_id="agent-quarantine",
-        session_id="sess-quarantine",
+        actor_id="parent-orchestrator",
+        session_id="sess-failed-child",
         project_root="/tmp/project",
     )
     decision = default_registry().evaluate(
@@ -434,9 +468,7 @@ def test_quarantined_subagent_is_denied_at_policy_boundary(conn):
         )
     )
 
-    assert decision.action == "deny"
-    assert decision.policy_name == "quarantine_gate"
-    assert "quarantined" in decision.reason
+    assert decision.action == "allow"
 
 
 # ---------------------------------------------------------------------------

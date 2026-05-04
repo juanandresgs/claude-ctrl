@@ -32,10 +32,12 @@ message), not advisory warnings.
 
 Dispatch identity is owned by the runtime, not by shell glue or prompt text.
 `dispatch_attempts` is the canonical attempt ledger. A PreToolUse Agent/Task
-request creates an attempt before the carrier row is written, and the carrier is
-keyed by `attempt_id`. SubagentStart may only consume that carrier and claim the
-already-issued attempt; it no longer creates fallback leases or invents
-identity when the PreToolUse side failed.
+request first runs prompt-pack preflight against the same six-field contract
+SubagentStart will consume. Only a preflight-valid canonical launch creates an
+attempt, issues a dispatch lease, and writes the carrier keyed by `attempt_id`.
+SubagentStart may only consume that carrier and claim the already-issued
+attempt; it no longer creates fallback leases or invents identity when the
+PreToolUse side failed.
 
 The attempt record owns:
 
@@ -45,14 +47,15 @@ The attempt record owns:
 - tool-use and hook invocation ids
 - child session/agent identity after SubagentStart claim
 - runtime-issued lease id
-- terminal status: `completed`, `failed`, `expired`, `orphaned`, `cancelled`, or
-  `quarantined`
+- status: `pending`, `delivered`, `acknowledged`, `failed`, `timed_out`, or
+  `cancelled`
 
-If SubagentStart sees a missing carrier, mismatched role, missing runtime lease,
-or prompt-pack compile failure, it records a quarantined attempt when identity is
-available. `quarantine_gate` is the first policy in the runtime policy registry;
-it blocks Bash/Write/Edit/PreToolUse activity for quarantined sessions so a bad
-spawn cannot continue as an ordinary agent.
+If SubagentStart sees a mismatched role or prompt-pack compile failure for a
+carrier-backed launch, it marks that exact attempt `failed`, emits diagnostic
+context, and exits without seating markers or claiming leases. There is no
+runtime quarantine gate; failed child attempts do not block parent Bash or Agent
+calls. Canonical seats without a carrier receive `BLOCKED` context and are not
+seated.
 
 Scratchlane permission is also runtime-scoped. Guardian Admission may grant an
 obvious task lane, but storage and enforcement remain in `scratchlane_permits`
@@ -86,7 +89,6 @@ policies in priority order (first deny wins):
 
 | Priority | Policy | What it enforces |
 |----------|--------|-----------------|
-| 25 | `quarantine_gate` | Quarantined dispatch attempts cannot continue tool activity. |
 | 100 | `branch_guard` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
 | 150 | `write_scratchlane_gate` | Obvious tmp/scratchlane writes are routed through Guardian Admission, which may activate the permit; tracked files under tmp remain denied. |
 | 175 | `write_admission_gate` | Uncustodied source writes route to Guardian Admission before WHO fallback. |
@@ -109,9 +111,8 @@ PreToolUse/Bash-path policies in priority order:
 
 | Priority | Policy | What it enforces |
 |----------|--------|-----------------|
-| 25 | `quarantine_gate` | Quarantined dispatch attempts cannot continue tool activity. |
 | 100 | `bash_tmp_safety` | Deny /tmp writes (Sacred Practice #3). |
-| 150 | `agent_contract_required` | Deny Agent worktree isolation, enforce canonical stage↔subagent contracts, create the runtime dispatch attempt, issue the dispatch lease, and write the attempt-keyed carrier. |
+| 150 | `agent_contract_required` | Deny Agent worktree isolation, enforce canonical stage↔subagent contracts, run prompt-pack preflight, create the runtime dispatch attempt, issue the dispatch lease, and write the attempt-keyed carrier. |
 | 200 | `bash_worktree_cwd` | Deny bare cd into .worktrees/. |
 | 250 | `bash_worktree_nesting` | Prevent nested worktree creation. |
 | 260 | `bash_scratchlane_gate` | Shell tmp/interpreter scratchlane work routes through Guardian Admission and the runtime-owned scratchlane executor. |
@@ -136,7 +137,7 @@ PreToolUse/Bash-path policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/subagent-start.sh` | Consumes the attempt-keyed PreToolUse Agent carrier row, claims dispatch delivery against that exact attempt, seats runtime-issued leases, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context, are not seated, and are quarantined when identity is available. Guardian admission consumes its own narrow carrier and injects admission-only guidance without seating canonical Guardian state. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
+| `hooks/subagent-start.sh` | Consumes the attempt-keyed PreToolUse Agent carrier row, claims dispatch delivery against that exact attempt, compiles the runtime prompt pack before marker seating or lease claiming, seats runtime-issued leases only after compile success, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context and are not seated. Compile failures mark the carrier attempt `failed` and do not block the parent. Guardian admission consumes its own narrow carrier and injects admission-only guidance without seating canonical Guardian state. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
 
 ### Guardian Admission Stop Handling
 
@@ -192,9 +193,9 @@ workflow `auto_dispatch` or `next_role`
 ### Remaining Harness Boundary
 
 - **Harness spawn cannot be denied at SubagentStart.** Claude's SubagentStart
-  hook can only inject context. The runtime now quarantines bad spawns and the
-  first policy blocks subsequent tool activity, but the literal process spawn is
-  still a harness boundary.
+  hook can only inject context. The runtime fails invalid canonical launches
+  before Agent spawn when possible; if SubagentStart still detects a compile
+  failure, it reports context and marks only that child attempt failed.
 - **Runtime next-action state is authoritative.** `AUTO_DISPATCH:` remains the
   harness transport signal; `dispatch_next_actions` is the inspectable runtime
   state for queued next-role decisions.

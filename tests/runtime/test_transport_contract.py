@@ -343,7 +343,7 @@ def test_retry_then_deliver(conn):
 
 
 # ---------------------------------------------------------------------------
-# 19. Invalid transitions raise ValueError through the adapter
+# 19. Terminal/invalid transitions raise ValueError through the adapter
 # ---------------------------------------------------------------------------
 
 
@@ -353,10 +353,10 @@ def test_on_acknowledged_from_pending_raises(conn):
         ADAPTER.on_acknowledged(conn, row["attempt_id"])
 
 
-def test_on_failed_from_pending_raises(conn):
+def test_on_failed_from_pending_transitions_to_failed(conn):
     row = ADAPTER.dispatch(conn, SEAT, "bad fail")
-    with pytest.raises(ValueError, match="invalid transition"):
-        ADAPTER.on_failed(conn, row["attempt_id"])
+    updated = ADAPTER.on_failed(conn, row["attempt_id"])
+    assert updated["status"] == "failed"
 
 
 def test_on_delivery_claimed_from_acknowledged_raises(conn):
