@@ -62,9 +62,19 @@ from runtime.core.dispatch_contract import dispatch_subagent_type_for_stage
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.stage_packet import dispatch_bootstrap_guidance
 
+GUARDIAN_ADMISSION_MODE_LINE = "GUARDIAN_MODE: admission"
+
 
 def _repair_hint(stage_id: str | None = None) -> str:
     return dispatch_bootstrap_guidance(stage_id)
+
+
+def is_guardian_admission_prompt(prompt: str) -> bool:
+    """Return True when a Guardian launch declares the non-canonical admission mode."""
+    lines = (prompt or "").splitlines()
+    if not lines:
+        return False
+    return lines[0].strip().lower() == GUARDIAN_ADMISSION_MODE_LINE.lower()
 
 
 def _validate_contract_shape(contract: dict) -> Optional[PolicyDecision]:
@@ -315,6 +325,18 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     canonical = authority_registry.canonical_dispatch_subagent_type(subagent_type)
     if not canonical:
         return None  # non-canonical → pass-through
+    if canonical == "guardian" and is_guardian_admission_prompt(prompt):
+        return None  # non-canonical Guardian mode; carrier is written by cc-policy evaluate.
+    admission_hint = ""
+    if canonical == "implementer":
+        admission_hint = (
+            " ADMISSION_REQUIRED: direct implementer launch without a runtime "
+            "contract is a custody fork. Route to Guardian with "
+            "`GUARDIAN_MODE: admission` or run "
+            "`cc-policy admission classify --payload <json>` so Guardian "
+            "Admission decides scratchlane vs project onboarding before "
+            "implementation continues."
+        )
     return PolicyDecision(
         action="deny",
         reason=(
@@ -322,6 +344,7 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             f"requires a runtime-issued contract. The prompt must start with "
             f"'{CONTRACT_BLOCK_PREFIX}' on line 1. "
             + _repair_hint(subagent_type)
+            + admission_hint
         ),
         policy_name="agent_contract_required",
     )

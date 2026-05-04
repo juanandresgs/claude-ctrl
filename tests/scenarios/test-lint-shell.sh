@@ -26,6 +26,7 @@ if ! command -v shellcheck &>/dev/null; then
 fi
 
 mkdir -p "$TMP_DIR/.claude"
+TEST_DB="$TMP_DIR/.claude/state.db"
 git -C "$TMP_DIR" init -q
 git -C "$TMP_DIR" config user.email "test@test.com"
 git -C "$TMP_DIR" config user.name "Test"
@@ -50,7 +51,7 @@ PAYLOAD=$(jq -n \
     '{tool_name: $tool_name, tool_input: {file_path: $file_path, content: $content}}')
 
 exit_code=0
-output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>/dev/null) || exit_code=$?
+output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" "$HOOK" 2>/dev/null) || exit_code=$?
 
 if [[ "$exit_code" -ne 0 ]]; then
     echo "FAIL: $TEST_NAME — expected exit 0 for valid .sh file, got $exit_code"
@@ -58,13 +59,18 @@ if [[ "$exit_code" -ne 0 ]]; then
     exit 1
 fi
 
-# Confirm no enforcement-gap entry was created for sh
-if [[ -f "$TMP_DIR/.claude/.enforcement-gaps" ]]; then
-    gap_content=$(grep "sh" "$TMP_DIR/.claude/.enforcement-gaps" 2>/dev/null || true)
-    if [[ -n "$gap_content" ]]; then
-        echo "FAIL: $TEST_NAME — unexpected enforcement gap for valid .sh file: $gap_content"
-        exit 1
-    fi
+# Confirm no enforcement-gap row was created for sh
+GAP_JSON=$(CLAUDE_POLICY_DB="$TEST_DB" PYTHONPATH="$REPO_ROOT" python3 "$REPO_ROOT/runtime/cli.py" \
+    enforcement-gap count --project-root "$TMP_DIR" --gap-type missing_dep --ext sh)
+GAP_COUNT=$(printf '%s' "$GAP_JSON" | jq -r '.count // 0')
+if [[ "$GAP_COUNT" != "0" ]]; then
+    echo "FAIL: $TEST_NAME — unexpected enforcement gap for valid .sh file: $GAP_JSON"
+    exit 1
+fi
+
+if [[ -e "$TMP_DIR/.claude/.enforcement-gaps" ]]; then
+    echo "FAIL: $TEST_NAME — retired .enforcement-gaps flatfile was created"
+    exit 1
 fi
 
 echo "PASS: $TEST_NAME"

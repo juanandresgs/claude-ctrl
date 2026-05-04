@@ -16,6 +16,7 @@ source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
+seed_project_dir_from_hook_payload_cwd "$AGENT_RESPONSE"
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 
 PROJECT_ROOT=$(detect_project_root)
@@ -69,19 +70,19 @@ fi
 
 # Check 2: Scan session-changes for 50+ line source files missing @decision
 get_session_changes "$PROJECT_ROOT"
-CHANGES="${SESSION_FILE:-}"
+CHANGES_TEXT="${SESSION_CHANGES_TEXT:-}"
 
 MISSING_COUNT=0
 MISSING_FILES=""
 DECISION_PATTERN='@decision|# DECISION:|// DECISION\('
 
-if [[ -n "$CHANGES" && -f "$CHANGES" ]]; then
+if [[ -n "$CHANGES_TEXT" ]]; then
     while IFS= read -r file; do
         [[ ! -f "$file" ]] && continue
-        # Only check source files
-        [[ ! "$file" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh)$ ]] && continue
-        # Skip test/config
-        [[ "$file" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]] && continue
+        # Only check source files; skip generated/vendor output and runtime meta.
+        is_source_file "$file" || continue
+        is_skippable_path "$file" && continue
+        [[ "$file" =~ (^|/)\.claude(/|$) ]] && continue
 
         # Check line count
         line_count=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
@@ -91,7 +92,7 @@ if [[ -n "$CHANGES" && -f "$CHANGES" ]]; then
                 MISSING_FILES+="  - $(basename "$file") ($line_count lines)\n"
             fi
         fi
-    done < <(sort -u "$CHANGES")
+    done < <(printf '%s\n' "$CHANGES_TEXT" | sort -u)
 fi
 
 if [[ "$MISSING_COUNT" -gt 0 ]]; then

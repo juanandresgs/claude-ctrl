@@ -16,6 +16,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 
@@ -28,6 +29,7 @@ is_source_file "$FILE_PATH" || exit 0
 
 # Skip non-source directories and test files
 is_skippable_path "$FILE_PATH" && exit 0
+is_scratchlane_path "$FILE_PATH" && exit 0
 [[ "$FILE_PATH" =~ \.claude ]] && exit 0
 
 # Skip test files (review production code, not tests)

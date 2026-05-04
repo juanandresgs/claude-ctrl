@@ -1,7 +1,7 @@
-"""Validation tests for the 15 seed eval scenarios (TKT-EVAL-5).
+"""Validation tests for the 21 seed eval scenarios (TKT-EVAL-5).
 
 Verifies:
-  1. All 15 YAML files (including the pre-existing write-who-deny.yaml) load
+  1. All 21 YAML files (including the pre-existing write-who-deny.yaml) load
      without error via load_scenario().
   2. Each scenario has all required schema fields.
   3. Each scenario references an existing fixture directory.
@@ -15,7 +15,7 @@ Title: test_eval_scenarios.py validates data structure, not execution
 Status: accepted
 Rationale: Scenarios are data (YAML + fixture files). The runner tests
   (test_eval_runner.py) already cover execution. This module's job is to
-  verify the 15 seed scenarios are structurally sound: parseable, referencing
+  verify the 21 seed scenarios are structurally sound: parseable, referencing
   real fixtures, and containing the required contract files. Separating
   structural validation from execution tests keeps failures actionable —
   a structural failure here means bad YAML or a missing file, not a runner bug.
@@ -41,10 +41,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCENARIOS_DIR = REPO_ROOT / "evals" / "scenarios"
 FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
 
-# All 15 expected scenario names (including the pre-existing write-who-deny)
+# All 21 expected scenario names (including the pre-existing write-who-deny)
 EXPECTED_SCENARIO_NAMES: frozenset[str] = frozenset(
     {
-        # gate (5)
+        # gate (11)
+        "admission-ambiguous-asks-user",
+        "admission-git-bootstrap",
+        "admission-guardian-provision",
+        "admission-non-git-project",
+        "admission-obvious-scratch",
+        "admission-ready-implementer",
         "write-who-deny",
         "impl-source-allow",
         "guardian-no-lease-deny",
@@ -66,7 +72,7 @@ EXPECTED_SCENARIO_NAMES: frozenset[str] = frozenset(
 )
 
 EXPECTED_CATEGORY_COUNTS: dict[str, int] = {
-    "gate": 5,
+    "gate": 11,
     "judgment": 5,
     "adversarial": 5,
 }
@@ -92,23 +98,23 @@ def _load_all() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Test: all 15 YAML files exist and load without error
+# Test: all 21 YAML files exist and load without error
 # ---------------------------------------------------------------------------
 
 
-def test_all_15_scenarios_exist():
-    """All 15 expected scenario YAML files exist under evals/scenarios/."""
+def test_all_21_scenarios_exist():
+    """All 21 expected scenario YAML files exist under evals/scenarios/."""
     scenarios = _load_all()
     names = {s["name"] for s in scenarios}
     missing = EXPECTED_SCENARIO_NAMES - names
     assert not missing, f"Missing scenario YAML files: {sorted(missing)}"
 
 
-def test_exactly_15_scenarios():
-    """Exactly 15 scenario YAML files exist (no extras, no duplicates)."""
+def test_exactly_21_scenarios():
+    """Exactly 21 scenario YAML files exist (no extras, no duplicates)."""
     scenarios = _load_all()
     names = [s["name"] for s in scenarios]
-    assert len(names) == 15, f"Expected 15 scenarios, found {len(names)}: {sorted(names)}"
+    assert len(names) == 21, f"Expected 21 scenarios, found {len(names)}: {sorted(names)}"
     # No duplicates
     assert len(names) == len(set(names)), f"Duplicate scenario names: {sorted(names)}"
 
@@ -167,11 +173,11 @@ def test_scenario_ground_truth_has_expected_verdict(scenario):
 # ---------------------------------------------------------------------------
 
 
-def test_five_gate_scenarios():
-    """Exactly 5 gate scenarios exist."""
+def test_eleven_gate_scenarios():
+    """Exactly 11 gate scenarios exist."""
     scenarios = _load_all()
     gate = [s for s in scenarios if s["category"] == "gate"]
-    assert len(gate) == 5, f"Expected 5 gate scenarios, found {len(gate)}"
+    assert len(gate) == 11, f"Expected 11 gate scenarios, found {len(gate)}"
 
 
 def test_five_judgment_scenarios():
@@ -303,16 +309,16 @@ def test_fixture_yaml_files_are_self_contained(scenario):
 
 
 def test_discover_all_gate_scenarios_end_to_end():
-    """discover_scenarios() finds all 5 gate scenarios and they all load cleanly.
+    """discover_scenarios() finds all 11 gate scenarios and they all load cleanly.
 
     This is the Compound-Interaction Test: it exercises the real production
     sequence — discover_scenarios() → load_scenario() — crossing the boundary
-    between filesystem discovery, YAML parsing, and schema validation. All 5
+    between filesystem discovery, YAML parsing, and schema validation. All 11
     gate scenarios must be discoverable and valid.
     """
     gate_scenarios = eval_runner.discover_scenarios(SCENARIOS_DIR, category="gate")
-    assert len(gate_scenarios) == 5, (
-        f"Expected 5 gate scenarios from discover_scenarios(), found {len(gate_scenarios)}: "
+    assert len(gate_scenarios) == 11, (
+        f"Expected 11 gate scenarios from discover_scenarios(), found {len(gate_scenarios)}: "
         f"{[s['name'] for s in gate_scenarios]}"
     )
     for s in gate_scenarios:

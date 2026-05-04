@@ -224,15 +224,6 @@ _CONCRETE: Tuple[ConstitutionEntry, ...] = (
         ),
     ),
     ConstitutionEntry(
-        name="implementation_plan.md",
-        kind=KIND_CONCRETE,
-        path="implementation_plan.md",
-        rationale=(
-            "Active implementation plan that gates source work. Donor "
-            "surface during cutover per CUTOVER_PLAN §Donor Surfaces."
-        ),
-    ),
-    ConstitutionEntry(
         name="MASTER_PLAN.md",
         kind=KIND_CONCRETE,
         path="MASTER_PLAN.md",

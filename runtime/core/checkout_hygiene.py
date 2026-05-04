@@ -8,7 +8,7 @@ Rationale: statusline.sh and live slices were inferring "dirty" from raw
   different states into one count:
     * active slice changes that should be visible to implementer/reviewer
     * tolerated local baseline dirt in the canonical soak checkout
-    * ephemeral runtime artifacts (prompt counters, policy DB copies, etc.)
+    * ephemeral runtime artifacts (retired prompt counters, policy DB copies, etc.)
     * genuinely unexpected drift
 
   This module is the single runtime authority that classifies checkout state
@@ -44,6 +44,7 @@ _BASELINE_TOLERATED_PATTERNS = frozenset(
 
 _EPHEMERAL_RUNTIME_PATTERNS = frozenset(
     {
+        # Retired flatfiles remain tolerated during migration cleanup only.
         ".prompt-count-*",
         ".claude/.prompt-count-*",
         "policy.db",

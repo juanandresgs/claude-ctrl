@@ -6,15 +6,14 @@
 #
 #   - Default behaviour (no CLAUDEX_ENABLE_COMPACTION_HINTS set) must NOT
 #     emit the "Consider running /compact" line, even when the prior
-#     prompt-count threshold (35 or 60 prompts) would otherwise have
+#     DB prompt-count threshold (35 or 60 prompts) would otherwise have
 #     fired.
 #   - Opt-in behaviour (CLAUDEX_ENABLE_COMPACTION_HINTS=1) must emit the
 #     compaction suggestion when the threshold is reached.
 #
-# Deterministic driver: the hook derives SESSION_ID from
-# CLAUDE_SESSION_ID (falling back to $$), so the test can control the
-# PROMPT_COUNT_FILE path exactly, pre-seed the counter to one below the
-# threshold, and assert the hook's post-increment behaviour in each case.
+# Deterministic driver: the hook derives SESSION_ID from CLAUDE_SESSION_ID
+# (falling back to $$), so the test can pre-seed the state.db session_activity
+# row to one below the threshold and assert the hook's post-increment behavior.
 set -euo pipefail
 
 TEST_NAME="test-prompt-submit-compaction-opt-in"
@@ -29,11 +28,12 @@ mkdir -p "$TMP_DIR"
 git -C "$TMP_DIR" init -q
 git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 
-# Use a fixed session id so the PROMPT_COUNT_FILE path is predictable.
+# Use a fixed session id so the state.db row is predictable.
 SESSION_ID="compaction-opt-in-test"
 CLAUDE_DIR="$TMP_DIR/.claude"
-PROMPT_COUNT_FILE="$CLAUDE_DIR/.prompt-count-${SESSION_ID}"
 mkdir -p "$CLAUDE_DIR"
+TEST_DB="$CLAUDE_DIR/state.db"
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null
 
 PAYLOAD='{"prompt":"What is the current plan status?"}'
 COMPACT_MARKER="Consider running /compact"
@@ -46,19 +46,31 @@ fail() {
 run_hook() {
   local enable_flag="${1:-}"
   local env_prefix=()
-  env_prefix+=("CLAUDE_PROJECT_DIR=$TMP_DIR" "CLAUDE_SESSION_ID=$SESSION_ID")
+  env_prefix+=("CLAUDE_PROJECT_DIR=$TMP_DIR" "CLAUDE_SESSION_ID=$SESSION_ID" "CLAUDE_POLICY_DB=$TEST_DB")
   if [[ -n "$enable_flag" ]]; then
     env_prefix+=("CLAUDEX_ENABLE_COMPACTION_HINTS=$enable_flag")
   fi
   printf '%s' "$PAYLOAD" | env "${env_prefix[@]}" "$HOOK" 2>/dev/null
 }
 
+seed_prompt_count() {
+  local count="$1"
+  local now
+  now=$(date +%s)
+  sqlite3 "$TEST_DB" \
+    "INSERT INTO session_activity(session_id, project_root, prompt_count, started_at, updated_at) VALUES('$SESSION_ID', '$TMP_DIR', $count, $now, $now) ON CONFLICT(session_id, project_root) DO UPDATE SET prompt_count=$count, started_at=$now, updated_at=$now, ended_at=NULL;"
+}
+
+current_prompt_count() {
+  sqlite3 "$TEST_DB" "SELECT prompt_count FROM session_activity WHERE session_id='$SESSION_ID' AND project_root='$TMP_DIR';"
+}
+
 # ---------------------------------------------------------------------------
 # Case 1: default (no env var) — hint must NOT fire at the 35-prompt threshold
 # ---------------------------------------------------------------------------
-echo "34" > "$PROMPT_COUNT_FILE"   # hook increments → 35 (pre-fix threshold)
+seed_prompt_count 34   # hook increments → 35 (pre-fix threshold)
 output_default=$(run_hook "")
-post_count_default=$(cat "$PROMPT_COUNT_FILE")
+post_count_default=$(current_prompt_count)
 if [[ "$post_count_default" != "35" ]]; then
   fail "increment path (no env) did not reach 35; got $post_count_default"
 fi
@@ -69,9 +81,9 @@ fi
 # ---------------------------------------------------------------------------
 # Case 2: explicit CLAUDEX_ENABLE_COMPACTION_HINTS=0 — same: hint must NOT fire
 # ---------------------------------------------------------------------------
-echo "34" > "$PROMPT_COUNT_FILE"   # re-seed so increment lands on 35 again
+seed_prompt_count 34   # re-seed so increment lands on 35 again
 output_zero=$(run_hook "0")
-post_count_zero=$(cat "$PROMPT_COUNT_FILE")
+post_count_zero=$(current_prompt_count)
 if [[ "$post_count_zero" != "35" ]]; then
   fail "increment path (=0) did not reach 35; got $post_count_zero"
 fi
@@ -82,9 +94,9 @@ fi
 # ---------------------------------------------------------------------------
 # Case 3: opt-in (CLAUDEX_ENABLE_COMPACTION_HINTS=1) — hint MUST fire at 35
 # ---------------------------------------------------------------------------
-echo "34" > "$PROMPT_COUNT_FILE"
+seed_prompt_count 34
 output_on=$(run_hook "1")
-post_count_on=$(cat "$PROMPT_COUNT_FILE")
+post_count_on=$(current_prompt_count)
 if [[ "$post_count_on" != "35" ]]; then
   fail "increment path (=1) did not reach 35; got $post_count_on"
 fi
@@ -103,10 +115,10 @@ fi
 # ---------------------------------------------------------------------------
 # Case 4: opt-in at 60-prompt secondary threshold must also fire
 # ---------------------------------------------------------------------------
-echo "59" > "$PROMPT_COUNT_FILE"
+seed_prompt_count 59
 output_on_60=$(run_hook "1")
-if [[ "$(cat "$PROMPT_COUNT_FILE")" != "60" ]]; then
-  fail "increment path to 60 did not land; got $(cat "$PROMPT_COUNT_FILE")"
+if [[ "$(current_prompt_count)" != "60" ]]; then
+  fail "increment path to 60 did not land; got $(current_prompt_count)"
 fi
 if ! echo "$output_on_60" | grep -q "$COMPACT_MARKER"; then
   fail "compaction hint did NOT fire at 60 prompts with opt-in enabled"
@@ -118,10 +130,10 @@ fi
 # ---------------------------------------------------------------------------
 # Case 5: opt-in at a NON-threshold count (36) must NOT fire the hint
 # ---------------------------------------------------------------------------
-echo "35" > "$PROMPT_COUNT_FILE"
+seed_prompt_count 35
 output_on_36=$(run_hook "1")
-if [[ "$(cat "$PROMPT_COUNT_FILE")" != "36" ]]; then
-  fail "increment path to 36 did not land; got $(cat "$PROMPT_COUNT_FILE")"
+if [[ "$(current_prompt_count)" != "36" ]]; then
+  fail "increment path to 36 did not land; got $(current_prompt_count)"
 fi
 if echo "$output_on_36" | grep -q "$COMPACT_MARKER"; then
   fail "compaction hint fired at 36 (non-threshold) with opt-in enabled"
@@ -131,9 +143,9 @@ fi
 # Case 6: unexpected env-var values (anything not == '1') must NOT fire
 # ---------------------------------------------------------------------------
 for flag in "true" "yes" "on" "2" "01"; do
-  echo "34" > "$PROMPT_COUNT_FILE"
+  seed_prompt_count 34
   output_unexpected=$(run_hook "$flag")
-  if [[ "$(cat "$PROMPT_COUNT_FILE")" != "35" ]]; then
+  if [[ "$(current_prompt_count)" != "35" ]]; then
     fail "increment path with env=$flag did not land at 35"
   fi
   if echo "$output_unexpected" | grep -q "$COMPACT_MARKER"; then
@@ -144,8 +156,8 @@ done
 # ---------------------------------------------------------------------------
 # Hook exit code must remain 0 on every path.
 # ---------------------------------------------------------------------------
-echo "10" > "$PROMPT_COUNT_FILE"
-if ! printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_SESSION_ID="$SESSION_ID" \
+seed_prompt_count 10
+if ! printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_SESSION_ID="$SESSION_ID" CLAUDE_POLICY_DB="$TEST_DB" \
     CLAUDEX_ENABLE_COMPACTION_HINTS=1 "$HOOK" >/dev/null 2>&1; then
   fail "hook exited nonzero on opt-in path"
 fi

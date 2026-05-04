@@ -61,7 +61,8 @@ def _imported_module_names(module) -> set[str]:
 
 
 # The CUTOVER_PLAN §"Constitution-Level Files" list plus promotions.
-# The 11 baseline entries come verbatim from CUTOVER_PLAN;
+# The 10 retained baseline entries come from the CUTOVER_PLAN lineage after
+# retiring the root implementation_plan.md donor surface;
 # subsequent phases promoted realized modules to concrete entries.
 # Pinning this set equality remains the primary invariant of the
 # concrete-file surface.
@@ -70,7 +71,6 @@ CUTOVER_PLAN_CONCRETE_FILES: frozenset[str] = frozenset(
         "CLAUDE.md",
         "AGENTS.md",
         "settings.json",
-        "implementation_plan.md",
         "MASTER_PLAN.md",
         "hooks/HOOKS.md",
         "runtime/cli.py",
@@ -118,14 +118,14 @@ class TestConcreteSetEquality:
         # the path itself. This assertion pins that convention.
         assert cr.CONCRETE_ENTRY_NAMES == CUTOVER_PLAN_CONCRETE_FILES
 
-    def test_concrete_count_is_twenty_four(self):
-        # 11 CUTOVER_PLAN baseline + 1 Phase 2 + 2 Phase 7 S3 +
+    def test_concrete_count_is_twenty_three(self):
+        # 10 retained CUTOVER_PLAN baseline + 1 Phase 2 + 2 Phase 7 S3 +
         # 1 Phase 7 S4 + 4 Phase 7 S5 + 1 Phase 7 S8 (hook_manifest)
         # + 1 Phase 7 S10 (prompt_pack_resolver)
         # + 1 Phase 7 S13 (decision_digest_projection)
         # + 1 Phase 7 S16 (projection_reflow)
         # + 1 Phase 7 S17 (memory_retrieval).
-        assert len(cr.concrete_entries()) == 24
+        assert len(cr.concrete_entries()) == 23
 
     def test_all_concrete_paths_helper_returns_declaration_order(self):
         ordered = cr.all_concrete_paths()
@@ -136,7 +136,6 @@ class TestConcreteSetEquality:
             "CLAUDE.md",
             "AGENTS.md",
             "settings.json",
-            "implementation_plan.md",
             "MASTER_PLAN.md",
             "hooks/HOOKS.md",
             "runtime/cli.py",
@@ -163,9 +162,9 @@ class TestConcreteSetEquality:
         # Frozen, ordered, immutable.
         assert isinstance(cr.CONSTITUTION_REGISTRY, tuple)
         # Concrete entries come first, planned after. Pin the layout.
-        first_twenty_four = cr.CONSTITUTION_REGISTRY[:24]
-        assert all(e.kind == cr.KIND_CONCRETE for e in first_twenty_four)
-        remaining = cr.CONSTITUTION_REGISTRY[24:]
+        first_twenty_three = cr.CONSTITUTION_REGISTRY[:23]
+        assert all(e.kind == cr.KIND_CONCRETE for e in first_twenty_three)
+        remaining = cr.CONSTITUTION_REGISTRY[23:]
         assert all(e.kind == cr.KIND_PLANNED for e in remaining)
 
     def test_planned_area_set_is_empty_after_slice_17(self):

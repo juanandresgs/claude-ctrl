@@ -4,18 +4,17 @@ set -euo pipefail
 # Session cleanup on termination.
 # SessionEnd hook — runs once when session actually ends.
 #
-# Cleans up:
-#   - Session tracking files (.session-changes-*)
-#   - Lint cache files (.lint-cache)
-#   - Temporary tracking artifacts
+# Marks DB-backed session activity ended and cleans up retired legacy flatfiles
+# plus process-local temp/lock artifacts.
 
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
-# Optimization: Stream input directly to jq to avoid loading potentially
+# Optimization: stream input directly to jq to avoid loading potentially
 # large session history into a Bash variable (which consumes ~3-4x RAM).
-# HOOK_INPUT=$(read_input) <- removing this
-REASON=$(jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")
+_SESSION_META=$(jq -r '[.reason // "unknown", .session_id // ""] | @tsv' 2>/dev/null || printf 'unknown\t')
+IFS=$'\t' read -r REASON HOOK_SESSION_ID <<< "$_SESSION_META"
+SESSION_ID="${HOOK_SESSION_ID:-$(canonical_session_id)}"
 
 PROJECT_ROOT=$(detect_project_root)
 
@@ -24,7 +23,7 @@ log_info "SESSION-END" "Session ending (reason: $REASON)"
 # --- Release active todo claims for this session ---
 TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
 if [[ -x "$TODO_SCRIPT" ]]; then
-    "$TODO_SCRIPT" unclaim --session="$(canonical_session_id)" 2>/dev/null || true
+    "$TODO_SCRIPT" unclaim --session="$SESSION_ID" 2>/dev/null || true
 fi
 
 # --- Kill THIS session's async test-runner process (scoped by lock file) ---
@@ -53,13 +52,13 @@ if [[ -f "$_TR_LOCK" ]]; then
     rm -f "$_TR_LOCK"
 fi
 
-# Observatory: emit session_summary metric before cleanup erases ephemeral data (W-OBS-2).
-# Reads .session-start-epoch (written by prompt-submit.sh on first prompt) and
-# .prompt-count-<session_id> (written by prompt-submit.sh on each turn) for labels.
-# All reads are best-effort — a missing file produces 0; metric emission uses || true.
-_obs_session_id=$(canonical_session_id 2>/dev/null || echo "")
-_obs_start_epoch=$(cat "$PROJECT_ROOT/.claude/.session-start-epoch" 2>/dev/null || echo "0")
-_obs_prompt_count=$(cat "$PROJECT_ROOT/.claude/.prompt-count-${_obs_session_id}" 2>/dev/null || echo "0")
+# Observatory: emit session_summary metric from DB-backed session activity.
+_obs_session_id="$SESSION_ID"
+_obs_session_json=$(cc_policy session-activity get \
+    --project-root "$PROJECT_ROOT" \
+    --session-id "$_obs_session_id" 2>/dev/null || echo '{"prompt_count":0,"started_at":0}')
+_obs_start_epoch=$(printf '%s' "$_obs_session_json" | jq -r '.started_at // 0' 2>/dev/null || echo "0")
+_obs_prompt_count=$(printf '%s' "$_obs_session_json" | jq -r '.prompt_count // 0' 2>/dev/null || echo "0")
 _obs_now=$(date +%s)
 _obs_session_duration=0
 if [[ "$_obs_start_epoch" -gt 0 ]]; then
@@ -67,23 +66,34 @@ if [[ "$_obs_start_epoch" -gt 0 ]]; then
 fi
 rt_obs_metric session_summary "$_obs_session_duration" \
     "{\"prompt_count\":${_obs_prompt_count:-0}}" "" "" || true
+cc_policy session-activity end \
+    --project-root "$PROJECT_ROOT" \
+    --session-id "$_obs_session_id" >/dev/null 2>&1 || true
 
-# --- Clean up session-scoped files (these don't persist) ---
-rm -f "$PROJECT_ROOT/.claude/.session-changes"*
-rm -f "$PROJECT_ROOT/.claude/.session-decisions"*
-rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
-rm -f "$PROJECT_ROOT/.claude/.lint-cache"
+# --- Clean up retired legacy session flatfiles and ephemeral process files ---
+rm -f "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/.session-decisions"*
+rm -f "$PROJECT_ROOT/.claude/.prompt-count-"* "$PROJECT_ROOT/.claude/.session-start-epoch"
+rm -f "$PROJECT_ROOT/.claude/.lint-cache" "$PROJECT_ROOT/.claude/.lint-cache-"*
 rm -f "$PROJECT_ROOT/.claude/.test-runner."*
 rm -f "$PROJECT_ROOT/.claude/.test-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.test-gate-cold-warned"
 rm -f "$PROJECT_ROOT/.claude/.mock-gate-strikes"
 rm -f "$PROJECT_ROOT/.claude/.track."*
 
-# DO NOT delete (cross-session state):
-#   .lint-breaker    — circuit breaker state
-# NOTE: .test-status is cleared at session START (session-init.sh), not here.
-# It must survive session-end so session-init can read it for context injection,
-# then clears it to prevent stale results from satisfying the commit gate.
+# --- Clean up empty scratchlane roots for this completed session ---
+# The runtime cleanup is deliberately rmdir-only: it only targets active
+# scratchlane permit roots under PROJECT_ROOT/tmp for this session, ignores
+# known local clutter such as .DS_Store, and preserves any substantive content.
+_SCRATCH_CLEANUP=$(cc_policy scratchlane cleanup-empty \
+    --project-root "$PROJECT_ROOT" \
+    --session-id "$SESSION_ID" \
+    2>/dev/null || echo '{"removed_count":0}')
+_SCRATCH_REMOVED=$(printf '%s' "$_SCRATCH_CLEANUP" | jq -r '.removed_count // 0' 2>/dev/null || echo "0")
+if [[ "$_SCRATCH_REMOVED" -gt 0 ]]; then
+    log_info "SESSION-END" "Removed $_SCRATCH_REMOVED empty scratchlane root(s) for $PROJECT_ROOT"
+fi
+
+# Durable cross-session state lives in state.db. Do not delete it here.
 #
 # TKT-008 removals — these flat files are no longer written and need no trimming:
 #   .audit-log       — audit trail now lives in SQLite (runtime event store)

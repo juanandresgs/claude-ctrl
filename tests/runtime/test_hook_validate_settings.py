@@ -115,6 +115,7 @@ class TestExtractRepoOwnedEntries:
         # Deterministic stop-advisor.sh added to replace model Stop review.
         settings = _load_real_settings()
         entries = hm.extract_repo_owned_entries(settings)
+        # Guardian Admission is now a mode of the existing Guardian matcher.
         assert len(entries) == 32
 
     def test_bash_passthrough_is_skipped(self):

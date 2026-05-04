@@ -130,9 +130,15 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 
 The orchestrator never writes source files directly. If a task requires source-code changes, dispatch an implementer (or continue one that already owns that workflow) and let that role perform the edits in its worktree.
 
-If write-side WHO enforcement denies a source edit, do not retry the edit from the orchestrator. Treat the denial as a routing signal:
-- **No active implementer for this work** — dispatch one with the appropriate Evaluation Contract and Scope Manifest.
-- **An implementer already owns this workflow** — continue it via SendMessage with the specific edit instruction.
+Guardian Admission owns the pre-implementation custody fork. If a direct implementer launch, source write, or Bash file mutation hits `ADMISSION_REQUIRED`, do not retry the operation from the orchestrator. Route to the `guardian` subagent with `GUARDIAN_MODE: admission` as the first prompt line, or run `cc-policy admission classify --payload <json>` so Guardian Admission chooses one of:
+- durable project onboarding / workflow bootstrap
+- planner scope creation
+- Guardian worktree provisioning
+- existing implementer custody
+- task-local scratchlane custody
+- user decision, only when the fork is genuinely ambiguous or risky
+
+Scratchlane is also Guardian-custodied. When Guardian Admission returns `scratchlane_authorized`, use `cc-policy admission apply --payload <json>` or the policy-applied permit, then retry only under the returned `tmp/<task>/` root.
 
 Session HUD state or subagent markers do not prove the actor behind the current tool call. Enforcement decisions about a specific write take precedence over coarser session-level or statusline role labels.
 
@@ -260,6 +266,7 @@ Subagent authority model (enforce this in routing):
 - `implementer`: source implementation within scope; no landing authority.
 - `reviewer`: read-only outer-loop technical evaluation and verdict authority (`ready_for_guardian|needs_changes|blocked_by_plan`). Codex implementer critic reviews are tactical inner-loop filters; they do not replace reviewer readiness.
 - `guardian (land)`: local landing authority (`commit`/`merge`/straightforward `push` to the established upstream) once readiness gates are green.
+- `guardian (admission)`: non-canonical pre-workflow custody mode for project onboarding vs scratchlane. It uses the same `guardian` subagent identity, may classify and apply scratchlane permits through `cc-policy admission`, but does not create workflow completion records or participate in auto-dispatch.
 - `orchestrator`: coordination/dispatch/review only; does not perform source edits, landing operations, or bypass stage authorities.
 
 When `cc-policy` denies, treat the denial as routing guidance:
@@ -297,11 +304,14 @@ When `worktree_path` is present, the orchestrator MUST set the implementer's (or
 Note: Implementer SubagentStop uses a dedicated Codex critic path that persists routing verdicts (`READY_FOR_REVIEWER`, `TRY_AGAIN`, `BLOCKED_BY_PLAN`, `CRITIC_UNAVAILABLE`) before `post-task.sh` routes the workflow. This critic is an inner-loop implementer quality filter: it may send work back to implementer or planner before reviewer sees it, but it cannot issue Guardian readiness. The reviewer remains the outer-loop readiness authority and its valid `REVIEW_*` completion is projected into `evaluation_state` for Guardian landing. Regular Stop uses deterministic advice only (`stop-advisor.sh`); broad Codex/Gemini review is explicit or dispatch-critic work, not a default Stop-time blocker (DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
 
 When implementer stop output contains `CRITIC_DETAIL`, `CRITIC_NEXT_STEPS`,
-`CRITIC_ARTIFACT`, or `CRITIC_ACTION`, treat that block as routing payload, not
-as a recap. If the next role is implementer or planner, include the critic
-detail and next steps verbatim in the next Agent prompt. If external CLI review
-is unavailable and the action requests a reviewer-subagent fallback, dispatch
-the canonical read-only reviewer rather than silently continuing.
+`CRITIC_ACTION`, or `USER_VISIBLE_CRITIC_DIGEST`, treat that
+block as routing payload, not as a recap. Surface the user-visible digest in the
+conversation thread so the user can see Codex critic value, progress, findings,
+errors, and fallback state. Critic review details live in `state.db`, not review
+artifact flatfiles. If the next role is implementer or planner, include
+the critic detail and next steps verbatim in the next Agent prompt. If external
+CLI review is unavailable and the action requests a reviewer-subagent fallback,
+dispatch the canonical read-only reviewer rather than silently continuing.
 
 ### Guardian Landing Preflight (Required)
 

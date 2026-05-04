@@ -112,6 +112,9 @@ def snapshot(conn: sqlite3.Connection) -> dict:
                              verdict: str|None, reviewed_at: int|None}.
                             reviewed=False when no codex_stop_review event
                             postdates the most recent evaluation_state update.
+      critic_run          — latest Codex critic run telemetry:
+                            {active, status, verdict, provider, workflow_id,
+                             run_id, elapsed_seconds, fallback, progress_preview}
       snapshot_at         — Unix epoch when this snapshot was taken
       status              — 'ok' when all sections succeeded, 'partial_failure'
                             when one or more sections raised an exception
@@ -148,6 +151,25 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             "reviewer": None,
             "verdict": None,
             "reviewed_at": None,
+        },
+        "critic_run": {
+            "found": False,
+            "active": False,
+            "run_id": None,
+            "workflow_id": None,
+            "status": None,
+            "verdict": None,
+            "provider": None,
+            "elapsed_seconds": None,
+            "fallback": None,
+            "summary": None,
+            "error": None,
+            "artifact_path": None,
+            "progress_preview": [],
+            "try_again_streak": 0,
+            "retry_limit": 0,
+            "escalated": False,
+            "escalation_reason": None,
         },
         "snapshot_at": now,
         "status": "ok",
@@ -349,5 +371,71 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     except Exception as exc:
         result["status"] = "partial_failure"
         result["errors"].append({"section": "last_review", "error": str(exc)})
+
+    # ------------------------------------------------------------------
+    # Section: Latest critic run — statusline heartbeat for Codex tactical
+    # critic visibility (DEC-CRITIC-RUNS-001).
+    #
+    # This reads critic_runs, not hook text. CRITIC_UNAVAILABLE remains
+    # visible as fallback_required until reviewer fallback completion marks
+    # the run fallback_completed or a newer critic run supersedes it.
+    # ------------------------------------------------------------------
+    try:
+        row = conn.execute(
+            """
+            SELECT run_id, workflow_id, status, verdict, provider, fallback,
+                   summary, error, artifact_path, progress_json, metrics_json,
+                   started_at, updated_at, completed_at
+            FROM   critic_runs
+            ORDER  BY updated_at DESC, started_at DESC, run_id DESC
+            LIMIT  1
+            """
+        ).fetchone()
+        if row:
+            import json as _json
+
+            try:
+                progress = _json.loads(row["progress_json"] or "[]")
+            except (TypeError, ValueError):
+                progress = []
+            if not isinstance(progress, list):
+                progress = []
+            try:
+                metrics = _json.loads(row["metrics_json"] or "{}")
+            except (TypeError, ValueError):
+                metrics = {}
+            if not isinstance(metrics, dict):
+                metrics = {}
+            started_at = int(row["started_at"] or 0)
+            completed_at = int(row["completed_at"] or 0)
+            updated_at = int(row["updated_at"] or 0)
+            elapsed = max(0, (completed_at or updated_at or now) - started_at) if started_at else 0
+            active = str(row["status"] or "") in {"started", "provider_ready", "reviewing"}
+            result["critic_run"] = {
+                "found": True,
+                "active": active,
+                "run_id": row["run_id"],
+                "workflow_id": row["workflow_id"],
+                "status": row["status"],
+                "verdict": row["verdict"],
+                "provider": row["provider"],
+                "elapsed_seconds": elapsed,
+                "fallback": row["fallback"],
+                "summary": row["summary"],
+                "error": row["error"],
+                "artifact_path": row["artifact_path"],
+                "progress_preview": [
+                    str(item.get("message") or "")
+                    for item in progress[-3:]
+                    if isinstance(item, dict) and str(item.get("message") or "").strip()
+                ],
+                "try_again_streak": int(metrics.get("try_again_streak") or 0),
+                "retry_limit": int(metrics.get("retry_limit") or 0),
+                "escalated": bool(metrics.get("escalated") or False),
+                "escalation_reason": str(metrics.get("escalation_reason") or "") or None,
+            }
+    except Exception as exc:
+        result["status"] = "partial_failure"
+        result["errors"].append({"section": "critic_run", "error": str(exc)})
 
     return result

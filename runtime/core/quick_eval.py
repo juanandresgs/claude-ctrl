@@ -37,8 +37,7 @@ from runtime.core import evaluation, events
 # ---------------------------------------------------------------------------
 
 # Source file extensions that require full reviewer evaluation.
-# .sh and config formats (.json, .yaml, .toml, .md) are excluded — they
-# are non-source for STFP purposes (docs, hooks, config).
+# Data/config/document formats (.json, .yaml, .toml, .md, .svg) are excluded.
 _SOURCE_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".py",
@@ -46,6 +45,19 @@ _SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         ".tsx",
         ".js",
         ".jsx",
+        ".mjs",
+        ".cjs",
+        ".mts",
+        ".cts",
+        ".astro",
+        ".vue",
+        ".svelte",
+        ".css",
+        ".scss",
+        ".sass",
+        ".less",
+        ".html",
+        ".htm",
         ".rs",
         ".go",
         ".java",
@@ -58,6 +70,9 @@ _SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         ".cs",
         ".rb",
         ".php",
+        ".sh",
+        ".bash",
+        ".zsh",
     }
 )
 

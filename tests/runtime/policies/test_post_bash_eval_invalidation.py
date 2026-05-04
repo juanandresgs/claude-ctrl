@@ -108,38 +108,40 @@ def _run_hook(
 
 
 def _capture_baseline(
+    db_path: str,
     project_root: str,
     session_id: str = "test-session-001",
     baseline_key: str | None = None,
 ) -> str:
-    """Capture a source-fingerprint baseline (mirrors pre-bash.sh capture).
-
-    Calls compute_source_fingerprint from context-lib.sh and writes the
-    result to the same tmp file that pre-bash.sh would create.
-    Returns the fingerprint string.
-    """
-    hooks_dir = str(_REPO_ROOT / "hooks")
+    """Capture a source-fingerprint baseline through the runtime hook path."""
     env = {
         **os.environ,
         "PYTHONPATH": str(_REPO_ROOT),
         "CLAUDE_SESSION_ID": session_id,
+        "CLAUDE_POLICY_DB": db_path,
+        "CLAUDE_PROJECT_DIR": project_root,
     }
-    key = baseline_key or session_id
-    script = (
-        f'source "{hooks_dir}/log.sh"\n'
-        f'source "{hooks_dir}/context-lib.sh"\n'
-        f'FP=$(compute_source_fingerprint "{project_root}")\n'
-        f'mkdir -p "{project_root}/tmp"\n'
-        f'printf \'%s\' "$FP" > "{project_root}/tmp/.bash-source-baseline-{key}"\n'
-        f'printf \'%s\' "$FP"\n'
-    )
+    payload_obj = {
+        "session_id": session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo baseline"},
+        "cwd": project_root,
+    }
+    if baseline_key:
+        payload_obj["tool_use_id"] = baseline_key
     result = subprocess.run(
-        ["bash", "-c", script],
+        [sys.executable, _CLI, "hook", "bash-pre-baseline"],
+        input=json.dumps(payload_obj),
         capture_output=True,
         text=True,
         env=env,
     )
-    return result.stdout.strip()
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    baseline_ref = parsed.get("result", {}).get("baseline_file", "")
+    assert baseline_ref.startswith("state.db:bash-source-baseline:")
+    assert not any(Path(project_root, "tmp").glob(".bash-source-baseline-*"))
+    return baseline_ref
 
 
 def _git_init(project_path: Path) -> None:
@@ -305,7 +307,7 @@ class TestNonSourceFileMutationDoesNotInvalidate:
         invalidate evaluation_state.
 
         Skippable paths include: node_modules, vendor, build, __pycache__,
-        .generated., .min., .config., .test., .spec. — see context-lib.sh.
+        .generated., .min. — see context-lib.sh.
         """
         branch_out = subprocess.run(
             ["git", "-C", str(project), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -626,7 +628,7 @@ class TestGuardianCommitHeadPromotion:
         (worktree / "src").mkdir()
         (worktree / "src" / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(worktree), "add", "src/feature.py"], check=True)
-        _capture_baseline(str(worktree), baseline_key="tool-commit")
+        _capture_baseline(db, str(worktree), baseline_key="tool-commit")
 
         command = f'git -C "{worktree}" commit -m "feature commit"'
         subprocess.run(
@@ -701,7 +703,7 @@ class TestStagedSourceBaselineNoInvalidation:
         assert _get_eval_status(db, wf_id, str(project)) == "ready_for_guardian"
 
         # Capture baseline fingerprint (pre-bash.sh would do this)
-        baseline = _capture_baseline(str(project))
+        baseline = _capture_baseline(db, str(project))
         assert baseline, "baseline fingerprint must be non-empty"
 
         # Run post-bash.sh — non-mutating command, fingerprints should match
@@ -759,7 +761,7 @@ class TestStagedMutationInvalidates:
         assert _get_eval_status(db, wf_id, str(project)) == "ready_for_guardian"
 
         # Capture baseline fingerprint with content A
-        baseline = _capture_baseline(str(project))
+        baseline = _capture_baseline(db, str(project))
         assert baseline, "baseline fingerprint must be non-empty"
 
         # Simulate Bash command mutating the file further (content B)
@@ -818,6 +820,7 @@ class TestPayloadIdentityBaselineKey:
 
         baseline_key = "toolu-payload-key-001"
         baseline = _capture_baseline(
+            db,
             str(project),
             session_id="unused-session-id",
             baseline_key=baseline_key,
@@ -874,6 +877,7 @@ class TestPayloadIdentityBaselineKey:
         # Baseline key = payload session_id (no tool_use_id)
         payload_session = "session-fallback-key-002"
         baseline = _capture_baseline(
+            db,
             str(project),
             session_id="unused",
             baseline_key=payload_session,
@@ -922,7 +926,7 @@ class TestPayloadIdentityBaselineKey:
         _seed_ready(db, wf_id, str(project))
 
         baseline_key = "toolu-mutation-key-003"
-        _capture_baseline(str(project), baseline_key=baseline_key)
+        _capture_baseline(db, str(project), baseline_key=baseline_key)
 
         # Mutate the file after baseline capture
         src_file.write_text("# version B — mutated\n")

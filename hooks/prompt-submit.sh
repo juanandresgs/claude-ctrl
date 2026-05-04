@@ -13,6 +13,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 HOOK_SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
@@ -22,6 +23,13 @@ HOOK_SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
 SESSION_ID="${HOOK_SESSION_ID:-$(canonical_session_id)}"
+SESSION_ACTIVITY_JSON=$(cc_policy session-activity prompt \
+    --project-root "$PROJECT_ROOT" \
+    --session-id "$SESSION_ID" 2>/dev/null || echo '{"prompt_count":0,"started_at":0}')
+PROMPT_NUM=$(printf '%s' "$SESSION_ACTIVITY_JSON" | jq -r '.prompt_count // 0' 2>/dev/null || echo "0")
+[[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
+SESSION_STARTED_AT=$(printf '%s' "$SESSION_ACTIVITY_JSON" | jq -r '.started_at // 0' 2>/dev/null || echo "0")
+[[ "$SESSION_STARTED_AT" =~ ^[0-9]+$ ]] || SESSION_STARTED_AT=0
 
 # --- Pending scratchlane approval resolution ---
 # If the previous turn asked "Allow task scratchlane ... for this task?",
@@ -61,11 +69,7 @@ fi
 #   applies to the reviewer-driven readiness pipeline.)
 
 # --- First-prompt mitigation for session-init bug (Issue #10373) ---
-PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${SESSION_ID}"
-if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
-    mkdir -p "${PROJECT_ROOT}/.claude"
-    echo "1" > "$PROMPT_COUNT_FILE"
-    echo "$(date +%s)" > "${PROJECT_ROOT}/.claude/.session-start-epoch"
+if [[ "$PROMPT_NUM" -le 1 ]]; then
     # Inject full session context (same as session-init.sh)
     get_git_state "$PROJECT_ROOT"
     get_plan_status "$PROJECT_ROOT"
@@ -124,17 +128,15 @@ if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
         fi
     fi
     # --- Enforcement gap surfacing (first-prompt path) ---
-    GAPS_FILE_PS="${PROJECT_ROOT}/.claude/.enforcement-gaps"
-    if [[ -f "$GAPS_FILE_PS" && -s "$GAPS_FILE_PS" ]]; then
-        while IFS='|' read -r gap_type ext tool _first _count; do
-            [[ -z "$gap_type" ]] && continue
-            if [[ "$gap_type" == "unsupported" ]]; then
-                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files. Writes to .${ext} source files are not linted.")
-            else
-                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed. Install it to restore enforcement.")
-            fi
-        done < "$GAPS_FILE_PS"
-    fi
+    GAPS_JSON=$(cc_policy enforcement-gap list --project-root "$PROJECT_ROOT" 2>/dev/null || echo '{"items":[]}')
+    while IFS=$'\t' read -r gap_type ext tool; do
+        [[ -z "$gap_type" ]] && continue
+        if [[ "$gap_type" == "unsupported" ]]; then
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files. Writes to .${ext} source files are not linted.")
+        else
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed. Install it to restore enforcement.")
+        fi
+    done < <(printf '%s' "$GAPS_JSON" | jq -r '.items[]? | [.gap_type, .ext, .tool] | @tsv' 2>/dev/null)
 fi
 
 # --- Inject agent findings from previous subagent runs (runtime events) ---
@@ -230,13 +232,6 @@ if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|communit
     fi
 fi
 
-# --- Increment prompt counter ---
-if [[ -f "$PROMPT_COUNT_FILE" ]]; then
-    CURRENT_COUNT=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
-    [[ "$CURRENT_COUNT" =~ ^[0-9]+$ ]] || CURRENT_COUNT=0
-    echo "$((CURRENT_COUNT + 1))" > "$PROMPT_COUNT_FILE"
-fi
-
 # --- Compaction heuristic (opt-in) ---
 # @decision DEC-COMPACT-001
 # @title Compaction suggestion hook is explicitly opt-in
@@ -244,10 +239,7 @@ fi
 # @rationale The previous fixed-threshold compaction hints added drag in
 # long-context sessions (e.g. Opus 1M) where no compaction was needed.
 # Suggestions now run only when CLAUDEX_ENABLE_COMPACTION_HINTS=1.
-if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" && -f "$PROMPT_COUNT_FILE" ]]; then
-    PROMPT_NUM=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
-    [[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
-
+if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" ]]; then
     SUGGEST_COMPACT=false
     COMPACT_REASON=""
 
@@ -256,9 +248,8 @@ if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" && -f "$PROMPT_COUNT_FILE" 
         COMPACT_REASON="$PROMPT_NUM prompts in this session"
     fi
 
-    EPOCH_FILE="${PROJECT_ROOT}/.claude/.session-start-epoch"
-    if [[ "$SUGGEST_COMPACT" == "false" && -f "$EPOCH_FILE" ]]; then
-        START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")
+    if [[ "$SUGGEST_COMPACT" == "false" && "$SESSION_STARTED_AT" -gt 0 ]]; then
+        START_EPOCH="$SESSION_STARTED_AT"
         NOW_EPOCH=$(date +%s)
         ELAPSED_MIN=$(( (NOW_EPOCH - START_EPOCH) / 60 ))
         if [[ "$ELAPSED_MIN" -ge 45 && "$ELAPSED_MIN" -le 47 ]] || \

@@ -22,6 +22,7 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 mkdir -p "$TMP_DIR/.claude"
+TEST_DB="$TMP_DIR/.claude/state.db"
 git -C "$TMP_DIR" init -q
 git -C "$TMP_DIR" config user.email "test@test.com"
 git -C "$TMP_DIR" config user.name "Test"
@@ -43,7 +44,7 @@ PAYLOAD=$(jq -n \
 # HOME override prevents real todo.sh from filing GitHub issues during tests
 exit_code=0
 output=$(printf '%s' "$PAYLOAD" | \
-    HOME="$TMP_DIR" PATH=/usr/bin:/bin CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>&1) || exit_code=$?
+    HOME="$TMP_DIR" PATH=/usr/bin:/bin CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_RUNTIME_ROOT="$REPO_ROOT/runtime" CLAUDE_POLICY_DB="$TEST_DB" "$HOOK" 2>&1) || exit_code=$?
 
 # Must exit 0 — DEC-LINT-002: gap detection is advisory; hard DENY is in the
 # policy engine (write_enforcement_gap.py), not in lint.sh.
@@ -74,16 +75,12 @@ if ! echo "$output" | grep -q "shellcheck"; then
     exit 1
 fi
 
-# .enforcement-gaps must exist with a missing_dep|sh entry
-GAPS_FILE="$TMP_DIR/.claude/.enforcement-gaps"
-if [[ ! -f "$GAPS_FILE" ]]; then
-    echo "FAIL: $TEST_NAME — .enforcement-gaps file not created"
-    exit 1
-fi
-
-if ! grep -q "missing_dep|sh" "$GAPS_FILE"; then
-    echo "FAIL: $TEST_NAME — .enforcement-gaps missing 'missing_dep|sh' entry"
-    echo "  gaps: $(cat "$GAPS_FILE")"
+# state.db must have the missing_dep sh gap entry
+GAP_COUNT=$(CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" python3 "$REPO_ROOT/runtime/cli.py" \
+    enforcement-gap count --project-root "$TMP_DIR" --gap-type missing_dep --ext sh \
+    2>/dev/null | jq -r '.count // 0')
+if [[ "$GAP_COUNT" -lt 1 ]]; then
+    echo "FAIL: $TEST_NAME — state.db missing missing_dep sh gap (count=$GAP_COUNT)"
     exit 1
 fi
 

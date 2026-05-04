@@ -23,7 +23,7 @@ import sqlite3
 
 import pytest
 
-from runtime.core import completions, critic_reviews, evaluation, leases
+from runtime.core import completions, critic_reviews, critic_runs, evaluation, leases
 from runtime.core import decision_work_registry as dwr
 from runtime.core.dispatch_engine import process_agent_stop
 from runtime.core.policy_utils import current_workflow_id
@@ -360,7 +360,7 @@ def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_r
         fingerprint="fp-try-1",
         metadata={
             "next_steps": ["Add regression coverage for the happy path."],
-            "artifact_path": "/tmp/critic-review.md",
+            "artifact_ref": "state.db:critic-run:critic-test",
         },
     )
     result = process_agent_stop(conn, "implementer", project_root)
@@ -372,7 +372,7 @@ def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_r
     assert "CRITIC_RETRY" in result["suggestion"]
     assert "CRITIC_NEXT_STEPS" in result["suggestion"]
     assert "Add regression coverage for the happy path." in result["suggestion"]
-    assert "CRITIC_ARTIFACT: /tmp/critic-review.md" in result["suggestion"]
+    assert "CRITIC_ARTIFACT" not in result["suggestion"]
     assert "CRITIC_ACTION: Re-dispatch implementer" in result["suggestion"]
 
 
@@ -417,6 +417,37 @@ def test_implementer_critic_unavailable_routes_to_reviewer(conn, project_root):
     assert result["critic_verdict"] == "CRITIC_UNAVAILABLE"
     assert result["next_role"] == "reviewer"
     assert result["auto_dispatch"] is True
+
+
+def test_reviewer_completion_marks_critic_fallback_completed(conn, project_root):
+    """Reviewer stop closes the visible CRITIC_UNAVAILABLE fallback telemetry."""
+    wf_id = "wf-impl-critic-fallback-complete-001"
+    run = critic_runs.start(conn, workflow_id=wf_id, provider="codex")
+    critic_runs.complete(
+        conn,
+        run_id=run["run_id"],
+        verdict="CRITIC_UNAVAILABLE",
+        summary="Codex unavailable.",
+        detail="Provider unavailable.",
+        fallback="reviewer",
+    )
+
+    reviewer_lease = _issue_lease_at(conn, "reviewer", project_root, workflow_id=wf_id)
+    _submit_valid_reviewer_completion(
+        conn,
+        reviewer_lease["lease_id"],
+        wf_id,
+        verdict="needs_changes",
+        findings=[
+            {"severity": "blocking", "title": "Fallback finding", "detail": "Needs rework"},
+        ],
+    )
+    result = process_agent_stop(conn, "reviewer", project_root)
+    assert result["next_role"] == "implementer"
+
+    latest = critic_runs.latest(conn, workflow_id=wf_id)
+    assert latest is not None
+    assert latest["status"] == "fallback_completed"
 
 
 def test_implementer_critic_retry_limit_escalates_to_reviewer(conn, project_root):

@@ -6,6 +6,7 @@
     "verdict",
     "summary",
     "detail",
+    "findings",
     "next_steps"
   ],
   "properties": {
@@ -24,6 +25,14 @@
     "detail": {
       "type": "string",
       "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Short tactical finding highlights. These are not outer-loop reviewer findings."
     },
     "next_steps": {
       "type": "array",

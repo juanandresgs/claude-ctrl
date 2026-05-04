@@ -49,6 +49,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import runtime.core.completions as completions_mod
+import runtime.core.critic_runs as critic_runs_mod
 import runtime.core.events as events_mod
 import runtime.core.markers as markers_mod
 import runtime.core.statusline as statusline
@@ -96,6 +97,7 @@ REQUIRED_KEYS = {
     "recent_event_count",
     "recent_events",
     "last_review",
+    "critic_run",
     "snapshot_at",
     "status",
     "errors",
@@ -133,11 +135,66 @@ def test_snapshot_empty_db_safe_defaults(conn):
     assert snap["last_review"]["reviewer"] is None
     assert snap["last_review"]["verdict"] is None
     assert snap["last_review"]["reviewed_at"] is None
+    assert snap["critic_run"]["found"] is False
+    assert snap["critic_run"]["active"] is False
+    assert snap["critic_run"]["status"] is None
+    assert snap["critic_run"]["verdict"] is None
+    assert snap["critic_run"]["progress_preview"] == []
     # DEC-SL-160: errors list is empty on clean DB
     assert snap["errors"] == []
     assert isinstance(snap["snapshot_at"], int)
     assert snap["snapshot_at"] > 0
     assert snap["status"] == "ok"
+
+
+def test_snapshot_reflects_active_critic_run(conn):
+    """Latest critic run appears as a compact statusline heartbeat source."""
+    run = critic_runs_mod.start(
+        conn,
+        workflow_id="wf-status-critic",
+        provider="codex",
+    )
+    critic_runs_mod.progress(
+        conn,
+        run_id=run["run_id"],
+        message="Provider status: codex ready.",
+        phase="provider",
+        status="provider_ready",
+    )
+    snap = statusline.snapshot(conn)
+    assert snap["critic_run"]["found"] is True
+    assert snap["critic_run"]["active"] is True
+    assert snap["critic_run"]["status"] == "provider_ready"
+    assert snap["critic_run"]["provider"] == "codex"
+    assert snap["critic_run"]["workflow_id"] == "wf-status-critic"
+    assert snap["critic_run"]["progress_preview"][-1] == "Provider status: codex ready."
+
+
+def test_snapshot_persists_unavailable_fallback_until_completed(conn):
+    """CRITIC_UNAVAILABLE stays visible until reviewer fallback closes it."""
+    run = critic_runs_mod.start(conn, workflow_id="wf-status-fallback", provider="codex")
+    critic_runs_mod.complete(
+        conn,
+        run_id=run["run_id"],
+        verdict="CRITIC_UNAVAILABLE",
+        provider="codex",
+        summary="Codex unavailable.",
+        detail="Provider authentication missing.",
+        fallback="reviewer",
+    )
+    snap = statusline.snapshot(conn)
+    assert snap["critic_run"]["status"] == "fallback_required"
+    assert snap["critic_run"]["verdict"] == "CRITIC_UNAVAILABLE"
+    assert snap["critic_run"]["fallback"] == "reviewer"
+
+    critic_runs_mod.mark_fallback_completed(
+        conn,
+        workflow_id="wf-status-fallback",
+        summary="Reviewer fallback completed.",
+    )
+    snap_after = statusline.snapshot(conn)
+    assert snap_after["critic_run"]["status"] == "fallback_completed"
+    assert snap_after["critic_run"]["verdict"] == "CRITIC_UNAVAILABLE"
 
 
 # ---------------------------------------------------------------------------

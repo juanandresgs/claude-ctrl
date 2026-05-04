@@ -3,7 +3,7 @@
 Port of hooks/test-gate.sh (165 lines).
 
 Reads test_state from PolicyContext (already resolved by build_context()).
-Manages strike counts via a flat file under project_root/.claude/.test-gate-strikes.
+Manages strike counts via the policy_strikes table in state.db.
 
 Logic:
   - No test state → ALLOW
@@ -17,14 +17,13 @@ Logic:
   - Non-source files always ALLOW
 
 @decision DEC-PE-W5-002
-Title: write_test_gate reads test_state from PolicyContext, manages strikes via flat file
+Title: write_test_gate reads test_state from PolicyContext, manages strikes via state.db
 Status: accepted
 Rationale: test-gate.sh read test_state via rt_test_state_get (SQLite).
   PolicyContext already carries the resolved test_state record from build_context(),
-  so the policy is a pure function of request.context.test_state. The only
-  stateful side effect is the strikes flat file under .claude/ — this is
-  intentionally local to the project and reset on passing tests, matching the
-  original shell hook's behavior exactly. Priority 650 places this after WHO/plan
+  so the policy is a pure function of request.context.test_state and
+  request.context.policy_strikes. Strike updates are emitted as CLI effects and
+  persisted to state.db after evaluation. Priority 650 places this after WHO/plan
   checks but before doc_gate at 700.
 """
 
@@ -62,37 +61,29 @@ def _is_test_file(file_path: str) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Strikes file helpers
-# ---------------------------------------------------------------------------
+_POLICY_NAME = "test_gate_pretool"
+_SCOPE_KEY = "source_write"
 
 
-def _strikes_path(project_root: str) -> str:
-    return os.path.join(project_root, ".claude", ".test-gate-strikes")
-
-
-def _read_strikes(project_root: str) -> int:
-    path = _strikes_path(project_root)
+def _strike_count(request: PolicyRequest) -> int:
+    row = request.context.policy_strikes.get(f"{_POLICY_NAME}:{_SCOPE_KEY}") or {}
     try:
-        raw = open(path).read().strip()
-        return int(raw.split("|")[0])
+        return int(row.get("count") or 0)
     except Exception:
         return 0
 
 
-def _write_strikes(project_root: str, count: int) -> None:
-    path = _strikes_path(project_root)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(f"{count}|{int(time.time())}")
-
-
-def _reset_strikes(project_root: str) -> None:
-    path = _strikes_path(project_root)
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
+def _strike_effect(project_root: str, count: int) -> dict:
+    return {
+        "policy_strikes": [
+            {
+                "project_root": project_root,
+                "policy_name": _POLICY_NAME,
+                "scope_key": _SCOPE_KEY,
+                "count": max(0, int(count or 0)),
+            }
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +145,13 @@ def check_test_gate_pretool(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     # Tests passing → allow + reset strikes
     if status in _PASS_STATUSES:
-        if project_root:
-            _reset_strikes(project_root)
+        if project_root and _strike_count(request) > 0:
+            return PolicyDecision(
+                action="allow",
+                reason="test gate strikes reset after passing test state",
+                policy_name=_POLICY_NAME,
+                effects=_strike_effect(project_root, 0),
+            )
         return None
 
     # Stale results → allow
@@ -166,10 +162,9 @@ def check_test_gate_pretool(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     # --- Tests failing and fresh — apply escalating strikes ---
-    current_strikes = _read_strikes(project_root) if project_root else 0
+    current_strikes = _strike_count(request) if project_root else 0
     new_strikes = current_strikes + 1
-    if project_root:
-        _write_strikes(project_root, new_strikes)
+    effects = _strike_effect(project_root, new_strikes) if project_root else None
 
     fail_count = ts.get("fail_count", 0) or 0
 
@@ -181,7 +176,8 @@ def check_test_gate_pretool(request: PolicyRequest) -> Optional[PolicyDecision]:
                 f"You have written source code {new_strikes} times without fixing tests. "
                 "Fix the failing tests before continuing. Test files are exempt from this gate."
             ),
-            policy_name="test_gate_pretool",
+            policy_name=_POLICY_NAME,
+            effects=effects,
         )
 
     # Strike 1: advisory feedback
@@ -192,5 +188,6 @@ def check_test_gate_pretool(request: PolicyRequest) -> Optional[PolicyDecision]:
             "Consider fixing tests before writing more source code. "
             "Next source write without fixing tests will be blocked."
         ),
-        policy_name="test_gate_pretool",
+        policy_name=_POLICY_NAME,
+        effects=effects,
     )

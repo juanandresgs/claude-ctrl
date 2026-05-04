@@ -6,7 +6,7 @@ Owns both scratchlane tables:
   * ``scratchlane_requests`` — pending yes/no requests awaiting user reply
 
 A scratchlane is a user-approved, task-scoped artifact root under
-``tmp/.claude-scratch/<task_slug>`` inside a project checkout. Scratchlanes
+``tmp/<task_slug>`` inside a project checkout. Scratchlanes
 exist so the orchestrator may perform one-off automation work (scripts,
 manifests, generated outputs) without being forced into the source-write path.
 
@@ -47,11 +47,16 @@ import json
 import re
 import sqlite3
 import time
+from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_utils import (
+    is_path_under,
+    legacy_scratchlane_parent,
+    legacy_scratchlane_root,
     normalize_path,
     sanitize_token,
+    scratchlane_parent,
     scratchlane_root,
 )
 
@@ -59,6 +64,16 @@ REQUEST_STATUS_PENDING = "pending"
 REQUEST_STATUS_APPROVED = "approved"
 REQUEST_STATUS_DENIED = "denied"
 REQUEST_STATUS_SUPERSEDED = "superseded"
+
+IGNORABLE_CLEANUP_FILES = frozenset(
+    {
+        ".DS_Store",
+        ".DS_STORE",
+        ".localized",
+        "Thumbs.db",
+        "desktop.ini",
+    }
+)
 
 
 def _request_row_to_dict(row: sqlite3.Row | None) -> Optional[dict]:
@@ -304,6 +319,168 @@ def active_roots(
     )
 
 
+def _is_ignorable_cleanup_file(path: Path) -> bool:
+    name = path.name
+    if name in IGNORABLE_CLEANUP_FILES:
+        return path.is_file() and not path.is_symlink()
+    if name.startswith("._"):
+        return path.is_file() and not path.is_symlink()
+    return False
+
+
+def _effective_empty_plan(root: Path) -> tuple[bool, list[Path], list[Path], list[Path]]:
+    """Return whether ``root`` is empty aside from ignorable local clutter.
+
+    The plan contains regular ignorable files and child directories that can be
+    removed before removing ``root`` itself. Symlinks are always substantive.
+    """
+    removable_files: list[Path] = []
+    removable_dirs: list[Path] = []
+    substantive: list[Path] = []
+
+    def visit(directory: Path) -> bool:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            substantive.append(directory)
+            return False
+
+        empty = True
+        for entry in entries:
+            if entry.is_symlink():
+                substantive.append(entry)
+                empty = False
+            elif entry.is_dir():
+                if visit(entry):
+                    removable_dirs.append(entry)
+                else:
+                    empty = False
+            elif _is_ignorable_cleanup_file(entry):
+                removable_files.append(entry)
+            else:
+                substantive.append(entry)
+                empty = False
+        return empty
+
+    return visit(root), removable_files, removable_dirs, substantive
+
+
+def _remove_dir_if_effectively_empty(root: Path) -> dict:
+    """Remove ``root`` with rmdir-only semantics when it has no real content."""
+    if not root.exists():
+        return {"status": "missing", "path": str(root)}
+    if not root.is_dir() or root.is_symlink():
+        return {"status": "unsafe", "path": str(root), "reason": "not_directory"}
+
+    empty, removable_files, removable_dirs, substantive = _effective_empty_plan(root)
+    if not empty:
+        return {
+            "status": "kept",
+            "path": str(root),
+            "reason": "not_empty",
+            "substantive_entries": [str(path) for path in substantive[:10]],
+        }
+
+    try:
+        for path in removable_files:
+            path.unlink(missing_ok=True)
+        for path in sorted(removable_dirs, key=lambda item: len(item.parts), reverse=True):
+            path.rmdir()
+        root.rmdir()
+    except OSError as exc:
+        return {
+            "status": "kept",
+            "path": str(root),
+            "reason": "rmdir_failed",
+            "error": str(exc),
+        }
+
+    return {
+        "status": "removed",
+        "path": str(root),
+        "removed_ignorable_files": len(removable_files),
+        "removed_empty_dirs": len(removable_dirs),
+    }
+
+
+def _safe_cleanup_root(project_root: str, task_slug: str, root_path: str) -> tuple[bool, str]:
+    if not project_root or not task_slug or not root_path:
+        return False, "missing_cleanup_identity"
+    canonical_project_root = normalize_path(project_root)
+    slug = sanitize_token(task_slug)
+    root = normalize_path(root_path)
+    allowed_roots = {
+        scratchlane_root(canonical_project_root, slug),
+        legacy_scratchlane_root(canonical_project_root, slug),
+    }
+    if root not in allowed_roots:
+        return False, "not_registered_scratchlane_root"
+    tmp_parent = scratchlane_parent(canonical_project_root)
+    if not is_path_under(tmp_parent, root):
+        return False, "outside_project_tmp"
+    if root in {canonical_project_root, tmp_parent, legacy_scratchlane_parent(canonical_project_root)}:
+        return False, "root_too_broad"
+    if Path(root).name != slug:
+        return False, "task_slug_mismatch"
+    return True, ""
+
+
+def cleanup_empty_roots(
+    conn: sqlite3.Connection,
+    project_root: str,
+    *,
+    session_id: str = "",
+) -> dict:
+    """Remove empty scratchlane roots for a completed session.
+
+    Cleanup is intentionally narrow: it only considers active scratchlane
+    permits for ``project_root`` and, when supplied, ``session_id``. A directory
+    is deleted only when its permit root matches the canonical local-tmp root
+    or the legacy ``tmp/.claude-scratch`` root for that same task. The delete
+    itself removes only known ignorable local clutter and empty directories,
+    then calls ``rmdir`` on the scratchlane root. Non-empty roots are preserved.
+    """
+    canonical_project_root = normalize_path(project_root)
+    items = list_active(conn, project_root=canonical_project_root)
+    if session_id:
+        items = [item for item in items if str(item.get("session_id") or "") == session_id]
+
+    results: list[dict] = []
+    removed_count = 0
+    for item in items:
+        task_slug = str(item.get("task_slug") or "")
+        root_path = str(item.get("root_path") or "")
+        safe, reason = _safe_cleanup_root(canonical_project_root, task_slug, root_path)
+        if not safe:
+            results.append(
+                {
+                    "status": "unsafe",
+                    "path": root_path,
+                    "task_slug": task_slug,
+                    "reason": reason,
+                }
+            )
+            continue
+
+        result = _remove_dir_if_effectively_empty(Path(normalize_path(root_path)))
+        result["task_slug"] = task_slug
+        if result["status"] == "removed":
+            removed_count += 1
+        results.append(result)
+
+    tmp_cleanup = None
+    if removed_count:
+        tmp_cleanup = _remove_dir_if_effectively_empty(Path(scratchlane_parent(canonical_project_root)))
+
+    return {
+        "project_root": canonical_project_root,
+        "session_id": session_id,
+        "items": results,
+        "removed_count": removed_count,
+        "tmp_cleanup": tmp_cleanup,
+    }
+
+
 def _same_pending_request(
     existing: dict | None,
     *,
@@ -534,7 +711,7 @@ def classify_prompt_response(prompt: str, *, task_slug: str) -> Optional[str]:
             "scratchlane",
             "scratch lane",
             "task lane",
-            ".claude-scratch",
+            "tmp/",
             task_text,
             task_words,
         )

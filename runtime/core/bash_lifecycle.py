@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,10 +26,10 @@ from runtime.core.landing_authority import FEATURE_COMMIT_LANDED
 from runtime.core.policy_utils import current_workflow_id, normalize_path, sanitize_token
 
 SOURCE_EXTENSIONS_RE = re.compile(
-    r"\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$"
+    r"\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|vue|svelte|css|scss|sass|less|html|htm|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$"
 )
 SKIPPABLE_PATH_RE = re.compile(
-    r"(\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.|node_modules|vendor|dist|build|\.next|__pycache__|\.git)"
+    r"(\.generated\.|\.min\.|(^|/)(node_modules|vendor|dist|build|\.next|__pycache__|\.git)(/|$))"
 )
 
 
@@ -39,7 +40,7 @@ class BashLifecycleResult:
     project_root: str
     workflow_id: str
     baseline_key: str
-    baseline_file: str
+    baseline_file: str  # Backward-compatible JSON key; value is a state.db ref.
     source_mutation: bool = False
     promoted_commit_head: bool = False
     invalidated: bool = False
@@ -52,6 +53,7 @@ class BashLifecycleResult:
             "workflow_id": self.workflow_id,
             "baseline_key": self.baseline_key,
             "baseline_file": self.baseline_file,
+            "baseline_ref": self.baseline_file,
             "source_mutation": self.source_mutation,
             "promoted_commit_head": self.promoted_commit_head,
             "invalidated": self.invalidated,
@@ -69,7 +71,11 @@ def _is_skippable_path(path: str) -> bool:
 
 
 def _is_scratchlane_path(path: str) -> bool:
-    return path.startswith("tmp/.claude-scratch/") or "/tmp/.claude-scratch/" in path
+    normalized = path.replace("\\", "/").lstrip("/")
+    parts = normalized.split("/")
+    return normalized.startswith("tmp/.claude-scratch/") or (
+        len(parts) >= 3 and parts[0] == "tmp"
+    )
 
 
 def _git_lines(project_root: str, args: list[str]) -> list[str]:
@@ -124,8 +130,58 @@ def baseline_key(payload: Mapping[str, Any]) -> str:
     return sanitize_token(raw)
 
 
-def baseline_path(project_root: str, key: str) -> Path:
-    return Path(project_root) / "tmp" / f".bash-source-baseline-{key}"
+def baseline_ref(key: str) -> str:
+    return f"state.db:bash-source-baseline:{key}"
+
+
+def _save_baseline(
+    conn: sqlite3.Connection,
+    *,
+    project_root: str,
+    key: str,
+    fingerprint: str,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO bash_source_baselines
+                (project_root, baseline_key, fingerprint, captured_at, consumed_at)
+            VALUES (?, ?, ?, ?, NULL)
+            ON CONFLICT(project_root, baseline_key) DO UPDATE SET
+                fingerprint = excluded.fingerprint,
+                captured_at = excluded.captured_at,
+                consumed_at = NULL
+            """,
+            (project_root, key, fingerprint, int(time.time())),
+        )
+
+
+def _consume_baseline(
+    conn: sqlite3.Connection,
+    *,
+    project_root: str,
+    key: str,
+) -> str:
+    row = conn.execute(
+        """
+        SELECT fingerprint
+        FROM bash_source_baselines
+        WHERE project_root = ? AND baseline_key = ?
+        """,
+        (project_root, key),
+    ).fetchone()
+    fingerprint = str(row["fingerprint"] or "") if row else ""
+    if row:
+        with conn:
+            conn.execute(
+                """
+                UPDATE bash_source_baselines
+                SET consumed_at = ?
+                WHERE project_root = ? AND baseline_key = ?
+                """,
+                (int(time.time()), project_root, key),
+            )
+    return fingerprint
 
 
 def _has_git_subcommand(envelope: HookEventEnvelope, subcommand: str) -> bool:
@@ -139,20 +195,27 @@ def _head(project_root: str) -> str:
     return "\n".join(_git_lines(project_root, ["rev-parse", "HEAD"])).strip()
 
 
-def capture_pre_bash_baseline(payload: Mapping[str, Any]) -> BashLifecycleResult:
+def capture_pre_bash_baseline(
+    conn: sqlite3.Connection,
+    payload: Mapping[str, Any],
+) -> BashLifecycleResult:
     """Capture the per-command source fingerprint baseline after policy allow."""
     envelope = build_hook_event_envelope(payload)
     project_root = envelope.project_root
     key = baseline_key(payload)
-    path = baseline_path(project_root, key) if project_root else Path("")
+    ref = baseline_ref(key) if project_root else ""
     if project_root:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(source_fingerprint(project_root), encoding="utf-8")
+        _save_baseline(
+            conn,
+            project_root=project_root,
+            key=key,
+            fingerprint=source_fingerprint(project_root),
+        )
     return BashLifecycleResult(
         project_root=project_root,
         workflow_id="",
         baseline_key=key,
-        baseline_file=str(path),
+        baseline_file=ref,
     )
 
 
@@ -161,17 +224,17 @@ def handle_post_bash(conn: sqlite3.Connection, payload: Mapping[str, Any]) -> Ba
     envelope = build_hook_event_envelope(payload)
     project_root = envelope.project_root
     key = baseline_key(payload)
-    path = baseline_path(project_root, key) if project_root else Path("")
+    ref = baseline_ref(key) if project_root else ""
 
     if not project_root:
         return BashLifecycleResult(
             project_root="",
             workflow_id="",
             baseline_key=key,
-            baseline_file=str(path),
+            baseline_file=ref,
         )
 
-    baseline = path.read_text(encoding="utf-8") if path.is_file() else ""
+    baseline = _consume_baseline(conn, project_root=project_root, key=key)
     post_fp = source_fingerprint(project_root)
     source_mutation = bool((not baseline and post_fp != "EMPTY") or (baseline and baseline != post_fp))
 
@@ -228,7 +291,7 @@ def handle_post_bash(conn: sqlite3.Connection, payload: Mapping[str, Any]) -> Ba
         project_root=project_root,
         workflow_id=workflow_id,
         baseline_key=key,
-        baseline_file=str(path),
+        baseline_file=ref,
         source_mutation=source_mutation,
         promoted_commit_head=promoted,
         invalidated=invalidated,

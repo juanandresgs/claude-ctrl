@@ -113,6 +113,41 @@ CREATE TABLE IF NOT EXISTS session_tokens (
 )
 """
 
+SESSION_ACTIVITY_DDL = """
+CREATE TABLE IF NOT EXISTS session_activity (
+    session_id   TEXT    NOT NULL,
+    project_root TEXT    NOT NULL,
+    prompt_count INTEGER NOT NULL DEFAULT 0,
+    started_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    ended_at     INTEGER,
+    PRIMARY KEY (session_id, project_root)
+)
+"""
+
+SESSION_ACTIVITY_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_session_activity_project_updated
+       ON session_activity (project_root, updated_at DESC)""",
+]
+
+SESSION_FILE_CHANGES_DDL = """
+CREATE TABLE IF NOT EXISTS session_file_changes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   TEXT    NOT NULL,
+    project_root TEXT    NOT NULL,
+    file_path    TEXT    NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    change_count  INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (session_id, project_root, file_path)
+)
+"""
+
+SESSION_FILE_CHANGES_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_session_file_changes_session_project
+       ON session_file_changes (session_id, project_root)""",
+]
+
 TODO_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS todo_state (
     project_hash   TEXT    PRIMARY KEY,
@@ -363,6 +398,40 @@ CRITIC_REVIEWS_INDEXES_DDL: list[str] = [
        ON critic_reviews (lease_id) WHERE lease_id IS NOT NULL AND lease_id != ''""",
 ]
 
+CRITIC_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS critic_runs (
+    run_id          TEXT    PRIMARY KEY,
+    workflow_id     TEXT    NOT NULL,
+    lease_id        TEXT,
+    role            TEXT    NOT NULL,
+    provider        TEXT    NOT NULL,
+    status          TEXT    NOT NULL,
+    verdict         TEXT,
+    summary         TEXT,
+    detail          TEXT,
+    artifact_path   TEXT,
+    fallback        TEXT,
+    error           TEXT,
+    fingerprint     TEXT,
+    review_id       INTEGER,
+    trace_session_id TEXT,
+    progress_json   TEXT    NOT NULL DEFAULT '[]',
+    metrics_json    TEXT    NOT NULL DEFAULT '{}',
+    started_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    completed_at    INTEGER
+)
+"""
+
+CRITIC_RUNS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_critic_runs_workflow_role_time
+       ON critic_runs (workflow_id, role, updated_at DESC, started_at DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_critic_runs_status
+       ON critic_runs (status, updated_at DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_critic_runs_trace
+       ON critic_runs (trace_session_id) WHERE trace_session_id IS NOT NULL AND trace_session_id != ''""",
+]
+
 TEST_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS test_state (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -379,6 +448,108 @@ CREATE TABLE IF NOT EXISTS test_state (
 TEST_STATE_INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_test_state_project ON test_state (project_root)"
 )
+
+ENFORCEMENT_GAPS_DDL = """
+CREATE TABLE IF NOT EXISTS enforcement_gaps (
+    project_root    TEXT    NOT NULL,
+    gap_type        TEXT    NOT NULL,
+    ext             TEXT    NOT NULL,
+    tool            TEXT    NOT NULL DEFAULT '',
+    first_seen_at   INTEGER NOT NULL,
+    last_seen_at    INTEGER NOT NULL,
+    encounter_count INTEGER NOT NULL DEFAULT 1,
+    status          TEXT    NOT NULL DEFAULT 'open',
+    resolved_at     INTEGER,
+    PRIMARY KEY (project_root, gap_type, ext)
+)
+"""
+
+ENFORCEMENT_GAPS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_enforcement_gaps_project_status
+       ON enforcement_gaps (project_root, status, last_seen_at DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_enforcement_gaps_status
+       ON enforcement_gaps (status, last_seen_at DESC)""",
+]
+
+LINT_PROFILE_CACHE_DDL = """
+CREATE TABLE IF NOT EXISTS lint_profile_cache (
+    project_root TEXT    NOT NULL,
+    ext          TEXT    NOT NULL,
+    linter       TEXT    NOT NULL,
+    config_mtime INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (project_root, ext)
+)
+"""
+
+LINT_PROFILE_CACHE_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_lint_profile_cache_project
+       ON lint_profile_cache (project_root, updated_at DESC)""",
+]
+
+LINT_CIRCUIT_BREAKERS_DDL = """
+CREATE TABLE IF NOT EXISTS lint_circuit_breakers (
+    project_root  TEXT    NOT NULL,
+    ext           TEXT    NOT NULL,
+    state         TEXT    NOT NULL DEFAULT 'closed',
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (project_root, ext)
+)
+"""
+
+LINT_CIRCUIT_BREAKERS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_lint_circuit_breakers_project
+       ON lint_circuit_breakers (project_root, updated_at DESC)""",
+]
+
+PRESERVED_CONTEXTS_DDL = """
+CREATE TABLE IF NOT EXISTS preserved_contexts (
+    project_root TEXT    NOT NULL,
+    session_id   TEXT    NOT NULL DEFAULT '',
+    context_text TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    consumed_at  INTEGER,
+    PRIMARY KEY (project_root, session_id)
+)
+"""
+
+PRESERVED_CONTEXTS_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_preserved_contexts_project_unconsumed
+       ON preserved_contexts (project_root, consumed_at, created_at DESC)""",
+]
+
+POLICY_STRIKES_DDL = """
+CREATE TABLE IF NOT EXISTS policy_strikes (
+    project_root TEXT    NOT NULL,
+    policy_name  TEXT    NOT NULL,
+    scope_key    TEXT    NOT NULL,
+    count        INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (project_root, policy_name, scope_key)
+)
+"""
+
+POLICY_STRIKES_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_policy_strikes_project
+       ON policy_strikes (project_root, updated_at DESC)""",
+]
+
+BASH_SOURCE_BASELINES_DDL = """
+CREATE TABLE IF NOT EXISTS bash_source_baselines (
+    project_root  TEXT    NOT NULL,
+    baseline_key  TEXT    NOT NULL,
+    fingerprint   TEXT    NOT NULL,
+    captured_at   INTEGER NOT NULL,
+    consumed_at   INTEGER,
+    PRIMARY KEY (project_root, baseline_key)
+)
+"""
+
+BASH_SOURCE_BASELINES_INDEXES_DDL: list[str] = [
+    """CREATE INDEX IF NOT EXISTS idx_bash_source_baselines_project
+       ON bash_source_baselines (project_root, captured_at DESC)""",
+]
 
 # ---------------------------------------------------------------------------
 # Observatory DDL (W-OBS-1)
@@ -627,6 +798,9 @@ CREATE INDEX IF NOT EXISTS idx_goal_contracts_workflow
 #   * subagent-start.sh reads and atomically deletes the row at SubagentStart
 #     time, merging the six fields into HOOK_INPUT so the runtime-first path
 #     fires in production.
+#   * Guardian admission uses this table only as a narrow mode carrier,
+#     consumed before canonical prompt-pack delivery. It does not create
+#     dispatch attempts, leases, or completion records.
 #   * File sidecars are explicitly rejected: a tmp file is a second
 #     non-runtime authority for a control-plane fact
 #     (DEC-CLAUDEX-SA-PAYLOAD-SHAPE-001).
@@ -868,6 +1042,10 @@ ALL_DDL: list[str] = [
     TRACES_DDL,
     TRACE_MANIFEST_DDL,
     SESSION_TOKENS_DDL,
+    SESSION_ACTIVITY_DDL,
+    *SESSION_ACTIVITY_INDEXES_DDL,
+    SESSION_FILE_CHANGES_DDL,
+    *SESSION_FILE_CHANGES_INDEXES_DDL,
     TODO_STATE_DDL,
     WORKFLOW_BINDINGS_DDL,
     WORKFLOW_SCOPE_DDL,
@@ -884,7 +1062,20 @@ ALL_DDL: list[str] = [
     DISPATCH_NEXT_ACTIONS_DDL,
     DISPATCH_NEXT_ACTIONS_INDEX_DDL,
     CRITIC_REVIEWS_DDL,
+    CRITIC_RUNS_DDL,
     TEST_STATE_DDL,
+    ENFORCEMENT_GAPS_DDL,
+    *ENFORCEMENT_GAPS_INDEXES_DDL,
+    LINT_PROFILE_CACHE_DDL,
+    *LINT_PROFILE_CACHE_INDEXES_DDL,
+    LINT_CIRCUIT_BREAKERS_DDL,
+    *LINT_CIRCUIT_BREAKERS_INDEXES_DDL,
+    PRESERVED_CONTEXTS_DDL,
+    *PRESERVED_CONTEXTS_INDEXES_DDL,
+    POLICY_STRIKES_DDL,
+    *POLICY_STRIKES_INDEXES_DDL,
+    BASH_SOURCE_BASELINES_DDL,
+    *BASH_SOURCE_BASELINES_INDEXES_DDL,
     OBS_METRICS_DDL,
     OBS_SUGGESTIONS_DDL,
     OBS_RUNS_DDL,
@@ -1258,6 +1449,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         for idx_ddl in DISPATCH_LEASES_INDEXES_DDL:
             conn.execute(idx_ddl)
         for idx_ddl in CRITIC_REVIEWS_INDEXES_DDL:
+            conn.execute(idx_ddl)
+        for idx_ddl in CRITIC_RUNS_INDEXES_DDL:
             conn.execute(idx_ddl)
         for idx_ddl in SCRATCHLANE_PERMITS_INDEXES_DDL:
             conn.execute(idx_ddl)

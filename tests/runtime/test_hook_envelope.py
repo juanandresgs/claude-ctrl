@@ -110,3 +110,52 @@ def test_write_envelope_resolves_relative_file_path_from_subdir_payload_cwd(tmp_
     assert envelope.tool_input["file_path"] == str(repo / "src" / "app.ts")
     assert envelope.target_cwd == str(repo / "src")
     assert envelope.project_root == str(repo)
+
+
+def test_write_envelope_resolves_non_git_project_by_state_db_ancestor(tmp_path):
+    project = tmp_path / "project"
+    nested = project / "lsdyna_isolated" / "tmp" / "ad-hoc"
+    nested.mkdir(parents=True)
+    (project / ".claude").mkdir()
+    (project / ".claude" / "state.db").write_text("", encoding="utf-8")
+    (project / "lsdyna_isolated" / "tmp" / ".claude").mkdir()
+    (project / "lsdyna_isolated" / "tmp" / ".claude" / "state.db").write_text(
+        "",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "event_type": "PreToolUse",
+        "tool_name": "Write",
+        "cwd": str(project / "lsdyna_isolated"),
+        "tool_input": {
+            "file_path": str(nested / "ida_fast16_map.py"),
+            "content": "print('hi')\n",
+        },
+    }
+
+    envelope = build_hook_event_envelope(payload)
+
+    assert envelope.target_cwd == str(nested)
+    assert envelope.project_root == str(project)
+
+
+def test_write_envelope_anchors_non_git_first_write_to_payload_cwd(tmp_path):
+    project = tmp_path / "project"
+    nested = project / "site" / "src" / "pages"
+    nested.mkdir(parents=True)
+
+    payload = {
+        "event_type": "PreToolUse",
+        "tool_name": "Write",
+        "cwd": str(project),
+        "tool_input": {
+            "file_path": str(nested / "index.astro"),
+            "content": "---\n---\n",
+        },
+    }
+
+    envelope = build_hook_event_envelope(payload)
+
+    assert envelope.target_cwd == str(nested)
+    assert envelope.project_root == str(project)

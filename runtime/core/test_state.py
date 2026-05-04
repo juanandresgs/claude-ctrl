@@ -11,10 +11,9 @@ Rationale: WS3 retires the .claude/.test-status flat-file as a READ authority.
   guard.sh Checks 8/9, subagent-start.sh, and check-guardian.sh previously
   called `python3 -m runtime.cli test-state get` which read the flat-file.
   That bridge is replaced here: test_state is the canonical runtime table
-  for test results. test-runner.sh may continue WRITING the flat-file for
-  backward compatibility (e.g. session-init.sh clearing it), but NO
-  enforcement hook may READ the flat-file anymore. The single source of
-  truth is this module backed by SQLite.
+  for test results. Runtime hooks no longer write or read the retired
+  flat-file; session cleanup only removes stale historical copies. The single
+  source of truth is this module backed by SQLite.
 
   The module follows the same interface pattern as runtime.core.proof and
   runtime.core.evaluation: conn is passed in by the caller (cli.py) so

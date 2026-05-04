@@ -1,0 +1,19 @@
+name: admission-ready-implementer
+category: gate
+mode: deterministic
+fixture: clean-hello-world
+setup:
+  eval_target: admission
+  git: true
+  workflow_id: wf-admission
+  branch: feature/admission
+  bind_workflow: true
+  set_scope: true
+  issue_implementer_lease: true
+input:
+  payload:
+    trigger: source_write
+    workflow_id: wf-admission
+    target_path: src/hello.py
+ground_truth:
+  expected_verdict: ready_for_implementer

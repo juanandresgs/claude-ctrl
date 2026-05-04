@@ -1,0 +1,12 @@
+name: admission-ambiguous-asks-user
+category: gate
+mode: deterministic
+fixture: clean-hello-world
+setup:
+  eval_target: admission
+  git: false
+input:
+  payload:
+    trigger: manual
+ground_truth:
+  expected_verdict: user_decision_required

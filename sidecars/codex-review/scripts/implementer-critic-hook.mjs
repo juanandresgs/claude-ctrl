@@ -29,8 +29,8 @@ const RUNTIME_CLI_PATH =
 const CRITIC_SCHEMA = path.join(ROOT_DIR, "schemas", "critic-output.schema.json");
 const POLICY_DIR = path.resolve(ROOT_DIR, "policies");
 const REVIEW_PROVIDER_KEY = "review_gate_provider";
-const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$/;
-const SKIPPABLE_PATH = /(\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.|node_modules|vendor|dist|build|\.next|__pycache__|\.git)/;
+const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|vue|svelte|css|scss|sass|less|html|htm|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$/;
+const SKIPPABLE_PATH = /(\.generated\.|\.min\.|(^|\/)(node_modules|vendor|dist|build|\.next|__pycache__|\.git)(\/|$))/;
 const VALID_REVIEW_PROVIDERS = new Set(["auto", "codex", "gemini", "reviewer-subagent"]);
 
 function readHookInput() {
@@ -86,9 +86,7 @@ function localCliPath() {
 function readPolicyJson(cwd, args) {
   const env = { ...process.env };
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  if (!env.CLAUDE_PROJECT_DIR) {
-    env.CLAUDE_PROJECT_DIR = workspaceRoot;
-  }
+  env.CLAUDE_PROJECT_DIR = workspaceRoot;
   if (!env.CLAUDE_POLICY_DB) {
     env.CLAUDE_POLICY_DB = path.join(env.CLAUDE_PROJECT_DIR, ".claude", "state.db");
   }
@@ -189,6 +187,74 @@ function submitCriticReview(cwd, payload) {
     args.push("--lease-id", payload.leaseId);
   }
   return readPolicyJson(cwd, args);
+}
+
+function startCriticRun(cwd, payload) {
+  const args = [
+    "critic-run", "start",
+    "--workflow-id", payload.workflowId,
+    "--role", "implementer",
+    "--provider", payload.provider || "codex"
+  ];
+  if (payload.leaseId) {
+    args.push("--lease-id", payload.leaseId);
+  }
+  return readPolicyJson(cwd, args);
+}
+
+function recordCriticProgress(cwd, runId, message, options = {}) {
+  if (!runId || !message) {
+    return null;
+  }
+  try {
+    const args = [
+      "critic-run", "progress",
+      "--run-id", runId,
+      "--message", String(message),
+    ];
+    if (options.phase) {
+      args.push("--phase", String(options.phase));
+    }
+    if (options.status) {
+      args.push("--status", String(options.status));
+    }
+    return readPolicyJson(cwd, args);
+  } catch (error) {
+    logNote(`[implementer-critic] Failed to record progress: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+function completeCriticRun(cwd, runId, payload) {
+  if (!runId) {
+    return null;
+  }
+  try {
+    const args = [
+      "critic-run", "complete",
+      "--run-id", runId,
+      "--provider", payload.provider || "codex",
+      "--verdict", payload.verdict,
+      "--summary", payload.summary || "",
+      "--detail", payload.detail || "",
+      "--artifact-path", payload.artifactPath || "",
+      "--fingerprint", payload.fingerprint || "",
+      "--metrics", JSON.stringify(payload.metrics || {})
+    ];
+    if (payload.reviewId != null) {
+      args.push("--review-id", String(payload.reviewId));
+    }
+    if (payload.fallback) {
+      args.push("--fallback", payload.fallback);
+    }
+    if (payload.error) {
+      args.push("--error", payload.error);
+    }
+    return readPolicyJson(cwd, args);
+  } catch (error) {
+    logNote(`[implementer-critic] Failed to complete critic run: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 
 function readFileHead(filePath, maxLines) {
@@ -357,6 +423,7 @@ function resolveTestReview() {
       verdict: String(parsed.verdict || ""),
       summary: String(parsed.summary || "Implementer critic test override."),
       detail: String(parsed.detail || parsed.summary || "Implementer critic test override."),
+      findings: normalizeFindings(parsed.findings),
       nextSteps: Array.isArray(parsed.next_steps) ? parsed.next_steps.map(String) : [],
       rawOutput: raw,
       progressLines: Array.isArray(parsed.progress)
@@ -369,6 +436,15 @@ function resolveTestReview() {
   } catch {
     return null;
   }
+}
+
+function normalizeFindings(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
 }
 
 function getGeminiLoginStatus(cwd) {
@@ -472,6 +548,7 @@ function runGeminiCritic(cwd, prompt) {
       verdict: "CRITIC_UNAVAILABLE",
       summary: "Gemini critic returned invalid structured output.",
       detail: parsed.parseError || "Gemini did not return a structured verdict.",
+      findings: ["Gemini returned invalid structured output."],
       nextSteps: ["Dispatch reviewer subagent fallback."],
       rawOutput: parsed.rawOutput || rawOutput || "",
       progressLines: [],
@@ -483,6 +560,7 @@ function runGeminiCritic(cwd, prompt) {
     verdict: String(parsed.parsed.verdict || ""),
     summary: String(parsed.parsed.summary || ""),
     detail: String(parsed.parsed.detail || ""),
+    findings: normalizeFindings(parsed.parsed.findings),
     nextSteps: Array.isArray(parsed.parsed.next_steps)
       ? parsed.parsed.next_steps.map((item) => String(item))
       : [],
@@ -504,6 +582,7 @@ function unavailableReviewerSubagentFallback(providerStatuses, configuredProvide
       "Dispatch the canonical reviewer subagent in read-only mode with the implementer response, diff context, and test evidence.",
       "Do not grant guardian readiness until the reviewer subagent returns a normal reviewer verdict."
     ],
+    findings: ["No external critic provider completed a structured review."],
     rawOutput: "",
     progressLines: [
       `Review provider preference: ${configuredProvider}.`,
@@ -524,6 +603,10 @@ async function runCritic(cwd, input = {}, options = {}) {
   if (testReview) {
     for (const line of testReview.progressLines) {
       logNote(`[implementer-critic] ${line}`);
+      recordCriticProgress(cwd, options.runId || "", line, {
+        phase: "test",
+        status: "reviewing"
+      });
     }
     return testReview;
   }
@@ -541,6 +624,10 @@ async function runCritic(cwd, input = {}, options = {}) {
       return;
     }
     logNote(`[implementer-critic] ${message}`);
+    recordCriticProgress(cwd, options.runId || "", message, {
+      phase: typeof update === "object" && update?.phase ? update.phase : "reviewing",
+      status: "reviewing"
+    });
     if (progressLines.length < 6) {
       progressLines.push(message);
     }
@@ -558,9 +645,17 @@ async function runCritic(cwd, input = {}, options = {}) {
         const line = `Provider status: codex unavailable (${status.detail || "unknown"}).`;
         progressLines.push(line);
         logNote(`[implementer-critic] ${line}`);
+        recordCriticProgress(cwd, options.runId || "", line, {
+          phase: "provider",
+          status: "provider_ready"
+        });
         continue;
       }
       progressLines.push("Provider status: codex ready.");
+      recordCriticProgress(cwd, options.runId || "", "Provider status: codex ready.", {
+        phase: "provider",
+        status: "provider_ready"
+      });
       try {
         const result = await runAppServerTurn(cwd, {
           prompt,
@@ -576,6 +671,10 @@ async function runCritic(cwd, input = {}, options = {}) {
           const detail = parsed.parseError || "Codex did not return a structured verdict.";
           providerStatuses.push({ provider: "codex", ready: true, failed: true, detail });
           progressLines.push(`Provider failure: codex invalid output (${detail}).`);
+          recordCriticProgress(cwd, options.runId || "", `Provider failure: codex invalid output (${detail}).`, {
+            phase: "provider",
+            status: "reviewing"
+          });
           continue;
         }
 
@@ -583,6 +682,7 @@ async function runCritic(cwd, input = {}, options = {}) {
           verdict: String(parsed.parsed.verdict || ""),
           summary: String(parsed.parsed.summary || ""),
           detail: String(parsed.parsed.detail || ""),
+          findings: normalizeFindings(parsed.parsed.findings),
           nextSteps: Array.isArray(parsed.parsed.next_steps)
             ? parsed.parsed.next_steps.map((item) => String(item))
             : [],
@@ -596,6 +696,10 @@ async function runCritic(cwd, input = {}, options = {}) {
         const detail = error instanceof Error ? error.message : String(error);
         providerStatuses.push({ provider: "codex", ready: true, failed: true, detail });
         progressLines.push(`Provider failure: codex failed (${detail}).`);
+        recordCriticProgress(cwd, options.runId || "", `Provider failure: codex failed (${detail}).`, {
+          phase: "provider",
+          status: "reviewing"
+        });
         continue;
       }
     }
@@ -611,9 +715,17 @@ async function runCritic(cwd, input = {}, options = {}) {
         const line = `Provider status: gemini unavailable (${status.detail || "unknown"}).`;
         progressLines.push(line);
         logNote(`[implementer-critic] ${line}`);
+        recordCriticProgress(cwd, options.runId || "", line, {
+          phase: "provider",
+          status: "provider_ready"
+        });
         continue;
       }
       progressLines.push("Provider status: gemini ready.");
+      recordCriticProgress(cwd, options.runId || "", "Provider status: gemini ready.", {
+        phase: "provider",
+        status: "provider_ready"
+      });
       try {
         const review = runGeminiCritic(cwd, prompt);
         if (review.verdict === "CRITIC_UNAVAILABLE") {
@@ -624,6 +736,10 @@ async function runCritic(cwd, input = {}, options = {}) {
             detail: review.detail || "invalid output"
           });
           progressLines.push(`Provider failure: gemini invalid output (${review.detail || "unknown"}).`);
+          recordCriticProgress(cwd, options.runId || "", `Provider failure: gemini invalid output (${review.detail || "unknown"}).`, {
+            phase: "provider",
+            status: "reviewing"
+          });
           continue;
         }
         return {
@@ -637,83 +753,16 @@ async function runCritic(cwd, input = {}, options = {}) {
         const detail = error instanceof Error ? error.message : String(error);
         providerStatuses.push({ provider: "gemini", ready: true, failed: true, detail });
         progressLines.push(`Provider failure: gemini failed (${detail}).`);
+        recordCriticProgress(cwd, options.runId || "", `Provider failure: gemini failed (${detail}).`, {
+          phase: "provider",
+          status: "reviewing"
+        });
         continue;
       }
     }
   }
 
   return unavailableReviewerSubagentFallback(providerStatuses, configuredProvider);
-}
-
-function artifactRoot(cwd) {
-  if (process.env.CLAUDEX_REVIEW_ARTIFACT_DIR) {
-    return path.resolve(process.env.CLAUDEX_REVIEW_ARTIFACT_DIR);
-  }
-  if (process.env.CLAUDE_PLUGIN_DATA) {
-    return path.join(process.env.CLAUDE_PLUGIN_DATA, "review-artifacts");
-  }
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  const workspaceHash = crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 12);
-  return path.join(home || "/tmp", ".claude", "review-artifacts", workspaceHash);
-}
-
-function buildArtifactPath(cwd, workflowId, provider) {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return path.join(
-    artifactRoot(cwd),
-    "implementer-critic",
-    `${stamp}-${sanitizeToken(workflowId)}-${sanitizeToken(provider)}.md`
-  );
-}
-
-function writeCriticArtifact(filePath, payload) {
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const nextSteps = (payload.review.nextSteps || [])
-      .map((item) => `- ${item}`)
-      .join("\n") || "- none";
-    const providerStatuses = (payload.review.providerStatuses || [])
-      .map((item) => `- ${item.provider}: ${item.ready ? "ready" : "unavailable"}${item.failed ? " (failed)" : ""} - ${item.detail || "no detail"}`)
-      .join("\n") || "- none recorded";
-    const progress = (payload.review.progressLines || [])
-      .map((item) => `- ${item}`)
-      .join("\n") || "- none recorded";
-    const content = [
-      "# Implementer Critic Review",
-      "",
-      `- workflow_id: ${payload.workflowId || "unknown"}`,
-      `- lease_id: ${payload.leaseId || ""}`,
-      `- provider: ${payload.review.provider || "unknown"}`,
-      `- configured_provider: ${payload.review.configuredProvider || ""}`,
-      `- verdict: ${payload.submitResult?.verdict || payload.review.verdict || ""}`,
-      `- next_role: ${payload.submitResult?.resolution?.next_role || ""}`,
-      `- fingerprint: ${payload.fingerprint || ""}`,
-      "",
-      "## Provider Status",
-      providerStatuses,
-      "",
-      "## Progress",
-      progress,
-      "",
-      "## Summary",
-      payload.review.summary || "",
-      "",
-      "## Detail",
-      payload.review.detail || "",
-      "",
-      "## Next Steps",
-      nextSteps,
-      "",
-      "## Raw Output",
-      "```text",
-      payload.review.rawOutput || "",
-      "```",
-      ""
-    ].join("\n");
-    fs.writeFileSync(filePath, content);
-  } catch (error) {
-    logNote(`[implementer-critic] Failed to write artifact: ${error instanceof Error ? error.message : String(error)}`);
-  }
 }
 
 function buildHookOutput(review, submitResult, workflowId) {
@@ -752,15 +801,17 @@ function buildHookOutput(review, submitResult, workflowId) {
   if (review.detail) {
     lines.push(`Implementer critic detail: ${review.detail}`);
   }
+  if (Array.isArray(review.findings) && review.findings.length > 0) {
+    lines.push("Implementer critic findings:");
+    for (const finding of review.findings) {
+      lines.push(`- ${finding}`);
+    }
+  }
   if (Array.isArray(review.nextSteps) && review.nextSteps.length > 0) {
     lines.push("Implementer critic next steps:");
     for (const step of review.nextSteps) {
       lines.push(`- ${step}`);
     }
-  }
-  const artifactPath = submitResult?.metadata?.artifact_path || "";
-  if (artifactPath) {
-    lines.push(`Implementer critic artifact: ${artifactPath}`);
   }
   const verdict = resolution.verdict || review.verdict;
   if (verdict === "TRY_AGAIN") {
@@ -770,7 +821,31 @@ function buildHookOutput(review, submitResult, workflowId) {
   } else if (verdict === "CRITIC_UNAVAILABLE") {
     lines.push("Implementer critic action: dispatch reviewer subagent fallback for read-only adjudication.");
   }
-  return { additionalContext: lines.join("\n") };
+  lines.push("USER_VISIBLE_CRITIC_DIGEST:");
+  lines.push(`Codex critic: ${verdict || review.verdict || "unknown"} → ${resolution.next_role || "reviewer"}`);
+  if (review.summary) {
+    lines.push(`Summary: ${review.summary}`);
+  }
+  if (Array.isArray(review.findings) && review.findings.length > 0) {
+    lines.push("Highlights:");
+    for (const finding of review.findings.slice(0, 4)) {
+      lines.push(`- ${finding}`);
+    }
+  }
+  if (Array.isArray(review.nextSteps) && review.nextSteps.length > 0) {
+    lines.push("Next:");
+    for (const step of review.nextSteps.slice(0, 4)) {
+      lines.push(`- ${step}`);
+    }
+  }
+  const additionalContext = lines.join("\n");
+  return {
+    additionalContext,
+    hookSpecificOutput: {
+      hookEventName: "SubagentStop",
+      additionalContext
+    }
+  };
 }
 
 async function main() {
@@ -784,18 +859,39 @@ async function main() {
     input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd()
   );
   const criticContext = resolveCriticContext(cwd);
-  const review = await runCritic(cwd, input, { workflowId: criticContext.workflowId });
+  const configuredProvider = readConfiguredReviewProvider(cwd, criticContext.workflowId);
+  let criticRun = null;
+  try {
+    criticRun = startCriticRun(cwd, {
+      workflowId: criticContext.workflowId,
+      leaseId: criticContext.leaseId,
+      provider: configuredProvider
+    });
+  } catch (error) {
+    logNote(`[implementer-critic] Failed to start critic telemetry: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const runId = criticRun?.run_id || "";
+  recordCriticProgress(cwd, runId, `Review provider preference: ${configuredProvider}.`, {
+    phase: "provider",
+    status: "started"
+  });
+  const review = await runCritic(cwd, input, {
+    workflowId: criticContext.workflowId,
+    runId
+  });
   const fingerprint = computeSourceFingerprint(cwd);
-  const artifactPath = buildArtifactPath(cwd, criticContext.workflowId, review.provider || "reviewer");
+  const artifactRef = runId ? `state.db:critic-run:${runId}` : "state.db:critic-review";
   const metadata = {
     hook: "implementer-critic-hook.mjs",
-    artifact_path: artifactPath,
+    artifact_ref: artifactRef,
     configured_provider: review.configuredProvider || "",
     provider_statuses: review.providerStatuses || [],
     fallback: review.fallback || "",
     raw_output: review.rawOutput || "",
+    findings: review.findings || [],
     next_steps: review.nextSteps || [],
-    progress_lines: review.progressLines || []
+    progress_lines: review.progressLines || [],
+    critic_run_id: runId
   };
   const submitResult = submitCriticReview(cwd, {
     workflowId: criticContext.workflowId,
@@ -807,14 +903,25 @@ async function main() {
     fingerprint,
     metadata
   });
-  writeCriticArtifact(artifactPath, {
-    workflowId: criticContext.workflowId,
-    leaseId: criticContext.leaseId,
-    review,
-    submitResult,
-    fingerprint
+  const resolution = submitResult?.resolution || {};
+  completeCriticRun(cwd, runId, {
+    provider: review.provider || "codex",
+    verdict: resolution.verdict || review.verdict,
+    summary: review.summary,
+    detail: review.detail,
+    artifactPath: "",
+    fingerprint,
+    reviewId: submitResult?.id,
+    fallback: review.fallback || "",
+    error: (resolution.verdict || review.verdict) === "CRITIC_UNAVAILABLE" ? review.detail : "",
+    metrics: {
+      try_again_streak: resolution.try_again_streak || 0,
+      retry_limit: resolution.retry_limit || 0,
+      repeated_fingerprint_streak: resolution.repeated_fingerprint_streak || 0,
+      escalated: Boolean(resolution.escalated),
+      escalation_reason: resolution.escalation_reason || ""
+    }
   });
-
   emitDecision(buildHookOutput(review, submitResult, criticContext.workflowId));
 }
 

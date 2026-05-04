@@ -108,7 +108,7 @@ print(','.join(sorted(tables)))
 #   goal_contracts — Phase 2 goal-contract persistence (DEC-CLAUDEX-GOAL-CONTRACTS-001)
 #   pending_agent_requests — Phase 2 SubagentStart contract carrier (DEC-CLAUDEX-SA-CARRIER-001)
 #   agent_sessions, seats, supervision_threads, dispatch_attempts — Phase 2b supervision fabric (DEC-CLAUDEX-SUPERVISION-DOMAIN-001)
-EXPECTED="agent_markers,agent_sessions,approvals,bugs,completion_records,critic_reviews,decisions,dispatch_attempts,dispatch_leases,enforcement_config,evaluation_state,events,goal_contracts,obs_metrics,obs_runs,obs_suggestions,pending_agent_requests,reviewer_findings,seats,session_tokens,sqlite_sequence,supervision_threads,test_state,todo_state,trace_manifest,traces,work_items,workflow_bindings,workflow_scope,worktrees"
+EXPECTED="agent_markers,agent_sessions,approvals,bootstrap_requests,bugs,completion_records,critic_reviews,critic_runs,decisions,dispatch_attempts,dispatch_leases,dispatch_next_actions,enforcement_config,evaluation_state,events,goal_contracts,obs_metrics,obs_runs,obs_suggestions,pending_agent_requests,reviewer_findings,scratchlane_permits,scratchlane_requests,seats,session_tokens,sqlite_sequence,supervision_threads,test_state,todo_state,trace_manifest,traces,work_items,workflow_bindings,workflow_scope,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))

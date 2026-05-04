@@ -15,7 +15,7 @@ from runtime.core.db import connect, connect_memory
 from runtime.core.policies import bash_scratchlane_gate
 from runtime.core.policies.bash_write_who import check as bash_write_who
 from runtime.core.policies.write_scratchlane_gate import check as write_scratchlane_gate
-from runtime.core.policy_engine import PolicyContext, PolicyRequest
+from runtime.core.policy_engine import PolicyContext, PolicyRequest, default_registry
 from runtime.schemas import ensure_schema
 
 _WORKTREE = Path(__file__).resolve().parents[2]
@@ -167,7 +167,7 @@ def test_scratchlane_cli_grant_get_list_roundtrip(tmp_path, monkeypatch):
         db_path=db_path,
     )
     permit = grant["permit"]
-    expected_root = project_root / "tmp" / ".claude-scratch" / "dedup"
+    expected_root = project_root / "tmp" / "dedup"
     assert Path(permit["root_path"]) == expected_root
     assert expected_root.is_dir()
 
@@ -217,7 +217,7 @@ def test_scratchlane_permit_scope_filters_by_session_and_workflow(tmp_path):
         str(project_root),
         session_id="session-a",
         workflow_id="wf-a",
-    ) == (str(project_root / "tmp" / ".claude-scratch" / "ad-hoc"),)
+    ) == (str(project_root / "tmp" / "ad-hoc"),)
     assert scratchlanes.active_roots(
         conn,
         str(project_root),
@@ -230,6 +230,65 @@ def test_scratchlane_permit_scope_filters_by_session_and_workflow(tmp_path):
         session_id="session-a",
         workflow_id="wf-b",
     ) == ()
+
+
+def test_scratchlane_cleanup_removes_effectively_empty_session_root(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    permit = scratchlanes.grant(
+        conn,
+        str(project_root),
+        "ad-hoc",
+        session_id="session-clean",
+        granted_by="test",
+    )
+    scratch_root = Path(permit["root_path"])
+    scratch_root.mkdir(parents=True)
+    (scratch_root / ".DS_Store").write_text("mac clutter\n", encoding="utf-8")
+    (scratch_root / ".tmp").mkdir()
+    (scratch_root / ".tmp" / "._sandbox").write_text("", encoding="utf-8")
+
+    result = scratchlanes.cleanup_empty_roots(
+        conn,
+        str(project_root),
+        session_id="session-clean",
+    )
+
+    assert result["removed_count"] == 1
+    assert result["items"][0]["status"] == "removed"
+    assert not scratch_root.exists()
+    assert not (project_root / "tmp").exists()
+
+
+def test_scratchlane_cleanup_preserves_substantive_hidden_files(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    conn = connect_memory()
+    ensure_schema(conn)
+
+    permit = scratchlanes.grant(
+        conn,
+        str(project_root),
+        "ad-hoc",
+        session_id="session-keep",
+        granted_by="test",
+    )
+    scratch_root = Path(permit["root_path"])
+    scratch_root.mkdir(parents=True)
+    (scratch_root / ".gitkeep").write_text("", encoding="utf-8")
+
+    result = scratchlanes.cleanup_empty_roots(
+        conn,
+        str(project_root),
+        session_id="session-keep",
+    )
+
+    assert result["removed_count"] == 0
+    assert result["items"][0]["status"] == "kept"
+    assert (scratch_root / ".gitkeep").exists()
 
 
 def test_scratchlane_prompt_approval_preserves_request_scope(tmp_path):
@@ -298,7 +357,7 @@ def test_scratchlane_cli_uses_project_root_db_outside_project(tmp_path):
         conn.close()
 
     assert permit is not None
-    assert permit["root_path"] == str(project_root / "tmp" / ".claude-scratch" / "ad-hoc")
+    assert permit["root_path"] == str(project_root / "tmp" / "ad-hoc")
 
 
 def test_scratchlane_resolve_prompt_uses_project_root_db_outside_project(tmp_path):
@@ -376,19 +435,18 @@ def test_write_scratchlane_gate_redirects_tmp_source_candidate(tmp_path):
     assert decision is not None
     assert decision.action == "deny"
     assert "scratchlane" in decision.reason
-    assert "runtime will activate it automatically" in decision.reason
-    assert "Do not tell the user to run any command." in decision.reason
+    assert "Guardian Admission authorized scratchlane" in decision.reason
     assert decision.effects is not None
-    assert decision.effects["request_scratchlane_approval"]["task_slug"] == "dedup"
+    assert decision.effects["apply_guardian_admission"]["task_slug"] == "dedup"
     assert (
-        decision.effects["request_scratchlane_approval"]["request_reason"]
-        == "tmp_source_candidate"
+        decision.effects["apply_guardian_admission"]["user_prompt"]
+        == "obvious scratchlane candidate: tmp_source_candidate"
     )
 
 
 def test_write_scratchlane_gate_allows_approved_scratchlane(tmp_path):
     project_root = tmp_path
-    scratch_root = project_root / "tmp" / ".claude-scratch" / "dedup"
+    scratch_root = project_root / "tmp" / "dedup"
     scratch_root.mkdir(parents=True)
     request = PolicyRequest(
         event_type="Write",
@@ -405,6 +463,98 @@ def test_write_scratchlane_gate_allows_approved_scratchlane(tmp_path):
     )
 
     assert write_scratchlane_gate(request) is None
+
+
+def test_legacy_nested_scratchlane_is_redirected_to_local_tmp(tmp_path):
+    project_root = tmp_path
+    nested_target = (
+        project_root
+        / "lsdyna_isolated"
+        / "tmp"
+        / ".claude-scratch"
+        / "ad-hoc"
+        / "ida_fast16_map.py"
+    )
+    canonical_root = project_root / "tmp" / "ad-hoc"
+    request = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={
+            "file_path": str(nested_target),
+            "content": "print('hi')\n",
+        },
+        context=_make_context(project_root),
+        cwd=str(project_root / "lsdyna_isolated"),
+    )
+
+    decision = default_registry().evaluate(request)
+    assert decision.action == "deny"
+    assert decision.policy_name == "write_scratchlane_gate"
+    assert "Guardian Admission authorized task scratchlane" in decision.reason
+    assert str(canonical_root) in decision.reason
+    assert decision.effects is not None
+    effect = decision.effects["apply_guardian_admission"]
+    assert effect["task_slug"] == "ad-hoc"
+    assert effect["root_path"] == str(canonical_root)
+    assert effect["target_path"] == str(nested_target)
+
+
+def test_active_scratchlane_redirects_legacy_path_without_reapproval(tmp_path):
+    project_root = tmp_path
+    legacy_target = (
+        project_root
+        / "lsdyna_isolated"
+        / "tmp"
+        / ".claude-scratch"
+        / "ad-hoc"
+        / "ida_fast16_map.py"
+    )
+    canonical_root = project_root / "tmp" / "ad-hoc"
+    canonical_root.mkdir(parents=True)
+    request = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={
+            "file_path": str(legacy_target),
+            "content": "print('hi')\n",
+        },
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(canonical_root)}),
+        ),
+        cwd=str(project_root / "lsdyna_isolated"),
+    )
+
+    decision = default_registry().evaluate(request)
+    assert decision.action == "deny"
+    assert decision.policy_name == "write_scratchlane_gate"
+    assert "is active at" in decision.reason
+    assert str(canonical_root) in decision.reason
+    assert decision.effects is None
+
+
+def test_active_canonical_scratchlane_is_artifact_not_source(tmp_path):
+    project_root = tmp_path
+    canonical_root = project_root / "tmp" / "ad-hoc"
+    canonical_root.mkdir(parents=True)
+    target = canonical_root / "ida_fast16_map.py"
+    request = PolicyRequest(
+        event_type="Write",
+        tool_name="Write",
+        tool_input={
+            "file_path": str(target),
+            "content": "print('hi')\n",
+        },
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(canonical_root)}),
+        ),
+        cwd=str(project_root / "lsdyna_isolated"),
+    )
+
+    decision = default_registry().evaluate(request)
+    assert decision.action == "allow"
+    assert decision.policy_name == "default"
 
 
 def test_bash_scratchlane_gate_denies_raw_interpreter(tmp_path):
@@ -425,18 +575,18 @@ def test_bash_scratchlane_gate_denies_raw_interpreter(tmp_path):
     assert "scripts/scratchlane-exec.sh" in decision.reason
     assert "runtime will activate it automatically" in decision.reason
     assert decision.effects is not None
-    assert decision.effects["request_scratchlane_approval"]["task_slug"] == "ad-hoc"
+    assert decision.effects["apply_guardian_admission"]["task_slug"] == "ad-hoc"
     assert "--project-root" in decision.reason
     assert str(project_root) in decision.reason
     assert (
-        decision.effects["request_scratchlane_approval"]["request_reason"]
-        == "opaque_interpreter"
+        decision.effects["apply_guardian_admission"]["user_prompt"]
+        == "obvious scratchlane candidate: opaque_interpreter"
     )
 
 
 def test_bash_scratchlane_gate_does_not_reask_for_active_ad_hoc_lane(tmp_path):
     project_root = tmp_path
-    scratch_root = project_root / "tmp" / ".claude-scratch" / "ad-hoc"
+    scratch_root = project_root / "tmp" / "ad-hoc"
     command = "python3 -c 'print(1)'"
     request = PolicyRequest(
         event_type="PreToolUse",
@@ -460,10 +610,33 @@ def test_bash_scratchlane_gate_does_not_reask_for_active_ad_hoc_lane(tmp_path):
 
 def test_bash_scratchlane_gate_allows_absolute_runtime_wrapper_command(tmp_path):
     project_root = tmp_path
+    scratch_root = project_root / "tmp" / "dedup"
     wrapper = _WORKTREE / "scripts" / "scratchlane-exec.sh"
     command = (
         f"{wrapper} --task-slug dedup --project-root {project_root} -- bash -c "
         "'cd /tmp && cc-policy evaluation get wf | python3 -c \"print(1)\"'"
+    )
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(scratch_root)}),
+        ),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    assert bash_scratchlane_gate.check(request) is None
+
+
+def test_bash_scratchlane_gate_requests_approval_for_inactive_runtime_wrapper(tmp_path):
+    project_root = tmp_path
+    wrapper = _WORKTREE / "scripts" / "scratchlane-exec.sh"
+    command = (
+        f"{wrapper} --task-slug ad-hoc --project-root {project_root} -- "
+        "python3 -c 'print(1)'"
     )
     request = PolicyRequest(
         event_type="PreToolUse",
@@ -474,11 +647,22 @@ def test_bash_scratchlane_gate_allows_absolute_runtime_wrapper_command(tmp_path)
         command_intent=build_bash_command_intent(command, cwd=str(project_root)),
     )
 
-    assert bash_scratchlane_gate.check(request) is None
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "scratchlane 'ad-hoc' is not active" in decision.reason
+    assert decision.effects is not None
+    effect = decision.effects["apply_guardian_admission"]
+    expected_root = project_root / "tmp" / "ad-hoc"
+    assert effect["task_slug"] == "ad-hoc"
+    assert effect["user_prompt"] == "obvious scratchlane candidate: inactive_wrapper"
+    assert effect["root_path"] == str(expected_root)
+    assert effect["target_path"] == str(expected_root / ".scratchlane")
 
 
 def test_bash_scratchlane_gate_allows_relative_wrapper_only_from_runtime_root():
     project_root = _WORKTREE
+    scratch_root = project_root / "tmp" / "dedup"
     command = (
         "./scripts/scratchlane-exec.sh --task-slug dedup "
         f"--project-root {project_root} -- python3 -c 'print(1)'"
@@ -487,7 +671,10 @@ def test_bash_scratchlane_gate_allows_relative_wrapper_only_from_runtime_root():
         event_type="PreToolUse",
         tool_name="Bash",
         tool_input={"command": command},
-        context=_make_context(project_root),
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(scratch_root)}),
+        ),
         cwd=str(project_root),
         command_intent=build_bash_command_intent(command, cwd=str(project_root)),
     )
@@ -536,7 +723,7 @@ def test_bash_scratchlane_gate_denies_relative_wrapper_from_other_repo(tmp_path)
 
 def test_bash_write_who_ignores_approved_scratchlane_visible_write(tmp_path):
     project_root = tmp_path
-    scratch_root = project_root / "tmp" / ".claude-scratch" / "notes"
+    scratch_root = project_root / "tmp" / "notes"
     scratch_root.mkdir(parents=True)
     command = f"echo hi > {scratch_root / 'note.py'}"
     request = PolicyRequest(
@@ -546,6 +733,100 @@ def test_bash_write_who_ignores_approved_scratchlane_visible_write(tmp_path):
         context=_make_context(project_root, scratchlane_roots=frozenset({str(scratch_root)})),
         cwd=str(project_root),
         command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    assert bash_scratchlane_gate.check(request) is None
+    assert bash_write_who(request) is None
+
+
+def test_bash_legacy_nested_scratchlane_target_requests_local_tmp(tmp_path):
+    project_root = tmp_path
+    nested_target = (
+        project_root
+        / "lsdyna_isolated"
+        / "tmp"
+        / ".claude-scratch"
+        / "ad-hoc"
+        / "ida_fast16_map.py"
+    )
+    canonical_root = project_root / "tmp" / "ad-hoc"
+    command = f"echo hi > {nested_target}"
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(project_root),
+        cwd=str(project_root / "lsdyna_isolated"),
+        command_intent=build_bash_command_intent(
+            command,
+            cwd=str(project_root / "lsdyna_isolated"),
+        ),
+    )
+
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "scratchlane 'ad-hoc' is not active" in decision.reason
+    assert str(canonical_root) in decision.reason
+    assert decision.effects is not None
+    assert decision.effects["apply_guardian_admission"]["task_slug"] == "ad-hoc"
+
+
+def test_bash_active_scratchlane_redirects_legacy_target_without_reapproval(tmp_path):
+    project_root = tmp_path
+    legacy_target = (
+        project_root
+        / "lsdyna_isolated"
+        / "tmp"
+        / ".claude-scratch"
+        / "ad-hoc"
+        / "ida_fast16_map.py"
+    )
+    canonical_root = project_root / "tmp" / "ad-hoc"
+    canonical_root.mkdir(parents=True)
+    command = f"echo hi > {legacy_target}"
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(canonical_root)}),
+        ),
+        cwd=str(project_root / "lsdyna_isolated"),
+        command_intent=build_bash_command_intent(
+            command,
+            cwd=str(project_root / "lsdyna_isolated"),
+        ),
+    )
+
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert "is active at" in decision.reason
+    assert str(canonical_root) in decision.reason
+    assert decision.effects is None
+
+
+def test_bash_active_canonical_scratchlane_target_is_not_source_write(tmp_path):
+    project_root = tmp_path
+    canonical_root = project_root / "tmp" / "ad-hoc"
+    canonical_root.mkdir(parents=True)
+    target = canonical_root / "ida_fast16_map.py"
+    command = f"echo hi > {target}"
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(
+            project_root,
+            scratchlane_roots=frozenset({str(canonical_root)}),
+        ),
+        cwd=str(project_root / "lsdyna_isolated"),
+        command_intent=build_bash_command_intent(
+            command,
+            cwd=str(project_root / "lsdyna_isolated"),
+        ),
     )
 
     assert bash_scratchlane_gate.check(request) is None
@@ -747,23 +1028,104 @@ def test_evaluate_registers_pending_scratchlane_request(tmp_path):
     assert code == 0
     assert out["action"] == "deny"
     assert "scratchlane" in out["reason"]
-    assert out["runtimeNotification"]["notification_type"] == "scratchlane_approval_needed"
-    assert "tmp/.claude-scratch/dedup" in out["runtimeNotification"]["message"]
+    assert (
+        out["runtimeNotification"]["notification_type"]
+        == "guardian_admission_scratchlane_ready"
+    )
+    assert "tmp/dedup" in out["runtimeNotification"]["root_path"]
 
     conn = connect(db_path)
     try:
         ensure_schema(conn)
-        pending = scratchlanes.get_pending(
-            conn,
-            session_id="sess-evaluate",
-            project_root=str(project_root),
-        )
+        permit = scratchlanes.get_active(conn, str(project_root), "dedup")
+        pending = scratchlanes.get_pending(conn, session_id="sess-evaluate", project_root=str(project_root))
     finally:
         conn.close()
 
-    assert pending is not None
-    assert pending["task_slug"] == "dedup"
-    assert pending["requested_path"] == str(project_root / "tmp" / "dedup.py")
+    assert pending is None
+    assert permit is not None
+    assert permit["task_slug"] == "dedup"
+    assert permit["granted_by"] == "guardian_admission"
+
+
+def test_evaluate_registers_pending_scratchlane_request_for_inactive_wrapper(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = tmp_path / "state.db"
+    wrapper = _WORKTREE / "scripts" / "scratchlane-exec.sh"
+
+    payload = {
+        "event_type": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                f"{wrapper} --task-slug ad-hoc --project-root {project_root} -- "
+                "python3 -c 'print(1)'"
+            ),
+        },
+        "cwd": str(project_root),
+        "session_id": "sess-wrapper-approval",
+        "actor_role": "",
+        "actor_id": "",
+    }
+
+    code, out = _run_evaluate(
+        payload,
+        db_path=db_path,
+        extra_env={"CLAUDE_PROJECT_DIR": str(project_root)},
+    )
+
+    assert code == 0
+    assert out["action"] == "deny"
+    assert "scratchlane 'ad-hoc' is not active" in out["reason"]
+    assert (
+        out["runtimeNotification"]["notification_type"]
+        == "guardian_admission_scratchlane_ready"
+    )
+    assert "tmp/ad-hoc" in out["runtimeNotification"]["root_path"]
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        permit = scratchlanes.get_active(conn, str(project_root), "ad-hoc")
+        pending = scratchlanes.get_pending(conn, session_id="sess-wrapper-approval", project_root=str(project_root))
+    finally:
+        conn.close()
+
+    assert pending is None
+    assert permit is not None
+    assert permit["task_slug"] == "ad-hoc"
+    assert permit["granted_by"] == "guardian_admission"
+
+
+def test_evaluate_missing_session_id_omits_manual_scratchlane_grant_command(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = tmp_path / "state.db"
+
+    payload = {
+        "event_type": "Write",
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(project_root / "tmp" / "dedup.py"),
+            "content": "print('hi')\n",
+        },
+        "cwd": str(project_root),
+        "actor_role": "",
+        "actor_id": "",
+    }
+
+    code, out = _run_evaluate(
+        payload,
+        db_path=db_path,
+        extra_env={"CLAUDE_PROJECT_DIR": str(project_root)},
+    )
+
+    assert code == 0
+    assert out["action"] == "deny"
+    assert "Guardian Admission authorized scratchlane" in out["reason"]
+    assert "python3" not in out["reason"]
+    assert "scratchlane grant" not in out["reason"]
 
 
 def test_evaluate_reuses_identical_pending_request_without_repeat_notification(tmp_path):
@@ -808,10 +1170,13 @@ def test_evaluate_reuses_identical_pending_request_without_repeat_notification(t
             project_root=str(project_root),
             session_id="sess-repeat",
         )
+        permit = scratchlanes.get_active(conn, str(project_root), "dedup")
     finally:
         conn.close()
 
-    assert len(pending) == 1
+    assert pending == []
+    assert permit is not None
+    assert permit["granted_by"] == "guardian_admission"
 
 
 def test_pre_write_emits_local_notification_for_new_pending_request(tmp_path):
@@ -865,14 +1230,15 @@ def test_pre_write_emits_local_notification_for_new_pending_request(tmp_path):
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "runtimeNotification" not in output
 
-    capture = capture_path.read_bytes().split(b"\0")
-    args = [item.decode("utf-8") for item in capture if item]
-    assert "-title" in args
-    assert "Scratchlane Approval Needed" in args
-    assert "-message" in args
-    message = args[args.index("-message") + 1]
-    assert "tmp/.claude-scratch/dedup" in message
-    assert "Reply yes or no" in message
+    assert not capture_path.exists()
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        permit = scratchlanes.get_active(conn, str(project_root), "dedup")
+    finally:
+        conn.close()
+    assert permit is not None
+    assert permit["granted_by"] == "guardian_admission"
 
 
 def test_prompt_submit_consumes_plain_yes_into_scratchlane_approval(tmp_path):
@@ -898,10 +1264,6 @@ def test_prompt_submit_consumes_plain_yes_into_scratchlane_approval(tmp_path):
         )
     finally:
         conn.close()
-
-    prompt_count = project_root / ".claude" / f".prompt-count-{session_id}"
-    prompt_count.parent.mkdir(parents=True, exist_ok=True)
-    prompt_count.write_text("1\n", encoding="utf-8")
 
     env = {
         **os.environ,
@@ -946,6 +1308,36 @@ def test_prompt_submit_consumes_plain_yes_into_scratchlane_approval(tmp_path):
     assert permit is not None
     assert Path(permit["root_path"]).is_dir()
     assert pending is None
+
+
+def test_scratchlane_exec_wrapper_inactive_permit_omits_raw_grant_hint(tmp_path):
+    repo_root = _WORKTREE
+    db_path = tmp_path / "state.db"
+    env = os.environ.copy()
+    env["CLAUDE_POLICY_DB"] = str(db_path)
+
+    result = subprocess.run(
+        [
+            str(repo_root / "scripts" / "scratchlane-exec.sh"),
+            "--task-slug",
+            "ad-hoc",
+            "--project-root",
+            str(repo_root),
+            "--",
+            "python3",
+            "-c",
+            "print(1)",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "Ask the user to approve task scratchlane" in result.stderr
+    assert "python3" not in result.stderr
+    assert "scratchlane grant" not in result.stderr
 
 
 def test_scratchlane_exec_wrapper_uses_active_permit(tmp_path, monkeypatch):

@@ -23,6 +23,52 @@ couldn't before. Lead with that.
 - Do NOT use two-dot diff for merge analysis — always `git diff main...feature` (THREE dots). 
 - Do NOT touch MASTER_PLAN.md except at phase boundaries
 
+## Admission Mode
+
+When the dispatch prompt starts with:
+
+```text
+GUARDIAN_MODE: admission
+```
+
+you are acting as Guardian Admission, the non-canonical pre-workflow custody
+decider. This is still the Guardian subagent; it is not a separate agent type
+and it is not `guardian:provision` or `guardian:land`.
+
+In admission mode:
+
+- Do not provision worktrees, land git, create commits, create workflow
+  completion records, or write source files.
+- Decide whether the request belongs to durable project onboarding/workflow
+  custody, planner scope, Guardian provisioning, existing implementer custody,
+  task-local scratchlane custody, or a user decision.
+- Prefer the runtime classifier over inference:
+
+```bash
+cc-policy admission classify --payload '<json>'
+cc-policy admission apply --payload '<json>'
+```
+
+`classify` is read-only. `apply` may grant a scratchlane permit only when the
+verdict is `scratchlane_authorized`, and only through
+`runtime/core/scratchlanes.py` via the admission runtime.
+
+Ask the user only when the classifier returns `user_decision_required`, or when
+the request is destructive, contradictory, or lacks enough target information
+to distinguish durable project work from scratchlane work.
+
+Admission mode responses must end with these trailers, and must not include the
+landing trailers:
+
+```text
+ADMISSION_VERDICT: <ready_for_implementer|guardian_provision_required|planner_required|workflow_bootstrap_required|project_onboarding_required|scratchlane_authorized|user_decision_required>
+ADMISSION_NEXT_AUTHORITY: <scratchlane|workflow_bootstrap|planner|guardian:provision|implementer|user>
+ADMISSION_TARGET_ROOT: <absolute path>
+ADMISSION_TARGET_PATH: <absolute path|none>
+ADMISSION_SCRATCHLANE: <tmp/slug/|none>
+ADMISSION_REASON: <one sentence>
+```
+
 ## Fail-Fast: Check Before You Work
 
 Your FIRST action on any commit, merge, or governed push dispatch — before reading files or
@@ -198,7 +244,8 @@ consent before executing.
 
 ## Required Output Trailers
 
-Your final response MUST include these lines (hooks parse them mechanically):
+For provision and landing modes, your final response MUST include these lines
+(hooks parse them mechanically):
 
 ```
 LANDING_RESULT: provisioned|committed|merged|pushed|denied|skipped

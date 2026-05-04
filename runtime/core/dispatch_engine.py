@@ -125,6 +125,7 @@ from typing import Optional
 
 from runtime.core import (
     completions,
+    critic_runs,
     critic_reviews,
     dispatch_shadow,
     evaluation,
@@ -435,6 +436,16 @@ def process_agent_stop(
                     result["worktree_path"] = binding.get("worktree_path") or ""
             except Exception:
                 pass  # Advisory; routing is already determined.
+        if workflow_id and not error:
+            try:
+                critic_runs.mark_fallback_completed(
+                    conn,
+                    workflow_id=workflow_id,
+                    fallback="reviewer",
+                    summary="Reviewer fallback completed after critic unavailability.",
+                )
+            except Exception:
+                pass  # Telemetry only; reviewer routing remains authoritative.
 
     elif normalised == "guardian":
         next_role, error, worktree_path = _route_from_guardian_completion(
@@ -1081,7 +1092,6 @@ def _format_critic_context(result: dict) -> str:
     summary = str(result.get("critic_summary") or "")
     detail = str(result.get("critic_detail") or "")
     next_steps = result.get("critic_next_steps") or []
-    artifact_path = str(result.get("critic_artifact_path") or "")
     retry_limit = int(result.get("critic_retry_limit") or 0)
     try_again_streak = int(result.get("critic_try_again_streak") or 0)
     repeated_fp_streak = int(result.get("critic_repeated_fingerprint_streak") or 0)
@@ -1112,8 +1122,6 @@ def _format_critic_context(result: dict) -> str:
         lines.append("CRITIC_NEXT_STEPS:")
         for step in next_steps[:8]:
             lines.append(f"- {step}")
-    if artifact_path:
-        lines.append(f"CRITIC_ARTIFACT: {artifact_path}")
     if verdict == "TRY_AGAIN":
         lines.append(
             "CRITIC_ACTION: Re-dispatch implementer with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."

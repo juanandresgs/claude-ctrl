@@ -505,7 +505,7 @@ def _configure_parent_marker_feature_lease_in_shared_db(repo: Path, worktree: Pa
             "file_path": "src/app.ts",
             "content": _typescript_exports(1),
             "expected_decision": "deny",
-            "reason_substring": "orchestrator",
+            "reason_substring": "workflow_bootstrap",
         },
     ],
     ids=lambda case: case["id"],
@@ -610,6 +610,104 @@ def test_pre_write_hook_uses_envelope_normalized_relative_path_for_branch_guard(
     assert not parent_side_db.exists(), (
         "pre-write hook must not create/read a side DB from the hook subprocess cwd"
     )
+
+
+def test_pre_write_non_git_first_write_uses_payload_cwd_db_not_target_subdir(tmp_path):
+    """A non-git first write must not create nested state DB authorities.
+
+    Mercury-style projects can start as plain directories. The hook payload cwd
+    is the project root; target files may live several directories below it.
+    Runtime state belongs to the payload cwd, not the deepest target parent.
+    """
+    project = tmp_path / "mercury"
+    target_dir = project / "site" / "src" / "pages"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "index.astro"
+
+    payload = json.dumps(
+        {
+            "tool_name": "Write",
+            "cwd": str(project),
+            "tool_input": {
+                "file_path": str(target),
+                "content": "---\n---\n<section />\n",
+            },
+        }
+    )
+    env = _hook_env_without_policy_db(project)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+
+    result = _run(
+        ["bash", str(_PRE_WRITE_HOOK)],
+        cwd=project.parent,
+        env=env,
+        input_text=payload,
+        check=False,
+    )
+
+    _assert_hook_result(result, expected_decision="deny", reason_substring="workflow_bootstrap")
+    assert (project / ".claude" / "state.db").exists()
+    assert not (target_dir / ".claude" / "state.db").exists()
+    assert not (project / "site" / ".claude" / "state.db").exists()
+
+
+def test_pre_write_orchestrator_cannot_write_config_source(tmp_path):
+    """Config source files are implementation surface, not skippable metadata."""
+    project = _init_project(tmp_path, name="config-source")
+    target = project / "site" / "astro.config.mjs"
+    target.parent.mkdir(parents=True)
+
+    payload = json.dumps(
+        {
+            "tool_name": "Write",
+            "cwd": str(project),
+            "tool_input": {
+                "file_path": str(target),
+                "content": "import { defineConfig } from 'astro/config';\nexport default defineConfig({});\n",
+            },
+        }
+    )
+    env = _hook_env_without_policy_db(project)
+
+    result = _run(
+        ["bash", str(_PRE_WRITE_HOOK)],
+        cwd=project,
+        env=env,
+        input_text=payload,
+        check=False,
+    )
+
+    _assert_hook_result(result, expected_decision="deny", reason_substring="orchestrator")
+
+
+def test_pre_write_requires_master_plan_in_non_git_project_for_implementer(tmp_path):
+    """MASTER_PLAN.md presence is enforced for non-git project source writes."""
+    project = _init_project(tmp_path, name="non-git-plan-required")
+    _set_role(project, "implementer")
+    target = project / "site" / "src" / "pages" / "index.astro"
+    target.parent.mkdir(parents=True)
+
+    payload = json.dumps(
+        {
+            "tool_name": "Write",
+            "cwd": str(project),
+            "tool_input": {
+                "file_path": str(target),
+                "content": "---\n---\n<section />\n",
+            },
+        }
+    )
+    env = _hook_env_without_policy_db(project)
+
+    result = _run(
+        ["bash", str(_PRE_WRITE_HOOK)],
+        cwd=project,
+        env=env,
+        input_text=payload,
+        check=False,
+    )
+
+    _assert_hook_result(result, expected_decision="deny", reason_substring="No MASTER_PLAN.md")
 
 
 @pytest.mark.parametrize(

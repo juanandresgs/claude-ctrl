@@ -4,8 +4,8 @@
 Title: write_test_gate tests verify escalating strike logic via pure function calls
 Status: accepted
 Rationale: write_test_gate reads test_state from PolicyContext and manages
-  strike counts via flat-file state under project_root. Tests inject a
-  hand-crafted context and a temp directory to isolate state. No DB I/O.
+  strike counts via policy_strikes state. Tests inject a hand-crafted context
+  and a temp directory to isolate paths. No DB I/O.
 
 Production sequence:
   Claude Write/Edit -> pre-write.sh -> cc-policy evaluate ->
@@ -27,6 +27,7 @@ from runtime.core.policy_engine import PolicyContext, PolicyRegistry, PolicyRequ
 def _make_context(
     test_state=None,
     project_root: str = "/proj",
+    policy_strikes: dict | None = None,
 ) -> PolicyContext:
     return PolicyContext(
         actor_role="implementer",
@@ -42,6 +43,7 @@ def _make_context(
         test_state=test_state,
         binding=None,
         dispatch_phase=None,
+        policy_strikes=policy_strikes or {},
     )
 
 
@@ -49,12 +51,17 @@ def _write_req(
     file_path: str,
     project_root: str = "/proj",
     test_state=None,
+    policy_strikes: dict | None = None,
 ) -> PolicyRequest:
     return PolicyRequest(
         event_type="Write",
         tool_name="Write",
         tool_input={"file_path": file_path, "content": "x = 1\n"},
-        context=_make_context(test_state=test_state, project_root=project_root),
+        context=_make_context(
+            test_state=test_state,
+            project_root=project_root,
+            policy_strikes=policy_strikes,
+        ),
         cwd=project_root,
     )
 
@@ -156,12 +163,8 @@ def test_pass_complete_allows():
 
 
 def test_passing_resets_strikes(tmp_path):
-    """Passing tests clear any existing strikes file."""
+    """Passing tests emit a reset effect for existing DB strikes."""
     import time
-
-    strikes_file = tmp_path / ".claude" / ".test-gate-strikes"
-    strikes_file.parent.mkdir(parents=True)
-    strikes_file.write_text("2|1000000")
 
     state = {
         "found": True,
@@ -169,9 +172,17 @@ def test_passing_resets_strikes(tmp_path):
         "fail_count": 0,
         "updated_at": int(time.time()),
     }
-    req = _write_req(f"{tmp_path}/app.py", str(tmp_path), state)
-    _policy_fn(req)
-    assert not strikes_file.exists()
+    req = _write_req(
+        f"{tmp_path}/app.py",
+        str(tmp_path),
+        state,
+        policy_strikes={"test_gate_pretool:source_write": {"count": 2}},
+    )
+    result = _policy_fn(req)
+    assert result is not None
+    assert result.action == "allow"
+    assert result.effects["policy_strikes"][0]["count"] == 0
+    assert not (tmp_path / ".claude" / ".test-gate-strikes").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -219,18 +230,18 @@ def test_second_failure_strike2_deny(tmp_path):
     """Second consecutive write with failing tests: deny."""
     import time
 
-    # Write an existing strikes file to simulate strike 1 already happened
-    strikes_file = tmp_path / ".claude" / ".test-gate-strikes"
-    strikes_file.parent.mkdir(parents=True)
-    strikes_file.write_text(f"1|{int(time.time())}")
-
     state = {
         "found": True,
         "status": "fail",
         "fail_count": 3,
         "updated_at": int(time.time()),
     }
-    req = _write_req(f"{tmp_path}/app.py", str(tmp_path), state)
+    req = _write_req(
+        f"{tmp_path}/app.py",
+        str(tmp_path),
+        state,
+        policy_strikes={"test_gate_pretool:source_write": {"count": 1}},
+    )
     result = _policy_fn(req)
     assert result is not None
     assert result.action == "deny"
@@ -238,7 +249,7 @@ def test_second_failure_strike2_deny(tmp_path):
 
 
 def test_strike_count_increments(tmp_path):
-    """Strike count in file is incremented after each failing write."""
+    """Strike count is emitted as a DB persistence effect after each failing write."""
     import time
 
     state = {
@@ -248,12 +259,14 @@ def test_strike_count_increments(tmp_path):
         "updated_at": int(time.time()),
     }
     req = _write_req(f"{tmp_path}/app.py", str(tmp_path), state)
-    _policy_fn(req)
+    result = _policy_fn(req)
 
-    strikes_file = tmp_path / ".claude" / ".test-gate-strikes"
-    assert strikes_file.exists()
-    count = int(strikes_file.read_text().split("|")[0])
-    assert count == 1
+    assert result is not None
+    strikes = result.effects["policy_strikes"]
+    assert strikes[0]["policy_name"] == "test_gate_pretool"
+    assert strikes[0]["scope_key"] == "source_write"
+    assert strikes[0]["count"] == 1
+    assert not (tmp_path / ".claude" / ".test-gate-strikes").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -277,17 +290,19 @@ def test_registry_test_gate_deny_on_second_strike(tmp_path):
         priority=650,
     )
 
-    strikes_file = tmp_path / ".claude" / ".test-gate-strikes"
-    strikes_file.parent.mkdir(parents=True)
-    strikes_file.write_text(f"1|{int(time.time())}")
-
     state = {
         "found": True,
         "status": "fail",
         "fail_count": 2,
         "updated_at": int(time.time()),
     }
-    req = _write_req(f"{tmp_path}/app.py", str(tmp_path), state)
+    req = _write_req(
+        f"{tmp_path}/app.py",
+        str(tmp_path),
+        state,
+        policy_strikes={"test_gate_pretool:source_write": {"count": 1}},
+    )
     decision = reg.evaluate(req)
     assert decision.action == "deny"
     assert decision.policy_name == "test_gate_pretool"
+    assert decision.effects["policy_strikes"][0]["count"] == 2

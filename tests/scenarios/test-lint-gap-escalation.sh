@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# test-lint-gap-escalation.sh: Pre-seed .enforcement-gaps with count > 1 for
+# test-lint-gap-escalation.sh: Pre-seed state.db with count > 1 for
 # a .java file, then pipe a Write payload to pre-write.sh — expect deny.
 #
 # @decision DEC-LINT-TEST-005
 # @title Gap escalation scenario: repeated gap triggers PreToolUse deny
 # @status accepted
 # @rationale Verifies the repeated-write deny path. When encounter_count > 1
-#   exists in .enforcement-gaps for the target file's extension,
+#   exists in state.db for the target file's extension,
 #   check_enforcement_gap must return permissionDecision=deny. This is the
 #   deterministic block that prevents undetected enforcement bypass across
 #   multiple turns.
@@ -38,9 +38,13 @@ echo "# Plan" > "$TMP_DIR/MASTER_PLAN.md"
 git -C "$TMP_DIR" add MASTER_PLAN.md
 git -C "$TMP_DIR" commit -m "add plan" -q
 
-# Pre-seed .enforcement-gaps with encounter_count=2 for java (confirmed persistent gap)
-GAPS_FILE="$TMP_DIR/.claude/.enforcement-gaps"
-printf 'unsupported|java|none|1711929600|2\n' > "$GAPS_FILE"
+# Pre-seed enforcement_gaps with encounter_count=2 for java (confirmed persistent gap)
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" \
+    python3 "$REPO_ROOT/runtime/cli.py" enforcement-gap record \
+    --project-root "$TMP_DIR" --gap-type unsupported --ext java --tool none >/dev/null
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" \
+    python3 "$REPO_ROOT/runtime/cli.py" enforcement-gap record \
+    --project-root "$TMP_DIR" --gap-type unsupported --ext java --tool none >/dev/null
 
 TARGET_FILE="$TMP_DIR/src/Hello.java"
 

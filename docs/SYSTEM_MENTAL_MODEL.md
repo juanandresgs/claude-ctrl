@@ -27,6 +27,16 @@ These are the authoritative facts now:
   - Code anchor: `runtime/core/completions.py`
 - Test readiness: `test_state`
   - Code anchor: `runtime/core/test_state.py`
+- Session prompt counts and changed-file memory: `session_activity`, `session_file_changes`
+  - Code anchor: `runtime/core/session_activity.py`
+- Linter coverage gaps and linter hook memory: `enforcement_gaps`, `lint_profile_cache`, `lint_circuit_breakers`
+  - Code anchor: `runtime/core/enforcement_gaps.py`, `runtime/core/lint_state.py`
+- Escalating write-policy strike counters: `policy_strikes`
+  - Code anchor: `runtime/core/policy_strikes.py`
+- Compaction handoff context: `preserved_contexts`
+  - Code anchor: `runtime/core/preserved_context.py`
+- Bash source-mutation baselines: `bash_source_baselines`
+  - Code anchor: `runtime/core/bash_lifecycle.py`
 - Evaluator / landing readiness: `evaluation_state`
   - Code anchor: `runtime/core/evaluation.py`
 - Workflow binding and scope: runtime workflow tables
@@ -39,6 +49,11 @@ These are the authoritative facts now:
 These are no longer authoritative:
 
 - Branch-derived workflow identity in leased paths
+- `.session-changes-*`, `.prompt-count-*`, `.session-start-epoch`
+- `.enforcement-gaps`, `.lint-cache-*`, `.lint-breaker-*`
+- `.test-gate-strikes`, `.mock-gate-strikes`
+- `tmp/.bash-source-baseline-*`
+- `.preserved-context`
 - `.test-status`
 - `.agent-findings`
 - Pre-merge evaluator consumption

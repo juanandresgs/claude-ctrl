@@ -36,6 +36,7 @@ source "$(dirname "$0")/context-lib.sh"
 
 # shellcheck disable=SC2034  # HOOK_INPUT is consumed by get_field via context-lib shared state
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path

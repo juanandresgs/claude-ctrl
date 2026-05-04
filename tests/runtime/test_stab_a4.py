@@ -3,18 +3,17 @@
 Covers:
   1. markers.expire_stale — marks old active markers as 'expired'
   2. cli.py marker expire-stale subcommand — wires expire_stale into the CLI
-  3. cli.py test-state get subcommand — reads flat-file and returns JSON
+  3. cli.py test-state get subcommand — reads SQLite and ignores flat-files
   4. Compound interaction: expire_stale transitions, then get_active returns None
 
 @decision DEC-STAB-A4-001
-Title: markers.expire_stale and test-state get CLI bridge
+Title: markers.expire_stale and test-state SQLite CLI bridge
 Status: accepted
 Rationale: TKT-STAB-A4 removes flat-file .test-status reads from guard.sh,
   subagent-start.sh, and check-guardian.sh. Instead those hooks call
-  `python3 -m runtime.cli test-state get` which reads the flat-file and
-  returns structured JSON. This keeps the read surface uniform (all runtime
-  reads go through the CLI) without requiring test-runner.sh (out of scope)
-  to change how it writes. markers.expire_stale() TTL-based cleanup ensures
+  `python3 -m runtime.cli test-state get` which reads SQLite and returns
+  structured JSON. This keeps the read surface uniform (all runtime reads go
+  through the CLI). markers.expire_stale() TTL-based cleanup ensures
   stale active markers do not accumulate across crashed sessions.
 """
 

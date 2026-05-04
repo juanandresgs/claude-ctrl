@@ -11,7 +11,8 @@ set -euo pipefail
 source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
-read_input > /dev/null
+HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path
@@ -25,22 +26,15 @@ PROJECT_ROOT=$(detect_project_root)
 
 # Session-scoped tracking file (tracks file changes, not decisions)
 SESSION_ID=$(canonical_session_id)
-TRACKING_DIR="$PROJECT_ROOT/.claude"
-TRACKING_FILE="$TRACKING_DIR/.session-changes-${SESSION_ID}"
-
-# Create tracking directory if needed
-mkdir -p "$TRACKING_DIR"
-
-# Atomic append: write to temp then append (safer than direct >>)
-TMPFILE=$(mktemp "${TRACKING_DIR}/.track.XXXXXX")
-echo "$FILE_PATH" > "$TMPFILE"
-cat "$TMPFILE" >> "$TRACKING_FILE"
-rm -f "$TMPFILE"
+CHANGE_JSON=$(cc_policy session-activity change-record \
+    --project-root "$PROJECT_ROOT" \
+    --session-id "$SESSION_ID" \
+    --file-path "$FILE_PATH" 2>/dev/null || echo '{"count":1}')
 
 # Observatory: emit files_changed count async so track.sh adds zero latency (W-OBS-2).
-# Hot-path hook — use fire-and-forget (& disown). Value is the running total of
-# unique files tracked in this session (line count of the session tracking file).
-_tk_file_count=$(wc -l < "$TRACKING_FILE" 2>/dev/null | tr -d ' ') || _tk_file_count=1
+# Hot-path hook — use fire-and-forget (& disown). Value is the running total
+# of unique files tracked in this session from state.db.
+_tk_file_count=$(printf '%s' "$CHANGE_JSON" | jq -r '.count // 1' 2>/dev/null || echo "1")
 rt_obs_metric files_changed "$_tk_file_count" "" "" "" & disown
 
 # --- Invalidate evaluation_state when source files change after clearance ---

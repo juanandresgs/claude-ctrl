@@ -120,6 +120,7 @@ def test_deny_implementer_no_contract():
     assert decision.action == "deny"
     assert decision.policy_name == "agent_contract_required"
     assert "cc-policy workflow stage-packet" in decision.reason
+    assert "ADMISSION_REQUIRED" in decision.reason
 
 
 def test_deny_planner_no_contract():
@@ -132,6 +133,25 @@ def test_deny_planner_no_contract():
 
 def test_deny_guardian_no_contract():
     req = _make_agent_request(subagent_type="guardian", prompt="Land it")
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "agent_contract_required"
+
+
+def test_allow_guardian_admission_mode_without_canonical_contract():
+    req = _make_agent_request(
+        subagent_type="guardian",
+        prompt="GUARDIAN_MODE: admission\nClassify this custody fork.",
+    )
+    assert check(req) is None
+
+
+def test_guardian_admission_mode_marker_must_be_first_line():
+    req = _make_agent_request(
+        subagent_type="guardian",
+        prompt="Preamble\nGUARDIAN_MODE: admission\nClassify this custody fork.",
+    )
     decision = check(req)
     assert decision is not None
     assert decision.action == "deny"

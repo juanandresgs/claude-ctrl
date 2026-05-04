@@ -3,7 +3,7 @@
 This policy sits before source/governance write gates and recognizes the two
 temporary-automation cases that previously felt awkward:
 
-  * ``tmp/.claude-scratch/<task>/...`` — the canonical scratchlane root
+  * ``tmp/<task>/...`` — the canonical scratchlane root
   * source-looking files directly under ``tmp/`` (for example ``tmp/dedup.py``)
 
 The first case requires an active user-approved scratchlane permit for the
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from runtime.core import work_admission
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     PATH_KIND_ARTIFACT,
@@ -23,32 +24,49 @@ from runtime.core.policy_utils import (
     PATH_KIND_TMP_SOURCE_CANDIDATE,
     classify_policy_path,
     is_tracked_repo_path,
+    normalize_path,
     suggest_scratchlane_task_slug,
 )
 
 
-def _approval_prompt(task_slug: str) -> str:
-    return f"Allow task scratchlane `tmp/.claude-scratch/{task_slug}/` for this task?"
-
-
-def _approval_effect(
+def _admission_effect(
     *,
+    request: PolicyRequest,
     task_slug: str,
     scratch_root: str,
     requested_path: str,
-    tool_name: str,
     request_reason: str,
 ) -> dict:
     return {
-        "request_scratchlane_approval": {
+        "apply_guardian_admission": {
+            "trigger": "source_write",
+            "cwd": request.cwd,
+            "project_root": request.context.project_root,
+            "target_path": requested_path,
+            "workflow_id": request.context.workflow_id,
+            "session_id": request.context.session_id,
+            "tool_name": request.tool_name,
+            "user_prompt": f"obvious scratchlane candidate: {request_reason}",
             "task_slug": task_slug,
             "root_path": scratch_root,
-            "requested_path": requested_path,
-            "tool_name": tool_name,
-            "request_reason": request_reason,
-            "requested_by": "write_scratchlane_gate",
         }
     }
+
+
+def _root_display(root: str, fallback: str) -> str:
+    display = root or fallback
+    return display if display.endswith("/") else display + "/"
+
+
+def _active_root(root: str, scratch_roots: frozenset[str]) -> str:
+    if not root:
+        return ""
+    expected = normalize_path(root)
+    for item in scratch_roots:
+        candidate = normalize_path(str(item))
+        if candidate == expected:
+            return candidate
+    return ""
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -85,38 +103,63 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     task_slug = info.task_slug or suggest_scratchlane_task_slug(file_path)
     scratch_root = info.scratch_root or ""
-    scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
-    approval_effect = _approval_effect(
+    scratch_root_display = f"tmp/{task_slug}/"
+    active_root = _active_root(scratch_root, request.context.scratchlane_roots)
+
+    if active_root:
+        return PolicyDecision(
+            action="deny",
+            reason=(
+                f"BLOCKED: scratchlane '{task_slug}' is active at "
+                f"`{_root_display(active_root, scratch_root_display)}`, but this write "
+                f"targets `{info.normalized_path or file_path}`. Retry the write under "
+                "the active scratchlane root."
+            ),
+            policy_name="write_scratchlane_gate",
+        )
+
+    admission_effect = _admission_effect(
+        request=request,
         task_slug=task_slug,
         scratch_root=scratch_root,
         requested_path=info.normalized_path or file_path,
-        tool_name=request.tool_name,
         request_reason=info.kind,
     )
+    admission_result = {
+        "verdict": work_admission.VERDICT_SCRATCHLANE_AUTHORIZED,
+        "next_authority": "scratchlane",
+        "reason": "Target is an obvious task-local tmp scratchlane candidate.",
+        "target_path": info.normalized_path or file_path,
+        "scratchlane": {
+            "task_slug": task_slug,
+            "root_path": scratch_root,
+            "relative_path": scratch_root_display,
+        },
+    }
 
     if info.kind == PATH_KIND_ARTIFACT_CANDIDATE:
         return PolicyDecision(
             action="deny",
             reason=(
-                f"BLOCKED: scratchlane '{task_slug}' is not active for this task yet. "
-                f'Ask the user: "{_approval_prompt(task_slug)}" If they approve, '
-                "the runtime will activate it automatically and you can retry the "
-                f"write under `{scratch_root_display}`. Do not tell the user to run "
-                "any command."
+                "ADMISSION_REQUIRED: Guardian Admission authorized task "
+                f"scratchlane `{scratch_root_display}` for this obvious temporary "
+                "target. The runtime will activate the permit automatically; "
+                f"retry the write under `{_root_display(scratch_root, scratch_root_display)}`."
             ),
             policy_name="write_scratchlane_gate",
-            effects=approval_effect,
+            effects=admission_effect,
+            metadata={"guardian_admission": admission_result},
         )
 
     return PolicyDecision(
         action="deny",
         reason=(
-            f"BLOCKED: {file_path} looks like temporary automation, not repo source. "
-            f'Ask the user: "{_approval_prompt(task_slug)}" If they approve, '
-            "the runtime will activate it automatically and you can retry the write "
-            f"under `{scratch_root_display}` instead. Do not tell the user to run "
-            "any command."
+            f"ADMISSION_REQUIRED: {file_path} looks like temporary automation, "
+            f"not repo source. Guardian Admission authorized scratchlane "
+            f"`{scratch_root_display}`; retry the write under "
+            f"`{_root_display(scratch_root, scratch_root_display)}` instead."
         ),
         policy_name="write_scratchlane_gate",
-        effects=approval_effect,
+        effects=admission_effect,
+        metadata={"guardian_admission": admission_result},
     )

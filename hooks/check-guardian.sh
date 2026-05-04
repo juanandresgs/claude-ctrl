@@ -14,6 +14,7 @@ source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
+seed_project_dir_from_hook_payload_cwd "$AGENT_RESPONSE"
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 
 PROJECT_ROOT=$(detect_project_root)
@@ -33,6 +34,15 @@ _local_cc_policy() {
     fi
     cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
 }
+
+# Extract agent response text before lifecycle handling. Guardian admission is a
+# non-canonical mode, so it must not deactivate canonical Guardian markers or
+# submit Guardian completion records.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+if [[ "$AGENT_TYPE" == "guardian" ]] && printf '%s' "$RESPONSE_TEXT" | grep -qE '^ADMISSION_VERDICT:[[:space:]]*'; then
+    printf '%s' "$AGENT_RESPONSE" | "$_HOOK_DIR/lib/guardian-admission-stop.sh"
+    exit 0
+fi
 
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
@@ -59,9 +69,6 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
 fi
 
 ISSUES=()
-
-# Extract agent's response text first (needed for phase-boundary detection)
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
 
 # --- Completion contract submission (Phase 2: DEC-COMPLETION-001) ---
 # Parse LANDING_RESULT and OPERATION_CLASS from guardian response text.

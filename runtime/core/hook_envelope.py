@@ -87,6 +87,14 @@ def _tool_input(payload: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _is_path_under(root: str, path: str) -> bool:
+    if not root or not path:
+        return False
+    canonical_root = normalize_path(root)
+    canonical_path = normalize_path(path)
+    return canonical_path == canonical_root or canonical_path.startswith(canonical_root + os.sep)
+
+
 def _resolve_git_project_root(target_cwd: str) -> str:
     if not target_cwd or not os.path.isdir(target_cwd):
         return ""
@@ -101,6 +109,52 @@ def _resolve_git_project_root(target_cwd: str) -> str:
         result = None
     if result is not None and result.returncode == 0 and result.stdout.strip():
         return normalize_path(result.stdout.strip())
+    return ""
+
+
+def _resolve_state_project_root(target_cwd: str) -> str:
+    if not target_cwd or not os.path.isdir(target_cwd):
+        return ""
+    state_root = ""
+    home_root = normalize_path(str(Path.home()))
+    for candidate in (Path(target_cwd), *Path(target_cwd).parents):
+        normalized_candidate = normalize_path(str(candidate))
+        if normalized_candidate == home_root:
+            continue
+        if (candidate / ".claude" / "state.db").is_file():
+            state_root = normalized_candidate
+    return state_root
+
+
+def _resolve_project_root(target_cwd: str, *, cwd: str = "", target_path: str = "") -> str:
+    """Resolve the single project root authority for a hook event.
+
+    Git roots win. For non-git projects, an existing ancestor state DB wins.
+    Otherwise, writes under the session cwd are anchored to that cwd instead of
+    the deepest existing target directory. This prevents first writes in
+    subdirectories from creating nested ``.claude/state.db`` authorities.
+    """
+    git_root = _resolve_git_project_root(target_cwd)
+    if git_root:
+        return git_root
+
+    state_root = _resolve_state_project_root(target_cwd)
+    if state_root:
+        return state_root
+
+    normalized_cwd = normalize_path(cwd) if cwd and os.path.isdir(cwd) else ""
+    if normalized_cwd:
+        git_root = _resolve_git_project_root(normalized_cwd)
+        if git_root:
+            return git_root
+        state_root = _resolve_state_project_root(normalized_cwd)
+        if state_root:
+            return state_root
+        if _is_path_under(normalized_cwd, target_cwd) or (
+            target_path and _is_path_under(normalized_cwd, target_path)
+        ):
+            return normalized_cwd
+
     return normalize_path(target_cwd)
 
 
@@ -168,7 +222,7 @@ def build_hook_event_envelope(payload: Mapping[str, Any] | None) -> HookEventEnv
     else:
         target_cwd = cwd
 
-    project_root = _resolve_git_project_root(target_cwd)
+    project_root = _resolve_project_root(target_cwd, cwd=cwd, target_path=target_path)
 
     return HookEventEnvelope(
         event_type=event_type,

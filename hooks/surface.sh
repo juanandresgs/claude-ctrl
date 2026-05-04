@@ -14,6 +14,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 
 # --- Prevent re-firing loops ---
 # stop_hook_active is true if this Stop hook already ran and produced output
@@ -25,31 +26,109 @@ fi
 # Get project root (prefers CLAUDE_PROJECT_DIR)
 PROJECT_ROOT=$(detect_project_root)
 
-# Find session tracking file (try session-scoped first, fall back to legacy)
-get_session_changes "$PROJECT_ROOT"
-if [[ -n "${SESSION_FILE:-}" && -f "$SESSION_FILE" ]]; then
-    CHANGES="$SESSION_FILE"
-elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-changes"
-else
-    # Glob fallback for any session file
-    CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-changes"* 2>/dev/null | head -1 || echo "")
-    # Also check legacy name
-    if [[ -z "$CHANGES" ]]; then
-        CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-decisions"* 2>/dev/null | head -1 || echo "")
+_critic_surface_message() {
+    local latest found active run_id workflow_id status verdict provider summary detail
+    local source surfaced_count review findings next_steps progress escaped_detail
+
+    latest=$(cc_policy critic-run latest --role implementer 2>/dev/null || echo "")
+    [[ -n "$latest" ]] || return 0
+    found=$(printf '%s' "$latest" | jq -r '.found // false' 2>/dev/null || echo "false")
+    [[ "$found" == "true" ]] || return 0
+
+    active=$(printf '%s' "$latest" | jq -r '.active // false' 2>/dev/null || echo "false")
+    # Completed critic outcomes are the conversation-visible contract. Active
+    # progress remains in the statusline to avoid repeating transient updates.
+    [[ "$active" == "true" ]] && return 0
+
+    run_id=$(printf '%s' "$latest" | jq -r '.run_id // empty' 2>/dev/null || true)
+    [[ -n "$run_id" ]] || return 0
+    source="critic-run:$run_id"
+
+    surfaced_count=$(cc_policy event query --type critic_surface --source "$source" --limit 1 2>/dev/null \
+        | jq -r '.count // 0' 2>/dev/null || echo "0")
+    [[ "$surfaced_count" =~ ^[0-9]+$ ]] || surfaced_count=0
+    [[ "$surfaced_count" -gt 0 ]] && return 0
+
+    workflow_id=$(printf '%s' "$latest" | jq -r '.workflow_id // empty' 2>/dev/null || true)
+    status=$(printf '%s' "$latest" | jq -r '.status // empty' 2>/dev/null || true)
+    verdict=$(printf '%s' "$latest" | jq -r '.verdict // empty' 2>/dev/null || true)
+    provider=$(printf '%s' "$latest" | jq -r '.provider // empty' 2>/dev/null || true)
+    summary=$(printf '%s' "$latest" | jq -r '.summary // empty' 2>/dev/null || true)
+    detail=$(printf '%s' "$latest" | jq -r '.detail // empty' 2>/dev/null || true)
+    progress=$(printf '%s' "$latest" | jq -r '[.progress[]?.message] | .[-5:][]?' 2>/dev/null || true)
+
+    review=""
+    if [[ -n "$workflow_id" ]]; then
+        review=$(cc_policy critic-review latest --workflow-id "$workflow_id" --role implementer 2>/dev/null || echo "")
     fi
-fi
+    findings=$(printf '%s' "$review" | jq -r '.metadata.findings[]? // empty' 2>/dev/null | head -4 || true)
+    next_steps=$(printf '%s' "$review" | jq -r '.metadata.next_steps[]? // empty' 2>/dev/null | head -4 || true)
+    {
+        printf 'Codex critic review surfaced:\n'
+        printf -- '- workflow: %s\n' "${workflow_id:-unknown}"
+        printf -- '- status: %s\n' "${status:-unknown}"
+        printf -- '- provider: %s\n' "${provider:-unknown}"
+        printf -- '- verdict: %s\n' "${verdict:-unknown}"
+        [[ -n "$summary" ]] && printf -- '- summary: %s\n' "$summary"
+        if [[ -n "$detail" ]]; then
+            escaped_detail=$(printf '%s' "$detail" | tr '\n' ' ')
+            printf -- '- detail: %s\n' "$escaped_detail"
+        fi
+        if [[ -n "$findings" ]]; then
+            printf 'Critic highlights:\n'
+            while IFS= read -r item; do
+                [[ -n "$item" ]] && printf -- '- %s\n' "$item"
+            done <<< "$findings"
+        fi
+        if [[ -n "$next_steps" ]]; then
+            printf 'Critic next steps:\n'
+            while IFS= read -r item; do
+                [[ -n "$item" ]] && printf -- '- %s\n' "$item"
+            done <<< "$next_steps"
+        fi
+        if [[ -n "$progress" ]]; then
+            printf 'Critic trace highlights:\n'
+            while IFS= read -r item; do
+                [[ -n "$item" ]] && printf -- '- %s\n' "$item"
+            done <<< "$progress"
+        fi
+    }
+
+    cc_policy event emit critic_surface --source "$source" \
+        --detail "surfaced verdict=${verdict:-unknown}" >/dev/null 2>&1 || true
+}
+
+CRITIC_SURFACE_MESSAGE=$(_critic_surface_message || true)
+
+_emit_system_message() {
+    local message="${1:-}"
+    [[ -n "$message" ]] || return 0
+    local escaped
+    escaped=$(printf '%s' "$message" | jq -Rs .)
+    cat <<HOOK_EOF
+{
+  "systemMessage": $escaped
+}
+HOOK_EOF
+}
+
+# Load session changes from state.db.
+get_session_changes "$PROJECT_ROOT"
+CHANGES_TEXT="${SESSION_CHANGES_TEXT:-}"
 
 # Exit silently if no changes tracked
-[[ -z "$CHANGES" || ! -f "$CHANGES" ]] && exit 0
+if [[ -z "$CHANGES_TEXT" ]]; then
+    _emit_system_message "$CRITIC_SURFACE_MESSAGE"
+    exit 0
+fi
 
 # --- Count source file changes ---
 # Uses SOURCE_EXTENSIONS from context-lib.sh
 SOURCE_EXTS="($SOURCE_EXTENSIONS)"
-SOURCE_COUNT=$(grep -cE "\\.${SOURCE_EXTS}$" "$CHANGES" 2>/dev/null) || SOURCE_COUNT=0
+SOURCE_COUNT=$(printf '%s\n' "$CHANGES_TEXT" | grep -cE "\\.${SOURCE_EXTS}$") || SOURCE_COUNT=0
 
 if [[ "$SOURCE_COUNT" -eq 0 ]]; then
-    rm -f "$CHANGES"
+    _emit_system_message "$CRITIC_SURFACE_MESSAGE"
     exit 0
 fi
 
@@ -113,7 +192,7 @@ while IFS= read -r file; do
             MISSING_DECISIONS+=("$file ($line_count lines, no @decision)")
         fi
     fi
-done < <(sort -u "$CHANGES")
+done < <(printf '%s\n' "$CHANGES_TEXT" | sort -u)
 
 # --- Report ---
 log_info "SURFACE" "Scanned project: $TOTAL_DECISIONS @decision annotations found"
@@ -134,7 +213,7 @@ if [[ ${#VALIDATION_ISSUES[@]} -gt 0 ]]; then
 fi
 
 # Summary
-TOTAL_CHANGED=$(sort -u "$CHANGES" | grep -cE "\\.${SOURCE_EXTS}$" 2>/dev/null) || TOTAL_CHANGED=0
+TOTAL_CHANGED=$(printf '%s\n' "$CHANGES_TEXT" | sort -u | grep -cE "\\.${SOURCE_EXTS}$") || TOTAL_CHANGED=0
 MISSING_COUNT=${#MISSING_DECISIONS[@]}
 ISSUE_COUNT=${#VALIDATION_ISSUES[@]}
 
@@ -288,13 +367,9 @@ if [[ "${TOTAL_PHASES:-0}" -gt 0 ]]; then
 fi
 
 SUMMARY=$(printf '%s\n' "${SUMMARY_PARTS[@]}")
-ESCAPED_SUMMARY=$(echo "$SUMMARY" | jq -Rs .)
-cat <<HOOK_EOF
-{
-  "systemMessage": $ESCAPED_SUMMARY
-}
-HOOK_EOF
+if [[ -n "$CRITIC_SURFACE_MESSAGE" ]]; then
+    SUMMARY=$(printf '%s\n\n%s\n' "$CRITIC_SURFACE_MESSAGE" "$SUMMARY")
+fi
+_emit_system_message "$SUMMARY"
 
-# Clean up session tracking
-rm -f "$CHANGES"
 exit 0

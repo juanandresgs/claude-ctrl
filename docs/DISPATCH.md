@@ -16,6 +16,9 @@ The canonical role flow is:
 - Implementer builds in the worktree and hands off.
 - Reviewer verifies against the Evaluation Contract and owns findings.
 - Guardian (land) is the only role allowed to commit, merge, or push.
+- Guardian Admission is the non-canonical Guardian mode for the fork between
+  durable project onboarding and task-local scratchlane custody. It uses the
+  same `guardian` subagent identity as provision and land.
 - Phase 8 Slice 11: the legacy `tester` role is retired — `reviewer` is the
   sole evaluator of technical readiness.
 
@@ -51,12 +54,25 @@ available. `quarantine_gate` is the first policy in the runtime policy registry;
 it blocks Bash/Write/Edit/PreToolUse activity for quarantined sessions so a bad
 spawn cannot continue as an ordinary agent.
 
-Scratchlane permission is also runtime-scoped. `scratchlane_permits` and
+Scratchlane permission is also runtime-scoped. Guardian Admission may grant an
+obvious task lane, but storage and enforcement remain in `scratchlane_permits`
+and `scratchlane_requests`; there is no second scratchlane authority.
+`scratchlane_permits` and
 `scratchlane_requests` carry optional session, workflow, work-item, and attempt
 scope. Runtime approval keeps that scope, and policy evaluation only activates
 permits that match the current context. Unscoped manual permits remain possible
 for explicit operator use, but prompt-requested scratchlane work is no longer a
 global permission.
+
+Guardian Admission returns one of seven custody verdicts:
+`ready_for_implementer`, `guardian_provision_required`, `planner_required`,
+`workflow_bootstrap_required`, `project_onboarding_required`,
+`scratchlane_authorized`, or `user_decision_required`. The user is asked only
+for `user_decision_required`; otherwise the verdict names the next authority.
+Admission launches use `subagent_type=guardian` with `GUARDIAN_MODE: admission`
+as the first prompt line. The PreToolUse Agent path writes a narrow admission
+carrier, and SubagentStart consumes that carrier without seating canonical
+Guardian markers or leases.
 
 Auto-dispatch decisions are recorded in `dispatch_next_actions`. Hook output may
 still emit `AUTO_DISPATCH:` for the Claude harness, but the structured next
@@ -72,7 +88,8 @@ policies in priority order (first deny wins):
 |----------|--------|-----------------|
 | 25 | `quarantine_gate` | Quarantined dispatch attempts cannot continue tool activity. |
 | 100 | `branch_guard` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
-| 150 | `write_scratchlane_gate` | Writes outside the governed tree require an active scratchlane permit scoped to the current runtime context. |
+| 150 | `write_scratchlane_gate` | Obvious tmp/scratchlane writes are routed through Guardian Admission, which may activate the permit; tracked files under tmp remain denied. |
+| 175 | `write_admission_gate` | Uncustodied source writes route to Guardian Admission before WHO fallback. |
 | 200 | `write_who` | Only the `implementer` role may write source files. |
 | 250 | `enforcement_gap` | Deny writes to extensions with unresolved linter gaps (count > 1). |
 | 300 | `plan_guard` | Only actors with `CAN_WRITE_GOVERNANCE` may write governance markdown or constitution-level files. `CLAUDE_PLAN_MIGRATION=1` overrides. |
@@ -97,7 +114,8 @@ PreToolUse/Bash-path policies in priority order:
 | 150 | `agent_contract_required` | Deny Agent worktree isolation, enforce canonical stage↔subagent contracts, create the runtime dispatch attempt, issue the dispatch lease, and write the attempt-keyed carrier. |
 | 200 | `bash_worktree_cwd` | Deny bare cd into .worktrees/. |
 | 250 | `bash_worktree_nesting` | Prevent nested worktree creation. |
-| 260 | `bash_scratchlane_gate` | Shell writes outside governed roots require an active scratchlane permit scoped to the current runtime context. |
+| 260 | `bash_scratchlane_gate` | Shell tmp/interpreter scratchlane work routes through Guardian Admission and the runtime-owned scratchlane executor. |
+| 270 | `bash_admission_gate` | Uncustodied Bash source writes route to Guardian Admission before WHO fallback. |
 | 275 | `bash_write_who` | Capability-gated WHO enforcement for shell writes. |
 | 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |
 | 350 | `bash_worktree_creation` | Guardian-only worktree creation. |
@@ -118,7 +136,14 @@ PreToolUse/Bash-path policies in priority order:
 
 | Hook | What it enforces |
 |------|-----------------|
-| `hooks/subagent-start.sh` | Consumes the attempt-keyed PreToolUse Agent carrier row, claims dispatch delivery against that exact attempt, seats runtime-issued leases, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context, are not seated, and are quarantined when identity is available. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
+| `hooks/subagent-start.sh` | Consumes the attempt-keyed PreToolUse Agent carrier row, claims dispatch delivery against that exact attempt, seats runtime-issued leases, and injects runtime prompt-pack context. SubagentStart cannot emit a permission deny, but canonical seats without carrier-backed contracts receive `BLOCKED` context, are not seated, and are quarantined when identity is available. Guardian admission consumes its own narrow carrier and injects admission-only guidance without seating canonical Guardian state. The remaining shell-built context path is sparse and non-authoritative for non-canonical helper agents only. |
+
+### Guardian Admission Stop Handling
+
+| Hook | What it enforces |
+|------|-----------------|
+| `hooks/check-guardian.sh` | Recognizes `ADMISSION_*` trailers from `guardian` admission mode, delegates trailer parsing to the admission audit path, and exits before Guardian completion-record handling. |
+| `hooks/post-task.sh` | Skips canonical dispatch routing for Guardian admission stops so admission never creates dispatch markers, leases, or canonical completion records. |
 
 ### SessionStart (fires on session start, /clear, /compact, resume)
 

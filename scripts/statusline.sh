@@ -146,6 +146,17 @@ dispatch_from_verdict=""
 review_reviewed="false"
 review_verdict=""
 review_reviewer=""
+critic_found="false"
+critic_active="false"
+critic_status=""
+critic_verdict=""
+critic_provider=""
+critic_elapsed=0
+critic_fallback=""
+critic_try_again_streak=0
+critic_retry_limit=0
+critic_escalated="false"
+critic_escalation_reason=""
 snapshot_status="ok"
 if [[ -n "$snapshot" ]]; then
     eval_status=$(printf '%s' "$snapshot" | jq -r '.eval_status // "idle"' 2>/dev/null) || eval_status="idle"
@@ -158,6 +169,17 @@ if [[ -n "$snapshot" ]]; then
     review_reviewed=$(printf '%s' "$snapshot" | jq -r '.last_review.reviewed // false' 2>/dev/null) || review_reviewed="false"
     review_verdict=$(printf '%s' "$snapshot" | jq -r '.last_review.verdict // empty' 2>/dev/null) || review_verdict=""
     review_reviewer=$(printf '%s' "$snapshot" | jq -r '.last_review.reviewer // empty' 2>/dev/null) || review_reviewer=""
+    critic_found=$(printf '%s' "$snapshot" | jq -r '.critic_run.found // false' 2>/dev/null) || critic_found="false"
+    critic_active=$(printf '%s' "$snapshot" | jq -r '.critic_run.active // false' 2>/dev/null) || critic_active="false"
+    critic_status=$(printf '%s' "$snapshot" | jq -r '.critic_run.status // empty' 2>/dev/null) || critic_status=""
+    critic_verdict=$(printf '%s' "$snapshot" | jq -r '.critic_run.verdict // empty' 2>/dev/null) || critic_verdict=""
+    critic_provider=$(printf '%s' "$snapshot" | jq -r '.critic_run.provider // empty' 2>/dev/null) || critic_provider=""
+    critic_elapsed=$(printf '%s' "$snapshot" | jq -r '.critic_run.elapsed_seconds // 0' 2>/dev/null) || critic_elapsed=0
+    critic_fallback=$(printf '%s' "$snapshot" | jq -r '.critic_run.fallback // empty' 2>/dev/null) || critic_fallback=""
+    critic_try_again_streak=$(printf '%s' "$snapshot" | jq -r '.critic_run.try_again_streak // 0' 2>/dev/null) || critic_try_again_streak=0
+    critic_retry_limit=$(printf '%s' "$snapshot" | jq -r '.critic_run.retry_limit // 0' 2>/dev/null) || critic_retry_limit=0
+    critic_escalated=$(printf '%s' "$snapshot" | jq -r '.critic_run.escalated // false' 2>/dev/null) || critic_escalated="false"
+    critic_escalation_reason=$(printf '%s' "$snapshot" | jq -r '.critic_run.escalation_reason // empty' 2>/dev/null) || critic_escalation_reason=""
     snapshot_status=$(printf '%s' "$snapshot" | jq -r '.status // "ok"' 2>/dev/null) || snapshot_status="ok"
 fi
 [[ "${wt_count:-0}" =~ ^[0-9]+$ ]] || wt_count=0
@@ -168,7 +190,15 @@ fi
 [[ "$dispatch_from_verdict" == "null" ]] && dispatch_from_verdict=""
 [[ "$review_verdict"  == "null" ]] && review_verdict=""
 [[ "$review_reviewer" == "null" ]] && review_reviewer=""
+[[ "$critic_status"  == "null" ]] && critic_status=""
+[[ "$critic_verdict" == "null" ]] && critic_verdict=""
+[[ "$critic_provider" == "null" ]] && critic_provider=""
+[[ "$critic_fallback" == "null" ]] && critic_fallback=""
+[[ "$critic_escalation_reason" == "null" ]] && critic_escalation_reason=""
 [[ "$snapshot_status"  == "null" ]] && snapshot_status="ok"
+[[ "${critic_elapsed:-0}" =~ ^[0-9]+$ ]] || critic_elapsed=0
+[[ "${critic_try_again_streak:-0}" =~ ^[0-9]+$ ]] || critic_try_again_streak=0
+[[ "${critic_retry_limit:-0}" =~ ^[0-9]+$ ]] || critic_retry_limit=0
 
 # ---------------------------------------------------------------------------
 # Terminal width
@@ -559,13 +589,14 @@ _append_l2_seg() {
 [[ $_l2d4 -eq 0 ]] && _append_l2_seg "$_l2_4"
 
 # ---------------------------------------------------------------------------
-# LINE 3 (meta): eval: ✓ ready (wf-123) │ next: tester (ready_for_guardian) │ ✓codex │ todos: 3p 10g
+# LINE 3 (meta): eval: ✓ ready (wf-123) │ critic: running │ next: reviewer │ ✓codex │ todos: 3p 10g
 #
 # Priority table (lower = higher priority, dropped last):
 #   1 = evaluation readiness indicator + workflow (gate signal — most critical)
-#   2 = next dispatch role + from_verdict (routing state)
-#   3 = review indicator (Codex/Gemini review status, DEC-SL-160)
-#   4 = todos (project state — drops first before eval)
+#   2 = critic run heartbeat (Codex tactical review visibility)
+#   3 = next dispatch role + from_verdict (routing state)
+#   4 = review indicator (Codex/Gemini review status, DEC-SL-160)
+#   5 = todos (project state — drops first before eval)
 #
 # @decision DEC-SL-160-DROP
 # @title todos drop before eval on Line 3
@@ -579,6 +610,7 @@ _l3_0=""; _l3w0=0
 _l3_1=""; _l3w1=0
 _l3_2=""; _l3w2=0
 _l3_3=""; _l3w3=0
+_l3_4=""; _l3w4=0
 
 # L3.0: evaluation readiness indicator + workflow (priority 1, shown for non-idle eval)
 # TKT-024: evaluation_state is the sole readiness authority. proof_status is
@@ -611,16 +643,56 @@ case "$eval_status" in
     ;;
 esac
 
-# L3.1: next dispatch role + from_verdict (priority 2, conditional)
+# L3.1: critic run heartbeat (priority 2, conditional)
+if [[ "$critic_found" == "true" ]]; then
+  _s=""
+  _critic_label="critic"
+  _elapsed_display=""
+  if (( critic_elapsed >= 60 )); then
+    _elapsed_display="$(( critic_elapsed / 60 ))m"
+  elif (( critic_elapsed > 0 )); then
+    _elapsed_display="${critic_elapsed}s"
+  fi
+
+  if [[ "$critic_active" == "true" || "$critic_status" == "started" || "$critic_status" == "provider_ready" || "$critic_status" == "reviewing" ]]; then
+    _suffix=""
+    [[ -n "$_elapsed_display" ]] && _suffix=" ${_elapsed_display}"
+    _s=$(printf '\033[33m%s: running%s\033[0m' "$_critic_label" "$_suffix")
+  elif [[ "$critic_verdict" == "CRITIC_UNAVAILABLE" && "$critic_status" != "fallback_completed" ]]; then
+    _fb="${critic_fallback:-reviewer}"
+    _s=$(printf '\033[31m%s: UNAVAILABLE→%s\033[0m' "$_critic_label" "$_fb")
+  elif [[ "$critic_status" == "fallback_completed" ]]; then
+    _s=$(printf '\033[33m%s: fallback done\033[0m' "$_critic_label")
+  elif [[ "$critic_verdict" == "TRY_AGAIN" ]]; then
+    _retry=""
+    if (( critic_retry_limit > 0 )); then
+      _retry=$(printf ' %d/%d' "$critic_try_again_streak" "$critic_retry_limit")
+    fi
+    if [[ "$critic_escalated" == "true" ]]; then
+      _s=$(printf '\033[33m%s: TRY_AGAIN escalated\033[0m' "$_critic_label")
+    else
+      _s=$(printf '\033[33m%s: TRY_AGAIN%s\033[0m' "$_critic_label" "$_retry")
+    fi
+  elif [[ "$critic_verdict" == "BLOCKED_BY_PLAN" ]]; then
+    _s=$(printf '\033[31m%s: BLOCKED\033[0m' "$_critic_label")
+  elif [[ "$critic_verdict" == "READY_FOR_REVIEWER" ]]; then
+    _s=$(printf '\033[32m%s: READY→reviewer\033[0m' "$_critic_label")
+  elif [[ -n "$critic_status" ]]; then
+    _s=$(printf '\033[33m%s: %s\033[0m' "$_critic_label" "$critic_status")
+  fi
+  ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+fi
+
+# L3.2: next dispatch role + from_verdict (priority 3, conditional)
 # W-SL-160: dispatch_from_verdict shown in parentheses when available.
 if [[ -n "$dispatch_next" ]]; then
   _verdict_suffix=""
   [[ -n "$dispatch_from_verdict" ]] && _verdict_suffix=$(printf ' \033[2m(%s)\033[0m' "$dispatch_from_verdict")
   _s=$(printf '\033[35mnext: %s%s\033[0m' "$dispatch_next" "$_verdict_suffix")
-  ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
+  ansi_visible_width "$_s"; _l3w2=$_AVW; _l3_2="$_s"
 fi
 
-# L3.2: review indicator (priority 3, conditional — DEC-SL-160)
+# L3.3: review indicator (priority 4, conditional — DEC-SL-160)
 # Shows review status from last_review snapshot field when reviewed=true.
 # Bug #3 fix: read reviewer name from snapshot JSON instead of hardcoding.
 _review_label="${review_reviewer:-codex}"
@@ -636,26 +708,26 @@ if [[ "$review_reviewed" == "true" ]]; then
       _s=$(printf '\033[33m⏳%s\033[0m' "$_review_label")
       ;;
   esac
-  ansi_visible_width "$_s"; _l3w2=$_AVW; _l3_2="$_s"
+  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
 fi
 
-# L3.3: todos (priority 4, conditional — shown when any count > 0)
+# L3.4: todos (priority 5, conditional — shown when any count > 0)
 # W-SL-160: todos now drop before eval (priority 4, not 1).
 if (( todo_project > 0 && todo_global > 0 )); then
   _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m\033[35m %d\033[2mg\033[0m' \
     "$todo_project" "$todo_global")
-  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
+  ansi_visible_width "$_s"; _l3w4=$_AVW; _l3_4="$_s"
 elif (( todo_project > 0 )); then
   _s=$(printf '\033[35mtodos: %d\033[2mp\033[0m' "$todo_project")
-  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
+  ansi_visible_width "$_s"; _l3w4=$_AVW; _l3_4="$_s"
 elif (( todo_global > 0 )); then
   _s=$(printf '\033[35mtodos: %d\033[2mg\033[0m' "$todo_global")
-  ansi_visible_width "$_s"; _l3w3=$_AVW; _l3_3="$_s"
+  ansi_visible_width "$_s"; _l3w4=$_AVW; _l3_4="$_s"
 fi
 
 # Responsive drop loop for Line 3
-# Drop order: todos (4) → review (3) → dispatch (2). Eval never drops.
-_l3d0=0; _l3d1=0; _l3d2=0; _l3d3=0
+# Drop order: todos (5) → review (4) → dispatch (3) → critic (2). Eval never drops.
+_l3d0=0; _l3d1=0; _l3d2=0; _l3d3=0; _l3d4=0
 
 _compute_l3_width() {
   local total=0 seg_count=0
@@ -663,12 +735,14 @@ _compute_l3_width() {
   [[ $_l3d1 -eq 0 && -n "$_l3_1" ]] && total=$(( total + _l3w1 )) && (( seg_count++ )) || true
   [[ $_l3d2 -eq 0 && -n "$_l3_2" ]] && total=$(( total + _l3w2 )) && (( seg_count++ )) || true
   [[ $_l3d3 -eq 0 && -n "$_l3_3" ]] && total=$(( total + _l3w3 )) && (( seg_count++ )) || true
+  [[ $_l3d4 -eq 0 && -n "$_l3_4" ]] && total=$(( total + _l3w4 )) && (( seg_count++ )) || true
   (( seg_count > 1 )) && total=$(( total + (seg_count - 1) * 3 )) || true
   _L3_TOTAL=$total
 }
 
 _L3_TOTAL=0
 _compute_l3_width
+if (( _L3_TOTAL > term_w && _l3w4 > 0 )); then _l3d4=1; _compute_l3_width; fi
 if (( _L3_TOTAL > term_w && _l3w3 > 0 )); then _l3d3=1; _compute_l3_width; fi
 if (( _L3_TOTAL > term_w && _l3w2 > 0 )); then _l3d2=1; _compute_l3_width; fi
 if (( _L3_TOTAL > term_w && _l3w1 > 0 )); then _l3d1=1; _compute_l3_width; fi
@@ -688,6 +762,7 @@ _append_l3_seg() {
 [[ $_l3d1 -eq 0 ]] && _append_l3_seg "$_l3_1"
 [[ $_l3d2 -eq 0 ]] && _append_l3_seg "$_l3_2"
 [[ $_l3d3 -eq 0 ]] && _append_l3_seg "$_l3_3"
+[[ $_l3d4 -eq 0 ]] && _append_l3_seg "$_l3_4"
 
 # ---------------------------------------------------------------------------
 # Output — always exactly 3 lines for stable HUD height.

@@ -169,9 +169,9 @@ def plan_exists(request: PolicyRequest) -> Optional[PolicyDecision]:
       - No file_path in tool_input
       - File is not a source file or is skippable
       - File is under {project_root}/.claude/
-      - tool_name is "Edit" (inherently scoped — skip plan check)
-      - tool_name is "Write" with content < 20 lines (fast-mode bypass)
-      - project_root is not a git repo
+      - MASTER_PLAN.md exists and tool_name is "Edit" (scoped staleness bypass)
+      - MASTER_PLAN.md exists and tool_name is "Write" with content < 20 lines
+        (fast-mode staleness bypass)
 
     Deny conditions:
       - MASTER_PLAN.md does not exist
@@ -199,40 +199,7 @@ def plan_exists(request: PolicyRequest) -> Optional[PolicyDecision]:
     if info.kind != PATH_KIND_SOURCE:
         return None
 
-    # Edit tool is inherently scoped — skip plan check
-    tool_name = request.tool_name
-    if tool_name == "Edit":
-        return None
-
-    # Write tool: fast-mode bypass for small files
-    if tool_name == "Write":
-        content: str = request.tool_input.get("content", "")
-        line_count = len(content.splitlines())
-        if line_count < 20:
-            return PolicyDecision(
-                action="feedback",
-                reason=(
-                    f"Fast-mode bypass: small file write ({line_count} lines) "
-                    "skipped plan check. Surface audit will track this."
-                ),
-                policy_name="plan_exists",
-            )
-
-    # Resolve project root from file path (fix #468 pattern)
     if not project_root:
-        return None
-
-    # Verify project is a git repo
-    try:
-        r = subprocess.run(
-            ["git", "-C", project_root, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if r.returncode != 0:
-            return None
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
     plan_path = os.path.join(project_root, "MASTER_PLAN.md")
@@ -246,6 +213,41 @@ def plan_exists(request: PolicyRequest) -> Optional[PolicyDecision]:
             ),
             policy_name="plan_exists",
         )
+
+    # Edit tool is inherently scoped — skip staleness check once plan presence
+    # is proven. Presence is the hard project-log invariant.
+    tool_name = request.tool_name
+    if tool_name == "Edit":
+        return None
+
+    # Write tool: fast-mode bypass for staleness only. Missing-plan enforcement
+    # has already run above.
+    if tool_name == "Write":
+        content: str = request.tool_input.get("content", "")
+        line_count = len(content.splitlines())
+        if line_count < 20:
+            return PolicyDecision(
+                action="feedback",
+                reason=(
+                    f"Fast-mode bypass: small file write ({line_count} lines) "
+                    "skipped plan staleness check. Surface audit will track this."
+                ),
+                policy_name="plan_exists",
+            )
+
+    # Staleness is git-derived; plan presence is enforced for non-git projects,
+    # while non-git projects skip only this git-specific staleness tier.
+    try:
+        r = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
 
     # Plan staleness check
     churn_warn = int(os.environ.get("PLAN_CHURN_WARN", "15"))

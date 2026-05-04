@@ -85,6 +85,7 @@ _local_cc_policy() {
 # ---------------------------------------------------------------------------
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 
 # Tolerate both snake_case and camelCase field names for agent type
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
@@ -96,6 +97,14 @@ AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
 # Exit silently when agent_type is absent or empty; this hook only acts on
 # named agent completions in the canonical flow.
 [[ -z "$AGENT_TYPE" ]] && exit 0
+
+# Guardian admission is a non-canonical Guardian mode. check-guardian.sh parses
+# its ADMISSION_* trailers and emits audit context; post-task must not route it
+# through the canonical completion state machine.
+RESPONSE_TEXT=$(printf '%s' "$HOOK_INPUT" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+if [[ "$AGENT_TYPE" == "guardian" ]] && printf '%s' "$RESPONSE_TEXT" | grep -qE '^ADMISSION_VERDICT:[[:space:]]*'; then
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve project root for the runtime (used for lease context lookup)

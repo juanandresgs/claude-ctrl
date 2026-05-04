@@ -39,6 +39,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 
 PROJECT_ROOT=$(bash_payload_project_root "$HOOK_INPUT" 2>/dev/null || echo "")
 if [[ -n "$PROJECT_ROOT" && -d "$PROJECT_ROOT" ]]; then

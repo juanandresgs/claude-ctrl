@@ -33,7 +33,7 @@ def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
       - File is under {project_root}/.claude/ (meta-infrastructure)
       - File is MASTER_PLAN.md
       - File is not a source file (is_source_file returns False)
-      - File is a skippable path (test/config/vendor/generated)
+      - File is a skippable path (vendor/build/generated)
       - File's directory is not inside a git repo
       - Current branch is not main or master
     """

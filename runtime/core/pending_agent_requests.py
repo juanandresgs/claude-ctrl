@@ -18,6 +18,9 @@ Carrier table helpers for SubagentStart contract delivery.
   time, merging the six contract fields into the hook payload so that the
   runtime-first path (cc-policy prompt-pack subagent-start) fires in
   production — not just in synthetic tests.
+  The same runtime carrier also carries the narrow non-canonical Guardian
+  admission mode marker; that row is consumed before prompt-pack delivery and
+  never creates dispatch attempts, leases, or completion records.
   File sidecars are explicitly rejected: a tmp file is a second non-runtime
   authority for a control-plane fact (DEC-CLAUDEX-SA-PAYLOAD-SHAPE-001).
 """

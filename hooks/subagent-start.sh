@@ -137,18 +137,27 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
         [[ -z "$_CARRIER_AGENT_TYPE" ]] && _CARRIER_AGENT_TYPE="$AGENT_TYPE"
         _CARRIER_JSON=$("$(_resolve_runtime_python)" "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$_CARRIER_AGENT_TYPE" 2>/dev/null || echo "")
         if [[ -n "$_CARRIER_JSON" ]]; then
-            HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
             _CARRIER_ATTEMPT_ID=$(printf '%s' "$_CARRIER_JSON" | jq -r '.attempt_id // empty' 2>/dev/null || echo "")
-            # Claim delivery only when the carrier-backed correlation path matched
-            # (DEC-CLAUDEX-HOOK-WIRING-001). A bare SubagentStart with no carrier
-            # row must NOT claim a pending attempt — there is no PreToolUse proof.
-            # Best-effort: never blocks subagent start.
-            _local_cc_policy dispatch attempt-claim \
-                --session-id "$SESSION_ID" \
-                --agent-type "$_CARRIER_AGENT_TYPE" \
-                ${_CARRIER_ATTEMPT_ID:+--attempt-id "$_CARRIER_ATTEMPT_ID"} \
-                ${_PAYLOAD_AGENT_ID:+--agent-id "$_PAYLOAD_AGENT_ID"} \
-                >/dev/null 2>&1 || true
+            _CARRIER_GUARDIAN_MODE=$(printf '%s' "$_CARRIER_JSON" | jq -r '
+              (.contract_json // "{}" | fromjson? // {} | .guardian_mode // empty)
+            ' 2>/dev/null || echo "")
+            if [[ "$_CARRIER_AGENT_TYPE" == "guardian" && "$_CARRIER_GUARDIAN_MODE" == "admission" ]]; then
+                HOOK_INPUT=$(echo "$HOOK_INPUT" | jq \
+                    --arg attempt_id "$_CARRIER_ATTEMPT_ID" \
+                    '. + {guardian_mode:"admission", admission_attempt_id:$attempt_id}')
+            else
+                HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
+                # Claim delivery only when the carrier-backed correlation path matched
+                # (DEC-CLAUDEX-HOOK-WIRING-001). A bare SubagentStart with no carrier
+                # row must NOT claim a pending attempt — there is no PreToolUse proof.
+                # Best-effort: never blocks subagent start.
+                _local_cc_policy dispatch attempt-claim \
+                    --session-id "$SESSION_ID" \
+                    --agent-type "$_CARRIER_AGENT_TYPE" \
+                    ${_CARRIER_ATTEMPT_ID:+--attempt-id "$_CARRIER_ATTEMPT_ID"} \
+                    ${_PAYLOAD_AGENT_ID:+--agent-id "$_PAYLOAD_AGENT_ID"} \
+                    >/dev/null 2>&1 || true
+            fi
         fi
     fi
 fi
@@ -164,6 +173,10 @@ _EFFECTIVE_STAGE_ID=""
 _EFFECTIVE_LEASE_ROLE="$AGENT_TYPE"
 _MARKER_ROLE="$AGENT_TYPE"
 _EXPECTED_SUBAGENT_TYPE=""
+_GUARDIAN_ADMISSION_MODE=$(echo "$HOOK_INPUT" | jq -r '
+  if (.agent_type // "") == "guardian" and (.guardian_mode // "") == "admission"
+  then "yes" else "no" end
+' 2>/dev/null || echo "no")
 
 if [[ "$_HAS_CONTRACT" == "yes" ]]; then
     _EFFECTIVE_STAGE_ID=$(echo "$HOOK_INPUT" | jq -r '.stage_id // empty' 2>/dev/null || echo "")
@@ -177,6 +190,8 @@ if [[ "$_HAS_CONTRACT" == "yes" ]]; then
         _EFFECTIVE_LEASE_ROLE="${_LEASE_ROLE_FOR_STAGE:-$_EXPECTED_SUBAGENT_TYPE}"
         _MARKER_ROLE="$_EFFECTIVE_STAGE_ID"
     fi
+elif [[ "$_GUARDIAN_ADMISSION_MODE" == "yes" ]]; then
+    _emit_context_only "Guardian mode=admission: use only the Guardian prompt's Admission Mode section. This is a non-canonical pre-workflow custody decision; do not provision worktrees, land git, create completion records, or write source. Run cc-policy admission classify/apply as needed and end with ADMISSION_* trailers."
 elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
     # A8: canonical seat without a carrier-backed contract is a bypass attempt.
     # If the subagent_type resolves to a canonical dispatch seat but the six-field

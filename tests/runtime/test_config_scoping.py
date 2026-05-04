@@ -136,6 +136,33 @@ class TestDefaultDbPath:
             os.environ.pop("CLAUDE_POLICY_DB", None)
             assert resolve_db_path(project_root=str(explicit_project)) == expected
 
+    def test_explicit_non_git_subdir_uses_existing_ancestor_state_db(self, tmp_path):
+        """Non-git project state must not fragment into nested subdir DBs."""
+        project = tmp_path / "project"
+        nested = project / "site" / "src"
+        nested.mkdir(parents=True)
+        (project / ".claude").mkdir()
+        expected = project / ".claude" / "state.db"
+        expected.write_text("", encoding="utf-8")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_POLICY_DB", None)
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            assert resolve_db_path(project_root=str(nested)) == expected
+
+    def test_claude_project_dir_non_git_subdir_uses_existing_ancestor_state_db(self, tmp_path):
+        """Hook-exported subdir cwd must reuse ancestor project state."""
+        project = tmp_path / "project"
+        nested = project / "site" / "src"
+        nested.mkdir(parents=True)
+        (project / ".claude").mkdir()
+        expected = project / ".claude" / "state.db"
+        expected.write_text("", encoding="utf-8")
+
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(nested)}, clear=False):
+            os.environ.pop("CLAUDE_POLICY_DB", None)
+            assert default_db_path() == expected
+
     def test_explicit_worktree_path_resolves_shared_repo_db(self, tmp_path):
         """A linked worktree path must route to the shared repo-level DB."""
         repo, worktree = _make_repo_with_worktree(tmp_path)

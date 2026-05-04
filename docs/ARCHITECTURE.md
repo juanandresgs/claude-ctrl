@@ -200,11 +200,15 @@ The typed runtime owns all shared workflow state:
 
 - **CLI:** `cc-policy` with evaluate, policy, dispatch, lifecycle, context,
   marker, evaluation, lease, completion, workflow, test-state, approval,
-  event, worktree, statusline, trace, tokens, todos, bug, sidecar, proof
-  command groups.
-- **Schema:** 29 domain SQLite tables plus SQLite's `sqlite_sequence` table in
+  event, worktree, statusline, trace, tokens, todos, bug, sidecar,
+  critic-review, critic-run, session-activity, enforcement-gap, lint-state,
+  and preserved-context command groups.
+- **Schema:** Domain SQLite tables plus SQLite's `sqlite_sequence` table in
   WAL mode. Key tables: evaluation_state,
-  dispatch_leases, completion_records, test_state, workflow_bindings,
+  dispatch_leases, completion_records, critic_reviews, critic_runs, test_state,
+  session_activity, session_file_changes, enforcement_gaps, lint_profile_cache,
+  lint_circuit_breakers, preserved_contexts, policy_strikes,
+  bash_source_baselines, workflow_bindings,
   workflow_scope, work_items, pending_agent_requests, dispatch_attempts,
   agent_markers, approvals, events, bugs.
 - **Bridge:** `hooks/lib/runtime-bridge.sh` provides shell wrappers for
@@ -216,14 +220,21 @@ The typed runtime owns all shared workflow state:
 Runtime-backed read model via `cc-policy statusline snapshot`. No flat-file
 cache. All statusline data derives from runtime projections.
 
-### Flat-File State (Remaining)
+### Flat-File State Policy
 
-| File | Status | Notes |
-|------|--------|-------|
-| `.session-changes-*` | Active (session-scoped) | Written by track.sh, read by surface.sh |
-| `.enforcement-gaps` | Active (operational) | Written by lint.sh, read by enforcement_gap policy |
-| `.test-gate-strikes` | Active (session-scoped) | Written/read by test_gate_pretool policy |
-| `.mock-gate-strikes` | Active (session-scoped) | Written/read by mock_gate policy |
+Durable control-plane facts live in `state.db`. Project-local flatfiles are not
+authoritative state. Locks, process output, scratch artifacts, and test fixtures
+may exist as files; workflow memory does not.
+
+| Former file | Current authority |
+|-------------|-------------------|
+| `.session-changes-*`, `.prompt-count-*`, `.session-start-epoch` | `session_activity`, `session_file_changes` |
+| `.enforcement-gaps` | `enforcement_gaps` |
+| `.lint-cache-*`, `.lint-breaker-*` | `lint_profile_cache`, `lint_circuit_breakers` |
+| `.preserved-context` | `preserved_contexts` |
+| `.test-gate-strikes`, `.mock-gate-strikes` | `policy_strikes` |
+| `tmp/.bash-source-baseline-*` | `bash_source_baselines` |
+| `.test-status` | `test_state` |
 
 ### Deleted Shell Files (INIT-PE)
 

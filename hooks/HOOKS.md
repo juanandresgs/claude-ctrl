@@ -75,9 +75,9 @@ Generator version: `1.0.0`
 - matcher `implementer` → `hooks/post-task.sh`
   - _Thin post-task adapter for implementer stops._
 - matcher `guardian` → `hooks/check-guardian.sh`
-  - _Guardian completion assessment (CUTOVER_PLAN W5 / W6)._
+  - _Guardian completion assessment (CUTOVER_PLAN W5 / W6). Also recognizes Guardian admission trailers and emits admission audit context without canonical completion routing._
 - matcher `guardian` → `hooks/post-task.sh`
-  - _Thin post-task adapter for guardian stops._
+  - _Thin post-task adapter for guardian stops. Skips non-canonical Guardian admission stops._
 - matcher `reviewer` → `hooks/check-reviewer.sh`
   - _Phase 4 reviewer completion assessment — parses REVIEW_* trailers and submits structured completion record (DEC-CHECK-REVIEWER-001)._
 - matcher `reviewer` → `hooks/post-task.sh`

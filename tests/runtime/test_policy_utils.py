@@ -18,10 +18,15 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from runtime.core.policy_utils import (
+    PATH_KIND_ARTIFACT_CANDIDATE,
+    PATH_KIND_SOURCE,
     SOURCE_EXTENSIONS,
+    classify_policy_path,
     extract_cd_target,
     extract_git_target_dir,
     is_claude_meta_repo,
@@ -64,6 +69,21 @@ def test_is_source_file_sh():
 
 def test_is_source_file_json_false():
     assert is_source_file("config.json") is False
+
+
+@pytest.mark.parametrize("path", [
+    "src/pages/index.astro",
+    "src/App.vue",
+    "src/App.svelte",
+    "src/styles/global.css",
+    "src/styles/theme.scss",
+    "src/styles/theme.sass",
+    "src/styles/theme.less",
+    "public/index.html",
+    "public/index.htm",
+])
+def test_is_source_file_frontend_extensions(path):
+    assert is_source_file(path) is True
 
 
 def test_is_source_file_all_extensions():
@@ -148,16 +168,20 @@ def test_is_skippable_node_modules():
     assert is_skippable_path("node_modules/react/index.js") is True
 
 
-def test_is_skippable_test_file():
-    assert is_skippable_path("src/foo.test.ts") is True
+def test_is_not_skippable_test_file():
+    assert is_skippable_path("src/foo.test.ts") is False
 
 
-def test_is_skippable_spec_file():
-    assert is_skippable_path("src/bar.spec.js") is True
+def test_is_not_skippable_spec_file():
+    assert is_skippable_path("src/bar.spec.js") is False
 
 
-def test_is_skippable_tests_dir():
-    assert is_skippable_path("src/__tests__/helpers.py") is True
+def test_is_not_skippable_tests_dir():
+    assert is_skippable_path("src/__tests__/helpers.py") is False
+
+
+def test_is_not_skippable_config_source():
+    assert is_skippable_path("astro.config.mjs") is False
 
 
 def test_is_skippable_vendor():
@@ -182,6 +206,54 @@ def test_not_skippable_src_file():
 
 def test_not_skippable_plain_source():
     assert is_skippable_path("runtime/core/policy.py") is False
+
+
+def test_project_root_tmp_task_path_is_scratchlane_candidate(tmp_path):
+    project = tmp_path / "project"
+    target = project / "tmp" / "ad-hoc" / "helper.py"
+
+    info = classify_policy_path(
+        str(target),
+        project_root=str(project),
+        worktree_path=str(project),
+    )
+
+    assert info.kind == PATH_KIND_ARTIFACT_CANDIDATE
+    assert info.task_slug == "ad-hoc"
+
+
+def test_nested_tmp_task_path_is_regular_source(tmp_path):
+    project = tmp_path / "project"
+    target = project / "subdir" / "tmp" / "ad-hoc" / "helper.py"
+
+    info = classify_policy_path(
+        str(target),
+        project_root=str(project),
+        worktree_path=str(project),
+    )
+
+    assert info.kind == PATH_KIND_SOURCE
+    assert info.task_slug == ""
+
+
+@pytest.mark.parametrize("relative_path", [
+    "site/src/pages/index.astro",
+    "site/src/styles/global.css",
+    "site/astro.config.mjs",
+    "site/src/content.config.ts",
+    "site/src/app.test.ts",
+])
+def test_frontend_config_and_test_paths_classify_as_source(tmp_path, relative_path):
+    project = tmp_path / "project"
+    target = project / relative_path
+
+    info = classify_policy_path(
+        str(target),
+        project_root=str(project),
+        worktree_path=str(project),
+    )
+
+    assert info.kind == PATH_KIND_SOURCE
 
 
 # ---------------------------------------------------------------------------

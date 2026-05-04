@@ -10,6 +10,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input 2>/dev/null || echo "{}")
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 AGENT_TYPE=$(printf '%s' "$HOOK_INPUT" | jq -r '.agent_type // .agentType // empty' 2>/dev/null || true)
 AGENT_TYPE_LC=$(printf '%s' "$AGENT_TYPE" | tr '[:upper:]' '[:lower:]')
 [[ -z "$AGENT_TYPE_LC" || "$AGENT_TYPE_LC" != "implementer" ]] && exit 0
@@ -52,12 +53,18 @@ _critic_enabled() {
 
 _emit_unavailable() {
     local detail="$1"
-    local workflow_id lease_id metadata_json escaped
+    local workflow_id lease_id metadata_json escaped run_json run_id
     IFS=$'\t' read -r workflow_id lease_id < <(_resolve_context)
     metadata_json=$(jq -n \
         --arg hook "implementer-critic.sh" \
         --arg failure "$detail" \
         '{hook: $hook, failure: $failure}')
+    run_json=$(_local_cc_policy critic-run start \
+        --workflow-id "$workflow_id" \
+        --lease-id "${lease_id:-}" \
+        --role implementer \
+        --provider codex 2>/dev/null || echo "")
+    run_id=$(printf '%s' "$run_json" | jq -r '.run_id // empty' 2>/dev/null || true)
     _local_cc_policy critic-review submit \
         --workflow-id "$workflow_id" \
         --lease-id "${lease_id:-}" \
@@ -69,10 +76,24 @@ _emit_unavailable() {
         --fingerprint "" \
         --project-root "$PROJECT_ROOT" \
         --metadata "$metadata_json" >/dev/null 2>&1 || true
+    if [[ -n "$run_id" ]]; then
+        _local_cc_policy critic-run complete \
+            --run-id "$run_id" \
+            --provider codex \
+            --verdict CRITIC_UNAVAILABLE \
+            --summary "Implementer critic unavailable." \
+            --detail "$detail" \
+            --fallback reviewer \
+            --error "$detail" >/dev/null 2>&1 || true
+    fi
     escaped=$(printf 'Implementer critic progress: Starting Codex tactical critic (read-only).\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: verdict=CRITIC_UNAVAILABLE, next_role=reviewer.\nImplementer critic detail: %s' "$workflow_id" "$detail" | jq -Rs .)
     cat <<EOF
 {
-  "additionalContext": $escaped
+  "additionalContext": $escaped,
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStop",
+    "additionalContext": $escaped
+  }
 }
 EOF
 }
@@ -83,7 +104,11 @@ _emit_disabled() {
     escaped=$(printf 'Implementer critic disabled for this scope.\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: disabled, routing directly to reviewer.' "$workflow_id" | jq -Rs .)
     cat <<EOF
 {
-  "additionalContext": $escaped
+  "additionalContext": $escaped,
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStop",
+    "additionalContext": $escaped
+  }
 }
 EOF
 }

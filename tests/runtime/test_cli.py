@@ -119,6 +119,383 @@ def test_critic_review_submit_and_latest(db):
     assert latest["verdict"] == "TRY_AGAIN"
 
 
+def test_critic_run_lifecycle_and_metrics_cli(db):
+    code, started = run(
+        [
+            "critic-run",
+            "start",
+            "--workflow-id",
+            "wf-cli-critic-run-001",
+            "--lease-id",
+            "lease-cli-run-001",
+            "--provider",
+            "codex",
+        ],
+        db,
+    )
+    assert code == 0, started
+    assert started["status"] == "started"
+    run_id = started["run_id"]
+
+    code, progressed = run(
+        [
+            "critic-run",
+            "progress",
+            "--run-id",
+            run_id,
+            "--message",
+            "Provider status: codex ready.",
+            "--phase",
+            "provider",
+            "--status",
+            "provider_ready",
+        ],
+        db,
+    )
+    assert code == 0, progressed
+    assert progressed["status"] == "provider_ready"
+
+    code, completed = run(
+        [
+            "critic-run",
+            "complete",
+            "--run-id",
+            run_id,
+            "--verdict",
+            "READY_FOR_REVIEWER",
+            "--summary",
+            "Ready for reviewer.",
+            "--metrics",
+            '{"try_again_streak":0,"retry_limit":2}',
+        ],
+        db,
+    )
+    assert code == 0, completed
+    assert completed["status"] == "completed"
+    assert completed["verdict"] == "READY_FOR_REVIEWER"
+
+    code, latest = run(
+        ["critic-run", "latest", "--workflow-id", "wf-cli-critic-run-001"],
+        db,
+    )
+    assert code == 0, latest
+    assert latest["found"] is True
+    assert latest["run_id"] == run_id
+
+    code, metrics = run(
+        ["critic-run", "metrics", "--workflow-id", "wf-cli-critic-run-001"],
+        db,
+    )
+    assert code == 0, metrics
+    assert metrics["total_runs"] == 1
+    assert metrics["ready_for_reviewer"] == 1
+    assert metrics["loopback_rate"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Session activity / enforcement gaps
+# ---------------------------------------------------------------------------
+
+
+def test_session_activity_tracks_prompts_and_changed_files_in_db(db, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    changed = project / "src" / "app.ts"
+    changed.parent.mkdir()
+    changed.write_text("export const x = 1;\n")
+
+    code, first = run(
+        [
+            "session-activity",
+            "prompt",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-cli-001",
+        ],
+        db,
+    )
+    assert code == 0, first
+    assert first["prompt_count"] == 1
+
+    code, second = run(
+        [
+            "session-activity",
+            "prompt",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-cli-001",
+        ],
+        db,
+    )
+    assert code == 0, second
+    assert second["prompt_count"] == 2
+
+    code, recorded = run(
+        [
+            "session-activity",
+            "change-record",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-cli-001",
+            "--file-path",
+            str(changed),
+        ],
+        db,
+    )
+    assert code == 0, recorded
+    assert recorded["count"] == 1
+    assert recorded["items"][0]["file_path"] == str(changed.resolve())
+
+    code, listed = run(
+        [
+            "session-activity",
+            "change-list",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-cli-001",
+        ],
+        db,
+    )
+    assert code == 0, listed
+    assert listed["count"] == 1
+
+
+def test_enforcement_gap_cli_records_counts_and_clears(db, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    for _ in range(2):
+        code, out = run(
+            [
+                "enforcement-gap",
+                "record",
+                "--project-root",
+                str(project),
+                "--gap-type",
+                "unsupported",
+                "--ext",
+                "java",
+                "--tool",
+                "none",
+            ],
+            db,
+        )
+        assert code == 0, out
+
+    code, counted = run(
+        [
+            "enforcement-gap",
+            "count",
+            "--project-root",
+            str(project),
+            "--gap-type",
+            "unsupported",
+            "--ext",
+            "java",
+        ],
+        db,
+    )
+    assert code == 0, counted
+    assert counted["count"] == 2
+
+    code, listed = run(["enforcement-gap", "list", "--project-root", str(project)], db)
+    assert code == 0, listed
+    assert listed["count"] == 1
+    assert listed["items"][0]["ext"] == "java"
+
+    code, cleared = run(
+        [
+            "enforcement-gap",
+            "clear",
+            "--project-root",
+            str(project),
+            "--gap-type",
+            "unsupported",
+            "--ext",
+            "java",
+        ],
+        db,
+    )
+    assert code == 0, cleared
+    assert cleared["cleared"] is True
+
+    code, counted = run(
+        [
+            "enforcement-gap",
+            "count",
+            "--project-root",
+            str(project),
+            "--gap-type",
+            "unsupported",
+            "--ext",
+            "java",
+        ],
+        db,
+    )
+    assert code == 0, counted
+    assert counted["count"] == 0
+
+
+def test_lint_state_cli_stores_cache_and_breaker_in_db(db, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    code, empty = run(
+        [
+            "lint-state",
+            "cache-get",
+            "--project-root",
+            str(project),
+            "--ext",
+            "py",
+            "--config-mtime",
+            "100",
+        ],
+        db,
+    )
+    assert code == 0, empty
+    assert empty["found"] is False
+
+    code, cached = run(
+        [
+            "lint-state",
+            "cache-set",
+            "--project-root",
+            str(project),
+            "--ext",
+            ".py",
+            "--linter",
+            "ruff",
+            "--config-mtime",
+            "100",
+        ],
+        db,
+    )
+    assert code == 0, cached
+    assert cached["linter"] == "ruff"
+
+    code, fresh = run(
+        [
+            "lint-state",
+            "cache-get",
+            "--project-root",
+            str(project),
+            "--ext",
+            "py",
+            "--config-mtime",
+            "100",
+        ],
+        db,
+    )
+    assert code == 0, fresh
+    assert fresh["found"] is True
+    assert fresh["linter"] == "ruff"
+
+    code, stale = run(
+        [
+            "lint-state",
+            "cache-get",
+            "--project-root",
+            str(project),
+            "--ext",
+            "py",
+            "--config-mtime",
+            "101",
+        ],
+        db,
+    )
+    assert code == 0, stale
+    assert stale["found"] is False
+
+    code, breaker = run(
+        [
+            "lint-state",
+            "breaker-set",
+            "--project-root",
+            str(project),
+            "--ext",
+            "py",
+            "--state",
+            "open",
+            "--failure-count",
+            "3",
+            "--updated-at",
+            "123",
+        ],
+        db,
+    )
+    assert code == 0, breaker
+    assert breaker["state"] == "open"
+    assert breaker["failure_count"] == 3
+
+    code, breaker = run(
+        ["lint-state", "breaker-get", "--project-root", str(project), "--ext", "py"],
+        db,
+    )
+    assert code == 0, breaker
+    assert breaker["found"] is True
+    assert breaker["state"] == "open"
+
+
+def test_preserved_context_cli_saves_and_consumes_once(db, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    env = {"CLAUDE_POLICY_DB": db, "PYTHONPATH": str(_WORKTREE)}
+
+    save = subprocess.run(
+        [
+            sys.executable,
+            _CLI,
+            "preserved-context",
+            "save",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-preserve-001",
+        ],
+        input="Plan: active\nModified this session: app.ts\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert save.returncode == 0, save.stderr
+    saved = json.loads(save.stdout)
+    assert saved["found"] is True
+
+    code, consumed = run(
+        [
+            "preserved-context",
+            "consume",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-preserve-001",
+        ],
+        db,
+    )
+    assert code == 0, consumed
+    assert consumed["found"] is True
+    assert "Modified this session" in consumed["context_text"]
+
+    code, consumed_again = run(
+        [
+            "preserved-context",
+            "consume",
+            "--project-root",
+            str(project),
+            "--session-id",
+            "sess-preserve-001",
+        ],
+        db,
+    )
+    assert code == 0, consumed_again
+    assert consumed_again["found"] is False
+
+
 # ---------------------------------------------------------------------------
 # Marker
 # ---------------------------------------------------------------------------

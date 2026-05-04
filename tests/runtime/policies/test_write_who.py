@@ -23,7 +23,11 @@ from runtime.core.policy_engine import PolicyContext, PolicyRequest
 # ---------------------------------------------------------------------------
 
 
-def _make_context(actor_role: str = "", project_root: str = "/proj") -> PolicyContext:
+def _make_context(
+    actor_role: str = "",
+    project_root: str = "/proj",
+    scratchlane_roots: frozenset[str] = frozenset(),
+) -> PolicyContext:
     return PolicyContext(
         actor_role=actor_role,
         actor_id="agent-1",
@@ -39,15 +43,25 @@ def _make_context(actor_role: str = "", project_root: str = "/proj") -> PolicyCo
         binding=None,
         dispatch_phase=None,
         capabilities=capabilities_for(actor_role),
+        scratchlane_roots=scratchlane_roots,
     )
 
 
-def _req(file_path: str, role: str = "", project_root: str = "/proj") -> PolicyRequest:
+def _req(
+    file_path: str,
+    role: str = "",
+    project_root: str = "/proj",
+    scratchlane_roots: frozenset[str] = frozenset(),
+) -> PolicyRequest:
     return PolicyRequest(
         event_type="Write",
         tool_name="Write",
         tool_input={"file_path": file_path},
-        context=_make_context(actor_role=role, project_root=project_root),
+        context=_make_context(
+            actor_role=role,
+            project_root=project_root,
+            scratchlane_roots=scratchlane_roots,
+        ),
         cwd=project_root,
     )
 
@@ -108,6 +122,38 @@ def test_empty_role_denied():
     assert result.action == "deny"
     assert "orchestrator" in result.reason
     assert result.policy_name == "write_who"
+
+
+def test_empty_role_denial_steers_to_active_scratchlane():
+    result = write_who(
+        _req(
+            "/proj/lsdyna_isolated/scripts/ida_fast16_map.py",
+            role="",
+            scratchlane_roots=frozenset({"/proj/tmp/ad-hoc"}),
+        )
+    )
+
+    assert result is not None
+    assert result.action == "deny"
+    assert "Project source route" in result.reason
+    assert "configured source-edit dispatch path" in result.reason
+    assert "/proj/lsdyna_isolated/scripts/ida_fast16_map.py" in result.reason
+    assert "Temporary artifact route" in result.reason
+    assert "/proj/tmp/ad-hoc/ida_fast16_map.py" in result.reason
+    assert "Guardian Admission owns the scratchlane" in result.reason
+    assert "claude-scratch" not in result.reason
+
+
+def test_empty_role_denial_steers_to_ad_hoc_scratchlane_when_no_active_root():
+    result = write_who(_req("/proj/scripts/analysis.py", role=""))
+
+    assert result is not None
+    assert result.action == "deny"
+    assert "Project source route" in result.reason
+    assert "`/proj/scripts/analysis.py`" in result.reason
+    assert "Temporary artifact route" in result.reason
+    assert "`/proj/tmp/ad-hoc/analysis.py`" in result.reason
+    assert "claude-scratch" not in result.reason
 
 
 def test_planner_role_denied():

@@ -425,14 +425,17 @@ HOOK_MANIFEST: Tuple[HookManifestEntry, ...] = (
         "guardian",
         "hooks/check-guardian.sh",
         STATUS_ACTIVE,
-        "Guardian completion assessment (CUTOVER_PLAN W5 / W6).",
+        "Guardian completion assessment (CUTOVER_PLAN W5 / W6). Also "
+        "recognizes Guardian admission trailers and emits admission audit "
+        "context without canonical completion routing.",
     ),
     _e(
         "SubagentStop",
         "guardian",
         "hooks/post-task.sh",
         STATUS_ACTIVE,
-        "Thin post-task adapter for guardian stops.",
+        "Thin post-task adapter for guardian stops. Skips non-canonical "
+        "Guardian admission stops.",
     ),
     _e(
         "SubagentStop",

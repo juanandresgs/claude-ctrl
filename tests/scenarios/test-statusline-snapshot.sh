@@ -100,7 +100,7 @@ for key in active_agent active_agent_id \
            worktree_count worktrees dispatch_status dispatch_workflow \
            dispatch_from_role dispatch_from_verdict dispatch_initiative \
            dispatch_cycle_id recent_event_count recent_events \
-           last_review snapshot_at status errors; do
+           last_review critic_run snapshot_at status errors; do
     assert_jq "key '$key' present" "$snap" "has(\"$key\")"
 done
 
@@ -111,6 +111,7 @@ assert_eq "active_agent defaults to null"   "$snap" ".active_agent"   "null"
 assert_eq "status is ok"                    "$snap" ".status"         "ok"
 assert_eq "errors defaults to []"           "$snap" "(.errors | length)" "0"
 assert_eq "last_review.reviewed is false"   "$snap" ".last_review.reviewed" "false"
+assert_eq "critic_run.found is false"       "$snap" ".critic_run.found" "false"
 
 # ---------------------------------------------------------------------------
 # Test 3: active_agent reflects marker

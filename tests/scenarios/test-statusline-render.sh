@@ -208,6 +208,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 5c: active critic run renders compact statusline heartbeat
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- 5c: active critic run — HUD shows critic heartbeat"
+
+CRITIC_RUN=$(policy critic-run start --workflow-id "wf-sl-critic" --provider codex)
+CRITIC_RUN_ID=$(printf '%s' "$CRITIC_RUN" | jq -r '.run_id // empty')
+policy critic-run progress \
+    --run-id "$CRITIC_RUN_ID" \
+    --message "Provider status: codex ready." \
+    --phase provider \
+    --status provider_ready >/dev/null
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "critic: running"; then
+    echo "  PASS: critic heartbeat present in HUD"
+else
+    echo "  FAIL: critic heartbeat missing; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Test 6: pending eval renders ⏳ eval in HUD (TKT-024)
 # ---------------------------------------------------------------------------
 echo ""

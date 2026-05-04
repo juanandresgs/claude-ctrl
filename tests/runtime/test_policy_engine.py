@@ -291,6 +291,39 @@ def test_evaluate_feedback_continues():
     assert decision.policy_name == "second"
 
 
+def test_evaluate_preserves_effects_from_allow_and_feedback():
+    reg = PolicyRegistry()
+
+    def allow_with_effect(request: PolicyRequest) -> PolicyDecision:
+        return PolicyDecision(
+            action="allow",
+            reason="tracked",
+            policy_name="tracker",
+            effects={"policy_strikes": [{"policy_name": "tracker", "scope_key": "a", "count": 0}]},
+        )
+
+    def feedback_with_effect(request: PolicyRequest) -> PolicyDecision:
+        return PolicyDecision(
+            action="feedback",
+            reason="hint",
+            policy_name="feedback",
+            effects={"policy_strikes": [{"policy_name": "feedback", "scope_key": "b", "count": 1}]},
+        )
+
+    reg.register("tracker", allow_with_effect, event_types=["PreToolUse"], priority=1)
+    reg.register("feedback", feedback_with_effect, event_types=["PreToolUse"], priority=2)
+
+    decision = reg.evaluate(_make_request())
+    assert decision.action == "feedback"
+    assert decision.policy_name == "feedback"
+    assert decision.effects == {
+        "policy_strikes": [
+            {"policy_name": "tracker", "scope_key": "a", "count": 0},
+            {"policy_name": "feedback", "scope_key": "b", "count": 1},
+        ]
+    }
+
+
 # ---------------------------------------------------------------------------
 # evaluate: deny after feedback stops evaluation
 # ---------------------------------------------------------------------------
@@ -407,7 +440,13 @@ def test_priority_ordering():
 
 
 def test_build_context_basic(conn, tmp_path):
-    ctx = build_context(conn, cwd=str(tmp_path), actor_role="implementer", actor_id="agent-1")
+    ctx = build_context(
+        conn,
+        cwd=str(tmp_path),
+        actor_role="implementer",
+        actor_id="agent-1",
+        project_root=str(tmp_path),
+    )
     assert isinstance(ctx, PolicyContext)
     assert ctx.actor_role == "implementer"
     assert ctx.actor_id == "agent-1"
@@ -419,11 +458,43 @@ def test_build_context_basic(conn, tmp_path):
     assert ctx.binding is None
 
 
+def test_build_context_loads_policy_strikes_from_db(conn, tmp_path):
+    from runtime.core import policy_strikes
+
+    policy_strikes.set_count(
+        conn,
+        project_root=str(tmp_path),
+        policy_name="mock_gate",
+        scope_key="internal_mock",
+        count=2,
+    )
+
+    ctx = build_context(
+        conn,
+        cwd=str(tmp_path),
+        actor_role="implementer",
+        actor_id="agent-1",
+        project_root=str(tmp_path),
+    )
+    assert ctx.policy_strikes["mock_gate:internal_mock"]["count"] == 2
+
+
 def test_build_context_has_project_root(conn, tmp_path):
     ctx = build_context(conn, cwd=str(tmp_path))
     # project_root is populated (may be tmp_path or git root)
     assert isinstance(ctx.project_root, str)
     assert len(ctx.project_root) > 0
+
+
+def test_build_context_anchors_nested_non_git_cwd_to_project_root(conn, tmp_path):
+    project = tmp_path / "project"
+    cwd = project / "lsdyna_isolated" / "tmp"
+    cwd.mkdir(parents=True)
+
+    ctx = build_context(conn, cwd=str(cwd), project_root=str(project))
+
+    assert ctx.project_root == str(project)
+    assert ctx.worktree_path == str(project)
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +685,7 @@ def test_default_registry_has_all_policies():
         "branch_guard",
         "write_who",
         "write_scratchlane_gate",
+        "write_admission_gate",
         "enforcement_gap",
         "plan_guard",
         "plan_exists",
@@ -626,6 +698,7 @@ def test_default_registry_has_all_policies():
         "agent_contract_required",  # Agent/Task canonical contract enforcement
         "bash_worktree_cwd",
         "bash_scratchlane_gate",
+        "bash_admission_gate",
         "bash_worktree_nesting",  # Gap 5: prevent nested worktree creation
         "bash_worktree_creation",  # W-GWT-3: guardian-only worktree creation
         "bash_git_who",

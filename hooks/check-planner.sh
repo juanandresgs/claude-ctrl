@@ -18,6 +18,7 @@ source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
+seed_project_dir_from_hook_payload_cwd "$AGENT_RESPONSE"
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 
 PROJECT_ROOT=$(detect_project_root)

@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-04-27 (Public ClauDEX release surface cleanup)
+Last updated: 2026-05-03 (Codex critic telemetry and Guardian Admission lanes)
 
 ## Identity
 
@@ -63,6 +63,15 @@ through deterministic dispatch, critique, review, and landing gates.
   uses its scenarios and fixtures directly.
 - `2026-04-27 -- DEC-PUB-004` Keep `scripts/` only for live runtime support
   files used by `settings.json`, hooks, policies, skills, or sidecars.
+- `2026-05-03 -- DEC-CRITIC-RUNS-001` Add critic run telemetry as the
+  first-class visibility lane around `critic_reviews`: final verdicts remain
+  routing authority, while lifecycle progress, fallback state, traces, and
+  metrics feed the statusline, conversation digest, and self-improvement evals.
+- `2026-05-03 -- DEC-GUARDIAN-ADMISSION-001` Add Guardian Admission as the
+  non-canonical Guardian mode and pre-workflow custody authority for the fork
+  between project onboarding/provisioning and task-local scratchlane work.
+  Scratchlane permits remain owned by `runtime/core/scratchlanes.py`;
+  admission may apply them only through that authority.
 
 ## Active Initiatives
 
@@ -85,6 +94,25 @@ tracked release tree.
 
 **Dependencies:** None.
 
+### Critic Telemetry And Visibility
+
+**Status:** in-progress
+
+**Goal:** Make Codex critic work visible and measurable without turning traces
+into enforcement authority.
+
+**Scope:** `runtime/core/critic_runs.py`, `critic_runs` schema, `cc-policy
+critic-run`, implementer critic hook telemetry, statusline projection, trace
+manifest entries, and success metrics for loopback, fallback, duration, and
+escalation behavior.
+
+**Exit:** Critic runs persist start/progress/final/fallback lifecycle state,
+statusline shows compact live status, the Claude thread receives a concise
+critic digest, traces can reconstruct critic activity, and focused tests cover
+runtime metrics, hook telemetry, and HUD rendering.
+
+**Dependencies:** Public Codex Critic Lane.
+
 ## Completed Initiatives
 
 ### README Restoration
@@ -102,6 +130,28 @@ paths, and validation commands.
 **Summary:** Documented the implementer Codex CLI critic as the inner-loop
 quality filter and kept the public implementation under
 `sidecars/codex-review/` plus `hooks/implementer-critic.sh`.
+
+### State DB Consolidation
+
+**Status:** completed
+
+**Summary:** Moved durable hook/control-plane memory into `state.db`: session
+prompt/change tracking, linter enforcement gaps, linter profile cache, lint
+circuit breakers, compaction handoff context, escalating write-policy strike
+counters, Bash mutation baselines, and critic review details. Runtime hooks no
+longer create durable `.claude/.session-*`, `.prompt-count-*`,
+`.enforcement-gaps`, `.lint-cache-*`, `.lint-breaker-*`, `.preserved-context`,
+`.test-gate-strikes`, `.mock-gate-strikes`, `tmp/.bash-source-baseline-*`, or
+critic review artifact files.
+
+### Guardian Admission
+
+**Status:** completed
+
+**Summary:** Added the `cc-policy admission` classifier/apply domain,
+Guardian admission mode in `agents/guardian.md`, SubagentStop audit handling,
+write/Bash admission gates, scratchlane auto-application path, and
+deterministic eval coverage for project onboarding vs scratchlane custody.
 
 ## Parked Issues
 

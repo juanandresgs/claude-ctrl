@@ -119,6 +119,39 @@ def _check_scope_forbidden(
     return None
 
 
+def _slash(path: str) -> str:
+    return path if path.endswith("/") else path + "/"
+
+
+def _scratchlane_target(request: PolicyRequest, source_path: str) -> str:
+    """Return the best scratchlane retry target for a blocked source write."""
+    basename = os.path.basename(source_path.rstrip(os.sep)) or "temporary-script"
+    roots = sorted(str(root) for root in request.context.scratchlane_roots if str(root))
+    if roots:
+        root = _slash(roots[0])
+        return f"{root}{basename}"
+
+    project_root = request.context.project_root or request.cwd or ""
+    if project_root:
+        return os.path.join(project_root, "tmp", "ad-hoc", basename)
+    return os.path.join("tmp", "ad-hoc", basename)
+
+
+def _route_steering(request: PolicyRequest, source_path: str) -> str:
+    """Return source-vs-scratchlane steering for non-writer source denials."""
+    scratch_target = _scratchlane_target(request, source_path)
+    return (
+        "Project source route: if this file is part of the project, use the "
+        f"configured source-edit dispatch path for `{source_path}`.\n\n"
+        "Temporary artifact route: if this is a one-off script, analysis helper, "
+        f"or user-task output, retry the write under `{scratch_target}` instead. "
+        "That keeps the work in the project-local scratchlane (`tmp/<task>/...`). "
+        "If that lane is not active yet, Guardian Admission owns the scratchlane "
+        "authorization fork and the runtime will create it when the work is "
+        "obviously temporary."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main policy function
 # ---------------------------------------------------------------------------
@@ -197,8 +230,8 @@ def write_who(request: PolicyRequest) -> Optional[PolicyDecision]:
         action="deny",
         reason=(
             f"BLOCKED: {role_label} cannot write source files. "
-            "Only the implementer agent may write source code.\n\n"
-            "Action: Dispatch an implementer agent for this change."
+            "Only an implementer agent may write project source.\n\n"
+            f"{_route_steering(request, info.normalized_path or file_path)}"
         ),
         policy_name="write_who",
     )

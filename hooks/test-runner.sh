@@ -15,6 +15,7 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
+seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 
 # Exit silently if no file path or file doesn't exist
@@ -26,6 +27,7 @@ is_source_file "$FILE_PATH" || exit 0
 
 # Skip non-source directories
 is_skippable_path "$FILE_PATH" && exit 0
+is_scratchlane_path "$FILE_PATH" && exit 0
 [[ "$FILE_PATH" =~ \.claude ]] && exit 0
 
 PROJECT_ROOT=$(detect_project_root)
@@ -53,7 +55,7 @@ detect_test_runner() {
     fi
 
     # JavaScript/TypeScript
-    if [[ "$ext" =~ ^(ts|tsx|js|jsx)$ ]]; then
+    if [[ "$ext" =~ ^(ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|vue|svelte|css|scss|sass|less|html|htm)$ ]]; then
         if [[ -f "$root/vitest.config.ts" || -f "$root/vitest.config.js" ]]; then
             echo "vitest"
             return
@@ -88,11 +90,11 @@ RUNNER=$(detect_test_runner "$PROJECT_ROOT" "$FILE_PATH")
 
 # --- Cooldown: skip if last run was <10 seconds ago ---
 LOCK_DIR="${PROJECT_ROOT}/.claude"
-LAST_RUN_FILE="${LOCK_DIR}/.test-runner.last-run"
 mkdir -p "$LOCK_DIR"
 
-if [[ -f "$LAST_RUN_FILE" ]]; then
-    LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo "0")
+LAST_RUN_JSON=$(rt_test_state_get "$PROJECT_ROOT" 2>/dev/null || echo '{"updated_at":0}')
+LAST_RUN=$(printf '%s' "$LAST_RUN_JSON" | jq -r '.updated_at // 0' 2>/dev/null || echo "0")
+if [[ "$LAST_RUN" =~ ^[0-9]+$ && "$LAST_RUN" -gt 0 ]]; then
     NOW=$(date +%s)
     ELAPSED=$(( NOW - LAST_RUN ))
     if [[ "$ELAPSED" -lt 10 ]]; then
@@ -192,9 +194,6 @@ wait "$TEST_PID" 2>/dev/null || true
 TEST_EXIT=$?
 TEST_OUTPUT=$(cat "${LOCK_DIR}/.test-runner.out" 2>/dev/null || echo "")
 rm -f "${LOCK_DIR}/.test-runner.out"
-
-# Write cooldown timestamp
-date +%s > "$LAST_RUN_FILE"
 
 # --- Write test status to SQLite (WS-DOC-CLEAN: sole authority) ---
 # SQLite is the only enforcement authority. Flat-file write removed (WS-DOC-CLEAN).

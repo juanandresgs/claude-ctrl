@@ -369,6 +369,22 @@ class TestWriteSourceMutationInvalidatesReady:
             f"after .ts Write source mutation, got {status!r}"
         )
 
+    def test_write_config_source_invalidates_ready(self, project, db):
+        """Config code is source for evaluation invalidation."""
+        proj, branch = project
+        wf_id = _sanitize_token(branch)
+
+        _seed_ready(db, wf_id, str(proj))
+
+        source_file = str(proj / "astro.config.mjs")
+        code, stderr = _run_track_sh(db, str(proj), source_file)
+        assert code == 0, f"track.sh exited non-zero: {code}\nstderr:\n{stderr}"
+
+        status = _get_eval_status(db, wf_id, str(proj))
+        assert status == "pending", (
+            f"expected pending after config source mutation, got {status!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Invariant 2: Non-source path preserves readiness

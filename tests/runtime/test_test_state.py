@@ -21,8 +21,8 @@ Rationale: WS3 migrates test state from .claude/.test-status flat-file reads
   is replaced with a real set/get backed by runtime.core.test_state. Hooks
   that previously called python3 -m runtime.cli test-state get now call
   rt_test_state_get from runtime-bridge.sh, which wraps cc-policy test-state get.
-  The flat-file may still be written by test-runner.sh for backward compatibility
-  but must NOT be read by any enforcement hook.
+  Runtime hooks no longer write or read the retired flat-file; tests may create
+  one only to prove it is ignored.
 """
 
 from __future__ import annotations

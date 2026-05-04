@@ -1,0 +1,13 @@
+name: admission-obvious-scratch
+category: gate
+mode: deterministic
+fixture: clean-hello-world
+setup:
+  eval_target: admission
+  git: false
+input:
+  payload:
+    trigger: source_write
+    target_path: tmp/dedup.py
+ground_truth:
+  expected_verdict: scratchlane_authorized

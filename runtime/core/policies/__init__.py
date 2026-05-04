@@ -33,7 +33,8 @@ def register_all(registry: PolicyRegistry) -> None:
 
     Write-path priorities (PE-W2 + PE-W5):
       100  branch_guard       -- block source writes on main/master
-      150  write_scratchlane_gate -- task-local artifact lane under tmp/.claude-scratch/
+      150  write_scratchlane_gate -- task-local artifact lane under tmp/
+      175  write_admission_gate -- Guardian Admission custody fork for uncustodied source writes
       200  write_who          -- only implementer may write source files
       250  enforcement_gap    -- deny persistent linter gaps
       300  plan_guard         -- requires CAN_WRITE_GOVERNANCE for governance markdown or constitution-level files
@@ -51,6 +52,7 @@ def register_all(registry: PolicyRegistry) -> None:
       200  bash_worktree_cwd         -- deny bare cd into .worktrees/
       250  bash_worktree_nesting     -- deny worktree add from inside .worktrees/ (Gap 5)
       260  bash_scratchlane_gate     -- task-local artifact lane + opaque interpreter wrapper
+      270  bash_admission_gate       -- Guardian Admission custody fork for Bash source writes
       275  bash_write_who            -- capability gate for bash-based source/governance writes
       300  bash_git_who              -- lease-based WHO enforcement for git ops (expanded Gap 1)
       350  bash_worktree_creation    -- deny git worktree add from non-guardian roles (W-GWT-3)
@@ -75,6 +77,7 @@ def register_all(registry: PolicyRegistry) -> None:
     from runtime.core.policies.write_plan_guard import plan_guard
     from runtime.core.policies.write_plan_immutability import plan_immutability
     from runtime.core.policies.write_scratchlane_gate import check as write_scratchlane_gate
+    from runtime.core.policies.write_admission_gate import check as write_admission_gate
     from runtime.core.policies.write_who import write_who
 
     registry.register(
@@ -88,6 +91,12 @@ def register_all(registry: PolicyRegistry) -> None:
         write_scratchlane_gate,
         event_types=["Write", "Edit"],
         priority=150,
+    )
+    registry.register(
+        "write_admission_gate",
+        write_admission_gate,
+        event_types=["Write", "Edit"],
+        priority=175,
     )
     registry.register(
         "write_who",
@@ -154,6 +163,7 @@ def register_all(registry: PolicyRegistry) -> None:
     from runtime.core.policies import (
         agent_contract_required,
         bash_approval_gate,
+        bash_admission_gate,
         bash_cross_branch_restore_ban,
         bash_destructive_git,
         bash_eval_readiness,
@@ -182,6 +192,7 @@ def register_all(registry: PolicyRegistry) -> None:
         registry
     )  # Gap 5: prevent nested worktree creation (priority 250)
     bash_scratchlane_gate.register(registry)
+    bash_admission_gate.register(registry)
     bash_write_who.register(registry)
     bash_git_who.register(registry)
     bash_worktree_creation.register(registry)

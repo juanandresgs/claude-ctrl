@@ -81,6 +81,28 @@ def _resolve_shared_git_root(path: Path) -> Path | None:
     return None
 
 
+def _resolve_state_db_root(path: Path) -> Path | None:
+    """Return the outermost non-home ancestor that already owns state.db.
+
+    This is the non-git companion to ``_resolve_shared_git_root``. If hooks are
+    invoked from or against a subdirectory of an existing project, runtime state
+    must continue to use the existing project DB rather than creating a nested
+    ``<subdir>/.claude/state.db`` authority.
+    """
+    candidate = Path(os.path.realpath(str(path.expanduser())))
+    if not candidate.is_dir():
+        candidate = candidate.parent
+
+    home_root = Path(os.path.realpath(str(Path.home())))
+    state_root: Path | None = None
+    for parent in (candidate, *candidate.parents):
+        if parent == home_root:
+            continue
+        if (parent / ".claude" / "state.db").is_file():
+            state_root = parent
+    return state_root
+
+
 def resolve_project_db(cwd: str | None = None) -> Path | None:
     """Detect project DB from the shared root of the current git checkout.
 
@@ -144,6 +166,9 @@ def resolve_db_path(project_root: str | None = None) -> Path:
             shared_root = _resolve_shared_git_root(project_path)
             if shared_root is not None:
                 return shared_root / ".claude" / "state.db"
+            state_root = _resolve_state_db_root(project_path)
+            if state_root is not None:
+                return state_root / ".claude" / "state.db"
             return Path(os.path.realpath(project_root)) / ".claude" / "state.db"
 
     # Step 3: project dir env var (hook-exported, avoids git subprocess)
@@ -154,6 +179,9 @@ def resolve_db_path(project_root: str | None = None) -> Path:
             shared_root = _resolve_shared_git_root(project_path)
             if shared_root is not None:
                 return shared_root / ".claude" / "state.db"
+            state_root = _resolve_state_db_root(project_path)
+            if state_root is not None:
+                return state_root / ".claude" / "state.db"
             return project_path / ".claude" / "state.db"
 
     # Step 4: git root detection (direct CLI invocation path)

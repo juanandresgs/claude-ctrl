@@ -35,6 +35,7 @@ import runtime.core.completions as completions_mod
 import runtime.core.critic_reviews as critic_reviews_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.enforcement_config as enforcement_config_mod
+import runtime.core.enforcement_gaps as enforcement_gaps_mod
 import runtime.core.eval_metrics as eval_metrics_mod
 import runtime.core.hook_doc_validation as hook_doc_validation_mod
 import runtime.core.hook_manifest as hook_manifest_mod
@@ -45,17 +46,22 @@ import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
 import runtime.core.leases as leases_mod
 import runtime.core.lifecycle as lifecycle_mod
+import runtime.core.lint_state as lint_state_mod
 import runtime.core.markers as markers_mod
 import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
+import runtime.core.policy_strikes as policy_strikes_mod
+import runtime.core.preserved_context as preserved_context_mod
 import runtime.core.workflow_bootstrap as workflow_bootstrap_mod
 import runtime.core.quick_eval as quick_eval_mod
 import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.scratchlanes as scratchlanes_mod
+import runtime.core.session_activity as session_activity_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
 import runtime.core.tokens as tokens_mod
 import runtime.core.traces as traces_mod
+import runtime.core.work_admission as work_admission_mod
 import runtime.core.workflows as workflows_mod
 import runtime.core.worktrees as worktrees_mod
 from runtime.core.config import default_db_path, resolve_db_path
@@ -201,6 +207,94 @@ def _agent_contract_carrier_effect(conn, payload: dict, decision):
                 f"Detail: {exc}"
             ),
             policy_name="agent_contract_carrier",
+        )
+
+    return None
+
+
+def _guardian_admission_carrier_effect(conn, payload: dict, decision):
+    """Write the narrow carrier that marks a Guardian launch as admission mode."""
+    import time as _time
+    import uuid as _uuid
+
+    from runtime.core import authority_registry as _authority_registry
+    from runtime.core.pending_agent_requests import write_pending_request as _write_pending_request
+    from runtime.core.policies.agent_contract_required import (
+        is_guardian_admission_prompt as _is_guardian_admission_prompt,
+    )
+
+    if decision.action != "allow":
+        return None
+    if payload.get("event_type") != "PreToolUse":
+        return None
+    if payload.get("tool_name") not in ("Agent", "Task"):
+        return None
+
+    tool_input = payload.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return None
+
+    subagent_type = str(tool_input.get("subagent_type") or "").strip()
+    canonical = _authority_registry.canonical_dispatch_subagent_type(subagent_type)
+    prompt = str(tool_input.get("prompt") or "")
+    if canonical != "guardian" or not _is_guardian_admission_prompt(prompt):
+        return None
+
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return policy_engine_mod.PolicyDecision(
+            action="deny",
+            reason=(
+                "guardian_admission_carrier_failed: Guardian admission mode "
+                "requires a session_id so SubagentStart can receive the "
+                "non-canonical mode carrier."
+            ),
+            policy_name="guardian_admission_carrier",
+        )
+
+    if payload.get("carrier_db_resolved") is False:
+        return policy_engine_mod.PolicyDecision(
+            action="deny",
+            reason=(
+                "guardian_admission_carrier_failed: no project policy DB path "
+                "could be resolved for Guardian admission mode."
+            ),
+            policy_name="guardian_admission_carrier",
+        )
+
+    now = int(_time.time())
+    target_root = str(payload.get("project_root") or payload.get("cwd") or "")
+    try:
+        _write_pending_request(
+            conn,
+            attempt_id=f"guardian-admission-{_uuid.uuid4().hex}",
+            session_id=session_id,
+            agent_type="guardian",
+            workflow_id=str(payload.get("workflow_id") or "guardian-admission"),
+            stage_id="guardian:admission",
+            goal_id="guardian-admission",
+            work_item_id="guardian-admission",
+            decision_scope="pre-workflow custody admission",
+            generated_at=now,
+            parent_agent_id=str(payload.get("actor_id") or ""),
+            tool_use_id=str(payload.get("tool_use_id") or ""),
+            target_project_root=target_root,
+            worktree_path=target_root,
+            contract_json={
+                "guardian_mode": "admission",
+                "canonical_stage": False,
+                "authority": "runtime.core.work_admission",
+                "generated_at": now,
+            },
+        )
+    except Exception as exc:
+        return policy_engine_mod.PolicyDecision(
+            action="deny",
+            reason=(
+                "guardian_admission_carrier_failed: pending carrier row could "
+                f"not be written. Detail: {exc}"
+            ),
+            policy_name="guardian_admission_carrier",
         )
 
     return None
@@ -472,13 +566,19 @@ def _handle_hook(args) -> int:
 
     if args.action == "bash-pre-baseline":
         from runtime.core import bash_lifecycle as bash_lifecycle_mod
+        from runtime.core.hook_envelope import build_hook_event_envelope
 
         raw = sys.stdin.read()
         try:
             payload = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError as exc:
             return _err(f"hook bash-pre-baseline: invalid JSON on stdin: {exc}")
-        result = bash_lifecycle_mod.capture_pre_bash_baseline(payload)
+        envelope = build_hook_event_envelope(payload)
+        conn = _get_conn(project_root=envelope.project_root or None)
+        try:
+            result = bash_lifecycle_mod.capture_pre_bash_baseline(conn, payload)
+        finally:
+            conn.close()
         return _ok({"result": result.as_dict()})
 
     if args.action == "bash-post":
@@ -3354,6 +3454,103 @@ def _handle_critic_review(args) -> int:
     return _err(f"unknown critic-review action: {args.action}")
 
 
+def _handle_critic_run(args) -> int:
+    """Handle ``cc-policy critic-run`` telemetry subcommands."""
+    import json as _json
+    import runtime.core.critic_runs as critic_runs_mod
+
+    conn = _get_conn()
+    try:
+        if args.action == "start":
+            result = critic_runs_mod.start(
+                conn,
+                workflow_id=args.workflow_id,
+                lease_id=getattr(args, "lease_id", "") or "",
+                role=getattr(args, "role", critic_runs_mod.IMPLEMENTER_ROLE),
+                provider=getattr(args, "provider", "codex") or "codex",
+                run_id=getattr(args, "run_id", "") or "",
+                status=getattr(args, "run_status", "started") or "started",
+            )
+            return _ok(result)
+
+        if args.action == "progress":
+            result = critic_runs_mod.progress(
+                conn,
+                run_id=args.run_id,
+                message=args.message,
+                phase=getattr(args, "phase", "") or "",
+                status=getattr(args, "run_status", "") or "",
+            )
+            return _ok(result)
+
+        if args.action == "complete":
+            metrics = {}
+            if getattr(args, "metrics", None):
+                try:
+                    metrics = _json.loads(args.metrics)
+                except _json.JSONDecodeError as e:
+                    return _err(f"invalid JSON metrics: {e}")
+            result = critic_runs_mod.complete(
+                conn,
+                run_id=args.run_id,
+                verdict=args.verdict,
+                provider=getattr(args, "provider", "") or "",
+                summary=getattr(args, "summary", "") or "",
+                detail=getattr(args, "detail", "") or "",
+                artifact_path=getattr(args, "artifact_path", "") or "",
+                fingerprint=getattr(args, "fingerprint", "") or "",
+                review_id=getattr(args, "review_id", None),
+                fallback=getattr(args, "fallback", "") or "",
+                error=getattr(args, "error", "") or "",
+                metrics=metrics,
+            )
+            return _ok(result)
+
+        if args.action == "fallback-complete":
+            result = critic_runs_mod.mark_fallback_completed(
+                conn,
+                workflow_id=args.workflow_id,
+                fallback=getattr(args, "fallback", "") or "reviewer",
+                summary=getattr(args, "summary", "") or "",
+            )
+            return _ok({"found": result is not None, "run": result})
+
+        if args.action == "latest":
+            result = critic_runs_mod.latest(
+                conn,
+                workflow_id=getattr(args, "workflow_id", None),
+                role=getattr(args, "role", critic_runs_mod.IMPLEMENTER_ROLE),
+            )
+            if result is None:
+                return _ok({"found": False})
+            result["found"] = True
+            return _ok(result)
+
+        if args.action == "list":
+            rows = critic_runs_mod.list_runs(
+                conn,
+                workflow_id=getattr(args, "workflow_id", None),
+                role=getattr(args, "role", None),
+                status=getattr(args, "run_status", None),
+                limit=getattr(args, "limit", None),
+            )
+            return _ok({"items": rows, "count": len(rows)})
+
+        if args.action == "metrics":
+            result = critic_runs_mod.metrics(
+                conn,
+                workflow_id=getattr(args, "workflow_id", None),
+                role=getattr(args, "role", critic_runs_mod.IMPLEMENTER_ROLE),
+            )
+            return _ok(result.as_dict())
+
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown critic-run action: {args.action}")
+
+
 # ---------------------------------------------------------------------------
 # Bug pipeline handler
 # ---------------------------------------------------------------------------
@@ -3622,6 +3819,9 @@ def _handle_evaluate(args) -> int:
         #     → attempt to consume a one-shot approval token. If consumed,
         #       override the deny decision to allow (the token grants the op).
         #       If not consumed, leave the deny in place.
+        #   policy_strikes: [{"project_root": str, "policy_name": str,
+        #                     "scope_key": str, "count": int}]
+        #     → persist escalating warning/deny counters in state.db.
         effects = decision.effects or {}
 
         if effects.get("expire_stale_leases"):
@@ -3629,6 +3829,28 @@ def _handle_evaluate(args) -> int:
                 leases_mod.expire_stale(conn)
             except Exception:
                 pass  # Non-fatal: stale cleanup is best-effort
+
+        strike_effects = effects.get("policy_strikes") or []
+        if isinstance(strike_effects, dict):
+            strike_effects = [strike_effects]
+        for strike_effect in strike_effects:
+            if not isinstance(strike_effect, dict):
+                continue
+            try:
+                policy_name = str(strike_effect.get("policy_name") or "")
+                scope_key = str(strike_effect.get("scope_key") or "")
+                project_for_strike = str(strike_effect.get("project_root") or ctx.project_root or "")
+                count = int(strike_effect.get("count") or 0)
+                if policy_name and scope_key and project_for_strike:
+                    policy_strikes_mod.set_count(
+                        conn,
+                        project_root=project_for_strike,
+                        policy_name=policy_name,
+                        scope_key=scope_key,
+                        count=count,
+                    )
+            except Exception:
+                pass  # Non-fatal: the policy decision still stands.
 
         approval_effect = effects.get("check_and_consume_approval")
         if approval_effect and decision.action == "deny":
@@ -3648,6 +3870,57 @@ def _handle_evaluate(args) -> int:
                     pass  # Non-fatal: denial stands if consumption fails
 
         scratchlane_request_effect = effects.get("request_scratchlane_approval")
+        admission_effect = effects.get("apply_guardian_admission")
+        if admission_effect and decision.action == "deny":
+            try:
+                admission_payload = dict(admission_effect)
+                admission_payload.setdefault("session_id", str(payload.get("session_id") or ""))
+                admission_payload.setdefault("cwd", effective_cwd)
+                admission_payload.setdefault("project_root", ctx.project_root)
+                admission_payload.setdefault("workflow_id", ctx.workflow_id)
+                admission_result = work_admission_mod.apply_payload(
+                    conn,
+                    admission_payload,
+                )
+                permit = admission_result.get("permit")
+                if isinstance(permit, dict) and permit.get("root_path"):
+                    Path(str(permit["root_path"])).mkdir(parents=True, exist_ok=True)
+                metadata = {
+                    **(decision.metadata or {}),
+                    "guardian_admission": admission_result,
+                }
+                decision = policy_engine_mod.PolicyDecision(
+                    action=decision.action,
+                    reason=decision.reason,
+                    policy_name=decision.policy_name,
+                    effects=decision.effects,
+                    metadata=metadata,
+                )
+                if admission_result.get("applied"):
+                    runtime_notification = {
+                        "notification_type": "guardian_admission_scratchlane_ready",
+                        "title": "Scratchlane Ready",
+                        "message": (
+                            "Guardian Admission authorized scratchlane "
+                            f"{admission_result.get('scratchlane', {}).get('root_path', '')}."
+                        ),
+                        "task_slug": admission_result.get("scratchlane", {}).get("task_slug", ""),
+                        "root_path": admission_result.get("scratchlane", {}).get("root_path", ""),
+                    }
+            except Exception as exc:
+                decision = policy_engine_mod.PolicyDecision(
+                    action=decision.action,
+                    reason=(
+                        f"{decision.reason}\n\n"
+                        "Guardian Admission failed while applying its runtime effect. "
+                        "Do not create scratchlane permits manually; report this "
+                        f"control-plane failure. Detail: {exc}"
+                    ),
+                    policy_name=decision.policy_name,
+                    effects=decision.effects,
+                    metadata=decision.metadata,
+                )
+
         if scratchlane_request_effect and decision.action == "deny":
             session_id = str(payload.get("session_id") or "")
             task_slug = str(scratchlane_request_effect.get("task_slug") or "")
@@ -3676,37 +3949,38 @@ def _handle_evaluate(args) -> int:
                             request_record
                         )
                 except Exception as exc:
-                    fallback_cmd = (
-                        f"python3 runtime/cli.py scratchlane grant --task-slug {task_slug}"
-                    )
                     decision = policy_engine_mod.PolicyDecision(
                         action=decision.action,
                         reason=(
                             f"{decision.reason}\n\n"
                             "Automatic scratchlane approval setup failed, so the "
                             "runtime cannot consume a yes/no reply for this request. "
-                            f"Fallback grant command: {fallback_cmd}. Detail: {exc}"
+                            "Do not mutate scratchlane permits from Bash; retry "
+                            "through the scratchlane gate with a valid session or "
+                            f"report this control-plane failure. Detail: {exc}"
                         ),
                         policy_name=decision.policy_name,
                         effects=decision.effects,
                         metadata=decision.metadata,
                     )
             elif task_slug and root_path:
-                fallback_cmd = (
-                    f"python3 runtime/cli.py scratchlane grant --task-slug {task_slug}"
-                )
                 decision = policy_engine_mod.PolicyDecision(
                     action=decision.action,
                     reason=(
                         f"{decision.reason}\n\n"
                         "Automatic scratchlane approval could not be registered because "
                         "the session id was missing from the hook payload. "
-                        f"Fallback grant command: {fallback_cmd}"
+                        "Do not mutate scratchlane permits from Bash; report this "
+                        "as a hook payload bug."
                     ),
                     policy_name=decision.policy_name,
                     effects=decision.effects,
                     metadata=decision.metadata,
                 )
+
+        admission_carrier_deny = _guardian_admission_carrier_effect(conn, payload, decision)
+        if admission_carrier_deny is not None:
+            decision = admission_carrier_deny
 
         carrier_deny = _agent_contract_carrier_effect(conn, payload, decision)
         if carrier_deny is not None:
@@ -3990,11 +4264,258 @@ def _resolve_project_root(args) -> str:
     return normalize_path(project_root) if project_root else ""
 
 
+def _handle_session_activity(args) -> int:
+    """Handle DB-backed session activity and changed-file tracking."""
+
+    project_root = _resolve_project_root(args)
+    if not project_root:
+        return _err("session-activity requires --project-root or CLAUDE_PROJECT_DIR")
+    session_id = getattr(args, "session_id", "") or ""
+    if not session_id:
+        return _err("session-activity requires --session-id")
+
+    conn = _get_conn(project_root=project_root)
+    try:
+        if args.action == "prompt":
+            result = session_activity_mod.touch_prompt(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+            )
+            return _ok(result)
+
+        if args.action == "end":
+            result = session_activity_mod.end(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+            )
+            return _ok(result)
+
+        if args.action == "get":
+            result = session_activity_mod.get(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+            )
+            return _ok(result or {
+                "found": False,
+                "session_id": session_id,
+                "project_root": project_root,
+                "prompt_count": 0,
+                "started_at": 0,
+                "updated_at": 0,
+                "ended_at": None,
+            })
+
+        if args.action == "change-record":
+            result = session_activity_mod.record_file_change(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+                file_path=args.file_path,
+            )
+            return _ok(result)
+
+        if args.action == "change-list":
+            result = session_activity_mod.list_file_changes(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+                limit=getattr(args, "limit", 0) or 0,
+            )
+            return _ok(result)
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+
+    return _err(f"unknown session-activity action: {args.action}")
+
+
+def _handle_enforcement_gap(args) -> int:
+    """Handle DB-backed enforcement gap state."""
+
+    project_root = _resolve_project_root(args)
+    if not project_root:
+        return _err("enforcement-gap requires --project-root or CLAUDE_PROJECT_DIR")
+
+    conn = _get_conn(project_root=project_root)
+    try:
+        if args.action == "record":
+            result = enforcement_gaps_mod.record(
+                conn,
+                project_root=project_root,
+                gap_type=args.gap_type,
+                ext=args.ext,
+                tool=getattr(args, "tool", "") or "",
+            )
+            return _ok(result)
+
+        if args.action == "clear":
+            result = enforcement_gaps_mod.clear(
+                conn,
+                project_root=project_root,
+                gap_type=args.gap_type,
+                ext=args.ext,
+            )
+            return _ok(result)
+
+        if args.action == "count":
+            count = enforcement_gaps_mod.count(
+                conn,
+                project_root=project_root,
+                gap_type=args.gap_type,
+                ext=args.ext,
+            )
+            return _ok({
+                "project_root": project_root,
+                "gap_type": args.gap_type,
+                "ext": args.ext.lstrip("."),
+                "count": count,
+            })
+
+        if args.action == "list":
+            items = enforcement_gaps_mod.list_open(conn, project_root=project_root)
+            return _ok({"project_root": project_root, "items": items, "count": len(items)})
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+
+    return _err(f"unknown enforcement-gap action: {args.action}")
+
+
+def _handle_lint_state(args) -> int:
+    """Handle DB-backed linter cache and circuit breaker state."""
+
+    project_root = _resolve_project_root(args)
+    if not project_root:
+        return _err("lint-state requires --project-root or CLAUDE_PROJECT_DIR")
+
+    conn = _get_conn(project_root=project_root)
+    try:
+        if args.action == "cache-get":
+            result = lint_state_mod.cache_get(
+                conn,
+                project_root=project_root,
+                ext=args.ext,
+                config_mtime=getattr(args, "config_mtime", 0) or 0,
+            )
+            return _ok(result or {
+                "found": False,
+                "project_root": project_root,
+                "ext": args.ext.lstrip(".").lower(),
+            })
+
+        if args.action == "cache-set":
+            result = lint_state_mod.cache_set(
+                conn,
+                project_root=project_root,
+                ext=args.ext,
+                linter=args.linter,
+                config_mtime=getattr(args, "config_mtime", 0) or 0,
+            )
+            return _ok(result)
+
+        if args.action == "breaker-get":
+            result = lint_state_mod.breaker_get(
+                conn,
+                project_root=project_root,
+                ext=args.ext,
+            )
+            return _ok(result or {
+                "found": False,
+                "project_root": project_root,
+                "ext": args.ext.lstrip(".").lower(),
+                "state": "closed",
+                "failure_count": 0,
+                "updated_at": 0,
+            })
+
+        if args.action == "breaker-set":
+            result = lint_state_mod.breaker_set(
+                conn,
+                project_root=project_root,
+                ext=args.ext,
+                state=args.state,
+                failure_count=args.failure_count,
+                updated_at=getattr(args, "updated_at", None),
+            )
+            return _ok(result)
+
+        if args.action == "breaker-reset":
+            result = lint_state_mod.breaker_reset(
+                conn,
+                project_root=project_root,
+                ext=args.ext,
+            )
+            return _ok(result)
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+
+    return _err(f"unknown lint-state action: {args.action}")
+
+
+def _handle_preserved_context(args) -> int:
+    """Handle DB-backed compaction context handoff."""
+
+    project_root = _resolve_project_root(args)
+    if not project_root:
+        return _err("preserved-context requires --project-root or CLAUDE_PROJECT_DIR")
+    session_id = getattr(args, "session_id", "") or ""
+
+    conn = _get_conn(project_root=project_root)
+    try:
+        if args.action == "save":
+            context_text = sys.stdin.read()
+            result = preserved_context_mod.save(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+                context_text=context_text,
+            )
+            return _ok(result)
+
+        if args.action == "get":
+            result = preserved_context_mod.get(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+                include_consumed=getattr(args, "include_consumed", False),
+            )
+            return _ok(result or {
+                "found": False,
+                "project_root": project_root,
+                "session_id": session_id,
+            })
+
+        if args.action == "consume":
+            result = preserved_context_mod.consume(
+                conn,
+                project_root=project_root,
+                session_id=session_id,
+            )
+            return _ok(result or {
+                "found": False,
+                "project_root": project_root,
+                "session_id": session_id,
+            })
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+
+    return _err(f"unknown preserved-context action: {args.action}")
+
+
 def _handle_scratchlane(args) -> int:
     """Handle task-local scratchlane permit CRUD.
 
     Scratchlanes are user-approved artifact roots under
-    ``tmp/.claude-scratch/<task_slug>``. This handler is intentionally narrow:
+    ``tmp/<task_slug>``. This handler is intentionally narrow:
     it resolves the project root, reads/writes the permit table, and returns
     JSON describing the active root.
     """
@@ -4080,10 +4601,50 @@ def _handle_scratchlane(args) -> int:
             result["project_root"] = project_root
             result["session_id"] = args.session_id
             return _ok(result)
+
+        if args.action == "cleanup-empty":
+            result = scratchlanes_mod.cleanup_empty_roots(
+                conn,
+                project_root,
+                session_id=getattr(args, "session_id", None) or "",
+            )
+            return _ok(result)
     finally:
         conn.close()
 
     return _err(f"unknown scratchlane action: {args.action}")
+
+
+def _handle_admission(args) -> int:
+    """Handle Guardian Admission classify/apply operations."""
+    try:
+        payload = json.loads(args.payload)
+    except json.JSONDecodeError as exc:
+        return _err(f"admission {args.action}: payload is not valid JSON: {exc}")
+    if not isinstance(payload, dict):
+        return _err(f"admission {args.action}: payload must be a JSON object")
+
+    project_root = (
+        payload.get("project_root")
+        or work_admission_mod.resolve_project_root(payload)
+        or _resolve_project_root(args)
+    )
+    conn = _get_conn(project_root=project_root or None)
+    try:
+        if args.action == "classify":
+            result = work_admission_mod.classify_payload(conn, payload)
+            return _ok(result)
+
+        if args.action == "apply":
+            result = work_admission_mod.apply_payload(conn, payload)
+            permit = result.get("permit")
+            if isinstance(permit, dict) and permit.get("root_path"):
+                Path(str(permit["root_path"])).mkdir(parents=True, exist_ok=True)
+            return _ok(result)
+    finally:
+        conn.close()
+
+    return _err(f"unknown admission action: {args.action}")
 
 
 def _handle_test_state(args) -> int:
@@ -4091,9 +4652,8 @@ def _handle_test_state(args) -> int:
 
     Replaces the TKT-STAB-A4 flat-file bridge. The flat-file
     .claude/.test-status is no longer read by this handler — test_state
-    is the canonical authority. test-runner.sh may still WRITE the flat-file
-    for backward compatibility (session-init.sh clears it), but no
-    enforcement hook reads it.
+    is the canonical authority. Runtime hooks no longer write or read the
+    retired flat-file.
 
     @decision DEC-WS3-001
     Title: test-state subcommand reads/writes SQLite, not flat-file
@@ -5984,6 +6544,62 @@ def build_parser() -> argparse.ArgumentParser:
     cr_list.add_argument("--role", default=None)
     cr_list.add_argument("--limit", type=int, default=None)
 
+    # critic-run
+    crun_p = subparsers.add_parser(
+        "critic-run",
+        help="Persist and query Codex critic lifecycle telemetry, progress, and metrics",
+    )
+    crun_sub = crun_p.add_subparsers(dest="action", required=True)
+
+    crun_start = crun_sub.add_parser("start", help="Start a critic telemetry run")
+    crun_start.add_argument("--workflow-id", dest="workflow_id", required=True)
+    crun_start.add_argument("--lease-id", dest="lease_id", default="")
+    crun_start.add_argument("--role", default="implementer")
+    crun_start.add_argument("--provider", default="codex")
+    crun_start.add_argument("--run-id", dest="run_id", default="")
+    crun_start.add_argument("--status", dest="run_status", default="started")
+
+    crun_progress = crun_sub.add_parser("progress", help="Append critic run progress")
+    crun_progress.add_argument("--run-id", dest="run_id", required=True)
+    crun_progress.add_argument("--message", required=True)
+    crun_progress.add_argument("--phase", default="")
+    crun_progress.add_argument("--status", dest="run_status", default="")
+
+    crun_complete = crun_sub.add_parser("complete", help="Complete a critic telemetry run")
+    crun_complete.add_argument("--run-id", dest="run_id", required=True)
+    crun_complete.add_argument("--verdict", required=True)
+    crun_complete.add_argument("--provider", default="")
+    crun_complete.add_argument("--summary", default="")
+    crun_complete.add_argument("--detail", default="")
+    crun_complete.add_argument("--artifact-path", dest="artifact_path", default="")
+    crun_complete.add_argument("--fingerprint", default="")
+    crun_complete.add_argument("--review-id", dest="review_id", type=int, default=None)
+    crun_complete.add_argument("--fallback", default="")
+    crun_complete.add_argument("--error", default="")
+    crun_complete.add_argument("--metrics", default="{}")
+
+    crun_fb = crun_sub.add_parser(
+        "fallback-complete",
+        help="Mark the latest unavailable critic run as handled by reviewer fallback",
+    )
+    crun_fb.add_argument("--workflow-id", dest="workflow_id", required=True)
+    crun_fb.add_argument("--fallback", default="reviewer")
+    crun_fb.add_argument("--summary", default="")
+
+    crun_latest = crun_sub.add_parser("latest", help="Return the latest critic telemetry run")
+    crun_latest.add_argument("--workflow-id", dest="workflow_id", default=None)
+    crun_latest.add_argument("--role", default="implementer")
+
+    crun_list = crun_sub.add_parser("list", help="List critic telemetry runs")
+    crun_list.add_argument("--workflow-id", dest="workflow_id", default=None)
+    crun_list.add_argument("--role", default=None)
+    crun_list.add_argument("--status", dest="run_status", default=None)
+    crun_list.add_argument("--limit", type=int, default=None)
+
+    crun_metrics = crun_sub.add_parser("metrics", help="Aggregate critic run success metrics")
+    crun_metrics.add_argument("--workflow-id", dest="workflow_id", default=None)
+    crun_metrics.add_argument("--role", default="implementer")
+
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
     sc_sub = sc_p.add_subparsers(dest="action", required=True)
@@ -6058,7 +6674,129 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run all policies without short-circuit and return full trace (JSON on stdin)",
     )
 
-    # test-state: flat-file bridge (TKT-STAB-A4)
+    # session-activity: DB-backed prompt/session changed-file state
+    sa_p = subparsers.add_parser(
+        "session-activity",
+        help="Read/write session prompt counts and changed files in SQLite",
+    )
+    sa_sub = sa_p.add_subparsers(dest="action", required=True)
+    _sa_root_kwargs = dict(
+        dest="project_root",
+        default=None,
+        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
+    )
+
+    sa_prompt = sa_sub.add_parser("prompt", help="Increment prompt count for a session")
+    sa_prompt.add_argument("--project-root", **_sa_root_kwargs)
+    sa_prompt.add_argument("--session-id", dest="session_id", required=True)
+
+    sa_end = sa_sub.add_parser("end", help="Mark a session ended")
+    sa_end.add_argument("--project-root", **_sa_root_kwargs)
+    sa_end.add_argument("--session-id", dest="session_id", required=True)
+
+    sa_get = sa_sub.add_parser("get", help="Get session activity")
+    sa_get.add_argument("--project-root", **_sa_root_kwargs)
+    sa_get.add_argument("--session-id", dest="session_id", required=True)
+
+    sa_change_record = sa_sub.add_parser(
+        "change-record",
+        help="Record a changed file for a session",
+    )
+    sa_change_record.add_argument("--project-root", **_sa_root_kwargs)
+    sa_change_record.add_argument("--session-id", dest="session_id", required=True)
+    sa_change_record.add_argument("--file-path", dest="file_path", required=True)
+
+    sa_change_list = sa_sub.add_parser(
+        "change-list",
+        help="List changed files for a session",
+    )
+    sa_change_list.add_argument("--project-root", **_sa_root_kwargs)
+    sa_change_list.add_argument("--session-id", dest="session_id", required=True)
+    sa_change_list.add_argument("--limit", type=int, default=0)
+
+    # enforcement-gap: DB-backed linter coverage gap state
+    eg_p = subparsers.add_parser(
+        "enforcement-gap",
+        help="Read/write linter enforcement gaps in SQLite",
+    )
+    eg_sub = eg_p.add_subparsers(dest="action", required=True)
+    _eg_root_kwargs = dict(
+        dest="project_root",
+        default=None,
+        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
+    )
+    for _eg_action in ("record", "clear", "count"):
+        _eg_parser = eg_sub.add_parser(_eg_action, help=f"{_eg_action} an enforcement gap")
+        _eg_parser.add_argument("--project-root", **_eg_root_kwargs)
+        _eg_parser.add_argument("--gap-type", dest="gap_type", required=True)
+        _eg_parser.add_argument("--ext", required=True)
+        if _eg_action == "record":
+            _eg_parser.add_argument("--tool", default="")
+    eg_list = eg_sub.add_parser("list", help="List open enforcement gaps")
+    eg_list.add_argument("--project-root", **_eg_root_kwargs)
+
+    # lint-state: DB-backed linter cache and circuit breaker state
+    ls_p = subparsers.add_parser(
+        "lint-state",
+        help="Read/write linter cache and circuit breaker state in SQLite",
+    )
+    ls_sub = ls_p.add_subparsers(dest="action", required=True)
+    _ls_root_kwargs = dict(
+        dest="project_root",
+        default=None,
+        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
+    )
+
+    ls_cache_get = ls_sub.add_parser("cache-get", help="Get fresh cached linter for an extension")
+    ls_cache_get.add_argument("--project-root", **_ls_root_kwargs)
+    ls_cache_get.add_argument("--ext", required=True)
+    ls_cache_get.add_argument("--config-mtime", dest="config_mtime", type=int, default=0)
+
+    ls_cache_set = ls_sub.add_parser("cache-set", help="Set cached linter for an extension")
+    ls_cache_set.add_argument("--project-root", **_ls_root_kwargs)
+    ls_cache_set.add_argument("--ext", required=True)
+    ls_cache_set.add_argument("--linter", required=True)
+    ls_cache_set.add_argument("--config-mtime", dest="config_mtime", type=int, default=0)
+
+    ls_breaker_get = ls_sub.add_parser("breaker-get", help="Get lint circuit breaker state")
+    ls_breaker_get.add_argument("--project-root", **_ls_root_kwargs)
+    ls_breaker_get.add_argument("--ext", required=True)
+
+    ls_breaker_set = ls_sub.add_parser("breaker-set", help="Set lint circuit breaker state")
+    ls_breaker_set.add_argument("--project-root", **_ls_root_kwargs)
+    ls_breaker_set.add_argument("--ext", required=True)
+    ls_breaker_set.add_argument("--state", required=True, choices=sorted(lint_state_mod.VALID_BREAKER_STATES))
+    ls_breaker_set.add_argument("--failure-count", dest="failure_count", type=int, required=True)
+    ls_breaker_set.add_argument("--updated-at", dest="updated_at", type=int, default=None)
+
+    ls_breaker_reset = ls_sub.add_parser("breaker-reset", help="Reset lint circuit breaker state")
+    ls_breaker_reset.add_argument("--project-root", **_ls_root_kwargs)
+    ls_breaker_reset.add_argument("--ext", required=True)
+
+    # preserved-context: DB-backed PreCompact -> SessionStart handoff
+    pc_p = subparsers.add_parser(
+        "preserved-context",
+        help="Read/write compaction handoff context in SQLite",
+    )
+    pc_sub = pc_p.add_subparsers(dest="action", required=True)
+    _pc_root_kwargs = dict(
+        dest="project_root",
+        default=None,
+        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
+    )
+    pc_save = pc_sub.add_parser("save", help="Save context text from stdin")
+    pc_save.add_argument("--project-root", **_pc_root_kwargs)
+    pc_save.add_argument("--session-id", dest="session_id", default="")
+
+    pc_get = pc_sub.add_parser("get", help="Get unconsumed context for a session")
+    pc_get.add_argument("--project-root", **_pc_root_kwargs)
+    pc_get.add_argument("--session-id", dest="session_id", default="")
+    pc_get.add_argument("--include-consumed", action="store_true")
+
+    pc_consume = pc_sub.add_parser("consume", help="Consume context for a session")
+    pc_consume.add_argument("--project-root", **_pc_root_kwargs)
+    pc_consume.add_argument("--session-id", dest="session_id", default="")
+
     # test-state: SQLite-backed authority (WS3 — replaces flat-file bridge)
     ts_p = subparsers.add_parser(
         "test-state", help="Read/write test state from the SQLite test_state table"
@@ -6081,10 +6819,35 @@ def build_parser() -> argparse.ArgumentParser:
     ts_set.add_argument("--failed", type=int, default=0, help="Number of failing tests")
     ts_set.add_argument("--total", type=int, default=0, help="Total test count")
 
-    # scratchlane — task-local artifact roots under tmp/.claude-scratch/<task>
+    # admission — Guardian Admission custody classifier
+    adm_p = subparsers.add_parser(
+        "admission",
+        help="Guardian Admission custody classifier",
+    )
+    adm_sub = adm_p.add_subparsers(dest="action", required=True)
+    adm_classify = adm_sub.add_parser(
+        "classify",
+        help="Classify implementation/source-write custody from a JSON payload",
+    )
+    adm_classify.add_argument(
+        "--payload",
+        required=True,
+        help="JSON object with trigger, cwd/project_root/target_path, and optional runtime ids",
+    )
+    adm_apply = adm_sub.add_parser(
+        "apply",
+        help="Apply the admission decision when scratchlane custody is authorized",
+    )
+    adm_apply.add_argument(
+        "--payload",
+        required=True,
+        help="JSON object with trigger, cwd/project_root/target_path, and optional runtime ids",
+    )
+
+    # scratchlane — task-local artifact roots under tmp/<task>
     sl_p = subparsers.add_parser(
         "scratchlane",
-        help="Task-local scratchlane permits under tmp/.claude-scratch/",
+        help="Task-local scratchlane permits under tmp/",
     )
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
     _sl_root_kwargs = {
@@ -6128,6 +6891,13 @@ def build_parser() -> argparse.ArgumentParser:
     sl_resolve.add_argument("--session-id", dest="session_id", required=True)
     sl_resolve.add_argument("--granted-by", dest="granted_by", default="user_prompt")
     sl_resolve.add_argument("--project-root", **_sl_root_kwargs)
+
+    sl_cleanup = sl_sub.add_parser(
+        "cleanup-empty",
+        help="Remove empty scratchlane roots for a completed session",
+    )
+    sl_cleanup.add_argument("--session-id", dest="session_id", required=True)
+    sl_cleanup.add_argument("--project-root", **_sl_root_kwargs)
 
     # eval — Behavioral Evaluation Framework CLI
     ev_p = subparsers.add_parser("eval", help="Behavioral Evaluation Framework")
@@ -6534,8 +7304,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_completion(args)
     if args.domain == "critic-review":
         return _handle_critic_review(args)
+    if args.domain == "critic-run":
+        return _handle_critic_run(args)
+    if args.domain == "session-activity":
+        return _handle_session_activity(args)
+    if args.domain == "enforcement-gap":
+        return _handle_enforcement_gap(args)
+    if args.domain == "lint-state":
+        return _handle_lint_state(args)
+    if args.domain == "preserved-context":
+        return _handle_preserved_context(args)
     if args.domain == "test-state":
         return _handle_test_state(args)
+    if args.domain == "admission":
+        return _handle_admission(args)
     if args.domain == "scratchlane":
         return _handle_scratchlane(args)
     if args.domain == "eval":

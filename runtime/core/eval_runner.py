@@ -70,6 +70,7 @@ Rationale: The scoring pipeline (eval_scorer) was previously unused — the
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -82,6 +83,10 @@ import yaml
 
 import runtime.core.eval_metrics as eval_metrics
 import runtime.core.eval_scorer as eval_scorer
+from runtime.core import leases as leases_mod
+from runtime.core import work_admission as work_admission_mod
+from runtime.core import workflows as workflows_mod
+from runtime.core.db import connect_memory
 from runtime.core.policy_engine import (
     PolicyContext,
     PolicyDecision,
@@ -89,6 +94,7 @@ from runtime.core.policy_engine import (
     default_registry,
 )
 from runtime.eval_schemas import EVAL_CATEGORIES, EVAL_MODES
+from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -198,6 +204,8 @@ def setup_fixture(
     fixture_name: str,
     fixtures_dir: Path,
     project_tmp: Path,
+    *,
+    git_enabled: bool = True,
 ) -> Path:
     """Copy a fixture to a temp directory and initialize a git repo.
 
@@ -228,6 +236,9 @@ def setup_fixture(
 
     # Copy all fixture files
     shutil.copytree(str(fixture_src), str(dest), dirs_exist_ok=True)
+
+    if not git_enabled:
+        return dest
 
     # Initialize git repo
     _run_git(dest, ["init", "-b", "main"])
@@ -301,6 +312,10 @@ def run_deterministic(
     start_ms = int(time.monotonic() * 1000)
 
     try:
+        setup: dict = scenario.get("setup") or {}
+        if setup.get("eval_target") == "admission":
+            return run_admission_deterministic(scenario, fixture_path, repo_root)
+
         registry = default_registry()
 
         # Determine the target file path for the synthetic Write payload.
@@ -321,7 +336,6 @@ def run_deterministic(
         # continue to exercise the non-implementer deny branch after the
         # Phase 8 Slice 11 tester retirement.
         # DEC-EVAL-RUNNER-002: injecting actor_role directly, not via DB.
-        setup: dict = scenario.get("setup") or {}
         actor_role: str = setup.get("actor_role", "reviewer")
 
         from runtime.core.authority_registry import capabilities_for as _capabilities_for
@@ -388,6 +402,83 @@ def run_deterministic(
             "duration_ms": duration_ms,
             "error": str(exc),
         }
+
+
+def _admission_payload(scenario: dict, fixture_path: Path) -> dict:
+    input_block = scenario.get("input") or {}
+    raw_payload = input_block.get("payload") or {}
+    payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+    payload.setdefault("project_root", str(fixture_path))
+    payload.setdefault("cwd", str(fixture_path))
+    target = str(payload.get("target_path") or "")
+    if target and not os.path.isabs(target):
+        payload["target_path"] = str(fixture_path / target)
+    return payload
+
+
+def _seed_admission_runtime(conn: sqlite3.Connection, scenario: dict, fixture_path: Path) -> None:
+    setup = scenario.get("setup") or {}
+    workflow_id = str(setup.get("workflow_id") or "wf-admission")
+    branch = str(setup.get("branch") or "feature/admission")
+    if setup.get("bind_workflow"):
+        workflows_mod.bind_workflow(
+            conn,
+            workflow_id=workflow_id,
+            worktree_path=str(fixture_path),
+            branch=branch,
+        )
+    if setup.get("set_scope"):
+        workflows_mod.set_scope(
+            conn,
+            workflow_id,
+            allowed_paths=list(setup.get("allowed_paths") or ["src/**"]),
+            required_paths=list(setup.get("required_paths") or []),
+            forbidden_paths=list(setup.get("forbidden_paths") or []),
+            authority_domains=list(setup.get("authority_domains") or []),
+        )
+    if setup.get("issue_implementer_lease"):
+        leases_mod.issue(
+            conn,
+            role="implementer",
+            worktree_path=str(fixture_path),
+            workflow_id=workflow_id,
+            branch=branch,
+        )
+
+
+def run_admission_deterministic(
+    scenario: dict,
+    fixture_path: Path,
+    repo_root: Path,
+) -> dict:
+    """Execute a deterministic Guardian Admission classifier scenario."""
+    del repo_root
+    start_ms = int(time.monotonic() * 1000)
+    conn = connect_memory()
+    try:
+        ensure_schema(conn)
+        _seed_admission_runtime(conn, scenario, fixture_path)
+        result = work_admission_mod.classify_payload(
+            conn,
+            _admission_payload(scenario, fixture_path),
+        )
+        duration_ms = int(time.monotonic() * 1000) - start_ms
+        return {
+            "verdict": str(result.get("verdict") or "error"),
+            "raw_output": json.dumps(result, sort_keys=True),
+            "duration_ms": duration_ms,
+            "error": None,
+        }
+    except Exception as exc:
+        duration_ms = int(time.monotonic() * 1000) - start_ms
+        return {
+            "verdict": "error",
+            "raw_output": "",
+            "duration_ms": duration_ms,
+            "error": str(exc),
+        }
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +568,13 @@ def run_scenario(
 
     try:
         # Setup
-        fixture_path = setup_fixture(fixture_name, fixtures_dir, project_tmp)
+        setup = scenario.get("setup") or {}
+        fixture_path = setup_fixture(
+            fixture_name,
+            fixtures_dir,
+            project_tmp,
+            git_enabled=bool(setup.get("git", True)),
+        )
 
         # Execute
         if mode == "deterministic":

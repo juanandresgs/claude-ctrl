@@ -72,7 +72,7 @@ Rationale: Incident (cutover-maintenance slice 0022/0023): an orchestrator
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, FrozenSet, Optional
 
@@ -82,6 +82,7 @@ from runtime.core.policy_utils import (
     current_workflow_id,
     detect_project_root,
     is_claude_meta_repo,
+    is_path_under,
     normalize_path,
 )
 
@@ -112,6 +113,8 @@ class PolicyContext:
     binding: Optional[dict]  # workflow_binding record, or None
     dispatch_phase: Optional[str]  # derived from completions, or None
     enforcement_config: dict = field(default_factory=dict)  # DEC-CONFIG-AUTHORITY-001
+    enforcement_gaps: tuple[dict, ...] = field(default_factory=tuple)
+    policy_strikes: dict = field(default_factory=dict)
     # Resolved capability set for actor_role — populated by build_context() via
     # authority_registry.capabilities_for(resolved_role). Policy functions use
     # this field instead of raw role-name string comparisons so that capability
@@ -298,6 +301,28 @@ class PolicyRegistry:
           - No deny and no feedback → default allow
         """
         last_feedback: Optional[PolicyDecision] = None
+        pending_effects: dict = {}
+
+        def merge_effects(base: dict, update: Optional[dict]) -> dict:
+            if not update:
+                return base
+            merged = dict(base)
+            for key, value in update.items():
+                if key == "policy_strikes":
+                    existing = list(merged.get(key) or [])
+                    if isinstance(value, list):
+                        existing.extend(value)
+                    else:
+                        existing.append(value)
+                    merged[key] = existing
+                else:
+                    merged[key] = value
+            return merged
+
+        def with_pending_effects(decision: PolicyDecision) -> PolicyDecision:
+            if not pending_effects:
+                return decision
+            return replace(decision, effects=pending_effects)
 
         for entry in self._entries:
             if not entry.enabled:
@@ -310,8 +335,10 @@ class PolicyRegistry:
             if result is None:
                 continue
 
+            pending_effects = merge_effects(pending_effects, result.effects)
+
             if result.action == "deny":
-                return result
+                return with_pending_effects(result)
 
             if result.action == "feedback":
                 last_feedback = result
@@ -322,12 +349,13 @@ class PolicyRegistry:
             # unconditionally allow should return None instead.
 
         if last_feedback is not None:
-            return last_feedback
+            return with_pending_effects(last_feedback)
 
         return PolicyDecision(
             action="allow",
             reason="all policies passed",
             policy_name="default",
+            effects=pending_effects or None,
         )
 
     def explain(self, request: PolicyRequest) -> list[PolicyEvaluation]:
@@ -673,6 +701,8 @@ def build_context(
         worktree_path = lease.get("worktree_path", cwd) or cwd
     elif binding:
         worktree_path = binding.get("worktree_path", cwd) or cwd
+    elif project_root and is_path_under(project_root, cwd):
+        worktree_path = project_root
 
     # --- Branch ---
     branch = ""
@@ -766,6 +796,29 @@ def build_context(
     except Exception:
         pass  # fail-safe: empty dict → policies use built-in defaults
 
+    # --- Enforcement gaps ---
+    # Structured runtime state consumed by write_enforcement_gap. Kept in the
+    # context so policies remain pure and never read project-local flatfiles.
+    enforcement_gaps: tuple[dict, ...] = ()
+    try:
+        from runtime.core import enforcement_gaps as _eg_mod
+
+        enforcement_gaps = tuple(_eg_mod.list_open(conn, project_root=project_root))
+    except Exception:
+        enforcement_gaps = ()
+
+    # --- Policy strike counters ---
+    # Escalating warn-then-deny policies read strike state from context and
+    # return effects for cli.py to persist, preserving policy purity while
+    # keeping counters in state.db.
+    policy_strikes: dict = {}
+    try:
+        from runtime.core import policy_strikes as _ps_mod
+
+        policy_strikes = _ps_mod.list_for_project(conn, project_root=project_root)
+    except Exception:
+        policy_strikes = {}
+
     # --- Scratchlane permits (task-local artifact roots) ---
     scratchlane_roots: FrozenSet[str] = frozenset()
     try:
@@ -821,6 +874,8 @@ def build_context(
         binding=binding,
         dispatch_phase=dispatch_phase,
         enforcement_config=enforcement_config,
+        enforcement_gaps=enforcement_gaps,
+        policy_strikes=policy_strikes,
         capabilities=_capabilities_for(canonical_role),
         worktree_lease_suppressed_roles=suppressed_roles,
         scratchlane_roots=scratchlane_roots,

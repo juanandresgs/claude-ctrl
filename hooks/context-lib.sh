@@ -128,18 +128,19 @@ get_session_changes() {
     local root="$1"
     SESSION_CHANGED_COUNT=0
     SESSION_FILE=""
+    SESSION_CHANGES_TEXT=""
+    SESSION_CHANGES_JSON='{"items":[],"count":0}'
 
     local session_id
     session_id=$(canonical_session_id)
-    if [[ -n "$session_id" && -f "$root/.claude/.session-changes-${session_id}" ]]; then
-        SESSION_FILE="$root/.claude/.session-changes-${session_id}"
-    elif [[ -f "$root/.claude/.session-changes" ]]; then
-        SESSION_FILE="$root/.claude/.session-changes"
-    fi
+    [[ -n "$session_id" ]] || return 0
 
-    if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
-        SESSION_CHANGED_COUNT=$(sort -u "$SESSION_FILE" | wc -l | tr -d ' ')
-    fi
+    SESSION_CHANGES_JSON=$(cc_policy session-activity change-list \
+        --project-root "$root" \
+        --session-id "$session_id" 2>/dev/null || echo '{"items":[],"count":0}')
+    SESSION_CHANGED_COUNT=$(printf '%s' "$SESSION_CHANGES_JSON" | jq -r '.count // 0' 2>/dev/null || echo "0")
+    [[ "$SESSION_CHANGED_COUNT" =~ ^[0-9]+$ ]] || SESSION_CHANGED_COUNT=0
+    SESSION_CHANGES_TEXT=$(printf '%s' "$SESSION_CHANGES_JSON" | jq -r '.items[]?.file_path // empty' 2>/dev/null || true)
 }
 
 # --- Research log status ---
@@ -161,7 +162,7 @@ get_research_status() {
 # Single source of truth for source file extensions across all hooks.
 # DECISION: Consolidated extension list. Rationale: Source file regex was
 # copy-pasted in 8+ hooks creating drift risk. Status: accepted.
-SOURCE_EXTENSIONS='ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
+SOURCE_EXTENSIONS='ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|vue|svelte|css|scss|sass|less|html|htm|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
 
 # Check if a file is a source file by extension
 is_source_file() {
@@ -169,19 +170,59 @@ is_source_file() {
     [[ "$file" =~ \.($SOURCE_EXTENSIONS)$ ]]
 }
 
-# Check if a file should be skipped (test, config, generated, vendor)
+# Check if a file should be skipped (generated, vendor/build output).
+# Config and test files are source for governance/write authority.
 is_skippable_path() {
     local file="$1"
-    # Skip config files, test files, generated files
-    [[ "$file" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && return 0
+    # Skip generated/minified files
+    [[ "$file" =~ (\.generated\.|\.min\.) ]] && return 0
     # Skip vendor/build directories
-    [[ "$file" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && return 0
+    [[ "$file" =~ (^|/)(node_modules|vendor|dist|build|\.next|__pycache__|\.git)(/|$) ]] && return 0
     return 1
 }
 
+_SCRATCHLANE_PATH_CACHE_ROOT=""
+_SCRATCHLANE_PATH_CACHE=""
+
 is_scratchlane_path() {
     local file="$1"
-    [[ "$file" == tmp/.claude-scratch/* || "$file" == */tmp/.claude-scratch/* ]]
+    [[ -n "$file" ]] || return 1
+
+    local root="${PROJECT_ROOT:-}"
+    if [[ -z "$root" ]]; then
+        root=$(detect_project_root 2>/dev/null || true)
+    fi
+    [[ -n "$root" && -d "$root" ]] || return 1
+
+    local abs="$file"
+    if [[ "$abs" != /* ]]; then
+        abs="$root/$abs"
+    fi
+
+    local parent base
+    parent=$(dirname "$abs")
+    base=$(basename "$abs")
+    if [[ -d "$parent" ]]; then
+        parent=$(cd "$parent" 2>/dev/null && pwd -P) || return 1
+        abs="$parent/$base"
+    fi
+
+    if [[ "${_SCRATCHLANE_PATH_CACHE_ROOT:-}" != "$root" ]]; then
+        _SCRATCHLANE_PATH_CACHE_ROOT="$root"
+        _SCRATCHLANE_PATH_CACHE=$(cc_policy scratchlane list --project-root "$root" 2>/dev/null \
+            | jq -r '.items[]?.root_path // empty' 2>/dev/null) || _SCRATCHLANE_PATH_CACHE=""
+    fi
+
+    local scratch_root
+    while IFS= read -r scratch_root; do
+        [[ -n "$scratch_root" ]] || continue
+        if [[ -d "$scratch_root" ]]; then
+            scratch_root=$(cd "$scratch_root" 2>/dev/null && pwd -P) || continue
+        fi
+        [[ "$abs" == "$scratch_root" || "$abs" == "$scratch_root/"* ]] && return 0
+    done <<< "$_SCRATCHLANE_PATH_CACHE"
+
+    return 1
 }
 
 # --- Source mutation fingerprint (DEC-EVAL-006) ---

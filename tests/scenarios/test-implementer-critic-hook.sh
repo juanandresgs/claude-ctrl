@@ -16,6 +16,7 @@ set -euo pipefail
 TEST_NAME="test-implementer-critic-hook"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/implementer-critic.sh"
+SURFACE_HOOK="$REPO_ROOT/hooks/surface.sh"
 RUNTIME="$REPO_ROOT/runtime/cli.py"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/state.db"
@@ -93,10 +94,10 @@ else
     else
         fail "hook output shows actionable next steps (got: $CONTEXT)"
     fi
-    if [[ "$CONTEXT" == *"Implementer critic artifact:"* ]]; then
-        pass "hook output shows artifact path"
+    if [[ "$CONTEXT" != *"Implementer critic artifact:"* ]]; then
+        pass "hook output keeps critic details in state.db instead of artifact path"
     else
-        fail "hook output shows artifact path (got: $CONTEXT)"
+        fail "hook output should not show artifact path (got: $CONTEXT)"
     fi
 fi
 
@@ -104,15 +105,83 @@ LATEST=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
     critic-review latest --workflow-id "wf-critic-hook" 2>/dev/null)
 VERDICT=$(printf '%s' "$LATEST" | jq -r '.verdict // empty')
 ARTIFACT_PATH=$(printf '%s' "$LATEST" | jq -r '.metadata.artifact_path // empty')
+ARTIFACT_REF=$(printf '%s' "$LATEST" | jq -r '.metadata.artifact_ref // empty')
+CRITIC_RUN=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
+    critic-run latest --workflow-id "wf-critic-hook" 2>/dev/null)
+RUN_STATUS=$(printf '%s' "$CRITIC_RUN" | jq -r '.status // empty')
+RUN_VERDICT=$(printf '%s' "$CRITIC_RUN" | jq -r '.verdict // empty')
+RUN_TRACE=$(printf '%s' "$CRITIC_RUN" | jq -r '.trace_session_id // empty')
 if [[ "$VERDICT" == "TRY_AGAIN" ]]; then
     pass "critic review persisted with TRY_AGAIN verdict"
 else
     fail "critic review persisted with TRY_AGAIN verdict (got: $VERDICT)"
 fi
-if [[ -n "$ARTIFACT_PATH" && -f "$ARTIFACT_PATH" ]]; then
-    pass "critic review artifact is written"
+if [[ "$RUN_STATUS" == "completed" && "$RUN_VERDICT" == "TRY_AGAIN" && "$RUN_TRACE" == critic-run:* ]]; then
+    pass "critic run telemetry persisted with trace id"
 else
-    fail "critic review artifact is written (path=$ARTIFACT_PATH)"
+    fail "critic run telemetry persisted with trace id (status=$RUN_STATUS verdict=$RUN_VERDICT trace=$RUN_TRACE)"
+fi
+if [[ -z "$ARTIFACT_PATH" && "$ARTIFACT_REF" == state.db:critic-run:* ]]; then
+    pass "critic review details stay in state.db"
+else
+    fail "critic review details stay in state.db (path=$ARTIFACT_PATH ref=$ARTIFACT_REF)"
+fi
+if [[ ! -d "$ARTIFACT_DIR" ]]; then
+    pass "critic hook does not create review-artifact flatfiles"
+else
+    fail "critic hook should not create review-artifact flatfiles"
+fi
+
+PAYLOAD_ROOT_DB="$WORKTREE/.claude/state.db"
+STALE_PARENT="$TMP_DIR/stale-parent"
+mkdir -p "$WORKTREE/.claude" "$STALE_PARENT"
+CLAUDE_PROJECT_DIR="$WORKTREE" python3 "$RUNTIME" schema ensure >/dev/null 2>&1
+LEASE_JSON_PAYLOAD=$(CLAUDE_PROJECT_DIR="$WORKTREE" python3 "$RUNTIME" \
+    lease issue-for-dispatch implementer \
+    --workflow-id "wf-payload-root" \
+    --worktree-path "$WORKTREE" 2>/dev/null)
+LEASE_ID_PAYLOAD=$(printf '%s' "$LEASE_JSON_PAYLOAD" | jq -r '.lease.lease_id // empty')
+CLAUDE_PROJECT_DIR="$WORKTREE" python3 "$RUNTIME" \
+    completion submit \
+    --lease-id "$LEASE_ID_PAYLOAD" \
+    --workflow-id "wf-payload-root" \
+    --role implementer \
+    --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"payload123"}' >/dev/null 2>&1
+
+PAYLOAD_WITH_CWD=$(jq -n \
+    --arg cwd "$WORKTREE" \
+    '{hook_event_name:"SubagentStop", agent_type:"implementer", cwd:$cwd, last_assistant_message:"Implemented.\nIMPL_STATUS: complete\nIMPL_HEAD_SHA: payload123"}')
+OUTPUT_PAYLOAD_ROOT=$(printf '%s' "$PAYLOAD_WITH_CWD" \
+    | CLAUDE_PROJECT_DIR="$STALE_PARENT" \
+      CLAUDEX_REVIEW_ARTIFACT_DIR="$ARTIFACT_DIR" \
+      CLAUDEX_IMPLEMENTER_CRITIC_TEST_RESPONSE="$TEST_RESPONSE" \
+      "$HOOK" 2>/dev/null || true)
+LATEST_PAYLOAD=$(CLAUDE_PROJECT_DIR="$WORKTREE" python3 "$RUNTIME" \
+    critic-review latest --workflow-id "wf-payload-root" 2>/dev/null)
+PAYLOAD_VERDICT=$(printf '%s' "$LATEST_PAYLOAD" | jq -r '.verdict // empty')
+STALE_DB="$STALE_PARENT/.claude/state.db"
+if [[ "$PAYLOAD_VERDICT" == "TRY_AGAIN" && ! -f "$STALE_DB" ]]; then
+    pass "hook seeds project root from SubagentStop payload cwd before DB resolution"
+else
+    fail "hook seeds project root from payload cwd (verdict=$PAYLOAD_VERDICT stale_db_exists=$([[ -f "$STALE_DB" ]] && echo yes || echo no) output=$OUTPUT_PAYLOAD_ROOT)"
+fi
+
+SURFACE_PAYLOAD=$(jq -n --arg cwd "$WORKTREE" '{hook_event_name:"Stop", stop_hook_active:false, cwd:$cwd}')
+SURFACE_OUT=$(printf '%s' "$SURFACE_PAYLOAD" \
+    | CLAUDE_PROJECT_DIR="$STALE_PARENT" "$SURFACE_HOOK" 2>/dev/null || true)
+SURFACE_MSG=$(printf '%s' "$SURFACE_OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)
+if [[ "$SURFACE_MSG" == *"Codex critic review surfaced:"* && "$SURFACE_MSG" == *"verdict: TRY_AGAIN"* && "$SURFACE_MSG" == *"Critic next steps:"* ]]; then
+    pass "Stop surface emits visible critic digest from payload-root DB"
+else
+    fail "Stop surface emits visible critic digest (got=$SURFACE_OUT)"
+fi
+
+SURFACE_OUT_AGAIN=$(printf '%s' "$SURFACE_PAYLOAD" \
+    | CLAUDE_PROJECT_DIR="$STALE_PARENT" "$SURFACE_HOOK" 2>/dev/null || true)
+if [[ -z "$SURFACE_OUT_AGAIN" ]]; then
+    pass "Stop surface de-duplicates already surfaced critic run"
+else
+    fail "Stop surface de-duplicates already surfaced critic run (got=$SURFACE_OUT_AGAIN)"
 fi
 
 DISPATCH=$(printf '{"agent_type":"implementer","project_root":"%s"}' "$WORKTREE" \
@@ -252,6 +321,15 @@ if [[ "$FALLBACK_CONTEXT" == *"provider=reviewer-subagent"* && "$FALLBACK_CONTEX
     pass "reviewer subagent fallback is explicit when external critic is unavailable"
 else
     fail "reviewer subagent fallback is explicit (got: $FALLBACK_CONTEXT)"
+fi
+FALLBACK_RUN=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
+    critic-run latest --workflow-id "wf-critic-fallback" 2>/dev/null)
+FALLBACK_RUN_STATUS=$(printf '%s' "$FALLBACK_RUN" | jq -r '.status // empty')
+FALLBACK_RUN_VERDICT=$(printf '%s' "$FALLBACK_RUN" | jq -r '.verdict // empty')
+if [[ "$FALLBACK_RUN_STATUS" == "fallback_required" && "$FALLBACK_RUN_VERDICT" == "CRITIC_UNAVAILABLE" ]]; then
+    pass "critic run persists unavailable fallback for statusline"
+else
+    fail "critic run persists unavailable fallback (status=$FALLBACK_RUN_STATUS verdict=$FALLBACK_RUN_VERDICT)"
 fi
 
 echo ""

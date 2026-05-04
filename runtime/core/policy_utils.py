@@ -140,6 +140,15 @@ SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         "cjs",
         "mts",
         "cts",
+        "astro",
+        "vue",
+        "svelte",
+        "css",
+        "scss",
+        "sass",
+        "less",
+        "html",
+        "htm",
         "py",
         "rs",
         "go",
@@ -159,7 +168,8 @@ SOURCE_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
-SCRATCHLANE_PARENT_REL: str = "tmp/.claude-scratch"
+SCRATCHLANE_PARENT_REL: str = "tmp"
+LEGACY_SCRATCHLANE_PARENT_REL: str = "tmp/.claude-scratch"
 
 PATH_KIND_META: str = "meta"
 PATH_KIND_ARTIFACT: str = "artifact"
@@ -191,6 +201,16 @@ def scratchlane_parent(project_root: str) -> str:
 def scratchlane_root(project_root: str, task_slug: str) -> str:
     """Return the canonical absolute root for a task-local scratchlane."""
     return normalize_path(os.path.join(project_root, SCRATCHLANE_PARENT_REL, sanitize_token(task_slug)))
+
+
+def legacy_scratchlane_parent(project_root: str) -> str:
+    """Return the pre-local-tmp scratchlane parent for migration/cleanup."""
+    return normalize_path(os.path.join(project_root, LEGACY_SCRATCHLANE_PARENT_REL))
+
+
+def legacy_scratchlane_root(project_root: str, task_slug: str) -> str:
+    """Return the pre-local-tmp scratchlane root for migration/cleanup."""
+    return normalize_path(os.path.join(project_root, LEGACY_SCRATCHLANE_PARENT_REL, sanitize_token(task_slug)))
 
 
 def _strip_worktree_prefix(path: str) -> str:
@@ -287,12 +307,37 @@ def is_tracked_repo_path(project_root: str, repo_relative_path: str | None) -> b
     return result.returncode == 0
 
 
-def _is_path_under(root: str, path: str) -> bool:
+def is_path_under(root: str, path: str) -> bool:
     if not root or not path:
         return False
     canonical_root = normalize_path(root)
     canonical_path = normalize_path(path)
     return canonical_path == canonical_root or canonical_path.startswith(canonical_root + os.sep)
+
+
+def _is_path_under(root: str, path: str) -> bool:
+    return is_path_under(root, path)
+
+
+def _scratchlane_task_slug_from_repo_path(repo_relative_path: str | None) -> str:
+    if not repo_relative_path:
+        return ""
+    parts = normalize_repo_path(repo_relative_path).split("/")
+    if len(parts) < 3:
+        return ""
+    if parts[0] != "tmp" or parts[1] == ".claude-scratch":
+        return ""
+    return sanitize_token(parts[1])
+
+
+def _legacy_scratchlane_task_slug(repo_relative_path: str | None) -> str:
+    if not repo_relative_path:
+        return ""
+    parts = normalize_repo_path(repo_relative_path).split("/")
+    for idx in range(0, len(parts) - 2):
+        if parts[idx] == "tmp" and parts[idx + 1] == ".claude-scratch":
+            return sanitize_token(parts[idx + 2])
+    return ""
 
 
 def classify_policy_path(
@@ -307,12 +352,14 @@ def classify_policy_path(
     Classification order is authoritative:
       1. ``meta``               — under ``{project_root}/.claude/``
       2. ``artifact``           — under an approved scratchlane root
-      3. ``artifact_candidate`` — under ``tmp/.claude-scratch/`` but not approved
-      4. ``governance``         — canonical governance path in repo namespace
-      5. ``constitution``       — canonical constitution-level repo path
-      6. ``tmp_source_candidate`` — source-looking file under ``tmp/`` outside scratchlane
-      7. ``source``             — regular non-skippable source file
-      8. ``other``              — anything else
+      3. ``artifact_candidate`` — under ``tmp/<task>/`` but not approved
+      4. ``artifact_candidate`` — legacy scratchlane path; the
+                                  scratchlane gate owns correction
+      5. ``governance``         — canonical governance path in repo namespace
+      6. ``constitution``       — canonical constitution-level repo path
+      7. ``tmp_source_candidate`` — source-looking file under ``tmp/`` outside scratchlane
+      8. ``source``             — regular non-skippable source file
+      9. ``other``              — anything else
     """
     raw_path = path or ""
     canonical_project_root = normalize_path(project_root) if project_root else ""
@@ -339,29 +386,40 @@ def classify_policy_path(
         )
 
     if canonical_project_root:
-        scratch_parent_path = scratchlane_parent(canonical_project_root)
-        if _is_path_under(scratch_parent_path, normalized_path):
-            parts = [part for part in Path(normalized_path).parts if part]
-            task_slug = ""
-            scratch_parts = Path(scratch_parent_path).parts
-            if len(parts) > len(scratch_parts):
-                task_slug = sanitize_token(parts[len(scratch_parts)])
-            matched_root = ""
-            for root in scratch_roots:
-                if _is_path_under(root, normalized_path):
-                    matched_root = normalize_path(root)
-                    break
+        for root in scratch_roots:
+            if _is_path_under(root, normalized_path):
+                matched_root = normalize_path(root)
+                return PolicyPathInfo(
+                    raw_path=raw_path,
+                    normalized_path=normalized_path,
+                    repo_relative_path=repo_relative_path,
+                    kind=PATH_KIND_ARTIFACT,
+                    task_slug=sanitize_token(Path(matched_root).name),
+                    scratch_root=matched_root,
+                )
+
+    if canonical_project_root:
+        task_slug = _scratchlane_task_slug_from_repo_path(repo_relative_path)
+        if task_slug:
             return PolicyPathInfo(
                 raw_path=raw_path,
                 normalized_path=normalized_path,
                 repo_relative_path=repo_relative_path,
-                kind=PATH_KIND_ARTIFACT if matched_root else PATH_KIND_ARTIFACT_CANDIDATE,
+                kind=PATH_KIND_ARTIFACT_CANDIDATE,
                 task_slug=task_slug,
-                scratch_root=matched_root or (
-                    scratchlane_root(canonical_project_root, task_slug)
-                    if task_slug
-                    else ""
-                ),
+                scratch_root=scratchlane_root(canonical_project_root, task_slug),
+            )
+
+    if canonical_project_root:
+        legacy_task_slug = _legacy_scratchlane_task_slug(repo_relative_path)
+        if legacy_task_slug:
+            return PolicyPathInfo(
+                raw_path=raw_path,
+                normalized_path=normalized_path,
+                repo_relative_path=repo_relative_path,
+                kind=PATH_KIND_ARTIFACT_CANDIDATE,
+                task_slug=legacy_task_slug,
+                scratch_root=scratchlane_root(canonical_project_root, legacy_task_slug),
             )
 
     if is_governance_repo_path(repo_relative_path):
@@ -425,21 +483,26 @@ def is_source_file(path: str) -> bool:
 
 
 def is_skippable_path(path: str) -> bool:
-    """Check if a path is test/config/generated/vendor and should be skipped.
+    """Check if a path is generated/vendor output and should be skipped.
 
     Matches: hooks/context-lib.sh:184 is_skippable_path()
 
     Two groups of patterns (same as shell):
-      Group 1 — file-level patterns: .config., .test., .spec., __tests__,
-                 .generated., .min.
+      Group 1 — file-level patterns: .generated., .min.
       Group 2 — directory-level patterns: node_modules, vendor, dist, build,
                  .next, __pycache__, .git
+
+    Config and test source files are intentionally not skipped. They are
+    implementation surface for write authority, plan enforcement, and
+    evaluation invalidation even when some downstream lint/test hooks choose
+    to treat them specially.
     """
     # Group 1: file-level markers
-    if re.search(r"(\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.)", path):
+    normalized = path.replace("\\", "/")
+    if re.search(r"(\.generated\.|\.min\.)", normalized):
         return True
     # Group 2: directory-level markers
-    if re.search(r"(node_modules|vendor|dist|build|\.next|__pycache__|\.git)", path):
+    if re.search(r"(^|/)(node_modules|vendor|dist|build|\.next|__pycache__|\.git)(/|$)", normalized):
         return True
     return False
 

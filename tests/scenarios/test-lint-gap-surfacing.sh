@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-lint-gap-surfacing.sh: Pre-seed .enforcement-gaps, pipe a SessionStart
+# test-lint-gap-surfacing.sh: Pre-seed state.db, pipe a SessionStart
 # payload to session-init.sh — output must contain "ENFORCEMENT DEGRADED".
 #
 # @decision DEC-LINT-TEST-007
@@ -7,8 +7,8 @@
 # @status accepted
 # @rationale Verifies that persisted gaps survive session boundaries and are
 #   surfaced to the model at session start. session-init.sh reads
-#   .enforcement-gaps and adds "ENFORCEMENT DEGRADED" entries to
-#   CONTEXT_PARTS, so the model knows enforcement is degraded before it
+#   enforcement_gaps from state.db and adds "ENFORCEMENT DEGRADED" entries
+#   to CONTEXT_PARTS, so the model knows enforcement is degraded before it
 #   writes anything in the new session.
 set -euo pipefail
 
@@ -27,14 +27,17 @@ git -C "$TMP_DIR" config user.name "Test"
 git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 
 # Pre-seed two enforcement gaps — one unsupported, one missing_dep
-GAPS_FILE="$TMP_DIR/.claude/.enforcement-gaps"
-printf 'unsupported|java|none|1711929600|3\n' > "$GAPS_FILE"
-printf 'missing_dep|rs|clippy|1711929600|1\n' >> "$GAPS_FILE"
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    enforcement-gap record --project-root "$TMP_DIR" --gap-type unsupported --ext java --tool none >/dev/null
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    enforcement-gap record --project-root "$TMP_DIR" --gap-type unsupported --ext java --tool none >/dev/null
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    enforcement-gap record --project-root "$TMP_DIR" --gap-type missing_dep --ext rs --tool clippy >/dev/null
 
 # SessionStart payload (no tool_input, just event type)
 PAYLOAD='{"hookEventName":"SessionStart"}'
 
-output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>/dev/null) || true
+output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" "$HOOK" 2>/dev/null) || true
 
 if [[ -z "$output" ]]; then
     echo "FAIL: $TEST_NAME — session-init.sh produced no output"

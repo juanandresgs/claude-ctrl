@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from runtime.core import work_admission
 from runtime.core.command_intent import (
     extract_bash_write_targets,
     extract_single_simple_command_argv,
@@ -30,6 +31,7 @@ from runtime.core.policy_utils import (
     normalize_path,
     resolve_path_from_base,
     scratchlane_root,
+    sanitize_token,
     suggest_scratchlane_task_slug,
 )
 
@@ -174,34 +176,50 @@ def _wrapper_command(task_slug: str, *, project_root: str = "") -> str:
     return " ".join(parts)
 
 
-def _approval_prompt(task_slug: str) -> str:
-    return f"Allow task scratchlane `tmp/.claude-scratch/{task_slug}/` for this task?"
-
-
-def _approval_effect(
+def _admission_effect(
     *,
+    request: PolicyRequest,
     task_slug: str,
     scratch_root: str,
     requested_path: str,
-    tool_name: str,
     request_reason: str,
 ) -> dict:
     return {
-        "request_scratchlane_approval": {
+        "apply_guardian_admission": {
+            "trigger": "bash_file_mutation",
+            "cwd": request.cwd,
+            "project_root": request.context.project_root,
+            "target_path": requested_path,
+            "workflow_id": request.context.workflow_id,
+            "session_id": request.context.session_id,
+            "tool_name": request.tool_name,
+            "user_prompt": f"obvious scratchlane candidate: {request_reason}",
             "task_slug": task_slug,
             "root_path": scratch_root,
-            "requested_path": requested_path,
-            "tool_name": tool_name,
-            "request_reason": request_reason,
-            "requested_by": "bash_scratchlane_gate",
         }
     }
 
 
-def _approval_clause(task_slug: str) -> str:
+def _root_display(root: str, fallback: str) -> str:
+    display = root or fallback
+    return display if display.endswith("/") else display + "/"
+
+
+def _active_root(root: str, scratch_roots: frozenset[str]) -> str:
+    if not root:
+        return ""
+    expected = normalize_path(root)
+    for item in scratch_roots:
+        candidate = normalize_path(str(item))
+        if candidate == expected:
+            return candidate
+    return ""
+
+
+def _admission_clause(task_slug: str) -> str:
     return (
-        f'Ask the user: "{_approval_prompt(task_slug)}" If they approve, the runtime '
-        "will activate it automatically. Do not tell the user to run any command."
+        f"Guardian Admission authorized task scratchlane `tmp/{task_slug}/`; "
+        "the runtime will activate it automatically."
     )
 
 
@@ -264,42 +282,69 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
         task_slug = info.task_slug or suggest_scratchlane_task_slug(target)
         scratch_root = info.scratch_root or ""
-        scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
-        approval_effect = _approval_effect(
+        scratch_root_display = f"tmp/{task_slug}/"
+        active_root = _active_root(scratch_root, request.context.scratchlane_roots)
+        if active_root:
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    f"BLOCKED: scratchlane '{task_slug}' is active at "
+                    f"`{_root_display(active_root, scratch_root_display)}`, but this "
+                    f"command targets `{target}`. Retry the command with the write "
+                    "target under the active scratchlane root."
+                ),
+                policy_name="bash_scratchlane_gate",
+            )
+        admission_effect = _admission_effect(
+            request=request,
             task_slug=task_slug,
             scratch_root=scratch_root,
             requested_path=target,
-            tool_name=request.tool_name,
             request_reason=info.kind,
         )
+        admission_result = {
+            "verdict": work_admission.VERDICT_SCRATCHLANE_AUTHORIZED,
+            "next_authority": "scratchlane",
+            "reason": "Target is an obvious task-local tmp scratchlane candidate.",
+            "target_path": target,
+            "scratchlane": {
+                "task_slug": task_slug,
+                "root_path": scratch_root,
+                "relative_path": scratch_root_display,
+            },
+        }
         if info.kind == PATH_KIND_ARTIFACT_CANDIDATE:
             reason = (
                 f"BLOCKED: scratchlane '{task_slug}' is not active for this task yet. "
-                f"{_approval_clause(task_slug)} Retry the command after approval."
+                f"{_admission_clause(task_slug)} Retry the command "
+                f"with the write target under `{_root_display(scratch_root, scratch_root_display)}`."
             )
         else:
             reason = (
                 f"BLOCKED: {target} looks like temporary automation, not repo source. "
-                f"{_approval_clause(task_slug)} Retry it with the write target moved "
-                f"under `{scratch_root_display}`."
+                f"{_admission_clause(task_slug)} Retry it with the write target moved "
+                f"under `{_root_display(scratch_root, scratch_root_display)}`."
             )
         return PolicyDecision(
             action="deny",
             reason=reason,
             policy_name="bash_scratchlane_gate",
-            effects=approval_effect,
+            effects=admission_effect,
+            metadata={"guardian_admission": admission_result},
         )
 
     simple_argv = _simple_command_argv(command)
     wrapper_executable = _simple_command_executable(simple_argv)
     if wrapper_executable:
         if _is_scratchlane_exec_path(wrapper_executable, base_dir=base_dir):
+            task_slug = sanitize_token(
+                _wrapper_option(simple_argv, "--task-slug") or "ad-hoc"
+            )
             if project_root and not _wrapper_project_root_matches(
                 simple_argv,
                 base_dir=base_dir,
                 project_root=project_root,
             ):
-                task_slug = _wrapper_option(simple_argv, "--task-slug") or "ad-hoc"
                 return PolicyDecision(
                     action="deny",
                     reason=(
@@ -311,6 +356,42 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
                         "state."
                     ),
                     policy_name="bash_scratchlane_gate",
+                )
+            if project_root and not _active_scratch_root_for_task(
+                project_root=project_root,
+                task_slug=task_slug,
+                scratch_roots=request.context.scratchlane_roots,
+            ):
+                scratch_root = scratchlane_root(project_root, task_slug)
+                scratch_root_display = f"tmp/{task_slug}/"
+                return PolicyDecision(
+                    action="deny",
+                    reason=(
+                        f"BLOCKED: scratchlane '{task_slug}' is not active for this task yet. "
+                        f"{_admission_clause(task_slug)} Retry the same scratchlane "
+                        "executor command after activation."
+                    ),
+                    policy_name="bash_scratchlane_gate",
+                    effects=_admission_effect(
+                        request=request,
+                        task_slug=task_slug,
+                        scratch_root=scratch_root,
+                        requested_path=os.path.join(scratch_root, ".scratchlane"),
+                        request_reason="inactive_wrapper",
+                    ),
+                    metadata={
+                        "guardian_admission": {
+                            "verdict": work_admission.VERDICT_SCRATCHLANE_AUTHORIZED,
+                            "next_authority": "scratchlane",
+                            "reason": "Runtime scratchlane wrapper declared an inactive task lane.",
+                            "target_path": scratch_root,
+                            "scratchlane": {
+                                "task_slug": task_slug,
+                                "root_path": scratch_root,
+                                "relative_path": scratch_root_display,
+                            },
+                        }
+                    },
                 )
             return None
         if _looks_like_scratchlane_exec(wrapper_executable):
@@ -359,13 +440,13 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         )
     if scratch_root:
         needs_grant = False
-    scratch_root_display = f"tmp/.claude-scratch/{task_slug}/"
+    scratch_root_display = f"tmp/{task_slug}/"
     reason = (
         "BLOCKED: raw interpreter execution via Bash is opaque to the pre-tool write gate. "
     )
     if needs_grant:
         reason += (
-            f"{_approval_clause(task_slug)} Then re-run the command through "
+            f"{_admission_clause(task_slug)} Then re-run the command through "
             f"`{_wrapper_command(task_slug, project_root=project_root)}` so the "
             f"interpreter is confined to `{scratch_root_display}`."
         )
@@ -381,13 +462,30 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         reason=reason,
         policy_name="bash_scratchlane_gate",
         effects=(
-            _approval_effect(
+            _admission_effect(
+                request=request,
                 task_slug=task_slug,
                 scratch_root=scratch_root,
                 requested_path=requested_path,
-                tool_name=request.tool_name,
                 request_reason="opaque_interpreter",
             )
+            if needs_grant
+            else None
+        ),
+        metadata=(
+            {
+                "guardian_admission": {
+                    "verdict": work_admission.VERDICT_SCRATCHLANE_AUTHORIZED,
+                    "next_authority": "scratchlane",
+                    "reason": "Opaque interpreter execution requires Guardian-custodied scratchlane confinement.",
+                    "target_path": requested_path,
+                    "scratchlane": {
+                        "task_slug": task_slug,
+                        "root_path": scratch_root,
+                        "relative_path": scratch_root_display,
+                    },
+                }
+            }
             if needs_grant
             else None
         ),
