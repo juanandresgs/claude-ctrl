@@ -211,7 +211,7 @@ def _slug_from_prompt(prompt: str) -> str:
         "tmp",
     }
     selected = [word for word in words if word.lower() not in stop][:5]
-    return sanitize_token("-".join(selected) if selected else "ad-hoc")
+    return sanitize_token("-".join(selected) if selected else "scratchlane")
 
 
 def _scratchlane_identity(
@@ -424,6 +424,13 @@ def classify_facts(facts: dict[str, Any]) -> dict[str, Any]:
             facts,
         )
 
+    if trigger == "bash_opaque_interpreter" and not target_path:
+        return _decision(
+            VERDICT_SCRATCHLANE_AUTHORIZED,
+            "Opaque interpreter execution has no durable source target and requires Guardian-custodied scratchlane confinement.",
+            facts,
+        )
+
     source_like = path_kind == PATH_KIND_SOURCE or trigger in {
         "implementer_dispatch",
         "source_write",
@@ -572,7 +579,7 @@ def format_admission_reason(result: dict[str, Any]) -> str:
         parts.append(reason)
     if verdict == VERDICT_SCRATCHLANE_AUTHORIZED:
         parts.append(
-            "The runtime has Guardian authority to grant this scratchlane; retry the work under the scratchlane root, not at the original durable-source path."
+            "Route to Guardian Admission (`guardian` with `GUARDIAN_MODE: admission`); that mode may run `cc-policy admission apply --payload <json>`, and only after it grants the permit should the work be retried under the scratchlane root."
         )
     elif next_authority == "user":
         parts.append("Ask the user only for this custody decision; do not guess.")

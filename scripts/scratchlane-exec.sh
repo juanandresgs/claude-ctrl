@@ -65,7 +65,7 @@ RUNTIME_CLI="$CONTROL_ROOT/runtime/cli.py"
 PERMIT_JSON="$(python3 "$RUNTIME_CLI" scratchlane get --project-root "$PROJECT_ROOT" --task-slug "$TASK_SLUG")"
 FOUND="$(printf '%s' "$PERMIT_JSON" | jq -r '.found // false' 2>/dev/null || echo false)"
 if [[ "$FOUND" != "true" ]]; then
-    echo "scratchlane-exec: scratchlane '$TASK_SLUG' is not active for $PROJECT_ROOT. Ask the user to approve task scratchlane tmp/$TASK_SLUG/ in chat, then re-run this executor after approval." >&2
+    echo "scratchlane-exec: scratchlane '$TASK_SLUG' is not active for $PROJECT_ROOT. Route the blocked work to Guardian Admission (guardian with GUARDIAN_MODE: admission); that mode may run cc-policy admission apply for this task. Re-run this executor after the permit exists." >&2
     exit 1
 fi
 

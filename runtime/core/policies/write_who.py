@@ -133,8 +133,8 @@ def _scratchlane_target(request: PolicyRequest, source_path: str) -> str:
 
     project_root = request.context.project_root or request.cwd or ""
     if project_root:
-        return os.path.join(project_root, "tmp", "ad-hoc", basename)
-    return os.path.join("tmp", "ad-hoc", basename)
+        return os.path.join(project_root, "tmp", "scratchlane", basename)
+    return os.path.join("tmp", "scratchlane", basename)
 
 
 def _route_steering(request: PolicyRequest, source_path: str) -> str:
@@ -147,8 +147,8 @@ def _route_steering(request: PolicyRequest, source_path: str) -> str:
         f"or user-task output, retry the write under `{scratch_target}` instead. "
         "That keeps the work in the project-local scratchlane (`tmp/<task>/...`). "
         "If that lane is not active yet, Guardian Admission owns the scratchlane "
-        "authorization fork and the runtime will create it when the work is "
-        "obviously temporary."
+        "authorization fork and may create it through `cc-policy admission apply` "
+        "when the work is obviously temporary."
     )
 
 

@@ -435,13 +435,10 @@ def test_write_scratchlane_gate_redirects_tmp_source_candidate(tmp_path):
     assert decision is not None
     assert decision.action == "deny"
     assert "scratchlane" in decision.reason
-    assert "Guardian Admission authorized scratchlane" in decision.reason
-    assert decision.effects is not None
-    assert decision.effects["apply_guardian_admission"]["task_slug"] == "dedup"
-    assert (
-        decision.effects["apply_guardian_admission"]["user_prompt"]
-        == "obvious scratchlane candidate: tmp_source_candidate"
-    )
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
+    assert "GUARDIAN_MODE: admission" in decision.reason
+    assert decision.effects is None
+    assert decision.metadata["guardian_admission"]["scratchlane"]["task_slug"] == "dedup"
 
 
 def test_write_scratchlane_gate_allows_approved_scratchlane(tmp_path):
@@ -490,13 +487,12 @@ def test_legacy_nested_scratchlane_is_redirected_to_local_tmp(tmp_path):
     decision = default_registry().evaluate(request)
     assert decision.action == "deny"
     assert decision.policy_name == "write_scratchlane_gate"
-    assert "Guardian Admission authorized task scratchlane" in decision.reason
-    assert str(canonical_root) in decision.reason
-    assert decision.effects is not None
-    effect = decision.effects["apply_guardian_admission"]
-    assert effect["task_slug"] == "ad-hoc"
-    assert effect["root_path"] == str(canonical_root)
-    assert effect["target_path"] == str(nested_target)
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
+    assert decision.effects is None
+    scratch = decision.metadata["guardian_admission"]["scratchlane"]
+    assert scratch["task_slug"] == "ad-hoc"
+    assert scratch["root_path"] == str(canonical_root)
+    assert decision.metadata["guardian_admission"]["target_path"] == str(nested_target)
 
 
 def test_active_scratchlane_redirects_legacy_path_without_reapproval(tmp_path):
@@ -572,19 +568,55 @@ def test_bash_scratchlane_gate_denies_raw_interpreter(tmp_path):
     decision = bash_scratchlane_gate.check(request)
     assert decision is not None
     assert decision.action == "deny"
-    assert "scripts/scratchlane-exec.sh" in decision.reason
-    assert "runtime will activate it automatically" in decision.reason
-    assert decision.effects is not None
-    assert decision.effects["apply_guardian_admission"]["task_slug"] == "ad-hoc"
-    assert "--project-root" in decision.reason
-    assert str(project_root) in decision.reason
-    assert (
-        decision.effects["apply_guardian_admission"]["user_prompt"]
-        == "obvious scratchlane candidate: opaque_interpreter"
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
+    assert "GUARDIAN_MODE: admission" in decision.reason
+    assert decision.effects is None
+    assert decision.metadata["guardian_admission"]["scratchlane"]["task_slug"] == "wf-test"
+
+
+def test_bash_scratchlane_gate_allows_read_only_inline_json_filter(tmp_path):
+    project_root = tmp_path
+    command = (
+        "cc-policy workflow stage-packet coeditor --stage-id implementer 2>&1 | "
+        "python3 -c \"import json,sys; d=json.load(sys.stdin); "
+        "print(d.get('contract_block_line',''))\""
+    )
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(project_root),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
     )
 
+    assert bash_scratchlane_gate.check(request) is None
 
-def test_bash_scratchlane_gate_does_not_reask_for_active_ad_hoc_lane(tmp_path):
+
+def test_bash_scratchlane_gate_routes_mutating_inline_filter_to_admission(tmp_path):
+    project_root = tmp_path
+    command = (
+        "cc-policy workflow stage-packet coeditor --stage-id implementer | "
+        "python3 -c \"import sys; open('out.json','w').write(sys.stdin.read())\""
+    )
+    request = PolicyRequest(
+        event_type="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": command},
+        context=_make_context(project_root),
+        cwd=str(project_root),
+        command_intent=build_bash_command_intent(command, cwd=str(project_root)),
+    )
+
+    decision = bash_scratchlane_gate.check(request)
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.effects is None
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
+    assert decision.metadata["guardian_admission"]["scratchlane"]["task_slug"] == "wf-test"
+
+
+def test_bash_scratchlane_gate_ignores_active_lane_for_no_target_interpreter(tmp_path):
     project_root = tmp_path
     scratch_root = project_root / "tmp" / "ad-hoc"
     command = "python3 -c 'print(1)'"
@@ -603,9 +635,11 @@ def test_bash_scratchlane_gate_does_not_reask_for_active_ad_hoc_lane(tmp_path):
     decision = bash_scratchlane_gate.check(request)
     assert decision is not None
     assert decision.action == "deny"
-    assert "scripts/scratchlane-exec.sh" in decision.reason
-    assert "Ask the user" not in decision.reason
     assert decision.effects is None
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
+    assert "GUARDIAN_MODE: admission" in decision.reason
+    assert "tmp/ad-hoc" not in decision.reason
+    assert decision.metadata["guardian_admission"]["scratchlane"]["task_slug"] == "wf-test"
 
 
 def test_bash_scratchlane_gate_allows_absolute_runtime_wrapper_command(tmp_path):
@@ -650,14 +684,16 @@ def test_bash_scratchlane_gate_requests_approval_for_inactive_runtime_wrapper(tm
     decision = bash_scratchlane_gate.check(request)
     assert decision is not None
     assert decision.action == "deny"
-    assert "scratchlane 'ad-hoc' is not active" in decision.reason
-    assert decision.effects is not None
-    effect = decision.effects["apply_guardian_admission"]
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
     expected_root = project_root / "tmp" / "ad-hoc"
-    assert effect["task_slug"] == "ad-hoc"
-    assert effect["user_prompt"] == "obvious scratchlane candidate: inactive_wrapper"
-    assert effect["root_path"] == str(expected_root)
-    assert effect["target_path"] == str(expected_root / ".scratchlane")
+    assert str(expected_root) in decision.reason
+    assert decision.effects is None
+    scratch = decision.metadata["guardian_admission"]["scratchlane"]
+    assert scratch["task_slug"] == "ad-hoc"
+    assert scratch["root_path"] == str(expected_root)
+    assert decision.metadata["guardian_admission"]["target_path"] == str(
+        expected_root / ".scratchlane"
+    )
 
 
 def test_bash_scratchlane_gate_allows_relative_wrapper_only_from_runtime_root():
@@ -766,10 +802,11 @@ def test_bash_legacy_nested_scratchlane_target_requests_local_tmp(tmp_path):
     decision = bash_scratchlane_gate.check(request)
     assert decision is not None
     assert decision.action == "deny"
-    assert "scratchlane 'ad-hoc' is not active" in decision.reason
-    assert str(canonical_root) in decision.reason
-    assert decision.effects is not None
-    assert decision.effects["apply_guardian_admission"]["task_slug"] == "ad-hoc"
+    assert "Guardian Admission verdict=scratchlane_authorized" in decision.reason
+    assert decision.effects is None
+    scratch = decision.metadata["guardian_admission"]["scratchlane"]
+    assert scratch["task_slug"] == "ad-hoc"
+    assert scratch["root_path"] == str(canonical_root)
 
 
 def test_bash_active_scratchlane_redirects_legacy_target_without_reapproval(tmp_path):
@@ -1028,11 +1065,8 @@ def test_evaluate_registers_pending_scratchlane_request(tmp_path):
     assert code == 0
     assert out["action"] == "deny"
     assert "scratchlane" in out["reason"]
-    assert (
-        out["runtimeNotification"]["notification_type"]
-        == "guardian_admission_scratchlane_ready"
-    )
-    assert "tmp/dedup" in out["runtimeNotification"]["root_path"]
+    assert "GUARDIAN_MODE: admission" in out["reason"]
+    assert "runtimeNotification" not in out
 
     conn = connect(db_path)
     try:
@@ -1043,9 +1077,7 @@ def test_evaluate_registers_pending_scratchlane_request(tmp_path):
         conn.close()
 
     assert pending is None
-    assert permit is not None
-    assert permit["task_slug"] == "dedup"
-    assert permit["granted_by"] == "guardian_admission"
+    assert permit is None
 
 
 def test_evaluate_registers_pending_scratchlane_request_for_inactive_wrapper(tmp_path):
@@ -1077,12 +1109,9 @@ def test_evaluate_registers_pending_scratchlane_request_for_inactive_wrapper(tmp
 
     assert code == 0
     assert out["action"] == "deny"
-    assert "scratchlane 'ad-hoc' is not active" in out["reason"]
-    assert (
-        out["runtimeNotification"]["notification_type"]
-        == "guardian_admission_scratchlane_ready"
-    )
-    assert "tmp/ad-hoc" in out["runtimeNotification"]["root_path"]
+    assert "Guardian Admission verdict=scratchlane_authorized" in out["reason"]
+    assert "GUARDIAN_MODE: admission" in out["reason"]
+    assert "runtimeNotification" not in out
 
     conn = connect(db_path)
     try:
@@ -1093,9 +1122,7 @@ def test_evaluate_registers_pending_scratchlane_request_for_inactive_wrapper(tmp
         conn.close()
 
     assert pending is None
-    assert permit is not None
-    assert permit["task_slug"] == "ad-hoc"
-    assert permit["granted_by"] == "guardian_admission"
+    assert permit is None
 
 
 def test_evaluate_missing_session_id_omits_manual_scratchlane_grant_command(tmp_path):
@@ -1123,7 +1150,8 @@ def test_evaluate_missing_session_id_omits_manual_scratchlane_grant_command(tmp_
 
     assert code == 0
     assert out["action"] == "deny"
-    assert "Guardian Admission authorized scratchlane" in out["reason"]
+    assert "Guardian Admission verdict=scratchlane_authorized" in out["reason"]
+    assert "GUARDIAN_MODE: admission" in out["reason"]
     assert "python3" not in out["reason"]
     assert "scratchlane grant" not in out["reason"]
 
@@ -1159,7 +1187,7 @@ def test_evaluate_reuses_identical_pending_request_without_repeat_notification(t
 
     assert first_code == 0
     assert second_code == 0
-    assert "runtimeNotification" in first_out
+    assert "runtimeNotification" not in first_out
     assert "runtimeNotification" not in second_out
 
     conn = connect(db_path)
@@ -1175,8 +1203,7 @@ def test_evaluate_reuses_identical_pending_request_without_repeat_notification(t
         conn.close()
 
     assert pending == []
-    assert permit is not None
-    assert permit["granted_by"] == "guardian_admission"
+    assert permit is None
 
 
 def test_pre_write_emits_local_notification_for_new_pending_request(tmp_path):
@@ -1237,8 +1264,7 @@ def test_pre_write_emits_local_notification_for_new_pending_request(tmp_path):
         permit = scratchlanes.get_active(conn, str(project_root), "dedup")
     finally:
         conn.close()
-    assert permit is not None
-    assert permit["granted_by"] == "guardian_admission"
+    assert permit is None
 
 
 def test_prompt_submit_consumes_plain_yes_into_scratchlane_approval(tmp_path):
@@ -1335,7 +1361,7 @@ def test_scratchlane_exec_wrapper_inactive_permit_omits_raw_grant_hint(tmp_path)
     )
 
     assert result.returncode == 1
-    assert "Ask the user to approve task scratchlane" in result.stderr
+    assert "Guardian Admission" in result.stderr
     assert "python3" not in result.stderr
     assert "scratchlane grant" not in result.stderr
 
@@ -1470,3 +1496,26 @@ def test_scratchlane_exec_wrapper_defaults_to_invocation_project_root(tmp_path, 
     )
 
     assert marker.read_text(encoding="utf-8").strip() == str(scratch_root)
+
+
+def test_scratchlane_authority_not_reimplemented_in_policy_effects():
+    runtime_paths = [
+        *(_WORKTREE / "runtime" / "core" / "policies").glob("*.py"),
+        _WORKTREE / "runtime" / "cli.py",
+    ]
+    banned = (
+        "apply_guardian_admission",
+        "VERDICT_SCRATCHLANE_AUTHORIZED",
+        '"scratchlane_authorized"',
+        "'scratchlane_authorized'",
+        "tmp/ad-hoc",
+    )
+
+    offenders: list[str] = []
+    for path in runtime_paths:
+        text = path.read_text(encoding="utf-8")
+        for needle in banned:
+            if needle in text:
+                offenders.append(f"{path.relative_to(_WORKTREE)}: {needle}")
+
+    assert offenders == []

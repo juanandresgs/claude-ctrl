@@ -138,7 +138,17 @@ Guardian Admission owns the pre-implementation custody fork. If a direct impleme
 - task-local scratchlane custody
 - user decision, only when the fork is genuinely ambiguous or risky
 
-Scratchlane is also Guardian-custodied. When Guardian Admission returns `scratchlane_authorized`, use `cc-policy admission apply --payload <json>` or the policy-applied permit, then retry only under the returned `tmp/<task>/` root.
+Scratchlane is also Guardian-custodied. When Guardian Admission returns `scratchlane_authorized`, the Guardian Admission mode may use `cc-policy admission apply --payload <json>`, then the orchestrator may retry only under the returned `tmp/<task>/` root.
+
+For any `ADMISSION_REQUIRED` denial, the orchestrator repair path is a
+Guardian Admission dispatch, not an ad-hoc scratchlane retry. Launch the
+existing `guardian` subagent with `GUARDIAN_MODE: admission` as line 1, include
+the original blocked command or write target plus the policy metadata/payload,
+and let Guardian Admission run `cc-policy admission classify` / `apply`.
+Only after that authority grants a permit may the orchestrator rerun opaque
+interpreter work through `scripts/scratchlane-exec.sh --task-slug <slug>
+--project-root <root> -- <command>`. Do not invent `tmp/ad-hoc/`, manually
+grant scratchlane permits, or route this through `guardian:provision`.
 
 Session HUD state or subagent markers do not prove the actor behind the current tool call. Enforcement decisions about a specific write take precedence over coarser session-level or statusline role labels.
 

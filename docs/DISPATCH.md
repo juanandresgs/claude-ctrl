@@ -76,6 +76,10 @@ Admission launches use `subagent_type=guardian` with `GUARDIAN_MODE: admission`
 as the first prompt line. The PreToolUse Agent path writes a narrow admission
 carrier, and SubagentStart consumes that carrier without seating canonical
 Guardian markers or leases.
+Scratchlane gates classify through `runtime.core.work_admission` only; they do
+not hand-build scratchlane verdicts and do not apply permits as policy side
+effects. Permit creation happens through Guardian Admission's
+`cc-policy admission apply` path.
 
 Auto-dispatch decisions are recorded in `dispatch_next_actions`. Hook output may
 still emit `AUTO_DISPATCH:` for the Claude harness, but the structured next
@@ -90,7 +94,7 @@ policies in priority order (first deny wins):
 | Priority | Policy | What it enforces |
 |----------|--------|-----------------|
 | 100 | `branch_guard` | Source files cannot be written on `main` or `master`. Non-source files, MASTER_PLAN.md, and `.claude/` are exempt. |
-| 150 | `write_scratchlane_gate` | Obvious tmp/scratchlane writes are routed through Guardian Admission, which may activate the permit; tracked files under tmp remain denied. |
+| 150 | `write_scratchlane_gate` | Obvious tmp/scratchlane writes are classified by Guardian Admission; tracked files under tmp remain denied. |
 | 175 | `write_admission_gate` | Uncustodied source writes route to Guardian Admission before WHO fallback. |
 | 200 | `write_who` | Only the `implementer` role may write source files. |
 | 250 | `enforcement_gap` | Deny writes to extensions with unresolved linter gaps (count > 1). |
@@ -115,7 +119,7 @@ PreToolUse/Bash-path policies in priority order:
 | 150 | `agent_contract_required` | Deny Agent worktree isolation, enforce canonical stage↔subagent contracts, run prompt-pack preflight, create the runtime dispatch attempt, issue the dispatch lease, and write the attempt-keyed carrier. |
 | 200 | `bash_worktree_cwd` | Deny bare cd into .worktrees/. |
 | 250 | `bash_worktree_nesting` | Prevent nested worktree creation. |
-| 260 | `bash_scratchlane_gate` | Shell tmp/interpreter scratchlane work routes through Guardian Admission and the runtime-owned scratchlane executor. |
+| 260 | `bash_scratchlane_gate` | Shell tmp/interpreter scratchlane work classifies through Guardian Admission; active permits must use the runtime-owned scratchlane executor. |
 | 270 | `bash_admission_gate` | Uncustodied Bash source writes route to Guardian Admission before WHO fallback. |
 | 275 | `bash_write_who` | Capability-gated WHO enforcement for shell writes. |
 | 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |

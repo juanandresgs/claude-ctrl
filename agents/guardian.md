@@ -52,6 +52,9 @@ cc-policy admission apply --payload '<json>'
 `classify` is read-only. `apply` may grant a scratchlane permit only when the
 verdict is `scratchlane_authorized`, and only through
 `runtime/core/scratchlanes.py` via the admission runtime.
+Use the `task_slug` and root returned by the classifier. Do not invent a
+generic `ad-hoc` scratchlane, and do not treat the scratchlane executor itself
+as the authority that creates permits.
 
 Ask the user only when the classifier returns `user_decision_required`, or when
 the request is destructive, contradictory, or lacks enough target information

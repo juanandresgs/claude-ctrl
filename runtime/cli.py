@@ -3917,56 +3917,6 @@ def _handle_evaluate(args) -> int:
                     pass  # Non-fatal: denial stands if consumption fails
 
         scratchlane_request_effect = effects.get("request_scratchlane_approval")
-        admission_effect = effects.get("apply_guardian_admission")
-        if admission_effect and decision.action == "deny":
-            try:
-                admission_payload = dict(admission_effect)
-                admission_payload.setdefault("session_id", str(payload.get("session_id") or ""))
-                admission_payload.setdefault("cwd", effective_cwd)
-                admission_payload.setdefault("project_root", ctx.project_root)
-                admission_payload.setdefault("workflow_id", ctx.workflow_id)
-                admission_result = work_admission_mod.apply_payload(
-                    conn,
-                    admission_payload,
-                )
-                permit = admission_result.get("permit")
-                if isinstance(permit, dict) and permit.get("root_path"):
-                    Path(str(permit["root_path"])).mkdir(parents=True, exist_ok=True)
-                metadata = {
-                    **(decision.metadata or {}),
-                    "guardian_admission": admission_result,
-                }
-                decision = policy_engine_mod.PolicyDecision(
-                    action=decision.action,
-                    reason=decision.reason,
-                    policy_name=decision.policy_name,
-                    effects=decision.effects,
-                    metadata=metadata,
-                )
-                if admission_result.get("applied"):
-                    runtime_notification = {
-                        "notification_type": "guardian_admission_scratchlane_ready",
-                        "title": "Scratchlane Ready",
-                        "message": (
-                            "Guardian Admission authorized scratchlane "
-                            f"{admission_result.get('scratchlane', {}).get('root_path', '')}."
-                        ),
-                        "task_slug": admission_result.get("scratchlane", {}).get("task_slug", ""),
-                        "root_path": admission_result.get("scratchlane", {}).get("root_path", ""),
-                    }
-            except Exception as exc:
-                decision = policy_engine_mod.PolicyDecision(
-                    action=decision.action,
-                    reason=(
-                        f"{decision.reason}\n\n"
-                        "Guardian Admission failed while applying its runtime effect. "
-                        "Do not create scratchlane permits manually; report this "
-                        f"control-plane failure. Detail: {exc}"
-                    ),
-                    policy_name=decision.policy_name,
-                    effects=decision.effects,
-                    metadata=decision.metadata,
-                )
 
         if scratchlane_request_effect and decision.action == "deny":
             session_id = str(payload.get("session_id") or "")

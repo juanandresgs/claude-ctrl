@@ -144,7 +144,7 @@ def test_empty_role_denial_steers_to_active_scratchlane():
     assert "claude-scratch" not in result.reason
 
 
-def test_empty_role_denial_steers_to_ad_hoc_scratchlane_when_no_active_root():
+def test_empty_role_denial_steers_to_guardian_scratchlane_when_no_active_root():
     result = write_who(_req("/proj/scripts/analysis.py", role=""))
 
     assert result is not None
@@ -152,7 +152,7 @@ def test_empty_role_denial_steers_to_ad_hoc_scratchlane_when_no_active_root():
     assert "Project source route" in result.reason
     assert "`/proj/scripts/analysis.py`" in result.reason
     assert "Temporary artifact route" in result.reason
-    assert "`/proj/tmp/ad-hoc/analysis.py`" in result.reason
+    assert "`/proj/tmp/scratchlane/analysis.py`" in result.reason
     assert "claude-scratch" not in result.reason
 
 
