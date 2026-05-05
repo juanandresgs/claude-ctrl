@@ -116,8 +116,30 @@ fi
 # If there is no active lease, do not invent a fallback; post-task.sh/dispatch
 # will fail closed. Advisory: report but remain exit 0.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    # @decision DEC-CHECK-REVIEWER-WORKTREE-LOOKUP-001
+    # Title: Reviewer lease lookup uses agent payload cwd, not orchestrator PROJECT_ROOT
+    # Status: accepted (yakcc tracker #70, fixed 2026-05-05)
+    # Rationale: The reviewer is dispatched with worktree_path set to a feature
+    #   worktree (e.g. /repo/.worktrees/feature-X). Its lease is issued at that
+    #   worktree path. The hook subprocess inherits PROJECT_ROOT from the
+    #   orchestrator (/repo), so `lease current --worktree-path "$PROJECT_ROOT"`
+    #   misses the lease — no completion record submits → evaluation_state stays
+    #   pending → guardian:land preflight refuses to commit. Across 12 yakcc
+    #   WIs the workaround was user-typed manual push (3 shell commands).
+    #   Fix: read the agent's actual working directory from AGENT_RESPONSE.cwd
+    #   (canonical SubagentStop payload field, populated by Claude Code with the
+    #   dispatched worktree_path) and use THAT as --worktree-path. Fall back to
+    #   PROJECT_ROOT when cwd is absent (non-worktree dispatch, edge cases).
+    #   Narrow fix: PROJECT_ROOT remains the orchestrator root for everything
+    #   else in this hook; only the lease lookup gets the corrected path.
+    _RV_AGENT_CWD=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.cwd // empty' 2>/dev/null || echo "")
+    if [[ -n "$_RV_AGENT_CWD" && -d "$_RV_AGENT_CWD" ]]; then
+        _RV_LEASE_LOOKUP_PATH="$_RV_AGENT_CWD"
+    else
+        _RV_LEASE_LOOKUP_PATH="$PROJECT_ROOT"
+    fi
     # WS1: use lease_context() to derive workflow_id from the active lease.
-    _RV_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
+    _RV_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$_RV_LEASE_LOOKUP_PATH" 2>/dev/null || echo '{"found":false}')
     _RV_LEASE_FOUND=$(printf '%s' "$_RV_LEASE_CTX" | jq -r 'if (.found == true or .lease_id != null) then "true" else "false" end' 2>/dev/null || echo "false")
     if [[ "$_RV_LEASE_FOUND" == "true" ]]; then
         _RV_LEASE_ID=$(printf '%s' "$_RV_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
