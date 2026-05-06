@@ -189,6 +189,10 @@ def record_agent_dispatch(
                 "dispatch_session_id": session_id,
                 "dispatch_agent_type": agent_type,
                 "dispatch_stage_id": stage_id,
+                "workflow_id": workflow_id,
+                "goal_id": goal_id,
+                "work_item_id": work_item_id,
+                "decision_scope": decision_scope,
             },
         )
         if lease:

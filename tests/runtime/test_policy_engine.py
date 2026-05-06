@@ -572,6 +572,35 @@ def test_build_context_matching_role_attaches_lease_and_skips_probe(conn, tmp_pa
     assert ctx.worktree_lease_suppressed_roles == frozenset()
 
 
+def test_build_context_loads_work_item_grant_from_lease_metadata(conn, tmp_path):
+    from runtime.core import work_item_grants
+    from runtime.core.policy_utils import normalize_path as _np
+
+    wt = _np(str(tmp_path))
+    _seed_active_lease(
+        conn,
+        worktree_path=wt,
+        role="implementer",
+        workflow_id="wf-grant",
+    )
+    conn.execute(
+        "UPDATE dispatch_leases SET metadata_json = ? WHERE lease_id = ?",
+        ('{"work_item_id":"wi-grant"}', "lease-diag-1"),
+    )
+    work_item_grants.ensure_default(
+        conn,
+        workflow_id="wf-grant",
+        work_item_id="wi-grant",
+    )
+
+    ctx = build_context(conn, cwd=str(tmp_path), actor_role="implementer")
+
+    assert ctx.work_item_id == "wi-grant"
+    assert ctx.landing_grant is not None
+    assert ctx.landing_grant["can_commit_branch"] is True
+    assert ctx.landing_grant["merge_strategy"] == "no_ff"
+
+
 def test_build_context_normalizes_cwd_before_role_lease_lookup(conn, tmp_path):
     """Raw hook cwd variants must still match canonical stored lease paths."""
     from runtime.core.policy_utils import normalize_path as _np

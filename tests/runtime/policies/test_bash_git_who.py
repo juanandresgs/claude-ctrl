@@ -297,12 +297,42 @@ def test_arbitrary_role_with_read_only_review_injected_is_denied():
     assert "read-only" in decision.reason.lower()
 
 
-def test_implementer_denied_commit_by_landing_gate():
-    """Implementer with a valid lease is denied git commit by the CAN_LAND_GIT
-    gate (DEC-WHO-LANDING-001). Only guardian:land can land."""
+def test_implementer_branch_commit_allowed_with_work_item_grant():
+    """Implementer may make checkpoint commits on its scoped branch when the
+    work-item grant allows branch commits."""
     lease = _make_lease(allowed_ops=["routine_local"])
     lease["role"] = "implementer"
-    ctx = make_context(actor_role="implementer", lease=lease)
+    lease["worktree_path"] = "/project/.worktrees/feature-test"
+    ctx = make_context(
+        actor_role="implementer",
+        lease=lease,
+        project_root="/project/.worktrees/feature-test",
+        work_item_id="wi-test",
+        landing_grant={
+            "work_item_id": "wi-test",
+            "workflow_id": "feature-test",
+            "can_commit_branch": True,
+            "can_autoland": True,
+            "merge_strategy": "no_ff",
+            "requires_user_approval": [],
+        },
+    )
+    req = make_request("git commit -m 'feat: add thing'", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_implementer_branch_commit_denied_without_work_item_grant():
+    lease = _make_lease(allowed_ops=["routine_local"])
+    lease["role"] = "implementer"
+    lease["worktree_path"] = "/project/.worktrees/feature-test"
+    ctx = make_context(
+        actor_role="implementer",
+        lease=lease,
+        project_root="/project/.worktrees/feature-test",
+        work_item_id="wi-test",
+        landing_grant=None,
+    )
     req = make_request("git commit -m 'feat: add thing'", context=ctx)
     decision = check(req)
     assert decision is not None

@@ -106,6 +106,66 @@ def test_non_ff_merge_requires_approval():
     assert payload.get("op_type") == "non_ff_merge"
 
 
+def test_non_ff_merge_allowed_by_work_item_autoland_grant():
+    ctx = make_context(
+        actor_role="guardian:land",
+        work_item_id="wi-test",
+        landing_grant={
+            "work_item_id": "wi-test",
+            "workflow_id": "feature-test",
+            "can_autoland": True,
+            "merge_strategy": "no_ff",
+            "requires_user_approval": [
+                "rebase",
+                "reset",
+                "force_push",
+                "destructive_cleanup",
+                "plumbing",
+                "admin_recovery",
+            ],
+        },
+    )
+    req = make_request("git merge --no-ff feature/bar", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
+def test_non_ff_merge_autoland_grant_can_still_require_user_approval():
+    ctx = make_context(
+        actor_role="guardian:land",
+        work_item_id="wi-test",
+        landing_grant={
+            "work_item_id": "wi-test",
+            "workflow_id": "feature-test",
+            "can_autoland": True,
+            "merge_strategy": "no_ff",
+            "requires_user_approval": ["non_ff_merge"],
+        },
+    )
+    req = make_request("git merge --no-ff feature/bar", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+
+
+def test_non_ff_merge_string_required_ops_still_requires_approval():
+    ctx = make_context(
+        actor_role="guardian:land",
+        work_item_id="wi-test",
+        landing_grant={
+            "work_item_id": "wi-test",
+            "workflow_id": "feature-test",
+            "can_autoland": True,
+            "merge_strategy": "no_ff",
+            "requires_user_approval": "non_ff_merge",
+        },
+    )
+    req = make_request("git merge --no-ff feature/bar", context=ctx)
+    decision = check(req)
+    assert decision is not None
+    assert decision.action == "deny"
+
+
 def test_plumbing_requires_approval():
     ctx = make_context(actor_role="guardian:land")
     req = make_request("git update-ref refs/heads/main HEAD", context=ctx)

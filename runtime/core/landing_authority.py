@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from runtime.core.authority_registry import CAN_LAND_GIT
+from runtime.core.authority_registry import CAN_LAND_GIT, CAN_WRITE_SOURCE
 from runtime.core.config import _resolve_shared_git_root
 from runtime.core.policy_utils import is_governance_repo_path, normalize_path
 
@@ -72,6 +72,40 @@ def has_guardian_landing_capability(context: Any) -> bool:
         CAN_LAND_GIT in _context_capabilities(context)
         and (lease.get("role") or "") == "guardian"
     )
+
+
+def _context_landing_grant(context: Any) -> dict:
+    grant = getattr(context, "landing_grant", None) or {}
+    return grant if isinstance(grant, dict) else {}
+
+
+def has_branch_commit_grant(context: Any) -> bool:
+    """Return True when the work-item grant allows source-branch commits."""
+    grant = _context_landing_grant(context)
+    if not grant:
+        return False
+    return bool(grant.get("can_commit_branch"))
+
+
+def is_branch_checkpoint_commit(context: Any, target_dir: str) -> bool:
+    """Return True for an implementer checkpoint commit inside its worktree.
+
+    Branch commits are rollback/checkpoint artifacts, not integration
+    boundaries. They are allowed only for can_write_source actors, only on the
+    lease worktree, and only when the work-item grant allows them.
+    """
+    if CAN_WRITE_SOURCE not in _context_capabilities(context):
+        return False
+    if not has_branch_commit_grant(context):
+        return False
+    lease_worktree = normalize_path(_context_lease(context).get("worktree_path", "") or "")
+    target = normalize_path(target_dir or "")
+    if not lease_worktree or not target or lease_worktree != target:
+        return False
+    branch = str(getattr(context, "branch", "") or "")
+    if branch in {"main", "master"}:
+        return False
+    return True
 
 
 def is_guardian_land_shared_base_target(context: Any, target_dir: str) -> bool:

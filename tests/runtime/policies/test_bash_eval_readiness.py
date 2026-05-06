@@ -88,6 +88,25 @@ def test_eval_state_failed_denied():
     assert decision.action == "deny"
 
 
+def test_implementer_branch_checkpoint_commit_skips_eval_gate():
+    lease = {
+        "role": "implementer",
+        "workflow_id": "feature-test",
+        "worktree_path": "/project/.worktrees/feature-test",
+    }
+    ctx = make_context(
+        project_root="/project/.worktrees/feature-test",
+        actor_role="implementer",
+        lease=lease,
+        eval_state=None,
+        work_item_id="wi-test",
+        landing_grant={"can_commit_branch": True},
+    )
+    req = make_request("git commit -m 'checkpoint'", context=ctx)
+    decision = check(req)
+    assert decision is None
+
+
 # ---------------------------------------------------------------------------
 # Allow: status == ready_for_guardian
 # ---------------------------------------------------------------------------

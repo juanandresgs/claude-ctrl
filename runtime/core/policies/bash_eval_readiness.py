@@ -31,16 +31,17 @@ from __future__ import annotations
 import subprocess
 from typing import Optional
 
+from runtime.core.landing_authority import (
+    is_branch_checkpoint_commit,
+    is_guardian_land_shared_base_target,
+    paths_are_governance_only,
+)
 from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
     extract_merge_ref,
     sanitize_token,
-)
-from runtime.core.landing_authority import (
-    is_guardian_land_shared_base_target,
-    paths_are_governance_only,
 )
 
 
@@ -148,6 +149,11 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 def _check_invocation_readiness(
     request: PolicyRequest, invocation: GitInvocation, target_dir: str
 ) -> Optional[PolicyDecision]:
+    if invocation.subcommand == "commit" and is_branch_checkpoint_commit(
+        request.context, target_dir
+    ):
+        return None
+
     workflow_id = _resolve_workflow_id(request, invocation, target_dir)
 
     # Check evaluation state — use context (already loaded for resolved workflow_id).

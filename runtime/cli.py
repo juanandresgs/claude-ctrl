@@ -37,13 +37,12 @@ import runtime.core.dispatch_engine as dispatch_engine_mod
 import runtime.core.enforcement_config as enforcement_config_mod
 import runtime.core.enforcement_gaps as enforcement_gaps_mod
 import runtime.core.eval_metrics as eval_metrics_mod
-import runtime.core.hook_doc_validation as hook_doc_validation_mod
-import runtime.core.hook_manifest as hook_manifest_mod
-import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
 import runtime.core.eval_report as eval_report_mod
 import runtime.core.eval_scorer as eval_scorer_mod
 import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
+import runtime.core.hook_doc_validation as hook_doc_validation_mod
+import runtime.core.hook_manifest as hook_manifest_mod
 import runtime.core.leases as leases_mod
 import runtime.core.lifecycle as lifecycle_mod
 import runtime.core.lint_state as lint_state_mod
@@ -52,16 +51,17 @@ import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
 import runtime.core.policy_strikes as policy_strikes_mod
 import runtime.core.preserved_context as preserved_context_mod
-import runtime.core.workflow_bootstrap as workflow_bootstrap_mod
+import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
 import runtime.core.quick_eval as quick_eval_mod
-import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.scratchlanes as scratchlanes_mod
 import runtime.core.session_activity as session_activity_mod
+import runtime.core.shadow_parity as shadow_parity_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
 import runtime.core.tokens as tokens_mod
 import runtime.core.traces as traces_mod
 import runtime.core.work_admission as work_admission_mod
+import runtime.core.workflow_bootstrap as workflow_bootstrap_mod
 import runtime.core.workflows as workflows_mod
 import runtime.core.worktrees as worktrees_mod
 from runtime.core.config import default_db_path, resolve_db_path
@@ -108,6 +108,8 @@ def _agent_contract_carrier_effect(conn, payload: dict, decision):
 
     from runtime.core.agent_contract_codec import (
         CONTRACT_BLOCK_PREFIX as _CONTRACT_BLOCK_PREFIX,
+    )
+    from runtime.core.agent_contract_codec import (
         first_line_contract_json as _first_line_contract_json,
     )
     from runtime.core.dispatch_contract import (
@@ -982,12 +984,12 @@ def _handle_decision(args) -> int:
         # Function-scope import — shadow-only discipline; must not appear
         # at module scope.  (DEC-CLAUDEX-DEC-TRAILER-INGEST-001,
         # DEC-CLAUDEX-DECISION-DIGEST-CLI-001)
-        from runtime.core import decision_trailer_ingest as dti
-
         # Drift-check is read-only: open the DB in read-only mode
         # (mode=ro primary, mode=ro&immutable=1 fallback) so this command
         # can never accidentally write to the decisions table.
         import sqlite3 as _sqlite3
+
+        from runtime.core import decision_trailer_ingest as dti
 
         db_path = default_db_path()
 
@@ -1035,9 +1037,6 @@ def _handle_decision(args) -> int:
         print(json.dumps(result))
         return 1
 
-    from runtime.core import decision_digest_projection as ddp
-    from runtime.core import decision_work_registry as dwr
-
     # Shared read-only DB open with ``mode=ro`` primary and
     # ``mode=ro&immutable=1`` fallback (see DEC-CLAUDEX-DECISION-DIGEST-CLI-001
     # and Phase 7 Slice 14 correction #2). Both ``digest`` and
@@ -1046,6 +1045,9 @@ def _handle_decision(args) -> int:
     # ``db_read_mode`` is surfaced in the successful payload on both
     # branches so operators can see which path served the request.
     import sqlite3 as _sqlite3
+
+    from runtime.core import decision_digest_projection as ddp
+    from runtime.core import decision_work_registry as dwr
 
     def _read_decisions_ro(status_filter, scope_filter, *, subcommand):
         """Open the runtime DB read-only and return ``(decisions, db_read_mode)``.
@@ -3152,6 +3154,14 @@ def _handle_workflow(args) -> int:
                 workflow_id=args.workflow_id,
             )
             stored = _dwr.upsert_work_item(conn, record)
+            from runtime.core import work_item_grants as _wig
+
+            grant = _wig.ensure_default(
+                conn,
+                workflow_id=args.workflow_id,
+                work_item_id=stored.work_item_id,
+                granted_by=getattr(args, "author", "planner") or "planner",
+            )
             return _ok(
                 {
                     "action": "work-item-set",
@@ -3159,6 +3169,7 @@ def _handle_workflow(args) -> int:
                     "goal_id": stored.goal_id,
                     "work_item_id": stored.work_item_id,
                     "work_item_status": stored.status,
+                    "landing_grant": grant.as_dict(),
                     "created_at": stored.created_at,
                     "updated_at": stored.updated_at,
                 }
@@ -3185,10 +3196,18 @@ def _handle_workflow(args) -> int:
 
         elif args.action == "work-item-get":
             import runtime.core.decision_work_registry as _dwr
+            from runtime.core import work_item_grants as _wig
 
             wi = _dwr.get_work_item(conn, args.work_item_id)
             if wi is None:
                 return _err(f"work_item_id '{args.work_item_id}' not found")
+            landing_grant = None
+            if wi.workflow_id:
+                landing_grant = _wig.effective(
+                    conn,
+                    workflow_id=wi.workflow_id,
+                    work_item_id=wi.work_item_id,
+                ).as_dict()
             return _ok(
                 {
                     "work_item_id": wi.work_item_id,
@@ -3202,11 +3221,60 @@ def _handle_workflow(args) -> int:
                     "head_sha": wi.head_sha,
                     "reviewer_round": wi.reviewer_round,
                     "workflow_id": wi.workflow_id,
+                    "landing_grant": landing_grant,
                     "created_at": wi.created_at,
                     "updated_at": wi.updated_at,
                     "found": True,
                 }
             )
+
+        elif args.action == "work-item-grant-get":
+            import runtime.core.decision_work_registry as _dwr
+            from runtime.core import work_item_grants as _wig
+
+            wi = _dwr.get_work_item(conn, args.work_item_id)
+            if wi is None:
+                return _err(f"work_item_id '{args.work_item_id}' not found")
+            if not wi.workflow_id:
+                return _err(
+                    f"work_item_id '{args.work_item_id}' has no workflow_id; "
+                    "cannot resolve a work-item grant"
+                )
+            grant = _wig.effective(
+                conn,
+                workflow_id=wi.workflow_id,
+                work_item_id=wi.work_item_id,
+            )
+            return _ok({"landing_grant": grant.as_dict(), "found": True})
+
+        elif args.action == "work-item-grant-set":
+            import runtime.core.decision_work_registry as _dwr
+            from runtime.core import work_item_grants as _wig
+
+            wi = _dwr.get_work_item(conn, args.work_item_id)
+            if wi is None:
+                return _err(f"work_item_id '{args.work_item_id}' not found")
+            if wi.workflow_id != args.workflow_id:
+                return _err(
+                    f"work_item_id '{args.work_item_id}' is scoped to workflow "
+                    f"'{wi.workflow_id}', not '{args.workflow_id}'"
+                )
+            required_ops = (
+                tuple(getattr(args, "requires_user_approval", None) or [])
+                or _wig.DEFAULT_REQUIRES_USER_APPROVAL
+            )
+            grant = _wig.WorkItemGrant(
+                workflow_id=args.workflow_id,
+                work_item_id=args.work_item_id,
+                can_commit_branch=not getattr(args, "no_commit_branch", False),
+                can_request_review=not getattr(args, "no_request_review", False),
+                can_autoland=not getattr(args, "no_autoland", False),
+                merge_strategy=args.merge_strategy,
+                requires_user_approval=required_ops,
+                granted_by=getattr(args, "granted_by", "planner") or "planner",
+            )
+            stored = _wig.upsert(conn, grant)
+            return _ok({"landing_grant": stored.as_dict(), "found": True})
 
     except ValueError as e:
         return _err(str(e))
@@ -3504,6 +3572,7 @@ def _handle_critic_review(args) -> int:
 def _handle_critic_run(args) -> int:
     """Handle ``cc-policy critic-run`` telemetry subcommands."""
     import json as _json
+
     import runtime.core.critic_runs as critic_runs_mod
 
     conn = _get_conn()
@@ -3795,6 +3864,7 @@ def _handle_evaluate(args) -> int:
       feedback → {"additionalContext": "<reason>"}
     """
     import json as _json
+
     from runtime.core.hook_envelope import build_hook_event_envelope as _build_hook_event_envelope
 
     raw = sys.stdin.read()
@@ -6345,6 +6415,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read back a work_item record by work_item_id",
     )
     wf_wi_get.add_argument("work_item_id")
+
+    wf_wi_grant_get = wf_sub.add_parser(
+        "work-item-grant-get",
+        help="Read the effective landing grant attached to a work_item",
+    )
+    wf_wi_grant_get.add_argument("work_item_id")
+
+    wf_wi_grant_set = wf_sub.add_parser(
+        "work-item-grant-set",
+        help="Set the durable branch-commit/autoland grant for a work_item",
+    )
+    wf_wi_grant_set.add_argument("workflow_id")
+    wf_wi_grant_set.add_argument("work_item_id")
+    wf_wi_grant_set.add_argument(
+        "--merge-strategy",
+        default="no_ff",
+        choices=["no_ff", "ff_only", "squash", "manual"],
+    )
+    wf_wi_grant_set.add_argument(
+        "--no-commit-branch",
+        action="store_true",
+        default=False,
+        help="Disable implementer checkpoint commits on the scoped branch",
+    )
+    wf_wi_grant_set.add_argument(
+        "--no-request-review",
+        action="store_true",
+        default=False,
+        help="Disable automatic reviewer handoff from this work item",
+    )
+    wf_wi_grant_set.add_argument(
+        "--no-autoland",
+        action="store_true",
+        default=False,
+        help="Require explicit approval before Guardian autoland",
+    )
+    wf_wi_grant_set.add_argument(
+        "--requires-user-approval",
+        action="append",
+        choices=sorted(approvals_mod.VALID_OP_TYPES),
+        help=(
+            "Approval-gated op for this work item. May be repeated. "
+            "Defaults to destructive/history-rewrite/admin-recovery ops."
+        ),
+    )
+    wf_wi_grant_set.add_argument("--granted-by", default="planner")
 
     # bug pipeline
     bug_p = subparsers.add_parser("bug", help="Canonical bug-filing pipeline")

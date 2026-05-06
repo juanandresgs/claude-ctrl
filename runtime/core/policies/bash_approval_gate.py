@@ -104,6 +104,25 @@ def _resolve_workflow_id(request: PolicyRequest) -> str:
     return current_workflow_id(request.context.project_root or "")
 
 
+def _work_item_allows_non_ff_autoland(request: PolicyRequest) -> bool:
+    grant = request.context.landing_grant or {}
+    if not isinstance(grant, dict):
+        return False
+    required_raw = grant.get("requires_user_approval") or []
+    if isinstance(required_raw, str):
+        required = {required_raw}
+    else:
+        try:
+            required = set(required_raw)
+        except TypeError:
+            required = set()
+    return (
+        bool(grant.get("can_autoland"))
+        and str(grant.get("merge_strategy") or "") == "no_ff"
+        and "non_ff_merge" not in required
+    )
+
+
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Require a one-shot approval token for approval-gated git ops.
 
@@ -139,6 +158,9 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     op_type, op_class = gated
+
+    if op_type == "non_ff_merge" and _work_item_allows_non_ff_autoland(request):
+        return None
 
     workflow_id = _resolve_workflow_id(request)
 

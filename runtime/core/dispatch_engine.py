@@ -125,8 +125,8 @@ from typing import Optional
 
 from runtime.core import (
     completions,
-    critic_runs,
     critic_reviews,
+    critic_runs,
     dispatch_shadow,
     evaluation,
     events,
@@ -199,6 +199,9 @@ def process_agent_stop(
         "evaluation_head_sha": "",
         "reviewer_convergence_reason": "",
         "next_dispatch_id": None,
+        "work_item_id": "",
+        "landing_grant": None,
+        "grant_signal": "",
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -392,6 +395,30 @@ def process_agent_stop(
             elif critic_resolution.next_role == "implementer" and not result["worktree_path"]:
                 result["worktree_path"] = project_root or ""
 
+        if result["next_role"] == "reviewer" and workflow_id:
+            grant = _landing_grant_for_active_work_item(conn, workflow_id, active_lease_id)
+            if grant:
+                result["work_item_id"] = grant.get("work_item_id", "") or ""
+                result["landing_grant"] = grant
+                if not grant.get("can_request_review", True):
+                    result["next_role"] = None
+                    result["grant_signal"] = (
+                        "USER_DECISION_REQUIRED: work-item landing grant disables "
+                        f"reviewer handoff for {result['work_item_id'] or workflow_id}"
+                    )
+                    try:
+                        evt_id = events.emit(
+                            conn,
+                            type="work_item_grant_blocked_review",
+                            source="dispatch_engine",
+                            detail=result["grant_signal"],
+                        )
+                        result["events"].append(
+                            {"type": "work_item_grant_blocked_review", "id": evt_id}
+                        )
+                    except Exception:
+                        pass
+
         if active_lease_id:
             _safe_release(conn, active_lease_id)
 
@@ -575,6 +602,8 @@ def process_agent_stop(
                 )
             except Exception:
                 pass
+    elif result.get("grant_signal"):
+        result["suggestion"] = result["grant_signal"]
     elif normalised == "guardian" and not result["error"] and not result["next_role"]:
         # Guardian terminal state (should not occur with stage_registry routing,
         # but retained as a safety net for unknown verdicts).
@@ -688,6 +717,74 @@ def _persist_next_dispatch_action(
             ),
         )
     return int(cur.lastrowid)
+
+
+def _landing_grant_for_active_work_item(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    active_lease_id: str,
+) -> Optional[dict]:
+    """Return the effective work-item grant for the active dispatch, if known."""
+    if not workflow_id:
+        return None
+
+    work_item_id = ""
+    if active_lease_id:
+        try:
+            row = conn.execute(
+                """
+                SELECT work_item_id
+                FROM dispatch_attempts
+                WHERE lease_id = ? AND work_item_id IS NOT NULL AND work_item_id != ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (active_lease_id,),
+            ).fetchone()
+            if row:
+                work_item_id = row["work_item_id"] or ""
+        except sqlite3.OperationalError:
+            work_item_id = ""
+
+        if not work_item_id:
+            try:
+                lease = leases.get(conn, active_lease_id)
+                metadata = json.loads(lease.get("metadata_json") or "{}") if lease else {}
+                if isinstance(metadata, dict):
+                    work_item_id = str(metadata.get("work_item_id") or "")
+            except (TypeError, json.JSONDecodeError):
+                work_item_id = ""
+
+    if not work_item_id:
+        try:
+            rows = conn.execute(
+                """
+                SELECT work_item_id
+                FROM work_items
+                WHERE workflow_id = ?
+                  AND status IN ('in_progress', 'in_review', 'ready_to_land')
+                ORDER BY created_at ASC, work_item_id ASC
+                """,
+                (workflow_id,),
+            ).fetchall()
+            if len(rows) == 1:
+                work_item_id = rows[0]["work_item_id"] or ""
+        except sqlite3.OperationalError:
+            work_item_id = ""
+
+    if not work_item_id:
+        return None
+
+    try:
+        from runtime.core import work_item_grants
+
+        return work_item_grants.effective(
+            conn,
+            workflow_id=workflow_id,
+            work_item_id=work_item_id,
+        ).as_dict()
+    except Exception:
+        return None
 
 
 def _resolve_stop_assessment_wf_id(

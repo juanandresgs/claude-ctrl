@@ -8,19 +8,20 @@ module; they do not decide worktree target, lease context, or landing phase.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import os
 import re
 import sqlite3
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.core import evaluation as evaluation_mod
 from runtime.core import events as events_mod
 from runtime.core import leases as leases_mod
+from runtime.core import test_state as test_state_mod
 from runtime.core.hook_envelope import HookEventEnvelope, build_hook_event_envelope
 from runtime.core.landing_authority import FEATURE_COMMIT_LANDED
 from runtime.core.policy_utils import current_workflow_id, normalize_path, sanitize_token
@@ -44,8 +45,10 @@ class BashLifecycleResult:
     source_mutation: bool = False
     promoted_commit_head: bool = False
     invalidated: bool = False
+    projected_test_state: bool = False
     new_head: str = ""
     landing_phase: str = ""
+    test_status: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -57,8 +60,10 @@ class BashLifecycleResult:
             "source_mutation": self.source_mutation,
             "promoted_commit_head": self.promoted_commit_head,
             "invalidated": self.invalidated,
+            "projected_test_state": self.projected_test_state,
             "new_head": self.new_head,
             "landing_phase": self.landing_phase,
+            "test_status": self.test_status,
         }
 
 
@@ -195,6 +200,102 @@ def _head(project_root: str) -> str:
     return "\n".join(_git_lines(project_root, ["rev-parse", "HEAD"])).strip()
 
 
+_TEST_COMMAND_RE = re.compile(
+    r"(^|\s|&&|\|\|)(python3?)\s+-m\s+pytest\b|"
+    r"(^|\s|&&|\|\|)(uv|poetry|pipenv)\s+run\s+pytest\b|"
+    r"(^|\s|&&|\|\|)pytest\b|"
+    r"(^|\s|&&|\|\|)cargo\s+test\b|"
+    r"(^|\s|&&|\|\|)(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|"
+    r"(^|\s|&&|\|\|)go\s+test\b|"
+    r"(^|\s|&&|\|\|)make\s+test\b"
+)
+
+
+def _looks_like_test_command(command: str) -> bool:
+    return bool(command and _TEST_COMMAND_RE.search(command))
+
+
+def _tool_response(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = payload.get("tool_response") or payload.get("toolResponse") or {}
+    return value if isinstance(value, Mapping) else {}
+
+
+def _extract_exit_code(response: Mapping[str, Any]) -> int | None:
+    for key in ("exit_code", "exitCode", "status"):
+        value = response.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(value.strip())
+    return None
+
+
+def _extract_test_output(response: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("output", "stdout", "stderr"):
+        value = response.get(key)
+        if isinstance(value, str) and value:
+            parts.append(value)
+    return "\n".join(parts)
+
+
+def _parse_test_counts(output: str) -> tuple[int, int, int]:
+    passed = 0
+    failed = 0
+
+    # pytest summary: "12 passed", "1 failed", often combined in one line.
+    for match in re.finditer(r"(\d+)\s+passed\b", output):
+        passed = max(passed, int(match.group(1)))
+    for match in re.finditer(r"(\d+)\s+failed\b", output):
+        failed = max(failed, int(match.group(1)))
+
+    # cargo summary: "test result: ok. 3 passed; 0 failed; ..."
+    cargo = re.search(r"test result:\s+\w+\.\s+(\d+)\s+passed;\s+(\d+)\s+failed", output)
+    if cargo:
+        passed = max(passed, int(cargo.group(1)))
+        failed = max(failed, int(cargo.group(2)))
+
+    total = passed + failed
+    return passed, failed, total
+
+
+def _project_test_state_from_bash(
+    conn: sqlite3.Connection,
+    *,
+    project_root: str,
+    payload: Mapping[str, Any],
+    envelope: HookEventEnvelope,
+) -> tuple[bool, str]:
+    if not _looks_like_test_command(envelope.command):
+        return False, ""
+    response = _tool_response(payload)
+    exit_code = _extract_exit_code(response)
+    if exit_code is None:
+        return False, ""
+
+    output = _extract_test_output(response)
+    passed, failed, total = _parse_test_counts(output)
+    status = "pass" if exit_code == 0 else "fail"
+    test_state_mod.set_status(
+        conn,
+        project_root,
+        status,
+        head_sha=_head(project_root) or None,
+        pass_count=passed,
+        fail_count=failed if failed else (1 if exit_code != 0 and total == 0 else 0),
+        total_count=total if total else (1 if exit_code != 0 else passed),
+    )
+    events_mod.emit(
+        conn,
+        "test_state_projected",
+        source="post-bash",
+        detail=f"{project_root}:{status}:{passed}/{total}",
+    )
+    return True, status
+
+
 def capture_pre_bash_baseline(
     conn: sqlite3.Connection,
     payload: Mapping[str, Any],
@@ -237,6 +338,12 @@ def handle_post_bash(conn: sqlite3.Connection, payload: Mapping[str, Any]) -> Ba
     baseline = _consume_baseline(conn, project_root=project_root, key=key)
     post_fp = source_fingerprint(project_root)
     source_mutation = bool((not baseline and post_fp != "EMPTY") or (baseline and baseline != post_fp))
+    projected_test_state, test_status = _project_test_state_from_bash(
+        conn,
+        project_root=project_root,
+        payload=payload,
+        envelope=envelope,
+    )
 
     lease = leases_mod.get_current(conn, worktree_path=project_root)
     workflow_id = str(lease.get("workflow_id") or "") if lease else ""
@@ -295,6 +402,8 @@ def handle_post_bash(conn: sqlite3.Connection, payload: Mapping[str, Any]) -> Ba
         source_mutation=source_mutation,
         promoted_commit_head=promoted,
         invalidated=invalidated,
+        projected_test_state=projected_test_state,
         new_head=new_head,
         landing_phase=landing_phase,
+        test_status=test_status,
     )

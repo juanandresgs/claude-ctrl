@@ -88,6 +88,9 @@ For each item assign:
 - **Gate** — none (auto-verified), review (user sees result), approve
 - **Deps** — which W-IDs must complete first
 - **Integration** — which existing files/registries must be updated
+- **Landing policy** — default grant unless narrowed: branch checkpoint
+  allowed, reviewer handoff allowed, autoland allowed, `no_ff` merge;
+  explicitly list any operation classes requiring user approval
 
 **Compute waves** from the dependency graph. State critical paths and max width.
 

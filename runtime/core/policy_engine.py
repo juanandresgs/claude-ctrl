@@ -71,6 +71,7 @@ Rationale: Incident (cutover-maintenance slice 0022/0023): an orchestrator
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -111,7 +112,9 @@ class PolicyContext:
     eval_state: Optional[dict]  # evaluation_state record, or None
     test_state: Optional[dict]  # test_state record, or None
     binding: Optional[dict]  # workflow_binding record, or None
-    dispatch_phase: Optional[str]  # derived from completions, or None
+    work_item_id: str = ""  # active contract work item for this request
+    landing_grant: Optional[dict] = None  # work_item_grants projection, or None
+    dispatch_phase: Optional[str] = None  # derived from completions, or None
     enforcement_config: dict = field(default_factory=dict)  # DEC-CONFIG-AUTHORITY-001
     enforcement_gaps: tuple[dict, ...] = field(default_factory=tuple)
     policy_strikes: dict = field(default_factory=dict)
@@ -772,6 +775,70 @@ def build_context(
     # misgrant landing-vs-provision capability.
     dispatch_phase = _dispatch_phase_for_workflow(workflow_id) if workflow_id else None
 
+    # --- Work-item id + landing grant ---
+    # The dispatch contract is the primary source. It is copied into both the
+    # dispatch_attempts ledger and the lease metadata so either surface can
+    # recover the exact work item without scanning globally-active rows.
+    work_item_id = ""
+    if lease:
+        lease_id = lease.get("lease_id", "") or ""
+        if lease_id:
+            try:
+                row = conn.execute(
+                    """
+                    SELECT work_item_id
+                    FROM dispatch_attempts
+                    WHERE lease_id = ? AND work_item_id IS NOT NULL AND work_item_id != ''
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (lease_id,),
+                ).fetchone()
+                if row:
+                    work_item_id = row["work_item_id"] or ""
+            except sqlite3.OperationalError:
+                work_item_id = ""
+        if not work_item_id:
+            try:
+                metadata = json.loads(lease.get("metadata_json") or "{}")
+                if isinstance(metadata, dict):
+                    work_item_id = str(metadata.get("work_item_id") or "")
+            except (json.JSONDecodeError, TypeError):
+                work_item_id = ""
+
+    if not work_item_id and workflow_id:
+        # Legacy fallback: only resolve from work_items when exactly one row is
+        # active for the workflow. Multiple active rows are ambiguous and must
+        # be resolved by an explicit dispatch contract.
+        try:
+            rows = conn.execute(
+                """
+                SELECT work_item_id
+                FROM work_items
+                WHERE workflow_id = ?
+                  AND status IN ('in_progress', 'in_review', 'ready_to_land')
+                ORDER BY created_at ASC, work_item_id ASC
+                """,
+                (workflow_id,),
+            ).fetchall()
+            if len(rows) == 1:
+                work_item_id = rows[0]["work_item_id"] or ""
+        except sqlite3.OperationalError:
+            work_item_id = ""
+
+    landing_grant: Optional[dict] = None
+    if workflow_id and work_item_id:
+        try:
+            from runtime.core import work_item_grants as _wig_mod
+
+            landing_grant = _wig_mod.effective(
+                conn,
+                workflow_id=workflow_id,
+                work_item_id=work_item_id,
+            ).as_dict()
+        except Exception:
+            landing_grant = None
+
     # --- Enforcement config (DEC-CONFIG-AUTHORITY-001) ---
     # Collapse all enforcement_config rows with scope precedence:
     # global is the baseline; project= overrides; workflow= overrides project.
@@ -859,6 +926,8 @@ def build_context(
         eval_state=eval_state,
         test_state=test_state,
         binding=binding,
+        work_item_id=work_item_id,
+        landing_grant=landing_grant,
         dispatch_phase=dispatch_phase,
         enforcement_config=enforcement_config,
         enforcement_gaps=enforcement_gaps,

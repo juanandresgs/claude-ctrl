@@ -33,6 +33,7 @@ from typing import Any
 from runtime.core import agent_prompt as agent_prompt_mod
 from runtime.core import evaluation as evaluation_mod
 from runtime.core import test_state as test_state_mod
+from runtime.core import work_item_grants as work_item_grants_mod
 from runtime.core import workflows as workflows_mod
 from runtime.core.policy_utils import normalize_path
 from runtime.core.prompt_pack_state import capture_runtime_state_snapshot
@@ -258,6 +259,11 @@ def build_stage_packet(
     )
     scope = workflows_mod.get_scope(conn, resolved_workflow_id)
     evaluation_state = evaluation_mod.get(conn, resolved_workflow_id)
+    landing_grant = work_item_grants_mod.effective(
+        conn,
+        workflow_id=resolved_workflow_id,
+        work_item_id=resolved_work_item_id,
+    ).as_dict()
 
     runtime_snapshot = None
     test_state = None
@@ -341,6 +347,7 @@ def build_stage_packet(
         "runtime_state_snapshot": _jsonable(runtime_snapshot) if runtime_snapshot else None,
         "evaluation_state": evaluation_state,
         "test_state": test_state,
+        "landing_grant": landing_grant,
         "scope_parity": {
             "workflow_scope_found": workflow_scope is not None,
             "matches_work_item_scope": scope_matches,

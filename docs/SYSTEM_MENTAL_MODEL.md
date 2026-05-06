@@ -41,6 +41,8 @@ These are the authoritative facts now:
   - Code anchor: `runtime/core/evaluation.py`
 - Workflow binding and scope: runtime workflow tables
   - Code anchor: `runtime/core/workflows.py`
+- Work-item landing grant: `work_item_grants`
+  - Code anchor: `runtime/core/work_item_grants.py`
 - Findings and handoff breadcrumbs: runtime events
   - Code anchor: runtime event helpers used from hooks
 - Visible operational status: runtime-backed statusline snapshot
@@ -80,7 +82,7 @@ These are no longer authoritative:
          |                    |                |       decision_log, test_gate_pretool,
          |                    |                |       doc_gate, mock_gate, enforcement_gap
          |                    |                |
-         |                    |                +--> cc-policy evaluate (12 bash-path policies)
+         |                    |                +--> cc-policy evaluate (Bash/Agent policies)
          |                    |                       bash_tmp_safety, bash_worktree_cwd,
          |                    |                       bash_git_who, bash_main_sacred,
          |                    |                       bash_force_push, bash_destructive_git,
@@ -100,6 +102,7 @@ These are no longer authoritative:
          |                                      |           |
          |                                      |           |
          |                                      |           +--> writes runtime test_state
+         |                                      +--> projects test_state from successful Bash test commands
          |                                      |
          |                                      +--> invalidates evaluation_state after source changes
          |
@@ -143,6 +146,8 @@ Main runtime tables:
 - test_state
 - workflow_bindings
 - workflow_scope
+- work_items
+- work_item_grants
 - agent_markers
 - events
 - dispatch_cycles
@@ -168,7 +173,8 @@ post-task
 Implementer
     |
     | can write source
-    | cannot land
+    | can checkpoint commit on scoped branch when work-item grant allows it
+    | cannot merge, push, or touch main/master
     | source writes are tracked
     v
 post-task
@@ -201,12 +207,13 @@ post-task
 
 Guardian
     |
-    | only role allowed to commit / merge / push
+    | owns final landing: main/master commit, merge, push
     | pre-bash.sh -> cc-policy evaluate enforces:
     |   - valid active lease (bash_git_who)
     |   - passing test_state (bash_test_gate_commit, bash_test_gate_merge)
     |   - evaluation_state == ready_for_guardian + SHA match (bash_eval_readiness)
     |   - workflow binding and scope (bash_workflow_scope)
+    |   - work-item grant for routine no-ff autoland
     |   - approval token for high-risk ops (bash_approval_gate)
     |   - no force push without --force-with-lease (bash_force_push)
     v
@@ -236,6 +243,7 @@ Reviewer output is not just advisory anymore. The SubagentStop reviewer adapter 
 
 Guardian cannot land unless:
 
+- the work-item landing grant allows the requested landing operation
 - the test state is passing
 - the evaluator verdict is `ready_for_guardian`
 - the evaluated `head_sha` matches the current HEAD
@@ -251,9 +259,11 @@ If any of that is missing or stale, landing is denied.
 The write and git hooks now enforce role boundaries at action time:
 
 - Planner: governance / planning surfaces
-- Implementer: source changes
+- Implementer: source changes and scoped branch checkpoint commits only when
+  the work-item grant permits them
 - Reviewer: verification, no source authority
-- Guardian: permanent repo mutations only
+- Guardian: integration mutations only - final commit, merge, push, and
+  worktree lifecycle
 
 ### 5. Visibility reads runtime truth
 
@@ -265,7 +275,10 @@ You should expect the following behavior:
 
 - Wrong-role writes are denied immediately.
 - Unleased git operations in enforced paths are denied immediately.
-- Guardian cannot commit, merge, or push without the right lease and scope.
+- Implementer cannot checkpoint commit without the right lease, scoped branch,
+  and work-item grant.
+- Guardian cannot land, merge, or push without the right lease, scope, and
+  work-item grant.
 - Guardian cannot land with failing or stale test state.
 - Guardian cannot land if the Reviewer cleared a different SHA than the one currently checked out.
 - If code changes after the Reviewer clears it, readiness goes back to pending.
@@ -284,7 +297,8 @@ You should expect the following behavior:
 ### Implementer
 
 - Owns source changes
-- Does not own landing
+- May create scoped branch checkpoint commits when the work-item grant allows it
+- Does not own merge, push, main/master commits, or landing readiness
 - Completion reopens evaluation and hands off to Reviewer
 
 ### Reviewer
@@ -295,14 +309,16 @@ You should expect the following behavior:
 
 ### Guardian
 
-- Owns commit / merge / push
-- Must satisfy lease, scope, tests, evaluator readiness, and approval policy
+- Owns final landing commit / merge / push
+- Must satisfy lease, scope, tests, evaluator readiness, work-item grant, and
+  approval policy
 
 ## Practical Truths
 
 If you want to know what the system believes, trust the runtime-backed surfaces:
 
 - lease / workflow identity -> lease context
+- routine branch/landing permission -> work-item landing grant
 - next role -> completion routing
 - landing readiness -> evaluation state
 - test readiness -> test state
