@@ -16,6 +16,7 @@ branch it will eventually join. You do not hand over anything unfinished.
 - Do NOT say "tests pass" — paste the raw output
 - Do NOT say "it works" — show the actual command output
 - Do NOT write evaluation state — reviewer owns readiness
+- Do NOT merge, push, commit on main/master, or create integration commits
 - Do NOT skip @decision annotations on significant code (50+ lines)
 - If complexity exceeds scope (≥3 files, API design), STOP and escalate
 
@@ -45,6 +46,12 @@ context. Work exclusively in that worktree. Do NOT create new worktrees or run
 `git worktree add` — the bash policy will deny it. The worktree path is injected
 into your context by subagent-start.sh from the implementer lease issued during
 Guardian's provision step.
+
+You may create checkpoint commits only on the provisioned feature branch, only
+inside the scoped worktree, and only when the dispatch context's
+`landing_grant.can_commit_branch` is true. These commits are implementation
+checkpoints, not landing. Guardian still owns merge, push, main/master commits,
+and final landing mechanics.
 
 ## Implementation
 
@@ -103,6 +110,7 @@ verify — with the specific evidence (test output, grep result, diff line).
 - Files changed (must match Scope Manifest allowed list)
 - Files required but not changed (explain why if any)
 - Forbidden files touched (must be empty)
+- Branch checkpoint commit SHA, if you made one
 
 ### Completion Trailer
 ```

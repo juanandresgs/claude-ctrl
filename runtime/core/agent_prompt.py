@@ -28,18 +28,15 @@ import subprocess
 import time
 from typing import Optional
 
+import runtime.core.decision_work_registry as _dwr
+from runtime.core import completions as _completions
+from runtime.core import stage_registry as _stage_registry
+from runtime.core import workflows as _workflows
+from runtime.core.agent_contract_codec import CONTRACT_BLOCK_MARKER
 from runtime.core.authority_registry import (
     canonical_stage_id,
     dispatch_subagent_type_for_stage,
 )
-from runtime.core import completions as _completions
-import runtime.core.decision_work_registry as _dwr
-from runtime.core import stage_registry as _stage_registry
-from runtime.core import workflows as _workflows
-from runtime.core.dispatch_contract import (
-    dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
-)
-from runtime.core.agent_contract_codec import CONTRACT_BLOCK_MARKER
 
 __all__ = [
     "build_agent_dispatch_prompt",
@@ -254,6 +251,13 @@ def build_agent_dispatch_prompt(
                 "DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 to prevent cross-workflow "
                 "contract bleed."
             )
+        if len(active_goals) > 1:
+            ids = ", ".join(goal.goal_id for goal in active_goals)
+            raise ValueError(
+                f"multiple active goals found for workflow {workflow_id!r}: {ids}. "
+                "Pass --goal-id explicitly so runtime cannot dispatch the wrong "
+                "work item."
+            )
         goal_id = active_goals[0].goal_id
 
     # Resolve work_item_id from runtime state when not supplied. Same
@@ -283,6 +287,14 @@ def build_agent_dispatch_prompt(
                 "work that should not enter the canonical workflow chain. "
                 "See DEC-CLAUDEX-DW-WORKFLOW-JOIN-001 for why the global "
                 "fall-through was removed."
+            )
+        if len(in_progress) > 1:
+            ids = ", ".join(item.work_item_id for item in in_progress)
+            raise ValueError(
+                f"multiple in_progress work items found for goal {goal_id!r} "
+                f"scoped to workflow {workflow_id!r}: {ids}. Pass "
+                "--work-item-id explicitly so stage-packet cannot resolve "
+                "the wrong work item."
             )
         work_item_id = in_progress[0].work_item_id
 

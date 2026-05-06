@@ -112,6 +112,25 @@ def test_commit_with_failing_tests_denied():
     assert decision.action == "deny"
 
 
+def test_implementer_branch_checkpoint_commit_skips_test_gate():
+    lease = {
+        "role": "implementer",
+        "workflow_id": "feature-test",
+        "worktree_path": "/project/.worktrees/feature-test",
+    }
+    ctx = make_context(
+        project_root="/project/.worktrees/feature-test",
+        actor_role="implementer",
+        lease=lease,
+        test_state=None,
+        work_item_id="wi-test",
+        landing_grant={"can_commit_branch": True},
+    )
+    req = make_request("git commit -m 'checkpoint'", context=ctx)
+    decision = check_commit(req)
+    assert decision is None
+
+
 # ---------------------------------------------------------------------------
 # check_commit — allow cases
 # ---------------------------------------------------------------------------

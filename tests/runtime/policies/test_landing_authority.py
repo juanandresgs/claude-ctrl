@@ -12,12 +12,10 @@ Proves four invariants:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 import time
+from pathlib import Path
 
-
-from runtime.core.landing_authority import classify_landing_scope
 from runtime.core.authority_registry import (
     CAN_LAND_GIT,
     CAN_PROVISION_WORKTREE,
@@ -25,6 +23,7 @@ from runtime.core.authority_registry import (
     capabilities_for,
     lease_role_for_stage,
 )
+from runtime.core.landing_authority import classify_landing_scope
 from runtime.core.policies.bash_git_who import check
 from tests.runtime.policies.conftest import make_context, make_request
 
@@ -47,12 +46,34 @@ def _make_lease(*, role="guardian", allowed_ops=None):
     return {
         "role": role,
         "workflow_id": "test-workflow",
+        "worktree_path": "/project/.worktrees/feature-test",
         "expires_at": _future_expiry(),
         "allowed_ops_json": json.dumps(
             allowed_ops or ["routine_local", "high_risk", "admin_recovery"]
         ),
         "blocked_ops_json": json.dumps([]),
     }
+
+
+def _grant(**overrides):
+    result = {
+        "work_item_id": "wi-test",
+        "workflow_id": "test-workflow",
+        "can_commit_branch": True,
+        "can_request_review": True,
+        "can_autoland": True,
+        "merge_strategy": "no_ff",
+        "requires_user_approval": [
+            "rebase",
+            "reset",
+            "force_push",
+            "destructive_cleanup",
+            "plumbing",
+            "admin_recovery",
+        ],
+    }
+    result.update(overrides)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -62,9 +83,28 @@ def _make_lease(*, role="guardian", allowed_ops=None):
 
 class TestImplementerCannotLand:
 
-    def test_implementer_denied_commit(self):
+    def test_implementer_allowed_branch_checkpoint_commit_with_grant(self):
         lease = _make_lease(role="implementer", allowed_ops=["routine_local"])
-        ctx = make_context(actor_role="implementer", lease=lease)
+        ctx = make_context(
+            actor_role="implementer",
+            lease=lease,
+            project_root="/project/.worktrees/feature-test",
+            work_item_id="wi-test",
+            landing_grant=_grant(),
+        )
+        req = make_request("git commit -m 'impl work'", context=ctx)
+        d = check(req)
+        assert d is None
+
+    def test_implementer_commit_without_grant_is_denied(self):
+        lease = _make_lease(role="implementer", allowed_ops=["routine_local"])
+        ctx = make_context(
+            actor_role="implementer",
+            lease=lease,
+            project_root="/project/.worktrees/feature-test",
+            work_item_id="wi-test",
+            landing_grant=None,
+        )
         req = make_request("git commit -m 'impl work'", context=ctx)
         d = check(req)
         assert d is not None and d.action == "deny"

@@ -25,6 +25,7 @@ import pytest
 
 from runtime.core import completions, critic_reviews, critic_runs, evaluation, leases
 from runtime.core import decision_work_registry as dwr
+from runtime.core import work_item_grants as wig
 from runtime.core.dispatch_engine import process_agent_stop
 from runtime.core.policy_utils import current_workflow_id
 from runtime.schemas import ensure_schema
@@ -114,6 +115,29 @@ def _insert_goal(conn, goal_id, budget=5, status="active"):
             desired_end_state="Test goal",
             status=status,
             autonomy_budget=budget,
+        ),
+    )
+
+
+def _insert_work_item(conn, *, workflow_id, goal_id=None, work_item_id="WI-dispatch"):
+    return dwr.insert_work_item(
+        conn,
+        dwr.WorkItemRecord(
+            work_item_id=work_item_id,
+            goal_id=goal_id or workflow_id,
+            workflow_id=workflow_id,
+            title="dispatch test work item",
+            status="in_progress",
+            version=1,
+            author="planner",
+            scope_json=(
+                '{"allowed_paths":["runtime/*.py"],'
+                '"required_paths":["runtime/core/dispatch_engine.py"],'
+                '"forbidden_paths":[],"state_domains":["runtime"]}'
+            ),
+            evaluation_json='{"required_tests":[]}',
+            head_sha=None,
+            reviewer_round=0,
         ),
     )
 
@@ -343,6 +367,39 @@ def test_implementer_includes_worktree_path_for_reviewer(conn, project_root):
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["next_role"] == "reviewer"
     assert result.get("worktree_path") == worktree
+
+
+def test_implementer_review_handoff_respects_work_item_grant(conn, project_root):
+    """can_request_review=false blocks routine implementer -> reviewer handoff."""
+    wf_id = "wf-impl-grant-review-001"
+    wi_id = "WI-impl-no-review"
+    _insert_work_item(conn, workflow_id=wf_id, work_item_id=wi_id)
+    wig.upsert(
+        conn,
+        wig.WorkItemGrant(
+            workflow_id=wf_id,
+            work_item_id=wi_id,
+            can_request_review=False,
+            granted_by="user",
+        ),
+    )
+    lease = leases.issue(
+        conn,
+        role="implementer",
+        workflow_id=wf_id,
+        worktree_path=project_root,
+        metadata={"work_item_id": wi_id},
+    )
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+
+    result = process_agent_stop(conn, "implementer", project_root)
+
+    assert result["next_role"] is None
+    assert result["auto_dispatch"] is False
+    assert result["work_item_id"] == wi_id
+    assert result["landing_grant"]["can_request_review"] is False
+    assert result["suggestion"].startswith("USER_DECISION_REQUIRED")
+    assert any(e["type"] == "work_item_grant_blocked_review" for e in result["events"])
 
 
 def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_root):

@@ -14,11 +14,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from runtime.core import contracts
 from runtime.core import completions as completions_mod
+from runtime.core import contracts, goal_contract_codec
 from runtime.core import decision_work_registry as dwr
 from runtime.core import evaluation as evaluation_mod
-from runtime.core import goal_contract_codec
 from runtime.core import test_state as test_state_mod
 from runtime.core import workflows as workflows_mod
 from runtime.core.stage_packet import build_stage_packet
@@ -223,6 +222,8 @@ def test_build_stage_packet_returns_agent_tool_spec_and_command_recipes(conn):
     assert result["commands"]["goal_get"] == "cc-policy workflow goal-get GOAL-STAGE-1"
     assert result["commands"]["work_item_get"] == "cc-policy workflow work-item-get WI-STAGE-1"
     assert result["commands"]["evaluation_get"] == "cc-policy evaluation get wf-stage"
+    assert result["landing_grant"]["work_item_id"] == "WI-STAGE-1"
+    assert result["landing_grant"]["can_autoland"] is True
 
 
 def test_build_stage_packet_can_resolve_workflow_from_bound_worktree(conn):
@@ -258,7 +259,45 @@ def test_build_stage_packet_bare_guardian_without_completion_fails_actionably(co
     message = str(exc.value)
     assert "guardian:land" in message
     assert "guardian:provision" in message
-    assert "unknown active stage" not in message
+
+
+def test_build_stage_packet_refuses_ambiguous_work_item_without_explicit_id(conn):
+    dwr.insert_work_item(
+        conn,
+        dwr.WorkItemRecord(
+            work_item_id="WI-STAGE-2",
+            goal_id="GOAL-STAGE-1",
+            workflow_id="wf-stage",
+            title="second in-progress slice",
+            status="in_progress",
+            version=1,
+            author="planner",
+            scope_json=(
+                '{"allowed_paths":["runtime/*.py"],'
+                '"required_paths":["runtime/core/stage_packet.py"],'
+                '"forbidden_paths":["hooks/*.sh"],'
+                '"state_domains":["runtime"]}'
+            ),
+            evaluation_json='{"required_tests":[]}',
+            head_sha=None,
+            reviewer_round=0,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="multiple in_progress work items"):
+        build_stage_packet(
+            conn,
+            workflow_id="wf-stage",
+            stage_id="implementer",
+        )
+
+    result = build_stage_packet(
+        conn,
+        workflow_id="wf-stage",
+        stage_id="implementer",
+        work_item_id="WI-STAGE-2",
+    )
+    assert result["work_item_id"] == "WI-STAGE-2"
 
 
 def test_build_stage_packet_bare_guardian_after_reviewer_ready_resolves_land(conn):

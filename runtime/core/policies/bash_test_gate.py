@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from runtime.core.landing_authority import is_branch_checkpoint_commit
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
 _PASS_STATUSES = frozenset({"pass", "pass_complete"})
@@ -102,6 +103,10 @@ def check_commit(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     # Meta-repo bypass.
     if request.context.is_meta_repo:
+        return None
+
+    target_dir = request.context.project_root or request.cwd or ""
+    if is_branch_checkpoint_commit(request.context, target_dir):
         return None
 
     ok, status = _test_state_ok(request)

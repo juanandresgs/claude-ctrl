@@ -724,6 +724,26 @@ CREATE INDEX IF NOT EXISTS idx_work_items_workflow
     ON work_items (workflow_id) WHERE workflow_id IS NOT NULL
 """
 
+WORK_ITEM_GRANTS_DDL = """
+CREATE TABLE IF NOT EXISTS work_item_grants (
+    work_item_id                 TEXT    PRIMARY KEY,
+    workflow_id                  TEXT    NOT NULL,
+    can_commit_branch            INTEGER NOT NULL DEFAULT 1 CHECK (can_commit_branch IN (0, 1)),
+    can_request_review           INTEGER NOT NULL DEFAULT 1 CHECK (can_request_review IN (0, 1)),
+    can_autoland                 INTEGER NOT NULL DEFAULT 1 CHECK (can_autoland IN (0, 1)),
+    merge_strategy               TEXT    NOT NULL DEFAULT 'no_ff' CHECK (merge_strategy IN ('no_ff', 'ff_only', 'squash', 'manual')),
+    requires_user_approval_json  TEXT    NOT NULL DEFAULT '["rebase","reset","force_push","destructive_cleanup","plumbing","admin_recovery"]',
+    granted_by                   TEXT    NOT NULL DEFAULT 'planner',
+    created_at                   INTEGER NOT NULL,
+    updated_at                   INTEGER NOT NULL
+)
+"""
+
+WORK_ITEM_GRANTS_INDEX_WORKFLOW_DDL = """
+CREATE INDEX IF NOT EXISTS idx_work_item_grants_workflow
+    ON work_item_grants (workflow_id)
+"""
+
 # ---------------------------------------------------------------------------
 # ClauDEX canonical goal-contract persistence (shadow-only)
 #
@@ -1092,6 +1112,8 @@ ALL_DDL: list[str] = [
     WORK_ITEMS_DDL,
     WORK_ITEMS_INDEX_GOAL_DDL,
     WORK_ITEMS_INDEX_STATUS_DDL,
+    WORK_ITEM_GRANTS_DDL,
+    WORK_ITEM_GRANTS_INDEX_WORKFLOW_DDL,
     # ClauDEX Phase 2 canonical goal-contract persistence
     # (DEC-CLAUDEX-GOAL-CONTRACTS-001).
     GOAL_CONTRACTS_DDL,

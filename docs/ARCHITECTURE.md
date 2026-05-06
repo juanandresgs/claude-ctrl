@@ -19,20 +19,25 @@ JSON into a policy request and forward the decision.
   PolicyRequest, PolicyDecision. `evaluate()` runs policies in priority
   order with first-deny-wins semantics. `explain()` returns the full
   evaluation trace for debugging. `build_context()` resolves all SQLite
-  state (lease, markers, workflow, scope, evaluation, test_state,
-  completions) in one shot.
+  state (lease, markers, workflow, work item, landing grant, scope,
+  evaluation, test_state, completions) in one shot.
 - `runtime/core/hook_envelope.py` -- Canonical hook-event envelope builder.
   It owns session/tool identity normalization, Bash command intent
   construction, Write/Edit target path normalization, effective cwd, target
   cwd, and project-root resolution. Hooks and CLI handlers consume this
   envelope instead of deriving command targets from shell cwd.
-- `runtime/core/landing_authority.py` -- Guardian landing scope and phase
-  classifier. It distinguishes feature commits, governance-only base
-  sidecars, reviewed-feature merges, and non-landing operations from the
-  capability-bearing lease plus command target.
+- `runtime/core/landing_authority.py` -- Landing scope and phase classifier.
+  It distinguishes implementer branch checkpoint commits, Guardian feature
+  commits, governance-only base sidecars, reviewed-feature merges, and
+  non-landing operations from the capability-bearing lease, work-item grant,
+  and command target.
 - `runtime/core/bash_lifecycle.py` -- Runtime owner for Bash pre/post
   lifecycle bookkeeping: source fingerprint baselines, PostToolUse source
-  invalidation, Guardian commit head promotion, and landing phase events.
+  invalidation, Guardian commit head promotion, test-state projection from
+  successful test commands, and landing phase events.
+- `runtime/core/work_item_grants.py` -- Durable per-work-item landing grant
+  authority. Policies consume this record for routine branch checkpoint and
+  autoland decisions instead of requiring one-shot approvals for normal flow.
 - `runtime/core/policy_utils.py` -- Python ports of shell classification
   helpers (is_source_file, is_governance_markdown, extract_git_target_dir,
   classify_git_op, etc.).
@@ -65,7 +70,7 @@ Bash/Agent PreToolUse path (event_types=["Bash","PreToolUse"]):
 | 200 | bash_worktree_cwd | Deny bare cd into .worktrees/ |
 | 250 | bash_worktree_nesting | Prevent nested worktree creation |
 | 275 | bash_write_who | Capability-gated WHO enforcement for shell writes |
-| 300 | bash_git_who | Lease-based WHO enforcement for git ops |
+| 300 | bash_git_who | Lease-based WHO enforcement for git ops; scoped implementer branch commits require a work-item grant |
 | 350 | bash_worktree_creation | Guardian-only worktree creation |
 | 400 | bash_main_sacred | Deny non-landing commits on main/master; allow `guardian:land` final commits to proceed to test/evaluation gates |
 | 500 | bash_force_push | Deny unsafe force push |
@@ -75,10 +80,10 @@ Bash/Agent PreToolUse path (event_types=["Bash","PreToolUse"]):
 | 635 | bash_shell_copy_ban | Deny shell copy/move of forbidden scope paths from foreign refs/trees |
 | 700 | bash_worktree_removal | Safe worktree removal enforcement |
 | 800 | bash_test_gate_merge | Test-pass gate for git merge |
-| 850 | bash_test_gate_commit | Test-pass gate for git commit |
-| 900 | bash_eval_readiness | evaluation_state readiness + SHA match |
+| 850 | bash_test_gate_commit | Test-pass gate for Guardian landing commits |
+| 900 | bash_eval_readiness | Guardian landing readiness + SHA match |
 | 1000 | bash_workflow_scope | Workflow binding + scope compliance |
-| 1100 | bash_approval_gate | One-shot approval for rebase/reset/non-ff merge/admin recovery/direct plumbing |
+| 1100 | bash_approval_gate | One-shot approval for high-risk ops; routine no-ff autoland comes from work-item grants |
 
 **CLI entry points:**
 
@@ -179,11 +184,12 @@ When hook subprocess `PWD` and event `cwd` differ, the adapter binds
   `CLAUDE_PROJECT_DIR` to the command target, and calls
   `cc-policy hook bash-post`. `runtime.core/bash_lifecycle.py` resolves the
   same envelope as policy evaluation, compares the source fingerprint captured
-  by `cc-policy hook bash-pre-baseline`, promotes `evaluation_state.head_sha`
-  after successful Guardian feature commits, emits `landing_phase_transition`
-  / `eval_head_sync` events, and invalidates ready state for other source
-  mutations. The shell hook no longer decides lease context, eval state, or
-  landing phase.
+  by `cc-policy hook bash-pre-baseline`, projects runtime `test_state` from
+  successful test commands, promotes `evaluation_state.head_sha` after
+  successful Guardian feature commits, emits `landing_phase_transition` /
+  `eval_head_sync` events, and invalidates ready state for other source
+  mutations. The shell hook no longer decides lease context, eval state, test
+  state, or landing phase.
 
 ### Dispatch Engine
 
@@ -209,8 +215,8 @@ The typed runtime owns all shared workflow state:
   session_activity, session_file_changes, enforcement_gaps, lint_profile_cache,
   lint_circuit_breakers, preserved_contexts, policy_strikes,
   bash_source_baselines, workflow_bindings,
-  workflow_scope, work_items, pending_agent_requests, dispatch_attempts,
-  agent_markers, approvals, events, bugs.
+  workflow_scope, work_items, work_item_grants, pending_agent_requests,
+  dispatch_attempts, agent_markers, approvals, events, bugs.
 - **Bridge:** `hooks/lib/runtime-bridge.sh` provides shell wrappers for
   legacy callers. New hooks use `_local_cc_policy()` or direct
   `python3 "$_LOCAL_CLI"` resolution for new subcommands.

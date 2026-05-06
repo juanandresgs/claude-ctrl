@@ -71,6 +71,7 @@ from runtime.core.authority_registry import (
     READ_ONLY_REVIEW,
     actor_matches_lease_role,
 )
+from runtime.core.landing_authority import is_branch_checkpoint_commit
 from runtime.core.leases import op_class_label
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
@@ -262,9 +263,15 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     for operation in git_operations:
         invocation = operation.invocation
         op_class = operation.op_class
+        target_dir = request.context.project_root or request.cwd or ""
+        is_branch_commit = (
+            invocation.subcommand == "commit"
+            and is_branch_checkpoint_commit(request.context, target_dir)
+        )
         if (
             invocation.subcommand in _LANDING_SUBCOMMANDS
             and op_class != "admin_recovery"
+            and not is_branch_commit
         ):
             if CAN_LAND_GIT not in request.context.capabilities:
                 return PolicyDecision(

@@ -15,7 +15,10 @@ The canonical role flow is:
 - Guardian (provision) issues the implementer lease and provisions the worktree.
 - Implementer builds in the worktree and hands off.
 - Reviewer verifies against the Evaluation Contract and owns findings.
-- Guardian (land) is the only role allowed to commit, merge, or push.
+- Implementer may create scoped checkpoint commits on its provisioned feature
+  branch when the work-item landing grant allows `can_commit_branch`.
+- Guardian (land) owns integration: merge, push, main/master commits, and final
+  landing mechanics.
 - Guardian Admission is the non-canonical Guardian mode for the fork between
   durable project onboarding and task-local scratchlane custody. It uses the
   same `guardian` subagent identity as provision and land.
@@ -85,6 +88,14 @@ Auto-dispatch decisions are recorded in `dispatch_next_actions`. Hook output may
 still emit `AUTO_DISPATCH:` for the Claude harness, but the structured next
 action row is the runtime state that downstream tooling should inspect.
 
+Work-item landing policy is durable runtime data, not a turn-by-turn user
+approval ceremony. `work_item_grants` records whether a work item may checkpoint
+on its scoped branch, request review, and autoland, plus its merge strategy and
+the operations that still require explicit user approval. New work items receive
+the default grant (`can_commit_branch=true`, `can_request_review=true`,
+`can_autoland=true`, `merge_strategy=no_ff`) unless a planner/operator narrows
+it. Policies consume this grant through `PolicyContext.landing_grant`.
+
 ### PreToolUse Write|Edit chain (fires on every Write or Edit call)
 
 All write-path enforcement is handled by `hooks/pre-write.sh`, a thin adapter
@@ -122,7 +133,7 @@ PreToolUse/Bash-path policies in priority order:
 | 260 | `bash_scratchlane_gate` | Shell tmp/interpreter scratchlane work classifies through Guardian Admission; active permits must use the runtime-owned scratchlane executor. |
 | 270 | `bash_admission_gate` | Uncustodied Bash source writes route to Guardian Admission before WHO fallback. |
 | 275 | `bash_write_who` | Capability-gated WHO enforcement for shell writes. |
-| 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. |
+| 300 | `bash_git_who` | Lease-based WHO enforcement for git ops. Implementer checkpoint commits are allowed only on the scoped feature branch when the work-item grant permits them; merge/push remain Guardian-only. |
 | 350 | `bash_worktree_creation` | Guardian-only worktree creation. |
 | 400 | `bash_main_sacred` | Deny non-landing commits on main/master; `guardian:land` final commits pass through to test/evaluation gates. |
 | 500 | `bash_force_push` | Deny unsafe force push (require --force-with-lease). |
@@ -132,10 +143,10 @@ PreToolUse/Bash-path policies in priority order:
 | 635 | `bash_shell_copy_ban` | Deny shell copy/move of forbidden scope paths from foreign refs/trees. |
 | 700 | `bash_worktree_removal` | Safe worktree removal enforcement. |
 | 800 | `bash_test_gate_merge` | Test-pass gate for git merge. |
-| 850 | `bash_test_gate_commit` | Test-pass gate for git commit. |
-| 900 | `bash_eval_readiness` | Requires evaluation_state=ready_for_guardian + SHA match. |
+| 850 | `bash_test_gate_commit` | Test-pass gate for Guardian landing commits; scoped implementer checkpoint commits defer readiness to reviewer. |
+| 900 | `bash_eval_readiness` | Requires evaluation_state=ready_for_guardian + SHA match for Guardian landing; scoped implementer checkpoint commits are not landing. |
 | 1000 | `bash_workflow_scope` | Workflow binding + scope compliance. |
-| 1100 | `bash_approval_gate` | One-shot approval for rebase/reset/non-ff merge/admin recovery/direct plumbing; routine Guardian landing needs reviewer/test/lease clearance, not an extra approval token. |
+| 1100 | `bash_approval_gate` | One-shot approval for rebase/reset/force-push/destructive cleanup/admin recovery/direct plumbing. Routine no-ff Guardian landing is allowed by the work-item grant plus reviewer/test/lease clearance, not an extra approval token. |
 
 ### SubagentStart (fires on every agent spawn)
 
@@ -178,11 +189,15 @@ guardian(land) flow chains automatically when:
   `IMPL_STATUS`, `REVIEW_VERDICT`).
 - No `BLOCKED` or `ERROR` signal is present in hook output.
 - The `AUTO_DISPATCH:` directive names a valid next role.
+- The active goal/work item is unambiguous, or the dispatch explicitly names
+  `--goal-id` / `--work-item-id`.
 
 The orchestrator stops the chain only when hook output contains `BLOCKED`,
 `ERROR`, or `PROCESS ERROR`, or when Guardian needs user approval for high-risk
 ops (history rewrite, destructive recovery, ambiguous publish target, or
-non-straightforward push) gated by `bash_approval_gate` policy.
+non-straightforward push) gated by `bash_approval_gate` policy. A normal local
+`git merge --no-ff` is not high risk when the work-item grant explicitly allows
+`can_autoland` with `merge_strategy=no_ff`.
 
 Regular `Stop` is deterministic: `surface.sh`, `session-summary.sh`, and
 `stop-advisor.sh`. The advisor only blocks obvious "do the routine thing" asks

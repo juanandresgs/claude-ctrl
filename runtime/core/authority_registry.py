@@ -109,6 +109,7 @@ Rationale: CUTOVER_PLAN §Target Architecture §5 ("Capability Model") and
       * ``hook_event_envelope``      → ``runtime.core.hook_envelope``
       * ``prompt_pack_layers``       → ``runtime.core.prompt_pack``
       * ``guardian_landing_scope``   → ``runtime.core.landing_authority``
+      * ``work_item_landing_grants`` → ``runtime.core.work_item_grants``
       * ``bash_hook_lifecycle``      → ``runtime.core.bash_lifecycle``
 
     The ``hook_wiring`` fact realises CUTOVER_PLAN §Authority Map
@@ -513,6 +514,15 @@ AUTHORITY_TABLE: Tuple[OperationalFact, ...] = (
             "reviewed-feature merges."
         ),
         owner_module="runtime.core.landing_authority",
+    ),
+    OperationalFact(
+        name="work_item_landing_grants",
+        description=(
+            "Durable work-item permission envelope for branch commits, "
+            "review requests, autoland strategy, and approval escalation "
+            "boundaries."
+        ),
+        owner_module="runtime.core.work_item_grants",
     ),
     OperationalFact(
         name="bash_hook_lifecycle",
