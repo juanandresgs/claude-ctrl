@@ -77,6 +77,10 @@ from runtime.core.completions import latest as comp_latest
 from runtime.core.markers import get_active_with_age
 
 
+CRITIC_ACTIVE_MAX_AGE_SECONDS = 20 * 60
+CRITIC_ACTIVE_STATUSES = {"started", "provider_ready", "reviewing"}
+
+
 def snapshot(conn: sqlite3.Connection) -> dict:
     """Return a read-only projection of runtime state for status display.
 
@@ -180,6 +184,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # Used by the last_review section to scope review events to the current
     # eval cycle — a review event before the last eval reset does not count.
     _eval_updated_at: int | None = None
+    _latest_valid_completion: dict | None = None
 
     # ------------------------------------------------------------------
     # Section: Evaluation state (TKT-024 / W-CONV-4) — sole readiness
@@ -259,6 +264,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     try:
         comp = comp_latest(conn)
         if comp and comp.get("valid"):
+            _latest_valid_completion = comp
             _next = determine_next_role(comp["role"], comp.get("verdict", ""))
             result["dispatch_status"] = _next  # None means cycle complete
             result["dispatch_workflow"] = comp.get("workflow_id")
@@ -373,12 +379,13 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         result["errors"].append({"section": "last_review", "error": str(exc)})
 
     # ------------------------------------------------------------------
-    # Section: Latest critic run — statusline heartbeat for Codex tactical
-    # critic visibility (DEC-CRITIC-RUNS-001).
+    # Section: Current critic run — statusline heartbeat for Codex tactical
+    # critic visibility (DEC-CRITIC-RUNS-001 / DEC-CRITIC-VISIBILITY-002).
     #
-    # This reads critic_runs, not hook text. CRITIC_UNAVAILABLE remains
-    # visible as fallback_required until reviewer fallback completion marks
-    # the run fallback_completed or a newer critic run supersedes it.
+    # Do not show the latest critic row globally. That made stale terminal rows
+    # look current. Active non-stale runs are visible directly; terminal runs are
+    # visible only when the latest valid completion is an implementer completion
+    # for the same workflow and the critic run postdates that completion.
     # ------------------------------------------------------------------
     try:
         row = conn.execute(
@@ -387,10 +394,33 @@ def snapshot(conn: sqlite3.Connection) -> dict:
                    summary, error, artifact_path, progress_json, metrics_json,
                    started_at, updated_at, completed_at
             FROM   critic_runs
+            WHERE  status IN ('started', 'provider_ready', 'reviewing')
+              AND  updated_at >= ?
             ORDER  BY updated_at DESC, started_at DESC, run_id DESC
             LIMIT  1
-            """
+            """,
+            (now - CRITIC_ACTIVE_MAX_AGE_SECONDS,),
         ).fetchone()
+        if row is None and _latest_valid_completion:
+            latest_role = str(_latest_valid_completion.get("role") or "")
+            latest_workflow = str(_latest_valid_completion.get("workflow_id") or "")
+            latest_created_at = int(_latest_valid_completion.get("created_at") or 0)
+            if latest_role == "implementer" and latest_workflow:
+                row = conn.execute(
+                    """
+                    SELECT run_id, workflow_id, status, verdict, provider, fallback,
+                           summary, error, artifact_path, progress_json, metrics_json,
+                           started_at, updated_at, completed_at
+                    FROM   critic_runs
+                    WHERE  workflow_id = ?
+                      AND  role = 'implementer'
+                      AND  status != 'fallback_completed'
+                      AND  updated_at >= ?
+                    ORDER  BY updated_at DESC, started_at DESC, run_id DESC
+                    LIMIT  1
+                    """,
+                    (latest_workflow, latest_created_at),
+                ).fetchone()
         if row:
             import json as _json
 
@@ -410,7 +440,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             completed_at = int(row["completed_at"] or 0)
             updated_at = int(row["updated_at"] or 0)
             elapsed = max(0, (completed_at or updated_at or now) - started_at) if started_at else 0
-            active = str(row["status"] or "") in {"started", "provider_ready", "reviewing"}
+            active = str(row["status"] or "") in CRITIC_ACTIVE_STATUSES
             result["critic_run"] = {
                 "found": True,
                 "active": active,

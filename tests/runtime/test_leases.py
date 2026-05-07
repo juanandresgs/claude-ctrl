@@ -18,9 +18,8 @@ import time
 
 import pytest
 
-from runtime.schemas import ensure_schema
 from runtime.core import leases
-
+from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
 # Fixture
@@ -403,6 +402,46 @@ def test_expire_stale_does_not_touch_non_active_leases(conn):
     leases.release(conn, lease["lease_id"])  # already released
     count = leases.expire_stale(conn, now=int(time.time()) + 100)
     assert count == 0  # released lease not touched by expire_stale
+
+
+def test_revoke_missing_worktrees_revokes_deleted_worktree_lease(conn, tmp_path):
+    worktree = tmp_path / "feature-worktree"
+    worktree.mkdir()
+    lease = leases.issue(conn, role="guardian", worktree_path=str(worktree))
+    worktree.rmdir()
+
+    count = leases.revoke_missing_worktrees(conn)
+
+    assert count == 1
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "revoked"
+    assert refreshed["released_at"] is not None
+
+
+def test_revoke_missing_worktrees_keeps_existing_worktree_lease(conn, tmp_path):
+    worktree = tmp_path / "existing-worktree"
+    worktree.mkdir()
+    lease = leases.issue(conn, role="guardian", worktree_path=str(worktree))
+
+    count = leases.revoke_missing_worktrees(conn)
+
+    assert count == 0
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "active"
+
+
+def test_revoke_missing_worktrees_ignores_released_missing_worktree(conn, tmp_path):
+    worktree = tmp_path / "released-worktree"
+    worktree.mkdir()
+    lease = leases.issue(conn, role="guardian", worktree_path=str(worktree))
+    leases.release(conn, lease["lease_id"])
+    worktree.rmdir()
+
+    count = leases.revoke_missing_worktrees(conn)
+
+    assert count == 0
+    refreshed = leases.get(conn, lease["lease_id"])
+    assert refreshed["status"] == "released"
 
 
 # ---------------------------------------------------------------------------

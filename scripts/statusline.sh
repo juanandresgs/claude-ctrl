@@ -153,6 +153,8 @@ critic_verdict=""
 critic_provider=""
 critic_elapsed=0
 critic_fallback=""
+critic_summary=""
+critic_progress_latest=""
 critic_try_again_streak=0
 critic_retry_limit=0
 critic_escalated="false"
@@ -176,6 +178,8 @@ if [[ -n "$snapshot" ]]; then
     critic_provider=$(printf '%s' "$snapshot" | jq -r '.critic_run.provider // empty' 2>/dev/null) || critic_provider=""
     critic_elapsed=$(printf '%s' "$snapshot" | jq -r '.critic_run.elapsed_seconds // 0' 2>/dev/null) || critic_elapsed=0
     critic_fallback=$(printf '%s' "$snapshot" | jq -r '.critic_run.fallback // empty' 2>/dev/null) || critic_fallback=""
+    critic_summary=$(printf '%s' "$snapshot" | jq -r '.critic_run.summary // empty' 2>/dev/null) || critic_summary=""
+    critic_progress_latest=$(printf '%s' "$snapshot" | jq -r '.critic_run.progress_preview[-1] // empty' 2>/dev/null) || critic_progress_latest=""
     critic_try_again_streak=$(printf '%s' "$snapshot" | jq -r '.critic_run.try_again_streak // 0' 2>/dev/null) || critic_try_again_streak=0
     critic_retry_limit=$(printf '%s' "$snapshot" | jq -r '.critic_run.retry_limit // 0' 2>/dev/null) || critic_retry_limit=0
     critic_escalated=$(printf '%s' "$snapshot" | jq -r '.critic_run.escalated // false' 2>/dev/null) || critic_escalated="false"
@@ -194,6 +198,8 @@ fi
 [[ "$critic_verdict" == "null" ]] && critic_verdict=""
 [[ "$critic_provider" == "null" ]] && critic_provider=""
 [[ "$critic_fallback" == "null" ]] && critic_fallback=""
+[[ "$critic_summary" == "null" ]] && critic_summary=""
+[[ "$critic_progress_latest" == "null" ]] && critic_progress_latest=""
 [[ "$critic_escalation_reason" == "null" ]] && critic_escalation_reason=""
 [[ "$snapshot_status"  == "null" ]] && snapshot_status="ok"
 [[ "${critic_elapsed:-0}" =~ ^[0-9]+$ ]] || critic_elapsed=0
@@ -288,6 +294,24 @@ format_tokens() {
     printf '%dK' "$(( count / 1000 ))"
   else
     printf '%d' "$count"
+  fi
+}
+
+# shorten_plain text max_width — compact free text for a status segment.
+shorten_plain() {
+  local text="$1" max_w="${2:-48}"
+  text="${text//$'\n'/ }"
+  text="${text//$'\r'/ }"
+  text="${text//$'\t'/ }"
+  while [[ "$text" == *"  "* ]]; do
+    text="${text//  / }"
+  done
+  if (( ${#text} <= max_w )); then
+    printf '%s' "$text"
+  elif (( max_w > 3 )); then
+    printf '%s...' "${text:0:$(( max_w - 3 ))}"
+  else
+    printf '%s' "${text:0:max_w}"
   fi
 }
 
@@ -647,20 +671,41 @@ esac
 if [[ "$critic_found" == "true" ]]; then
   _s=""
   _critic_label="critic"
+  if [[ "$critic_active" != "true" && ( "$critic_status" == "failed" || "$critic_verdict" == "CRITIC_UNAVAILABLE" ) ]]; then
+    _critic_label="critic failed"
+  elif [[ "$critic_active" != "true" ]]; then
+    _critic_label="last critic"
+  fi
   _elapsed_display=""
+  _critic_progress_hint=""
+  _critic_summary_hint=""
   if (( critic_elapsed >= 60 )); then
     _elapsed_display="$(( critic_elapsed / 60 ))m"
   elif (( critic_elapsed > 0 )); then
     _elapsed_display="${critic_elapsed}s"
   fi
+  _critic_hint_width=44
+  if [[ -n "$_l3_0" || -n "$dispatch_next" ]]; then
+    _critic_hint_width=12
+  fi
+  if [[ "$review_reviewed" == "true" ]]; then
+    _critic_hint_width=0
+  fi
+  if [[ -n "$critic_progress_latest" && $_critic_hint_width -gt 0 ]]; then
+    _critic_progress_hint=$(printf ' - %s' "$(shorten_plain "$critic_progress_latest" "$_critic_hint_width")")
+  fi
+  if [[ -n "$critic_summary" && $_critic_hint_width -gt 0 ]]; then
+    _critic_summary_hint=$(printf ' - %s' "$(shorten_plain "$critic_summary" "$_critic_hint_width")")
+  fi
 
-  if [[ "$critic_active" == "true" || "$critic_status" == "started" || "$critic_status" == "provider_ready" || "$critic_status" == "reviewing" ]]; then
+  if [[ "$critic_active" == "true" ]]; then
     _suffix=""
     [[ -n "$_elapsed_display" ]] && _suffix=" ${_elapsed_display}"
-    _s=$(printf '\033[33m%s: running%s\033[0m' "$_critic_label" "$_suffix")
+    _s=$(printf '\033[33m%s: running%s%s\033[0m' "$_critic_label" "$_suffix" "$_critic_progress_hint")
   elif [[ "$critic_verdict" == "CRITIC_UNAVAILABLE" && "$critic_status" != "fallback_completed" ]]; then
-    _fb="${critic_fallback:-reviewer}"
-    _s=$(printf '\033[31m%s: UNAVAILABLE→%s\033[0m' "$_critic_label" "$_fb")
+    _s=$(printf '\033[31m%s: unavailable%s\033[0m' "$_critic_label" "$_critic_summary_hint")
+  elif [[ "$critic_status" == "failed" ]]; then
+    _s=$(printf '\033[31m%s: failed%s\033[0m' "$_critic_label" "$_critic_summary_hint")
   elif [[ "$critic_status" == "fallback_completed" ]]; then
     _s=$(printf '\033[33m%s: fallback done\033[0m' "$_critic_label")
   elif [[ "$critic_verdict" == "TRY_AGAIN" ]]; then
@@ -669,16 +714,16 @@ if [[ "$critic_found" == "true" ]]; then
       _retry=$(printf ' %d/%d' "$critic_try_again_streak" "$critic_retry_limit")
     fi
     if [[ "$critic_escalated" == "true" ]]; then
-      _s=$(printf '\033[33m%s: TRY_AGAIN escalated\033[0m' "$_critic_label")
+      _s=$(printf '\033[33m%s: TRY_AGAIN escalated%s\033[0m' "$_critic_label" "$_critic_summary_hint")
     else
-      _s=$(printf '\033[33m%s: TRY_AGAIN%s\033[0m' "$_critic_label" "$_retry")
+      _s=$(printf '\033[33m%s: TRY_AGAIN%s%s\033[0m' "$_critic_label" "$_retry" "$_critic_summary_hint")
     fi
   elif [[ "$critic_verdict" == "BLOCKED_BY_PLAN" ]]; then
-    _s=$(printf '\033[31m%s: BLOCKED\033[0m' "$_critic_label")
+    _s=$(printf '\033[31m%s: BLOCKED%s\033[0m' "$_critic_label" "$_critic_summary_hint")
   elif [[ "$critic_verdict" == "READY_FOR_REVIEWER" ]]; then
-    _s=$(printf '\033[32m%s: READY→reviewer\033[0m' "$_critic_label")
+    _s=$(printf '\033[32m%s: READY→reviewer%s\033[0m' "$_critic_label" "$_critic_summary_hint")
   elif [[ -n "$critic_status" ]]; then
-    _s=$(printf '\033[33m%s: %s\033[0m' "$_critic_label" "$critic_status")
+    _s=$(printf '\033[33m%s: %s%s\033[0m' "$_critic_label" "$critic_status" "$_critic_summary_hint")
   fi
   ansi_visible_width "$_s"; _l3w1=$_AVW; _l3_1="$_s"
 fi

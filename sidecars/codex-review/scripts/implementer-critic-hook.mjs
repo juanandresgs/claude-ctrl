@@ -83,24 +83,86 @@ function localCliPath() {
   return RUNTIME_CLI_PATH;
 }
 
-function readPolicyJson(cwd, args) {
-  const env = { ...process.env };
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  env.CLAUDE_PROJECT_DIR = workspaceRoot;
-  if (!env.CLAUDE_POLICY_DB) {
-    env.CLAUDE_POLICY_DB = path.join(env.CLAUDE_PROJECT_DIR, ".claude", "state.db");
-  }
+function execPolicyJson(cwd, args, env) {
   const raw = execFileSync(
     "python3",
     [localCliPath(), ...args],
     {
-      cwd: workspaceRoot,
+      cwd,
       env,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"]
     }
   );
   return JSON.parse(raw);
+}
+
+const POLICY_DB_OVERRIDE_CACHE = new Map();
+
+function homePolicyDb() {
+  if (!process.env.HOME) {
+    return "";
+  }
+  return path.join(process.env.HOME, ".claude", "state.db");
+}
+
+function resolvePolicyDbOverride(cwd, workspaceRoot) {
+  if (process.env.CLAUDE_POLICY_DB) {
+    return process.env.CLAUDE_POLICY_DB;
+  }
+  const cacheKey = `${workspaceRoot}\0${cwd}`;
+  if (POLICY_DB_OVERRIDE_CACHE.has(cacheKey)) {
+    return POLICY_DB_OVERRIDE_CACHE.get(cacheKey);
+  }
+
+  const baseEnv = { ...process.env, CLAUDE_PROJECT_DIR: workspaceRoot };
+  delete baseEnv.CLAUDE_POLICY_DB;
+  try {
+    const lease = execPolicyJson(
+      workspaceRoot,
+      ["lease", "current", "--worktree-path", cwd],
+      baseEnv
+    );
+    if (lease?.found) {
+      POLICY_DB_OVERRIDE_CACHE.set(cacheKey, "");
+      return "";
+    }
+  } catch {
+    // Probe only; the real command below will surface actionable failures.
+  }
+
+  const homeDb = homePolicyDb();
+  if (homeDb && fs.existsSync(homeDb)) {
+    try {
+      const lease = execPolicyJson(
+        workspaceRoot,
+        ["lease", "current", "--worktree-path", cwd],
+        { ...baseEnv, CLAUDE_POLICY_DB: homeDb }
+      );
+      if (lease?.found) {
+        POLICY_DB_OVERRIDE_CACHE.set(cacheKey, homeDb);
+        return homeDb;
+      }
+    } catch {
+      // Keep the default resolver path when the control-plane DB is unreadable.
+    }
+  }
+
+  POLICY_DB_OVERRIDE_CACHE.set(cacheKey, "");
+  return "";
+}
+
+function readPolicyJson(cwd, args) {
+  const env = { ...process.env };
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  env.CLAUDE_PROJECT_DIR = workspaceRoot;
+  if (!env.CLAUDE_POLICY_DB) {
+    const override = resolvePolicyDbOverride(cwd, workspaceRoot);
+    if (override) {
+      env.CLAUDE_POLICY_DB = override;
+    }
+  }
+  return execPolicyJson(workspaceRoot, args, env);
 }
 
 function normalizeReviewProvider(value) {
@@ -127,6 +189,11 @@ function providerOrder(provider) {
     default:
       return ["codex", "gemini"];
   }
+}
+
+function telemetryProvider(provider) {
+  const order = providerOrder(provider);
+  return order[0] || "external-critic";
 }
 
 function readConfiguredReviewProvider(cwd, workflowId = "") {
@@ -426,6 +493,11 @@ function resolveTestReview() {
       findings: normalizeFindings(parsed.findings),
       nextSteps: Array.isArray(parsed.next_steps) ? parsed.next_steps.map(String) : [],
       rawOutput: raw,
+      executionProof: {
+        provider: "test",
+        test_override: true,
+        parsed_structured_output_present: true
+      },
       progressLines: Array.isArray(parsed.progress)
         ? parsed.progress.map((item) => String(item))
         : ["Using implementer critic test override."],
@@ -549,7 +621,7 @@ function runGeminiCritic(cwd, prompt) {
       summary: "Gemini critic returned invalid structured output.",
       detail: parsed.parseError || "Gemini did not return a structured verdict.",
       findings: ["Gemini returned invalid structured output."],
-      nextSteps: ["Dispatch reviewer subagent fallback."],
+      nextSteps: ["Fix Gemini critic output so it returns the required structured verdict."],
       rawOutput: parsed.rawOutput || rawOutput || "",
       progressLines: [],
       provider: "gemini"
@@ -565,36 +637,47 @@ function runGeminiCritic(cwd, prompt) {
       ? parsed.parsed.next_steps.map((item) => String(item))
       : [],
     rawOutput: parsed.rawOutput || rawOutput || "",
+    executionProof: {
+      provider: "gemini",
+      exit_code: result.status,
+      parsed_structured_output_present: true,
+      raw_response_non_empty: Boolean(String(rawOutput || "").trim())
+    },
     progressLines: [],
     provider: "gemini"
   };
 }
 
-function unavailableReviewerSubagentFallback(providerStatuses, configuredProvider) {
+function unavailableExternalCritic(providerStatuses, configuredProvider) {
   const statusDetail = providerStatuses
     .map((item) => `${item.provider}: ${item.ready ? "ready" : "unavailable"} (${item.detail || "no detail"})`)
     .join("; ");
   return {
     verdict: "CRITIC_UNAVAILABLE",
-    summary: "External critic unavailable; reviewer subagent fallback required.",
-    detail: statusDetail || "No external review provider was available.",
+    summary: "External implementer critic did not run.",
+    detail: statusDetail || "No external critic provider returned valid structured output.",
     nextSteps: [
-      "Dispatch the canonical reviewer subagent in read-only mode with the implementer response, diff context, and test evidence.",
-      "Do not grant guardian readiness until the reviewer subagent returns a normal reviewer verdict."
+      "Fix the configured critic provider or disable critic_enabled_implementer_stop explicitly for this workflow/project.",
+      "Re-run the implementer stop after a real Codex or Gemini critic can produce structured output."
     ],
     findings: ["No external critic provider completed a structured review."],
     rawOutput: "",
+    executionProof: {
+      provider: "external-critic",
+      parsed_structured_output_present: false,
+      provider_failures: providerStatuses
+    },
     progressLines: [
       `Review provider preference: ${configuredProvider}.`,
       ...providerStatuses.map((item) => (
         `Provider status: ${item.provider} ${item.ready ? "ready" : "unavailable"} (${item.detail || "no detail"}).`
       )),
-      "Fallback: reviewer subagent required."
+      "Critic failed closed: no external provider produced a structured review."
     ],
     providerStatuses,
     configuredProvider,
-    fallback: "reviewer-subagent",
-    provider: "reviewer-subagent"
+    fallback: "",
+    provider: "external-critic"
   };
 }
 
@@ -632,6 +715,14 @@ async function runCritic(cwd, input = {}, options = {}) {
       progressLines.push(message);
     }
   };
+
+  if (normalizeReviewProvider(configuredProvider) === "reviewer-subagent") {
+    providerStatuses.push({
+      provider: "configuration",
+      ready: false,
+      detail: "reviewer-subagent is not an external implementer critic provider"
+    });
+  }
 
   for (const provider of providerOrder(configuredProvider)) {
     if (provider === "codex") {
@@ -678,6 +769,26 @@ async function runCritic(cwd, input = {}, options = {}) {
           continue;
         }
 
+        const proof = {
+          provider: "codex",
+          app_server_thread_id: result.threadId || "",
+          thread_id: result.threadId || "",
+          turn_id: result.turnId || "",
+          turn_status: result.turn?.status || "",
+          parsed_structured_output_present: true,
+          final_message_non_empty: Boolean(String(result.finalMessage || "").trim())
+        };
+        if (!proof.thread_id || !proof.turn_id || proof.turn_status !== "completed" || !proof.final_message_non_empty) {
+          const detail = "Codex critic completed without required execution proof fields.";
+          providerStatuses.push({ provider: "codex", ready: true, failed: true, detail });
+          progressLines.push(`Provider failure: codex proof invalid (${detail}).`);
+          recordCriticProgress(cwd, options.runId || "", `Provider failure: codex proof invalid (${detail}).`, {
+            phase: "provider",
+            status: "reviewing"
+          });
+          continue;
+        }
+
         return {
           verdict: String(parsed.parsed.verdict || ""),
           summary: String(parsed.parsed.summary || ""),
@@ -687,6 +798,7 @@ async function runCritic(cwd, input = {}, options = {}) {
             ? parsed.parsed.next_steps.map((item) => String(item))
             : [],
           rawOutput: parsed.rawOutput || result.finalMessage || "",
+          executionProof: proof,
           progressLines,
           providerStatuses,
           configuredProvider,
@@ -762,7 +874,7 @@ async function runCritic(cwd, input = {}, options = {}) {
     }
   }
 
-  return unavailableReviewerSubagentFallback(providerStatuses, configuredProvider);
+  return unavailableExternalCritic(providerStatuses, configuredProvider);
 }
 
 function buildHookOutput(review, submitResult, workflowId) {
@@ -775,7 +887,7 @@ function buildHookOutput(review, submitResult, workflowId) {
     `Implementer critic: provider=${review.provider || "codex"}, workflow=${workflowId || "unknown"}.`
   );
   lines.push(
-    `Implementer critic: verdict=${resolution.verdict || review.verdict}, next_role=${resolution.next_role || "reviewer"}.`
+    `Implementer critic: verdict=${resolution.verdict || review.verdict}, next_role=${resolution.next_role || "none"}.`
   );
 
   if ((resolution.verdict || review.verdict) === "TRY_AGAIN") {
@@ -819,10 +931,10 @@ function buildHookOutput(review, submitResult, workflowId) {
   } else if (verdict === "BLOCKED_BY_PLAN") {
     lines.push("Implementer critic action: re-dispatch planner with the critic detail and next steps verbatim.");
   } else if (verdict === "CRITIC_UNAVAILABLE") {
-    lines.push("Implementer critic action: dispatch reviewer subagent fallback for read-only adjudication.");
+    lines.push("Implementer critic action: fail closed; no automatic reviewer fallback is allowed.");
   }
   lines.push("USER_VISIBLE_CRITIC_DIGEST:");
-  lines.push(`Codex critic: ${verdict || review.verdict || "unknown"} → ${resolution.next_role || "reviewer"}`);
+  lines.push(`Implementer critic: ${verdict || review.verdict || "unknown"} -> ${resolution.next_role || "none"}`);
   if (review.summary) {
     lines.push(`Summary: ${review.summary}`);
   }
@@ -865,7 +977,7 @@ async function main() {
     criticRun = startCriticRun(cwd, {
       workflowId: criticContext.workflowId,
       leaseId: criticContext.leaseId,
-      provider: configuredProvider
+      provider: telemetryProvider(configuredProvider)
     });
   } catch (error) {
     logNote(`[implementer-critic] Failed to start critic telemetry: ${error instanceof Error ? error.message : String(error)}`);
@@ -888,6 +1000,7 @@ async function main() {
     provider_statuses: review.providerStatuses || [],
     fallback: review.fallback || "",
     raw_output: review.rawOutput || "",
+    execution_proof: review.executionProof || {},
     findings: review.findings || [],
     next_steps: review.nextSteps || [],
     progress_lines: review.progressLines || [],
@@ -912,7 +1025,7 @@ async function main() {
     artifactPath: "",
     fingerprint,
     reviewId: submitResult?.id,
-    fallback: review.fallback || "",
+    fallback: "",
     error: (resolution.verdict || review.verdict) === "CRITIC_UNAVAILABLE" ? review.detail : "",
     metrics: {
       try_again_streak: resolution.try_again_streak || 0,

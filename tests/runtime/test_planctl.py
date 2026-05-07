@@ -27,14 +27,11 @@ how hooks invoke it, verifying arg parsing -> logic -> JSON/exit-code chain.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-
-import pytest
 
 _WORKTREE = Path(__file__).resolve().parent.parent.parent
 _PLANCTL = str(_WORKTREE / "scripts" / "planctl.py")
@@ -309,6 +306,96 @@ class TestCheckDecisionLog:
         code, out = run_json(["check-decision-log", str(plan)], cwd=str(tmp_path))
         assert code != 0
         assert out.get("append_only") is False
+
+
+# ---------------------------------------------------------------------------
+# lookup-decision command
+# ---------------------------------------------------------------------------
+
+
+class TestLookupDecision:
+    def test_finds_markdown_table_decision_log_entry(self, tmp_path):
+        plan = tmp_path / "MASTER_PLAN.md"
+        plan.write_text(textwrap.dedent("""\
+            # MASTER_PLAN.md
+
+            ## Identity
+
+            Test plan.
+
+            ## Decision Log
+
+            | ID | Decision | Rationale |
+            | --- | --- | --- |
+            | DEC-COEDITOR-HISTORY-FORMAT-001 | History JSONL format. | Stable streaming load. |
+
+            ## Active Initiatives
+
+            Uses `DEC-COEDITOR-HISTORY-FORMAT-001` in W2.
+        """))
+
+        code, out = run_json([
+            "lookup-decision",
+            str(plan),
+            "DEC-COEDITOR-HISTORY-FORMAT-001",
+        ])
+
+        assert code == 0
+        assert out["found"] is True
+        assert out["in_decision_log"] is True
+        assert out["decision_log_matches"][0]["text"].startswith("| DEC-COEDITOR")
+        assert len(out["all_matches"]) == 2
+
+    def test_missing_when_only_referenced_outside_decision_log(self, tmp_path):
+        plan = tmp_path / "MASTER_PLAN.md"
+        plan.write_text(textwrap.dedent("""\
+            # MASTER_PLAN.md
+
+            ## Identity
+
+            Mentions DEC-ONLY-BODY-001.
+
+            ## Decision Log
+
+            - `2026-03-24 -- DEC-FORK-001` Bootstrap decision.
+        """))
+
+        code, out = run_json([
+            "lookup-decision",
+            str(plan),
+            "DEC-ONLY-BODY-001",
+        ])
+
+        assert code == 1
+        assert out["found"] is False
+        assert out["in_decision_log"] is False
+        assert len(out["all_matches"]) == 1
+
+    def test_exact_token_matching_does_not_match_prefix(self, tmp_path):
+        plan = tmp_path / "MASTER_PLAN.md"
+        plan.write_text(textwrap.dedent("""\
+            # MASTER_PLAN.md
+
+            ## Decision Log
+
+            | DEC-FOO-0010 | Different decision. | Rationale. |
+        """))
+
+        code, out = run_json(["lookup-decision", str(plan), "DEC-FOO-001"])
+
+        assert code == 1
+        assert out["found"] is False
+        assert out["decision_log_matches"] == []
+
+    def test_invalid_decision_id_exits_two(self, tmp_path):
+        plan = tmp_path / "MASTER_PLAN.md"
+        plan.write_text(MINIMAL_PLAN)
+
+        code, out = run_json(["lookup-decision", str(plan), "not-a-decision"])
+
+        assert code == 2
+        assert out["status"] == "error"
+        assert out["found"] is False
 
 
 # ---------------------------------------------------------------------------

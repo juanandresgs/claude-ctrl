@@ -31,7 +31,6 @@ Rationale: Subagents today rediscover identity from ambient state (markers, CWD
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
 import re
@@ -39,6 +38,7 @@ import shlex
 import sqlite3
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Optional
 
 from runtime.core.policy_utils import normalize_path  # DEC-CONV-001
@@ -1033,6 +1033,52 @@ def expire_stale(conn: sqlite3.Connection, now: Optional[int] = None) -> int:
                SET status = 'expired', released_at = ?
                WHERE status = 'active' AND expires_at < ?""",
             (now, now),
+        )
+    return cursor.rowcount
+
+
+def revoke_missing_worktrees(conn: sqlite3.Connection, now: Optional[int] = None) -> int:
+    """Revoke active leases whose bound worktree path no longer exists.
+
+    Lease TTL handles old-but-still-addressable leases. Guardian landing can
+    legitimately remove a feature worktree before later cleanup commands run;
+    after that, a lease anchored to the deleted path must stop shadowing the
+    workflow's active lease slot immediately instead of waiting for TTL expiry.
+    """
+    if now is None:
+        now = int(time.time())
+
+    rows = conn.execute(
+        """
+        SELECT lease_id, worktree_path
+        FROM dispatch_leases
+        WHERE status = 'active'
+          AND worktree_path IS NOT NULL
+          AND worktree_path != ''
+        """
+    ).fetchall()
+
+    missing_ids: list[str] = []
+    for row in rows:
+        worktree_path = row["worktree_path"]
+        try:
+            if not os.path.exists(worktree_path):
+                missing_ids.append(row["lease_id"])
+        except (OSError, TypeError):
+            missing_ids.append(row["lease_id"])
+
+    if not missing_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in missing_ids)
+    with conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE dispatch_leases
+            SET status = 'revoked', released_at = ?
+            WHERE status = 'active' AND lease_id IN ({placeholders})
+            """,
+            [now, *missing_ids],
         )
     return cursor.rowcount
 

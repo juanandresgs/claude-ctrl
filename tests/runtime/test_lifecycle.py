@@ -266,8 +266,9 @@ def test_dispatch_process_stop_reachable_via_local_cli_path(db_path):
     reachable. This test exercises that exact path by calling the CLI directly
     as a subprocess (the same mechanism post-task.sh uses after the fix).
     """
-    # Phase 6 Slice 4: planner requires lease+completion. Use implementer
-    # (fixed routing → reviewer) for the CLI reachability test.
+    # Use implementer because process-stop must now prove the critic handoff
+    # contract: without a persisted critic record, dispatch fails closed instead
+    # of silently routing to reviewer.
     payload = json.dumps({"agent_type": "implementer", "project_root": ""})
     rc, data = _cc("dispatch", "process-stop", db_path=db_path, stdin_text=payload)
     assert rc == 0, f"non-zero exit: {data}"
@@ -275,8 +276,10 @@ def test_dispatch_process_stop_reachable_via_local_cli_path(db_path):
     assert "hookSpecificOutput" in data, f"missing hookSpecificOutput in: {data}"
     hook_out = data["hookSpecificOutput"]
     assert hook_out.get("hookEventName") == "SubagentStop"
-    # Phase 5: implementer routes to reviewer
-    assert data.get("next_role") == "reviewer"
+    assert data.get("next_role") is None
+    assert data.get("auto_dispatch") is False
+    assert data.get("critic_found") is False
+    assert str(data.get("error", "")).startswith("PROCESS ERROR: implementer critic did not run")
 
 
 # ---------------------------------------------------------------------------

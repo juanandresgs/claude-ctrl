@@ -49,7 +49,13 @@ def test_submit_round_trip_returns_resolution(conn):
         metadata={
             "hook": "test",
             "artifact_path": "/tmp/critic-artifact.md",
+            "findings": ["No tactical blockers found."],
             "next_steps": ["Hand off to reviewer."],
+            "execution_proof": {
+                "provider": "test",
+                "test_override": True,
+                "parsed_structured_output_present": True,
+            },
         },
     )
     assert result["workflow_id"] == "wf-critic-001"
@@ -58,7 +64,9 @@ def test_submit_round_trip_returns_resolution(conn):
     assert result["resolution"]["found"] is True
     assert result["resolution"]["next_role"] == "reviewer"
     assert result["resolution"]["artifact_path"] == "/tmp/critic-artifact.md"
+    assert result["resolution"]["findings"] == ["No tactical blockers found."]
     assert result["resolution"]["next_steps"] == ["Hand off to reviewer."]
+    assert result["resolution"]["execution_proof_valid"] is True
 
 
 def test_try_again_routes_back_to_implementer(conn):
@@ -77,6 +85,49 @@ def test_try_again_routes_back_to_implementer(conn):
     assert resolution.next_role == "implementer"
     assert resolution.try_again_streak == 1
     assert resolution.escalated is False
+    assert resolution.execution_proof_valid is False
+
+
+def test_codex_execution_proof_valid(conn):
+    critic_reviews.submit(
+        conn,
+        workflow_id="wf-critic-proof-codex",
+        lease_id="lease-proof-codex",
+        verdict="READY_FOR_REVIEWER",
+        provider="codex",
+        metadata={
+            "execution_proof": {
+                "provider": "codex",
+                "app_server_thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "turn_status": "completed",
+                "parsed_structured_output_present": True,
+                "final_message_non_empty": True,
+            }
+        },
+    )
+    resolution = critic_reviews.assess_latest(conn, workflow_id="wf-critic-proof-codex")
+    assert resolution.execution_proof_valid is True
+
+
+def test_gemini_execution_proof_valid(conn):
+    critic_reviews.submit(
+        conn,
+        workflow_id="wf-critic-proof-gemini",
+        lease_id="lease-proof-gemini",
+        verdict="READY_FOR_REVIEWER",
+        provider="gemini",
+        metadata={
+            "execution_proof": {
+                "provider": "gemini",
+                "exit_code": 0,
+                "parsed_structured_output_present": True,
+                "raw_response_non_empty": True,
+            }
+        },
+    )
+    resolution = critic_reviews.assess_latest(conn, workflow_id="wf-critic-proof-gemini")
+    assert resolution.execution_proof_valid is True
 
 
 def test_third_try_again_escalates_to_reviewer(conn):

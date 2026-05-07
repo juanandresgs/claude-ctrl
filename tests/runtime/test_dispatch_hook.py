@@ -486,8 +486,9 @@ def test_cli_attempt_expire_stale_returns_zero_when_nothing_stale(db_path):
 def test_cli_attempt_expire_stale_expires_past_timeout(db_path):
     """Pending attempt with timeout_at in the past is transitioned to timed_out."""
     import sqlite3 as _sqlite3
-    from runtime.schemas import ensure_schema as _ensure_schema
+
     from runtime.core.dispatch_hook import record_agent_dispatch as _rad
+    from runtime.schemas import ensure_schema as _ensure_schema
 
     conn = _sqlite3.connect(db_path)
     conn.row_factory = _sqlite3.Row
@@ -515,8 +516,9 @@ def test_cli_attempt_expire_stale_expires_past_timeout(db_path):
 def test_cli_attempt_expire_stale_ignores_future_timeout(db_path):
     """Pending attempt with timeout_at in the future is NOT expired."""
     import sqlite3 as _sqlite3
-    from runtime.schemas import ensure_schema as _ensure_schema
+
     from runtime.core.dispatch_hook import record_agent_dispatch as _rad
+    from runtime.schemas import ensure_schema as _ensure_schema
 
     conn = _sqlite3.connect(db_path)
     conn.row_factory = _sqlite3.Row
@@ -534,8 +536,9 @@ def test_cli_attempt_expire_stale_ignores_future_timeout(db_path):
 def test_cli_attempt_expire_stale_fallback_expires_legacy_pending(db_path):
     """Fallback age option expires pending rows that have timeout_at=NULL."""
     import sqlite3 as _sqlite3
-    from runtime.schemas import ensure_schema as _ensure_schema
+
     from runtime.core.dispatch_hook import record_agent_dispatch as _rad
+    from runtime.schemas import ensure_schema as _ensure_schema
 
     conn = _sqlite3.connect(db_path)
     conn.row_factory = _sqlite3.Row
@@ -779,6 +782,16 @@ def test_check_hook_wires_seat_release(hook_name):
     )
 
 
+@pytest.mark.parametrize("hook_name", _CHECK_HOOKS)
+def test_check_hook_uses_shared_agent_response_text_extractor(hook_name):
+    src = _read_hook(hook_name)
+    assert "agent_response_text" in src, (
+        f"{hook_name} must parse final agent output through the shared "
+        "extractor so transcript-only SubagentStop payloads still submit "
+        "completion records"
+    )
+
+
 # ---------------------------------------------------------------------------
 # SubagentStop adapter execution pin — running each check hook against a
 # hermetic temp DB must actually release the seat and abandon supervision
@@ -987,6 +1000,107 @@ def test_check_hook_execution_is_idempotent(tmp_path, hook_name, agent_type):
     assert thread_second["updated_at"] == thread_first["updated_at"], (
         f"{hook_name} rewrote the abandoned thread on a second invocation"
     )
+
+
+def test_check_implementer_reads_completion_trailers_from_agent_transcript_path(tmp_path):
+    """Real SubagentStop payloads may omit response text and only pass transcript path."""
+    from runtime.core import completions, leases
+
+    db_path = str(tmp_path / "state.db")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "checkout", "-b", "feature/transcript-hook"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+            "-q",
+        ],
+        check=True,
+    )
+
+    c = sqlite3.connect(db_path)
+    c.row_factory = sqlite3.Row
+    ensure_schema(c)
+    lease = leases.issue(
+        c,
+        role="implementer",
+        worktree_path=str(repo),
+        workflow_id="wf-transcript-hook",
+    )
+    c.close()
+
+    transcript = tmp_path / "agent.jsonl"
+    assistant_row = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Implementation complete. Tests pass.\n\n"
+                        "IMPL_STATUS: complete\n"
+                        "IMPL_HEAD_SHA: deadbeef"
+                    ),
+                }
+            ],
+        },
+    }
+    transcript.write_text(json.dumps(assistant_row) + "\n", encoding="utf-8")
+
+    payload = json.dumps(
+        {
+            "hook_event_name": "SubagentStop",
+            "session_id": "transcript-hook-session",
+            "agent_type": "implementer",
+            "cwd": str(repo),
+            "agent_transcript_path": str(transcript),
+        }
+    )
+    env = os.environ.copy()
+    env["CLAUDE_POLICY_DB"] = db_path
+    env["CLAUDE_PROJECT_DIR"] = str(repo)
+    hook_path = os.path.join(_REPO_ROOT, "hooks", "check-implementer.sh")
+    proc = subprocess.run(
+        ["bash", hook_path],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(repo),
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    output = json.loads(proc.stdout)
+    assert "IMPL_STATUS=complete" in output["additionalContext"]
+
+    c2 = sqlite3.connect(db_path)
+    c2.row_factory = sqlite3.Row
+    try:
+        record = completions.latest(c2, lease_id=lease["lease_id"])
+    finally:
+        c2.close()
+    assert record is not None
+    assert record["role"] == "implementer"
+    assert record["verdict"] == "complete"
+    assert record["valid"] == 1
 
 
 def test_dispatch_hook_delegates_seat_writes_to_seats_domain():

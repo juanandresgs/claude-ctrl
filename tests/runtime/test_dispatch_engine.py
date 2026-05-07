@@ -142,6 +142,46 @@ def _insert_work_item(conn, *, workflow_id, goal_id=None, work_item_id="WI-dispa
     )
 
 
+def _disable_implementer_critic(conn, project_root):
+    from runtime.core import enforcement_config
+
+    enforcement_config.set_(
+        conn,
+        "critic_enabled_implementer_stop",
+        "false",
+        scope=f"project={project_root}",
+        actor_role="planner",
+    )
+
+
+def _test_execution_proof():
+    return {
+        "provider": "test",
+        "test_override": True,
+        "parsed_structured_output_present": True,
+    }
+
+
+def _codex_execution_proof():
+    return {
+        "provider": "codex",
+        "app_server_thread_id": "thread-test",
+        "turn_id": "turn-test",
+        "turn_status": "completed",
+        "parsed_structured_output_present": True,
+        "final_message_non_empty": True,
+    }
+
+
+def _gemini_execution_proof():
+    return {
+        "provider": "gemini",
+        "exit_code": 0,
+        "parsed_structured_output_present": True,
+        "raw_response_non_empty": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # planner routing via completion record (Phase 6 Slice 4)
 # ---------------------------------------------------------------------------
@@ -331,16 +371,19 @@ def test_full_planner_completion_production_sequence(conn, project_root):
 # ---------------------------------------------------------------------------
 
 
-def test_implementer_routes_to_reviewer(conn, project_root):
-    """Phase 5: implementer routes to reviewer, not tester."""
+def test_implementer_routes_to_reviewer_when_critic_disabled(conn, project_root):
+    """Explicitly disabled critic config preserves direct reviewer handoff."""
+    _disable_implementer_critic(conn, project_root)
     _issue_lease(conn, "implementer", workflow_id="wf-impl-001")
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["next_role"] == "reviewer"
     assert result["error"] is None
+    assert result["critic_disabled"] is True
 
 
 def test_implementer_does_not_set_eval_pending(conn, project_root):
     """Phase 5: eval_state=pending is no longer written on implementer stop."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-002"
     _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     process_agent_stop(conn, "implementer", project_root)
@@ -349,8 +392,9 @@ def test_implementer_does_not_set_eval_pending(conn, project_root):
     assert state is None or state.get("status") != "pending"
 
 
-def test_implementer_no_lease_still_routes_to_reviewer(conn, project_root):
-    """Phase 5: implementer→reviewer routing is fixed — no lease needed."""
+def test_implementer_no_lease_routes_to_reviewer_when_critic_disabled(conn, project_root):
+    """Disabled critic config is the only no-review direct handoff path."""
+    _disable_implementer_critic(conn, project_root)
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["next_role"] == "reviewer"
     assert result["error"] is None
@@ -360,6 +404,7 @@ def test_implementer_includes_worktree_path_for_reviewer(conn, project_root):
     """Phase 5: implementer stop populates worktree_path for reviewer dispatch."""
     from runtime.core import workflows
 
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-wt-001"
     worktree = "/some/project/.worktrees/feature-impl-reviewer"
     workflows.bind_workflow(conn, workflow_id=wf_id, worktree_path=worktree, branch="feature/impl-reviewer")
@@ -391,6 +436,13 @@ def test_implementer_review_handoff_respects_work_item_grant(conn, project_root)
         metadata={"work_item_id": wi_id},
     )
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-grant-review",
+    )
 
     result = process_agent_stop(conn, "implementer", project_root)
 
@@ -416,6 +468,7 @@ def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_r
         detail="The happy path still lacks tests.",
         fingerprint="fp-try-1",
         metadata={
+            "findings": ["The happy path still lacks tests."],
             "next_steps": ["Add regression coverage for the happy path."],
             "artifact_ref": "state.db:critic-run:critic-test",
         },
@@ -427,8 +480,11 @@ def test_implementer_critic_try_again_routes_back_to_implementer(conn, project_r
     assert result["auto_dispatch"] is True
     assert result["suggestion"].startswith("AUTO_DISPATCH: implementer")
     assert "CRITIC_RETRY" in result["suggestion"]
+    assert "CRITIC_FINDINGS" in result["suggestion"]
+    assert "The happy path still lacks tests." in result["suggestion"]
     assert "CRITIC_NEXT_STEPS" in result["suggestion"]
     assert "Add regression coverage for the happy path." in result["suggestion"]
+    assert "USER_VISIBLE_CRITIC_DIGEST" in result["suggestion"]
     assert "CRITIC_ARTIFACT" not in result["suggestion"]
     assert "CRITIC_ACTION: Re-dispatch implementer" in result["suggestion"]
 
@@ -455,8 +511,8 @@ def test_implementer_critic_blocked_by_plan_routes_to_planner(conn, project_root
     assert result["worktree_path"] == ""
 
 
-def test_implementer_critic_unavailable_routes_to_reviewer(conn, project_root):
-    """Persisted CRITIC_UNAVAILABLE falls through to reviewer adjudication."""
+def test_implementer_critic_unavailable_fails_closed(conn, project_root):
+    """Persisted CRITIC_UNAVAILABLE is infrastructure failure, not reviewer routing."""
     wf_id = "wf-impl-critic-unavail-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
@@ -472,8 +528,101 @@ def test_implementer_critic_unavailable_routes_to_reviewer(conn, project_root):
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["critic_found"] is True
     assert result["critic_verdict"] == "CRITIC_UNAVAILABLE"
+    assert result["next_role"] is None
+    assert result["auto_dispatch"] is False
+    assert result["error"].startswith("PROCESS ERROR: implementer critic did not run")
+
+
+def test_implementer_missing_critic_review_fails_closed(conn, project_root):
+    """With critic enabled, a completed implementer cannot route without a critic row."""
+    wf_id = "wf-impl-critic-missing-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+
+    result = process_agent_stop(conn, "implementer", project_root)
+
+    assert result["critic_found"] is False
+    assert result["next_role"] is None
+    assert result["auto_dispatch"] is False
+    assert result["error"] == "PROCESS ERROR: implementer critic did not run."
+
+
+def test_implementer_critic_disabled_records_intentional_direct_handoff(conn, project_root):
+    """Explicit disabled config routes directly to reviewer and records the reason."""
+    wf_id = "wf-impl-critic-disabled-001"
+    _disable_implementer_critic(conn, project_root)
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+
+    result = process_agent_stop(conn, "implementer", project_root)
+
     assert result["next_role"] == "reviewer"
     assert result["auto_dispatch"] is True
+    assert result["error"] is None
+    assert result["critic_disabled"] is True
+    assert any(e["type"] == "implementer_critic_disabled" for e in result["events"])
+
+
+def test_implementer_critic_codex_execution_proof_allows_routing(conn, project_root):
+    wf_id = "wf-impl-critic-proof-codex-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        provider="codex",
+        metadata={"execution_proof": _codex_execution_proof()},
+    )
+
+    result = process_agent_stop(conn, "implementer", project_root)
+
+    assert result["next_role"] == "reviewer"
+    assert result["auto_dispatch"] is True
+    assert result["critic_execution_proof_valid"] is True
+
+
+def test_implementer_critic_gemini_execution_proof_allows_routing(conn, project_root):
+    wf_id = "wf-impl-critic-proof-gemini-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        provider="gemini",
+        metadata={"execution_proof": _gemini_execution_proof()},
+    )
+
+    result = process_agent_stop(conn, "implementer", project_root)
+
+    assert result["next_role"] == "reviewer"
+    assert result["auto_dispatch"] is True
+    assert result["critic_execution_proof_valid"] is True
+
+
+def test_implementer_critic_missing_execution_proof_blocks_routing(conn, project_root):
+    wf_id = "wf-impl-critic-proof-missing-001"
+    lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
+    _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        execution_proof=False,
+    )
+
+    result = process_agent_stop(conn, "implementer", project_root)
+
+    assert result["critic_found"] is True
+    assert result["critic_verdict"] == "READY_FOR_REVIEWER"
+    assert result["critic_execution_proof_valid"] is False
+    assert result["next_role"] is None
+    assert result["auto_dispatch"] is False
+    assert result["error"] == "PROCESS ERROR: implementer critic execution proof invalid."
 
 
 def test_reviewer_completion_marks_critic_fallback_completed(conn, project_root):
@@ -616,6 +765,40 @@ def test_guardian_merged_routes_to_planner(conn, project_root):
     assert result["error"] is None
 
 
+def test_guardian_landing_projects_work_item_to_landed(conn, project_root):
+    wf_id = "wf-guardian-work-item-landing"
+    wi_id = "WI-guardian-landed"
+    _insert_work_item(conn, workflow_id=wf_id, work_item_id=wi_id)
+    lease = leases.issue(
+        conn,
+        role="guardian",
+        workflow_id=wf_id,
+        worktree_path=project_root,
+        metadata={"work_item_id": wi_id},
+    )
+    completions.submit(
+        conn,
+        lease_id=lease["lease_id"],
+        workflow_id=wf_id,
+        role="guardian",
+        payload={
+            "LANDING_RESULT": "merged",
+            "OPERATION_CLASS": "routine_local",
+            "MERGE_COMMIT_SHA": "abc1234",
+        },
+    )
+
+    result = process_agent_stop(conn, "guardian", project_root)
+
+    assert result["next_role"] == "planner"
+    assert result["work_item_id"] == wi_id
+    assert result["work_item_status_projected"] == "landed"
+    assert result["landing_head_sha"] == "abc1234"
+    fetched = dwr.get_work_item(conn, wi_id)
+    assert fetched.status == "landed"
+    assert fetched.head_sha == "abc1234"
+
+
 def test_guardian_pushed_routes_to_planner(conn, project_root):
     """Guardian pushed → planner (post-guardian continuation)."""
     wf_id = "wf-guardian-push-001"
@@ -748,22 +931,28 @@ def _submit_critic_review(
     detail="critic detail",
     fingerprint="fp-default",
     metadata=None,
+    provider="codex",
+    execution_proof=True,
 ):
+    metadata_payload = dict(metadata or {})
+    if execution_proof and "execution_proof" not in metadata_payload:
+        metadata_payload["execution_proof"] = _test_execution_proof()
     return critic_reviews.submit(
         conn,
         workflow_id=workflow_id,
         lease_id=lease_id,
         verdict=verdict,
-        provider="codex",
+        provider=provider,
         summary=summary,
         detail=detail,
         fingerprint=fingerprint,
-        metadata=metadata or {},
+        metadata=metadata_payload,
     )
 
 
 def test_implementer_valid_contract_emits_agent_complete(conn, project_root):
     """Valid IMPL_STATUS=complete contract → agent_complete event, routing → reviewer."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-contract-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
@@ -776,6 +965,7 @@ def test_implementer_valid_contract_emits_agent_complete(conn, project_root):
 
 def test_implementer_partial_contract_emits_agent_stopped(conn, project_root):
     """Valid IMPL_STATUS=partial contract → agent_stopped event, routing still → reviewer."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-contract-002"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="partial")
@@ -787,6 +977,7 @@ def test_implementer_partial_contract_emits_agent_stopped(conn, project_root):
 
 def test_implementer_blocked_contract_emits_agent_stopped(conn, project_root):
     """Valid IMPL_STATUS=blocked contract → agent_stopped event, routing still → reviewer."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-contract-003"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
@@ -798,6 +989,7 @@ def test_implementer_blocked_contract_emits_agent_stopped(conn, project_root):
 
 def test_implementer_invalid_contract_not_trusted(conn, project_root):
     """Malformed IMPL_STATUS emits impl_contract_invalid and does not override heuristic."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-contract-004"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     # Submit with bogus IMPL_STATUS — will be stored valid=0
@@ -816,6 +1008,7 @@ def test_implementer_invalid_contract_not_trusted(conn, project_root):
 
 def test_implementer_contract_uses_lease_workflow_id(conn, project_root):
     """Contract is read under the lease workflow_id, result carries that id."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-lease-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
@@ -838,6 +1031,7 @@ def test_implementer_no_trailers_heuristic_fallback(conn, project_root):
     This is the backward-compatibility path: old implementers that predate the
     structured contract produce no record and the heuristic governs instead.
     """
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-no-trailers-001"
     _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     # No completion record submitted — simulates missing trailers.
@@ -864,6 +1058,7 @@ def test_full_implementer_contract_production_sequence(conn, project_root):
 
     Domain boundaries crossed: leases / completions (evaluation no longer written here).
     """
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-impl-prod-seq-001"
 
     # Step 1: lease issued (mirrors orchestrator pre-dispatch action)
@@ -969,6 +1164,7 @@ def test_planner_stop_auto_dispatch(conn, project_root):
 
 def test_implementer_stop_auto_dispatch(conn, project_root):
     """Implementer stop (no interruption, valid contract) → auto_dispatch=True."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-ad-impl-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
@@ -980,6 +1176,7 @@ def test_implementer_stop_auto_dispatch(conn, project_root):
 
 def test_implementer_stop_interrupted_no_auto_dispatch(conn, project_root):
     """Implementer stop with IMPL_STATUS=partial (interrupted) → auto_dispatch=False."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-ad-impl-002"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     # partial verdict → is_interrupted = True via contract override
@@ -1048,6 +1245,7 @@ def test_suggestion_canonical_prefix_when_false(conn, project_root):
     so the suggestion should start with 'Canonical flow suggests' (not AUTO_DISPATCH).
     The interruption warning is appended after.
     """
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-ad-canon-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="blocked")
@@ -1085,6 +1283,13 @@ def test_auto_dispatch_full_cycle_production_sequence(conn, project_root):
     # --- Implementer stop (complete contract) → reviewer (Phase 5) ---
     impl_lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, impl_lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=impl_lease["lease_id"],
+        fingerprint="fp-ad-cycle-impl",
+    )
     r_impl = process_agent_stop(conn, "implementer", project_root)
     assert r_impl["auto_dispatch"] is True
     assert r_impl["next_role"] == "reviewer"
@@ -1126,6 +1331,13 @@ def test_stop_review_block_does_not_affect_auto_dispatch(conn, project_root):
     wf_id = "wf-sep-ad-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-sep-ad",
+    )
     ev.emit(
         conn,
         type="codex_stop_review",
@@ -1154,6 +1366,13 @@ def test_stop_review_block_does_not_affect_next_role(conn, project_root):
     wf_id = "wf-sep-impl-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-sep-impl",
+    )
 
     ev.emit(
         conn,
@@ -1178,6 +1397,13 @@ def test_stop_review_allow_does_not_affect_dispatch(conn, project_root):
     wf_id = "wf-sep-allow-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-sep-allow",
+    )
     ev.emit(
         conn,
         type="codex_stop_review",
@@ -1198,6 +1424,13 @@ def test_stop_review_absent_dispatch_unchanged(conn, project_root):
     wf_id = "wf-sep-absent-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-sep-absent",
+    )
     result = process_agent_stop(conn, "implementer", project_root)
     assert result["auto_dispatch"] is True
     assert result["next_role"] == "reviewer"
@@ -1216,6 +1449,13 @@ def test_stop_review_result_has_no_codex_fields(conn, project_root):
     wf_id = "wf-sep-nofields-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")
+    _submit_critic_review(
+        conn,
+        wf_id,
+        "READY_FOR_REVIEWER",
+        lease_id=lease["lease_id"],
+        fingerprint="fp-sep-nofields",
+    )
     ev.emit(
         conn,
         type="codex_stop_review",
@@ -1607,6 +1847,7 @@ def test_reviewer_lease_released_after_routing(conn, project_root):
 
 def test_implementer_routes_to_reviewer_phase5(conn, project_root):
     """Phase 5: implementer routes to reviewer (was tester before Phase 5)."""
+    _disable_implementer_critic(conn, project_root)
     wf_id = "wf-regression-impl-001"
     lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf_id)
     _submit_valid_implementer_completion(conn, lease["lease_id"], wf_id, status="complete")

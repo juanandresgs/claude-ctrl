@@ -53,6 +53,28 @@ about it. Never fake it, never skip it, never summarize what you can paste verba
 6. **Integration surfaces** — Confirm new code is reachable from real entry
    points and doesn't silently break adjacent components.
 
+## Decision Evidence Check
+
+Decision IDs are authority evidence. Before you report that a `DEC-*` decision
+is missing from `MASTER_PLAN.md`, run an exact Decision Log lookup and cite the
+negative result in the finding. Prefer the project-local tool when present:
+
+```bash
+python3 scripts/planctl.py lookup-decision MASTER_PLAN.md <DEC-ID>
+```
+
+If the project does not carry `scripts/planctl.py`, use the global control-plane
+copy:
+
+```bash
+python3 ~/.claude/scripts/planctl.py lookup-decision MASTER_PLAN.md <DEC-ID>
+```
+
+Only call the decision missing when that lookup returns `found=false` /
+`in_decision_log=false`. If the lookup finds a row, do not file a missing-plan
+finding; review whether the implementation and tests honor the recorded
+decision instead.
+
 ## Structured Findings
 
 Every observation that affects the verdict must be recorded as a structured

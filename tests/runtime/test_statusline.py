@@ -172,6 +172,13 @@ def test_snapshot_reflects_active_critic_run(conn):
 
 def test_snapshot_persists_unavailable_fallback_until_completed(conn):
     """CRITIC_UNAVAILABLE stays visible until reviewer fallback closes it."""
+    completions_mod.submit(
+        conn,
+        lease_id="lease-critic-anchor",
+        workflow_id="wf-status-fallback",
+        role="implementer",
+        payload={"IMPL_STATUS": "complete", "IMPL_HEAD_SHA": "impl-head"},
+    )
     run = critic_runs_mod.start(conn, workflow_id="wf-status-fallback", provider="codex")
     critic_runs_mod.complete(
         conn,
@@ -193,8 +200,71 @@ def test_snapshot_persists_unavailable_fallback_until_completed(conn):
         summary="Reviewer fallback completed.",
     )
     snap_after = statusline.snapshot(conn)
-    assert snap_after["critic_run"]["status"] == "fallback_completed"
-    assert snap_after["critic_run"]["verdict"] == "CRITIC_UNAVAILABLE"
+    assert snap_after["critic_run"]["found"] is False
+
+
+def test_snapshot_hides_terminal_critic_without_current_implementer_anchor(conn):
+    """A completed critic row is historical unless anchored to current routing."""
+    run = critic_runs_mod.start(conn, workflow_id="wf-old-critic", provider="codex")
+    critic_runs_mod.complete(
+        conn,
+        run_id=run["run_id"],
+        verdict="TRY_AGAIN",
+        provider="codex",
+        summary="Old retry.",
+    )
+    snap = statusline.snapshot(conn)
+    assert snap["critic_run"]["found"] is False
+
+
+def test_snapshot_hides_terminal_critic_after_reviewer_completion_supersedes_it(conn):
+    """Reviewer completion means the implementer critic result is no longer current."""
+    import json as _json
+
+    completions_mod.submit(
+        conn,
+        lease_id="lease-impl",
+        workflow_id="wf-superseded-critic",
+        role="implementer",
+        payload={"IMPL_STATUS": "complete", "IMPL_HEAD_SHA": "impl-head"},
+    )
+    run = critic_runs_mod.start(conn, workflow_id="wf-superseded-critic", provider="codex")
+    critic_runs_mod.complete(
+        conn,
+        run_id=run["run_id"],
+        verdict="READY_FOR_REVIEWER",
+        provider="codex",
+        summary="Hand off.",
+    )
+    snap_current = statusline.snapshot(conn)
+    assert snap_current["critic_run"]["found"] is True
+    assert snap_current["critic_run"]["verdict"] == "READY_FOR_REVIEWER"
+
+    completions_mod.submit(
+        conn,
+        lease_id="lease-reviewer",
+        workflow_id="wf-superseded-critic",
+        role="reviewer",
+        payload={
+            "REVIEW_VERDICT": "ready_for_guardian",
+            "REVIEW_HEAD_SHA": "review-head",
+            "REVIEW_FINDINGS_JSON": _json.dumps({"findings": []}),
+        },
+    )
+    snap_after_reviewer = statusline.snapshot(conn)
+    assert snap_after_reviewer["critic_run"]["found"] is False
+
+
+def test_snapshot_hides_stale_active_critic_run(conn):
+    """An abandoned active row must not claim a critic is running forever."""
+    run = critic_runs_mod.start(conn, workflow_id="wf-stale-active-critic", provider="codex")
+    old = int(time.time()) - statusline.CRITIC_ACTIVE_MAX_AGE_SECONDS - 10
+    conn.execute(
+        "UPDATE critic_runs SET updated_at = ?, started_at = ? WHERE run_id = ?",
+        (old, old, run["run_id"]),
+    )
+    snap = statusline.snapshot(conn)
+    assert snap["critic_run"]["found"] is False
 
 
 # ---------------------------------------------------------------------------

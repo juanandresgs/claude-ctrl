@@ -36,8 +36,8 @@ ROUTE_BY_VERDICT: dict[str, str] = {
     "READY_FOR_REVIEWER": "reviewer",
     "TRY_AGAIN": "implementer",
     "BLOCKED_BY_PLAN": "planner",
-    "CRITIC_UNAVAILABLE": "reviewer",
 }
+ROUTABLE_VERDICTS: frozenset[str] = frozenset(ROUTE_BY_VERDICT)
 
 ESCALATION_RETRY_LIMIT: str = "retry_limit_exhausted"
 ESCALATION_REPEATED_FINGERPRINT: str = "no_convergence_repeated_fingerprint"
@@ -56,15 +56,18 @@ class CriticResolution:
     provider: str
     summary: str
     detail: str
+    findings: list[str]
     next_steps: list[str]
     artifact_path: str
     fingerprint: str
-    next_role: str
+    next_role: Optional[str]
     retry_limit: int
     try_again_streak: int
     repeated_fingerprint_streak: int
     escalated: bool
     escalation_reason: str
+    execution_proof: dict
+    execution_proof_valid: bool
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -96,6 +99,82 @@ def _parse_metadata(raw: str | None) -> dict:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _truthy(value: object) -> bool:
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _proof_str(proof: dict, *keys: str) -> str:
+    for key in keys:
+        value = proof.get(key)
+        if value is not None:
+            return str(value or "").strip()
+    return ""
+
+
+def _proof_bool(proof: dict, *keys: str) -> bool:
+    for key in keys:
+        if key in proof:
+            return _truthy(proof.get(key))
+    return False
+
+
+def _execution_proof(metadata: dict) -> dict:
+    proof = metadata.get("execution_proof") if isinstance(metadata, dict) else {}
+    return proof if isinstance(proof, dict) else {}
+
+
+def _execution_proof_valid(metadata: dict) -> bool:
+    """Return whether metadata proves a real critic execution completed.
+
+    ``CRITIC_UNAVAILABLE`` rows are intentionally storable for audit, but they
+    are not routable. This proof check is for successful routing verdicts.
+    """
+
+    proof = _execution_proof(metadata)
+    if not proof:
+        return False
+
+    if _truthy(proof.get("test_override")):
+        return (
+            _proof_str(proof, "provider") == "test"
+            and _proof_bool(
+                proof,
+                "parsed_structured_output_present",
+                "parsed_structured_output",
+            )
+        )
+
+    provider = _proof_str(proof, "provider").lower()
+    parsed_present = _proof_bool(
+        proof,
+        "parsed_structured_output_present",
+        "parsed_structured_output",
+    )
+    if provider == "codex":
+        return (
+            bool(_proof_str(proof, "app_server_thread_id", "thread_id", "threadId"))
+            and bool(_proof_str(proof, "turn_id", "turnId"))
+            and _proof_str(proof, "turn_status", "turnStatus") == "completed"
+            and parsed_present
+            and _proof_bool(proof, "final_message_non_empty", "finalMessageNonEmpty")
+        )
+    if provider == "gemini":
+        try:
+            exit_code = int(proof.get("exit_code"))
+        except (TypeError, ValueError):
+            return False
+        return (
+            exit_code == 0
+            and parsed_present
+            and _proof_bool(proof, "raw_response_non_empty", "rawResponseNonEmpty")
+        )
+    return False
 
 
 def _row_to_dict(row: sqlite3.Row | tuple | None) -> Optional[dict]:
@@ -277,24 +356,31 @@ def assess_latest(
             provider="",
             summary="",
             detail="",
+            findings=[],
             next_steps=[],
             artifact_path="",
             fingerprint="",
-            next_role=ROUTE_BY_VERDICT["CRITIC_UNAVAILABLE"],
+            next_role=None,
             retry_limit=retry_limit,
             try_again_streak=0,
             repeated_fingerprint_streak=0,
             escalated=False,
             escalation_reason="",
+            execution_proof={},
+            execution_proof_valid=False,
         )
 
     latest_row = rows[0]
     verdict = latest_row.get("verdict", "")
     metadata = latest_row.get("metadata") if isinstance(latest_row.get("metadata"), dict) else {}
+    raw_findings = metadata.get("findings") if isinstance(metadata, dict) else []
+    findings = [str(item) for item in raw_findings] if isinstance(raw_findings, list) else []
     raw_next_steps = metadata.get("next_steps") if isinstance(metadata, dict) else []
     next_steps = [str(item) for item in raw_next_steps] if isinstance(raw_next_steps, list) else []
     artifact_path = str(metadata.get("artifact_path") or "") if isinstance(metadata, dict) else ""
-    next_role = ROUTE_BY_VERDICT.get(verdict, ROUTE_BY_VERDICT["CRITIC_UNAVAILABLE"])
+    proof = _execution_proof(metadata)
+    proof_valid = _execution_proof_valid(metadata)
+    next_role = ROUTE_BY_VERDICT.get(verdict)
     try_again_streak = 0
     repeated_fingerprint_streak = 0
     escalated = False
@@ -328,6 +414,7 @@ def assess_latest(
         provider=str(latest_row.get("provider") or ""),
         summary=str(latest_row.get("summary") or ""),
         detail=str(latest_row.get("detail") or ""),
+        findings=findings,
         next_steps=next_steps,
         artifact_path=artifact_path,
         fingerprint=str(latest_row.get("fingerprint") or ""),
@@ -337,6 +424,8 @@ def assess_latest(
         repeated_fingerprint_streak=repeated_fingerprint_streak,
         escalated=escalated,
         escalation_reason=escalation_reason,
+        execution_proof=proof,
+        execution_proof_valid=proof_valid,
     )
 
 

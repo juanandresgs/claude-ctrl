@@ -228,6 +228,63 @@ else
     echo "  FAIL: critic heartbeat missing; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
+if printf '%s' "$output" | grep -q "Provider status: codex ready"; then
+    echo "  PASS: critic progress detail present in HUD"
+else
+    echo "  FAIL: critic progress detail missing; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+policy critic-run complete \
+    --run-id "$CRITIC_RUN_ID" \
+    --provider codex \
+    --verdict READY_FOR_REVIEWER \
+    --summary "Active critic closed." >/dev/null
+
+# ---------------------------------------------------------------------------
+# Test 5d: failed critic run renders as failure, not reviewer progress
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- 5d: failed critic run — HUD shows critic failed"
+
+policy completion submit \
+    --lease-id "lease-sl-critic-failed" \
+    --workflow-id "wf-sl-critic-failed" \
+    --role implementer \
+    --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"abc123"}' >/dev/null
+FAILED_CRITIC_RUN=$(policy critic-run start --workflow-id "wf-sl-critic-failed" --provider external-critic)
+FAILED_CRITIC_RUN_ID=$(printf '%s' "$FAILED_CRITIC_RUN" | jq -r '.run_id // empty')
+policy critic-run complete \
+    --run-id "$FAILED_CRITIC_RUN_ID" \
+    --provider external-critic \
+    --verdict CRITIC_UNAVAILABLE \
+    --summary "External implementer critic did not run." \
+    --detail "No provider returned structured output." >/dev/null
+
+output=$(run_statusline)
+if printf '%s' "$output" | grep -q "critic failed: unavailable"; then
+    echo "  PASS: failed critic shown as failure"
+else
+    echo "  FAIL: failed critic not shown as failure; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+fi
+if printf '%s' "$output" | grep -q "reviewer"; then
+    echo "  FAIL: failed critic rendered reviewer progress; output: $(printf '%s' "$output" | cat -v)"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "  PASS: failed critic does not render reviewer progress"
+fi
+policy critic-run fallback-complete \
+    --workflow-id "wf-sl-critic-failed" \
+    --summary "Scenario cleanup after failed critic visibility assertion." >/dev/null
+PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" <<'PYEOF'
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("DELETE FROM completion_records WHERE lease_id = ?", ("lease-sl-critic-failed",))
+conn.commit()
+conn.close()
+PYEOF
 
 # ---------------------------------------------------------------------------
 # Test 6: pending eval renders ⏳ eval in HUD (TKT-024)

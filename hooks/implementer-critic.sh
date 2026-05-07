@@ -16,6 +16,12 @@ AGENT_TYPE_LC=$(printf '%s' "$AGENT_TYPE" | tr '[:upper:]' '[:lower:]')
 [[ -z "$AGENT_TYPE_LC" || "$AGENT_TYPE_LC" != "implementer" ]] && exit 0
 
 PROJECT_ROOT=$(detect_project_root 2>/dev/null || printf '%s\n' "${CLAUDE_PROJECT_DIR:-$(pwd)}")
+_INITIAL_CLAUDE_POLICY_DB="${CLAUDE_POLICY_DB:-}"
+if [[ -n "$_INITIAL_CLAUDE_POLICY_DB" ]]; then
+    _initial_db_name="$(basename "$_INITIAL_CLAUDE_POLICY_DB" 2>/dev/null || printf '%s' "$_INITIAL_CLAUDE_POLICY_DB")"
+    [[ "$_initial_db_name" == "policy.db" ]] && _INITIAL_CLAUDE_POLICY_DB=""
+    unset _initial_db_name
+fi
 
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
@@ -29,9 +35,24 @@ _local_cc_policy() {
 }
 
 _resolve_context() {
-    local lease_json found workflow_id lease_id
+    local lease_json found workflow_id lease_id home_db fallback_json fallback_found
     lease_json=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo "")
     found=$(printf '%s' "$lease_json" | jq -r '.found // false' 2>/dev/null || echo "false")
+
+    if [[ "$found" != "true" && -z "$_INITIAL_CLAUDE_POLICY_DB" && -n "${HOME:-}" ]]; then
+        home_db="$HOME/.claude/state.db"
+        if [[ -f "$home_db" && "${CLAUDE_POLICY_DB:-}" != "$home_db" ]]; then
+            fallback_json=$(CLAUDE_POLICY_DB="$home_db" python3 "$_LOCAL_RUNTIME_CLI" \
+                lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo "")
+            fallback_found=$(printf '%s' "$fallback_json" | jq -r '.found // false' 2>/dev/null || echo "false")
+            if [[ "$fallback_found" == "true" ]]; then
+                export CLAUDE_POLICY_DB="$home_db"
+                lease_json="$fallback_json"
+                found="true"
+            fi
+        fi
+    fi
+
     workflow_id=""
     lease_id=""
     if [[ "$found" == "true" ]]; then
@@ -58,7 +79,7 @@ _emit_unavailable() {
     metadata_json=$(jq -n \
         --arg hook "implementer-critic.sh" \
         --arg failure "$detail" \
-        '{hook: $hook, failure: $failure}')
+        '{hook: $hook, failure: $failure, execution_proof: {provider: "wrapper", parsed_structured_output_present: false}}')
     run_json=$(_local_cc_policy critic-run start \
         --workflow-id "$workflow_id" \
         --lease-id "${lease_id:-}" \
@@ -83,10 +104,9 @@ _emit_unavailable() {
             --verdict CRITIC_UNAVAILABLE \
             --summary "Implementer critic unavailable." \
             --detail "$detail" \
-            --fallback reviewer \
             --error "$detail" >/dev/null 2>&1 || true
     fi
-    escaped=$(printf 'Implementer critic progress: Starting Codex tactical critic (read-only).\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: verdict=CRITIC_UNAVAILABLE, next_role=reviewer.\nImplementer critic detail: %s' "$workflow_id" "$detail" | jq -Rs .)
+    escaped=$(printf 'Implementer critic progress: Starting Codex tactical critic (read-only).\nImplementer critic: provider=codex, workflow=%s.\nImplementer critic: verdict=CRITIC_UNAVAILABLE, next_role=none.\nImplementer critic detail: %s\nImplementer critic action: fail closed; no automatic reviewer fallback is allowed.' "$workflow_id" "$detail" | jq -Rs .)
     cat <<EOF
 {
   "additionalContext": $escaped,

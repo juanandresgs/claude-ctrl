@@ -94,8 +94,9 @@ returns the hook-shaped response Claude Code expects.
 
 Deterministic enforcement remains the point, but the system now has a single
 place where operational truth lives. No more outdated flatfiles. Code reviews
-are now enforced to convergence using a separate read-only CLI critic, Codex,
-to avoid model bias. Policies are now abstracted away from the hooks themselves,
+are now enforced to convergence using a separate read-only Codex/Gemini CLI
+critic with execution proof, to avoid model bias. Policies are now abstracted
+away from the hooks themselves,
 paving the way for support on other coding harnesses in future versions.
 
 Additional architectural changes:
@@ -195,7 +196,7 @@ where the decision is made:
 - Agent launches must carry the canonical ClauDEX contract
 - canonical subagent seats are backed by runtime carrier rows, leases, and
   prompt packs
-- Codex critic review is hook-wired through `settings.json`,
+- Codex/Gemini critic review is hook-wired through `settings.json`,
   `hooks/implementer-critic.sh`, and `sidecars/codex-review/`
 - completion records drive dispatch rather than pane text or local memory
 - routine Guardian landing requires reviewer readiness, test evidence, scope

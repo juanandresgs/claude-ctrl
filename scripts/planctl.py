@@ -23,6 +23,12 @@ check-decision-log <path>
     Exits 0 if append-only, 1 if violations found.
     Creates baseline on first run.
 
+lookup-decision <path> <decision_id>
+    Perform an exact, section-aware lookup for a DEC-* id in MASTER_PLAN.md.
+    Emits JSON with line-numbered matches in the Decision Log section and
+    across the full plan. Exits 0 when the id is present in the Decision Log,
+    1 when absent, 2 for malformed input or unreadable files.
+
 check-compression <path>
     Verify completed initiatives are compressed (no #### or ##### subsections).
     Verify active initiatives have all required fields.
@@ -97,6 +103,12 @@ _DEC_ENTRY_RE = re.compile(
 
 # Decision ID bare format check: DEC-COMPONENT-NNN (2+ uppercase letters, 3+ digits)
 _DEC_ID_FORMAT_RE = re.compile(r"^DEC-[A-Z]{2,}-\d{3,}$")
+
+# Broad token shape used for exact lookups. Decision IDs in project plans may
+# carry more domain segments than the legacy validator allows, e.g.
+# DEC-COEDITOR-HISTORY-FORMAT-001. Lookup must find those without changing the
+# historical validate command's stricter format gate.
+_DEC_ID_LOOKUP_RE = re.compile(r"^DEC-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$")
 
 # "Last updated:" line
 _LAST_UPDATED_RE = re.compile(r"^Last updated:\s+(\d{4}-\d{2}-\d{2})", re.MULTILINE)
@@ -186,6 +198,40 @@ def _parse_decision_entries(text: str) -> list[str]:
         if _DEC_ENTRY_RE.match(line.strip()):
             entries.append(line.strip())
     return entries
+
+
+def _decision_token_pattern(decision_id: str) -> re.Pattern[str]:
+    """Return a regex that matches ``decision_id`` as a whole DEC token."""
+    return re.compile(
+        rf"(?<![A-Za-z0-9-]){re.escape(decision_id)}(?![A-Za-z0-9-])"
+    )
+
+
+def _decision_log_line_range(lines: list[str]) -> tuple[int, int] | None:
+    """Return the 1-based inclusive line range for ``## Decision Log``.
+
+    Returns None when the section is absent. The range includes the header line
+    and stops immediately before the next level-2 section.
+    """
+    start: int | None = None
+    for idx, line in enumerate(lines, start=1):
+        if line.strip() == "## Decision Log":
+            start = idx
+            break
+    if start is None:
+        return None
+
+    end = len(lines)
+    for idx in range(start + 1, len(lines) + 1):
+        line = lines[idx - 1]
+        if line.startswith("## ") and line.strip() != "## Decision Log":
+            end = idx - 1
+            break
+    return start, end
+
+
+def _line_match(line_no: int, text: str) -> dict[str, Any]:
+    return {"line": line_no, "text": text}
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +424,84 @@ def check_decision_log(path: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# lookup-decision command
+# ---------------------------------------------------------------------------
+
+
+def lookup_decision(path: Path, decision_id: str) -> int:
+    """Look up a DEC-* id in the plan's Decision Log section.
+
+    This is a read-only reviewer/orchestrator helper. It deliberately performs
+    exact token matching and reports both section-scoped and full-plan matches
+    so an agent can distinguish "not in the Decision Log" from "mentioned
+    elsewhere in the plan" before filing a missing-decision finding.
+    """
+    if not _DEC_ID_LOOKUP_RE.match(decision_id):
+        print(json.dumps({
+            "status": "error",
+            "message": (
+                "lookup-decision: decision_id must be a DEC-* token; "
+                f"got {decision_id!r}"
+            ),
+            "decision_id": decision_id,
+            "found": False,
+            "in_decision_log": False,
+            "decision_log_matches": [],
+            "all_matches": [],
+        }))
+        return 2
+
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        print(json.dumps({
+            "status": "error",
+            "message": f"lookup-decision: failed to read {path}: {exc}",
+            "decision_id": decision_id,
+            "found": False,
+            "in_decision_log": False,
+            "decision_log_matches": [],
+            "all_matches": [],
+        }))
+        return 2
+
+    pattern = _decision_token_pattern(decision_id)
+    lines = text.splitlines()
+    decision_log_range = _decision_log_line_range(lines)
+
+    all_matches: list[dict[str, Any]] = []
+    decision_log_matches: list[dict[str, Any]] = []
+
+    for line_no, line in enumerate(lines, start=1):
+        if not pattern.search(line):
+            continue
+        match = _line_match(line_no, line.rstrip())
+        all_matches.append(match)
+        if (
+            decision_log_range is not None
+            and decision_log_range[0] <= line_no <= decision_log_range[1]
+        ):
+            decision_log_matches.append(match)
+
+    found_in_log = bool(decision_log_matches)
+    result = {
+        "status": "found" if found_in_log else "missing",
+        "decision_id": decision_id,
+        "found": found_in_log,
+        "in_decision_log": found_in_log,
+        "decision_log_section_found": decision_log_range is not None,
+        "decision_log_range": list(decision_log_range)
+        if decision_log_range is not None
+        else None,
+        "decision_log_matches": decision_log_matches,
+        "all_matches": all_matches,
+        "plan_path": str(path),
+    }
+    print(json.dumps(result))
+    return 0 if found_in_log else 1
+
+
+# ---------------------------------------------------------------------------
 # check-compression command
 # ---------------------------------------------------------------------------
 
@@ -525,6 +649,13 @@ def main() -> int:
     dl_cmd = sub.add_parser("check-decision-log", help="Verify decision log is append-only")
     dl_cmd.add_argument("path", type=Path)
 
+    lookup_cmd = sub.add_parser(
+        "lookup-decision",
+        help="Exact DEC-* lookup in the plan's Decision Log",
+    )
+    lookup_cmd.add_argument("path", type=Path)
+    lookup_cmd.add_argument("decision_id")
+
     comp_cmd = sub.add_parser("check-compression", help="Verify initiative compression rules")
     comp_cmd.add_argument("path", type=Path)
 
@@ -541,6 +672,7 @@ def main() -> int:
         "validate": lambda: validate(args.path),
         "check-immutability": lambda: check_immutability(args.path),
         "check-decision-log": lambda: check_decision_log(args.path),
+        "lookup-decision": lambda: lookup_decision(args.path, args.decision_id),
         "check-compression": lambda: check_compression(args.path),
         "stamp": lambda: stamp(args.path, getattr(args, "summary", None)),
         "refresh-baseline": lambda: refresh_baseline(args.path),

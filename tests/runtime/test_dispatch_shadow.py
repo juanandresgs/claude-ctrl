@@ -38,7 +38,14 @@ import sqlite3
 
 import pytest
 
-from runtime.core import completions, decision_work_registry as dwr, dispatch_shadow, events, leases
+from runtime.core import (
+    completions,
+    decision_work_registry as dwr,
+    dispatch_shadow,
+    enforcement_config,
+    events,
+    leases,
+)
 from runtime.core import stage_registry as sr
 from runtime.core.dispatch_engine import process_agent_stop
 from runtime.schemas import ensure_schema
@@ -581,6 +588,13 @@ class TestDispatchEngineShadowEmission:
 
     def test_implementer_stop_emits_shadow_event(self, conn, project_root):
         wf = "wf-shadow-impl"
+        enforcement_config.set_(
+            conn,
+            "critic_enabled_implementer_stop",
+            "false",
+            scope=f"project={project_root}",
+            actor_role="planner",
+        )
         lease = _issue_lease_at(conn, "implementer", project_root, workflow_id=wf)
         _submit_implementer(conn, lease["lease_id"], wf, verdict="complete")
 

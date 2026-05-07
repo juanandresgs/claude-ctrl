@@ -84,6 +84,15 @@ submit_completion() {
         --payload "$payload" >/dev/null 2>&1 || true
 }
 
+# Helper: explicitly disable the implementer critic for tests that exercise
+# direct reviewer handoff or interrupted auto_dispatch semantics.
+disable_implementer_critic() {
+    local wt_path="$1"
+    CLAUDE_POLICY_DB="$TEST_DB" CLAUDE_AGENT_ROLE="planner" $CC config set \
+        critic_enabled_implementer_stop false \
+        --scope "project=$wt_path" >/dev/null 2>&1
+}
+
 # Helper: seed the current planner contract path. Planner dispatch is no longer
 # a fixed route; it requires a planner lease, a valid completion record, and an
 # active goal contract for continuation-budget authority.
@@ -178,6 +187,7 @@ fi
 WD2="$TMP_DIR/wt-impl-complete"
 mkdir -p "$WD2"
 WF2="wf-ad-impl-e2e"
+disable_implementer_critic "$WD2"
 LEASE2=$(issue_lease "implementer" "$WF2" "$WD2")
 if [[ -n "$LEASE2" ]]; then
     submit_completion "implementer" "$LEASE2" "$WF2" '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"deadbeef"}'
@@ -206,6 +216,7 @@ fi
 WD3="$TMP_DIR/wt-impl-partial"
 mkdir -p "$WD3"
 WF3="wf-ad-impl-int-e2e"
+disable_implementer_critic "$WD3"
 LEASE3=$(issue_lease "implementer" "$WF3" "$WD3")
 if [[ -n "$LEASE3" ]]; then
     submit_completion "implementer" "$LEASE3" "$WF3" '{"IMPL_STATUS":"partial","IMPL_HEAD_SHA":"deadbeef"}'
