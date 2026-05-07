@@ -25,7 +25,7 @@ _local_cc_policy() {
     cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
 }
 
-RESPONSE_TEXT=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(agent_response_text "$AGENT_RESPONSE")
 
 _trailer() {
     local name="$1"

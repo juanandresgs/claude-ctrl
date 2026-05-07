@@ -101,7 +101,7 @@ AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
 # Guardian admission is a non-canonical Guardian mode. check-guardian.sh parses
 # its ADMISSION_* trailers and emits audit context; post-task must not route it
 # through the canonical completion state machine.
-RESPONSE_TEXT=$(printf '%s' "$HOOK_INPUT" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(agent_response_text "$HOOK_INPUT")
 if [[ "$AGENT_TYPE" == "guardian" ]] && printf '%s' "$RESPONSE_TEXT" | grep -qE '^ADMISSION_VERDICT:[[:space:]]*'; then
     exit 0
 fi

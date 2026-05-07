@@ -26,11 +26,13 @@ Rationale: post-task.sh contained ~200 lines of routing logic in bash including
   exclusively via completions.determine_next_role(). No case statement maps
   verdicts to roles in this module — that table lives only in completions.py.
 
-  Phase 5 fallback (DEC-PHASE5-ROUTING-001): when no persisted implementer
-  critic review exists, implementer still falls back to reviewer. With the
-  critic loop active, implementer routing is owned by critic_reviews:
+  Implementer critic enforcement: when critic_enabled_implementer_stop is true
+  (the default), implementer stops must have a persisted external critic review
+  with valid execution proof. With the critic loop active, implementer routing is
+  owned by critic_reviews:
   READY_FOR_REVIEWER → reviewer, TRY_AGAIN → implementer, BLOCKED_BY_PLAN
-  → planner, CRITIC_UNAVAILABLE → reviewer. The tester role is retired
+  → planner. CRITIC_UNAVAILABLE is retained as audit state but fails closed
+  instead of falling through to reviewer. The tester role is retired
   (Phase 8 Slice 11) — it is no longer a known runtime type and stop events
   that carry ``agent_type="tester"`` are handled by the generic unknown-type
   path (silent exit).
@@ -109,11 +111,12 @@ Title: Implementer inner-loop routing is owned by persisted critic reviews
 Status: accepted
 Rationale: The implementer previously routed straight to reviewer, forcing every
   tactical deficiency to be adjudicated in the outer loop. The new critic loop
-  introduces a runtime-owned critic_reviews domain whose persisted verdicts drive
-  implementer routing: READY_FOR_REVIEWER → reviewer, TRY_AGAIN → implementer,
-  BLOCKED_BY_PLAN → planner, CRITIC_UNAVAILABLE → reviewer. Retry-limit and
-  repeated-fingerprint escalation are computed from critic_reviews state, not from
-  hook-local heuristics, so the routing authority stays in Python/runtime.
+  introduces a runtime-owned critic_reviews domain whose persisted, proven
+  verdicts drive implementer routing: READY_FOR_REVIEWER → reviewer, TRY_AGAIN
+  → implementer, BLOCKED_BY_PLAN → planner. CRITIC_UNAVAILABLE and missing or
+  invalid execution proof are infrastructure failures. Retry-limit and
+  repeated-fingerprint escalation are computed from critic_reviews state, not
+  from hook-local heuristics, so the routing authority stays in Python/runtime.
 """
 
 from __future__ import annotations
@@ -128,6 +131,7 @@ from runtime.core import (
     critic_reviews,
     critic_runs,
     dispatch_shadow,
+    enforcement_config,
     evaluation,
     events,
     leases,
@@ -186,8 +190,12 @@ def process_agent_stop(
         "critic_provider": "",
         "critic_summary": "",
         "critic_detail": "",
+        "critic_findings": [],
         "critic_next_steps": [],
         "critic_artifact_path": "",
+        "critic_execution_proof": {},
+        "critic_execution_proof_valid": False,
+        "critic_disabled": False,
         "critic_try_again_streak": 0,
         "critic_retry_limit": 0,
         "critic_repeated_fingerprint_streak": 0,
@@ -313,10 +321,31 @@ def process_agent_stop(
                 pass  # Goal-status update is best-effort.
 
     elif normalised == "implementer":
-        # Default fallback (legacy/no-critic path): implementer routes to reviewer.
-        # DEC-IMPLEMENTER-CRITIC-LOOP-001 replaces this whenever a persisted
-        # critic review exists for the workflow.
-        result["next_role"] = "reviewer"
+        critic_enabled = _implementer_critic_enabled(
+            conn,
+            workflow_id=workflow_id,
+            project_root=project_root,
+        )
+        if critic_enabled:
+            # Strict default: implementer routing is blocked until the dedicated
+            # external critic lane persists a proven routing verdict.
+            result["next_role"] = None
+        else:
+            result["critic_disabled"] = True
+            result["next_role"] = "reviewer"
+            try:
+                events.emit(
+                    conn,
+                    type="implementer_critic_disabled",
+                    source="dispatch_engine",
+                    detail=(
+                        "critic_enabled_implementer_stop=false; "
+                        f"routing implementer directly to reviewer for {workflow_id or project_root}"
+                    ),
+                )
+                result["events"].append({"type": "implementer_critic_disabled"})
+            except Exception:
+                pass
 
         # Populate worktree_path so the reviewer runs in the same worktree
         # as the implementer. Prefer the live worktree root, then refine from
@@ -364,7 +393,7 @@ def process_agent_stop(
                 pass  # Contract lookup is best-effort; never block routing.
 
         critic_resolution = None
-        if workflow_id:
+        if critic_enabled and workflow_id:
             try:
                 critic_resolution = critic_reviews.assess_latest(
                     conn,
@@ -380,8 +409,13 @@ def process_agent_stop(
             result["critic_provider"] = critic_resolution.provider
             result["critic_summary"] = critic_resolution.summary
             result["critic_detail"] = critic_resolution.detail
+            result["critic_findings"] = critic_resolution.findings
             result["critic_next_steps"] = critic_resolution.next_steps
             result["critic_artifact_path"] = critic_resolution.artifact_path
+            result["critic_execution_proof"] = critic_resolution.execution_proof
+            result["critic_execution_proof_valid"] = (
+                critic_resolution.execution_proof_valid
+            )
             result["critic_try_again_streak"] = critic_resolution.try_again_streak
             result["critic_retry_limit"] = critic_resolution.retry_limit
             result["critic_repeated_fingerprint_streak"] = (
@@ -389,13 +423,38 @@ def process_agent_stop(
             )
             result["critic_escalated"] = critic_resolution.escalated
             result["critic_escalation_reason"] = critic_resolution.escalation_reason
-            result["next_role"] = critic_resolution.next_role
-            if critic_resolution.next_role == "planner":
+            if critic_resolution.verdict == "CRITIC_UNAVAILABLE":
+                result["next_role"] = None
+                result["error"] = (
+                    "PROCESS ERROR: implementer critic did not run "
+                    "(CRITIC_UNAVAILABLE)."
+                )
+            elif not critic_resolution.execution_proof_valid:
+                result["next_role"] = None
+                result["error"] = (
+                    "PROCESS ERROR: implementer critic execution proof invalid."
+                )
+            elif critic_resolution.verdict not in critic_reviews.ROUTABLE_VERDICTS:
+                result["next_role"] = None
+                result["error"] = (
+                    f"PROCESS ERROR: implementer critic verdict {critic_resolution.verdict} "
+                    "is not routable."
+                )
+            else:
+                result["next_role"] = critic_resolution.next_role
+            if critic_resolution.next_role == "planner" and not result["error"]:
                 result["worktree_path"] = ""
-            elif critic_resolution.next_role == "implementer" and not result["worktree_path"]:
+            elif (
+                critic_resolution.next_role == "implementer"
+                and not result["worktree_path"]
+                and not result["error"]
+            ):
                 result["worktree_path"] = project_root or ""
+        elif critic_enabled:
+            result["next_role"] = None
+            result["error"] = "PROCESS ERROR: implementer critic did not run."
 
-        if result["next_role"] == "reviewer" and workflow_id:
+        if result["next_role"] == "reviewer" and workflow_id and not result["error"]:
             grant = _landing_grant_for_active_work_item(conn, workflow_id, active_lease_id)
             if grant:
                 result["work_item_id"] = grant.get("work_item_id", "") or ""
@@ -484,6 +543,17 @@ def process_agent_stop(
         result["error"] = error
         if worktree_path:
             result["worktree_path"] = worktree_path
+        if workflow_id and active_lease_id and not error:
+            landing_projection = _project_guardian_landing_to_work_item(
+                conn,
+                workflow_id=workflow_id,
+                active_lease_id=active_lease_id,
+            )
+            if landing_projection:
+                result["work_item_id"] = landing_projection.get("work_item_id", "")
+                result["work_item_status_projected"] = landing_projection.get("status", "")
+                result["landing_head_sha"] = landing_projection.get("head_sha", "")
+                result["events"].append({"type": "work_item_landed"})
 
     # ---------------------------------------------------------------------------
     # Emit stop audit event (deferred so implementer contract can override
@@ -719,6 +789,25 @@ def _persist_next_dispatch_action(
     return int(cur.lastrowid)
 
 
+def _implementer_critic_enabled(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str = "",
+    project_root: str = "",
+) -> bool:
+    """Return whether implementer stop must have an external critic review."""
+
+    raw = enforcement_config.get(
+        conn,
+        "critic_enabled_implementer_stop",
+        workflow_id=workflow_id,
+        project_root=project_root,
+    )
+    if raw is None:
+        return True
+    return str(raw).strip().lower() != "false"
+
+
 def _landing_grant_for_active_work_item(
     conn: sqlite3.Connection,
     workflow_id: str,
@@ -728,6 +817,33 @@ def _landing_grant_for_active_work_item(
     if not workflow_id:
         return None
 
+    work_item_id = _work_item_id_for_active_dispatch(
+        conn,
+        workflow_id=workflow_id,
+        active_lease_id=active_lease_id,
+    )
+    if not work_item_id:
+        return None
+
+    try:
+        from runtime.core import work_item_grants
+
+        return work_item_grants.effective(
+            conn,
+            workflow_id=workflow_id,
+            work_item_id=work_item_id,
+        ).as_dict()
+    except Exception:
+        return None
+
+
+def _work_item_id_for_active_dispatch(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    active_lease_id: str,
+) -> str:
+    """Resolve the work item bound to the current dispatch lease."""
     work_item_id = ""
     if active_lease_id:
         try:
@@ -755,6 +871,15 @@ def _landing_grant_for_active_work_item(
             except (TypeError, json.JSONDecodeError):
                 work_item_id = ""
 
+        if not work_item_id:
+            try:
+                comp = completions.latest(conn, lease_id=active_lease_id)
+                payload = comp.get("payload_json") if comp else {}
+                if isinstance(payload, dict):
+                    work_item_id = str(payload.get("WORK_ITEM_ID") or "")
+            except Exception:
+                work_item_id = ""
+
     if not work_item_id:
         try:
             rows = conn.execute(
@@ -772,19 +897,83 @@ def _landing_grant_for_active_work_item(
         except sqlite3.OperationalError:
             work_item_id = ""
 
+    return work_item_id
+
+
+def _project_guardian_landing_to_work_item(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    active_lease_id: str,
+) -> dict:
+    """Mark the active work item landed after a valid Guardian landing."""
+    try:
+        comp = completions.latest(conn, lease_id=active_lease_id)
+    except Exception:
+        return {}
+    if not comp or comp.get("role") != "guardian":
+        return {}
+    if not (comp.get("valid") == 1 or comp.get("valid") is True):
+        return {}
+
+    verdict = comp.get("verdict") or ""
+    if verdict not in {"committed", "merged", "pushed"}:
+        return {}
+
+    payload = comp.get("payload_json") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    work_item_id = _work_item_id_for_active_dispatch(
+        conn,
+        workflow_id=workflow_id,
+        active_lease_id=active_lease_id,
+    )
     if not work_item_id:
-        return None
+        return {}
+
+    head_sha = ""
+    for key in (
+        "LANDING_HEAD_SHA",
+        "MERGE_COMMIT_SHA",
+        "FINAL_HEAD_SHA",
+        "HEAD_SHA",
+        "COMMIT_SHA",
+    ):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            head_sha = value
+            break
+
+    now = int(time.time())
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'landed',
+                head_sha = CASE WHEN ? != '' THEN ? ELSE head_sha END,
+                updated_at = ?
+            WHERE workflow_id = ?
+              AND work_item_id = ?
+              AND status != 'landed'
+              AND status != 'abandoned'
+            """,
+            (head_sha, head_sha, now, workflow_id, work_item_id),
+        )
+
+    if cursor.rowcount == 0:
+        return {}
 
     try:
-        from runtime.core import work_item_grants
-
-        return work_item_grants.effective(
+        events.emit(
             conn,
-            workflow_id=workflow_id,
-            work_item_id=work_item_id,
-        ).as_dict()
+            type="work_item_landed",
+            source="dispatch_engine",
+            detail=f"Guardian {verdict} projected work_item {work_item_id} to landed",
+        )
     except Exception:
-        return None
+        pass
+    return {"work_item_id": work_item_id, "status": "landed", "head_sha": head_sha}
 
 
 def _resolve_stop_assessment_wf_id(
@@ -1181,6 +1370,11 @@ def _safe_release(conn: sqlite3.Connection, lease_id: str) -> None:
 
 def _format_critic_context(result: dict) -> str:
     """Render implementer critic routing metadata for hook output."""
+    if result.get("critic_disabled"):
+        return (
+            "\nCRITIC: disabled (critic_enabled_implementer_stop=false; "
+            "direct reviewer handoff intentionally allowed)."
+        )
     if not result.get("critic_found"):
         return ""
 
@@ -1188,6 +1382,7 @@ def _format_critic_context(result: dict) -> str:
     provider = str(result.get("critic_provider") or "")
     summary = str(result.get("critic_summary") or "")
     detail = str(result.get("critic_detail") or "")
+    findings = result.get("critic_findings") or []
     next_steps = result.get("critic_next_steps") or []
     retry_limit = int(result.get("critic_retry_limit") or 0)
     try_again_streak = int(result.get("critic_try_again_streak") or 0)
@@ -1198,27 +1393,49 @@ def _format_critic_context(result: dict) -> str:
     lines: list[str] = [
         f"CRITIC: provider={provider or 'unknown'}, verdict={verdict}"
     ]
+    digest_lines: list[str] = [
+        "USER_VISIBLE_CRITIC_DIGEST:",
+        f"Implementer critic: {verdict or 'unknown'} -> {result.get('next_role') or 'unknown'}",
+    ]
     if verdict == "TRY_AGAIN":
         if escalated:
             lines.append(
                 f"CRITIC_RETRY: reviewer_adjudication after {escalation_reason}"
             )
+            digest_lines.append(
+                f"Retry state: reviewer adjudication after {escalation_reason or 'retry escalation'}."
+            )
         else:
             lines.append(
                 f"CRITIC_RETRY: try_again={try_again_streak}, retry_limit={retry_limit}"
+            )
+            digest_lines.append(
+                f"Retry state: {try_again_streak} of {retry_limit} before reviewer escalation."
             )
         if repeated_fp_streak >= 2:
             lines.append(
                 f"CRITIC_CONVERGENCE: repeated_fingerprint_streak={repeated_fp_streak}"
             )
+            digest_lines.append(f"Convergence: repeated fingerprint streak {repeated_fp_streak}.")
     if summary:
         lines.append(f"CRITIC_SUMMARY: {summary}")
+        digest_lines.append(f"Summary: {summary}")
     if detail:
         lines.append(f"CRITIC_DETAIL: {detail}")
+    if findings:
+        lines.append("CRITIC_FINDINGS:")
+        digest_lines.append("Findings:")
+        for finding in findings[:8]:
+            lines.append(f"- {finding}")
+        for finding in findings[:4]:
+            digest_lines.append(f"- {finding}")
     if next_steps:
         lines.append("CRITIC_NEXT_STEPS:")
+        digest_lines.append("Next:")
         for step in next_steps[:8]:
             lines.append(f"- {step}")
+        for step in next_steps[:4]:
+            digest_lines.append(f"- {step}")
     if verdict == "TRY_AGAIN":
         lines.append(
             "CRITIC_ACTION: Re-dispatch implementer with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."
@@ -1227,11 +1444,7 @@ def _format_critic_context(result: dict) -> str:
         lines.append(
             "CRITIC_ACTION: Re-dispatch planner with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."
         )
-    elif verdict == "CRITIC_UNAVAILABLE":
-        lines.append(
-            "CRITIC_ACTION: Dispatch reviewer subagent fallback for read-only adjudication."
-        )
-    return "\n" + "\n".join(lines) if lines else ""
+    return "\n" + "\n".join(lines + digest_lines) if lines else ""
 
 
 def _emit_shadow_stage_decision(

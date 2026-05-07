@@ -72,7 +72,7 @@ if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
 fi
 
 ISSUES=()
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(agent_response_text "$AGENT_RESPONSE")
 
 # ---------------------------------------------------------------------------
 # Parse REVIEW_* trailers

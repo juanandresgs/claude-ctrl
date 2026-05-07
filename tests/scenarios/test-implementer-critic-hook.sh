@@ -61,7 +61,7 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
     --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"abc123"}' >/dev/null 2>&1
 
 PAYLOAD='{"hook_event_name":"SubagentStop","agent_type":"implementer","last_assistant_message":"Implemented the feature but it still needs more tests."}'
-TEST_RESPONSE='{"verdict":"TRY_AGAIN","summary":"Add coverage before reviewer handoff.","detail":"The main success path is implemented, but the regression test for the dispatch retry boundary is still missing.","next_steps":["Add the missing regression test."],"progress":["Provider ready.","Inspecting changed files."]}'
+TEST_RESPONSE='{"verdict":"TRY_AGAIN","summary":"Add coverage before reviewer handoff.","detail":"The main success path is implemented, but the regression test for the dispatch retry boundary is still missing.","findings":["Dispatch retry boundary lacks regression coverage."],"next_steps":["Add the missing regression test."],"progress":["Provider ready.","Inspecting changed files."]}'
 
 OUTPUT=$(printf '%s' "$PAYLOAD" \
     | CLAUDE_PROJECT_DIR="$WORKTREE" \
@@ -94,6 +94,11 @@ else
     else
         fail "hook output shows actionable next steps (got: $CONTEXT)"
     fi
+    if [[ "$CONTEXT" == *"Implementer critic findings:"* && "$CONTEXT" == *"Dispatch retry boundary lacks regression coverage."* ]]; then
+        pass "hook output shows critic findings"
+    else
+        fail "hook output shows critic findings (got: $CONTEXT)"
+    fi
     if [[ "$CONTEXT" != *"Implementer critic artifact:"* ]]; then
         pass "hook output keeps critic details in state.db instead of artifact path"
     else
@@ -106,6 +111,8 @@ LATEST=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
 VERDICT=$(printf '%s' "$LATEST" | jq -r '.verdict // empty')
 ARTIFACT_PATH=$(printf '%s' "$LATEST" | jq -r '.metadata.artifact_path // empty')
 ARTIFACT_REF=$(printf '%s' "$LATEST" | jq -r '.metadata.artifact_ref // empty')
+TEST_OVERRIDE_PROOF=$(printf '%s' "$LATEST" | jq -r '.metadata.execution_proof.test_override // false')
+PROOF_VALID=$(printf '%s' "$LATEST" | jq -r '.resolution.execution_proof_valid // false')
 CRITIC_RUN=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
     critic-run latest --workflow-id "wf-critic-hook" 2>/dev/null)
 RUN_STATUS=$(printf '%s' "$CRITIC_RUN" | jq -r '.status // empty')
@@ -125,6 +132,11 @@ if [[ -z "$ARTIFACT_PATH" && "$ARTIFACT_REF" == state.db:critic-run:* ]]; then
     pass "critic review details stay in state.db"
 else
     fail "critic review details stay in state.db (path=$ARTIFACT_PATH ref=$ARTIFACT_REF)"
+fi
+if [[ "$TEST_OVERRIDE_PROOF" == "true" && "$PROOF_VALID" == "true" ]]; then
+    pass "test override records explicit execution proof"
+else
+    fail "test override records explicit execution proof (test_override=$TEST_OVERRIDE_PROOF proof_valid=$PROOF_VALID)"
 fi
 if [[ ! -d "$ARTIFACT_DIR" ]]; then
     pass "critic hook does not create review-artifact flatfiles"
@@ -184,6 +196,58 @@ else
     fail "Stop surface de-duplicates already surfaced critic run (got=$SURFACE_OUT_AGAIN)"
 fi
 
+GLOBAL_WORKTREE="$TMP_DIR/repo-global"
+GLOBAL_HOME="$TMP_DIR/global-home"
+GLOBAL_DB="$GLOBAL_HOME/.claude/state.db"
+mkdir -p "$GLOBAL_WORKTREE" "$GLOBAL_HOME/.claude"
+git -C "$GLOBAL_WORKTREE" init >/dev/null 2>&1
+git -C "$GLOBAL_WORKTREE" config user.name "Test User"
+git -C "$GLOBAL_WORKTREE" config user.email "test@example.com"
+printf 'print("global db split")\n' > "$GLOBAL_WORKTREE/app.py"
+git -C "$GLOBAL_WORKTREE" add app.py
+git -C "$GLOBAL_WORKTREE" commit -m "seed global db split" >/dev/null 2>&1
+printf '\nprint("critic unavailable")\n' >> "$GLOBAL_WORKTREE/app.py"
+
+CLAUDE_POLICY_DB="$GLOBAL_DB" python3 "$RUNTIME" schema ensure >/dev/null 2>&1
+LEASE_JSON_GLOBAL=$(CLAUDE_POLICY_DB="$GLOBAL_DB" python3 "$RUNTIME" \
+    lease issue-for-dispatch implementer \
+    --workflow-id "wf-global-db-split" \
+    --worktree-path "$GLOBAL_WORKTREE" 2>/dev/null)
+LEASE_ID_GLOBAL=$(printf '%s' "$LEASE_JSON_GLOBAL" | jq -r '.lease.lease_id // empty')
+CLAUDE_POLICY_DB="$GLOBAL_DB" python3 "$RUNTIME" \
+    completion submit \
+    --lease-id "$LEASE_ID_GLOBAL" \
+    --workflow-id "wf-global-db-split" \
+    --role implementer \
+    --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"global123"}' >/dev/null 2>&1
+
+PAYLOAD_GLOBAL=$(jq -n \
+    --arg cwd "$GLOBAL_WORKTREE" \
+    '{hook_event_name:"SubagentStop", agent_type:"implementer", cwd:$cwd, last_assistant_message:"Implemented.\nIMPL_STATUS: complete\nIMPL_HEAD_SHA: global123"}')
+GLOBAL_OUTPUT=$(printf '%s' "$PAYLOAD_GLOBAL" \
+    | HOME="$GLOBAL_HOME" \
+      CLAUDE_PROJECT_DIR="$STALE_PARENT" \
+      CLAUDEX_REVIEW_ARTIFACT_DIR="$ARTIFACT_DIR" \
+      CLAUDEX_REVIEW_PROVIDER="reviewer-subagent" \
+      "$HOOK" 2>/dev/null || true)
+GLOBAL_CONTEXT=$(printf '%s' "$GLOBAL_OUTPUT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+GLOBAL_LATEST=$(CLAUDE_POLICY_DB="$GLOBAL_DB" python3 "$RUNTIME" \
+    critic-review latest --workflow-id "wf-global-db-split" 2>/dev/null)
+GLOBAL_VERDICT=$(printf '%s' "$GLOBAL_LATEST" | jq -r '.verdict // empty')
+GLOBAL_PROJECT_LATEST=$(CLAUDE_PROJECT_DIR="$GLOBAL_WORKTREE" python3 "$RUNTIME" \
+    critic-review latest --workflow-id "wf-global-db-split" 2>/dev/null || echo '{}')
+GLOBAL_PROJECT_FOUND=$(printf '%s' "$GLOBAL_PROJECT_LATEST" | jq -r '.found // false' 2>/dev/null || echo "false")
+GLOBAL_DISPATCH=$(printf '{"agent_type":"implementer","project_root":"%s"}' "$GLOBAL_WORKTREE" \
+    | CLAUDE_POLICY_DB="$GLOBAL_DB" python3 "$RUNTIME" dispatch process-stop 2>/dev/null || echo '{}')
+GLOBAL_DISPATCH_CRITIC_FOUND=$(printf '%s' "$GLOBAL_DISPATCH" | jq -r '.critic_found // false')
+GLOBAL_DISPATCH_AUTO=$(printf '%s' "$GLOBAL_DISPATCH" | jq -r '.auto_dispatch // false')
+GLOBAL_DISPATCH_ERROR=$(printf '%s' "$GLOBAL_DISPATCH" | jq -r '.error // empty')
+if [[ "$GLOBAL_CONTEXT" == *"verdict=CRITIC_UNAVAILABLE"* && "$GLOBAL_VERDICT" == "CRITIC_UNAVAILABLE" && "$GLOBAL_PROJECT_FOUND" == "false" && "$GLOBAL_DISPATCH_CRITIC_FOUND" == "true" && "$GLOBAL_DISPATCH_AUTO" == "false" && "$GLOBAL_DISPATCH_ERROR" == PROCESS\ ERROR:\ implementer\ critic\ did\ not\ run* ]]; then
+    pass "critic hook writes to active control-plane DB when project DB has no lease"
+else
+    fail "critic hook writes to active control-plane DB (context=$GLOBAL_CONTEXT verdict=$GLOBAL_VERDICT project_found=$GLOBAL_PROJECT_FOUND dispatch=$GLOBAL_DISPATCH)"
+fi
+
 DISPATCH=$(printf '{"agent_type":"implementer","project_root":"%s"}' "$WORKTREE" \
     | CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" dispatch process-stop 2>/dev/null || echo '{}')
 NEXT_ROLE=$(printf '%s' "$DISPATCH" | jq -r '.next_role // empty')
@@ -195,7 +259,7 @@ if [[ "$NEXT_ROLE" == "implementer" && "$CRITIC_VERDICT" == "TRY_AGAIN" && "$AUT
 else
     fail "dispatch consumes persisted TRY_AGAIN critic verdict (next_role=$NEXT_ROLE critic_verdict=$CRITIC_VERDICT auto_dispatch=$AUTO)"
 fi
-if [[ "$SUGGESTION" == *"CRITIC_NEXT_STEPS"* && "$SUGGESTION" == *"Add the missing regression test."* && "$SUGGESTION" == *"CRITIC_ACTION: Re-dispatch implementer"* ]]; then
+if [[ "$SUGGESTION" == *"CRITIC_FINDINGS"* && "$SUGGESTION" == *"Dispatch retry boundary lacks regression coverage."* && "$SUGGESTION" == *"CRITIC_NEXT_STEPS"* && "$SUGGESTION" == *"Add the missing regression test."* && "$SUGGESTION" == *"USER_VISIBLE_CRITIC_DIGEST"* && "$SUGGESTION" == *"CRITIC_ACTION: Re-dispatch implementer"* ]]; then
     pass "dispatch suggestion carries critic feedback to implementer"
 else
     fail "dispatch suggestion carries critic feedback to implementer (got: $SUGGESTION)"
@@ -296,6 +360,16 @@ if [[ "$GEMINI_CONTEXT" == *"provider=gemini"* && "$GEMINI_CONTEXT" == *"verdict
 else
     fail "Gemini provider can replace Codex for implementer critic (got: $GEMINI_CONTEXT)"
 fi
+GEMINI_LATEST=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
+    critic-review latest --workflow-id "wf-critic-gemini" 2>/dev/null)
+GEMINI_PROOF_PROVIDER=$(printf '%s' "$GEMINI_LATEST" | jq -r '.metadata.execution_proof.provider // empty')
+GEMINI_PROOF_EXIT=$(printf '%s' "$GEMINI_LATEST" | jq -r '.metadata.execution_proof.exit_code // empty')
+GEMINI_PROOF_VALID=$(printf '%s' "$GEMINI_LATEST" | jq -r '.resolution.execution_proof_valid // false')
+if [[ "$GEMINI_PROOF_PROVIDER" == "gemini" && "$GEMINI_PROOF_EXIT" == "0" && "$GEMINI_PROOF_VALID" == "true" ]]; then
+    pass "Gemini success persists valid execution proof"
+else
+    fail "Gemini success persists valid execution proof (provider=$GEMINI_PROOF_PROVIDER exit=$GEMINI_PROOF_EXIT proof_valid=$GEMINI_PROOF_VALID)"
+fi
 
 LEASE_JSON_4=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
     lease issue-for-dispatch implementer \
@@ -317,19 +391,29 @@ FALLBACK_OUTPUT=$(printf '%s' "$PAYLOAD" \
       CLAUDEX_REVIEW_PROVIDER="reviewer-subagent" \
       "$HOOK" 2>/dev/null || true)
 FALLBACK_CONTEXT=$(printf '%s' "$FALLBACK_OUTPUT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
-if [[ "$FALLBACK_CONTEXT" == *"provider=reviewer-subagent"* && "$FALLBACK_CONTEXT" == *"verdict=CRITIC_UNAVAILABLE"* && "$FALLBACK_CONTEXT" == *"dispatch reviewer subagent fallback"* ]]; then
-    pass "reviewer subagent fallback is explicit when external critic is unavailable"
+if [[ "$FALLBACK_CONTEXT" == *"provider=external-critic"* && "$FALLBACK_CONTEXT" == *"verdict=CRITIC_UNAVAILABLE"* && "$FALLBACK_CONTEXT" == *"fail closed"* ]]; then
+    pass "unavailable external critic fails closed instead of reviewer fallback"
 else
-    fail "reviewer subagent fallback is explicit (got: $FALLBACK_CONTEXT)"
+    fail "unavailable external critic fails closed (got: $FALLBACK_CONTEXT)"
 fi
 FALLBACK_RUN=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" \
     critic-run latest --workflow-id "wf-critic-fallback" 2>/dev/null)
 FALLBACK_RUN_STATUS=$(printf '%s' "$FALLBACK_RUN" | jq -r '.status // empty')
 FALLBACK_RUN_VERDICT=$(printf '%s' "$FALLBACK_RUN" | jq -r '.verdict // empty')
 if [[ "$FALLBACK_RUN_STATUS" == "fallback_required" && "$FALLBACK_RUN_VERDICT" == "CRITIC_UNAVAILABLE" ]]; then
-    pass "critic run persists unavailable fallback for statusline"
+    pass "critic run persists unavailable failure for statusline"
 else
-    fail "critic run persists unavailable fallback (status=$FALLBACK_RUN_STATUS verdict=$FALLBACK_RUN_VERDICT)"
+    fail "critic run persists unavailable failure (status=$FALLBACK_RUN_STATUS verdict=$FALLBACK_RUN_VERDICT)"
+fi
+DISPATCH_FALLBACK=$(printf '{"agent_type":"implementer","project_root":"%s"}' "$WORKTREE" \
+    | CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME" dispatch process-stop 2>/dev/null || echo '{}')
+FALLBACK_NEXT_ROLE=$(printf '%s' "$DISPATCH_FALLBACK" | jq -r '.next_role // empty')
+FALLBACK_AUTO=$(printf '%s' "$DISPATCH_FALLBACK" | jq -r '.auto_dispatch // false')
+FALLBACK_ERROR=$(printf '%s' "$DISPATCH_FALLBACK" | jq -r '.error // empty')
+if [[ -z "$FALLBACK_NEXT_ROLE" && "$FALLBACK_AUTO" == "false" && "$FALLBACK_ERROR" == PROCESS\ ERROR:\ implementer\ critic\ did\ not\ run* ]]; then
+    pass "dispatch blocks unavailable critic instead of routing reviewer"
+else
+    fail "dispatch blocks unavailable critic (next_role=$FALLBACK_NEXT_ROLE auto=$FALLBACK_AUTO error=$FALLBACK_ERROR)"
 fi
 
 echo ""

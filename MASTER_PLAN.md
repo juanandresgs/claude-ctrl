@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-05-03 (Codex critic telemetry and Guardian Admission lanes)
+Last updated: 2026-05-06 (Codex critic visibility digest)
 
 ## Identity
 
@@ -67,6 +67,11 @@ through deterministic dispatch, critique, review, and landing gates.
   first-class visibility lane around `critic_reviews`: final verdicts remain
   routing authority, while lifecycle progress, fallback state, traces, and
   metrics feed the statusline, conversation digest, and self-improvement evals.
+- `2026-05-06 -- DEC-CRITIC-VISIBILITY-002` Carry critic findings and
+  user-visible digests through the final dispatch output, and render the latest
+  active or current implementer-anchored critic progress/summary in the
+  statusline so Codex CLI critique is not hidden behind prompt-discipline-only
+  narration or falsely revived from stale global rows.
 - `2026-05-03 -- DEC-GUARDIAN-ADMISSION-001` Add Guardian Admission as the
   non-canonical Guardian mode and pre-workflow custody authority for the fork
   between project onboarding/provisioning and task-local scratchlane work.
@@ -101,10 +106,11 @@ tracked release tree.
 **Goal:** Make Codex critic work visible and measurable without turning traces
 into enforcement authority.
 
-**Scope:** `runtime/core/critic_runs.py`, `critic_runs` schema, `cc-policy
-critic-run`, implementer critic hook telemetry, statusline projection, trace
-manifest entries, and success metrics for loopback, fallback, duration, and
-escalation behavior.
+**Scope:** `runtime/core/critic_runs.py`, `runtime/core/critic_reviews.py`,
+`runtime/core/dispatch_engine.py`, `critic_runs` schema, `cc-policy critic-run`,
+implementer critic hook telemetry, statusline projection, trace manifest
+entries, and success metrics for loopback, fallback, duration, and escalation
+behavior.
 
 **Exit:** Critic runs persist start/progress/final/fallback lifecycle state,
 statusline shows compact live status, the Claude thread receives a concise

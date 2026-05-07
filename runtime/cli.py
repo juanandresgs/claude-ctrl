@@ -2187,6 +2187,12 @@ def _handle_dispatch(args) -> int:
                     "critic_provider": result.get("critic_provider", ""),
                     "critic_summary": result.get("critic_summary", ""),
                     "critic_detail": result.get("critic_detail", ""),
+                    "critic_findings": result.get("critic_findings", []),
+                    "critic_execution_proof": result.get("critic_execution_proof", {}),
+                    "critic_execution_proof_valid": result.get(
+                        "critic_execution_proof_valid", False
+                    ),
+                    "critic_disabled": result.get("critic_disabled", False),
                     "critic_try_again_streak": result.get("critic_try_again_streak", 0),
                     "critic_retry_limit": result.get("critic_retry_limit", 0),
                     "critic_repeated_fingerprint_streak": result.get(
@@ -3428,10 +3434,18 @@ def _handle_lease(args) -> int:
             return _ok({"revoked": revoked})
 
         elif args.action == "expire-stale":
-            count = leases_mod.expire_stale(conn)
-            return _ok({"expired_count": count})
+            expired_count = leases_mod.expire_stale(conn)
+            revoked_missing_worktree_count = leases_mod.revoke_missing_worktrees(conn)
+            return _ok(
+                {
+                    "expired_count": expired_count,
+                    "revoked_missing_worktree_count": revoked_missing_worktree_count,
+                    "total_count": expired_count + revoked_missing_worktree_count,
+                }
+            )
 
         elif args.action == "summary":
+            leases_mod.revoke_missing_worktrees(conn)
             result = leases_mod.summary(
                 conn,
                 worktree_path=getattr(args, "worktree_path", None),
@@ -3550,6 +3564,12 @@ def _handle_critic_review(args) -> int:
             )
             if record is None:
                 return _ok({"found": False})
+            resolution = critic_reviews_mod.assess_latest(
+                conn,
+                workflow_id=record.get("workflow_id", ""),
+                role=record.get("role", critic_reviews_mod.IMPLEMENTER_ROLE),
+            )
+            record["resolution"] = resolution.as_dict()
             return _ok(record)
 
         elif args.action == "list":
@@ -3944,6 +3964,7 @@ def _handle_evaluate(args) -> int:
         if effects.get("expire_stale_leases"):
             try:
                 leases_mod.expire_stale(conn)
+                leases_mod.revoke_missing_worktrees(conn)
             except Exception:
                 pass  # Non-fatal: stale cleanup is best-effort
 
@@ -6689,7 +6710,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     crun_fb = crun_sub.add_parser(
         "fallback-complete",
-        help="Mark the latest unavailable critic run as handled by reviewer fallback",
+        help="Mark the latest unavailable critic run as handled",
     )
     crun_fb.add_argument("--workflow-id", dest="workflow_id", required=True)
     crun_fb.add_argument("--fallback", default="reviewer")

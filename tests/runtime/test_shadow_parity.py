@@ -43,6 +43,7 @@ from runtime.core import (
     completions,
     decision_work_registry as dwr,
     dispatch_shadow,
+    enforcement_config,
     events,
     leases,
     shadow_parity,
@@ -442,6 +443,13 @@ class TestEndToEndReasonSequence:
         assert result_planner["error"] is None
 
         # 2. Implementer stop with a valid completion contract.
+        enforcement_config.set_(
+            conn,
+            "critic_enabled_implementer_stop",
+            "false",
+            scope=f"project={project_root}",
+            actor_role="planner",
+        )
         lease_impl = self._issue_lease_at(conn, "implementer", project_root, wf)
         self._submit_impl(conn, lease_impl["lease_id"], wf)
         result_impl = process_agent_stop(conn, "implementer", project_root)
@@ -975,6 +983,13 @@ class TestShadowParityInvariantCli:
             process_agent_stop(conn_local, "planner", project)
 
             # Implementer stop
+            enforcement_config.set_(
+                conn_local,
+                "critic_enabled_implementer_stop",
+                "false",
+                scope=f"project={project}",
+                actor_role="planner",
+            )
             lease_impl = leases.issue(
                 conn_local, role="implementer", workflow_id=wf, worktree_path=project,
             )

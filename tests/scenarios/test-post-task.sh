@@ -94,6 +94,27 @@ conn.close()
 PYEOF
 }
 
+disable_implementer_critic() {
+    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$TMP_DIR" <<'PYEOF'
+import sqlite3, sys
+from runtime.core import enforcement_config
+from runtime.schemas import ensure_schema
+
+db_path, project_root = sys.argv[1], sys.argv[2]
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+ensure_schema(conn)
+enforcement_config.set_(
+    conn,
+    "critic_enabled_implementer_stop",
+    "false",
+    scope=f"project={project_root}",
+    actor_role="planner",
+)
+conn.close()
+PYEOF
+}
+
 # -----------------------------------------------------------------------
 # Test 1: planner completion → suggests guardian
 # -----------------------------------------------------------------------
@@ -113,6 +134,7 @@ fi
 # -----------------------------------------------------------------------
 # Test 2: implementer completion → suggests reviewer
 # -----------------------------------------------------------------------
+disable_implementer_critic
 output=$(run_hook "implementer") || true
 if ! echo "$output" | jq '.' >/dev/null 2>&1; then
     echo "  FAIL: implementer — output is not valid JSON (got: $output)"

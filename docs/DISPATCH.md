@@ -202,11 +202,13 @@ non-straightforward push) gated by `bash_approval_gate` policy. A normal local
 Regular `Stop` is deterministic: `surface.sh`, `session-summary.sh`, and
 `stop-advisor.sh`. The advisor only blocks obvious "do the routine thing" asks
 so Claude acts, files the item, or dispatches the owning authority instead of
-asking the user. The deterministic SubagentStop Codex braid is
-`hooks/implementer-critic.sh`, which persists `critic_reviews` before
-`post-task.sh` routes the workflow. Broad Codex/Gemini review is explicit or
-critic-lane work; it is not a default regular-Stop blocker and does not affect
-workflow `auto_dispatch` or `next_role`
+asking the user. The deterministic SubagentStop Codex/Gemini braid is
+`hooks/implementer-critic.sh`, which persists `critic_reviews` with execution
+proof before `post-task.sh` routes the workflow. If that critic is enabled and
+does not run, dispatch fails closed; `CRITIC_UNAVAILABLE` is audit state, not a
+reviewer fallback. Broad Codex/Gemini review is explicit or critic-lane work; it
+is not a default regular-Stop blocker and does not affect workflow
+`auto_dispatch` or `next_role`
 (DEC-PHASE5-STOP-REVIEW-SEPARATION-001, DEC-STOP-ADVISOR-001).
 
 ### Remaining Harness Boundary

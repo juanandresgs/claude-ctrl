@@ -40,9 +40,8 @@ from pathlib import Path
 
 import pytest
 
-from runtime.core import contracts
+from runtime.core import contracts, goal_contract_codec
 from runtime.core import decision_work_registry as dwr
-from runtime.core import goal_contract_codec
 from runtime.core import workflows as workflows_mod
 from runtime.core.dispatch_hook import record_agent_dispatch
 from runtime.core.pending_agent_requests import write_pending_request
@@ -804,6 +803,14 @@ class TestReviewerAgentPromptExists:
         reviewer_md = _REPO_ROOT / "agents" / "reviewer.md"
         content = reviewer_md.read_text(encoding="utf-8")
         assert "Do NOT modify source code" in content
+
+    def test_reviewer_agent_prompt_requires_decision_log_lookup(self):
+        reviewer_md = _REPO_ROOT / "agents" / "reviewer.md"
+        content = reviewer_md.read_text(encoding="utf-8")
+        assert "lookup-decision" in content
+        assert "Decision Log" in content
+        assert "found=false" in content
+        assert "in_decision_log=false" in content
 
 
 class TestAgentPromptCompletionContracts:

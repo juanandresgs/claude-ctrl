@@ -38,7 +38,7 @@ _local_cc_policy() {
 # Extract agent response text before lifecycle handling. Guardian admission is a
 # non-canonical mode, so it must not deactivate canonical Guardian markers or
 # submit Guardian completion records.
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
+RESPONSE_TEXT=$(agent_response_text "$AGENT_RESPONSE")
 if [[ "$AGENT_TYPE" == "guardian" ]] && printf '%s' "$RESPONSE_TEXT" | grep -qE '^ADMISSION_VERDICT:[[:space:]]*'; then
     printf '%s' "$AGENT_RESPONSE" | "$_HOOK_DIR/lib/guardian-admission-stop.sh"
     exit 0
