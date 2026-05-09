@@ -213,6 +213,27 @@ CREATE TABLE IF NOT EXISTS bugs (
 )
 """
 
+ISSUE_CAPTURES_DDL = """
+CREATE TABLE IF NOT EXISTS issue_captures (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint      TEXT    NOT NULL UNIQUE,
+    item_kind        TEXT    NOT NULL,
+    title            TEXT    NOT NULL,
+    body             TEXT,
+    scope            TEXT    NOT NULL DEFAULT 'auto',
+    repo             TEXT,
+    source_component TEXT,
+    file_path        TEXT,
+    evidence         TEXT,
+    disposition      TEXT    NOT NULL DEFAULT 'pending',
+    issue_number     INTEGER,
+    issue_url        TEXT,
+    first_seen_at    INTEGER NOT NULL,
+    last_seen_at     INTEGER NOT NULL,
+    encounter_count  INTEGER NOT NULL DEFAULT 1
+)
+"""
+
 APPROVALS_DDL = """
 CREATE TABLE IF NOT EXISTS approvals (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1077,6 +1098,7 @@ ALL_DDL: list[str] = [
     SCRATCHLANE_REQUESTS_DDL,
     EVALUATION_STATE_DDL,
     BUGS_DDL,
+    ISSUE_CAPTURES_DDL,
     DISPATCH_LEASES_DDL,
     COMPLETION_RECORDS_DDL,
     DISPATCH_NEXT_ACTIONS_DDL,

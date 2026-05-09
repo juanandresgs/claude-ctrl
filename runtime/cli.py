@@ -3760,6 +3760,96 @@ def _handle_bug(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Issue capture handler
+# ---------------------------------------------------------------------------
+
+
+def _handle_issue(args) -> int:
+    """Handle all ``cc-policy issue`` subcommands."""
+    import json as _json
+
+    import runtime.core.issue_capture as issue_capture_mod
+
+    conn = None
+    try:
+        if args.action == "qualify":
+            payload = _payload_from_args(args, _json)
+            disposition = issue_capture_mod.qualify(
+                item_kind=payload.get("item_kind", payload.get("kind", "task")),
+                title=payload.get("title", ""),
+                evidence=payload.get("evidence", ""),
+                fixed_now=bool(payload.get("fixed_now", False)),
+            )
+            return _ok({"disposition": disposition})
+
+        if args.action == "file":
+            payload = _payload_from_args(args, _json)
+            project_root = payload.get("project_root", getattr(args, "project_root", "") or "")
+            conn = _get_conn(project_root=project_root or None)
+            result = issue_capture_mod.file_issue(
+                conn,
+                item_kind=payload.get("item_kind", payload.get("kind", "task")),
+                title=payload.get("title", ""),
+                body=payload.get("body", ""),
+                scope=payload.get("scope", "auto"),
+                repo=payload.get("repo", ""),
+                source_component=payload.get("source_component", ""),
+                file_path=payload.get("file_path", ""),
+                evidence=payload.get("evidence", ""),
+                project_root=project_root,
+                fixed_now=bool(payload.get("fixed_now", False)),
+            )
+            return _ok(result)
+
+        if args.action == "list":
+            conn = _get_conn(project_root=getattr(args, "project_root", None) or None)
+            rows = issue_capture_mod.list_issues(
+                conn,
+                disposition=getattr(args, "disposition", None) or None,
+                item_kind=getattr(args, "item_kind", None) or None,
+                limit=int(getattr(args, "limit", 50) or 50),
+            )
+            return _ok({"items": rows, "count": len(rows)})
+
+        if args.action == "retry-failed":
+            conn = _get_conn(project_root=getattr(args, "project_root", None) or None)
+            results = issue_capture_mod.retry_failed(conn)
+            return _ok({"items": results, "count": len(results)})
+
+    except Exception as e:
+        return _err(f"issue command error: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
+    return _err(f"unknown issue action: {args.action}")
+
+
+def _payload_from_args(args, json_module) -> dict:
+    payload: dict = {}
+    json_payload = getattr(args, "json_payload", None)
+    if json_payload:
+        try:
+            payload.update(json_module.loads(json_payload))
+        except json_module.JSONDecodeError as e:
+            raise ValueError(f"invalid JSON payload: {e}") from e
+    for attr in (
+        "item_kind",
+        "title",
+        "body",
+        "scope",
+        "repo",
+        "source_component",
+        "file_path",
+        "evidence",
+        "project_root",
+    ):
+        value = getattr(args, attr, None)
+        if value not in (None, ""):
+            payload[attr] = value
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Sidecar handlers
 # ---------------------------------------------------------------------------
 
@@ -6514,6 +6604,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug_sub.add_parser("retry-failed", help="Retry all failed_to_file bugs")
 
+    # issue capture
+    issue_p = subparsers.add_parser(
+        "issue", help="Canonical issue/backlog capture pipeline"
+    )
+    issue_sub = issue_p.add_subparsers(dest="action", required=True)
+
+    issue_qualify = issue_sub.add_parser("qualify", help="Dry-run qualification check")
+    issue_qualify.add_argument("json_payload", nargs="?", metavar="JSON")
+    issue_qualify.add_argument("--kind", dest="item_kind", default=None)
+    issue_qualify.add_argument("--title", default=None)
+    issue_qualify.add_argument("--evidence", default=None)
+
+    issue_file = issue_sub.add_parser("file", help="Capture and file an issue")
+    issue_file.add_argument("json_payload", nargs="?", metavar="JSON")
+    issue_file.add_argument("--kind", dest="item_kind", default=None)
+    issue_file.add_argument("--title", default=None)
+    issue_file.add_argument("--body", default=None)
+    issue_file.add_argument(
+        "--scope", default=None, help="auto | project | config | global"
+    )
+    issue_file.add_argument("--repo", default=None, help="Explicit owner/repo target")
+    issue_file.add_argument("--source-component", dest="source_component", default=None)
+    issue_file.add_argument("--file-path", dest="file_path", default=None)
+    issue_file.add_argument("--evidence", default=None)
+    issue_file.add_argument("--project-root", dest="project_root", default=None)
+
+    issue_list = issue_sub.add_parser("list", help="List captured issues")
+    issue_list.add_argument("--disposition", default=None)
+    issue_list.add_argument("--kind", dest="item_kind", default=None)
+    issue_list.add_argument("--limit", type=int, default=50)
+    issue_list.add_argument("--project-root", dest="project_root", default=None)
+
+    issue_retry = issue_sub.add_parser("retry-failed", help="Retry failed captures")
+    issue_retry.add_argument("--project-root", dest="project_root", default=None)
+
     # approval
     ap_p = subparsers.add_parser(
         "approval", help="One-shot approval tokens for guarded git ops"
@@ -7426,6 +7551,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_sidecar(args)
     if args.domain == "bug":
         return _handle_bug(args)
+    if args.domain == "issue":
+        return _handle_issue(args)
     if args.domain == "approval":
         return _handle_approval(args)
     if args.domain == "lease":

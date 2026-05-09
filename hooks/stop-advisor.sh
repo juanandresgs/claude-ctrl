@@ -58,22 +58,35 @@ has_user_boundary() {
     printf '%s' "$NORMALIZED" | grep -Eq 'force[- ]?push|force push|history rewrite|destructive|reset --hard|git reset|rebase|non[- ]?ff|non fast-forward|ambiguous publish|publish target|irreconcilable|product signoff|explicit user|user approval|user adjudicat|requires approval|needs approval|ask the user'
 }
 
+has_followup_surface() {
+    printf '%s' "$NORMALIZED" | grep -Eq 'worth filing|follow[- ]?up item|follow[- ]?ups? (surfaced|identified|found|remain|to file)|backlog candidate|non[- ]?blocking (item|concern|issue)s?|surfaced .* (item|concern|issue)s?|file .* (later|as follow[- ]?ups?)'
+}
+
+has_capture_evidence() {
+    printf '%s' "$MESSAGE" | grep -Eq 'https://github\.com/[^[:space:]]+/issues/[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|\[fingerprint:|fingerprint[" :]+[a-f0-9]{8,}|issue_url'
+}
+
 emit_block() {
     local reason="$1"
     jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
-
-if ! has_question_shape; then
-    exit 0
-fi
 
 # Real decision boundaries remain user-visible. Do not suppress those asks.
 if has_user_boundary; then
     exit 0
 fi
 
-if asks_about '(/backlog|backlog|todo|follow[- ]?up|followup|file .*issue|open .*issue|track .*issue|record .*issue|file those|file all)'; then
+if has_question_shape && asks_about '(/backlog|backlog|todo|follow[- ]?up|followup|file .*issue|open .*issue|track .*issue|record .*issue|file those|file all)'; then
     emit_block "Stop advisor: do not ask the user to approve obvious bookkeeping. File or track the backlog/follow-up items now, then stop."
+    exit 0
+fi
+
+if has_followup_surface && ! has_capture_evidence; then
+    emit_block "Stop advisor: follow-up/backlog items were surfaced without captured issue evidence. File them through /backlog or cc-policy issue file, include the issue URL(s) or fingerprint(s), then stop."
+    exit 0
+fi
+
+if ! has_question_shape; then
     exit 0
 fi
 

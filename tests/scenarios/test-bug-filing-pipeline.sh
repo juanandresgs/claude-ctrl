@@ -44,6 +44,7 @@ echo "https://github.com/test-org/test-repo/issues/99"
 exit 0
 STUB
 chmod +x "$STUB_TODO"
+export CLAUDE_TODO_SH="$STUB_TODO"
 
 # Failing stub todo.sh
 FAIL_TODO="$TMP_DIR/fail-todo.sh"

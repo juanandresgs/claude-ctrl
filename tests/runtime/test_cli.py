@@ -77,6 +77,41 @@ def test_init_alias(db):
     assert out["status"] == "ok"
 
 
+def test_issue_file_cli_routes_through_capture_authority(db, tmp_path):
+    todo_sh = tmp_path / "todo.sh"
+    todo_sh.write_text("#!/usr/bin/env bash\necho 'https://github.com/org/repo/issues/55'\n")
+    todo_sh.chmod(0o755)
+
+    code, out = run(
+        [
+            "issue",
+            "file",
+            "--kind",
+            "follow_up",
+            "--scope",
+            "project",
+            "--title",
+            "cli follow-up",
+            "--body",
+            "body",
+            "--project-root",
+            str(tmp_path),
+        ],
+        db,
+        extra_env={"CLAUDE_TODO_SH": str(todo_sh)},
+    )
+
+    assert code == 0, out
+    assert out["disposition"] == "filed"
+    assert out["scope"] == "project"
+    assert out["issue_url"] == "https://github.com/org/repo/issues/55"
+
+    code, listed = run(["issue", "list"], db)
+    assert code == 0, listed
+    assert listed["count"] == 1
+    assert listed["items"][0]["title"] == "cli follow-up"
+
+
 # ---------------------------------------------------------------------------
 # Critic review
 # ---------------------------------------------------------------------------

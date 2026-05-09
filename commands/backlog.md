@@ -1,12 +1,31 @@
 ---
 name: backlog
-description: Manage your backlog — list, create, close, and triage todos (GitHub Issues). Usage: /backlog [text | done <#> | stale | review | --global | --project]
-argument-hint: "[todo text | done <#> | stale | review | --global | --project]"
+description: Manage your backlog — list, create, close, and triage todos (GitHub Issues). Usage: /backlog [text | done <#> | stale | review | --global | --project | --config | --repo owner/repo]
+argument-hint: "[todo text | done <#> | stale | review | --global | --project | --config | --repo owner/repo]"
 ---
 
 # /backlog — Unified Backlog Management
 
 Create, list, close, and triage todos (GitHub Issues labeled `claude-todo`).
+
+## Capture authority
+
+Creation must go through the runtime issue-capture authority, not direct
+`todo.sh add`. Use:
+
+```bash
+cc-policy issue file --kind task --scope auto --title "$TITLE" --body "$BODY"
+```
+
+Scope flags map as follows:
+- `--project` → `--scope project`
+- `--global` → `--scope global`
+- `--config` → `--scope config`
+- `--repo owner/repo` → `--repo owner/repo`
+
+The runtime writes a SQLite capture row first, deduplicates by fingerprint,
+routes config/control-plane items to the config repo, then invokes `todo.sh` as
+the GitHub adapter. Confirm the issue URL or duplicate fingerprint to the user.
 
 ## JSON output pattern
 
@@ -59,8 +78,14 @@ Read `$SCRATCHPAD/backlog.json`, then format into the markdown table described i
 ### Otherwise → Create a new todo
 Treat the entire `$ARGUMENTS` as todo text (plus any flags like `--global`, `--priority=high|medium|low`):
 ```bash
-~/.claude/scripts/todo.sh add $ARGUMENTS
+cc-policy issue file --kind task --scope auto --title "$TITLE" --body "Captured via Claude Code /backlog"
 ```
+
+If the user supplies `--global`, `--project`, `--config`, or `--repo owner/repo`,
+translate that flag to the capture authority scope before invoking `cc-policy`.
+If the text is a discovered reviewer/guardian follow-up, prefer
+`--kind follow_up`; if it is a defect, prefer `--kind bug` and include
+`--evidence`.
 
 After creating the issue:
 1. **Cross-reference check:** Scan existing issues (both project and global — use session-init context or `todo.sh list --all`) for semantically related topics. If a related issue exists in either scope, add a comment on **both** issues linking them (e.g., "**Related:** owner/repo#N — <brief reason>"). This catches duplicates and ensures agents see connections when they pick up work.
@@ -70,6 +95,8 @@ After creating the issue:
 
 - **Default (no flag)**: Saves to / lists from current project's GitHub repo issues
 - **`--global`**: Uses the global backlog repo (`<your-github-user>/cc-todos`, auto-detected)
+- **`--config`**: Uses the Claude control-plane/config repo
+- **`--repo owner/repo`**: Uses an explicit GitHub repository
 - If not in a git repo, automatically falls back to global
 
 ## Display Format

@@ -418,6 +418,33 @@ rt_bug_file() {
         || echo '{"disposition":"failed_to_file","error":"runtime unavailable","fingerprint":"","issue_url":null,"encounter_count":0}'
 }
 
+# rt_issue_file <kind> <title> [body] [scope] [repo] [source_component] [file_path] [evidence] [project_root]
+#
+# Routes backlog/follow-up capture through the canonical issue pipeline:
+#   cc-policy issue file '{"item_kind":...}'
+#
+# This is the general capture path used by `/backlog`; rt_bug_file remains as
+# the compatibility wrapper for bug-specific hook callers.
+rt_issue_file() {
+    _rt_ensure_schema
+    local item_kind="$1"
+    local title="$2"
+    local body="${3:-}"
+    local scope="${4:-auto}"
+    local repo="${5:-}"
+    local source_component="${6:-}"
+    local file_path="${7:-}"
+    local evidence="${8:-}"
+    local project_root="${9:-}"
+
+    local json
+    json=$(printf '{"item_kind":"%s","title":"%s","body":"%s","scope":"%s","repo":"%s","source_component":"%s","file_path":"%s","evidence":"%s","project_root":"%s","fixed_now":false}' \
+        "$item_kind" "$title" "$body" "$scope" "$repo" "$source_component" "$file_path" "$evidence" "$project_root")
+
+    cc_policy issue file "$json" 2>/dev/null \
+        || echo '{"disposition":"failed_to_file","error":"runtime unavailable","fingerprint":"","issue_url":null,"encounter_count":0}'
+}
+
 # ---------------------------------------------------------------------------
 # Approval token wrappers (DEC-APPROVAL-001)
 # ---------------------------------------------------------------------------

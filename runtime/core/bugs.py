@@ -162,7 +162,7 @@ def qualify(
 
 def _resolve_todo_sh(todo_sh_path: Optional[str]) -> Optional[str]:
     """Return a usable todo.sh path, or None if unavailable."""
-    path = todo_sh_path or _DEFAULT_TODO_SH
+    path = todo_sh_path or os.environ.get("CLAUDE_TODO_SH") or _DEFAULT_TODO_SH
     if path and os.path.isfile(path) and os.access(path, os.X_OK):
         return path
     return None

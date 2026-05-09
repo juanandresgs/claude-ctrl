@@ -64,7 +64,10 @@ run_hook "dispatch" '{"hook_event_name":"Stop","last_assistant_message":"Reviewe
 assert_block_contains "dispatch" "routine canonical dispatch"
 
 run_hook "mixed-summary-no-bookkeeping-ask" '{"hook_event_name":"Stop","last_assistant_message":"Verdict: ready. Should I tighten the token-consume atomicity now? The two minor items above are worth filing as follow-ups but do not block landing."}'
-assert_passes_empty "mixed-summary-no-bookkeeping-ask"
+assert_block_contains "mixed-summary-no-bookkeeping-ask" "without captured issue evidence"
+
+run_hook "followups-with-issue-evidence" '{"hook_event_name":"Stop","last_assistant_message":"Filed follow-up items: juanandresgs/claude-ctrl-hardFork#401 and juanandresgs/cc-todos#402."}'
+assert_passes_empty "followups-with-issue-evidence"
 
 run_hook "user-boundary" '{"hook_event_name":"Stop","last_assistant_message":"This requires a force push history rewrite. Do you want to approve it?"}'
 assert_passes_empty "user-boundary"

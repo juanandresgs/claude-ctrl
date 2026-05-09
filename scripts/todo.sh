@@ -145,6 +145,7 @@ ensure_global_repo() {
 cmd_add() {
     local title=""
     local scope="project"
+    local explicit_repo=""
     local priority=""
     local body="Captured via Claude Code /todo"
 
@@ -154,6 +155,18 @@ cmd_add() {
             --global)
                 scope="global"
                 shift ;;
+            --repo=*)
+                scope="repo"
+                explicit_repo="${1#--repo=}"
+                shift ;;
+            --repo)
+                scope="repo"
+                explicit_repo="${2:-}"
+                if [[ $# -ge 2 ]]; then
+                    shift 2
+                else
+                    shift
+                fi ;;
             --priority=*)
                 priority="${1#--priority=}"
                 shift ;;
@@ -172,7 +185,11 @@ cmd_add() {
 
     if [[ -z "$title" ]]; then
         echo "ERROR: No todo title provided." >&2
-        echo "Usage: todo.sh add \"title\" [--global] [--priority=high|medium|low]" >&2
+        echo "Usage: todo.sh add \"title\" [--global|--repo=owner/repo] [--priority=high|medium|low]" >&2
+        exit 1
+    fi
+    if [[ "$scope" == "repo" && -z "$explicit_repo" ]]; then
+        echo "ERROR: --repo requires owner/repo." >&2
         exit 1
     fi
 
@@ -180,7 +197,11 @@ cmd_add() {
     local target_repo=""
     local repo_flag=""
 
-    if [[ "$scope" == "global" ]]; then
+    if [[ "$scope" == "repo" ]]; then
+        target_repo="$explicit_repo"
+        repo_flag="--repo $explicit_repo"
+        body="$body (repo: $explicit_repo)"
+    elif [[ "$scope" == "global" ]]; then
         ensure_global_repo
         target_repo="$GLOBAL_REPO"
         repo_flag="--repo $GLOBAL_REPO"
@@ -720,7 +741,7 @@ case "$COMMAND" in
         echo "Claude Code Todo System"
         echo ""
         echo "Usage:"
-        echo "  todo.sh add \"title\" [--global] [--priority=high|medium|low] [--body=\"details\"]"
+        echo "  todo.sh add \"title\" [--global|--repo=owner/repo] [--priority=high|medium|low] [--body=\"details\"]"
         echo "  todo.sh list [--project|--global|--all] [--json]"
         echo "  todo.sh done <issue-number> [--global|--repo=owner/repo]"
         echo "  todo.sh stale [--days=14]"

@@ -98,7 +98,7 @@ print(','.join(sorted(tables)))
 " 2>/dev/null || echo "ERROR")
 # sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns.
 # Expected list updated to match current schema (WS1+WS2+WS3+WS4+WS5+W-OBS-1+Phase1+Phase2+Phase2b additions):
-#   approvals, bugs, completion_records, critic_reviews — lease/completion/review/bug tracking
+#   approvals, bugs, issue_captures, completion_records, critic_reviews — lease/completion/review/bug/backlog tracking
 #   dispatch_attempts, dispatch_leases — canonical dispatch state and lease stores
 #   evaluation_state — evaluator authority (TKT-024)
 #   workflow_bindings, workflow_scope — workflow scoping (TKT-022)
@@ -108,7 +108,7 @@ print(','.join(sorted(tables)))
 #   goal_contracts — Phase 2 goal-contract persistence (DEC-CLAUDEX-GOAL-CONTRACTS-001)
 #   pending_agent_requests — Phase 2 SubagentStart contract carrier (DEC-CLAUDEX-SA-CARRIER-001)
 #   agent_sessions, seats, supervision_threads, dispatch_attempts — Phase 2b supervision fabric (DEC-CLAUDEX-SUPERVISION-DOMAIN-001)
-EXPECTED="agent_markers,agent_sessions,approvals,bootstrap_requests,bugs,completion_records,critic_reviews,critic_runs,decisions,dispatch_attempts,dispatch_leases,dispatch_next_actions,enforcement_config,evaluation_state,events,goal_contracts,obs_metrics,obs_runs,obs_suggestions,pending_agent_requests,reviewer_findings,scratchlane_permits,scratchlane_requests,seats,session_tokens,sqlite_sequence,supervision_threads,test_state,todo_state,trace_manifest,traces,work_items,workflow_bindings,workflow_scope,worktrees"
+EXPECTED="agent_markers,agent_sessions,approvals,bash_source_baselines,bootstrap_requests,bugs,completion_records,critic_reviews,critic_runs,decisions,dispatch_attempts,dispatch_leases,dispatch_next_actions,enforcement_config,enforcement_gaps,evaluation_state,events,goal_contracts,issue_captures,lint_circuit_breakers,lint_profile_cache,obs_metrics,obs_runs,obs_suggestions,pending_agent_requests,policy_strikes,preserved_contexts,reviewer_findings,scratchlane_permits,scratchlane_requests,seats,session_activity,session_file_changes,session_tokens,sqlite_sequence,supervision_threads,test_state,todo_state,trace_manifest,traces,work_item_grants,work_items,workflow_bindings,workflow_scope,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))
