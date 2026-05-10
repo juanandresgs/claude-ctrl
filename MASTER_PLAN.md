@@ -77,6 +77,42 @@ through deterministic dispatch, critique, review, and landing gates.
   between project onboarding/provisioning and task-local scratchlane work.
   Scratchlane permits remain owned by `runtime/core/scratchlanes.py`;
   admission may apply them only through that authority.
+- `2026-05-10 -- DEC-WT-RETIRE-001` `_retire_worktree` is the sole atomic
+  cleanup authority for feature worktrees, symmetric counterpart to
+  `_provision_worktree`. Guardian calls `cc-policy worktree retire` after a
+  successful landing. No agent-side prose path, `safe_cleanup` script, or
+  manual `git worktree remove` / `git branch -d` sequence substitutes for this
+  function. The runtime function owns the full sequence atomically.
+- `2026-05-10 -- DEC-WT-RETIRE-002` Retire Guardian lease is anchored at
+  `project_root`, never the feature worktree path. The lease must outlive
+  the worktree disappearing mid-operation. The project_root anchor survives
+  the entire retire sequence and is released in `finally`, preventing
+  stranded leases.
+- `2026-05-10 -- DEC-WT-RETIRE-003` (superseded by DEC-WT-RETIRE-003a) ---
+  original planner-approved ordering placed `git branch -d` before
+  `git worktree remove`. Superseded because git refuses `branch -d` on a
+  branch that is checked out in a live worktree. See DEC-WT-RETIRE-003a.
+- `2026-05-10 -- DEC-WT-RETIRE-003a` Step ordering inverted from
+  DEC-WT-RETIRE-003: `git worktree remove` runs before `git branch -d`
+  because git refuses `branch -d` on a branch that is currently checked out in
+  any worktree. The fail-before-mutation invariant for unmerged branches is
+  preserved via an explicit `git merge-base --is-ancestor` pre-flight check
+  (step 2) that runs before either git mutation. Atomicity and rollback
+  semantics are preserved by the Guardian PROJECT_ROOT lease (DEC-WT-RETIRE-002)
+  plus the pre-flight gate that blocks both git ops when the branch is unmerged.
+  Rollback boundary under the new ordering: if `git worktree remove` (step 3)
+  fails, branch is untouched and registry is untouched - caller retries from
+  step 3. If `git branch -d` (step 4) fails after successful worktree remove,
+  the registry is NOT soft-deleted; the next retry observes
+  (worktree-gone, branch-still-exists, registry-still-active) and converges
+  from a `branch -d` retry. The lease-anchor invariant (DEC-WT-RETIRE-002)
+  is unchanged.
+- `2026-05-10 -- DEC-WT-RETIRE-004` Retire explicitly revokes leases by
+  `worktree_path` filter and does NOT call `revoke_missing_worktrees()`.
+  That janitor function is for leak recovery; using it as primary cleanup
+  would conflate intentional cleanup with accidental path loss, create a race
+  window, and make revocation dependent on filesystem state rather than
+  explicit lease IDs.
 
 ## Active Initiatives
 

@@ -2084,27 +2084,36 @@ def _retire_worktree(
     branch: str,
     force: bool = False,
 ) -> dict:
-    """Atomic worktree retire: branch -d, worktree remove, registry soft-delete, lease revocation.
+    """Atomic worktree retire: worktree remove, branch -d, registry soft-delete, lease revocation.
 
     Retire sequence (symmetric to _provision_worktree, DEC-WT-RETIRE-001):
       1. Guardian lease is acquired at PROJECT_ROOT (never at the feature path —
          DEC-WT-RETIRE-002). The lease outlives the worktree disappearing mid-op.
-      2. git branch -d <branch> (or -D if force=True). Ordered BEFORE worktree
-         remove — reversing the order reproduces the race where an unmerged-branch
-         error is raised after the working tree is already gone (DEC-WT-RETIRE-003).
-      3. git worktree remove <path>. Branch is gone before the tree is removed.
-      4. worktrees.remove(path) — soft-delete sets removed_at (DEC-RT-001).
-      5. Explicit revocation of all active leases anchored to worktree_path.
+      2. Pre-flight unmerged check: git merge-base --is-ancestor validates branch
+         is merged before any git mutation (DEC-WT-RETIRE-003a). Failure here
+         leaves zero state mutated; caller may fix cause and retry.
+      3. git worktree remove <path>. Must run BEFORE branch -d — git refuses
+         branch -d on a branch that is currently checked out in any worktree
+         (DEC-WT-RETIRE-003a supersedes DEC-WT-RETIRE-003).
+         Rollback: if this fails, branch still exists, registry unchanged; retry from here.
+      4. git branch -d <branch> (or -D if force=True). Runs AFTER worktree remove
+         so the branch is no longer checked out.
+         Rollback: if this fails after step 3, worktree is gone but branch still
+         exists and registry is unchanged; next retry observes (worktree-gone,
+         branch-still-exists, registry-still-active) and converges from branch -d.
+      5. worktrees.remove(path) — soft-delete sets removed_at (DEC-RT-001).
+         Idempotent; next retry converges.
+      6. Explicit revocation of all active leases anchored to worktree_path.
          Must NOT call revoke_missing_worktrees() — that janitor is for leak
          recovery; retire owns its cleanup explicitly (DEC-WT-RETIRE-004).
-      6. Guardian PROJECT_ROOT lease released in finally so it never strands.
+      7. Guardian PROJECT_ROOT lease released in finally so it never strands.
 
-    Rollback boundaries (DEC-GUARD-WT-008 R3 / DEC-WT-RETIRE-003):
-      - Step 2 failure: nothing mutated; caller may fix cause and retry.
-      - Step 3 failure after step 2: function raises without touching the
-        registry; next retry sees deleted-branch + still-on-disk worktree +
-        still-active registry row and proceeds from step 3.
-      - Step 4 failure: worktrees.remove is idempotent; next retry converges.
+    Rollback boundaries (DEC-GUARD-WT-008 R3 / DEC-WT-RETIRE-003a):
+      - Step 2 failure: nothing mutated; caller may fix cause (merge or --force) and retry.
+      - Step 3 failure: branch and registry unchanged; retry from step 3.
+      - Step 4 failure after step 3: worktree gone, branch still exists, registry active;
+        next retry converges from branch -d.
+      - Step 5 failure: worktrees.remove is idempotent; next retry converges.
 
     @decision DEC-WT-RETIRE-001
     Title: _retire_worktree mirrors _provision_worktree as the sole atomic cleanup authority
@@ -2126,13 +2135,22 @@ def _retire_worktree(
       and is released in finally, preventing stranded leases.
 
     @decision DEC-WT-RETIRE-003
-    Title: branch -d runs before git worktree remove (ordering is not arbitrary)
+    Title: branch -d ordered before worktree remove (superseded by DEC-WT-RETIRE-003a)
+    Status: superseded
+    Rationale: Original planner-approved ordering. Superseded because git refuses
+      branch -d on a branch that is checked out in a live worktree. See DEC-WT-RETIRE-003a.
+
+    @decision DEC-WT-RETIRE-003a
+    Title: git worktree remove runs before git branch -d (actual ordering)
     Status: accepted
-    Rationale: Reversing the order (worktree remove then branch -d) reproduces the bug
-      where the checkout is removed but the branch deletion then fails on "unmerged changes"
-      or "branch not found" for a path that no longer exists. Doing branch -d first means:
-      if the branch is unmerged, the error is raised before any filesystem mutation, so
-      the caller can fix the cause and retry cleanly from zero state.
+    Rationale: git refuses branch -d on a branch that is currently checked out in any
+      worktree. The fail-before-mutation invariant for unmerged branches is preserved via
+      an explicit git merge-base --is-ancestor pre-flight check (step 2) that runs before
+      either git mutation. The atomicity guarantee (Guardian PROJECT_ROOT lease covers both
+      git ops) is unchanged. If step 3 (worktree remove) fails, branch and registry are
+      untouched. If step 4 (branch -d) fails after step 3, the worktree is gone but the
+      branch still exists and the registry row is still active; the next retry converges
+      from branch -d alone.
 
     @decision DEC-WT-RETIRE-004
     Title: Retire explicitly revokes leases by path — does not call revoke_missing_worktrees
@@ -2166,12 +2184,13 @@ def _retire_worktree(
     retire_lease_id = g_lease["lease_id"]
 
     try:
-        # --- Step 2: Pre-flight unmerged check (DEC-WT-RETIRE-003) ---
-        # git branch -d cannot run while the branch is checked out in a worktree.
-        # We must remove the worktree first. However, to preserve the "fail before
-        # any mutation" invariant for unmerged branches, we check merge status HERE
-        # before touching either filesystem or registry. This replaces what would
-        # have been an implicit git branch -d error with an explicit pre-flight.
+        # --- Step 2: Pre-flight unmerged check (DEC-WT-RETIRE-003a) ---
+        # git branch -d cannot run while the branch is checked out in a worktree,
+        # so worktree remove (step 3) must run before branch -d (step 4). To preserve
+        # the "fail before any mutation" invariant for unmerged branches, we check
+        # merge status HERE before touching either filesystem or registry. This
+        # replaces what would have been an implicit git branch -d error with an
+        # explicit pre-flight that leaves zero state mutated on failure.
         if not force:
             # Check if branch has been merged into HEAD of the main repo.
             # git merge-base --is-ancestor <branch> HEAD returns 0 if merged.
@@ -2187,10 +2206,10 @@ def _retire_worktree(
                     f"Use --force to delete an unmerged branch."
                 )
 
-        # --- Step 3: git worktree remove ---
-        # Must run BEFORE branch -d: git cannot delete a branch that is checked
-        # out in a live worktree. After worktree remove, the branch is no longer
-        # checked out and branch -d will succeed.
+        # --- Step 3: git worktree remove (DEC-WT-RETIRE-003a) ---
+        # Must run BEFORE branch -d: git refuses to delete a branch that is checked
+        # out in a live worktree. After worktree remove, the branch is detached from
+        # the working tree and branch -d (step 4) will succeed.
         # Rollback: if this fails, branch still exists, registry unchanged — retry from here.
         r_wt = _subprocess.run(
             ["git", "-C", project_root, "worktree", "remove", canonical_wt_path],
@@ -2201,10 +2220,10 @@ def _retire_worktree(
             stderr = r_wt.stderr.strip() or r_wt.stdout.strip() or "git worktree remove failed"
             raise RuntimeError(f"`git worktree remove {canonical_wt_path}` failed: {stderr}")
 
-        # --- Step 2 (post-remove): git branch -d (or -D if force) (DEC-WT-RETIRE-003) ---
+        # --- Step 4: git branch -d (or -D if force) (DEC-WT-RETIRE-003a) ---
         # Worktree is removed so branch is no longer checked out; -d will succeed.
-        # Rollback: if -d fails here, worktree is removed but branch still exists;
-        # next retry can re-run branch -d only.
+        # Rollback: if -d fails here, worktree is removed but branch still exists
+        # and registry row is still active; next retry converges from branch -d alone.
         delete_flag = "-D" if force else "-d"
         r_branch = _subprocess.run(
             ["git", "-C", project_root, "branch", delete_flag, branch],
@@ -6143,8 +6162,8 @@ def build_parser() -> argparse.ArgumentParser:
     wt_ret = wt_sub.add_parser(
         "retire",
         help=(
-            "Retire a feature worktree: git branch -d, git worktree remove, "
-            "DB soft-delete, explicit lease revocation (W-WTR-1)"
+            "Retire a feature worktree: git worktree remove, git branch -d, "
+            "DB soft-delete, explicit lease revocation (W-WTR-1, DEC-WT-RETIRE-003a)"
         ),
     )
     wt_ret.add_argument(

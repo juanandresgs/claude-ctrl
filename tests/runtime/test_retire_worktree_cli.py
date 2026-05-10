@@ -4,11 +4,13 @@ Production sequence: After a successful landing, Guardian calls
   `cc-policy worktree retire --workflow-id <W> --feature-name <F> --project-root <P>`
 which atomically:
   1. Issues a Guardian lease at PROJECT_ROOT (never at the feature path)
-  2. git branch -d <branch>   (BEFORE worktree remove — DEC-WT-RETIRE-003)
-  3. git worktree remove <path>
-  4. worktrees.remove(path)   — soft-delete (DEC-RT-001)
-  5. Explicit lease revocation for all active leases at worktree_path
-  6. Guardian lease released in finally (never strands)
+  2. Pre-flight merge check (git merge-base --is-ancestor) — fails before any mutation
+  3. git worktree remove <path>   (BEFORE branch -d — DEC-WT-RETIRE-003a: git refuses
+     branch -d on a checked-out branch)
+  4. git branch -d <branch>   (after worktree remove, branch is no longer checked out)
+  5. worktrees.remove(path)   — soft-delete (DEC-RT-001)
+  6. Explicit lease revocation for all active leases at worktree_path
+  7. Guardian lease released in finally (never strands)
 
 Each test exercises the real CLI boundary (subprocess) so the argparse wiring,
 JSON serialization, and domain module integration are all verified together.
@@ -28,12 +30,15 @@ Status: accepted
 Rationale: The lease must outlive the worktree disappearing mid-operation.
   test_retire_lease_anchor_is_project_root verifies this invariant directly.
 
-@decision DEC-WT-RETIRE-003
-Title: branch -d ordered BEFORE git worktree remove
+@decision DEC-WT-RETIRE-003a
+Title: git worktree remove runs before git branch -d (actual ordering)
 Status: accepted
-Rationale: test_retire_branch_d_fails_unmerged verifies that a failure on step 2
-  leaves zero state mutated; test_retire_worktree_remove_fails_after_branch_d
-  verifies the correct partial-failure state after step 2 succeeds.
+Rationale: test_retire_branch_d_fails_unmerged verifies that a failure on the
+  pre-flight merge check (step 2) leaves zero state mutated; the explicit
+  pre-flight preserves the fail-before-mutation invariant even though worktree
+  remove (step 3) must precede branch -d (step 4). test_retire_branch_d_fails_after_worktree_remove
+  verifies the correct partial-failure state when worktree remove succeeds but
+  branch -d fails or when the worktree remove step itself fails.
 
 @decision DEC-WT-RETIRE-004
 Title: Retire explicitly revokes leases by path — does not call revoke_missing_worktrees
@@ -156,7 +161,7 @@ def test_retire_worktree_happy_path(tmp_path, git_repo):
 
     This is the primary compound-interaction test: provision -> commit on feature ->
     merge into main -> retire. Verifies the full production sequence end-to-end:
-    CLI args -> git branch -d -> git worktree remove -> DB soft-delete -> lease
+    CLI args -> git worktree remove -> git branch -d -> DB soft-delete -> lease
     revocation -> structured JSON output.
     """
     db_path = str(tmp_path / "state.db")
@@ -365,9 +370,10 @@ def test_retire_lease_anchor_is_project_root(tmp_path, git_repo):
 def test_retire_branch_d_fails_unmerged(tmp_path, git_repo):
     """git branch -d fails for an unmerged branch — retire must return error with zero mutation.
 
-    DEC-WT-RETIRE-003: Ordering ensures branch -d is the first git operation.
-    If it fails (unmerged changes), no filesystem or DB state has been touched.
-    The caller may fix the cause (merge or --force) and retry cleanly.
+    DEC-WT-RETIRE-003a: The pre-flight merge check (step 2) runs before any git mutation,
+    preserving the fail-before-mutation invariant even though worktree remove (step 3) must
+    precede branch -d (step 4). If the pre-flight detects an unmerged branch, no filesystem
+    or DB state has been touched. The caller may fix the cause (merge or --force) and retry.
     """
     db_path = str(tmp_path / "state.db")
     project_root = git_repo
@@ -442,21 +448,28 @@ def test_retire_branch_d_fails_unmerged(tmp_path, git_repo):
 # ---------------------------------------------------------------------------
 
 
-def test_retire_worktree_remove_fails_after_branch_d(tmp_path, git_repo):
-    """Partial failure: git worktree remove fails — registry row must NOT be soft-deleted.
+def test_retire_branch_d_fails_after_worktree_remove(tmp_path, git_repo):
+    """Partial failure: git worktree remove step is blocked — registry row must NOT be soft-deleted.
 
-    DEC-WT-RETIRE-003 rollback boundary:
-    After the worktree remove step fails, the function raises WITHOUT calling
-    worktrees.remove() or revoking leases. The next retry sees: worktree
-    still on disk + still-active registry row + branch still exists (pre-flight
-    check runs before any git op, so branch is only deleted after worktree remove).
+    DEC-WT-RETIRE-003a rollback boundary (step 3 failure):
+    git worktree lock prevents git worktree remove from succeeding. The retire
+    function raises WITHOUT calling worktrees.remove() or revoking any leases.
+    The next retry (after git worktree unlock) sees:
+      - worktree still on disk
+      - still-active registry row
+      - branch still exists (pre-flight passed, but no git mutation ran)
+    and converges by retrying from the worktree remove step.
 
-    This test calls _retire_worktree directly (in-process) to enable subprocess
-    mocking. The CLI boundary test (happy path) already proves the full chain.
+    This test uses git's own locking semantics — no subprocess mocking required.
+    After asserting the failure state, the test unlocks the worktree and verifies
+    that a second retire call succeeds and reaches the clean terminal state.
+
+    Additional assertions:
+      - git branch -d was NOT run (branch still exists after failed retire)
+      - worktrees.list_active() still includes the path
+      - The retire Guardian PROJECT_ROOT lease was released (no orphan leases)
+      - A second retire call after git worktree unlock succeeds and converges
     """
-    import unittest.mock as mock
-    import sqlite3 as _sqlite3
-
     db_path = str(tmp_path / "state.db")
     project_root = git_repo
     workflow_id = "wf-retire-partial-001"
@@ -465,7 +478,7 @@ def test_retire_worktree_remove_fails_after_branch_d(tmp_path, git_repo):
     wt_path = str(Path(project_root) / ".worktrees" / f"feature-{feature_name}")
 
     # Provision + merge so the pre-flight merge check passes
-    prov = provision_worktree(project_root, workflow_id, feature_name, db_path)
+    provision_worktree(project_root, workflow_id, feature_name, db_path)
     (Path(wt_path) / "step3.txt").write_text("will merge")
     subprocess.run(["git", "-C", wt_path, "add", "step3.txt"], check=True, capture_output=True)
     subprocess.run(
@@ -479,52 +492,57 @@ def test_retire_worktree_remove_fails_after_branch_d(tmp_path, git_repo):
         capture_output=True,
     )
 
-    # Call _retire_worktree directly (in-process) so subprocess mock works
-    import sys
-    sys.path.insert(0, str(_REPO_ROOT))
-    import runtime.cli as cli_mod
-    from pathlib import Path as _Path
+    # Lock the worktree so git worktree remove refuses it (without --force).
+    # This uses git's own locking semantics — no subprocess mocking required.
+    subprocess.run(
+        ["git", "-C", project_root, "worktree", "lock", wt_path],
+        check=True,
+        capture_output=True,
+    )
 
+    # Attempt retire while worktree is locked — must fail at step 3 (worktree remove)
+    code_locked, out_locked = run_cli(
+        [
+            "worktree",
+            "retire",
+            "--workflow-id",
+            workflow_id,
+            "--feature-name",
+            feature_name,
+            "--project-root",
+            project_root,
+        ],
+        db_path,
+    )
+
+    # Must fail with non-zero exit
+    assert code_locked != 0, (
+        f"Expected non-zero exit when worktree is locked, got {code_locked}: {out_locked}"
+    )
+    assert out_locked.get("status") == "error", (
+        f"Expected status=error from locked-worktree retire, got: {out_locked}"
+    )
+
+    # Critical: git branch -d was NOT run — branch still exists
+    branch_check = subprocess.run(
+        ["git", "-C", project_root, "branch", "--list", branch],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert branch_check.stdout.strip() != "", (
+        f"Branch must still exist after failed retire (step 3 fail leaves branch untouched): "
+        f"{branch_check.stdout!r}"
+    )
+
+    # Critical: worktree must still be on disk
+    assert Path(wt_path).exists(), (
+        "Worktree directory must still exist after failed retire (step 3 fail)"
+    )
+
+    # Critical: registry row must still be active
     conn = open_db(db_path)
     try:
-        original_subprocess_run = subprocess.run
-
-        def patched_run(args, *pargs, **kwargs):
-            # Fail specifically on git worktree remove
-            if (
-                isinstance(args, list)
-                and "git" in args
-                and "worktree" in args
-                and "remove" in args
-            ):
-                class FakeResult:
-                    returncode = 1
-                    stderr = "simulated: cannot remove worktree"
-                    stdout = ""
-                return FakeResult()
-            return original_subprocess_run(args, *pargs, **kwargs)
-
-        raised = None
-        with mock.patch("subprocess.run", side_effect=patched_run):
-            try:
-                cli_mod._retire_worktree(
-                    conn,
-                    workflow_id=workflow_id,
-                    project_root=project_root,
-                    worktree_path=wt_path,
-                    branch=branch,
-                    force=False,
-                )
-            except RuntimeError as exc:
-                raised = exc
-
-        # Must have raised
-        assert raised is not None, "Expected RuntimeError from _retire_worktree when wt remove fails"
-        assert "worktree remove" in str(raised).lower() or "cannot remove" in str(raised).lower(), (
-            f"Expected worktree remove error, got: {raised}"
-        )
-
-        # Critical: registry row must still be active (worktrees.remove was NOT called)
         active_after = worktrees_mod.list_active(conn)
         active_paths = [w["path"] for w in active_after]
         assert any(
@@ -536,12 +554,12 @@ def test_retire_worktree_remove_fails_after_branch_d(tmp_path, git_repo):
 
         # retire.failed event must be emitted
         events = events_mod.query(conn, type="workflow.retire.failed", limit=10)
-        assert len(events) >= 1, "Expected workflow.retire.failed event after worktree remove failure"
+        assert len(events) >= 1, (
+            "Expected workflow.retire.failed event after locked-worktree retire"
+        )
 
-        # Guardian retire lease must be released (not stranded), even though step 3 failed
-        # List all recent leases and find the retire one (role=guardian at project_root)
+        # Guardian retire lease must be released (not stranded) even though step 3 failed
         recent_guardian_leases = leases_mod.list_leases(conn, role="guardian")
-        # The retire lease should be the latest guardian lease and must be released
         if recent_guardian_leases:
             latest = recent_guardian_leases[0]  # ordered by issued_at DESC
             assert latest["status"] in ("released", "revoked"), (
@@ -549,6 +567,51 @@ def test_retire_worktree_remove_fails_after_branch_d(tmp_path, git_repo):
             )
     finally:
         conn.close()
+
+    # Unlock and verify that a second retire converges to clean terminal state
+    subprocess.run(
+        ["git", "-C", project_root, "worktree", "unlock", wt_path],
+        check=True,
+        capture_output=True,
+    )
+
+    code_retry, out_retry = run_cli(
+        [
+            "worktree",
+            "retire",
+            "--workflow-id",
+            workflow_id,
+            "--feature-name",
+            feature_name,
+            "--project-root",
+            project_root,
+        ],
+        db_path,
+    )
+    assert code_retry == 0, (
+        f"Second retire (after unlock) must succeed, got {code_retry}: {out_retry}"
+    )
+    assert out_retry.get("status") == "ok", (
+        f"Second retire must return status=ok, got: {out_retry}"
+    )
+
+    # Clean terminal state: worktree gone, branch gone, registry empty
+    assert not Path(wt_path).exists(), "Worktree must be gone after successful retry"
+    branch_after = subprocess.run(
+        ["git", "-C", project_root, "branch", "--list", branch],
+        capture_output=True, text=True, check=True,
+    )
+    assert branch_after.stdout.strip() == "", (
+        f"Branch must be gone after successful retry: {branch_after.stdout!r}"
+    )
+    conn2 = open_db(db_path)
+    try:
+        active_final = worktrees_mod.list_active(conn2)
+        assert len(active_final) == 0, (
+            f"No active worktrees expected after successful retry: {active_final}"
+        )
+    finally:
+        conn2.close()
 
 
 # ---------------------------------------------------------------------------

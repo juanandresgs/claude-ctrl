@@ -187,8 +187,9 @@ cc-policy worktree retire \
 ```
 
 This single call handles the full atomic cleanup (DEC-WT-RETIRE-001):
-- `git branch -d feature/<name>` — ordered BEFORE worktree remove (DEC-WT-RETIRE-003)
-- `git worktree remove .worktrees/feature-<name>`
+- Pre-flight merge check (`git merge-base --is-ancestor`) — fails before any mutation if branch is unmerged
+- `git worktree remove .worktrees/feature-<name>` — ordered BEFORE branch -d (DEC-WT-RETIRE-003a: git refuses branch -d on a checked-out branch)
+- `git branch -d feature/<name>` — runs after worktree remove so the branch is no longer checked out
 - `worktrees.remove()` soft-delete in the DB (DEC-RT-001)
 - Explicit lease revocation for all leases anchored to the worktree path (DEC-WT-RETIRE-004)
 - Guardian PROJECT_ROOT lease released in `finally` (lease never strands — DEC-WT-RETIRE-002)
@@ -205,7 +206,7 @@ LANDING_RESULT: skipped
 OPERATION_CLASS: routine_local
 ```
 
-If retire fails, report the structured `_err` payload and do not attempt manual git cleanup — the partial state is recoverable on the next retry from the rollback boundary described in DEC-WT-RETIRE-003.
+If retire fails, report the structured `_err` payload and do not attempt manual git cleanup — the partial state is recoverable on the next retry from the rollback boundary described in DEC-WT-RETIRE-003a.
 
 ## Commit Preparation
 
