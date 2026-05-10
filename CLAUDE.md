@@ -372,9 +372,9 @@ Before switching branches, deleting a branch, or removing a worktree:
 After a successful push/landing and an idle, clean worktree:
 - switch the checkout back to the long-lived base branch when needed so the task branch is no longer checked out.
 - delete the local task branch when it has been pushed or merged and no local-only commits remain.
-- remove the task worktree with `git worktree remove <path>` when the branch used a separate worktree.
+- retire the task worktree with `cc-policy worktree retire --workflow-id <wf> --feature-name <name> --project-root <root>` when the branch used a separate worktree. This is the sole runtime authority (DEC-WT-RETIRE-001): it atomically runs `git branch -d`, `git worktree remove`, DB soft-delete, and lease revocation under a Guardian PROJECT_ROOT lease. Do not use `git worktree remove` directly — route all feature-worktree cleanup through this command.
 
-If the user says "push and clean up", interpret that as push plus safe local branch/worktree cleanup, not just upstream tracking and a clean status check.
+If the user says "push and clean up", interpret that as push plus `cc-policy worktree retire` (not manual git cleanup), not just upstream tracking and a clean status check.
 
 ### Simple Task Fast Path
 Skip planner only when ALL hold:

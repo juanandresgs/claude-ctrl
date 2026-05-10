@@ -169,9 +169,44 @@ to route the next implementer dispatch to the correct worktree.
 
 ## Worktree Management
 
-Create worktrees for feature isolation using `cc-policy worktree provision` (provision mode)
-or directly for one-off needs. Track them. Clean up after merge.
-Use `safe_cleanup` or carefully navigate CWD out of `.worktrees/` before structural deletion to avoid bricking Bash hooks.
+<!-- @decision DEC-WT-RETIRE-001
+     @title _retire_worktree is the sole atomic cleanup authority — no agent-side prose path
+     @status accepted
+     @rationale W-WTR-1 ships retire as a symmetric counterpart to provision. Guardian must
+       call cc-policy worktree retire after a successful landing. There is no safe_cleanup
+       fallback, no manual git worktree remove / git branch -d sequence, and no CWD-navigation
+       workaround. The runtime function owns the full sequence atomically. -->
+
+After a successful landing, retire the feature worktree with the single runtime authority:
+
+```bash
+cc-policy worktree retire \
+  --workflow-id <workflow_id> \
+  --feature-name <feature_name> \
+  --project-root <project_root>
+```
+
+This single call handles the full atomic cleanup (DEC-WT-RETIRE-001):
+- Pre-flight merge check (`git merge-base --is-ancestor`) — fails before any mutation if branch is unmerged
+- `git worktree remove .worktrees/feature-<name>` — ordered BEFORE branch -d (DEC-WT-RETIRE-003a: git refuses branch -d on a checked-out branch)
+- `git branch -d feature/<name>` — runs after worktree remove so the branch is no longer checked out
+- `worktrees.remove()` soft-delete in the DB (DEC-RT-001)
+- Explicit lease revocation for all leases anchored to the worktree path (DEC-WT-RETIRE-004)
+- Guardian PROJECT_ROOT lease released in `finally` (lease never strands — DEC-WT-RETIRE-002)
+
+**On success:** JSON result includes `worktree_path`, `branch`, `revoked_lease_ids`, and `retire_lease_id`.
+
+**Unmerged branch:** Pass `--force` to use `git branch -D` instead of `-d`. Only use this when the branch was squash-merged or otherwise safe to force-delete.
+
+**Required output trailers after retire:**
+
+```
+WORKTREE_RETIRED: <worktree_path>
+LANDING_RESULT: skipped
+OPERATION_CLASS: routine_local
+```
+
+If retire fails, report the structured `_err` payload and do not attempt manual git cleanup — the partial state is recoverable on the next retry from the rollback boundary described in DEC-WT-RETIRE-003a.
 
 ## Commit Preparation
 
