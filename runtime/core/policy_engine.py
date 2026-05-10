@@ -639,7 +639,8 @@ def build_context(
         # env-var path handles it.
         from runtime.core.markers import get_active as _get_active_marker
 
-        _marker = _get_active_marker(conn, project_root=project_root)
+        # Opt in to lease-aware marker resolution per DEC-IMPL-STOP-MARKER-001 (closes yakcc#171)
+        _marker = _get_active_marker(conn, project_root=project_root, require_active_lease=True)
         if _marker:
             if not resolved_role:
                 resolved_role = _marker.get("role") or ""

@@ -184,6 +184,7 @@ def get_active(
     conn: sqlite3.Connection,
     project_root: str | None = None,
     workflow_id: str | None = None,
+    require_active_lease: bool = False,
 ) -> Optional[dict]:
     """Return the most recently started active marker, or None.
 
@@ -196,38 +197,108 @@ def get_active(
     compatibility for statusline.py which calls get_active_with_age(conn)
     without a project context.
 
+    When require_active_lease=True the query LEFT JOINs dispatch_leases on
+    agent_id and filters out any marker whose owning lease has been released,
+    revoked, or expired (i.e. status != 'active'). Markers with no owning
+    lease (NULL join) are still returned — they represent pre-lease-era or
+    lifecycle.py-spawned agents that legitimately lack a lease row.
+
+    This opt-in flag is the defense-in-depth complement to the Stop-hook
+    deactivate path (DEC-LIFECYCLE-003). It defends against the
+    dropped-Stop-signal failure class: a marker survives past its owning
+    agent's lease release because the Stop hook never fired (yakcc#171).
+
+    @decision DEC-IMPL-STOP-MARKER-001
+    Title: Resolver-side lease-aware marker skip (Option B, yakcc#171)
+    Status: accepted
+    Rationale: Option A (Stop hook deactivate) is already implemented at
+      hooks/check-implementer.sh via cc-policy lifecycle on-stop. It is
+      fragile against the dropped-Stop-signal class: process kill, harness
+      crash, or out-of-band lease release leave a marker with is_active=1
+      even though the owning agent is gone. Option B adds a defense-in-depth
+      read-side filter: LEFT JOIN dispatch_leases on agent_id, skip markers
+      whose lease.status is not 'active'. Markers with no lease row (NULL
+      join) pass through unchanged — they are legacy/lifecycle-path markers
+      that legitimately lack a lease. The parameter defaults to False so
+      existing callers (statusline.py, lifecycle.py, CLI) are unaffected;
+      only policy_engine.py:build_context opts in (DEC-PE-EGAP-BUILD-CTX-001).
+      Cross-reference: yakcc#171, DEC-IMPL-STOP-MARKER-002 (test file).
+
     Args:
-        conn:         Open SQLite connection with schema applied.
-        project_root: Optional canonical project root to scope the query.
-        workflow_id:  Optional workflow_id to further scope within a project.
+        conn:                Open SQLite connection with schema applied.
+        project_root:        Optional canonical project root to scope the query.
+        workflow_id:         Optional workflow_id to further scope within a project.
+        require_active_lease: When True, skip markers whose owning lease is not
+                             'active'. Defaults to False for backward compatibility.
     """
+    if require_active_lease and project_root is None and workflow_id is None:
+        raise ValueError(
+            "require_active_lease=True requires project_root or workflow_id scope "
+            "(see DEC-IMPL-STOP-MARKER-001 — the lease JOIN requires a scope to avoid "
+            "cross-project pollution)"
+        )
+
     if project_root is not None or workflow_id is not None:
         # Scoped query — build WHERE clauses dynamically for the provided params.
         # Only include workflow_id predicate when both are given; if only
         # workflow_id is given (unusual) scope by that alone.
-        clauses = ["is_active = 1"]
         params: list = []
         if project_root is not None:
-            clauses.append("project_root = ?")
             params.append(project_root)
         if workflow_id is not None:
-            clauses.append("workflow_id = ?")
             params.append(workflow_id)
-        where = " AND ".join(clauses)
-        row = conn.execute(
-            f"""
-            SELECT agent_id, role, started_at, stopped_at, is_active, status,
-                   project_root, workflow_id
-            FROM   agent_markers
-            WHERE  {where}
-            ORDER  BY started_at DESC
-            LIMIT  1
-            """,
-            params,
-        ).fetchone()
+
+        if require_active_lease:
+            # DEC-IMPL-STOP-MARKER-001: LEFT JOIN dispatch_leases on agent_id.
+            # Skip markers whose lease exists AND is not 'active' (released,
+            # revoked, expired). NULL-join rows (no lease) pass through — they
+            # are pre-lease / lifecycle callers that legitimately lack a lease.
+            # Raise on SQL error rather than silently falling back (Sacred #5).
+            join_clauses = ["am.is_active = 1"]
+            if project_root is not None:
+                join_clauses.append("am.project_root = ?")
+            if workflow_id is not None:
+                join_clauses.append("am.workflow_id = ?")
+            where = " AND ".join(join_clauses)
+            row = conn.execute(
+                f"""
+                SELECT am.agent_id, am.role, am.started_at, am.stopped_at,
+                       am.is_active, am.status, am.project_root, am.workflow_id
+                FROM   agent_markers AS am
+                LEFT JOIN dispatch_leases AS dl
+                       ON dl.agent_id = am.agent_id
+                WHERE  {where}
+                  AND  (dl.agent_id IS NULL OR dl.status = 'active')
+                ORDER  BY am.started_at DESC
+                LIMIT  1
+                """,
+                params,
+            ).fetchone()
+        else:
+            plain_clauses = ["is_active = 1"]
+            if project_root is not None:
+                plain_clauses.append("project_root = ?")
+            if workflow_id is not None:
+                plain_clauses.append("workflow_id = ?")
+            where = " AND ".join(plain_clauses)
+            row = conn.execute(
+                f"""
+                SELECT agent_id, role, started_at, stopped_at, is_active, status,
+                       project_root, workflow_id
+                FROM   agent_markers
+                WHERE  {where}
+                ORDER  BY started_at DESC
+                LIMIT  1
+                """,
+                params,
+            ).fetchone()
         return _row_to_dict(row) if row else None
 
     # Unscoped: return globally newest active marker (backward compat).
+    # require_active_lease is not applied on the unscoped path — the lease JOIN
+    # requires a project_root or workflow_id scope to avoid cross-project
+    # pollution, and statusline.py (the only unscoped caller) intentionally
+    # uses the global newest-active view.
     row = conn.execute(
         """
         SELECT agent_id, role, started_at, stopped_at, is_active, status,
