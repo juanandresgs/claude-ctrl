@@ -14,7 +14,7 @@ Safe patterns:
 - Other commands: `(cd .worktrees/<name> && <command>)` — subshell only
 
 Before deleting any directory, ensure the shell is NOT inside it.
-Use `safe_cleanup` from context-lib.sh or `cd <project_root>` first.
+Use `cc-policy worktree retire` to clean up feature worktrees after landing (runtime authority — DEC-WT-RETIRE-001); or navigate to `<project_root>` before any manual directory removal.
 
 Deleting the shell's CWD bricks all Bash operations for the session.
 Unrecoverable without `/clear`.

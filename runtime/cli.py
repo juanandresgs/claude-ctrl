@@ -2076,9 +2076,224 @@ def _provision_worktree(
     }
 
 
+def _retire_worktree(
+    conn,
+    workflow_id: str,
+    project_root: str,
+    worktree_path: str,
+    branch: str,
+    force: bool = False,
+) -> dict:
+    """Atomic worktree retire: branch -d, worktree remove, registry soft-delete, lease revocation.
+
+    Retire sequence (symmetric to _provision_worktree, DEC-WT-RETIRE-001):
+      1. Guardian lease is acquired at PROJECT_ROOT (never at the feature path —
+         DEC-WT-RETIRE-002). The lease outlives the worktree disappearing mid-op.
+      2. git branch -d <branch> (or -D if force=True). Ordered BEFORE worktree
+         remove — reversing the order reproduces the race where an unmerged-branch
+         error is raised after the working tree is already gone (DEC-WT-RETIRE-003).
+      3. git worktree remove <path>. Branch is gone before the tree is removed.
+      4. worktrees.remove(path) — soft-delete sets removed_at (DEC-RT-001).
+      5. Explicit revocation of all active leases anchored to worktree_path.
+         Must NOT call revoke_missing_worktrees() — that janitor is for leak
+         recovery; retire owns its cleanup explicitly (DEC-WT-RETIRE-004).
+      6. Guardian PROJECT_ROOT lease released in finally so it never strands.
+
+    Rollback boundaries (DEC-GUARD-WT-008 R3 / DEC-WT-RETIRE-003):
+      - Step 2 failure: nothing mutated; caller may fix cause and retry.
+      - Step 3 failure after step 2: function raises without touching the
+        registry; next retry sees deleted-branch + still-on-disk worktree +
+        still-active registry row and proceeds from step 3.
+      - Step 4 failure: worktrees.remove is idempotent; next retry converges.
+
+    @decision DEC-WT-RETIRE-001
+    Title: _retire_worktree mirrors _provision_worktree as the sole atomic cleanup authority
+    Status: accepted
+    Rationale: Provision and retire must be symmetric runtime functions. There must
+      be no agent-side prose path or safe_cleanup script that substitutes for this
+      function. Retire issues a Guardian lease at PROJECT_ROOT, runs three git ops,
+      soft-deletes the registry row, and explicitly revokes leases. Guardian calls
+      cc-policy worktree retire after a successful landing — check-guardian.sh
+      reads the LANDING_RESULT and WORKTREE_RETIRED trailers.
+
+    @decision DEC-WT-RETIRE-002
+    Title: Retire Guardian lease anchored at project_root, never the feature worktree path
+    Status: accepted
+    Rationale: Provision issues the Guardian lease at project_root so check-guardian.sh
+      can find it via lease_context(PROJECT_ROOT). Retire must match this anchor: if
+      retire anchored its lease at the feature path, that lease would disappear with the
+      worktree mid-operation. The project_root anchor survives the entire retire sequence
+      and is released in finally, preventing stranded leases.
+
+    @decision DEC-WT-RETIRE-003
+    Title: branch -d runs before git worktree remove (ordering is not arbitrary)
+    Status: accepted
+    Rationale: Reversing the order (worktree remove then branch -d) reproduces the bug
+      where the checkout is removed but the branch deletion then fails on "unmerged changes"
+      or "branch not found" for a path that no longer exists. Doing branch -d first means:
+      if the branch is unmerged, the error is raised before any filesystem mutation, so
+      the caller can fix the cause and retry cleanly from zero state.
+
+    @decision DEC-WT-RETIRE-004
+    Title: Retire explicitly revokes leases by path — does not call revoke_missing_worktrees
+    Status: accepted
+    Rationale: revoke_missing_worktrees() is a janitor function for leak recovery (it scans
+      all active leases and checks os.path.exists). Using it as the primary cleanup path
+      for retire would: (a) conflate intentional cleanup with accidental path loss,
+      (b) create a race window between worktree remove and the path-existence check, and
+      (c) make the revocation dependent on filesystem state rather than explicit lease IDs.
+      Retire revokes leases by worktree_path filter BEFORE the worktree is removed from
+      disk, ensuring deterministic lease cleanup regardless of filesystem timing.
+    """
+    import os as _os
+    import subprocess as _subprocess
+
+    from runtime.core.policy_utils import normalize_path
+
+    project_root = normalize_path(project_root)
+    canonical_wt_path = normalize_path(worktree_path)
+
+    # --- Step 1: Issue Guardian lease at PROJECT_ROOT (DEC-WT-RETIRE-002) ---
+    # Acquired before any mutation. Released in finally to prevent stranding.
+    g_lease = leases_mod.issue(
+        conn,
+        role="guardian",
+        worktree_path=project_root,
+        workflow_id=workflow_id,
+        branch=branch,
+        requires_eval=False,
+    )
+    retire_lease_id = g_lease["lease_id"]
+
+    try:
+        # --- Step 2: Pre-flight unmerged check (DEC-WT-RETIRE-003) ---
+        # git branch -d cannot run while the branch is checked out in a worktree.
+        # We must remove the worktree first. However, to preserve the "fail before
+        # any mutation" invariant for unmerged branches, we check merge status HERE
+        # before touching either filesystem or registry. This replaces what would
+        # have been an implicit git branch -d error with an explicit pre-flight.
+        if not force:
+            # Check if branch has been merged into HEAD of the main repo.
+            # git merge-base --is-ancestor <branch> HEAD returns 0 if merged.
+            r_merged = _subprocess.run(
+                ["git", "-C", project_root, "merge-base", "--is-ancestor", branch, "HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if r_merged.returncode != 0:
+                raise RuntimeError(
+                    f"Branch '{branch}' has not been fully merged into HEAD "
+                    f"(git merge-base --is-ancestor returned {r_merged.returncode}). "
+                    f"Use --force to delete an unmerged branch."
+                )
+
+        # --- Step 3: git worktree remove ---
+        # Must run BEFORE branch -d: git cannot delete a branch that is checked
+        # out in a live worktree. After worktree remove, the branch is no longer
+        # checked out and branch -d will succeed.
+        # Rollback: if this fails, branch still exists, registry unchanged — retry from here.
+        r_wt = _subprocess.run(
+            ["git", "-C", project_root, "worktree", "remove", canonical_wt_path],
+            capture_output=True,
+            text=True,
+        )
+        if r_wt.returncode != 0:
+            stderr = r_wt.stderr.strip() or r_wt.stdout.strip() or "git worktree remove failed"
+            raise RuntimeError(f"`git worktree remove {canonical_wt_path}` failed: {stderr}")
+
+        # --- Step 2 (post-remove): git branch -d (or -D if force) (DEC-WT-RETIRE-003) ---
+        # Worktree is removed so branch is no longer checked out; -d will succeed.
+        # Rollback: if -d fails here, worktree is removed but branch still exists;
+        # next retry can re-run branch -d only.
+        delete_flag = "-D" if force else "-d"
+        r_branch = _subprocess.run(
+            ["git", "-C", project_root, "branch", delete_flag, branch],
+            capture_output=True,
+            text=True,
+        )
+        if r_branch.returncode != 0:
+            stderr = r_branch.stderr.strip() or r_branch.stdout.strip() or "git branch delete failed"
+            raise RuntimeError(f"`git branch {delete_flag} {branch}` failed: {stderr}")
+
+        # --- Step 4: worktrees.remove() — soft-delete (DEC-RT-001) ---
+        # idempotent against already-removed paths; next retry converges.
+        worktrees_mod.remove(conn, canonical_wt_path)
+
+        # --- Step 5: Explicit lease revocation by worktree_path (DEC-WT-RETIRE-004) ---
+        # Revoke BEFORE path disappears so revocation is deterministic.
+        # Uses list_leases + revoke rather than revoke_missing_worktrees (forbidden).
+        revoked_ids: list[str] = []
+        active_leases = leases_mod.list_leases(
+            conn, status="active", worktree_path=canonical_wt_path
+        )
+        for lease in active_leases:
+            lid = lease["lease_id"]
+            if lid == retire_lease_id:
+                # Skip our own retire lease — released in finally.
+                continue
+            leases_mod.revoke(conn, lid)
+            revoked_ids.append(lid)
+
+        # Emit success event (mirrors workflow.bootstrap.repo_initialized pattern).
+        events_mod.emit(
+            conn,
+            "workflow.retire.completed",
+            source=f"workflow:{workflow_id}",
+            detail=json.dumps(
+                {
+                    "workflow_id": workflow_id,
+                    "project_root": project_root,
+                    "worktree_path": canonical_wt_path,
+                    "branch": branch,
+                    "force": force,
+                    "revoked_lease_ids": revoked_ids,
+                },
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "worktree_path": canonical_wt_path,
+            "branch": branch,
+            "workflow_id": workflow_id,
+            "force": force,
+            "revoked_lease_ids": revoked_ids,
+            "retire_lease_id": retire_lease_id,
+        }
+
+    except Exception as exc:
+        # Emit failure event before re-raising.
+        try:
+            events_mod.emit(
+                conn,
+                "workflow.retire.failed",
+                source=f"workflow:{workflow_id}",
+                detail=json.dumps(
+                    {
+                        "workflow_id": workflow_id,
+                        "project_root": project_root,
+                        "worktree_path": canonical_wt_path,
+                        "branch": branch,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception:
+            pass  # Do not mask the original error
+        raise
+
+    finally:
+        # Always release the Guardian lease so it never strands (DEC-WT-RETIRE-002).
+        try:
+            leases_mod.release(conn, retire_lease_id)
+        except Exception:
+            pass  # Best-effort; cleanup failure does not mask original error
+
+
 def _handle_worktree(args) -> int:
     worktree_db_root = None
-    if args.action == "provision":
+    if args.action in ("provision", "retire"):
         worktree_db_root = getattr(args, "project_root", None) or None
     conn = _get_conn(project_root=worktree_db_root)
     try:
@@ -2131,6 +2346,64 @@ def _handle_worktree(args) -> int:
                 )
             except Exception as exc:
                 return _err(f"worktree provision failed: {exc}")
+
+            return _ok(result)
+
+        elif args.action == "retire":
+            import os as _os
+
+            # Resolve project_root from args or CLAUDE_PROJECT_DIR env var
+            project_root = getattr(args, "project_root", None) or ""
+            if not project_root:
+                project_root = _os.environ.get("CLAUDE_PROJECT_DIR", "")
+            if not project_root:
+                return _err(
+                    "worktree retire: --project-root is required (or set CLAUDE_PROJECT_DIR)"
+                )
+
+            workflow_id = getattr(args, "workflow_id", None) or ""
+            if not workflow_id:
+                return _err("worktree retire: --workflow-id is required")
+
+            feature_name = getattr(args, "feature_name", None) or ""
+            if not feature_name:
+                return _err("worktree retire: --feature-name is required")
+
+            force = getattr(args, "force", False)
+
+            # Derive worktree path and branch from project_root + feature_name
+            # (mirrors _provision_worktree derivation exactly)
+            from runtime.core.policy_utils import normalize_path
+            project_root_norm = normalize_path(project_root)
+            branch = f"feature/{feature_name}"
+            worktree_path = _os.path.join(
+                project_root_norm, ".worktrees", f"feature-{feature_name}"
+            )
+
+            # Guard: verify the repo has a HEAD (not unborn)
+            import subprocess as _subprocess
+            head_check = _subprocess.run(
+                ["git", "-C", project_root_norm, "rev-parse", "--verify", "HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if head_check.returncode != 0:
+                return _err(
+                    "worktree retire: project_root has no HEAD (unborn repo); "
+                    "nothing to retire"
+                )
+
+            try:
+                result = _retire_worktree(
+                    conn,
+                    workflow_id=workflow_id,
+                    project_root=project_root_norm,
+                    worktree_path=worktree_path,
+                    branch=branch,
+                    force=force,
+                )
+            except Exception as exc:
+                return _err(f"worktree retire failed: {exc}")
 
             return _ok(result)
 
@@ -5863,6 +6136,44 @@ def build_parser() -> argparse.ArgumentParser:
         dest="base_branch",
         default="main",
         help="Base branch for the new worktree (default: main)",
+    )
+
+    # worktree retire — W-WTR-1 (DEC-WT-RETIRE-001)
+    # Guardian calls this after successful landing to atomically clean up.
+    wt_ret = wt_sub.add_parser(
+        "retire",
+        help=(
+            "Retire a feature worktree: git branch -d, git worktree remove, "
+            "DB soft-delete, explicit lease revocation (W-WTR-1)"
+        ),
+    )
+    wt_ret.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        required=True,
+        help="Workflow ID whose worktree is being retired",
+    )
+    wt_ret.add_argument(
+        "--feature-name",
+        dest="feature_name",
+        required=True,
+        help="Feature name (used to compute branch feature/<name> and path .worktrees/feature-<name>)",
+    )
+    wt_ret.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=None,
+        help="Git repo root (defaults to CLAUDE_PROJECT_DIR env var)",
+    )
+    wt_ret.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        default=False,
+        help=(
+            "Use git branch -D (force-delete) instead of -d. "
+            "Required for unmerged branches. Default: false."
+        ),
     )
 
     # dispatch
