@@ -219,12 +219,11 @@ function readConfiguredReviewProvider(cwd, workflowId = "") {
   }
 }
 
-// resolveCriticContext() was deleted (DEC-CRITIC-CONTEXT-001).
+// resolveCriticContext() — renamed to resolveCriticContextFromRuntime (DEC-CRITIC-CONTEXT-001).
 // The old implementation used lease current --worktree-path <cwd>, which resolves
 // to the ORCHESTRATOR's project root when SubagentStop fires.  The single authority
 // for critic context resolution is now runtime/core/critic_context.py, called via
 // cc-policy critic context resolve --hook-input <hook_input_json>.
-// Use resolveCriticContextFromRuntime(cwd, input) instead.
 
 /**
  * Resolve implementer workflow_id + lease_id from the SubagentStop hook input JSON.
@@ -244,7 +243,7 @@ function readConfiguredReviewProvider(cwd, workflowId = "") {
  * Note: Mocking the Codex/Gemini CLI in tests is acceptable; the runtime
  * resolver itself is a real SQLite call and must NOT be mocked in tests.
  */
-function resolveCriticContext(cwd, input) {
+function resolveCriticContextFromRuntime(cwd, input) {
   try {
     const hookInputJson = JSON.stringify(input || {});
     const ctx = readPolicyJson(cwd, [
@@ -1013,7 +1012,7 @@ async function main() {
   const cwd = resolveWorkspaceRoot(
     input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd()
   );
-  const criticContext = resolveCriticContext(cwd, input);
+  const criticContext = resolveCriticContextFromRuntime(cwd, input);
   const configuredProvider = readConfiguredReviewProvider(cwd, criticContext.workflowId);
   let criticRun = null;
   try {
