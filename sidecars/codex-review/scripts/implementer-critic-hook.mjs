@@ -243,6 +243,15 @@ function readConfiguredReviewProvider(cwd, workflowId = "") {
  * Note: Mocking the Codex/Gemini CLI in tests is acceptable; the runtime
  * resolver itself is a real SQLite call and must NOT be mocked in tests.
  */
+// @decision DEC-CRITIC-FAIL-CLOSED-003 (Node mirror)
+// resolveCriticContextFromRuntime is the Node-side mirror of the bash wrapper's
+// _resolve_critic_context fix. The prior fallback to currentWorkflowId(cwd) (git
+// rev-parse --abbrev-ref HEAD) silently stamped the orchestrator's branch name
+// ("main") onto critic_reviews rows when the runtime resolver returned found=false.
+// Fixed: when found=false, return { workflowId: "", leaseId: "", found: false }.
+// The caller (main()) checks found and emits CRITIC_UNAVAILABLE with the
+// "__unresolved__" sentinel instead of proceeding with a guessed workflow_id.
+// See also DEC-CRITIC-FAIL-CLOSED-002 in runtime/core/critic_context.py.
 function resolveCriticContextFromRuntime(cwd, input) {
   try {
     const hookInputJson = JSON.stringify(input || {});
@@ -254,28 +263,31 @@ function resolveCriticContextFromRuntime(cwd, input) {
     if (ctx?.found) {
       return {
         workflowId: String(ctx.workflow_id || ""),
-        leaseId: String(ctx.lease_id || "")
+        leaseId: String(ctx.lease_id || ""),
+        found: true
       };
     }
-    // Runtime resolver returned not-found: fall through to branch-derived id as
-    // last resort.  This only fires when neither agent_id nor cwd resolves a lease.
+    // @decision DEC-CRITIC-FAIL-CLOSED-003
+    // Runtime resolver returned not-found. Return found=false with empty
+    // workflowId. The caller MUST emit CRITIC_UNAVAILABLE — no branch-name
+    // fallback is permitted. Deleted: currentWorkflowId(cwd) fallback.
     logNote(
-      "[implementer-critic] critic context resolve: not found, falling back to branch-derived id. " +
+      "[implementer-critic] critic context resolve: not found; emitting CRITIC_UNAVAILABLE. " +
       String(ctx?.error || "")
     );
   } catch (err) {
-    // Probe only: runtime unavailable or JSON parse failed.  Fall through to
-    // branch-derived workflow identity so the hook can still emit CRITIC_UNAVAILABLE
-    // with an audit trail rather than silently dying.
+    // Runtime unavailable or JSON parse failed. Return found=false so the
+    // caller emits CRITIC_UNAVAILABLE. No branch-derived fallback.
     logNote(
       "[implementer-critic] critic context resolve failed: " +
       (err instanceof Error ? err.message : String(err)) +
-      "; falling back to branch-derived workflow_id."
+      "; emitting CRITIC_UNAVAILABLE (no branch-name fallback)."
     );
   }
   return {
-    workflowId: currentWorkflowId(cwd),
-    leaseId: ""
+    workflowId: "",
+    leaseId: "",
+    found: false
   };
 }
 
@@ -1013,6 +1025,52 @@ async function main() {
     input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd()
   );
   const criticContext = resolveCriticContextFromRuntime(cwd, input);
+
+  // @decision DEC-CRITIC-FAIL-CLOSED-003 (Node mirror)
+  // When the resolver returns found=false, emit CRITIC_UNAVAILABLE immediately
+  // with the "__unresolved__" sentinel workflow_id. Do NOT proceed with a
+  // guessed (branch-derived) workflow_id — that was the regression.
+  if (!criticContext.found) {
+    const unavailDetail = "context-not-resolved: no implementer lease found for this agent_id/cwd";
+    const unavailWorkflowId = "__unresolved__";
+    logNote(`[implementer-critic] ${unavailDetail}`);
+    const unavailMetadata = {
+      hook: "implementer-critic-hook.mjs",
+      failure: unavailDetail,
+      execution_proof: { provider: "wrapper", parsed_structured_output_present: false }
+    };
+    try {
+      submitCriticReview(cwd, {
+        workflowId: unavailWorkflowId,
+        leaseId: "",
+        provider: "codex",
+        verdict: "CRITIC_UNAVAILABLE",
+        summary: "Implementer critic unavailable.",
+        detail: unavailDetail,
+        fingerprint: "",
+        metadata: unavailMetadata
+      });
+    } catch (submitErr) {
+      logNote(`[implementer-critic] Failed to submit CRITIC_UNAVAILABLE row: ${submitErr instanceof Error ? submitErr.message : String(submitErr)}`);
+    }
+    const unavailLines = [
+      "Implementer critic progress: Starting Codex tactical critic (read-only).",
+      `Implementer critic: provider=codex, workflow=${unavailWorkflowId}.`,
+      "Implementer critic: verdict=CRITIC_UNAVAILABLE, next_role=none.",
+      `Implementer critic detail: ${unavailDetail}`,
+      "Implementer critic action: fail closed; no automatic reviewer fallback is allowed.",
+      "USER_VISIBLE_CRITIC_DIGEST:",
+      `Implementer critic: CRITIC_UNAVAILABLE -> none`,
+      `Summary: ${unavailDetail}`
+    ];
+    const unavailContext = unavailLines.join("\n");
+    emitDecision({
+      additionalContext: unavailContext,
+      hookSpecificOutput: { hookEventName: "SubagentStop", additionalContext: unavailContext }
+    });
+    return;
+  }
+
   const configuredProvider = readConfiguredReviewProvider(cwd, criticContext.workflowId);
   let criticRun = null;
   try {

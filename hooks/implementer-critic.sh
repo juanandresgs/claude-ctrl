@@ -13,6 +13,18 @@
 #   cc-policy critic context resolve --hook-input <json> removes the parallel inline resolution path
 #   so there is one authority for critic context resolution.  The bash wrapper no longer contains any
 #   context-derivation logic; it calls the runtime and reads structured JSON back.
+#
+# @decision DEC-CRITIC-FAIL-CLOSED-003
+# Title: Bash wrapper emits CRITIC_UNAVAILABLE with __unresolved__ sentinel when resolver returns found=false
+# Status: accepted
+# Rationale: The prior code had a `current_workflow_id "$PROJECT_ROOT"` fallback on line 69 that
+#   silently stamped the orchestrator's branch name (e.g. "main") onto the critic_reviews row when
+#   the runtime resolver returned found=false. This made the row unroutable — dispatch_engine can't
+#   match a critic review tagged "main" to an implementer workflow. The fix: when found=false, call
+#   _emit_unavailable with the explicit context arguments (not by re-calling _resolve_critic_context).
+#   _emit_unavailable uses the "__unresolved__" sentinel as workflow_id so the row is clearly marked
+#   as an unresolved-context unavailability. No branch-name guessing is permitted anywhere in the
+#   resolution path. See also DEC-CRITIC-FAIL-CLOSED-002 in critic_context.py.
 set -euo pipefail
 
 # shellcheck source=hooks/log.sh
@@ -50,9 +62,18 @@ _local_cc_policy() {
 #   cc-policy critic context resolve --hook-input <hook_input_json>
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# _resolve_critic_context — FAIL-CLOSED (DEC-CRITIC-FAIL-CLOSED-003)
+#
+# Returns tab-separated: workflow_id TAB lease_id TAB found
+# found is "true" when the runtime resolver found a lease; "false" otherwise.
+#
+# IMPORTANT: When found=false, the caller MUST call _emit_unavailable and
+# return. It MUST NOT fall back to current_workflow_id or any branch-derived
+# workflow_id. That fallback was the regression (row tagged "main"). Deleted.
+# ---------------------------------------------------------------------------
+
 _resolve_critic_context() {
-    # Returns tab-separated: workflow_id TAB lease_id
-    # Falls back to current_workflow_id when runtime resolve fails or returns not found.
     local ctx_json found workflow_id lease_id
     ctx_json=$(_local_cc_policy critic context resolve \
         --hook-input "$(printf '%s' "$HOOK_INPUT" | jq -c '.' 2>/dev/null || echo '{}')" \
@@ -64,10 +85,11 @@ _resolve_critic_context() {
         lease_id=$(printf '%s' "$ctx_json" | jq -r '.lease_id // empty' 2>/dev/null || true)
     fi
 
-    # Only fall through to branch-derived workflow_id when the runtime resolver
-    # found nothing AND we have no fallback from the hook input cwd.
-    [[ -n "${workflow_id:-}" ]] || workflow_id=$(current_workflow_id "$PROJECT_ROOT")
-    printf '%s\t%s\n' "${workflow_id:-}" "${lease_id:-}"
+    # @decision DEC-CRITIC-FAIL-CLOSED-003
+    # No fallback to current_workflow_id here. When found=false we return an
+    # empty workflow_id and the caller checks found to decide whether to
+    # call _emit_unavailable. Branch-name guessing is permanently deleted.
+    printf '%s\t%s\t%s\n' "${workflow_id:-}" "${lease_id:-}" "${found:-false}"
 }
 
 _critic_enabled() {
@@ -79,10 +101,16 @@ _critic_enabled() {
     [[ -z "$value" || "$value" == "true" ]]
 }
 
+# @decision DEC-CRITIC-FAIL-CLOSED-003
+# _emit_unavailable now accepts workflow_id and lease_id as arguments (not by
+# re-calling _resolve_critic_context). This prevents a double-resolution that
+# could produce a different (wrong) workflow_id when called from a not-found
+# path. Callers pass the context they already resolved (or the sentinel values).
 _emit_unavailable() {
     local detail="$1"
-    local workflow_id lease_id metadata_json escaped run_json run_id
-    IFS=$'\t' read -r workflow_id lease_id < <(_resolve_critic_context)
+    local workflow_id="${2:-__unresolved__}"
+    local lease_id="${3:-}"
+    local metadata_json escaped run_json run_id
     metadata_json=$(jq -n \
         --arg hook "implementer-critic.sh" \
         --arg failure "$detail" \
@@ -140,20 +168,31 @@ _emit_disabled() {
 EOF
 }
 
-IFS=$'\t' read -r WORKFLOW_ID LEASE_ID < <(_resolve_critic_context)
+IFS=$'\t' read -r WORKFLOW_ID LEASE_ID CONTEXT_FOUND < <(_resolve_critic_context)
+
+# @decision DEC-CRITIC-FAIL-CLOSED-003
+# If the resolver did not find a lease, emit CRITIC_UNAVAILABLE immediately
+# with the __unresolved__ sentinel workflow_id. Do NOT fall through to the
+# critic_enabled check or Node hook invocation — they would use a wrong
+# workflow_id and produce unroutable rows.
+if [[ "${CONTEXT_FOUND:-false}" != "true" ]]; then
+    _emit_unavailable "context-not-resolved: no implementer lease found for this agent_id/cwd" "__unresolved__" ""
+    exit 0
+fi
+
 if ! _critic_enabled "$WORKFLOW_ID" "$PROJECT_ROOT"; then
     _emit_disabled "$WORKFLOW_ID"
     exit 0
 fi
 
 if [[ ! -f "$_LOCAL_CRITIC_HOOK" ]]; then
-    _emit_unavailable "Implementer critic hook not found at $_LOCAL_CRITIC_HOOK"
+    _emit_unavailable "Implementer critic hook not found at $_LOCAL_CRITIC_HOOK" "$WORKFLOW_ID" "$LEASE_ID"
     exit 0
 fi
 
 RESULT=$(printf '%s' "$HOOK_INPUT" | node "$_LOCAL_CRITIC_HOOK") || RESULT=""
 if [[ -z "$RESULT" ]] || ! printf '%s' "$RESULT" | jq -e '.additionalContext' >/dev/null 2>&1; then
-    _emit_unavailable "Implementer critic hook failed or returned malformed output"
+    _emit_unavailable "Implementer critic hook failed or returned malformed output" "$WORKFLOW_ID" "$LEASE_ID"
     exit 0
 fi
 

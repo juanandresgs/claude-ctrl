@@ -170,3 +170,107 @@ def test_critic_context_resolves_lease_id_by_agent_id(db, tmp_path):
     assert result["agent_id"] == test_agent_id, (
         f"Expected agent_id={test_agent_id!r} echoed back, got {result['agent_id']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 3 (F2): resolver resolves recently-revoked lease by agent_id
+# ---------------------------------------------------------------------------
+
+
+def test_critic_context_resolves_recently_revoked_implementer_lease(db, tmp_path):
+    """resolve() returns found=True for a recently-revoked implementer lease matched by agent_id.
+
+    Production failure reproduced (F2): By the time SubagentStop fires, the harness
+    has already revoked the implementer lease. leases.get_current() hardcodes
+    status='active', so it misses the revoked row. This test verifies that
+    critic_context.resolve() uses _fetch_recent_by_agent_id (which widens the
+    status filter) to find the revoked lease.
+
+    This is the test that would have caught the shipped regression in #81.
+    """
+    feature_worktree = str(tmp_path / "feature-worktree")
+    implementer_workflow_id = "feature-fix-critic-fail-closed"
+    test_agent_id = "agent-revoked-abc456"
+
+    # Issue + claim implementer lease (simulates SubagentStart)
+    lease = leases_mod.issue(
+        db,
+        role="implementer",
+        worktree_path=feature_worktree,
+        workflow_id=implementer_workflow_id,
+    )
+    lease_id = lease["lease_id"]
+    leases_mod.claim(db, agent_id=test_agent_id, lease_id=lease_id)
+
+    # REVOKE the lease (simulates what the harness does before SubagentStop fires)
+    revoked = leases_mod.revoke(db, lease_id)
+    assert revoked is True, "Expected lease to be revoked"
+
+    # Verify get_current (active-only) now misses it
+    active_lease = leases_mod.get_current(db, agent_id=test_agent_id)
+    assert active_lease is None, (
+        "leases.get_current should return None for a revoked lease (active-only semantics)."
+    )
+
+    # critic_context.resolve() should still find it via _fetch_recent_by_agent_id
+    hook_input = {
+        "agent_type": "implementer",
+        "agent_id": test_agent_id,
+        "cwd": feature_worktree,
+    }
+    result = critic_context_mod.resolve(db, hook_input)
+
+    assert result["found"] is True, (
+        f"Expected found=True for recently-revoked lease, got: {result}. "
+        "This is F2: critic_context.resolve() must widen the status filter to "
+        "find recently-released/revoked leases within RECENT_LEASE_TTL_SECONDS."
+    )
+    assert result["workflow_id"] == implementer_workflow_id, (
+        f"Expected workflow_id={implementer_workflow_id!r}, got {result['workflow_id']!r}"
+    )
+    assert result["lease_id"] == lease_id, (
+        f"Expected lease_id={lease_id!r}, got {result['lease_id']!r}"
+    )
+    assert result["resolve_path"] == "agent_id", (
+        f"Expected resolve_path='agent_id', got {result['resolve_path']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4 (F1+F3): resolver returns found=False when no lease exists — no fallback
+# ---------------------------------------------------------------------------
+
+
+def test_critic_context_does_not_fallback_to_branch_name_via_bash_wrapper(db, tmp_path):
+    """resolve() returns found=False (no workflow_id set) when no lease matches.
+
+    The resolver itself MUST NOT fall back to a git branch name or any other
+    ambient workflow identity. When found=False, the caller (bash wrapper or
+    Node sidecar) is responsible for emitting CRITIC_UNAVAILABLE.
+
+    This is the negative test for DEC-CRITIC-FAIL-CLOSED-002:
+      - No implementer lease exists for the given agent_id or cwd.
+      - resolve() returns found=False with empty workflow_id.
+      - No fallback derivation occurs inside the resolver.
+    """
+    # No leases issued — resolution must fail.
+    hook_input = {
+        "agent_type": "implementer",
+        "agent_id": "agent-does-not-exist-xyz",
+        "cwd": str(tmp_path / "no-such-worktree"),
+    }
+
+    result = critic_context_mod.resolve(db, hook_input)
+
+    assert result["found"] is False, (
+        f"Expected found=False when no lease exists, got: {result}. "
+        "The resolver must NOT fall back to a branch name."
+    )
+    assert result["workflow_id"] == "", (
+        f"Expected empty workflow_id when not found, got: {result['workflow_id']!r}. "
+        "resolver must return empty string (not 'main' or any branch name) "
+        "so the caller can detect not-found and emit CRITIC_UNAVAILABLE."
+    )
+    assert result["resolve_path"] == "not_found", (
+        f"Expected resolve_path='not_found', got {result['resolve_path']!r}"
+    )
