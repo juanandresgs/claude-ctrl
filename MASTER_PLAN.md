@@ -2,7 +2,7 @@
 
 Status: active
 Created: 2026-03-23
-Last updated: 2026-05-06 (Codex critic visibility digest)
+Last updated: 2026-05-12 (Implementer critic routing repair initiative)
 
 ## Identity
 
@@ -113,6 +113,42 @@ through deterministic dispatch, critique, review, and landing gates.
   would conflate intentional cleanup with accidental path loss, create a race
   window, and make revocation dependent on filesystem state rather than
   explicit lease IDs.
+- `2026-05-12 -- DEC-CRITIC-CONTEXT-001` Implementer critic context (workflow
+  identity + lease identity at SubagentStop) is owned by a single runtime
+  authority that resolves from the SubagentStop hook input, not by branch
+  inference. The bash wrapper (`hooks/implementer-critic.sh`) and the Node
+  sidecar (`sidecars/codex-review/scripts/implementer-critic-hook.mjs`) call
+  the same `cc-policy` resolver; they must not derive workflow_id via
+  `current_workflow_id()` or `detect_project_root()` when the hook payload
+  carries the implementer's cwd or agent_id. The resolver prefers
+  agent_id-anchored lease lookup, then hook-input-cwd-anchored lease lookup,
+  then a clearly-marked unresolved state — never the orchestrator session
+  branch. Rationale: SubagentStop fires in the orchestrator's context, so
+  PROJECT_ROOT/CLAUDE_PROJECT_DIR resolve to the orchestrator and mis-tag the
+  critic_reviews row to the orchestrator's workflow_id. Encoding the resolver
+  in runtime keeps a single authority per CLAUDE.md "Architecture
+  Preservation" and prevents the bash/Node wrappers from drifting apart.
+- `2026-05-12 -- DEC-CRITIC-BLOCKED-002` When implementer critic is enabled
+  and `dispatch_engine` returns PROCESS ERROR (no matching critic_reviews
+  row, missing execution proof, or non-routable verdict), `hooks/post-task.sh`
+  must surface a hard `BLOCKED:` marker inside
+  `hookSpecificOutput.additionalContext` that the orchestrator already
+  honors as a stop condition (per CLAUDE.md "Auto-Dispatch" rules). The
+  orchestrator must not fall back to the implementer's self-reported
+  `IMPL_RESULT:` trailer to dispatch reviewer; that is the parallel-authority
+  bug that was hiding the broken critic loop. Rationale: encoding the stop in
+  the hook output is mechanically enforced, while a CLAUDE.md prose
+  instruction is brittle and depends on the orchestrator's reading
+  discipline — CLAUDE.md "Architecture Preservation" requires the stricter
+  encoding.
+- `2026-05-12 -- DEC-WT-RETIRE-TEST-005` (closes issue #82)
+  `test_retire_branch_d_fails_after_worktree_remove` must actually exercise
+  the step-4 (git branch -d) failure path after a successful step-3 worktree
+  remove (DEC-WT-RETIRE-003a rollback boundary), e.g. by pre-deleting the
+  feature branch ref so step 4 errors with "branch not found" while step 3
+  succeeds. The step-3 locked-worktree case it previously covered is lifted
+  out into a separately named test (`test_retire_worktree_remove_fails_when_locked`)
+  so coverage of both rollback boundaries is preserved.
 
 ## Active Initiatives
 
@@ -154,6 +190,171 @@ critic digest, traces can reconstruct critic activity, and focused tests cover
 runtime metrics, hook telemetry, and HUD rendering.
 
 **Dependencies:** Public Codex Critic Lane.
+
+### Implementer Critic Routing Repair
+
+**Status:** in-progress
+
+**Workflow:** `fix-implementer-critic-routing`
+**Goal:** `g-fix-critic-routing`
+**Closes:** GitHub issues `#81`, `#82`
+
+**Problem statement.** The implementer critic loop is cosmetic. Three concrete
+defects compound to make Codex critic verdicts unable to drive routing, while
+appearing in the UI and persisting to the database:
+
+- **R1 — wrong workflow_id.** `hooks/implementer-critic.sh` and
+  `sidecars/codex-review/scripts/implementer-critic-hook.mjs` resolve their
+  context via `detect_project_root` / `CLAUDE_PROJECT_DIR` /
+  `current_workflow_id`. SubagentStop fires in the orchestrator's session
+  context, so these resolve to the orchestrator (`/Users/turla/.claude`) and
+  tag `critic_reviews.workflow_id` with the orchestrator's session branch
+  (e.g. `codex-dispatch-runtime-authority`) instead of the implementer's
+  actual workflow_id (e.g. `worktree-retire-authority`).
+- **R2 — empty lease_id.** Same root cause: `lease current --worktree-path`
+  is called with the orchestrator's path, returns nothing, and the wrappers
+  submit `critic-review` rows with `lease_id=""`. The implementer's actual
+  lease (already issued with a populated `agent_id`) is never consulted.
+- **R3 — orchestrator ignores PROCESS ERROR.** Even when `dispatch_engine`
+  correctly returns `next_role=None, error="PROCESS ERROR: implementer
+  critic did not run."` because no critic_reviews row matches the workflow_id
+  it's looking up, the orchestrator reads the implementer's self-reported
+  `IMPL_RESULT: complete, READY_FOR_REVIEWER` trailer and dispatches reviewer
+  manually. This is the parallel-authority pattern CLAUDE.md "Architecture
+  Preservation" forbids.
+
+Hard evidence in `state.db` `critic_reviews`: three rows for recent runs,
+none matching the implementer's workflow_id, all with `lease_id=""`, all
+TRY_AGAIN — including row id=3, whose verdict text correctly identified that
+`test_retire_branch_d_fails_after_worktree_remove` does not exercise the
+step-4 failure path it claims to. We shipped past it because the routing was
+silently broken.
+
+**Goal.** Close the implementer critic loop end-to-end so a TRY_AGAIN verdict
+from Codex actually routes implementer→implementer (and a BLOCKED_BY_PLAN
+verdict routes implementer→planner), with a regression test that proves it,
+and fix the #82 test as part of the same bundle so the now-closed loop would
+catch equivalent gaps going forward.
+
+**Non-goals.**
+- Reshaping the canonical routing table (DEC-COMPLETION-001 / DEC-ROUTING-002
+  remain authoritative).
+- Changing reviewer outer-loop readiness semantics.
+- Reworking critic execution-proof validation rules.
+
+**Architecture decisions.**
+- DEC-CRITIC-CONTEXT-001 (this update): runtime-owned resolver, called from
+  both wrappers; agent_id-first, hook-input-cwd-second lookup; never branch
+  inference. (Architectural choice B + C from the planner brief; choice A — a
+  parallel inline fix in each wrapper — was rejected because it preserves two
+  drift-prone authorities.)
+- DEC-CRITIC-BLOCKED-002 (this update): post-task.sh emits a hard `BLOCKED:`
+  signal on PROCESS ERROR. (Architectural choice R3b; choice R3a — a prose
+  fix in CLAUDE.md — was rejected because the existing CLAUDE.md "Auto-
+  Dispatch" rules already honor BLOCKED, so the mechanical fix is cheaper
+  than relying on orchestrator narration discipline.)
+- DEC-WT-RETIRE-TEST-005 (this update): #82 test rewrite ships in this same
+  bundle; the whole point is closing a loop that would otherwise let the same
+  class of defect through.
+
+**Scope (authoritative — runtime scope-sync written for
+`wi-fix-critic-routing-implementation`):**
+
+Allowed / required surfaces:
+- `hooks/implementer-critic.sh` (R1, R2)
+- `sidecars/codex-review/scripts/implementer-critic-hook.mjs` (R1, R2)
+- `runtime/cli.py` and/or `runtime/core/critic_context.py` (new resolver)
+- `runtime/core/dispatch_engine.py` (verify PROCESS ERROR shape; do not
+  expand routing table)
+- `runtime/core/critic_reviews.py` (touch only if `assess_latest` needs
+  adjustment — default expectation is no change)
+- `hooks/post-task.sh` (R3b BLOCKED encoding)
+- `tests/runtime/test_critic_context.py` (new)
+- `tests/runtime/test_critic_routing_end_to_end.py` (new)
+- `tests/runtime/test_dispatch_engine_critic.py` (new)
+- `tests/runtime/test_post_task_blocked_signal.py` (new)
+- `tests/runtime/test_retire_worktree_cli.py` (rewrite of the named test,
+  plus a new `test_retire_worktree_remove_fails_when_locked`)
+
+Forbidden surfaces:
+- `runtime/core/completions.py` (DEC-COMPLETION-001 routing table)
+- `agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md`,
+  `agents/guardian.md` (no agent-prose routing fixes; this is a runtime/hook
+  fix)
+- `settings.json` (hook wiring is correct; this is a logic fix)
+- Existing Decision Log entries above DEC-WT-RETIRE-004 (append-only)
+
+**Evaluation Contract (mirrors the runtime work-item record):**
+
+Required tests (real SQLite, real subprocess; no `unittest.mock.patch` on
+subprocess in new tests, per Sacred Practice #5):
+1. `tests/runtime/test_critic_context.py::test_critic_context_resolves_implementer_workflow_from_hook_input`
+2. `tests/runtime/test_critic_context.py::test_critic_context_resolves_lease_id_by_agent_id`
+3. `tests/runtime/test_critic_routing_end_to_end.py::test_critic_review_submitted_with_correct_workflow_id`
+4. `tests/runtime/test_dispatch_engine_critic.py::test_dispatch_engine_routes_try_again_back_to_implementer`
+5. `tests/runtime/test_dispatch_engine_critic.py::test_dispatch_engine_blocks_when_critic_missing`
+6. `tests/runtime/test_post_task_blocked_signal.py::test_post_task_emits_blocked_signal_on_process_error`
+7. `tests/runtime/test_retire_worktree_cli.py::test_retire_branch_d_fails_after_worktree_remove` (rewritten — step-4)
+8. `tests/runtime/test_retire_worktree_cli.py::test_retire_worktree_remove_fails_when_locked` (new — preserves step-3 coverage)
+
+Required real-path check: a live implementer dispatch against a scratch
+workflow with `critic_enabled=true`, emitting known-bad code, must produce a
+`critic_reviews` row tagged to the scratch workflow_id with non-empty
+lease_id, and `dispatch_engine.process_agent_stop` must return
+`next_role="implementer"`. Trace captured in PR description.
+
+Required authority invariants:
+- `critic_reviews.workflow_id` equals the implementer lease workflow_id, not
+  the orchestrator session branch.
+- `critic_reviews.lease_id` is non-empty whenever an implementer lease
+  exists at SubagentStop.
+- `dispatch_engine` returns `next_role=None` with PROCESS ERROR when
+  `critic_enabled=true` and no matching critic_reviews row exists for the
+  resolved workflow_id.
+- `post-task.sh` `additionalContext` carries a `BLOCKED:` marker on PROCESS
+  ERROR.
+
+Forbidden shortcuts:
+- No prose-only CLAUDE.md fix for R3 without the runtime BLOCKED signal.
+- No `current_workflow_id()` fallback in the critic hook when hook-input cwd
+  is present.
+- No mocking of `subprocess.*` in the new critic-context or end-to-end tests.
+- No filing the #82 rewrite as follow-up.
+- No expansion of the `dispatch_engine` routing table.
+
+Ready-for-guardian definition: all 8 required tests pass on a clean
+checkout; live real-path trace in PR description proves the row matches and
+lease_id is populated; reviewer subagent returns
+`REVIEW_VERDICT=ready_for_guardian`; `cc-policy` reports no scope
+violations; PR text references `#81` and `#82` for closure.
+
+**Wave decomposition.**
+
+Single bundle (per CLAUDE.md "Architecture Preservation" — authority change
+ships with invariants, derived surfaces, and removal of the superseded path
+in one change).
+
+- **W-CCR-1** (`wi-fix-critic-routing-implementation`) — single
+  implementation slice covering: (a) runtime resolver
+  (`runtime/core/critic_context.py`) and `cc-policy critic context resolve`
+  surface; (b) `hooks/implementer-critic.sh` and the Node sidecar switched to
+  the resolver; (c) `hooks/post-task.sh` BLOCKED encoding for PROCESS ERROR;
+  (d) tests #1–#6 above; (e) #82 test rewrite plus the new
+  `test_retire_worktree_remove_fails_when_locked`. Weight: L. Gate:
+  review→guardian(land). Deps: none. Landing policy: default grant from
+  work-item record (`can_commit_branch`, `can_request_review`,
+  `can_autoland`, `no_ff`); destructive/history-rewrite actions remain
+  user-gated per the standard grant. Integration: critic_reviews table,
+  leases table, dispatch_attempts table, workflow_bindings.
+
+**Exit.** Active goal closes when the work item lands, the live real-path
+trace is in the PR description, and both `#81` and `#82` are closed by the
+merge. The Critic Telemetry And Visibility initiative remains in-progress —
+this fix is a prerequisite, not a substitute, for visibility work.
+
+**Dependencies.** None blocking. Public Codex Critic Lane and Critic
+Telemetry And Visibility initiatives are upstream context; this fix is
+inside their authority surface but does not change their contracts.
 
 ## Completed Initiatives
 
