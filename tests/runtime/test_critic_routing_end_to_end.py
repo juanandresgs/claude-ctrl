@@ -169,3 +169,165 @@ def test_critic_review_submitted_with_correct_workflow_id(db, tmp_path):
     assert "AUTO_DISPATCH: implementer" in suggestion, (
         f"Expected AUTO_DISPATCH: implementer in suggestion, got: {suggestion!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 2 (F3): bash-wrapper-to-resolver wire with a revoked lease in the path
+# ---------------------------------------------------------------------------
+
+import json
+import os
+import subprocess
+import sqlite3 as _sqlite3
+
+
+_REPO_ROOT_E2E = Path(__file__).resolve().parent.parent.parent
+_BASH_HOOK = _REPO_ROOT_E2E / "hooks" / "implementer-critic.sh"
+
+
+def test_critic_loop_end_to_end_under_realistic_lease_lifecycle(tmp_path):
+    """bash wrapper produces a critic_reviews row tagged to the implementer workflow_id.
+
+    This is the test that would have caught the shipped regression (#81):
+      - issue → claim → REVOKE → SubagentStop → implementer-critic.sh
+
+    Production failure reproduced (F1 + F2):
+      - F2: leases.get_current only returned active leases, missing the revoked one.
+      - F1: bash wrapper fell back to current_workflow_id (branch name = "main").
+      - Result: critic_reviews row tagged workflow_id='main', unroutable.
+
+    After the fix:
+      - critic_context.resolve() widens status filter to find revoked lease.
+      - bash wrapper emits CRITIC_UNAVAILABLE with __unresolved__ when not found.
+      - When found, workflow_id matches the implementer's feature workflow.
+
+    Compound-interaction sequence (real production path):
+      1. Issue implementer lease with a known feature workflow_id.
+      2. Claim the lease with a known agent_id (SubagentStart).
+      3. REVOKE the lease (mimics the harness lifecycle before SubagentStop fires).
+      4. Pipe synthetic SubagentStop JSON into hooks/implementer-critic.sh via subprocess.
+      5. Query critic_reviews: workflow_id must be the implementer's feature workflow
+         (NOT 'main', NOT the branch name), OR workflow_id='__unresolved__' with
+         CRITIC_UNAVAILABLE (also acceptable — indicates the resolver is fail-closed,
+         not guessing a branch name).
+      6. CRITICAL: workflow_id must NEVER equal 'main' or any branch-derived name.
+
+    No subprocess mocking for git ops. Codex CLI is bypassed via
+    CLAUDEX_IMPLEMENTER_CRITIC_TEST_RESPONSE env var (the existing test override
+    mechanism — see resolveTestReview() in implementer-critic-hook.mjs).
+    """
+    # Set up a real state DB in a temp dir
+    db_path = tmp_path / "state.db"
+    conn = _sqlite3.connect(str(db_path))
+    conn.row_factory = _sqlite3.Row
+
+    from runtime.schemas import ensure_schema
+    ensure_schema(conn)
+    conn.commit()
+
+    feature_workflow_id = "feature-fix-critic-fail-closed-e2e"
+    feature_worktree = str(tmp_path / "feature-worktree")
+    test_agent_id = "e2e-revoke-agent-" + str(id(tmp_path))[-8:]
+
+    # Step 1+2: Issue and claim the implementer lease
+    from runtime.core import leases as leases_mod_e2e
+    lease = leases_mod_e2e.issue(
+        conn,
+        role="implementer",
+        worktree_path=feature_worktree,
+        workflow_id=feature_workflow_id,
+    )
+    lease_id = lease["lease_id"]
+    leases_mod_e2e.claim(conn, agent_id=test_agent_id, lease_id=lease_id)
+    conn.commit()
+
+    # Step 3: REVOKE the lease (harness lifecycle before SubagentStop)
+    leases_mod_e2e.revoke(conn, lease_id)
+    conn.commit()
+    conn.close()
+
+    # Step 4: Invoke bash hook via subprocess with synthetic SubagentStop input
+    hook_input = {
+        "agent_id": test_agent_id,
+        "agent_type": "implementer",
+        "cwd": "/Users/turla/.claude",   # orchestrator cwd, NOT the feature worktree
+        "hook_event_name": "SubagentStop",
+        "permission_mode": "bypassPermissions",
+    }
+    # Use CLAUDEX_IMPLEMENTER_CRITIC_TEST_RESPONSE to bypass Codex CLI invocation.
+    # This is the same test-override used in implementer-critic-hook.mjs:resolveTestReview().
+    test_response = json.dumps({
+        "verdict": "READY_FOR_REVIEWER",
+        "summary": "E2E test override: all checks pass.",
+        "detail": "Synthetic critic response for bash-wrapper-to-resolver wire test.",
+        "findings": ["E2E test: implementation looks correct."],
+        "next_steps": [],
+        "progress": ["E2E test override active."]
+    })
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(_REPO_ROOT_E2E),
+        "CLAUDE_POLICY_DB": str(db_path),
+        "CLAUDE_PROJECT_DIR": str(_REPO_ROOT_E2E),
+        "CLAUDEX_IMPLEMENTER_CRITIC_TEST_RESPONSE": test_response,
+    }
+    result = subprocess.run(
+        ["bash", str(_BASH_HOOK)],
+        input=json.dumps(hook_input),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(_REPO_ROOT_E2E),
+        timeout=60,
+    )
+    # The bash hook should exit 0 (CRITIC_UNAVAILABLE or a valid review)
+    # Allow non-zero exit only if there's a very early failure (e.g., jq missing)
+    assert result.returncode == 0, (
+        f"bash hook exited {result.returncode}.\n"
+        f"stdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+
+    # Step 5: Query critic_reviews from the DB
+    conn2 = _sqlite3.connect(str(db_path))
+    conn2.row_factory = _sqlite3.Row
+    rows = conn2.execute(
+        "SELECT * FROM critic_reviews ORDER BY created_at DESC LIMIT 5"
+    ).fetchall()
+    conn2.close()
+
+    assert len(rows) > 0, (
+        "Expected at least one critic_reviews row after bash hook invocation. "
+        f"Hook stdout: {result.stdout}\nHook stderr: {result.stderr}"
+    )
+
+    latest_row = dict(rows[0])
+    actual_workflow_id = latest_row.get("workflow_id", "")
+
+    # Step 6: CRITICAL invariant — workflow_id must NEVER be 'main' or branch-derived
+    # Acceptable outcomes:
+    #   a) workflow_id == feature_workflow_id (resolver found the revoked lease — F2 fixed)
+    #   b) workflow_id == '__unresolved__' (CRITIC_UNAVAILABLE from fail-closed path)
+    # Unacceptable:
+    #   c) workflow_id == 'main', 'codex-dispatch-runtime-authority', or any other branch name
+    branch_derived_ids = {
+        "main",
+        "codex-dispatch-runtime-authority",
+        "feature-fix-critic-fail-closed",  # also a branch name, not a workflow_id here
+    }
+    assert actual_workflow_id not in branch_derived_ids, (
+        f"REGRESSION: critic_reviews row has branch-derived workflow_id={actual_workflow_id!r}. "
+        f"This is the bug being fixed. Full row: {latest_row}"
+    )
+    assert actual_workflow_id in (feature_workflow_id, "__unresolved__"), (
+        f"Expected workflow_id to be {feature_workflow_id!r} (F2 fixed) or '__unresolved__' "
+        f"(fail-closed), got {actual_workflow_id!r}. Full row: {latest_row}.\n"
+        f"Hook stdout: {result.stdout}\nHook stderr: {result.stderr}"
+    )
+
+    # If the resolver worked correctly (F2 fixed), we also want lease_id
+    if actual_workflow_id == feature_workflow_id:
+        assert latest_row.get("lease_id"), (
+            f"Expected non-empty lease_id when workflow_id is resolved correctly. "
+            f"Row: {latest_row}"
+        )
