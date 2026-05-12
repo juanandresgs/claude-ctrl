@@ -219,17 +219,59 @@ function readConfiguredReviewProvider(cwd, workflowId = "") {
   }
 }
 
-function resolveCriticContext(cwd) {
+// resolveCriticContext() — renamed to resolveCriticContextFromRuntime (DEC-CRITIC-CONTEXT-001).
+// The old implementation used lease current --worktree-path <cwd>, which resolves
+// to the ORCHESTRATOR's project root when SubagentStop fires.  The single authority
+// for critic context resolution is now runtime/core/critic_context.py, called via
+// cc-policy critic context resolve --hook-input <hook_input_json>.
+
+/**
+ * Resolve implementer workflow_id + lease_id from the SubagentStop hook input JSON.
+ *
+ * DEC-CRITIC-CONTEXT-001: single authority — delegates to runtime/core/critic_context.py
+ * via cc-policy critic context resolve so both this sidecar and the bash wrapper share
+ * exactly the same resolution logic.
+ *
+ * Priority (enforced by the runtime):
+ *   1. agent_id from hook input  -> leases.get_current(agent_id=...)
+ *   2. cwd from hook input       -> leases.get_current(worktree_path=...)
+ *   3. fallback worktree path    -> leases.get_current(worktree_path=...)
+ *
+ * Returns { workflowId, leaseId }.  On failure, workflowId falls back to the
+ * branch-derived identifier only as a last resort (not from input.cwd).
+ *
+ * Note: Mocking the Codex/Gemini CLI in tests is acceptable; the runtime
+ * resolver itself is a real SQLite call and must NOT be mocked in tests.
+ */
+function resolveCriticContextFromRuntime(cwd, input) {
   try {
-    const lease = readPolicyJson(cwd, ["lease", "current", "--worktree-path", cwd]);
-    if (lease?.found) {
+    const hookInputJson = JSON.stringify(input || {});
+    const ctx = readPolicyJson(cwd, [
+      "critic", "context", "resolve",
+      "--hook-input", hookInputJson,
+      "--fallback-worktree-path", cwd
+    ]);
+    if (ctx?.found) {
       return {
-        workflowId: String(lease.workflow_id || currentWorkflowId(cwd)),
-        leaseId: String(lease.lease_id || "")
+        workflowId: String(ctx.workflow_id || ""),
+        leaseId: String(ctx.lease_id || "")
       };
     }
-  } catch {
-    // Fall through to branch-derived workflow identity.
+    // Runtime resolver returned not-found: fall through to branch-derived id as
+    // last resort.  This only fires when neither agent_id nor cwd resolves a lease.
+    logNote(
+      "[implementer-critic] critic context resolve: not found, falling back to branch-derived id. " +
+      String(ctx?.error || "")
+    );
+  } catch (err) {
+    // Probe only: runtime unavailable or JSON parse failed.  Fall through to
+    // branch-derived workflow identity so the hook can still emit CRITIC_UNAVAILABLE
+    // with an audit trail rather than silently dying.
+    logNote(
+      "[implementer-critic] critic context resolve failed: " +
+      (err instanceof Error ? err.message : String(err)) +
+      "; falling back to branch-derived workflow_id."
+    );
   }
   return {
     workflowId: currentWorkflowId(cwd),
@@ -970,7 +1012,7 @@ async function main() {
   const cwd = resolveWorkspaceRoot(
     input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd()
   );
-  const criticContext = resolveCriticContext(cwd);
+  const criticContext = resolveCriticContextFromRuntime(cwd, input);
   const configuredProvider = readConfiguredReviewProvider(cwd, criticContext.workflowId);
   let criticRun = null;
   try {

@@ -3980,6 +3980,49 @@ def _handle_critic_run(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Critic top-level handler (DEC-CRITIC-CONTEXT-001)
+# ---------------------------------------------------------------------------
+
+
+def _handle_critic(args) -> int:
+    """Handle ``cc-policy critic`` subcommands.
+
+    Subcommands:
+      context resolve --hook-input <json>   Resolve implementer workflow_id +
+          lease_id from a SubagentStop hook input JSON.  This is the single
+          authority called by implementer-critic.sh and implementer-critic-hook.mjs
+          (DEC-CRITIC-CONTEXT-001).
+
+    Returns JSON with:
+      found          bool   -- True when an implementer lease was resolved.
+      workflow_id    str    -- resolved workflow_id.
+      lease_id       str    -- resolved lease_id (empty when not found).
+      worktree_path  str    -- resolved worktree_path from the lease.
+      agent_id       str    -- agent_id from the hook input.
+      resolve_path   str    -- "agent_id" | "cwd" | "fallback" | "not_found".
+      error          str    -- human-readable failure reason when not found.
+    """
+    import runtime.core.critic_context as critic_context_mod
+
+    conn = _get_conn()
+    try:
+        if getattr(args, "subcommand", None) == "context":
+            if getattr(args, "action", None) == "resolve":
+                hook_input_raw = getattr(args, "hook_input", "") or ""
+                fallback_path = getattr(args, "fallback_worktree_path", "") or ""
+                result = critic_context_mod.resolve_from_json_string(
+                    conn,
+                    hook_input_raw,
+                    fallback_worktree_path=fallback_path,
+                )
+                return _ok(result)
+            return _err(f"unknown critic context action: {getattr(args, 'action', '')!r}")
+        return _err(f"unknown critic subcommand: {getattr(args, 'subcommand', '')!r}")
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Bug pipeline handler
 # ---------------------------------------------------------------------------
 
@@ -7185,6 +7228,40 @@ def build_parser() -> argparse.ArgumentParser:
     crun_metrics.add_argument("--workflow-id", dest="workflow_id", default=None)
     crun_metrics.add_argument("--role", default="implementer")
 
+    # critic — single-authority implementer critic context resolver (DEC-CRITIC-CONTEXT-001)
+    critic_p = subparsers.add_parser(
+        "critic",
+        help="Implementer critic context resolution (single authority, DEC-CRITIC-CONTEXT-001)",
+    )
+    critic_sub = critic_p.add_subparsers(dest="subcommand", required=True)
+
+    critic_ctx_p = critic_sub.add_parser(
+        "context",
+        help="Resolve critic context (workflow_id, lease_id) from hook input",
+    )
+    critic_ctx_sub = critic_ctx_p.add_subparsers(dest="action", required=True)
+
+    critic_ctx_resolve = critic_ctx_sub.add_parser(
+        "resolve",
+        help=(
+            "Resolve implementer workflow_id + lease_id from a SubagentStop hook input JSON. "
+            "Priority: agent_id > cwd > fallback_worktree_path. "
+            "Returns {found, workflow_id, lease_id, worktree_path, agent_id, resolve_path, error}."
+        ),
+    )
+    critic_ctx_resolve.add_argument(
+        "--hook-input",
+        dest="hook_input",
+        required=True,
+        help="SubagentStop hook input JSON string",
+    )
+    critic_ctx_resolve.add_argument(
+        "--fallback-worktree-path",
+        dest="fallback_worktree_path",
+        default="",
+        help="Last-resort worktree_path when agent_id and cwd both miss (optional)",
+    )
+
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
     sc_sub = sc_p.add_subparsers(dest="action", required=True)
@@ -7893,6 +7970,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_critic_review(args)
     if args.domain == "critic-run":
         return _handle_critic_run(args)
+    if args.domain == "critic":
+        return _handle_critic(args)
     if args.domain == "session-activity":
         return _handle_session_activity(args)
     if args.domain == "enforcement-gap":
