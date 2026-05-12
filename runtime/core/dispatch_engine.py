@@ -612,7 +612,29 @@ def process_agent_stop(
     #   all other transitions:   AUTO_DISPATCH: <role> (workflow_id=W)
     # ---------------------------------------------------------------------------
     if result["error"]:
-        result["suggestion"] = result["error"]
+        # DEC-CRITIC-BLOCKED-002: when critic_enabled=True and the implementer stop
+        # has no matching critic_reviews row, dispatch_engine already sets
+        # error="PROCESS ERROR: implementer critic did not run." with next_role=None.
+        # The orchestrator's chain-stop rule fires on BLOCKED, ERROR, or PROCESS ERROR,
+        # but human transcripts sometimes bypass the PROCESS ERROR check when the
+        # implementer itself emitted READY_FOR_REVIEWER in its response text.
+        # Adding an explicit BLOCKED: marker on its own line makes the signal
+        # grep-able and unambiguous in additionalContext.  Both lines are preserved
+        # so that any parser relying on PROCESS ERROR continues to work.
+        _error_str = str(result["error"])
+        _critic_missing_errors = {
+            "PROCESS ERROR: implementer critic did not run.",
+            "PROCESS ERROR: implementer critic did not run (CRITIC_UNAVAILABLE).",
+            "PROCESS ERROR: implementer critic execution proof invalid.",
+        }
+        if _error_str in _critic_missing_errors:
+            result["suggestion"] = (
+                "BLOCKED: implementer critic did not run; "
+                "routing back to implementer is mandatory before reviewer.\n"
+                + _error_str
+            )
+        else:
+            result["suggestion"] = _error_str
     elif result["next_role"]:
         if result["auto_dispatch"]:
             # Machine-parseable prefix: orchestrator can auto-dispatch without
