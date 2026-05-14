@@ -92,7 +92,18 @@ get_plan_status() {
 
     # Plan age
     local plan_mod
-    plan_mod=$(stat -f '%m' "$root/MASTER_PLAN.md" 2>/dev/null || stat -c '%Y' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    # @decision DEC-CONTEXT-LIB-STAT-PORTABILITY-001
+    # @title GNU-first stat ordering + mandatory numeric guard for plan_mod
+    # @status accepted
+    # @rationale The original BSD-first chain assumed stat -f fails on GNU systems,
+    #   but Windows git bash (GNU coreutils) treats -f as --file-system and succeeds,
+    #   emitting multi-line filesystem text. plan_mod then held that text, and the
+    #   [[ -gt 0 ]] arithmetic context threw: File: unbound variable (set -u).
+    #   Fix: (1) GNU stat -c '%Y' first (correct on Linux AND Windows git bash);
+    #   (2) mandatory numeric guard so any non-integer output is forced to 0 before
+    #   arithmetic use -- the guard is the real robustness fix, not just reordering.
+    plan_mod=$(stat -c '%Y' "$root/MASTER_PLAN.md" 2>/dev/null || stat -f '%m' "$root/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    [[ "$plan_mod" =~ ^[0-9]+$ ]] || plan_mod=0
     if [[ "$plan_mod" -gt 0 ]]; then
         local now
         now=$(date +%s)
@@ -380,9 +391,22 @@ current_workflow_id() {
 }
 
 # --- Cross-platform filesystem helpers ---
+# @decision DEC-CONTEXT-LIB-STAT-PORTABILITY-001
+# @title (see get_plan_status) -- same GNU-first stat + numeric guard pattern
+# @status accepted
+# @rationale file_mtime() had the identical BSD-first ordering bug: stat -f on
+#   Windows git bash (GNU) interprets -f as --file-system and succeeds, returning
+#   filesystem info text. Callers that pass the result to arithmetic (check-guardian.sh
+#   does AGE=$((NOW - MOD_TIME))) would crash or produce garbage. Fix: GNU-first
+#   ordering plus in-function numeric validation so the return value is always a
+#   clean integer (0 for missing/unstateable, epoch for success).
 file_mtime() {
     local path="$1"
-    stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null || echo "0"
+    local _mtime
+    _mtime=$(stat -c '%Y' "$path" 2>/dev/null || stat -f '%m' "$path" 2>/dev/null || echo "0")
+    [[ "$_mtime" =~ ^[0-9]+$ ]] || _mtime=0
+    printf '%s
+' "$_mtime"
 }
 
 # --- Evaluation state (TKT-024: sole readiness authority) ---
