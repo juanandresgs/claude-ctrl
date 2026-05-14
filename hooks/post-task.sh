@@ -180,29 +180,74 @@ DIAG
     log_info "POST-TASK" "wrote diagnostic summary for ${agent_type} at ${sum_file}"
 }
 
+# --- Background-dispatch guard (DEC-POST-TASK-BG-DISPATCH-001) ---
+# When run_in_background=true, PostToolUse:Task fires the moment the tool call
+# returns an agentId — the subagent is still running. Calling finalize_trace here
+# would delete the .active-<type>-<sid>-<phash> marker while the subagent is live.
+# pre-write.sh Gate 1.5 checks for this marker to allow implementer source writes;
+# removing it early causes all Write/Edit calls from the subagent to be blocked with
+# "Source writes from orchestrator context."
+#
+# Discriminator: tool_input.run_in_background is the flag the orchestrator passes
+# when dispatching a background subagent. It appears in HOOK_INPUT.tool_input exactly
+# as the caller specified it. When absent or false, this is a foreground dispatch
+# (tool call blocks until the agent returns) — the existing fallback is correct.
+#
+# Risk: if SubagentStop fails to fire for a bg subagent, the marker leaks until the
+# next session or a manual stale-marker sweep. This is acceptable: a leaked marker
+# causes a false-allow (benign) rather than a false-deny (the pre-existing bug).
+# Future work: implement a periodic stale-marker sweep in session-end.sh that removes
+# markers older than the configured stale_threshold (1800s default in trace-lib.sh).
+#
+# @decision DEC-POST-TASK-BG-DISPATCH-001
+# @title Skip fallback finalize for background-dispatch returns
+# @status accepted
+# @rationale PostToolUse:Task fires twice for background subagents: (1) immediately
+#   when the orchestrator's Task call returns an agentId (bg dispatch return), and
+#   (2) never — because SubagentStop is the canonical completion event. The existing
+#   fallback finalization (detect_active_trace + finalize_trace) was designed for the
+#   case where SubagentStop does not fire (documented unreliability, DEC-PROOF-LIFE-001).
+#   For bg dispatches, this premature finalization deletes the .active-* marker that
+#   pre-write.sh Gate 1.5 requires to permit source writes from implementer subagents.
+#   Fix: detect tool_input.run_in_background==true and skip finalize_trace. The actual
+#   finalization will happen when SubagentStop fires. For fg dispatches (bg==false or
+#   absent), the existing fallback runs unchanged — SubagentStop unreliability still
+#   applies there.
+_IS_BG_DISPATCH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.run_in_background // false' 2>/dev/null || echo "false")
+
 _fb_trace_id=""  # Initialize for use in implementer section below (DEC-CYCLE-DETECT-001)
 if [[ "$IS_SUBAGENT" == "true" && "$SUBAGENT_TYPE" != "tester" && -n "$SUBAGENT_TYPE" ]]; then
-    _fb_project_root=$(detect_project_root 2>/dev/null || echo "")
-    if [[ -n "$_fb_project_root" ]]; then
-        _fb_trace_id=$(detect_active_trace "$_fb_project_root" "$SUBAGENT_TYPE" 2>/dev/null || echo "")
-        if [[ -n "$_fb_trace_id" ]]; then
-            _fb_trace_dir="${TRACE_STORE}/${_fb_trace_id}"
-            log_info "POST-TASK" "fallback: detected active ${SUBAGENT_TYPE} trace ${_fb_trace_id} — writing diagnostic summary + finalizing"
-            _write_diagnostic_summary "$_fb_trace_dir" "$SUBAGENT_TYPE" "$_fb_project_root"
-            finalize_trace "$_fb_trace_id" "$_fb_project_root" "$SUBAGENT_TYPE" 2>/dev/null || true
-            log_info "POST-TASK" "fallback: trace finalized for agent_type=${SUBAGENT_TYPE}"
-            append_audit "$_fb_project_root" "post_task_fallback_finalize" \
-                "agent_type=${SUBAGENT_TYPE} trace=${_fb_trace_id}" 2>/dev/null || true
-            # Emit additionalContext for non-implementer agents (implementer gets its own
-            # DISPATCH TESTER NOW directive below — do not exit here for implementers).
-            if [[ "$SUBAGENT_TYPE" != "implementer" ]]; then
-                _fb_summary=$(head -c 2000 "${TRACE_STORE}/${_fb_trace_id}/summary.md" 2>/dev/null || echo "")
-                if [[ -n "$_fb_summary" ]]; then
-                    _fb_escaped=$(printf 'post-task fallback (%s): %s' "$SUBAGENT_TYPE" "$_fb_summary" | jq -Rs .)
-                    cat <<EOF
+    # Background dispatch: the subagent is still running — skip finalize to preserve marker.
+    # SubagentStop is the canonical finalize event for background subagents.
+    if [[ "$_IS_BG_DISPATCH" == "true" ]]; then
+        log_info "POST-TASK" "bg dispatch return for ${SUBAGENT_TYPE} — skipping fallback finalize (subagent still running, marker preserved for Gate 1.5)"
+        append_audit "$(detect_project_root 2>/dev/null || echo /)" "post_task_bg_dispatch_skip" \
+            "agent_type=${SUBAGENT_TYPE} bg=true — finalize deferred to SubagentStop" 2>/dev/null || true
+        # Fall through: do NOT finalize, do NOT write summary.md (subagent hasn't completed yet).
+        # The implementer directive below (lines 230+) still runs for bg implementer dispatches.
+    else
+        _fb_project_root=$(detect_project_root 2>/dev/null || echo "")
+        if [[ -n "$_fb_project_root" ]]; then
+            _fb_trace_id=$(detect_active_trace "$_fb_project_root" "$SUBAGENT_TYPE" 2>/dev/null || echo "")
+            if [[ -n "$_fb_trace_id" ]]; then
+                _fb_trace_dir="${TRACE_STORE}/${_fb_trace_id}"
+                log_info "POST-TASK" "fallback: detected active ${SUBAGENT_TYPE} trace ${_fb_trace_id} — writing diagnostic summary + finalizing"
+                _write_diagnostic_summary "$_fb_trace_dir" "$SUBAGENT_TYPE" "$_fb_project_root"
+                finalize_trace "$_fb_trace_id" "$_fb_project_root" "$SUBAGENT_TYPE" 2>/dev/null || true
+                log_info "POST-TASK" "fallback: trace finalized for agent_type=${SUBAGENT_TYPE}"
+                append_audit "$_fb_project_root" "post_task_fallback_finalize" \
+                    "agent_type=${SUBAGENT_TYPE} trace=${_fb_trace_id}" 2>/dev/null || true
+                # Emit additionalContext for non-implementer agents (implementer gets its own
+                # DISPATCH TESTER NOW directive below — do not exit here for implementers).
+                if [[ "$SUBAGENT_TYPE" != "implementer" ]]; then
+                    _fb_summary=$(head -c 2000 "${TRACE_STORE}/${_fb_trace_id}/summary.md" 2>/dev/null || echo "")
+                    if [[ -n "$_fb_summary" ]]; then
+                        _fb_escaped=$(printf 'post-task fallback (%s): %s' "$SUBAGENT_TYPE" "$_fb_summary" | jq -Rs .)
+                        cat <<EOF
 { "additionalContext": $_fb_escaped }
 EOF
-                    exit 0
+                        exit 0
+                    fi
                 fi
             fi
         fi
