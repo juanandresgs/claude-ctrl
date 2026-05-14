@@ -411,3 +411,204 @@ def test_ensure_schema_idempotent_on_new_db():
     assert "workflow_id" in cols
     assert "project_root" in cols
     c.close()
+
+
+# ---------------------------------------------------------------------------
+# DEC-IMPL-STOP-MARKER-001: require_active_lease filter tests
+#
+# The lease-aware get_active() path (require_active_lease=True) defends
+# against the dropped-Stop-signal failure class: a marker survives past its
+# owning agent's lease release/revoke because the Stop hook never fired.
+# Resolver-side filter ensures these ghost markers are silently skipped.
+#
+# Cross-reference: yakcc#171, DEC-IMPL-STOP-MARKER-001 (markers.py).
+# ---------------------------------------------------------------------------
+
+
+def _seed_lease(conn, agent_id: str, status: str = "active") -> None:
+    """Insert a minimal dispatch_leases row with the given status.
+
+    released_at is set to a non-null integer for non-active leases so that
+    the JOIN predicate correctly filters them out. The exact value doesn't
+    matter for these tests.
+    """
+    import time as _time
+    now = int(_time.time())
+    released_at = now if status != "active" else None
+    conn.execute(
+        """
+        INSERT INTO dispatch_leases
+            (lease_id, agent_id, role, workflow_id, worktree_path, branch,
+             allowed_ops_json, blocked_ops_json, requires_eval,
+             status, issued_at, expires_at, released_at)
+        VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', 0, ?, ?, ?, ?)
+        """,
+        (
+            f"lease-{agent_id}",
+            agent_id,
+            "implementer",
+            "wf-001",
+            "/repo/project-a",
+            "feature/x",
+            status,
+            now,
+            now + 7200,
+            released_at,
+        ),
+    )
+    conn.commit()
+
+
+def test_get_active_excludes_released_lease_markers(conn):
+    """require_active_lease=True skips a marker whose owning lease is released.
+
+    Production scenario (yakcc#171): Stop hook never fired after lease release.
+    The marker sits with is_active=1 but its lease has status='released'.
+    get_active(require_active_lease=True) must return None.
+
+    Back-compat: get_active() with default parameter returns the marker unchanged.
+    """
+    markers.set_active(
+        conn, "agent-impl", "implementer",
+        project_root="/repo/project-a", workflow_id="wf-001",
+    )
+    _seed_lease(conn, "agent-impl", status="released")
+
+    # Lease-aware path: stale marker must be skipped.
+    result = markers.get_active(
+        conn,
+        project_root="/repo/project-a",
+        require_active_lease=True,
+    )
+    assert result is None, "released-lease marker must be invisible to lease-aware resolver"
+
+    # Back-compat path: default behavior unchanged — marker still visible.
+    legacy = markers.get_active(conn, project_root="/repo/project-a")
+    assert legacy is not None
+    assert legacy["agent_id"] == "agent-impl"
+
+
+def test_get_active_excludes_revoked_lease_markers(conn):
+    """require_active_lease=True skips a marker whose owning lease is revoked.
+
+    Revoke is the emergency-stop lease transition. Same ghost-marker risk:
+    the Stop hook may not have run.
+    """
+    markers.set_active(
+        conn, "agent-guardian", "guardian",
+        project_root="/repo/project-a", workflow_id="wf-002",
+    )
+    _seed_lease(conn, "agent-guardian", status="revoked")
+
+    result = markers.get_active(
+        conn,
+        project_root="/repo/project-a",
+        require_active_lease=True,
+    )
+    assert result is None, "revoked-lease marker must be invisible to lease-aware resolver"
+
+    # Back-compat unchanged.
+    legacy = markers.get_active(conn, project_root="/repo/project-a")
+    assert legacy is not None
+
+
+def test_get_active_excludes_expired_lease_markers(conn):
+    """require_active_lease=True skips a marker whose owning lease is expired.
+
+    Expiry (TTL-based transition) is another non-Stop termination path.
+    """
+    markers.set_active(
+        conn, "agent-reviewer", "reviewer",
+        project_root="/repo/project-a", workflow_id="wf-003",
+    )
+    _seed_lease(conn, "agent-reviewer", status="expired")
+
+    result = markers.get_active(
+        conn,
+        project_root="/repo/project-a",
+        require_active_lease=True,
+    )
+    assert result is None, "expired-lease marker must be invisible to lease-aware resolver"
+
+
+def test_get_active_includes_active_lease_markers(conn):
+    """require_active_lease=True returns a marker whose owning lease is still active.
+
+    Positive / happy-path case: agent is live, lease is active, marker returned.
+    """
+    markers.set_active(
+        conn, "agent-impl-live", "implementer",
+        project_root="/repo/project-a", workflow_id="wf-004",
+    )
+    _seed_lease(conn, "agent-impl-live", status="active")
+
+    result = markers.get_active(
+        conn,
+        project_root="/repo/project-a",
+        require_active_lease=True,
+    )
+    assert result is not None
+    assert result["agent_id"] == "agent-impl-live"
+    assert result["role"] == "implementer"
+
+
+def test_get_active_includes_legacy_no_lease_markers(conn):
+    """require_active_lease=True returns markers with NO owning lease (legacy path).
+
+    Pre-lease-era markers and lifecycle.py callers that do not create a lease
+    must still be visible. The LEFT JOIN must not filter out NULL-lease rows.
+    This ensures the opt-in filter is additive, not a hard gate on all markers.
+    """
+    markers.set_active(
+        conn, "agent-legacy", "implementer",
+        project_root="/repo/project-a", workflow_id="wf-legacy",
+    )
+    # No lease row for agent-legacy — simulates pre-lease or lifecycle caller.
+
+    result = markers.get_active(
+        conn,
+        project_root="/repo/project-a",
+        require_active_lease=True,
+    )
+    assert result is not None, (
+        "legacy marker with no owning lease must be returned by lease-aware resolver"
+    )
+    assert result["agent_id"] == "agent-legacy"
+
+
+def test_get_active_default_param_is_legacy_behavior(conn):
+    """require_active_lease defaults to False — existing call sites unaffected.
+
+    Explicit back-compat invariant: adding require_active_lease must not change
+    get_active() when the parameter is not passed. The default=False means the
+    lease filter is NOT applied.
+    """
+    markers.set_active(conn, "agent-1", "implementer")
+    markers.set_active(conn, "agent-2", "reviewer")
+    conn.execute(
+        "UPDATE agent_markers SET started_at = started_at - 10 WHERE agent_id = 'agent-1'"
+    )
+    conn.commit()
+
+    # With a released lease on agent-2, default path must still return agent-2
+    # (the newest active marker) even though the lease is released.
+    _seed_lease(conn, "agent-2", status="released")
+
+    result = markers.get_active(conn)
+    assert result is not None
+    assert result["agent_id"] == "agent-2", (
+        "default get_active() must return newest active marker ignoring lease state"
+    )
+
+
+def test_get_active_raises_when_require_active_lease_unscoped(conn):
+    """require_active_lease=True with no project_root/workflow_id must raise ValueError.
+
+    The lease JOIN requires a scope to avoid cross-project pollution
+    (DEC-IMPL-STOP-MARKER-001). Calling get_active(conn, require_active_lease=True)
+    without either project_root or workflow_id silently enters the unscoped branch
+    and ignores the flag — a precondition violation. The guard makes this a loud
+    failure instead of a silent no-op.
+    """
+    with pytest.raises(ValueError, match="require_active_lease=True requires"):
+        markers.get_active(conn, require_active_lease=True)
